@@ -127,7 +127,7 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
 
   login.on("completed", async (result: any) => {
     try {
-      const cookie = result.data as { SESSDATA: string; bili_jct: string; DedeUserID: string };
+      const cookie = result as { SESSDATA: string; bili_jct: string; DedeUserID: string };
       const info = await getUserInfo(cookie);
       const userId = String(info.uid);
       userStore.upsert({
@@ -159,7 +159,7 @@ app.get("/api/users/login/status", requireAuth, (req, res) => {
     res.status(404).json({ success: false, message: "Login session not found" });
     return;
   }
-  res.json({ success: true, data: { status: session.status } });
+  res.json({ success: true, data: { status: session.status, message: session.message } });
 });
 
 app.get("/api/users/:id/favorites", requireAuth, async (req, res) => {

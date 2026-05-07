@@ -16,7 +16,7 @@ services:
 
   rclone:
     image: rclone/rclone:latest
-    command: rcd --config /config/rclone/rclone.conf --rc-web-gui --rc-addr :5572
+    command: rcd --config /config/rclone/rclone.conf --rc-web-gui --rc-addr :5572 --rc-user admin --rc-pass admin
     ports:
       - "5572:5572"
     volumes:

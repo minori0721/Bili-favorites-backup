@@ -4,7 +4,7 @@ export function renderLoginPage() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bili Favorites Sync</title>
+  <title>B站收藏夹同步</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&display=swap');
     :root {
@@ -67,13 +67,13 @@ export function renderLoginPage() {
 </head>
 <body>
   <div class="card">
-    <h1>Favorites Sync</h1>
-    <p>Sign in to manage Bilibili sync.</p>
-    <label>Username</label>
+    <h1>B站收藏夹同步</h1>
+    <p>请登录以管理您的B站同步任务。</p>
+    <label>用户名</label>
     <input id="username" type="text" autocomplete="username" />
-    <label>Password</label>
+    <label>密码</label>
     <input id="password" type="password" autocomplete="current-password" />
-    <button id="loginBtn">Login</button>
+    <button id="loginBtn">登录</button>
     <div class="error" id="error"></div>
   </div>
   <script>
@@ -92,7 +92,7 @@ export function renderLoginPage() {
       if (data.success) {
         window.location.href = '/';
       } else {
-        errorEl.textContent = data.message || 'Login failed';
+        errorEl.textContent = data.message || '登录失败';
       }
     });
   </script>
@@ -106,7 +106,7 @@ export function renderAppPage() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bili Favorites Sync</title>
+  <title>B站收藏夹同步</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&display=swap');
     :root {
@@ -217,39 +217,40 @@ export function renderAppPage() {
 </head>
 <body>
   <header>
-    <h1>Favorites Sync</h1>
-    <button id="logoutBtn">Logout</button>
+  <header>
+    <h1>B站收藏夹同步</h1>
+    <button id="logoutBtn">退出登录</button>
   </header>
   <main>
     <section class="card">
-      <h2>Accounts</h2>
-      <p class="muted">Manage Bilibili accounts and favorite folders.</p>
+      <h2>账号管理</h2>
+      <p class="muted">管理B站账号及同步的收藏夹。</p>
       <div class="row">
-        <button id="addUserBtn">Add Bili Account</button>
-        <button class="ghost" id="syncNowBtn">Run Sync Now</button>
+        <button id="addUserBtn">添加B站账号</button>
+        <button class="ghost" id="syncNowBtn">立即同步</button>
       </div>
       <div class="user-list" id="userList"></div>
     </section>
 
     <section class="card">
-      <h2>Settings</h2>
-      <label>Poll interval (minutes)</label>
+      <h2>设置</h2>
+      <label>轮询间隔 (分钟)</label>
       <input id="pollInterval" type="number" min="1" />
-      <label>Delay between videos (seconds)</label>
+      <label>视频间延迟 (秒)</label>
       <input id="delaySeconds" type="number" min="0" />
-      <label>Rclone destination</label>
-      <input id="rcloneDest" type="text" />
-      <label>Upload layout</label>
+      <label>Rclone 目标路径</label>
+      <input id="rcloneDest" type="text" placeholder="例如: my_s3:bili-backup/videos" />
+      <label>上传目录结构</label>
       <select id="uploadLayout">
-        <option value="user-folder-video">User / Folder / Video</option>
-        <option value="folder-video">Folder / Video</option>
-        <option value="video-only">Video only</option>
+        <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
+        <option value="folder-video">收藏夹名 / 视频</option>
+        <option value="video-only">仅视频文件</option>
       </select>
-      <label>Rclone Web UI URL</label>
+      <label>Rclone Web UI 地址</label>
       <input id="rcloneWebUrl" type="text" />
       <div class="row" style="margin-top: 12px;">
-        <button id="saveConfigBtn">Save Settings</button>
-        <a id="openRcloneBtn" class="ghost" target="_blank">Open Rclone UI</a>
+        <button id="saveConfigBtn">保存设置</button>
+        <a id="openRcloneBtn" class="ghost" target="_blank">打开 Rclone UI</a>
       </div>
       <div class="muted" id="configStatus"></div>
     </section>
@@ -257,23 +258,23 @@ export function renderAppPage() {
 
   <div class="modal" id="loginModal">
     <div class="panel">
-      <h2>Scan to Login</h2>
-      <p class="muted">Scan QR code with Bilibili app.</p>
+      <h2>扫码登录</h2>
+      <p class="muted">请使用B站APP扫描二维码。</p>
       <img id="loginQr" alt="QR" style="width: 200px; height: 200px;" />
       <div id="loginStatus" class="muted"></div>
       <div class="row" style="margin-top: 12px;">
-        <button id="closeLoginBtn" class="ghost">Close</button>
+        <button id="closeLoginBtn" class="ghost">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="favoritesModal">
     <div class="panel">
-      <h2>Select Favorites</h2>
+      <h2>选择同步收藏夹</h2>
       <div class="favorites-list" id="favoritesList"></div>
       <div class="row" style="margin-top: 12px;">
-        <button id="saveFavoritesBtn">Save</button>
-        <button id="closeFavoritesBtn" class="ghost">Cancel</button>
+        <button id="saveFavoritesBtn">保存</button>
+        <button id="closeFavoritesBtn" class="ghost">取消</button>
       </div>
       <div class="muted" id="favoritesStatus"></div>
     </div>
@@ -306,7 +307,7 @@ export function renderAppPage() {
       const res = await fetch(url, options);
       const data = await res.json();
       if (!data.success) {
-        throw new Error(data.message || 'Request failed');
+        throw new Error(data.message || '请求失败');
       }
       return data.data;
     }
@@ -317,8 +318,16 @@ export function renderAppPage() {
       document.getElementById('delaySeconds').value = data.perVideoDelaySeconds;
       document.getElementById('rcloneDest').value = data.rcloneDestination;
       document.getElementById('uploadLayout').value = data.uploadLayout;
-      document.getElementById('rcloneWebUrl').value = data.rcloneWebUrl;
-      openRcloneBtn.href = data.rcloneWebUrl;
+      
+      let webUrl = data.rcloneWebUrl;
+      if (webUrl.includes('localhost') || webUrl.includes('127.0.0.1')) {
+        const portMatch = webUrl.match(/:(\\d+)/);
+        const port = portMatch ? portMatch[1] : '5572';
+        webUrl = window.location.protocol + '//' + window.location.hostname + ':' + port;
+      }
+      
+      document.getElementById('rcloneWebUrl').value = webUrl;
+      openRcloneBtn.href = webUrl;
     }
 
     async function loadUsers() {
@@ -329,20 +338,20 @@ export function renderAppPage() {
         item.className = 'user-item';
         item.innerHTML =
           '<strong>' + user.name + '</strong>' +
-          '<div class="muted">UID: ' + user.uid + ' | Favorites: ' + user.favoritesCount + '</div>' +
+          '<div class="muted">UID: ' + user.uid + ' | 已选收藏夹: ' + user.favoritesCount + '</div>' +
           '<div class="row">' +
-            '<button data-action="favorites" data-id="' + user.id + '">Select Favorites</button>' +
+            '<button data-action="favorites" data-id="' + user.id + '">选择收藏夹</button>' +
             '<button class="ghost" data-action="toggle" data-id="' + user.id + '">' +
-              (user.enabled ? 'Disable' : 'Enable') +
+              (user.enabled ? '停用' : '启用') +
             '</button>' +
-            '<button class="ghost" data-action="remove" data-id="' + user.id + '">Remove</button>' +
+            '<button class="ghost" data-action="remove" data-id="' + user.id + '">删除</button>' +
           '</div>';
         userListEl.appendChild(item);
       });
     }
 
     async function startLogin() {
-      loginStatus.textContent = 'Waiting for scan...';
+      loginStatus.textContent = '等待扫码...';
       const data = await fetchJson('/api/users/login/start', { method: 'POST' });
       currentLoginId = data.loginId;
       loginQr.src = data.qrDataUrl;
@@ -353,17 +362,32 @@ export function renderAppPage() {
     async function pollLoginStatus() {
       if (!currentLoginId) return;
       try {
-        const data = await fetchJson('/api/users/login/status?loginId=' + currentLoginId);
-        loginStatus.textContent = data.status;
+        const res = await fetch('/api/users/login/status?loginId=' + currentLoginId);
+        const json = await res.json();
+        
+        // Handle server 404 or other errors gracefully
+        if (!res.ok || !json.success) {
+          loginStatus.textContent = json.message || '查询状态失败';
+          currentLoginId = null;
+          return;
+        }
+
+        const data = json.data;
         if (data.status === 'completed') {
+          loginStatus.textContent = '登录成功！';
           currentLoginId = null;
           loginModal.classList.remove('active');
           await loadUsers();
+        } else if (data.status === 'error') {
+          loginStatus.textContent = data.message || '登录异常';
+          currentLoginId = null;
         } else {
+          loginStatus.textContent = data.status === 'pending' ? '等待扫码...' : data.status;
           setTimeout(pollLoginStatus, 1500);
         }
       } catch (error) {
         loginStatus.textContent = error.message;
+        currentLoginId = null;
       }
     }
 
@@ -389,7 +413,7 @@ export function renderAppPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mediaIds: selected })
       });
-      favoritesStatus.textContent = 'Saved.';
+      favoritesStatus.textContent = '已保存';
       favoritesModal.classList.remove('active');
       await loadUsers();
     }
@@ -408,7 +432,7 @@ export function renderAppPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      configStatus.textContent = 'Saved.';
+      configStatus.textContent = '已保存';
       openRcloneBtn.href = payload.rcloneWebUrl;
     }
 
