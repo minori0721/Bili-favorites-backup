@@ -1,0 +1,27 @@
+{
+  "name": "bili-favorites-backup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "login": "tsx src/scripts/login.ts"
+  },
+  "dependencies": {
+    "@renmu/bili-api": "^2.13.2",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "qrcode-terminal": "^0.12.0",
+    "qrcode": "^1.5.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.17.10",
+    "@types/node": "^20.11.30",
+    "@types/qrcode-terminal": "^0.12.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

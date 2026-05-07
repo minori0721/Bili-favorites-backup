@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - ADMIN_USER=admin
+      - ADMIN_PASS=admin
+      - SESSION_SECRET=change-me
+    volumes:
+      - ./data:/app/data
+      - ./temp:/app/temp
+      - ./rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro
+    depends_on:
+      - rclone
+
+  rclone:
+    image: rclone/rclone:latest
+    command: rcd --config /config/rclone/rclone.conf --rc-web-gui --rc-addr :5572
+    ports:
+      - "5572:5572"
+    volumes:
+      - ./rclone:/config/rclone
