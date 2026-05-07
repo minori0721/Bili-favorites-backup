@@ -24,8 +24,8 @@ export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
   const client = new Client(auth);
   const res = await client.user.getMyInfo();
   return {
-    uid: res.data?.mid || Number(cookie.DedeUserID),
-    name: res.data?.name || "Unknown",
+    uid: res.profile?.mid || Number(cookie.DedeUserID),
+    name: res.profile?.name || "Unknown",
   };
 }
 
