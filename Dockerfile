@@ -17,10 +17,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg curl unzip ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://rclone.org/install.sh | bash
-RUN curl -L https://github.com/nilaoda/BBDown/releases/latest/download/BBDown_linux_amd64.zip -o /tmp/bbdown.zip \
-  && unzip /tmp/bbdown.zip -d /usr/local/bin \
-  && chmod +x /usr/local/bin/BBDown \
-  && rm /tmp/bbdown.zip
+RUN set -e; \
+  BB_URL=$(curl -fsSL https://api.github.com/repos/nilaoda/BBDown/releases/latest \
+    | grep -o "https://github.com/nilaoda/BBDown/releases/download/[^\"]*linux-x64.zip" \
+    | head -n 1); \
+  if [ -z "$BB_URL" ]; then echo "BBDown download URL not found" >&2; exit 1; fi; \
+  curl -fsSL "$BB_URL" -o /tmp/bbdown.zip; \
+  unzip -o /tmp/bbdown.zip -d /usr/local/bin; \
+  chmod +x /usr/local/bin/BBDown; \
+  rm /tmp/bbdown.zip
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist

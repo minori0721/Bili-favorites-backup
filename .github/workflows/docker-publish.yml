@@ -13,6 +13,7 @@ permissions:
 
 env:
   IMAGE_NAME: minori0721/bili-favorites-backup
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   docker:
