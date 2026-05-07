@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { sanitizeSegment, joinRemotePath } from "./utils";
-import { UploadLayout } from "./config";
+import { sanitizeSegment, joinRemotePath } from "./utils.js";
+import { UploadLayout } from "./config.js";
 
 export interface UploadContext {
   destination: string;

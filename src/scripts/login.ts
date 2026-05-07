@@ -2,9 +2,9 @@ import { WebQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode-terminal";
 import fs from "node:fs";
 import path from "node:path";
-import { ensureAppDirs, dataDir } from "../paths";
-import { getUserInfo } from "../bili";
-import { UserStore } from "../users";
+import { ensureAppDirs, dataDir } from "../paths.js";
+import { getUserInfo } from "../bili.js";
+import { UserStore } from "../users.js";
 
 async function run() {
   ensureAppDirs();

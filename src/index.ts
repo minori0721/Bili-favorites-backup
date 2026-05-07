@@ -3,13 +3,13 @@ import session from "express-session";
 import crypto from "node:crypto";
 import { WebQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { ensureAppDirs } from "./paths";
-import { ConfigStore, validateConfig } from "./config";
-import { UserStore } from "./users";
-import { StateManager } from "./state";
-import { getUserInfo, listFavoriteFolders } from "./bili";
-import { renderLoginPage, renderAppPage } from "./web";
-import { SyncScheduler } from "./scheduler";
+import { ensureAppDirs } from "./paths.js";
+import { ConfigStore, validateConfig } from "./config.js";
+import { UserStore } from "./users.js";
+import { StateManager } from "./state.js";
+import { getUserInfo, listFavoriteFolders } from "./bili.js";
+import { renderLoginPage, renderAppPage } from "./web.js";
+import { SyncScheduler } from "./scheduler.js";
 
 ensureAppDirs();
 

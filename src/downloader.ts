@@ -1,8 +1,8 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { tempDir } from "./paths";
-import { buildCookieString, BiliCookie } from "./users";
+import { tempDir } from "./paths.js";
+import { buildCookieString, BiliCookie } from "./users.js";
 
 export interface DownloadResult {
   downloadDir: string;

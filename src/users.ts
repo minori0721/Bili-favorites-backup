@@ -1,6 +1,6 @@
 import path from "node:path";
-import { dataDir } from "./paths";
-import { readJsonFile, writeJsonFile } from "./storage";
+import { dataDir } from "./paths.js";
+import { readJsonFile, writeJsonFile } from "./storage.js";
 
 export interface BiliCookie {
   SESSDATA: string;

@@ -1,5 +1,5 @@
 import { Client, Auth } from "@renmu/bili-api";
-import { BiliCookie } from "./users";
+import { BiliCookie } from "./users.js";
 
 export interface BiliUserInfo {
   uid: number;

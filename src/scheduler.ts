@@ -1,10 +1,10 @@
-import { ConfigStore } from "./config";
-import { StateManager } from "./state";
-import { UserStore, buildCookieString } from "./users";
-import { listFavoriteItems } from "./bili";
-import { downloadWithBBDown } from "./downloader";
-import { uploadWithRclone, resolveRemotePath } from "./uploader";
-import { delay } from "./utils";
+import { ConfigStore } from "./config.js";
+import { StateManager } from "./state.js";
+import { UserStore, buildCookieString } from "./users.js";
+import { listFavoriteItems } from "./bili.js";
+import { downloadWithBBDown } from "./downloader.js";
+import { uploadWithRclone, resolveRemotePath } from "./uploader.js";
+import { delay } from "./utils.js";
 
 export class SyncScheduler {
   private timer: NodeJS.Timeout | null = null;
