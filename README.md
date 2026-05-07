@@ -18,6 +18,21 @@
 docker compose up -d --build
 ```
 
+如果你想直接使用 Docker Hub 镜像：
+
+```bash
+docker run -d \
+	--name bili-favorites-backup \
+	-p 3000:3000 \
+	-v $(pwd)/data:/app/data \
+	-v $(pwd)/temp:/app/temp \
+	-v $(pwd)/rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro \
+	-e ADMIN_USER=admin \
+	-e ADMIN_PASS=admin \
+	-e SESSION_SECRET=change-me \
+	minori0721/bili-favorites-backup:latest
+```
+
 2. 打开网页
 
 - 应用：http://localhost:3000
@@ -35,6 +50,14 @@ docker compose up -d --build
 - `ADMIN_USER`
 - `ADMIN_PASS`
 - `SESSION_SECRET`
+
+## 镜像构建
+
+GitHub Actions 会在推送 `main` 分支或打 tag（如 `v1.0.0`）时自动构建并推送镜像：
+
+- `minori0721/bili-favorites-backup:latest`
+- `minori0721/bili-favorites-backup:sha-<commit>`
+- `minori0721/bili-favorites-backup:vX.Y.Z`
 
 ## 配置说明
 
