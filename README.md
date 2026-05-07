@@ -42,6 +42,7 @@ docker run -d \
 
 - 配置会写入 `./rclone/rclone.conf`
 - 以后重启容器会自动复用该配置
+- 如果 Web UI 报错 `Error reading tag file`，请为 rclone 指定可写缓存目录（见下文）
 
 默认登录：`admin / admin`（请在 compose 环境变量里修改）
 
@@ -87,6 +88,30 @@ npm run login
 - Cookie 保存在 `data/users.json`
 - 下载缓存位于 `temp/`，上传后由 rclone move 自动清理
 - 管理员登录由 `ADMIN_USER` / `ADMIN_PASS` 控制
+- 宿主机挂载目录会长期保留：即使删除容器，`data/`、`temp/`、`rclone/` 仍在；
+	只有你手动删除这些目录，数据才会消失
+
+## rclone Web UI 缓存目录
+
+部分环境下 rclone Web UI 会尝试写入 `/root/.cache/rclone/webgui/tag`，
+如果容器内该目录不可写，会出现 `Error reading tag file`。
+
+解决方案：为 rclone 指定可写缓存目录并挂载到宿主机，例如：
+
+```yaml
+	rclone:
+		image: rclone/rclone:latest
+		command: rcd --config /config/rclone/rclone.conf --rc-web-gui --rc-addr :5572 --cache-dir /config/rclone/cache
+		volumes:
+			- ./rclone:/config/rclone
+			- ./rclone-cache:/config/rclone/cache
+```
+
+然后在宿主机创建目录：
+
+```bash
+mkdir -p ./rclone-cache
+```
 
 ## 参考资料 & 鸣谢
 
