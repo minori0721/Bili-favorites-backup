@@ -118,15 +118,16 @@ app.get("/api/users", requireAuth, (req, res) => {
 });
 
 app.post("/api/users/login/start", requireAuth, async (req, res) => {
-  const loginId = crypto.randomUUID();
-  const login = new WebQrcodeLogin();
-  const url = await login.login();
-  const qrDataUrl = await QRCode.toDataURL(url);
+  try {
+    const loginId = crypto.randomUUID();
+    const login = new WebQrcodeLogin();
+    const url = await login.login();
+    const qrDataUrl = await QRCode.toDataURL(url);
 
-  loginSessions.set(loginId, { status: "pending", qrDataUrl });
+    loginSessions.set(loginId, { status: "pending", qrDataUrl });
 
-  login.on("completed", async (result: any) => {
-    try {
+    login.emitter.on("completed", async (result: any) => {
+      try {
       const cookie = result as { SESSDATA: string; bili_jct: string; DedeUserID: string };
       const info = await getUserInfo(cookie);
       const userId = String(info.uid);
@@ -140,16 +141,20 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
         lastLoginAt: new Date().toISOString(),
       });
       loginSessions.set(loginId, { status: "completed", qrDataUrl, userId });
-    } catch (error) {
-      loginSessions.set(loginId, { status: "error", qrDataUrl, message: "Failed to save user" });
-    }
-  });
+      } catch (error: any) {
+        loginSessions.set(loginId, { status: "error", qrDataUrl, message: error?.message || "Failed to save user" });
+      }
+    });
 
-  login.on("error", (error: any) => {
-    loginSessions.set(loginId, { status: "error", qrDataUrl, message: error?.message || "Login failed" });
-  });
+    login.emitter.on("error", (error: any) => {
+      const msg = error?.data?.message || error?.message || "Login failed";
+      loginSessions.set(loginId, { status: "error", qrDataUrl, message: msg });
+    });
 
-  res.json({ success: true, data: { loginId, qrDataUrl } });
+    res.json({ success: true, data: { loginId, qrDataUrl } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Failed to start login" });
+  }
 });
 
 app.get("/api/users/login/status", requireAuth, (req, res) => {

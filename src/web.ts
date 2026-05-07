@@ -319,15 +319,8 @@ export function renderAppPage() {
       document.getElementById('rcloneDest').value = data.rcloneDestination;
       document.getElementById('uploadLayout').value = data.uploadLayout;
       
-      let webUrl = data.rcloneWebUrl;
-      if (webUrl.includes('localhost') || webUrl.includes('127.0.0.1')) {
-        const portMatch = webUrl.match(/:(\\d+)/);
-        const port = portMatch ? portMatch[1] : '5572';
-        webUrl = window.location.protocol + '//' + window.location.hostname + ':' + port;
-      }
-      
-      document.getElementById('rcloneWebUrl').value = webUrl;
-      openRcloneBtn.href = webUrl;
+      document.getElementById('rcloneWebUrl').value = data.rcloneWebUrl;
+      openRcloneBtn.href = data.rcloneWebUrl;
     }
 
     async function loadUsers() {
