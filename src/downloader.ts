@@ -8,7 +8,9 @@ export interface DownloadResult {
   downloadDir: string;
 }
 
-export async function downloadWithBBDown(bvid: string, cookie: BiliCookie): Promise<DownloadResult> {
+import { AppConfig } from "./config.js";
+
+export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, config: AppConfig): Promise<DownloadResult> {
   const downloadDir = path.join(tempDir, bvid);
   await fs.promises.rm(downloadDir, { recursive: true, force: true });
   await fs.promises.mkdir(downloadDir, { recursive: true });
@@ -27,6 +29,19 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie): Prom
     "<bvid>_P<pageNumberWithZero>",
   ];
 
+  if (config.bbdownEncoding) {
+    args.push("--encoding", config.bbdownEncoding);
+  }
+  if (config.bbdownQuality) {
+    args.push("--dfn", config.bbdownQuality);
+  }
+  if (config.bbdownHiRes) {
+    args.push("--hs");
+  }
+  if (config.bbdownDolby) {
+    args.push("--dolby");
+  }
+  
   await runCommand("BBDown", args, downloadDir);
 
   const entries = await fs.promises.readdir(downloadDir);

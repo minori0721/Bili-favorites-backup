@@ -1,7 +1,8 @@
 import express from "express";
 import session from "express-session";
 import crypto from "node:crypto";
-import { WebQrcodeLogin } from "@renmu/bili-api";
+import { exec } from "node:child_process";
+import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
@@ -105,6 +106,17 @@ app.put("/api/config", requireAuth, (req, res) => {
   res.json({ success: true, data: updated });
 });
 
+app.get("/api/rclone/remotes", requireAuth, (req, res) => {
+  exec("rclone listremotes", (error, stdout, stderr) => {
+    if (error) {
+      console.error("rclone listremotes error:", stderr);
+      return res.status(500).json({ success: false, message: "Failed to list remotes" });
+    }
+    const remotes = stdout.split('\n').map(r => r.trim()).filter(r => r.length > 0);
+    res.json({ success: true, data: remotes });
+  });
+});
+
 app.get("/api/users", requireAuth, (req, res) => {
   const users = userStore.list().map((user) => ({
     id: user.id,
@@ -120,7 +132,7 @@ app.get("/api/users", requireAuth, (req, res) => {
 app.post("/api/users/login/start", requireAuth, async (req, res) => {
   try {
     const loginId = crypto.randomUUID();
-    const login = new WebQrcodeLogin();
+    const login = new TvQrcodeLogin();
     const url = await login.login();
     const qrDataUrl = await QRCode.toDataURL(url);
 
@@ -128,7 +140,12 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
 
     login.emitter.on("completed", async (result: any) => {
       try {
-      const cookie = result as { SESSDATA: string; bili_jct: string; DedeUserID: string };
+      const cookieArray = result?.data?.cookie_info?.cookies || [];
+      const cookie = {
+        SESSDATA: cookieArray.find((c: any) => c.name === "SESSDATA")?.value || "",
+        bili_jct: cookieArray.find((c: any) => c.name === "bili_jct")?.value || "",
+        DedeUserID: cookieArray.find((c: any) => c.name === "DedeUserID")?.value || "",
+      };
       const info = await getUserInfo(cookie);
       const userId = String(info.uid);
       userStore.upsert({

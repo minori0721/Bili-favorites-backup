@@ -10,6 +10,14 @@ export interface AppConfig {
   rcloneDestination: string;
   uploadLayout: UploadLayout;
   rcloneWebUrl: string;
+  maxRetries: number;
+  retryDelaySeconds: number;
+  concurrentDownloads: number;
+  concurrentUploads: number;
+  bbdownEncoding: string;
+  bbdownQuality: string;
+  bbdownHiRes: boolean;
+  bbdownDolby: boolean;
 }
 
 const configPath = path.join(dataDir, "config.json");
@@ -20,6 +28,14 @@ const defaultConfig: AppConfig = {
   rcloneDestination: "my_s3:bili-backup/videos",
   uploadLayout: "user-folder-video",
   rcloneWebUrl: "http://localhost:5572",
+  maxRetries: 3,
+  retryDelaySeconds: 5,
+  concurrentDownloads: 1,
+  concurrentUploads: 2,
+  bbdownEncoding: "",
+  bbdownQuality: "",
+  bbdownHiRes: false,
+  bbdownDolby: false,
 };
 
 export class ConfigStore {
