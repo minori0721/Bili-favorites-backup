@@ -87,6 +87,13 @@ export async function listFavoriteItemsPage(
     type: "2",
     tid: "0",
     platform: "web",
+    web_location: "1550101",
+    dm_img_list: "[]",
+    dm_img_str: "V2ViR0wgMS",
+    dm_cover_img_str: utils.fakeDmCoverImgStr(
+      "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0XX)), SwiftShader driver)Google Inc. (Google)"
+    ),
+    dm_img_inter: '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
   };
 
   const signedParams = await utils.WbiSign(params);
