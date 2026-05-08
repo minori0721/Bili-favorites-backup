@@ -114,14 +114,17 @@ export async function listFavoriteItemsPage(
   } catch (error: any) {
     const statusCode = error?.statusCode || error?.response?.status;
     const errMsg = error?.message || String(error);
-    if (statusCode === 406 || errMsg.includes("request was banned") || errMsg.includes("访问被拒绝")) {
+    if (
+      statusCode === 406 ||
+      statusCode === 412 ||
+      errMsg.includes("request was banned") ||
+      errMsg.includes("访问被拒绝")
+    ) {
       throw new BiliRiskOrLoginError(
         `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
       );
     }
-    throw new BiliRiskOrLoginError(
-      `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
-    );
+    throw error;
   }
 
   const medias = data?.medias || [];
