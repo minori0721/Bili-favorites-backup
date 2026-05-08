@@ -158,8 +158,12 @@ export async function listFavoriteItemsPage(
   page = 1,
   pageSize = 20
 ): Promise<FavoriteItemsPage> {
-  // Build simple cookie string (same as 58fb3ca working version)
-  const cookieString = `SESSDATA=${cookie.SESSDATA}; bili_jct=${cookie.bili_jct}; DedeUserID=${cookie.DedeUserID}`;
+  // Build full cookie string — include ALL fields, not just SESSDATA/bili_jct/DedeUserID
+  // B站 may require additional fields like buvid3, b_nut, etc. for risk scoring
+  const cookieString = Object.entries(cookie)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
 
   // WBI sign the params (B站 requires this on some endpoints)
   const wbiKeys = await getCachedWbiKeys();
