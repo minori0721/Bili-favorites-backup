@@ -36,9 +36,18 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
     password: config.alistPassword,
   });
 
-  // Ensure remote directory exists
-  if (await client.exists(remotePath) === false) {
-    await client.createDirectory(remotePath);
+  // Ensure remote directory exists recursively
+  const segments = remotePath.split('/').filter(s => s.length > 0);
+  let currentPath = '';
+  for (const segment of segments) {
+    currentPath += '/' + segment;
+    try {
+      if (await client.exists(currentPath) === false) {
+        await client.createDirectory(currentPath);
+      }
+    } catch (e) {
+      // Ignore errors that might occur if created concurrently
+    }
   }
 
   const entries = await fs.promises.readdir(localDir, { withFileTypes: true });

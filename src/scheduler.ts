@@ -26,6 +26,14 @@ export class SyncScheduler {
     this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1);
     this.uploadQueue = new TaskQueue(config.concurrentUploads || 2);
 
+    const logTaskError = (task: any, error: any) => console.error(`[Queue] Task ${task.name} permanently failed:`, error);
+    const logTaskRetry = (task: any, error: any) => console.warn(`[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}):`, error.message || error);
+    
+    this.downloadQueue.on("taskError", logTaskError);
+    this.downloadQueue.on("taskRetry", logTaskRetry);
+    this.uploadQueue.on("taskError", logTaskError);
+    this.uploadQueue.on("taskRetry", logTaskRetry);
+
     this.downloadQueue.on("taskCompleted", (task: DownloadTask) => {
       if (!task.downloadDir) return;
       const t = task as any;
