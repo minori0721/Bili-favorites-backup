@@ -104,7 +104,6 @@ export class SyncScheduler {
         try {
           items = await listFavoriteItems(user.cookie, folder.mediaId);
         } catch (error) {
-          // Only non-risk errors reach here (risk errors now return partial items instead of throwing)
           console.error("Failed to list favorites", error);
           continue;
         }
@@ -134,9 +133,6 @@ export class SyncScheduler {
           this.downloadQueue.addTask(task);
           existingDownloadTaskBvids.add(item.bvid);
         }
-
-        // Small delay between folders (300ms like between pages)
-        await new Promise((resolve) => setTimeout(resolve, 300));
       }
     }
   }
