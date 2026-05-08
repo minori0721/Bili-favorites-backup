@@ -101,7 +101,7 @@ export class SyncScheduler {
           continue;
         }
 
-        const pending = items.filter((item) => !this.stateManager.isProcessed(user.id, item.bvid));
+        const pending = items.filter((item) => !this.stateManager.isProcessed(user.id, item.bvid) && !item.unavailable);
         for (const item of pending) {
           if (existingDownloadTaskBvids.has(item.bvid) || existingUploadTaskBvids.has(item.bvid)) {
             continue; // Already in queue

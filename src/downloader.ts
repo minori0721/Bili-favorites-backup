@@ -34,10 +34,10 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
   ];
 
   if (config.bbdownEncoding) {
-    args.push("--encoding-priority", config.bbdownEncoding);
+    args.push("--encoding-priority", normalizeEncodingPriority(config.bbdownEncoding));
   }
   if (config.bbdownQuality) {
-    args.push("--dfn-priority", config.bbdownQuality);
+    args.push("--dfn-priority", normalizeQualityPriority(config.bbdownQuality));
   }
   if (config.bbdownHiRes || config.bbdownDolby) {
     // BBDown 需要使用 APP 端接口 (-app) 才能解析出 Hi-Res 和 杜比音效
@@ -52,6 +52,29 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
   }
 
   return { downloadDir };
+}
+
+function normalizeEncodingPriority(value: string) {
+  const map: Record<string, string> = {
+    HEVC: "hevc",
+    AVC: "avc",
+    AV1: "av1",
+  };
+  if (map[value]) {
+    return map[value];
+  }
+  return value.toLowerCase();
+}
+
+function normalizeQualityPriority(value: string) {
+  const map: Record<string, string> = {
+    "8K": "8K \u8d85\u9ad8\u6e05",
+    "4K": "4K \u8d85\u6e05",
+    "1080P60": "1080P 60\u5e27",
+    "1080P": "1080P \u9ad8\u6e05",
+    "720P": "720P \u9ad8\u6e05",
+  };
+  return map[value] || value;
 }
 
 function runCommand(command: string, args: string[], cwd: string, bvid: string) {

@@ -214,6 +214,46 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res)
   }
 });
 
+// NEW: List unavailable videos across all selected folders
+app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+
+  try {
+    const cookieString = buildCookieString(user.cookie);
+    const results: Array<{
+      bvid: string;
+      title: string;
+      upperName: string;
+      cover?: string;
+      unavailable?: boolean;
+      processed: boolean;
+      mediaId: number;
+      folderTitle: string;
+    }> = [];
+
+    for (const folder of user.favorites) {
+      const items = await listFavoriteItems(cookieString, folder.mediaId, 100);
+      for (const item of items) {
+        if (!item.unavailable) continue;
+        results.push({
+          ...item,
+          processed: stateManager.isProcessed(user.id, item.bvid),
+          mediaId: folder.mediaId,
+          folderTitle: folder.title,
+        });
+      }
+    }
+
+    res.json({ success: true, data: results });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Failed to list unavailable videos" });
+  }
+});
+
 // NEW: Get processed state for all users
 app.get("/api/state", requireAuth, (req, res) => {
   res.json({ success: true, data: stateManager.getAllProcessed() });

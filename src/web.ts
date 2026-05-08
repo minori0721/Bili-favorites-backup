@@ -191,8 +191,8 @@ function getAppStyles() {
     .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; }
     .video-item { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); align-items:center; transition:all 0.2s; }
     .video-item.processed { background:var(--success-bg); border-color:var(--success); }
-    .video-item.unavailable-saved { background:#FCE4EC; border-color:#F48FB1; }
-    .video-item.unavailable-unsaved { background:#FFEBEE; border-color:#FFCDD2; }
+    .video-item.unavailable-uploaded { background:#FFF8E1; border-color:#FFC107; box-shadow:0 0 0 1px #FFC107; }
+    .video-item.unavailable-missing { background:#FFEBEE; border-color:#FFCDD2; }
     .video-cover { width:120px; height:75px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
     .video-info { flex:1; min-width:0; }
     .video-title { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -200,8 +200,11 @@ function getAppStyles() {
     .video-badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:6px; font-weight:600; }
     .video-badge.done { background:var(--success); color:white; }
     .video-badge.pending { background:var(--border); color:var(--muted); }
-    .video-badge.removed-saved { background:#F48FB1; color:white; }
-    .video-badge.removed-unsaved { background:#EF9A9A; color:white; }
+    .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
+    .video-badge.removed-missing { background:#EF9A9A; color:white; }
+    .filter-toggle { display:flex; gap:8px; margin-bottom:12px; }
+    .filter-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
+    .filter-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
     /* Template tags */
     .template-tags { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
     .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:8px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:2px solid transparent; transition:all 0.2s; user-select:none; }
@@ -367,6 +370,20 @@ function getModals() {
         <button id="closeVideoDetailBtn" class="ghost" style="width:100%;">关闭</button>
       </div>
     </div>
+  </div>
+
+  <div class="modal" id="unavailableModal">
+    <div class="panel" style="max-width:900px;">
+      <h2>下架视频清单</h2>
+      <div class="filter-toggle">
+        <button id="filterMissingBtn" class="active">下架未上传</button>
+        <button id="filterUploadedBtn">下架已上传</button>
+      </div>
+      <div class="video-grid" id="unavailableGrid"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="closeUnavailableBtn" class="ghost" style="width:100%;">关闭</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -387,6 +404,9 @@ function getAppScript() {
     let favoritesUserId = null;
     let logMode = 'simple';
     let logEntries = [];
+    let unavailableItems = [];
+    let unavailableUserId = null;
+    let unavailableFilter = 'missing';
 
     async function fetchJson(url, options) {
       const res = await fetch(url, options);
@@ -545,6 +565,7 @@ function getAppScript() {
           '<div style="margin:4px 0;">' + favHtml + '</div>' +
           '<div class="row" style="margin-top:4px;">' +
             '<button data-action="favorites" data-id="'+user.id+'">选择收藏夹</button>' +
+            '<button class="ghost" data-action="unavailable" data-id="'+user.id+'">下架清单</button>' +
             '<button class="ghost" data-action="toggle" data-id="'+user.id+'">' + (user.enabled?'暂停同步':'恢复同步') + '</button>' +
             '<button class="ghost" style="border-color:#E57373;color:#E57373;" data-action="remove" data-id="'+user.id+'">删除账号</button>' +
           '</div>';
@@ -623,13 +644,13 @@ function getAppScript() {
           let badgeClass = '';
           let badgeText = '';
           if (item.unavailable && item.processed) {
-            stateClass = 'unavailable-saved';
-            badgeClass = 'removed-saved';
-            badgeText = '已下架（已保存）';
+            stateClass = 'unavailable-uploaded';
+            badgeClass = 'removed-uploaded';
+            badgeText = '已下架（已上传）';
           } else if (item.unavailable && !item.processed) {
-            stateClass = 'unavailable-unsaved';
-            badgeClass = 'removed-unsaved';
-            badgeText = '已下架（未保存）';
+            stateClass = 'unavailable-missing';
+            badgeClass = 'removed-missing';
+            badgeText = '已下架（未上传）';
           } else if (item.processed) {
             stateClass = 'processed';
             badgeClass = 'done';
@@ -653,6 +674,62 @@ function getAppScript() {
       } catch(e) {
         grid.innerHTML = '<div style="color:#E57373;">加载失败: '+e.message+'</div>';
       }
+    }
+
+    // ---- Unavailable Videos Modal ----
+    async function openUnavailable(userId) {
+      unavailableUserId = userId;
+      unavailableFilter = 'missing';
+      document.getElementById('filterMissingBtn').classList.add('active');
+      document.getElementById('filterUploadedBtn').classList.remove('active');
+      const grid = document.getElementById('unavailableGrid');
+      grid.innerHTML = '<div class="muted" style="text-align:center;">加载中...</div>';
+      document.getElementById('unavailableModal').classList.add('active');
+      try {
+        const data = await fetchJson('/api/users/' + userId + '/unavailable');
+        unavailableItems = data || [];
+        renderUnavailableList();
+      } catch (e) {
+        grid.innerHTML = '<div style="color:#E57373;">加载失败: ' + e.message + '</div>';
+      }
+    }
+
+    function setUnavailableFilter(filter) {
+      unavailableFilter = filter;
+      document.getElementById('filterMissingBtn').classList.toggle('active', filter === 'missing');
+      document.getElementById('filterUploadedBtn').classList.toggle('active', filter === 'uploaded');
+      renderUnavailableList();
+    }
+
+    function renderUnavailableList() {
+      const grid = document.getElementById('unavailableGrid');
+      const filtered = (unavailableItems || []).filter(item =>
+        item.processed ? unavailableFilter === 'uploaded' : unavailableFilter === 'missing'
+      );
+
+      if (filtered.length === 0) {
+        grid.innerHTML = '<div class="muted" style="text-align:center;">暂无符合条件的视频</div>';
+        return;
+      }
+
+      grid.innerHTML = '';
+      filtered.forEach(item => {
+        const div = document.createElement('div');
+        const stateClass = item.processed ? 'unavailable-uploaded' : 'unavailable-missing';
+        const badgeClass = item.processed ? 'removed-uploaded' : 'removed-missing';
+        const badgeText = item.processed ? '已下架（已上传）' : '已下架（未上传）';
+        const coverUrl = item.cover ? item.cover.replace('http://','https://') : '';
+        div.className = 'video-item ' + stateClass;
+        div.innerHTML =
+          (coverUrl ? '<img class="video-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="video-cover"></div>') +
+          '<div class="video-info">' +
+            '<div class="video-title" title="'+item.title+'">'+item.title+'</div>' +
+            '<div class="video-meta">UP: '+item.upperName+' | '+item.bvid+'</div>' +
+            '<div class="video-meta">收藏夹: '+(item.folderTitle || '未知')+'</div>' +
+          '</div>' +
+          '<span class="video-badge '+badgeClass+'">'+badgeText+'</span>';
+        grid.appendChild(div);
+      });
     }
 
     async function saveFavorites() {
@@ -720,12 +797,16 @@ function getAppScript() {
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => document.getElementById('favoritesModal').classList.remove('active'));
     document.getElementById('closeVideoDetailBtn').addEventListener('click', () => document.getElementById('videoDetailModal').classList.remove('active'));
+    document.getElementById('closeUnavailableBtn').addEventListener('click', () => document.getElementById('unavailableModal').classList.remove('active'));
+    document.getElementById('filterMissingBtn').addEventListener('click', () => setUnavailableFilter('missing'));
+    document.getElementById('filterUploadedBtn').addEventListener('click', () => setUnavailableFilter('uploaded'));
 
     document.getElementById('userList').addEventListener('click', async (event) => {
       const t = event.target;
       if (!(t instanceof HTMLElement)) return;
       const action = t.dataset.action, userId = t.dataset.id;
       if (action === 'favorites') await openFavorites(userId);
+      if (action === 'unavailable') await openUnavailable(userId);
       if (action === 'remove' && confirm('确定要删除这个账号吗？')) { await fetchJson('/api/users/'+userId,{method:'DELETE'}); await loadUsers(); }
       if (action === 'toggle') { await fetchJson('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})}); await loadUsers(); }
     });
