@@ -60,7 +60,10 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
     const data = (await res.json()) as {
       code: number;
       message: string;
-      data?: { medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }> };
+      data?: {
+        medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
+        has_more?: number;
+      };
     };
     if (data.code !== 0) {
       throw new Error(data.message || "Failed to fetch favorites");
@@ -79,6 +82,13 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
       }));
 
     items.push(...mapped);
+    const hasMore = data.data?.has_more;
+    if (hasMore === 1) {
+      continue;
+    }
+    if (hasMore === 0) {
+      break;
+    }
     if (medias.length < 20) {
       break;
     }
