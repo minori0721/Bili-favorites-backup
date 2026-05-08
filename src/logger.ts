@@ -36,8 +36,9 @@ class LogManager extends EventEmitter {
 export const logManager = new LogManager();
 
 /** Parse structured info from a chunk of BBDown stdout lines */
-export function parseBBDownOutput(rawChunk: string, bvid: string): LogEntry[] {
+export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: LogEntry[], unmatched: string[] } {
   const entries: LogEntry[] = [];
+  const unmatched: string[] = [];
   const now = () => new Date().toISOString();
   const lines = rawChunk.split("\n").map((l) => l.trim()).filter(Boolean);
 
@@ -101,7 +102,9 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): LogEntry[] {
       });
       continue;
     }
+    
+    unmatched.push(line);
   }
 
-  return entries;
+  return { entries, unmatched };
 }

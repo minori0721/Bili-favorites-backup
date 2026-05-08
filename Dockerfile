@@ -16,7 +16,6 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg curl unzip ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://rclone.org/install.sh | bash
 RUN set -e; \
   BB_URL=$(curl -fsSL https://api.github.com/repos/nilaoda/BBDown/releases/latest \
     | grep -o "https://github.com/nilaoda/BBDown/releases/download/[^\"]*linux-x64.zip" \

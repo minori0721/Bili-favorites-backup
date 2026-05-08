@@ -409,8 +409,12 @@ app.delete("/api/users/:id", requireAuth, (req, res) => {
 });
 
 app.post("/api/sync/now", requireAuth, async (req, res) => {
-  await scheduler.tick();
-  res.json({ success: true });
+  try {
+    scheduler.runNow();
+    res.json({ success: true, data: { message: "Sync triggered" } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Sync failed" });
+  }
 });
 
 app.get("/api/logs/stream", requireAuth, (req, res) => {
@@ -472,6 +476,8 @@ app.get("/api/remote/list", requireAuth, async (req, res) => {
     res.status(500).json({ success: false, message: err?.message || "Failed to list" });
   }
 });
+
+
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {

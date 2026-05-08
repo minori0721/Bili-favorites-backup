@@ -17,7 +17,7 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
 
   const url = `https://www.bilibili.com/video/${bvid}`;
   const cookieString = buildCookieString(cookie);
-  const filePattern = config.filenameTemplate || "<bvid>";
+  const filePattern = config.filenameTemplate || "<videoTitle>";
 
   const args = [
     url,
@@ -99,17 +99,16 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       stdoutBuffer += text;
 
       const parsed = parseBBDownOutput(stdoutBuffer, bvid);
-      for (const entry of parsed) {
+      for (const entry of parsed.entries) {
         logManager.push(entry);
       }
 
-      const rawLines = text.split("\n").filter((line: string) => line.trim());
-      for (const rawLine of rawLines) {
+      for (const rawLine of parsed.unmatched) {
         logManager.push({
           timestamp: new Date().toISOString(),
           type: "download",
           level: "info",
-          summary: rawLine.trim(),
+          summary: rawLine,
           raw: rawLine,
           bvid,
         });

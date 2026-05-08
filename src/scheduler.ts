@@ -30,9 +30,8 @@ export class SyncScheduler {
     
     this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
       logTaskError(task, error);
-      const t = task as any;
-      if (error?.permanent && t.userId && t.mediaId) {
-        this.stateManager.markFailed(t.userId, task.bvid, t.mediaId, error.message || "Permanent download failure", true);
+      if (error?.permanent && task.userId && task.mediaId) {
+        this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Permanent download failure", true);
       }
     });
     this.downloadQueue.on("taskRetry", logTaskRetry);
@@ -40,17 +39,17 @@ export class SyncScheduler {
     this.uploadQueue.on("taskRetry", logTaskRetry);
 
     this.downloadQueue.on("taskCompleted", (task: DownloadTask) => {
-      if (!task.downloadDir) return;
-      const t = task as any;
-      const uploadTask = new UploadTask(task.bvid, task.downloadDir, t.remotePath, this.configStore.get());
-      (uploadTask as any).userId = t.userId;
-      (uploadTask as any).mediaId = t.mediaId;
+      if (!task.downloadDir || !task.remotePath) return;
+      const uploadTask = new UploadTask(task.bvid, task.downloadDir, task.remotePath, this.configStore.get());
+      uploadTask.userId = task.userId;
+      uploadTask.mediaId = task.mediaId;
       this.uploadQueue.addTask(uploadTask);
     });
 
     this.uploadQueue.on("taskCompleted", (task: UploadTask) => {
-      const t = task as any;
-      this.stateManager.markProcessed(t.userId, task.bvid, t.mediaId);
+      if (task.userId && task.mediaId) {
+        this.stateManager.markProcessed(task.userId, task.bvid, task.mediaId);
+      }
     });
   }
 
@@ -74,6 +73,11 @@ export class SyncScheduler {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+
+  runNow() {
+    console.log("[Scheduler] Manual sync triggered");
+    void this.tick();
   }
 
   async tick() {
@@ -124,9 +128,9 @@ export class SyncScheduler {
           });
 
           const task = new DownloadTask(item.bvid, user.cookie, config);
-          (task as any).userId = user.id;
-          (task as any).mediaId = folder.mediaId;
-          (task as any).remotePath = remotePath;
+          task.userId = user.id;
+          task.mediaId = folder.mediaId;
+          task.remotePath = remotePath;
           
           this.downloadQueue.addTask(task);
           existingDownloadTaskBvids.add(item.bvid);

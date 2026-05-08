@@ -137,6 +137,7 @@ export function renderAppPage() {
     ${getLogSection()}
   </main>
   ${getModals()}
+  <div id="toastContainer" class="toast-container"></div>
   <script>
     ${getAppScript()}
   </script>
@@ -229,7 +230,14 @@ function getAppStyles() {
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
     .rename-btn { background:#FF7043!important; }
     .rename-btn:hover { background:#F4511E!important; }
+    .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
+    .toast { background:white; color:var(--ink); padding:16px 20px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:center; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:400px; word-break:break-word; pointer-events:auto; }
+    .toast.success { border-left-color:var(--success); }
+    .toast.info { border-left-color:var(--accent); }
+    .toast.fade-out { animation:toastOut 0.3s cubic-bezier(0.16,1,0.3,1) forwards; }
     @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes toastIn { from{opacity:0;transform:translateX(40px) scale(0.9)} to{opacity:1;transform:translateX(0) scale(1)} }
+    @keyframes toastOut { from{opacity:1;transform:translateX(0) scale(1)} to{opacity:0;transform:translateX(40px) scale(0.9)} }
   </style>`;
 }
 
@@ -422,11 +430,28 @@ function getAppScript() {
       token: 0
     };
 
+    function showToast(message, type = 'error') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = 'toast ' + type;
+      toast.innerHTML = '<div>' + message + '</div>';
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.classList.add('fade-out');
+        toast.addEventListener('animationend', () => toast.remove());
+      }, 3500);
+    }
+
     async function fetchJson(url, options) {
-      const res = await fetch(url, options);
-      const data = await res.json();
-      if (!data.success) throw new Error(data.message || '请求失败');
-      return data.data;
+      try {
+        const res = await fetch(url, options);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || '请求失败');
+        return data.data;
+      } catch (e) {
+        showToast(e.message || String(e), 'error');
+        throw e;
+      }
     }
 
     // ---- Config ----
@@ -621,7 +646,7 @@ function getAppScript() {
       favoritesUserId = userId;
       document.getElementById('favoritesStatus').textContent = '';
       const list = document.getElementById('favoritesList');
-      list.innerHTML = '<div class="muted" style="text-align:center;">鍔犺浇涓?..</div>';
+      list.innerHTML = '<div class="muted" style="text-align:center;">加载中...</div>';
       document.getElementById('favoritesModal').classList.add('active');
       const data = await fetchJson('/api/users/'+userId+'/favorites');
       list.innerHTML = '';
@@ -634,7 +659,7 @@ function getAppScript() {
           (coverUrl ? '<img class="fav-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="fav-cover"></div>') +
           '<div style="flex:1;min-width:0;">' +
             '<div style="font-weight:600;">'+folder.title+'</div>' +
-            '<div style="font-size:12px;color:var(--muted);">'+folder.mediaCount+' 涓棰?/div>' +
+            '<div style="font-size:12px;color:var(--muted);">'+folder.mediaCount+' 个视频</div>' +
           '</div>' +
           '<button class="ghost" style="padding:4px 12px;font-size:12px;flex-shrink:0;" data-detail-media="'+folder.mediaId+'" data-detail-title="'+folder.title+'">查看详情</button>';
         list.appendChild(lbl);

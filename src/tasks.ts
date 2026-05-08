@@ -9,6 +9,9 @@ export class DownloadTask extends Task {
   cookie: BiliCookie;
   config: AppConfig;
   downloadDir?: string;
+  userId?: string;
+  mediaId?: number;
+  remotePath?: string;
 
   constructor(bvid: string, cookie: BiliCookie, config: AppConfig) {
     super(`Download ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
@@ -30,6 +33,8 @@ export class UploadTask extends Task {
   downloadDir: string;
   remotePath: string;
   config: AppConfig;
+  userId?: string;
+  mediaId?: number;
 
   constructor(bvid: string, downloadDir: string, remotePath: string, config: AppConfig) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { sanitizeSegment, joinRemotePath } from "./utils.js";
 import { UploadLayout } from "./config.js";
 
