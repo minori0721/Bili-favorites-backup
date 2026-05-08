@@ -1,6 +1,6 @@
 import { ConfigStore } from "./config.js";
 import { StateManager } from "./state.js";
-import { UserStore, buildCookieString } from "./users.js";
+import { UserStore } from "./users.js";
 import { listFavoriteItems } from "./bili.js";
 import { resolveRemotePath } from "./uploader.js";
 import { TaskQueue } from "./queue.js";
@@ -99,12 +99,10 @@ export class SyncScheduler {
     const existingUploadTaskBvids = new Set(this.uploadQueue.getTasks().map(t => (t as UploadTask).bvid));
 
     for (const user of users) {
-      const cookieString = buildCookieString(user.cookie);
       for (const folder of user.favorites) {
-        let items = [];
+        let items: Awaited<ReturnType<typeof listFavoriteItems>> = [];
         try {
-          // 获取最多 100 页（每页 20 个，约 2000 个视频），确保能同步完所有的收藏
-          items = await listFavoriteItems(cookieString, folder.mediaId);
+          items = await listFavoriteItems(user.cookie, folder.mediaId);
         } catch (error) {
           console.error("Failed to list favorites", error);
           continue;

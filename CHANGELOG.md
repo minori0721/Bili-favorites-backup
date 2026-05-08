@@ -1,5 +1,26 @@
 # 更新日志 (Changelog)
 
+## [1.0.2] - 2026-05-09
+
+### 🐛 关键修复
+
+#### 修复「request was banned」错误
+- **bili.ts**: `listFavoriteItemsPage()` 从原生 `fetch()` 改为使用 biliAPI 库的请求基础设施
+- **bili.ts**: 所有请求参数通过 `utils.WbiSign()` 进行 WBI 签名，添加 `w_rid` + `wts` 参数
+- **bili.ts**: 请求自动携带完整 Cookie（含真实 buvid3/buvid4）、User-Agent、dm_cover_img_str 等风控参数
+- **bili.ts**: 提取公共 `createBiliClient()` 工厂函数，消除 `getUserInfo`/`listFavoriteFolders`/`listFavoriteItemsPage` 中的重复代码
+
+#### 修复「同步到一半卡住」问题
+- **bili.ts**: `listFavoriteItems()` 新增指数退避重试机制，每页最多重试 3 次（1s → 2s → 4s，上限 10s）
+- **bili.ts**: 风控/登录失效错误（`BiliRiskOrLoginError`）立即向上抛出，不做无意义重试
+- **bili.ts**: 普通网络错误重试耗尽后跳过当前页继续后续页，不再丢弃整个收藏夹的剩余视频
+- **bili.ts**: 控制台输出清晰的重试/跳过警告日志，方便排查问题
+
+#### 接口签名统一
+- **scheduler.ts**: `listFavoriteItems()` 调用改为直接传入 `BiliCookie` 对象，移除中间 `buildCookieString()` 转换
+- **index.ts**: 两处 `listFavoriteItemsPage()` 调用同步改为传入 `BiliCookie` 对象
+- **scheduler.ts**, **index.ts**: 移除不再需要的 `buildCookieString` 导入
+
 ## [1.0.1] - 2026-05-08
 
 ### 🐛 核心修复与优化

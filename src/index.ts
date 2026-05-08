@@ -5,7 +5,7 @@ import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
-import { UserStore, buildCookieString } from "./users.js";
+import { UserStore } from "./users.js";
 import { StateManager } from "./state.js";
 import {
   BiliRiskOrLoginError,
@@ -272,7 +272,6 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res)
     return;
   }
   try {
-    const cookieString = buildCookieString(user.cookie);
     const mediaId = Number(req.params.mediaId);
     if (!Number.isFinite(mediaId) || mediaId < 1) {
       res.status(400).json({ success: false, message: "Invalid mediaId" });
@@ -291,7 +290,7 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res)
       favoriteItemsCache.delete(cacheKey);
     }
 
-    const pageResult = await listFavoriteItemsPage(cookieString, mediaId, page, pageSize);
+    const pageResult = await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
     favoriteItemsCache.set(cacheKey, {
       expiresAt: Date.now() + favoriteItemsCacheTtlMs,
       data: pageResult,
@@ -310,7 +309,6 @@ app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
   }
 
   try {
-    const cookieString = buildCookieString(user.cookie);
     const pageSize = normalizePageSize(req.query.pageSize);
     const cursor = parseUnavailableCursor(req.query.cursor);
     const results: Array<{
@@ -329,7 +327,7 @@ app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
     let page = cursor.page;
     while (folderIndex < user.favorites.length && results.length < pageSize) {
       const folder = user.favorites[folderIndex];
-      const pageResult = await listFavoriteItemsPage(cookieString, folder.mediaId, page, 20);
+      const pageResult = await listFavoriteItemsPage(user.cookie, folder.mediaId, page, 20);
       for (const item of pageResult.items) {
         if (!item.unavailable) continue;
         results.push({

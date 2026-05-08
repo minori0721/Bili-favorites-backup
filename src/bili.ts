@@ -1,4 +1,4 @@
-import { Client, Auth } from "@renmu/bili-api";
+import { Client, Auth, utils } from "@renmu/bili-api";
 import { BiliCookie } from "./users.js";
 import { delay } from "./utils.js";
 
@@ -37,10 +37,14 @@ export class BiliRiskOrLoginError extends Error {
   }
 }
 
-export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
+function createBiliClient(cookie: BiliCookie) {
   const auth = new Auth();
-  await auth.setAuth(cookie, Number(cookie.DedeUserID));
-  const client = new Client(auth);
+  auth.setAuth(cookie, Number(cookie.DedeUserID));
+  return new Client(auth);
+}
+
+export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
+  const client = createBiliClient(cookie);
   const res = await client.user.getMyInfo();
   return {
     uid: res.profile?.mid || Number(cookie.DedeUserID),
@@ -49,9 +53,7 @@ export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
 }
 
 export async function listFavoriteFolders(cookie: BiliCookie): Promise<FavoriteFolderInfo[]> {
-  const auth = new Auth();
-  await auth.setAuth(cookie, Number(cookie.DedeUserID));
-  const client = new Client(auth);
+  const client = createBiliClient(cookie);
   const res = await client.video.listFavoriteBox({ aid: 0, type: 2 });
   const list = res.list || [];
   return list.map((item) => ({
@@ -69,56 +71,53 @@ function normalizeHasMore(value: number | string | boolean | undefined, page: nu
 }
 
 export async function listFavoriteItemsPage(
-  cookieString: string,
+  cookie: BiliCookie,
   mediaId: number,
   page = 1,
   pageSize = 20
 ): Promise<FavoriteItemsPage> {
-  const url =
-    `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${mediaId}` +
-    `&pn=${page}&ps=${pageSize}&order=fav_time&order_type=0&type=2&tid=0&platform=web`;
-  const res = await fetch(url, {
-    headers: {
-      cookie: cookieString,
-      accept: "application/json, text/plain, */*",
-      referer: "https://www.bilibili.com/",
-      "user-agent": "Mozilla/5.0",
-    },
-  });
-  const contentType = res.headers.get("content-type") || "";
-  const bodyText = await res.text();
-  const trimmed = bodyText.trim();
-  const looksLikeJson = contentType.includes("application/json") || trimmed.startsWith("{");
-  if (!looksLikeJson) {
-    const snippet = trimmed.slice(0, 120);
-    throw new BiliRiskOrLoginError(
-      `Bili API returned non-JSON for favorite ${mediaId} page ${page}. status=${res.status}. ` +
-        `Login may be expired or risk control was triggered. ${snippet}`
-    );
-  }
+  const client = createBiliClient(cookie);
+
+  const params: Record<string, string | number> = {
+    media_id: mediaId,
+    pn: page,
+    ps: pageSize,
+    order: "fav_time",
+    order_type: "0",
+    type: "2",
+    tid: "0",
+    platform: "web",
+  };
+
+  const signedParams = await utils.WbiSign(params);
+  const url = `https://api.bilibili.com/x/v3/fav/resource/list?${signedParams}`;
 
   let data: {
-    code: number;
-    message: string;
-    data?: {
-      medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
-      has_more?: number | string | boolean;
-      info?: { media_count?: number };
-    };
+    medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
+    has_more?: number | string | boolean;
+    info?: { media_count?: number };
   };
+
   try {
-    data = JSON.parse(bodyText);
+    data = await client.video.request.get(url, {
+      headers: {
+        referer: "https://www.bilibili.com/",
+      },
+    });
   } catch (error: any) {
+    const statusCode = error?.statusCode || error?.response?.status;
+    const errMsg = error?.message || String(error);
+    if (statusCode === 406 || errMsg.includes("request was banned") || errMsg.includes("访问被拒绝")) {
+      throw new BiliRiskOrLoginError(
+        `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
+      );
+    }
     throw new BiliRiskOrLoginError(
-      `Bili API returned invalid JSON for favorite ${mediaId} page ${page}. ${error?.message || ""}`.trim()
+      `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
     );
   }
 
-  if (data.code !== 0) {
-    throw new Error(data.message || "Failed to fetch favorites");
-  }
-
-  const medias = data.data?.medias || [];
+  const medias = data?.medias || [];
   const items = medias
     .filter((media) => Boolean(media.bvid))
     .map((media) => ({
@@ -126,28 +125,62 @@ export async function listFavoriteItemsPage(
       title: media.title || "Untitled",
       upperName: media.upper?.name || "Unknown",
       cover: media.cover || undefined,
-      // attr !== 0 means the video is deleted or unavailable on Bilibili.
       unavailable: media.attr !== undefined && media.attr !== 0,
     }));
-  const total = data.data?.info?.media_count;
+  const total = data?.info?.media_count;
 
   return {
     items,
     page,
     pageSize,
-    hasMore: normalizeHasMore(data.data?.has_more, page, pageSize, total),
+    hasMore: normalizeHasMore(data?.has_more, page, pageSize, total),
     total,
   };
 }
 
-export async function listFavoriteItems(cookieString: string, mediaId: number, maxPages = Number.POSITIVE_INFINITY) {
+export async function listFavoriteItems(
+  cookie: BiliCookie,
+  mediaId: number,
+  maxPages = Number.POSITIVE_INFINITY,
+  maxPageRetries = 3
+) {
   const items: FavoriteItem[] = [];
   for (let page = 1; page <= maxPages; page += 1) {
-    const result = await listFavoriteItemsPage(cookieString, mediaId, page, 20);
-    items.push(...result.items);
-    if (!result.hasMore || result.items.length === 0) {
-      break;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= maxPageRetries; attempt += 1) {
+      try {
+        const result = await listFavoriteItemsPage(cookie, mediaId, page, 20);
+        items.push(...result.items);
+        if (!result.hasMore || result.items.length === 0) {
+          return items;
+        }
+        lastError = null;
+        break;
+      } catch (error: any) {
+        lastError = error;
+        if (error instanceof BiliRiskOrLoginError) {
+          throw error;
+        }
+        if (attempt < maxPageRetries) {
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+          console.warn(
+            `[Bili] Page ${page} of favorite ${mediaId} failed (attempt ${attempt + 1}/${maxPageRetries + 1}), retrying in ${backoffMs}ms:`,
+            error.message || error
+          );
+          await delay(backoffMs);
+        }
+      }
     }
+
+    if (lastError) {
+      console.error(
+        `[Bili] Page ${page} of favorite ${mediaId} exhausted all retries, skipping remaining pages:`,
+        lastError.message || lastError
+      );
+      return items;
+    }
+
     if (page < maxPages) {
       await delay(300);
     }
