@@ -1,14 +1,10 @@
 import { ConfigStore } from "./config.js";
 import { StateManager } from "./state.js";
 import { UserStore } from "./users.js";
-import { listFavoriteItems, BiliRiskOrLoginError } from "./bili.js";
+import { listFavoriteItems } from "./bili.js";
 import { resolveRemotePath } from "./uploader.js";
 import { TaskQueue } from "./queue.js";
 import { DownloadTask, UploadTask } from "./tasks.js";
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export class SyncScheduler {
   private timer: NodeJS.Timeout | null = null;
@@ -108,13 +104,8 @@ export class SyncScheduler {
         try {
           items = await listFavoriteItems(user.cookie, folder.mediaId);
         } catch (error) {
-          if (error instanceof BiliRiskOrLoginError) {
-            // Global cooldown on risk control — wait 2 minutes before next folder
-            console.error("[Scheduler] Risk control hit, cooling down 120s before next folder:", error.message);
-            await delay(120_000);
-          } else {
-            console.error("Failed to list favorites", error);
-          }
+          // Only non-risk errors reach here (risk errors now return partial items instead of throwing)
+          console.error("Failed to list favorites", error);
           continue;
         }
 
@@ -145,7 +136,7 @@ export class SyncScheduler {
         }
 
         // Small delay between folders (300ms like between pages)
-        await delay(300);
+        await new Promise((resolve) => setTimeout(resolve, 300));
       }
     }
   }
