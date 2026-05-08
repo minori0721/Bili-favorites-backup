@@ -99,7 +99,7 @@ export class SyncScheduler {
           }
 
           const remotePath = resolveRemotePath({
-            destination: config.rcloneDestination,
+            destination: config.alistDest,
             layout: config.uploadLayout,
             userName: user.name,
             folderName: folder.title,

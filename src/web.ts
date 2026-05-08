@@ -345,14 +345,23 @@ export function renderAppPage() {
         </div>
         
         <div class="settings-group">
-          <div class="settings-group-title">Rclone 云盘设置</div>
+          <div class="settings-group-title">AList 云盘设置</div>
         </div>
         <div class="field-full">
-          <label>Rclone 目标节点 (Remote)</label>
-          <select id="rcloneDest">
-            <option value="">(手动输入或等待加载)</option>
-          </select>
-          <input id="rcloneDestManual" type="text" placeholder="如果下拉没找到，可手动输入，例如: my_s3:bili-backup" style="margin-top: 8px;" />
+          <label>AList 内部通信地址</label>
+          <input id="alistUrl" type="text" placeholder="例如: http://alist:5244" />
+        </div>
+        <div>
+          <label>AList 账号 (WebDAV 用户名)</label>
+          <input id="alistUsername" type="text" placeholder="例如: admin" />
+        </div>
+        <div>
+          <label>AList 密码 (WebDAV 密码)</label>
+          <input id="alistPassword" type="password" placeholder="密码" />
+        </div>
+        <div class="field-full">
+          <label>目标存储路径</label>
+          <input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" />
         </div>
         <div class="field-full">
           <label>上传目录结构</label>
@@ -361,10 +370,6 @@ export function renderAppPage() {
             <option value="folder-video">收藏夹名 / 视频</option>
             <option value="video-only">仅视频文件</option>
           </select>
-        </div>
-        <div class="field-full">
-          <label>Rclone Web UI 地址</label>
-          <input id="rcloneWebUrl" type="text" />
         </div>
 
         <div class="settings-group">
@@ -418,7 +423,7 @@ export function renderAppPage() {
 
       <div class="row" style="margin-top: 24px;">
         <button id="saveConfigBtn">保存设置并生效</button>
-        <a id="openRcloneBtn" class="ghost" target="_blank">打开 Rclone 面板</a>
+        <a id="openRcloneBtn" class="ghost" target="_blank" href="/">返回首页刷新</a>
       </div>
       <div class="muted" id="configStatus" style="margin-top: 12px; color: var(--accent);"></div>
     </section>
@@ -458,7 +463,6 @@ export function renderAppPage() {
     const logoutBtn = document.getElementById('logoutBtn');
     const saveConfigBtn = document.getElementById('saveConfigBtn');
     const configStatus = document.getElementById('configStatus');
-    const openRcloneBtn = document.getElementById('openRcloneBtn');
 
     const loginModal = document.getElementById('loginModal');
     const loginQr = document.getElementById('loginQr');
@@ -483,46 +487,16 @@ export function renderAppPage() {
       return data.data;
     }
 
-    async function loadRemotes(currentDest) {
-      const select = document.getElementById('rcloneDest');
-      try {
-        const remotes = await fetchJson('/api/rclone/remotes');
-        select.innerHTML = '<option value="">(选择节点)</option>';
-        let found = false;
-        remotes.forEach(remote => {
-          const opt = document.createElement('option');
-          opt.value = remote;
-          opt.textContent = remote;
-          if (currentDest && currentDest.startsWith(remote)) {
-            opt.selected = true;
-            found = true;
-          }
-          select.appendChild(opt);
-        });
-        
-        // If there's a destination but it doesn't match the remote exactly (e.g. it has a subfolder)
-        // we put the whole thing in the manual input
-        if (currentDest) {
-          document.getElementById('rcloneDestManual').value = currentDest;
-        }
-      } catch (e) {
-        console.error('Failed to load remotes:', e);
-      }
-    }
-
-    // When dropdown changes, update manual input
-    document.getElementById('rcloneDest').addEventListener('change', (e) => {
-      if (e.target.value) {
-        document.getElementById('rcloneDestManual').value = e.target.value + 'bili-backup/videos';
-      }
-    });
-
     async function loadConfig() {
       const data = await fetchJson('/api/config');
       document.getElementById('pollInterval').value = data.pollIntervalMinutes;
       document.getElementById('delaySeconds').value = data.perVideoDelaySeconds;
       document.getElementById('uploadLayout').value = data.uploadLayout;
-      document.getElementById('rcloneWebUrl').value = data.rcloneWebUrl;
+      
+      document.getElementById('alistUrl').value = data.alistUrl || '';
+      document.getElementById('alistUsername').value = data.alistUsername || '';
+      document.getElementById('alistPassword').value = data.alistPassword || '';
+      document.getElementById('alistDest').value = data.alistDest || '';
       
       document.getElementById('bbdownEncoding').value = data.bbdownEncoding || '';
       document.getElementById('bbdownQuality').value = data.bbdownQuality || '';
@@ -533,9 +507,6 @@ export function renderAppPage() {
       document.getElementById('retryDelaySeconds').value = data.retryDelaySeconds ?? 5;
       document.getElementById('concurrentDownloads').value = data.concurrentDownloads ?? 1;
       document.getElementById('concurrentUploads').value = data.concurrentUploads ?? 2;
-
-      openRcloneBtn.href = data.rcloneWebUrl;
-      await loadRemotes(data.rcloneDestination);
     }
 
     async function loadUsers() {
@@ -633,15 +604,15 @@ export function renderAppPage() {
       saveConfigBtn.textContent = '保存中...';
       configStatus.textContent = '';
       
-      const rcloneDest = document.getElementById('rcloneDestManual').value.trim() 
-                         || document.getElementById('rcloneDest').value.trim();
-
       const payload = {
         pollIntervalMinutes: Number(document.getElementById('pollInterval').value),
         perVideoDelaySeconds: Number(document.getElementById('delaySeconds').value),
-        rcloneDestination: rcloneDest,
         uploadLayout: document.getElementById('uploadLayout').value,
-        rcloneWebUrl: document.getElementById('rcloneWebUrl').value.trim(),
+        
+        alistUrl: document.getElementById('alistUrl').value.trim(),
+        alistUsername: document.getElementById('alistUsername').value.trim(),
+        alistPassword: document.getElementById('alistPassword').value.trim(),
+        alistDest: document.getElementById('alistDest').value.trim(),
         
         bbdownEncoding: document.getElementById('bbdownEncoding').value,
         bbdownQuality: document.getElementById('bbdownQuality').value,
@@ -661,7 +632,6 @@ export function renderAppPage() {
           body: JSON.stringify(payload)
         });
         configStatus.textContent = '设置已保存并生效！';
-        openRcloneBtn.href = payload.rcloneWebUrl;
       } catch (e) {
         configStatus.textContent = '保存失败: ' + e.message;
         configStatus.style.color = '#E57373';

@@ -7,9 +7,11 @@ export type UploadLayout = "user-folder-video" | "folder-video" | "video-only";
 export interface AppConfig {
   pollIntervalMinutes: number;
   perVideoDelaySeconds: number;
-  rcloneDestination: string;
   uploadLayout: UploadLayout;
-  rcloneWebUrl: string;
+  alistUrl: string;
+  alistUsername: string;
+  alistPassword: string;
+  alistDest: string;
   maxRetries: number;
   retryDelaySeconds: number;
   concurrentDownloads: number;
@@ -25,9 +27,11 @@ const configPath = path.join(dataDir, "config.json");
 const defaultConfig: AppConfig = {
   pollIntervalMinutes: 10,
   perVideoDelaySeconds: 15,
-  rcloneDestination: "my_s3:bili-backup/videos",
   uploadLayout: "user-folder-video",
-  rcloneWebUrl: "http://localhost:5572",
+  alistUrl: "http://alist:5244",
+  alistUsername: "admin",
+  alistPassword: "",
+  alistDest: "/bili-backup/videos",
   maxRetries: 3,
   retryDelaySeconds: 5,
   concurrentDownloads: 1,
@@ -73,9 +77,15 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
   }
 
-  if (input.rcloneDestination !== undefined) {
-    if (typeof input.rcloneDestination !== "string" || input.rcloneDestination.trim().length === 0) {
-      return "rcloneDestination is required";
+  if (input.alistUrl !== undefined) {
+    if (typeof input.alistUrl !== "string" || input.alistUrl.trim().length === 0) {
+      return "alistUrl is required";
+    }
+  }
+
+  if (input.alistDest !== undefined) {
+    if (typeof input.alistDest !== "string" || input.alistDest.trim().length === 0) {
+      return "alistDest is required";
     }
   }
 
@@ -86,12 +96,6 @@ export function validateConfig(input: Partial<AppConfig>) {
       "video-only",
     ].includes(input.uploadLayout)) {
       return "uploadLayout is invalid";
-    }
-  }
-
-  if (input.rcloneWebUrl !== undefined) {
-    if (typeof input.rcloneWebUrl !== "string" || input.rcloneWebUrl.trim().length === 0) {
-      return "rcloneWebUrl is required";
     }
   }
 

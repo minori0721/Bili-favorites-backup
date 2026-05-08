@@ -1,6 +1,6 @@
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
-import { uploadWithRclone, resolveRemotePath } from "./uploader.js";
+import { uploadWithAList } from "./uploader.js";
 import { AppConfig } from "./config.js";
 import { BiliCookie } from "./users.js";
 
@@ -29,17 +29,19 @@ export class UploadTask extends Task {
   bvid: string;
   downloadDir: string;
   remotePath: string;
+  config: AppConfig;
 
   constructor(bvid: string, downloadDir: string, remotePath: string, config: AppConfig) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
     this.downloadDir = downloadDir;
     this.remotePath = remotePath;
+    this.config = config;
   }
 
   async run() {
     console.log(`[Task] Starting upload for ${this.bvid} to ${this.remotePath}`);
-    await uploadWithRclone(this.downloadDir, this.remotePath);
+    await uploadWithAList(this.downloadDir, this.remotePath, this.config);
     console.log(`[Task] Completed upload for ${this.bvid}`);
   }
 }

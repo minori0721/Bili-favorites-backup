@@ -106,16 +106,6 @@ app.put("/api/config", requireAuth, (req, res) => {
   res.json({ success: true, data: updated });
 });
 
-app.get("/api/rclone/remotes", requireAuth, (req, res) => {
-  exec("rclone listremotes", (error, stdout, stderr) => {
-    if (error) {
-      console.error("rclone listremotes error:", stderr);
-      return res.status(500).json({ success: false, message: "Failed to list remotes" });
-    }
-    const remotes = stdout.split('\n').map(r => r.trim()).filter(r => r.length > 0);
-    res.json({ success: true, data: remotes });
-  });
-});
 
 app.get("/api/users", requireAuth, (req, res) => {
   const users = userStore.list().map((user) => ({

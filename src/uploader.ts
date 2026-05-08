@@ -24,35 +24,54 @@ export function resolveRemotePath(context: UploadContext) {
   }
 }
 
-export async function uploadWithRclone(localPath: string, remotePath: string) {
-  const args = ["move", localPath, remotePath, "-v"];
-  await runCommand("rclone", args);
-}
+import { createClient } from "webdav";
+import fs from "node:fs";
+import path from "node:path";
+import { AppConfig } from "./config.js";
 
-function runCommand(command: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args);
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      process.stdout.write(chunk);
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      process.stderr.write(chunk);
-    });
-
-    child.on("error", (error) => {
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(stderr || `Command failed with code ${code}`));
-      }
-    });
+export async function uploadWithAList(localDir: string, remotePath: string, config: AppConfig) {
+  const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
+  const client = createClient(davUrl, {
+    username: config.alistUsername,
+    password: config.alistPassword,
   });
+
+  // Ensure remote directory exists
+  if (await client.exists(remotePath) === false) {
+    await client.createDirectory(remotePath);
+  }
+
+  const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile()) {
+      const localFile = path.join(localDir, entry.name);
+      // Join using posix style for webdav
+      const remoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
+      
+      const fileStream = fs.createReadStream(localFile);
+      const stat = await fs.promises.stat(localFile);
+      console.log(`[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`);
+      
+      let uploadSuccessful = false;
+      try {
+        await client.putFileContents(remoteFile, fileStream as any, {
+          contentLength: false, // Don't send content length for streams to avoid issues
+          onUploadProgress: (progress) => {
+            // Optional: log progress
+          }
+        });
+        uploadSuccessful = true;
+      } catch (err) {
+        console.error(`[AList] Failed to upload ${entry.name}`, err);
+        throw err;
+      }
+      
+      if (uploadSuccessful) {
+        await fs.promises.rm(localFile);
+      }
+    }
+  }
+
+  // Cleanup local dir
+  await fs.promises.rm(localDir, { recursive: true, force: true });
 }

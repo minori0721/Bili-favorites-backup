@@ -10,14 +10,19 @@ services:
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
-      - ./rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro
     depends_on:
-      - rclone
+      - alist
 
-  rclone:
-    image: rclone/rclone:latest
-    command: rcd --config /config/rclone/rclone.conf --rc-web-gui --rc-addr :5572 --rc-user admin --rc-pass admin
-    ports:
-      - "5572:5572"
+  alist:
+    image: xhofe/alist:latest
+    container_name: bili-favorites-backup-alist
+    restart: always
     volumes:
-      - ./rclone:/config/rclone
+      - ./alist:/opt/alist/data
+    ports:
+      - "5244:5244"
+    environment:
+      - PUID=0
+      - PGID=0
+      - UMASK=022
+      - ALIST_ADMIN_PASSWORD=admin123  # 这里就是你的 AList 初始管理员密码，可以随意修改
