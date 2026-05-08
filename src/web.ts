@@ -746,6 +746,7 @@ function getAppScript() {
       setGridStatus('videoGrid', 'video-detail', text, isError);
     }
 
+    let videoDetailThrottleTimer = null;
     async function loadNextVideoDetailPage() {
       if (videoDetailState.loading || !videoDetailState.hasMore) return;
       const token = videoDetailState.token;
@@ -780,7 +781,12 @@ function getAppScript() {
         }
       } catch(e) {
         if (token !== videoDetailState.token) return;
-        setVideoDetailStatus('加载失败: ' + (e instanceof Error ? e.message : String(e)), true);
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/412|风控|risk/i.test(msg)) {
+          setVideoDetailStatus('触发B站风控，请等待几分钟后再试', true);
+        } else {
+          setVideoDetailStatus('加载失败: ' + msg, true);
+        }
         videoDetailState.hasMore = false;
       } finally {
         if (token === videoDetailState.token) {
@@ -959,13 +965,22 @@ function getAppScript() {
     document.getElementById('videoGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('videoGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
-        loadNextVideoDetailPage();
+        if (videoDetailThrottleTimer) return;
+        videoDetailThrottleTimer = setTimeout(() => {
+          videoDetailThrottleTimer = null;
+          loadNextVideoDetailPage();
+        }, 800);
       }
     });
+    let unavailableThrottleTimer = null;
     document.getElementById('unavailableGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('unavailableGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
-        loadMoreUnavailable();
+        if (unavailableThrottleTimer) return;
+        unavailableThrottleTimer = setTimeout(() => {
+          unavailableThrottleTimer = null;
+          loadMoreUnavailable();
+        }, 800);
       }
     });
 

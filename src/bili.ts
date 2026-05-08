@@ -251,7 +251,16 @@ export async function listFavoriteItems(
         break;
       } catch (error: any) {
         lastError = error;
+        // 412/risk-control: wait longer before retrying
         if (error instanceof BiliRiskOrLoginError) {
+          if (attempt < maxPageRetries) {
+            const cooldownMs = Math.min(5000 * Math.pow(2, attempt), 60000);
+            console.warn(
+              `[Bili] Page ${page} of favorite ${mediaId} hit risk control, cooling down ${cooldownMs}ms before retry ${attempt + 1}/${maxPageRetries + 1}`
+            );
+            await delay(cooldownMs);
+            continue;
+          }
           throw error;
         }
         if (attempt < maxPageRetries) {
@@ -273,8 +282,9 @@ export async function listFavoriteItems(
       return items;
     }
 
+    // 1.5s between pages to avoid rate limiting
     if (page < maxPages) {
-      await delay(300);
+      await delay(1500);
     }
   }
 
