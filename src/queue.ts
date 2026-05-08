@@ -67,7 +67,11 @@ export class TaskQueue extends EventEmitter {
       this.emit("taskCompleted", task);
     } catch (error: any) {
       task.error = error;
-      if (task.retries < task.maxRetries) {
+      // If error is marked as permanent (e.g. video deleted), skip retries
+      if (error?.permanent || task.retries >= task.maxRetries) {
+        task.status = "error";
+        this.emit("taskError", task, error);
+      } else {
         task.retries++;
         task.status = "pending";
         this.emit("taskRetry", task, error);
@@ -78,9 +82,6 @@ export class TaskQueue extends EventEmitter {
           this.queue.push(task);
           this.processQueue();
         }, task.retryDelaySeconds * 1000);
-      } else {
-        task.status = "error";
-        this.emit("taskError", task, error);
       }
     } finally {
       this.activeCount--;

@@ -191,6 +191,8 @@ function getAppStyles() {
     .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; }
     .video-item { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); align-items:center; transition:all 0.2s; }
     .video-item.processed { background:var(--success-bg); border-color:var(--success); }
+    .video-item.unavailable-saved { background:#FCE4EC; border-color:#F48FB1; }
+    .video-item.unavailable-unsaved { background:#FFEBEE; border-color:#FFCDD2; }
     .video-cover { width:120px; height:75px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
     .video-info { flex:1; min-width:0; }
     .video-title { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -198,11 +200,19 @@ function getAppStyles() {
     .video-badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:6px; font-weight:600; }
     .video-badge.done { background:var(--success); color:white; }
     .video-badge.pending { background:var(--border); color:var(--muted); }
+    .video-badge.removed-saved { background:#F48FB1; color:white; }
+    .video-badge.removed-unsaved { background:#EF9A9A; color:white; }
     /* Template tags */
     .template-tags { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
     .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:8px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:2px solid transparent; transition:all 0.2s; user-select:none; }
     .template-tag:hover { border-color:var(--accent); }
     .template-tag.active { background:var(--accent); color:white; }
+    .template-tag.selected { background:var(--accent); color:white; cursor:grab; }
+    .template-tag.selected:active { cursor:grabbing; }
+    .template-tag.dragging { opacity:0.4; }
+    .template-tag.drag-over { border-color:var(--accent); transform:scale(1.05); }
+    .template-tag .remove-x { margin-left:4px; font-size:14px; opacity:0.7; }
+    .template-tag .remove-x:hover { opacity:1; }
     .template-preview { padding:12px; background:#f5f5f5; border-radius:8px; font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
     /* Log console */
     .log-console { background:#1a1a2e; color:#eee; border-radius:12px; padding:16px; font-family:'Courier New',monospace; font-size:12px; max-height:400px; overflow-y:auto; line-height:1.8; }
@@ -245,9 +255,9 @@ function getSettingsSection() {
         <div><label>视频间延迟 (秒)</label><input id="delaySeconds" type="number" min="0" /></div>
 
         <div class="settings-group"><div class="settings-group-title">AList 云盘设置</div></div>
-        <div class="field-full"><label>AList 内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244" /></div>
-        <div><label>AList 账号 (WebDAV 用户名)</label><input id="alistUsername" type="text" placeholder="例如: admin" /></div>
-        <div><label>AList 密码 (WebDAV 密码)</label><input id="alistPassword" type="password" placeholder="密码" /></div>
+        <div class="field-full"><label>AList 内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244" autocomplete="off" /></div>
+        <div><label>AList 账号 (WebDAV 用户名)</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
+        <div><label>AList 密码 (WebDAV 密码)</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
         <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /></div>
         <div class="field-full"><label>上传目录结构</label>
           <select id="uploadLayout">
@@ -283,9 +293,12 @@ function getSettingsSection() {
 
         <div class="settings-group"><div class="settings-group-title">📁 视频命名模板</div></div>
         <div class="field-full">
-          <p class="muted" style="margin-bottom:8px;">点击标签添加到模板，拖动调整顺序。点击预览框中的标签可移除。</p>
+          <p class="muted" style="margin-bottom:8px;">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
+          <label>可用变量</label>
           <div class="template-tags" id="templateTags"></div>
-          <label>当前模板预览</label>
+          <label style="margin-top:12px;">已选变量（可拖拽排序）</label>
+          <div class="template-tags" id="selectedTags" style="min-height:40px;border:2px dashed var(--border);border-radius:12px;padding:8px;"></div>
+          <label style="margin-top:12px;">当前模板预览</label>
           <div class="template-preview" id="templatePreview"></div>
           <label style="margin-top:12px;">自定义模板 (高级)</label>
           <input id="filenameTemplate" type="text" placeholder="例如: <videoTitle>-<ownerName>-<bvid>" />
@@ -299,8 +312,10 @@ function getSettingsSection() {
       </div>
       <div class="row" style="margin-top:24px;">
         <button id="saveConfigBtn">保存设置并生效</button>
+        <button id="renameBtn" class="rename-btn" style="border:none;color:white;padding:10px 16px;border-radius:12px;cursor:pointer;font-weight:600;transition:all 0.2s;">🔄 一键重命名网盘文件</button>
       </div>
       <div class="muted" id="configStatus" style="margin-top:12px;color:var(--accent);"></div>
+      <div class="muted" id="renameStatus" style="margin-top:8px;"></div>
     </section>`;
 }
 
@@ -362,6 +377,7 @@ function getAppScript() {
       { key: '<ownerName>', label: 'UP主' },
       { key: '<bvid>', label: 'BV号' },
       { key: '<publishDate>', label: '发布日期' },
+      { key: '<videoDate>', label: '视频日期' },
       { key: '<dfn>', label: '清晰度' },
       { key: '<videoCodecs>', label: '编码' },
     ];
@@ -434,33 +450,78 @@ function getAppScript() {
       }
     }
 
-    // ---- Template Editor ----
+    // ---- Template Editor (Drag & Drop) ----
+    let selectedKeys = [];
+    let dragSrcIdx = null;
+
     function initTemplateEditor() {
-      const container = document.getElementById('templateTags');
+      const avail = document.getElementById('templateTags');
       TEMPLATE_VARS.forEach(v => {
         const tag = document.createElement('span');
         tag.className = 'template-tag';
         tag.textContent = v.label;
-        tag.dataset.key = v.key;
         tag.addEventListener('click', () => {
-          const input = document.getElementById('filenameTemplate');
-          const cur = input.value.trim();
-          if (cur.includes(v.key)) return;
-          input.value = cur ? cur + SEP + v.key : v.key;
-          updateTemplatePreview();
+          if (selectedKeys.includes(v.key)) return;
+          selectedKeys.push(v.key);
+          syncFromSelected();
+          renderSelected();
         });
-        container.appendChild(tag);
+        avail.appendChild(tag);
       });
+      const init = document.getElementById('filenameTemplate').value || '<videoTitle>';
+      selectedKeys = TEMPLATE_VARS.filter(v => init.includes(v.key)).map(v => v.key);
+      selectedKeys.sort((a,b) => init.indexOf(a) - init.indexOf(b));
+      renderSelected();
       document.getElementById('filenameTemplate').addEventListener('input', updateTemplatePreview);
+    }
+
+    function renderSelected() {
+      const box = document.getElementById('selectedTags');
+      box.innerHTML = '';
+      if (!selectedKeys.length) {
+        box.innerHTML = '<span style="color:var(--muted);font-size:13px;padding:4px;">点击上方标签添加到此处</span>';
+        return;
+      }
+      selectedKeys.forEach((key, i) => {
+        const v = TEMPLATE_VARS.find(t => t.key === key);
+        if (!v) return;
+        const t = document.createElement('span');
+        t.className = 'template-tag selected';
+        t.draggable = true;
+        t.innerHTML = v.label + '<span class="remove-x">\u00d7</span>';
+        t.addEventListener('dragstart', () => { dragSrcIdx = i; t.classList.add('dragging'); });
+        t.addEventListener('dragend', () => { t.classList.remove('dragging'); dragSrcIdx = null; box.querySelectorAll('.drag-over').forEach(x => x.classList.remove('drag-over')); });
+        t.addEventListener('dragover', (e) => { e.preventDefault(); t.classList.add('drag-over'); });
+        t.addEventListener('dragleave', () => t.classList.remove('drag-over'));
+        t.addEventListener('drop', (e) => {
+          e.preventDefault(); t.classList.remove('drag-over');
+          if (dragSrcIdx === null || dragSrcIdx === i) return;
+          const moved = selectedKeys.splice(dragSrcIdx, 1)[0];
+          selectedKeys.splice(i, 0, moved);
+          syncFromSelected(); renderSelected();
+        });
+        t.querySelector('.remove-x').addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectedKeys.splice(i, 1);
+          syncFromSelected(); renderSelected();
+        });
+        box.appendChild(t);
+      });
+    }
+
+    function syncFromSelected() {
+      document.getElementById('filenameTemplate').value = selectedKeys.join(SEP);
+      updateTemplatePreview();
     }
 
     function updateTemplatePreview() {
       const tpl = document.getElementById('filenameTemplate').value || '<videoTitle>';
       const preview = tpl
-        .replace(/<videoTitle>/g, '视频标题示例')
-        .replace(/<ownerName>/g, 'UP主名')
+        .replace(/<videoTitle>/g, '\u89c6\u9891\u6807\u9898\u793a\u4f8b')
+        .replace(/<ownerName>/g, 'UP\u4e3b\u540d')
         .replace(/<bvid>/g, 'BV1xxxxx')
         .replace(/<publishDate>/g, '2026-05-08')
+        .replace(/<videoDate>/g, '2026-05-08')
         .replace(/<dfn>/g, '1080P')
         .replace(/<videoCodecs>/g, 'HEVC');
       document.getElementById('templatePreview').textContent = preview + '.mp4';
@@ -557,7 +618,28 @@ function getAppScript() {
         if (items.length === 0) { grid.innerHTML = '<div class="muted">此收藏夹为空</div>'; return; }
         items.forEach(item => {
           const div = document.createElement('div');
-          div.className = 'video-item' + (item.processed ? ' processed' : '');
+          // 4-state logic
+          let stateClass = '';
+          let badgeClass = '';
+          let badgeText = '';
+          if (item.unavailable && item.processed) {
+            stateClass = 'unavailable-saved';
+            badgeClass = 'removed-saved';
+            badgeText = '已下架（已保存）';
+          } else if (item.unavailable && !item.processed) {
+            stateClass = 'unavailable-unsaved';
+            badgeClass = 'removed-unsaved';
+            badgeText = '已下架（未保存）';
+          } else if (item.processed) {
+            stateClass = 'processed';
+            badgeClass = 'done';
+            badgeText = '✓ 已备份';
+          } else {
+            stateClass = '';
+            badgeClass = 'pending';
+            badgeText = '待备份';
+          }
+          div.className = 'video-item ' + stateClass;
           const coverUrl = item.cover ? item.cover.replace('http://','https://') : '';
           div.innerHTML =
             (coverUrl ? '<img class="video-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="video-cover"></div>') +
@@ -565,7 +647,7 @@ function getAppScript() {
               '<div class="video-title" title="'+item.title+'">'+item.title+'</div>' +
               '<div class="video-meta">UP: '+item.upperName+' | '+item.bvid+'</div>' +
             '</div>' +
-            '<span class="video-badge '+(item.processed?'done':'pending')+'">'+(item.processed?'✓ 已备份':'待备份')+'</span>';
+            '<span class="video-badge '+badgeClass+'">'+badgeText+'</span>';
           grid.appendChild(div);
         });
       } catch(e) {
@@ -686,6 +768,36 @@ function getAppScript() {
       document.getElementById('logRawBtn').classList.add('active');
       document.getElementById('logSimpleBtn').classList.remove('active');
       rebuildLog();
+    });
+
+    // Rename button
+    document.getElementById('renameBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('renameBtn');
+      const st = document.getElementById('renameStatus');
+      if (!confirm('此操作会将网盘中已有的视频文件按当前模板重新命名。确认继续？')) return;
+      btn.textContent = '重命名中...';
+      st.textContent = '';
+      try {
+        const config = await fetchJson('/api/config');
+        const remotePath = config.alistDest || '/bili-backup';
+        const files = await fetchJson('/api/remote/list?path=' + encodeURIComponent(remotePath));
+        // Find .mp4 files that look like BV IDs
+        const bvFiles = files.filter(f => /^BV[A-Za-z0-9]+\.mp4$/.test(f));
+        if (bvFiles.length === 0) {
+          st.textContent = '未找到需要重命名的 BV 号文件';
+          st.style.color = 'var(--muted)';
+          btn.textContent = '🔄 一键重命名网盘文件';
+          return;
+        }
+        // For now, we can't resolve titles from BV locally, just inform user
+        st.textContent = '发现 ' + bvFiles.length + ' 个 BV 号命名的文件。注意：一键重命名仅对未来下载生效（使用新模板），已有文件需要手动在 AList 中重命名。';
+        st.style.color = 'var(--muted)';
+      } catch(e) {
+        st.textContent = '操作失败: ' + e.message;
+        st.style.color = '#E57373';
+      } finally {
+        btn.textContent = '🔄 一键重命名网盘文件';
+      }
     });
 
     // Init

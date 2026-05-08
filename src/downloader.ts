@@ -109,7 +109,15 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(stderr || `Command failed with code ${code}`));
+        const errMsg = stderr || `Command failed with code ${code}`;
+        // Arg_KeyNotFound = video deleted/unavailable, don't retry
+        if (stderr.includes("Arg_KeyNotFound") || stderr.includes("未找到此 EP/SS")) {
+          const err = new Error(`视频不可用 (已删除或下架): ${errMsg}`);
+          (err as any).permanent = true; // Signal to queue: don't retry
+          reject(err);
+        } else {
+          reject(new Error(errMsg));
+        }
       }
     });
   });

@@ -18,6 +18,7 @@ export interface FavoriteItem {
   title: string;
   upperName: string;
   cover?: string;
+  unavailable?: boolean;
 }
 
 export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
@@ -59,7 +60,7 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
     const data = (await res.json()) as {
       code: number;
       message: string;
-      data?: { medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string }> };
+      data?: { medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }> };
     };
     if (data.code !== 0) {
       throw new Error(data.message || "Failed to fetch favorites");
@@ -73,6 +74,8 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
         title: media.title || "Untitled",
         upperName: media.upper?.name || "Unknown",
         cover: media.cover || undefined,
+        // attr !== 0 means the video is deleted/unavailable on B站
+        unavailable: (media.attr !== undefined && media.attr !== 0),
       }));
 
     items.push(...mapped);
