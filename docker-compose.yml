@@ -10,6 +10,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
+      - ./alist:/app/alist:ro
     depends_on:
       - alist
 

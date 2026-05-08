@@ -10,12 +10,14 @@ export interface FavoriteFolderInfo {
   mediaId: number;
   title: string;
   mediaCount: number;
+  cover?: string;
 }
 
 export interface FavoriteItem {
   bvid: string;
   title: string;
   upperName: string;
+  cover?: string;
 }
 
 export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
@@ -39,6 +41,7 @@ export async function listFavoriteFolders(cookie: BiliCookie): Promise<FavoriteF
     mediaId: item.id,
     title: item.title,
     mediaCount: item.media_count,
+    cover: (item as any).cover || undefined,
   }));
 }
 
@@ -56,7 +59,7 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
     const data = (await res.json()) as {
       code: number;
       message: string;
-      data?: { medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string } }> };
+      data?: { medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string }> };
     };
     if (data.code !== 0) {
       throw new Error(data.message || "Failed to fetch favorites");
@@ -69,6 +72,7 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
         bvid: media.bvid as string,
         title: media.title || "Untitled",
         upperName: media.upper?.name || "Unknown",
+        cover: media.cover || undefined,
       }));
 
     items.push(...mapped);

@@ -3,12 +3,12 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { tempDir } from "./paths.js";
 import { buildCookieString, BiliCookie } from "./users.js";
+import { AppConfig } from "./config.js";
+import { logManager, parseBBDownOutput, LogEntry } from "./logger.js";
 
 export interface DownloadResult {
   downloadDir: string;
 }
-
-import { AppConfig } from "./config.js";
 
 export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, config: AppConfig): Promise<DownloadResult> {
   const downloadDir = path.join(tempDir, bvid);
@@ -17,6 +17,10 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
 
   const url = `https://www.bilibili.com/video/${bvid}`;
   const cookieString = buildCookieString(cookie);
+
+  // Build the filename pattern from user template, fallback to <bvid>
+  const filePattern = config.filenameTemplate || "<bvid>";
+
   const args = [
     url,
     "-c",
@@ -24,9 +28,9 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
     "--work-dir",
     downloadDir,
     "-F",
-    "<bvid>",
+    filePattern,
     "-M",
-    "<bvid>_P<pageNumberWithZero>",
+    `${filePattern}_P<pageNumberWithZero>`,
   ];
 
   if (config.bbdownEncoding) {
@@ -40,7 +44,7 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
     args.push("-app");
   }
   
-  await runCommand("BBDown", args, downloadDir);
+  await runCommand("BBDown", args, downloadDir, bvid);
 
   const entries = await fs.promises.readdir(downloadDir);
   if (entries.length === 0) {
@@ -50,18 +54,51 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
   return { downloadDir };
 }
 
-function runCommand(command: string, args: string[], cwd: string) {
+function runCommand(command: string, args: string[], cwd: string, bvid: string) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd });
     let stderr = "";
+    let stdoutBuffer = "";
 
     child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
       process.stdout.write(chunk);
+      stdoutBuffer += text;
+
+      // Parse structured logs from accumulated output
+      const parsed = parseBBDownOutput(stdoutBuffer, bvid);
+      for (const entry of parsed) {
+        logManager.push(entry);
+      }
+
+      // Also push raw lines
+      const rawLines = text.split("\n").filter((l: string) => l.trim());
+      for (const rawLine of rawLines) {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "download",
+          level: "info",
+          summary: rawLine.trim(),
+          raw: rawLine,
+          bvid,
+        });
+      }
+
+      stdoutBuffer = "";
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
       process.stderr.write(chunk);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "error",
+        summary: `[错误] ${text.trim()}`,
+        raw: text,
+        bvid,
+      });
     });
 
     child.on("error", (error) => {

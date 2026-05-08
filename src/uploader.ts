@@ -24,19 +24,21 @@ export function resolveRemotePath(context: UploadContext) {
   }
 }
 
-import { createClient } from "webdav";
+import { createClient, WebDAVClient } from "webdav";
 import fs from "node:fs";
 import path from "node:path";
 import { AppConfig } from "./config.js";
+import { logManager } from "./logger.js";
 
-export async function uploadWithAList(localDir: string, remotePath: string, config: AppConfig) {
+function buildDavClient(config: AppConfig): WebDAVClient {
   const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
-  const client = createClient(davUrl, {
+  return createClient(davUrl, {
     username: config.alistUsername,
     password: config.alistPassword,
   });
+}
 
-  // Ensure remote directory exists recursively
+async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
   const segments = remotePath.split('/').filter(s => s.length > 0);
   let currentPath = '';
   for (const segment of segments) {
@@ -49,6 +51,12 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
       // Ignore errors that might occur if created concurrently
     }
   }
+}
+
+export async function uploadWithAList(localDir: string, remotePath: string, config: AppConfig) {
+  const client = buildDavClient(config);
+
+  await ensureRemoteDir(client, remotePath);
 
   const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
   for (const entry of entries) {
@@ -59,7 +67,16 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
       
       const fileStream = fs.createReadStream(localFile);
       const stat = await fs.promises.stat(localFile);
+      const sizeKB = (stat.size / 1024).toFixed(1);
       console.log(`[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`);
+      
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "upload",
+        level: "info",
+        summary: `正在上传: ${entry.name} (${sizeKB} KB) → ${remotePath}`,
+        raw: `[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`,
+      });
       
       let uploadSuccessful = false;
       try {
@@ -70,8 +87,22 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
           }
         });
         uploadSuccessful = true;
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "upload",
+          level: "info",
+          summary: `上传完成: ${entry.name}`,
+          raw: `[AList] Upload completed for ${entry.name}`,
+        });
       } catch (err) {
         console.error(`[AList] Failed to upload ${entry.name}`, err);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "upload",
+          level: "error",
+          summary: `上传失败: ${entry.name} - ${(err as Error).message}`,
+          raw: `[AList] Failed to upload ${entry.name}: ${(err as Error).message}`,
+        });
         throw err;
       }
       
@@ -83,4 +114,60 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
 
   // Cleanup local dir
   await fs.promises.rm(localDir, { recursive: true, force: true });
+}
+
+/** Batch rename files on remote storage via WebDAV MOVE */
+export async function batchRenameRemote(
+  config: AppConfig,
+  remotePath: string,
+  renameMap: Array<{ oldName: string; newName: string }>
+): Promise<{ success: number; failed: number; errors: string[] }> {
+  const client = buildDavClient(config);
+  let success = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const { oldName, newName } of renameMap) {
+    if (oldName === newName) {
+      success++;
+      continue;
+    }
+    const oldPath = remotePath.replace(/\/$/, "") + "/" + oldName;
+    const newPath = remotePath.replace(/\/$/, "") + "/" + newName;
+    try {
+      await client.moveFile(oldPath, newPath);
+      success++;
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `重命名: ${oldName} → ${newName}`,
+        raw: `[Rename] ${oldPath} -> ${newPath}`,
+      });
+    } catch (err) {
+      failed++;
+      const msg = `${oldName}: ${(err as Error).message}`;
+      errors.push(msg);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "error",
+        summary: `重命名失败: ${msg}`,
+        raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${(err as Error).message}`,
+      });
+    }
+  }
+
+  return { success, failed, errors };
+}
+
+/** List remote directory contents */
+export async function listRemoteDir(config: AppConfig, remotePath: string): Promise<string[]> {
+  const client = buildDavClient(config);
+  try {
+    const items = await client.getDirectoryContents(remotePath) as any[];
+    return items.map((item: any) => item.basename);
+  } catch {
+    return [];
+  }
 }

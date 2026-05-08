@@ -6,11 +6,13 @@ import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
-import { UserStore } from "./users.js";
+import { UserStore, buildCookieString } from "./users.js";
 import { StateManager } from "./state.js";
-import { getUserInfo, listFavoriteFolders } from "./bili.js";
+import { getUserInfo, listFavoriteFolders, listFavoriteItems } from "./bili.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
+import { logManager } from "./logger.js";
+import { batchRenameRemote, listRemoteDir } from "./uploader.js";
 
 ensureAppDirs();
 
@@ -113,6 +115,7 @@ app.get("/api/users", requireAuth, (req, res) => {
     uid: user.uid,
     name: user.name,
     favoritesCount: user.favorites.length,
+    favorites: user.favorites,
     enabled: user.enabled,
     lastLoginAt: user.lastLoginAt,
   }));
@@ -189,6 +192,33 @@ app.get("/api/users/:id/favorites", requireAuth, async (req, res) => {
   res.json({ success: true, data });
 });
 
+// NEW: List items in a specific favorite folder
+app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  try {
+    const cookieString = buildCookieString(user.cookie);
+    const mediaId = Number(req.params.mediaId);
+    const items = await listFavoriteItems(cookieString, mediaId, 100);
+    // Mark which items have been processed
+    const itemsWithStatus = items.map((item) => ({
+      ...item,
+      processed: stateManager.isProcessed(user.id, item.bvid),
+    }));
+    res.json({ success: true, data: itemsWithStatus });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Failed to list items" });
+  }
+});
+
+// NEW: Get processed state for all users
+app.get("/api/state", requireAuth, (req, res) => {
+  res.json({ success: true, data: stateManager.getAllProcessed() });
+});
+
 app.put("/api/users/:id/favorites", requireAuth, async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
@@ -224,6 +254,67 @@ app.delete("/api/users/:id", requireAuth, (req, res) => {
 app.post("/api/sync/now", requireAuth, async (req, res) => {
   await scheduler.tick();
   res.json({ success: true });
+});
+
+// NEW: SSE endpoint for real-time logs
+app.get("/api/logs/stream", requireAuth, (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  // Send existing logs first
+  const existing = logManager.getAll();
+  for (const entry of existing) {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  }
+
+  // Stream new logs
+  const onLog = (entry: any) => {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  };
+  logManager.on("log", onLog);
+
+  req.on("close", () => {
+    logManager.removeListener("log", onLog);
+  });
+});
+
+// NEW: Get all logs as JSON (for initial load)
+app.get("/api/logs", requireAuth, (req, res) => {
+  res.json({ success: true, data: logManager.getAll() });
+});
+
+// NEW: Batch rename API
+app.post("/api/rename", requireAuth, async (req, res) => {
+  const { remotePath, renameMap } = req.body as {
+    remotePath: string;
+    renameMap: Array<{ oldName: string; newName: string }>;
+  };
+  if (!remotePath || !renameMap || !Array.isArray(renameMap)) {
+    res.status(400).json({ success: false, message: "remotePath and renameMap required" });
+    return;
+  }
+  try {
+    const config = configStore.get();
+    const result = await batchRenameRemote(config, remotePath, renameMap);
+    res.json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Rename failed" });
+  }
+});
+
+// NEW: List remote directory
+app.get("/api/remote/list", requireAuth, async (req, res) => {
+  const remotePath = String(req.query.path || "/");
+  try {
+    const config = configStore.get();
+    const files = await listRemoteDir(config, remotePath);
+    res.json({ success: true, data: files });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Failed to list" });
+  }
 });
 
 const port = Number(process.env.PORT || 3000);

@@ -20,6 +20,7 @@ export interface AppConfig {
   bbdownQuality: string;
   bbdownHiRes: boolean;
   bbdownDolby: boolean;
+  filenameTemplate: string;
 }
 
 const configPath = path.join(dataDir, "config.json");
@@ -40,6 +41,7 @@ const defaultConfig: AppConfig = {
   bbdownQuality: "",
   bbdownHiRes: false,
   bbdownDolby: false,
+  filenameTemplate: "<videoTitle>",
 };
 
 export class ConfigStore {

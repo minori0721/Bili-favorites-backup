@@ -94,7 +94,8 @@ export class SyncScheduler {
       for (const folder of user.favorites) {
         let items = [];
         try {
-          items = await listFavoriteItems(cookieString, folder.mediaId, 1);
+          // 获取最多 100 页（每页 20 个，约 2000 个视频），确保能同步完所有的收藏
+          items = await listFavoriteItems(cookieString, folder.mediaId, 100);
         } catch (error) {
           console.error("Failed to list favorites", error);
           continue;

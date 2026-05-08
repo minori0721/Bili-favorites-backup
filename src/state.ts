@@ -38,6 +38,10 @@ export class StateManager {
     this.save();
   }
 
+  getAllProcessed() {
+    return { ...this.state.processedByUser };
+  }
+
   private save() {
     writeJsonFile(statePath, this.state);
   }
