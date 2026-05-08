@@ -53,11 +53,23 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
     const res = await fetch(url, {
       headers: {
         cookie: cookieString,
+        accept: "application/json, text/plain, */*",
         referer: "https://www.bilibili.com/",
         "user-agent": "Mozilla/5.0",
       },
     });
-    const data = (await res.json()) as {
+    const contentType = res.headers.get("content-type") || "";
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(`B站请求失败(${res.status}): ${rawText.slice(0, 200)}`);
+    }
+
+    if (!contentType.includes("application/json")) {
+      const hint = rawText.trim().startsWith("<") ? "B站返回HTML，可能被风控或Cookie失效" : "B站返回非JSON";
+      throw new Error(`${hint}: ${rawText.slice(0, 200)}`);
+    }
+
+    let data: {
       code: number;
       message: string;
       data?: {
@@ -66,6 +78,13 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
         info?: { media_count?: number };
       };
     };
+
+    try {
+      data = JSON.parse(rawText) as typeof data;
+    } catch {
+      const hint = rawText.trim().startsWith("<") ? "B站返回HTML，可能被风控或Cookie失效" : "B站返回非JSON";
+      throw new Error(`${hint}: ${rawText.slice(0, 200)}`);
+    }
     if (data.code !== 0) {
       throw new Error(data.message || "Failed to fetch favorites");
     }
