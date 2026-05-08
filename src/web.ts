@@ -609,7 +609,7 @@ export function renderAppPage() {
         perVideoDelaySeconds: Number(document.getElementById('delaySeconds').value),
         uploadLayout: document.getElementById('uploadLayout').value,
         
-        alistUrl: document.getElementById('alistUrl').value.trim(),
+        alistUrl: document.getElementById('alistUrl').value.trim() || 'http://alist:5244',
         alistUsername: document.getElementById('alistUsername').value.trim(),
         alistPassword: document.getElementById('alistPassword').value.trim(),
         alistDest: document.getElementById('alistDest').value.trim(),

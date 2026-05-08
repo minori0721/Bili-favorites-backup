@@ -62,6 +62,29 @@ docker compose up -d
 docker compose up -d --build
 ```
 
+### 方式三：接入已有的 AList（无需部署内置 AList）
+
+如果你在别的服务器上（或者本机其他地方）**已经部署过 AList**，你可以完全不需要让本程序再跑一个 AList。
+直接使用极其精简的 `docker-compose.yml` 即可：
+
+```yaml
+services:
+  app:
+    image: minori0721/bili-favorites-backup:latest
+    container_name: bili-favorites-backup
+    ports:
+      - "3000:3000"
+    environment:
+      - ADMIN_USER=admin
+      - ADMIN_PASS=admin
+      - SESSION_SECRET=change-me
+    volumes:
+      - ./data:/app/data
+      - ./temp:/app/temp
+```
+
+部署完成后，在我们的 Web 面板里，把“AList 内部通信地址”填成你**已有 AList 的公网/局域网地址**（例如 `http://192.168.1.100:5244`），再填上你的账号密码，系统就能无缝对接到你现有的 AList 里！
+
 ### 2. 日常更新镜像与代码
 
 如果拉取了新代码，请使用以下命令重启并重新构建镜像：

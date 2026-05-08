@@ -30,16 +30,14 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
   ];
 
   if (config.bbdownEncoding) {
-    args.push("--encoding", config.bbdownEncoding);
+    args.push("--encoding-priority", config.bbdownEncoding);
   }
   if (config.bbdownQuality) {
-    args.push("--dfn", config.bbdownQuality);
+    args.push("--dfn-priority", config.bbdownQuality);
   }
-  if (config.bbdownHiRes) {
-    args.push("--hs");
-  }
-  if (config.bbdownDolby) {
-    args.push("--dolby");
+  if (config.bbdownHiRes || config.bbdownDolby) {
+    // BBDown 需要使用 APP 端接口 (-app) 才能解析出 Hi-Res 和 杜比音效
+    args.push("-app");
   }
   
   await runCommand("BBDown", args, downloadDir);
