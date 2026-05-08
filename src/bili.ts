@@ -158,9 +158,11 @@ export async function listFavoriteItemsPage(
   page = 1,
   pageSize = 20
 ): Promise<FavoriteItemsPage> {
-  const client = createBiliClient(cookie);
-  const wbiKeys = await getCachedWbiKeys();
+  // Build simple cookie string (same as 58fb3ca working version)
+  const cookieString = `SESSDATA=${cookie.SESSDATA}; bili_jct=${cookie.bili_jct}; DedeUserID=${cookie.DedeUserID}`;
 
+  // WBI sign the params (B站 requires this on some endpoints)
+  const wbiKeys = await getCachedWbiKeys();
   const baseParams: Record<string, string | number> = {
     media_id: mediaId,
     pn: page,
@@ -171,61 +173,63 @@ export async function listFavoriteItemsPage(
     tid: "0",
     platform: "web",
     web_location: "1550101",
-    dm_img_list: "[]",
-    dm_img_str: "V2ViR0wgMS",
-    dm_cover_img_str: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0XX)), SwiftShader driver)Google Inc. (Google)",
-    dm_img_inter: '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
   };
-
   const queryString = encWbi(baseParams, wbiKeys.img_key, wbiKeys.sub_key);
   const url = `https://api.bilibili.com/x/v3/fav/resource/list?${queryString}`;
 
-  let responseBody: unknown;
-  try {
-    responseBody = await client.video.request.get(url, {
-      headers: { referer: "https://www.bilibili.com/" },
-      extra: { rawResponse: true },
-    });
-  } catch (error: any) {
-    const statusCode = error?.statusCode || error?.response?.status;
-    const errMsg = error?.message || String(error);
-    if (isBiliRiskStatus(statusCode, errMsg)) {
+  // Use native fetch like 58fb3ca — no biliAPI Client middleware
+  const res = await fetch(url, {
+    headers: {
+      cookie: cookieString,
+      referer: "https://www.bilibili.com/",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    },
+  });
+
+  if (!res.ok) {
+    if (isBiliRiskStatus(res.status, res.statusText)) {
       throw new BiliRiskOrLoginError(
-        `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
+        `Bili API error (status ${res.status}): ${res.statusText}`
       );
     }
-    throw error;
+    throw new Error(`Bili API HTTP ${res.status}: ${res.statusText}`);
   }
 
-  const body = (responseBody as Record<string, any>)?.data ?? {};
-  const apiCode = Number(body.code ?? 0);
+  const body = (await res.json()) as {
+    code: number;
+    message: string;
+    data?: {
+      medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
+      has_more?: number;
+      info?: { media_count?: number };
+    };
+  };
 
-  if (apiCode !== 0) {
-    const msg = body.message || `Bili API returned code ${apiCode}`;
-    if (apiCode === -101 || apiCode === -111 || /cookie|登录|鉴权/i.test(msg)) {
-      throw new BiliRiskOrLoginError(`Bili API code ${apiCode}: ${msg}`);
+  if (body.code !== 0) {
+    const msg = body.message || `Bili API returned code ${body.code}`;
+    if (body.code === -101 || body.code === -111 || /cookie|登录|鉴权/i.test(msg)) {
+      throw new BiliRiskOrLoginError(`Bili API code ${body.code}: ${msg}`);
     }
     throw new Error(msg);
   }
 
-  const data = body.data as Record<string, any> | undefined;
-  const medias = Array.isArray(data?.medias) ? data.medias : [];
+  const medias = body.data?.medias || [];
   const items = medias
-    .filter((media: any) => Boolean(media.bvid))
-    .map((media: any) => ({
+    .filter((media) => Boolean(media.bvid))
+    .map((media) => ({
       bvid: media.bvid as string,
       title: media.title || "Untitled",
       upperName: media.upper?.name || "Unknown",
       cover: media.cover || undefined,
       unavailable: media.attr !== undefined && media.attr !== 0,
     }));
-  const total = data?.info?.media_count as number | undefined;
+  const total = body.data?.info?.media_count as number | undefined;
 
   return {
     items,
     page,
     pageSize,
-    hasMore: normalizeHasMore(data?.has_more, page, pageSize, total),
+    hasMore: normalizeHasMore(body.data?.has_more, page, pageSize, total),
     total,
   };
 }
@@ -282,9 +286,9 @@ export async function listFavoriteItems(
       return items;
     }
 
-    // 1.5s between pages to avoid rate limiting
+    // Small delay between pages (58fb3ca had none, but 300ms adds safety margin)
     if (page < maxPages) {
-      await delay(1500);
+      await delay(300);
     }
   }
 

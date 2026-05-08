@@ -144,8 +144,8 @@ export class SyncScheduler {
           existingDownloadTaskBvids.add(item.bvid);
         }
 
-        // 3s between folders to avoid rate limiting
-        await delay(3000);
+        // Small delay between folders (300ms like between pages)
+        await delay(300);
       }
     }
   }
