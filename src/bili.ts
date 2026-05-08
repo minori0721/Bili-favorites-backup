@@ -62,7 +62,8 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
       message: string;
       data?: {
         medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
-        has_more?: number;
+        has_more?: number | string | boolean;
+        info?: { media_count?: number };
       };
     };
     if (data.code !== 0) {
@@ -83,13 +84,19 @@ export async function listFavoriteItems(cookieString: string, mediaId: number, m
 
     items.push(...mapped);
     const hasMore = data.data?.has_more;
-    if (hasMore === 1) {
+    if (hasMore === 1 || hasMore === true || hasMore === "1") {
       continue;
     }
-    if (hasMore === 0) {
+    if (hasMore === 0 || hasMore === false || hasMore === "0") {
       break;
     }
-    if (medias.length < 20) {
+
+    const total = data.data?.info?.media_count;
+    if (typeof total === "number" && page * 20 < total) {
+      continue;
+    }
+
+    if (medias.length === 0) {
       break;
     }
   }
