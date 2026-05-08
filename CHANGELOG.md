@@ -1,5 +1,32 @@
 # 更新日志 (Changelog)
 
+## [1.0.3] - 2026-05-09
+
+### 🐛 关键修复
+
+#### 修复 accessToken 污染 Cookie header
+- **bili.ts**: `createBiliClient()` 解构剔除 `accessToken`，仅将 `SESSDATA` / `bili_jct` / `DedeUserID` 写入 Cookie 字符串
+- **bili.ts**: `accessToken` 改为通过 `Auth.setAuth()` 第三个参数独立传入，不再污染 Cookie header
+
+#### 修复 B 站 API `code` 检查丢失
+- **bili.ts**: `listFavoriteItemsPage()` 使用 `extra: { rawResponse: true }` 获取完整 B 站 JSON 响应 (`{code, message, data}`)
+- **bili.ts**: 显式检查 `code !== 0`，`-101` / `-111` 等鉴权失败码转为 `BiliRiskOrLoginError`
+
+#### 完善风控状态码覆盖
+- **bili.ts**: 新增 `403` / `509` 状态码识别
+- **bili.ts**: 正则匹配「风控」「安全验证」关键词，减少漏报
+
+#### 修复 WBI 签名算法
+- **bili.ts**: `mixinKey` 重写为逐字符拼接（对照 biliAPI 源码 `getMixinKey`），修复 `codePointAt → string` 类型错误
+- **bili.ts**: `encWbi` 补全 `!'()*` 字符过滤，与 biliAPI 签名协议一致
+- **bili.ts**: WBI key 获取 URL 改为 `x/web-interface/nav`（此前使用错误的 `wbi/index/nav`）
+
+#### WBI Key 缓存优化
+- **bili.ts**: 实现内存 + 文件持久化缓存（`data/.wbi-keys.json`），进程生命周期内复用 WBI key，不再每次请求独立获取
+
+### ⚡ 性能
+- 每次轮询不再重复拉取 WBI key（减少 1-N 次额外 HTTP 请求）
+
 ## [1.0.2] - 2026-05-09
 
 ### 🐛 关键修复
