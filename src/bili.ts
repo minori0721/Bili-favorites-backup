@@ -255,17 +255,13 @@ export async function listFavoriteItems(
         break;
       } catch (error: any) {
         lastError = error;
-        // 412/risk-control: wait longer before retrying
+        // 412/risk-control: don't retry — just return what we have so far
+        // Retrying while rate-limited only makes it worse
         if (error instanceof BiliRiskOrLoginError) {
-          if (attempt < maxPageRetries) {
-            const cooldownMs = Math.min(5000 * Math.pow(2, attempt), 60000);
-            console.warn(
-              `[Bili] Page ${page} of favorite ${mediaId} hit risk control, cooling down ${cooldownMs}ms before retry ${attempt + 1}/${maxPageRetries + 1}`
-            );
-            await delay(cooldownMs);
-            continue;
-          }
-          throw error;
+          console.warn(
+            `[Bili] Page ${page} of favorite ${mediaId} hit risk control, returning ${items.length} items gathered so far`
+          );
+          return items;
         }
         if (attempt < maxPageRetries) {
           const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
