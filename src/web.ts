@@ -88,7 +88,7 @@ export function renderLoginPage() {
 <body>
   <div class="card">
     <h1>B站收藏夹同步</h1>
-    <p>初音绿主题 · 登录以管理您的同步任务。</p>
+    <p>欢迎回来 · 登录以管理您的同步任务。</p>
     <label>管理员用户名</label>
     <input id="username" type="text" autocomplete="username" placeholder="输入用户名" />
     <label>密码</label>
@@ -190,6 +190,8 @@ function getAppStyles() {
     /* Video items in detail modal */
     .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; }
     .video-item { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); align-items:center; transition:all 0.2s; }
+    .video-detail-status { text-align:center; padding:10px; color:var(--muted); font-size:13px; }
+    .video-detail-status.error { color:#E57373; }
     .video-item.processed { background:var(--success-bg); border-color:var(--success); }
     .video-item.unavailable-uploaded { background:#FFF8E1; border-color:#FFC107; box-shadow:0 0 0 1px #FFC107; }
     .video-item.unavailable-missing { background:#FFEBEE; border-color:#FFCDD2; }
@@ -241,10 +243,10 @@ function getAppHeader() {
 function getAccountSection() {
   return `<section class="card">
       <h2>账号与同步</h2>
-      <p class="muted">管理 Bilibili 账号及需同步的收藏夹。点击立即同步可唤醒后台任务队列。</p>
+      <p class="muted">管理 Bilibili 账号及需同步的收藏夹。点击“立即同步”会唤起后台任务队列。</p>
       <div class="row" style="margin-bottom:20px;">
         <button id="addUserBtn">添加 B站账号</button>
-        <button class="ghost" id="syncNowBtn">触发立即同步</button>
+        <button class="ghost" id="syncNowBtn">立即同步</button>
       </div>
       <div class="user-list" id="userList"></div>
     </section>`;
@@ -294,7 +296,7 @@ function getSettingsSection() {
           <label class="checkbox-label"><input type="checkbox" id="bbdownDolby" /> 下载 杜比音效 (Dolby)</label>
         </div>
 
-        <div class="settings-group"><div class="settings-group-title">📁 视频命名模板</div></div>
+        <div class="settings-group"><div class="settings-group-title">📌 视频命名模板</div></div>
         <div class="field-full">
           <p class="muted" style="margin-bottom:8px;">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
           <label>可用变量</label>
@@ -303,7 +305,7 @@ function getSettingsSection() {
           <div class="template-tags" id="selectedTags" style="min-height:40px;border:2px dashed var(--border);border-radius:12px;padding:8px;"></div>
           <label style="margin-top:12px;">当前模板预览</label>
           <div class="template-preview" id="templatePreview"></div>
-          <label style="margin-top:12px;">自定义模板 (高级)</label>
+          <label style="margin-top:12px;">自定义模板（高级）</label>
           <input id="filenameTemplate" type="text" placeholder="例如: <videoTitle>-<ownerName>-<bvid>" />
         </div>
 
@@ -338,7 +340,7 @@ function getModals() {
   <div class="modal" id="loginModal">
     <div class="panel">
       <h2>扫码登录</h2>
-      <p class="muted">请使用B站APP扫描二维码登录（TV端接口）。</p>
+      <p class="muted">请使用B站APP扫码登录（TV端接口）。</p>
       <div style="text-align:center;margin:24px 0;">
         <img id="loginQr" alt="QR" style="width:200px;height:200px;border-radius:16px;border:4px solid var(--border);" />
       </div>
@@ -407,6 +409,18 @@ function getAppScript() {
     let unavailableItems = [];
     let unavailableUserId = null;
     let unavailableFilter = 'missing';
+    let unavailableCursor = null;
+    let unavailableHasMore = true;
+    let unavailableLoading = false;
+    let videoDetailState = {
+      userId: null,
+      mediaId: null,
+      page: 0,
+      pageSize: 20,
+      hasMore: true,
+      loading: false,
+      token: 0
+    };
 
     async function fetchJson(url, options) {
       const res = await fetch(url, options);
@@ -461,7 +475,7 @@ function getAppScript() {
       };
       try {
         await fetchJson('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-        st.textContent = '设置已保存并生效！'; st.style.color = 'var(--accent)';
+        st.textContent = '设置已保存并生效。'; st.style.color = 'var(--accent)';
       } catch(e) {
         st.textContent = '保存失败: '+e.message; st.style.color = '#E57373';
       } finally {
@@ -561,12 +575,12 @@ function getAppScript() {
         item.className = 'user-item';
         item.innerHTML =
           '<strong style="font-size:16px;color:var(--accent);">' + user.name + '</strong>' +
-          '<div class="muted" style="margin:0;">UID: ' + user.uid + ' | 已选 ' + user.favoritesCount + ' 个收藏夹</div>' +
+          '<div class="muted" style="margin:0;">UID: ' + user.uid + ' | 收藏夹: ' + user.favoritesCount + '</div>' +
           '<div style="margin:4px 0;">' + favHtml + '</div>' +
           '<div class="row" style="margin-top:4px;">' +
-            '<button data-action="favorites" data-id="'+user.id+'">选择收藏夹</button>' +
+            '<button data-action="favorites" data-id="'+user.id+'">选择同步收藏夹</button>' +
             '<button class="ghost" data-action="unavailable" data-id="'+user.id+'">下架清单</button>' +
-            '<button class="ghost" data-action="toggle" data-id="'+user.id+'">' + (user.enabled?'暂停同步':'恢复同步') + '</button>' +
+            '<button class="ghost" data-action="toggle" data-id="'+user.id+'">' + (user.enabled?'暂停同步':'启用同步') + '</button>' +
             '<button class="ghost" style="border-color:#E57373;color:#E57373;" data-action="remove" data-id="'+user.id+'">删除账号</button>' +
           '</div>';
         el.appendChild(item);
@@ -575,7 +589,7 @@ function getAppScript() {
 
     // ---- Login ----
     async function startLogin() {
-      document.getElementById('loginStatus').textContent = '等待扫码...';
+      document.getElementById('loginStatus').textContent = '正在生成二维码...';
       const data = await fetchJson('/api/users/login/start', { method:'POST' });
       currentLoginId = data.loginId;
       document.getElementById('loginQr').src = data.qrDataUrl;
@@ -590,13 +604,13 @@ function getAppScript() {
         if (!res.ok || !json.success) { document.getElementById('loginStatus').textContent = json.message||'失败'; currentLoginId=null; return; }
         const d = json.data;
         if (d.status==='completed') {
-          document.getElementById('loginStatus').textContent = '登录成功！';
+          document.getElementById('loginStatus').textContent = '登录成功';
           currentLoginId=null;
           setTimeout(()=>{ document.getElementById('loginModal').classList.remove('active'); loadUsers(); },1000);
         } else if (d.status==='error') {
           document.getElementById('loginStatus').textContent = d.message||'异常'; currentLoginId=null;
         } else {
-          document.getElementById('loginStatus').textContent = '等待扫码并确认...';
+          document.getElementById('loginStatus').textContent = '等待扫码中...';
           setTimeout(pollLoginStatus, 1500);
         }
       } catch(e) { document.getElementById('loginStatus').textContent = e.message; currentLoginId=null; }
@@ -607,7 +621,7 @@ function getAppScript() {
       favoritesUserId = userId;
       document.getElementById('favoritesStatus').textContent = '';
       const list = document.getElementById('favoritesList');
-      list.innerHTML = '<div class="muted" style="text-align:center;">加载中...</div>';
+      list.innerHTML = '<div class="muted" style="text-align:center;">鍔犺浇涓?..</div>';
       document.getElementById('favoritesModal').classList.add('active');
       const data = await fetchJson('/api/users/'+userId+'/favorites');
       list.innerHTML = '';
@@ -620,7 +634,7 @@ function getAppScript() {
           (coverUrl ? '<img class="fav-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="fav-cover"></div>') +
           '<div style="flex:1;min-width:0;">' +
             '<div style="font-weight:600;">'+folder.title+'</div>' +
-            '<div style="font-size:12px;color:var(--muted);">'+folder.mediaCount+' 个视频</div>' +
+            '<div style="font-size:12px;color:var(--muted);">'+folder.mediaCount+' 涓棰?/div>' +
           '</div>' +
           '<button class="ghost" style="padding:4px 12px;font-size:12px;flex-shrink:0;" data-detail-media="'+folder.mediaId+'" data-detail-title="'+folder.title+'">查看详情</button>';
         list.appendChild(lbl);
@@ -628,69 +642,180 @@ function getAppScript() {
     }
 
     // ---- Video Detail Modal ----
+    function renderVideoDetailItem(item) {
+      const div = document.createElement('div');
+      let stateClass = '';
+      let badgeClass = '';
+      let badgeText = '';
+      if (item.unavailable && item.processed) {
+        stateClass = 'unavailable-uploaded';
+        badgeClass = 'removed-uploaded';
+        badgeText = '已下架（已上传）';
+      } else if (item.unavailable && !item.processed) {
+        stateClass = 'unavailable-missing';
+        badgeClass = 'removed-missing';
+        badgeText = '已下架（未上传）';
+      } else if (item.processed) {
+        stateClass = 'processed';
+        badgeClass = 'done';
+        badgeText = '已备份';
+      } else if (item.failed) {
+        stateClass = 'unavailable-missing';
+        badgeClass = 'removed-missing';
+        badgeText = '下载失败';
+      } else {
+        stateClass = '';
+        badgeClass = 'pending';
+        badgeText = '待备份';
+      }
+
+      div.className = 'video-item ' + stateClass;
+      const coverUrl = item.cover ? item.cover.replace('http://','https://') : '';
+      if (coverUrl) {
+        const img = document.createElement('img');
+        img.className = 'video-cover';
+        img.src = coverUrl;
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        div.appendChild(img);
+      } else {
+        const cover = document.createElement('div');
+        cover.className = 'video-cover';
+        div.appendChild(cover);
+      }
+
+      const info = document.createElement('div');
+      info.className = 'video-info';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'video-title';
+      titleEl.title = item.title || '';
+      titleEl.textContent = item.title || '';
+      const meta = document.createElement('div');
+      meta.className = 'video-meta';
+      meta.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + item.bvid;
+      info.appendChild(titleEl);
+      info.appendChild(meta);
+      div.appendChild(info);
+
+      const badge = document.createElement('span');
+      badge.className = 'video-badge ' + badgeClass;
+      badge.textContent = badgeText;
+      div.appendChild(badge);
+      return div;
+    }
+
+    function setGridStatus(gridId, marker, text, isError) {
+      const grid = document.getElementById(gridId);
+      let status = grid.querySelector('[data-status-marker="' + marker + '"]');
+      if (!status) {
+        status = document.createElement('div');
+        status.dataset.statusMarker = marker;
+        grid.appendChild(status);
+      }
+      status.className = 'video-detail-status' + (isError ? ' error' : '');
+      status.textContent = text || '';
+      if (!text) status.remove();
+    }
+
+    function setVideoDetailStatus(text, isError) {
+      setGridStatus('videoGrid', 'video-detail', text, isError);
+    }
+
+    async function loadNextVideoDetailPage() {
+      if (videoDetailState.loading || !videoDetailState.hasMore) return;
+      const token = videoDetailState.token;
+      const nextPage = videoDetailState.page + 1;
+      const grid = document.getElementById('videoGrid');
+      videoDetailState.loading = true;
+      setVideoDetailStatus(nextPage === 1 ? '加载视频列表...' : '加载更多...');
+      try {
+        const data = await fetchJson(
+          '/api/users/' + videoDetailState.userId +
+          '/favorites/' + videoDetailState.mediaId +
+          '/items?page=' + nextPage +
+          '&pageSize=' + videoDetailState.pageSize
+        );
+        if (token !== videoDetailState.token) return;
+        const items = Array.isArray(data.items) ? data.items : [];
+        if (nextPage === 1 && items.length === 0) {
+          grid.innerHTML = '';
+          videoDetailState.page = data.page || nextPage;
+          videoDetailState.hasMore = false;
+          setVideoDetailStatus('此收藏夹为空');
+        } else if (Array.isArray(data.items)) {
+          const oldStatus = grid.querySelector('[data-status-marker="video-detail"]');
+          if (oldStatus) oldStatus.remove();
+          items.forEach(item => grid.appendChild(renderVideoDetailItem(item)));
+          videoDetailState.page = data.page || nextPage;
+          videoDetailState.hasMore = Boolean(data.hasMore);
+          setVideoDetailStatus(videoDetailState.hasMore ? '' : '已加载全部');
+        } else {
+          setVideoDetailStatus('服务器返回数据格式错误', true);
+          videoDetailState.hasMore = false;
+        }
+      } catch(e) {
+        if (token !== videoDetailState.token) return;
+        setVideoDetailStatus('加载失败: ' + (e instanceof Error ? e.message : String(e)), true);
+        videoDetailState.hasMore = false;
+      } finally {
+        if (token === videoDetailState.token) {
+          videoDetailState.loading = false;
+        }
+      }
+    }
+
     async function openVideoDetail(userId, mediaId, title) {
+      videoDetailState.token += 1;
+      videoDetailState = {
+        userId,
+        mediaId,
+        page: 0,
+        pageSize: 20,
+        hasMore: true,
+        loading: false,
+        token: videoDetailState.token
+      };
       document.getElementById('videoDetailTitle').textContent = '📁 ' + title;
       const grid = document.getElementById('videoGrid');
-      grid.innerHTML = '<div class="muted" style="text-align:center;">加载视频列表...</div>';
+      grid.innerHTML = '';
+      grid.scrollTop = 0;
       document.getElementById('videoDetailModal').classList.add('active');
-      try {
-        const items = await fetchJson('/api/users/'+userId+'/favorites/'+mediaId+'/items');
-        grid.innerHTML = '';
-        if (items.length === 0) { grid.innerHTML = '<div class="muted">此收藏夹为空</div>'; return; }
-        items.forEach(item => {
-          const div = document.createElement('div');
-          // 4-state logic
-          let stateClass = '';
-          let badgeClass = '';
-          let badgeText = '';
-          if (item.unavailable && item.processed) {
-            stateClass = 'unavailable-uploaded';
-            badgeClass = 'removed-uploaded';
-            badgeText = '已下架（已上传）';
-          } else if (item.unavailable && !item.processed) {
-            stateClass = 'unavailable-missing';
-            badgeClass = 'removed-missing';
-            badgeText = '已下架（未上传）';
-          } else if (item.processed) {
-            stateClass = 'processed';
-            badgeClass = 'done';
-            badgeText = '✓ 已备份';
-          } else {
-            stateClass = '';
-            badgeClass = 'pending';
-            badgeText = '待备份';
-          }
-          div.className = 'video-item ' + stateClass;
-          const coverUrl = item.cover ? item.cover.replace('http://','https://') : '';
-          div.innerHTML =
-            (coverUrl ? '<img class="video-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="video-cover"></div>') +
-            '<div class="video-info">' +
-              '<div class="video-title" title="'+item.title+'">'+item.title+'</div>' +
-              '<div class="video-meta">UP: '+item.upperName+' | '+item.bvid+'</div>' +
-            '</div>' +
-            '<span class="video-badge '+badgeClass+'">'+badgeText+'</span>';
-          grid.appendChild(div);
-        });
-      } catch(e) {
-        grid.innerHTML = '<div style="color:#E57373;">加载失败: '+e.message+'</div>';
-      }
+      await loadNextVideoDetailPage();
     }
 
     // ---- Unavailable Videos Modal ----
     async function openUnavailable(userId) {
       unavailableUserId = userId;
       unavailableFilter = 'missing';
+      unavailableItems = [];
+      unavailableCursor = null;
+      unavailableHasMore = true;
+      unavailableLoading = false;
       document.getElementById('filterMissingBtn').classList.add('active');
       document.getElementById('filterUploadedBtn').classList.remove('active');
       const grid = document.getElementById('unavailableGrid');
-      grid.innerHTML = '<div class="muted" style="text-align:center;">加载中...</div>';
+      grid.innerHTML = '';
       document.getElementById('unavailableModal').classList.add('active');
+      await loadMoreUnavailable();
+    }
+
+    async function loadMoreUnavailable() {
+      if (unavailableLoading || !unavailableHasMore || !unavailableUserId) return;
+      unavailableLoading = true;
+      setGridStatus('unavailableGrid', 'unavailable', unavailableItems.length ? '加载更多...' : '加载中...');
       try {
-        const data = await fetchJson('/api/users/' + userId + '/unavailable');
-        unavailableItems = data || [];
+        const url = '/api/users/' + unavailableUserId + '/unavailable?pageSize=20' +
+          (unavailableCursor ? '&cursor=' + encodeURIComponent(unavailableCursor) : '');
+        const data = await fetchJson(url);
+        unavailableItems.push(...(data.items || []));
+        unavailableCursor = data.nextCursor || null;
+        unavailableHasMore = !!data.hasMore;
         renderUnavailableList();
       } catch (e) {
-        grid.innerHTML = '<div style="color:#E57373;">加载失败: ' + e.message + '</div>';
+        setGridStatus('unavailableGrid', 'unavailable', '加载失败: ' + e.message, true);
+        unavailableHasMore = false;
+      } finally {
+        unavailableLoading = false;
       }
     }
 
@@ -703,33 +828,30 @@ function getAppScript() {
 
     function renderUnavailableList() {
       const grid = document.getElementById('unavailableGrid');
+      const oldStatus = grid.querySelector('[data-status-marker="unavailable"]');
+      if (oldStatus) oldStatus.remove();
       const filtered = (unavailableItems || []).filter(item =>
         item.processed ? unavailableFilter === 'uploaded' : unavailableFilter === 'missing'
       );
 
-      if (filtered.length === 0) {
-        grid.innerHTML = '<div class="muted" style="text-align:center;">暂无符合条件的视频</div>';
-        return;
-      }
-
       grid.innerHTML = '';
       filtered.forEach(item => {
-        const div = document.createElement('div');
-        const stateClass = item.processed ? 'unavailable-uploaded' : 'unavailable-missing';
-        const badgeClass = item.processed ? 'removed-uploaded' : 'removed-missing';
-        const badgeText = item.processed ? '已下架（已上传）' : '已下架（未上传）';
-        const coverUrl = item.cover ? item.cover.replace('http://','https://') : '';
-        div.className = 'video-item ' + stateClass;
-        div.innerHTML =
-          (coverUrl ? '<img class="video-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="video-cover"></div>') +
-          '<div class="video-info">' +
-            '<div class="video-title" title="'+item.title+'">'+item.title+'</div>' +
-            '<div class="video-meta">UP: '+item.upperName+' | '+item.bvid+'</div>' +
-            '<div class="video-meta">收藏夹: '+(item.folderTitle || '未知')+'</div>' +
-          '</div>' +
-          '<span class="video-badge '+badgeClass+'">'+badgeText+'</span>';
+        const div = renderVideoDetailItem(item);
+        const meta = document.createElement('div');
+        meta.className = 'video-meta';
+        meta.textContent = '收藏夹: ' + (item.folderTitle || '未知');
+        const info = div.querySelector('.video-info');
+        if (info) info.appendChild(meta);
         grid.appendChild(div);
       });
+
+      if (filtered.length === 0 && !unavailableHasMore) {
+        setGridStatus('unavailableGrid', 'unavailable', '暂无符合条件的视频');
+      } else if (!unavailableHasMore) {
+        setGridStatus('unavailableGrid', 'unavailable', '已加载全部');
+      } else {
+        setGridStatus('unavailableGrid', 'unavailable', '');
+      }
     }
 
     async function saveFavorites() {
@@ -739,7 +861,7 @@ function getAppScript() {
         method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mediaIds:selected})
       });
       document.getElementById('saveFavoritesBtn').textContent = '保存选择';
-      document.getElementById('favoritesStatus').textContent = '已保存！';
+      document.getElementById('favoritesStatus').textContent = '已保存';
       setTimeout(()=>document.getElementById('favoritesModal').classList.remove('active'),500);
       await loadUsers();
     }
@@ -796,10 +918,31 @@ function getAppScript() {
     });
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => document.getElementById('favoritesModal').classList.remove('active'));
-    document.getElementById('closeVideoDetailBtn').addEventListener('click', () => document.getElementById('videoDetailModal').classList.remove('active'));
-    document.getElementById('closeUnavailableBtn').addEventListener('click', () => document.getElementById('unavailableModal').classList.remove('active'));
+    document.getElementById('closeVideoDetailBtn').addEventListener('click', () => {
+      videoDetailState.token += 1;
+      videoDetailState.loading = false;
+      videoDetailState.hasMore = false;
+      document.getElementById('videoDetailModal').classList.remove('active');
+    });
+    document.getElementById('closeUnavailableBtn').addEventListener('click', () => {
+      unavailableHasMore = false;
+      unavailableLoading = false;
+      document.getElementById('unavailableModal').classList.remove('active');
+    });
     document.getElementById('filterMissingBtn').addEventListener('click', () => setUnavailableFilter('missing'));
     document.getElementById('filterUploadedBtn').addEventListener('click', () => setUnavailableFilter('uploaded'));
+    document.getElementById('videoGrid').addEventListener('scroll', () => {
+      const grid = document.getElementById('videoGrid');
+      if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
+        loadNextVideoDetailPage();
+      }
+    });
+    document.getElementById('unavailableGrid').addEventListener('scroll', () => {
+      const grid = document.getElementById('unavailableGrid');
+      if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
+        loadMoreUnavailable();
+      }
+    });
 
     document.getElementById('userList').addEventListener('click', async (event) => {
       const t = event.target;

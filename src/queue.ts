@@ -8,6 +8,7 @@ export abstract class Task {
   retries: number = 0;
   status: "pending" | "running" | "completed" | "error" = "pending";
   error?: Error;
+  [key: string]: any; // Allow dynamic properties for task metadata (userId, mediaId, etc)
 
   constructor(
     name: string,

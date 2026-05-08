@@ -1,14 +1,18 @@
 import express from "express";
 import session from "express-session";
 import crypto from "node:crypto";
-import { exec } from "node:child_process";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
 import { UserStore, buildCookieString } from "./users.js";
 import { StateManager } from "./state.js";
-import { getUserInfo, listFavoriteFolders, listFavoriteItems } from "./bili.js";
+import {
+  BiliRiskOrLoginError,
+  getUserInfo,
+  listFavoriteFolders,
+  listFavoriteItemsPage,
+} from "./bili.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager } from "./logger.js";
@@ -20,6 +24,15 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
+
+const favoriteItemsCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    data: Awaited<ReturnType<typeof listFavoriteItemsPage>>;
+  }
+>();
+const favoriteItemsCacheTtlMs = 60 * 1000;
 
 scheduler.start();
 
@@ -54,6 +67,65 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
     return next();
   }
   return res.status(401).json({ success: false, message: "Unauthorized" });
+}
+
+function parsePositiveInteger(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function normalizePageSize(value: unknown) {
+  return Math.min(parsePositiveInteger(value, 20), 50);
+}
+
+function markFavoriteItemProcessed(userId: string, item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]) {
+  return {
+    ...item,
+    processed: stateManager.isProcessed(userId, item.bvid),
+    failed: stateManager.isFailed(userId, item.bvid),
+  };
+}
+
+function withProcessedStatus(userId: string, pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>) {
+  return {
+    ...pageResult,
+    items: pageResult.items.map((item) => markFavoriteItemProcessed(userId, item)),
+  };
+}
+
+function getBiliListErrorMessage(error: unknown) {
+  if (error instanceof BiliRiskOrLoginError) {
+    return "B 站返回了非 JSON 页面，可能是登录失效或触发风控。请稍后重试，必要时重新扫码登录。";
+  }
+  return error instanceof Error && error.message ? error.message : "Failed to list items";
+}
+
+function parseUnavailableCursor(value: unknown) {
+  if (!value) {
+    return { folderIndex: 0, page: 1 };
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) {
+      return { folderIndex: 0, page: 1 };
+    }
+    const folderIndex = Math.max(0, parsePositiveInteger(parsed.folderIndex, 0));
+    const page = parsePositiveInteger(parsed.page, 1);
+    // Validate bounds: prevent malicious cursors from causing excessive API calls
+    if (folderIndex > 10000 || page > 10000) {
+      return { folderIndex: 0, page: 1 };
+    }
+    return { folderIndex, page };
+  } catch {
+    return { folderIndex: 0, page: 1 };
+  }
+}
+
+function encodeUnavailableCursor(folderIndex: number, page: number) {
+  return Buffer.from(JSON.stringify({ folderIndex, page }), "utf8").toString("base64url");
 }
 
 const loginSessions = new Map<
@@ -108,7 +180,6 @@ app.put("/api/config", requireAuth, (req, res) => {
   res.json({ success: true, data: updated });
 });
 
-
 app.get("/api/users", requireAuth, (req, res) => {
   const users = userStore.list().map((user) => ({
     id: user.id,
@@ -133,24 +204,26 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
 
     login.emitter.on("completed", async (result: any) => {
       try {
-      const cookieArray = result?.data?.cookie_info?.cookies || [];
-      const cookie = {
-        SESSDATA: cookieArray.find((c: any) => c.name === "SESSDATA")?.value || "",
-        bili_jct: cookieArray.find((c: any) => c.name === "bili_jct")?.value || "",
-        DedeUserID: cookieArray.find((c: any) => c.name === "DedeUserID")?.value || "",
-      };
-      const info = await getUserInfo(cookie);
-      const userId = String(info.uid);
-      userStore.upsert({
-        id: userId,
-        uid: info.uid,
-        name: info.name,
-        cookie,
-        favorites: [],
-        enabled: true,
-        lastLoginAt: new Date().toISOString(),
-      });
-      loginSessions.set(loginId, { status: "completed", qrDataUrl, userId });
+        const cookieArray = result?.data?.cookie_info?.cookies || [];
+        const accessToken = result?.data?.token_info?.access_token;
+        const cookie = {
+          SESSDATA: cookieArray.find((c: any) => c.name === "SESSDATA")?.value || "",
+          bili_jct: cookieArray.find((c: any) => c.name === "bili_jct")?.value || "",
+          DedeUserID: cookieArray.find((c: any) => c.name === "DedeUserID")?.value || "",
+          accessToken: accessToken || "",
+        };
+        const info = await getUserInfo(cookie);
+        const userId = String(info.uid);
+        userStore.upsert({
+          id: userId,
+          uid: info.uid,
+          name: info.name,
+          cookie,
+          favorites: [],
+          enabled: true,
+          lastLoginAt: new Date().toISOString(),
+        });
+        loginSessions.set(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
         loginSessions.set(loginId, { status: "error", qrDataUrl, message: error?.message || "Failed to save user" });
       }
@@ -169,12 +242,12 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
 
 app.get("/api/users/login/status", requireAuth, (req, res) => {
   const loginId = String(req.query.loginId || "");
-  const session = loginSessions.get(loginId);
-  if (!session) {
+  const current = loginSessions.get(loginId);
+  if (!current) {
     res.status(404).json({ success: false, message: "Login session not found" });
     return;
   }
-  res.json({ success: true, data: { status: session.status, message: session.message } });
+  res.json({ success: true, data: { status: current.status, message: current.message } });
 });
 
 app.get("/api/users/:id/favorites", requireAuth, async (req, res) => {
@@ -192,7 +265,6 @@ app.get("/api/users/:id/favorites", requireAuth, async (req, res) => {
   res.json({ success: true, data });
 });
 
-// NEW: List items in a specific favorite folder
 app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
@@ -202,19 +274,34 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res)
   try {
     const cookieString = buildCookieString(user.cookie);
     const mediaId = Number(req.params.mediaId);
-    const items = await listFavoriteItems(cookieString, mediaId, 100);
-    // Mark which items have been processed
-    const itemsWithStatus = items.map((item) => ({
-      ...item,
-      processed: stateManager.isProcessed(user.id, item.bvid),
-    }));
-    res.json({ success: true, data: itemsWithStatus });
+    if (!Number.isFinite(mediaId) || mediaId < 1) {
+      res.status(400).json({ success: false, message: "Invalid mediaId" });
+      return;
+    }
+
+    const page = parsePositiveInteger(req.query.page, 1);
+    const pageSize = 20;
+    const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
+    const cached = favoriteItemsCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.json({ success: true, data: withProcessedStatus(user.id, cached.data) });
+      return;
+    }
+    if (cached) {
+      favoriteItemsCache.delete(cacheKey);
+    }
+
+    const pageResult = await listFavoriteItemsPage(cookieString, mediaId, page, pageSize);
+    favoriteItemsCache.set(cacheKey, {
+      expiresAt: Date.now() + favoriteItemsCacheTtlMs,
+      data: pageResult,
+    });
+    res.json({ success: true, data: withProcessedStatus(user.id, pageResult) });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Failed to list items" });
+    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
   }
 });
 
-// NEW: List unavailable videos across all selected folders
 app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
@@ -224,6 +311,8 @@ app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
 
   try {
     const cookieString = buildCookieString(user.cookie);
+    const pageSize = normalizePageSize(req.query.pageSize);
+    const cursor = parseUnavailableCursor(req.query.cursor);
     const results: Array<{
       bvid: string;
       title: string;
@@ -231,32 +320,60 @@ app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
       cover?: string;
       unavailable?: boolean;
       processed: boolean;
+      failed: boolean;
       mediaId: number;
       folderTitle: string;
     }> = [];
 
-    for (const folder of user.favorites) {
-      const items = await listFavoriteItems(cookieString, folder.mediaId, 100);
-      for (const item of items) {
+    let folderIndex = cursor.folderIndex;
+    let page = cursor.page;
+    while (folderIndex < user.favorites.length && results.length < pageSize) {
+      const folder = user.favorites[folderIndex];
+      const pageResult = await listFavoriteItemsPage(cookieString, folder.mediaId, page, 20);
+      for (const item of pageResult.items) {
         if (!item.unavailable) continue;
         results.push({
           ...item,
           processed: stateManager.isProcessed(user.id, item.bvid),
+          failed: stateManager.isFailed(user.id, item.bvid),
           mediaId: folder.mediaId,
           folderTitle: folder.title,
         });
+        if (results.length >= pageSize) {
+          break;
+        }
+      }
+
+      if (pageResult.hasMore) {
+        page += 1;
+      } else {
+        folderIndex += 1;
+        page = 1;
       }
     }
 
-    res.json({ success: true, data: results });
+    const hasMore = folderIndex < user.favorites.length;
+    res.json({
+      success: true,
+      data: {
+        items: results,
+        hasMore,
+        nextCursor: hasMore ? encodeUnavailableCursor(folderIndex, page) : null,
+      },
+    });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Failed to list unavailable videos" });
+    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
   }
 });
 
-// NEW: Get processed state for all users
 app.get("/api/state", requireAuth, (req, res) => {
-  res.json({ success: true, data: stateManager.getAllProcessed() });
+  res.json({
+    success: true,
+    data: {
+      processed: stateManager.getAllProcessed(),
+      failed: stateManager.getAllFailed(),
+    },
+  });
 });
 
 app.put("/api/users/:id/favorites", requireAuth, async (req, res) => {
@@ -296,7 +413,6 @@ app.post("/api/sync/now", requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// NEW: SSE endpoint for real-time logs
 app.get("/api/logs/stream", requireAuth, (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -304,13 +420,11 @@ app.get("/api/logs/stream", requireAuth, (req, res) => {
     Connection: "keep-alive",
   });
 
-  // Send existing logs first
   const existing = logManager.getAll();
   for (const entry of existing) {
     res.write(`data: ${JSON.stringify(entry)}\n\n`);
   }
 
-  // Stream new logs
   const onLog = (entry: any) => {
     res.write(`data: ${JSON.stringify(entry)}\n\n`);
   };
@@ -321,12 +435,15 @@ app.get("/api/logs/stream", requireAuth, (req, res) => {
   });
 });
 
-// NEW: Get all logs as JSON (for initial load)
 app.get("/api/logs", requireAuth, (req, res) => {
   res.json({ success: true, data: logManager.getAll() });
 });
 
-// NEW: Batch rename API
+app.post("/api/cache/clear", requireAuth, (req, res) => {
+  favoriteItemsCache.clear();
+  res.json({ success: true, message: "Favorite items cache cleared" });
+});
+
 app.post("/api/rename", requireAuth, async (req, res) => {
   const { remotePath, renameMap } = req.body as {
     remotePath: string;
@@ -345,7 +462,6 @@ app.post("/api/rename", requireAuth, async (req, res) => {
   }
 });
 
-// NEW: List remote directory
 app.get("/api/remote/list", requireAuth, async (req, res) => {
   const remotePath = String(req.query.path || "/");
   try {

@@ -3,7 +3,6 @@ import { StateManager } from "./state.js";
 import { UserStore, buildCookieString } from "./users.js";
 import { listFavoriteItems } from "./bili.js";
 import { resolveRemotePath } from "./uploader.js";
-import { delay } from "./utils.js";
 import { TaskQueue } from "./queue.js";
 import { DownloadTask, UploadTask } from "./tasks.js";
 
@@ -29,7 +28,13 @@ export class SyncScheduler {
     const logTaskError = (task: any, error: any) => console.error(`[Queue] Task ${task.name} permanently failed:`, error);
     const logTaskRetry = (task: any, error: any) => console.warn(`[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}):`, error.message || error);
     
-    this.downloadQueue.on("taskError", logTaskError);
+    this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
+      logTaskError(task, error);
+      const t = task as any;
+      if (error?.permanent && t.userId && t.mediaId) {
+        this.stateManager.markFailed(t.userId, task.bvid, t.mediaId, error.message || "Permanent download failure", true);
+      }
+    });
     this.downloadQueue.on("taskRetry", logTaskRetry);
     this.uploadQueue.on("taskError", logTaskError);
     this.uploadQueue.on("taskRetry", logTaskRetry);
@@ -95,13 +100,17 @@ export class SyncScheduler {
         let items = [];
         try {
           // 获取最多 100 页（每页 20 个，约 2000 个视频），确保能同步完所有的收藏
-          items = await listFavoriteItems(cookieString, folder.mediaId, 100);
+          items = await listFavoriteItems(cookieString, folder.mediaId);
         } catch (error) {
           console.error("Failed to list favorites", error);
           continue;
         }
 
-        const pending = items.filter((item) => !this.stateManager.isProcessed(user.id, item.bvid) && !item.unavailable);
+        const pending = items.filter((item) =>
+          !this.stateManager.isProcessed(user.id, item.bvid) &&
+          !this.stateManager.isFailed(user.id, item.bvid) &&
+          !item.unavailable
+        );
         for (const item of pending) {
           if (existingDownloadTaskBvids.has(item.bvid) || existingUploadTaskBvids.has(item.bvid)) {
             continue; // Already in queue
@@ -120,6 +129,7 @@ export class SyncScheduler {
           (task as any).remotePath = remotePath;
           
           this.downloadQueue.addTask(task);
+          existingDownloadTaskBvids.add(item.bvid);
         }
       }
     }

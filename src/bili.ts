@@ -1,5 +1,6 @@
 import { Client, Auth } from "@renmu/bili-api";
 import { BiliCookie } from "./users.js";
+import { delay } from "./utils.js";
 
 export interface BiliUserInfo {
   uid: number;
@@ -19,6 +20,21 @@ export interface FavoriteItem {
   upperName: string;
   cover?: string;
   unavailable?: boolean;
+}
+
+export interface FavoriteItemsPage {
+  items: FavoriteItem[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+  total?: number;
+}
+
+export class BiliRiskOrLoginError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BiliRiskOrLoginError";
+  }
 }
 
 export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
@@ -46,77 +62,94 @@ export async function listFavoriteFolders(cookie: BiliCookie): Promise<FavoriteF
   }));
 }
 
-export async function listFavoriteItems(cookieString: string, mediaId: number, maxPages = 1) {
+function normalizeHasMore(value: number | string | boolean | undefined, page: number, pageSize: number, total?: number) {
+  if (value === 1 || value === true || value === "1") return true;
+  if (value === 0 || value === false || value === "0") return false;
+  return typeof total === "number" ? page * pageSize < total : false;
+}
+
+export async function listFavoriteItemsPage(
+  cookieString: string,
+  mediaId: number,
+  page = 1,
+  pageSize = 20
+): Promise<FavoriteItemsPage> {
+  const url =
+    `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${mediaId}` +
+    `&pn=${page}&ps=${pageSize}&order=fav_time&order_type=0&type=2&tid=0&platform=web`;
+  const res = await fetch(url, {
+    headers: {
+      cookie: cookieString,
+      accept: "application/json, text/plain, */*",
+      referer: "https://www.bilibili.com/",
+      "user-agent": "Mozilla/5.0",
+    },
+  });
+  const contentType = res.headers.get("content-type") || "";
+  const bodyText = await res.text();
+  const trimmed = bodyText.trim();
+  const looksLikeJson = contentType.includes("application/json") || trimmed.startsWith("{");
+  if (!looksLikeJson) {
+    const snippet = trimmed.slice(0, 120);
+    throw new BiliRiskOrLoginError(
+      `Bili API returned non-JSON for favorite ${mediaId} page ${page}. status=${res.status}. ` +
+        `Login may be expired or risk control was triggered. ${snippet}`
+    );
+  }
+
+  let data: {
+    code: number;
+    message: string;
+    data?: {
+      medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
+      has_more?: number | string | boolean;
+      info?: { media_count?: number };
+    };
+  };
+  try {
+    data = JSON.parse(bodyText);
+  } catch (error: any) {
+    throw new BiliRiskOrLoginError(
+      `Bili API returned invalid JSON for favorite ${mediaId} page ${page}. ${error?.message || ""}`.trim()
+    );
+  }
+
+  if (data.code !== 0) {
+    throw new Error(data.message || "Failed to fetch favorites");
+  }
+
+  const medias = data.data?.medias || [];
+  const items = medias
+    .filter((media) => Boolean(media.bvid))
+    .map((media) => ({
+      bvid: media.bvid as string,
+      title: media.title || "Untitled",
+      upperName: media.upper?.name || "Unknown",
+      cover: media.cover || undefined,
+      // attr !== 0 means the video is deleted or unavailable on Bilibili.
+      unavailable: media.attr !== undefined && media.attr !== 0,
+    }));
+  const total = data.data?.info?.media_count;
+
+  return {
+    items,
+    page,
+    pageSize,
+    hasMore: normalizeHasMore(data.data?.has_more, page, pageSize, total),
+    total,
+  };
+}
+
+export async function listFavoriteItems(cookieString: string, mediaId: number, maxPages = Number.POSITIVE_INFINITY) {
   const items: FavoriteItem[] = [];
   for (let page = 1; page <= maxPages; page += 1) {
-    const url = `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${mediaId}&pn=${page}&ps=20&order=fav_time&order_type=0`;
-    const res = await fetch(url, {
-      headers: {
-        cookie: cookieString,
-        accept: "application/json, text/plain, */*",
-        referer: "https://www.bilibili.com/",
-        "user-agent": "Mozilla/5.0",
-      },
-    });
-    const contentType = res.headers.get("content-type") || "";
-    const rawText = await res.text();
-    if (!res.ok) {
-      throw new Error(`B站请求失败(${res.status}): ${rawText.slice(0, 200)}`);
-    }
-
-    if (!contentType.includes("application/json")) {
-      const hint = rawText.trim().startsWith("<") ? "B站返回HTML，可能被风控或Cookie失效" : "B站返回非JSON";
-      throw new Error(`${hint}: ${rawText.slice(0, 200)}`);
-    }
-
-    let data: {
-      code: number;
-      message: string;
-      data?: {
-        medias?: Array<{ bvid?: string; title?: string; upper?: { name?: string }; cover?: string; attr?: number }>;
-        has_more?: number | string | boolean;
-        info?: { media_count?: number };
-      };
-    };
-
-    try {
-      data = JSON.parse(rawText) as typeof data;
-    } catch {
-      const hint = rawText.trim().startsWith("<") ? "B站返回HTML，可能被风控或Cookie失效" : "B站返回非JSON";
-      throw new Error(`${hint}: ${rawText.slice(0, 200)}`);
-    }
-    if (data.code !== 0) {
-      throw new Error(data.message || "Failed to fetch favorites");
-    }
-
-    const medias = data.data?.medias || [];
-    const mapped = medias
-      .filter((media) => Boolean(media.bvid))
-      .map((media) => ({
-        bvid: media.bvid as string,
-        title: media.title || "Untitled",
-        upperName: media.upper?.name || "Unknown",
-        cover: media.cover || undefined,
-        // attr !== 0 means the video is deleted/unavailable on B站
-        unavailable: (media.attr !== undefined && media.attr !== 0),
-      }));
-
-    items.push(...mapped);
-    const hasMore = data.data?.has_more;
-    if (hasMore === 1 || hasMore === true || hasMore === "1") {
-      continue;
-    }
-    if (hasMore === 0 || hasMore === false || hasMore === "0") {
+    const result = await listFavoriteItemsPage(cookieString, mediaId, page, 20);
+    items.push(...result.items);
+    if (!result.hasMore || result.items.length === 0) {
       break;
     }
-
-    const total = data.data?.info?.media_count;
-    if (typeof total === "number" && page * 20 < total) {
-      continue;
-    }
-
-    if (medias.length === 0) {
-      break;
+    if (page < maxPages) {
+      await delay(300);
     }
   }
 
