@@ -78,27 +78,37 @@ export async function listFavoriteItemsPage(
 ): Promise<FavoriteItemsPage> {
   const client = createBiliClient(cookie, Number(cookie.DedeUserID), cookie.accessToken);
 
-  // Simplest possible request — like biliLive-tools: just params, no WBI, no dm_*
-  const res = await client.video.request.get(
-    "https://api.bilibili.com/x/v3/fav/resource/list",
-    {
-      params: {
-        media_id: mediaId,
-        pn: page,
-        ps: pageSize,
-        order: "fav_time",
-        order_type: "0",
-        type: "2",
-        tid: "0",
-        platform: "web",
-      },
-      headers: {
-        referer: "https://www.bilibili.com/",
-      },
-    }
-  );
+  // Build URL with params directly (biliAPI's axios doesn't support { params } well)
+  const params = new URLSearchParams({
+    media_id: String(mediaId),
+    pn: String(page),
+    ps: String(pageSize),
+    order: "fav_time",
+    order_type: "0",
+    type: "2",
+    tid: "0",
+    platform: "web",
+  });
+  const url = `https://api.bilibili.com/x/v3/fav/resource/list?${params.toString()}`;
 
-  const body = res?.data ?? {};
+  let responseBody: unknown;
+  try {
+    responseBody = await client.video.request.get(url, {
+      headers: { referer: "https://www.bilibili.com/" },
+      extra: { rawResponse: true },
+    });
+  } catch (error: any) {
+    const statusCode = error?.statusCode || error?.response?.status;
+    const errMsg = error?.message || String(error);
+    if (statusCode === 412 || statusCode === 406 || statusCode === 509 || statusCode === 403) {
+      throw new BiliRiskOrLoginError(
+        `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
+      );
+    }
+    throw error;
+  }
+
+  const body = (responseBody as Record<string, any>)?.data ?? {};
   const apiCode = Number(body.code ?? 0);
 
   if (apiCode !== 0) {
