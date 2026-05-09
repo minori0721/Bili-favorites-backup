@@ -5,13 +5,14 @@ import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
-import { UserStore } from "./users.js";
+import { UserStore, BiliCookie } from "./users.js";
 import { StateManager } from "./state.js";
 import {
   BiliRiskOrLoginError,
   getUserInfo,
   listFavoriteFolders,
   listFavoriteItemsPage,
+  refreshUserAuth,
 } from "./bili.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
@@ -35,6 +36,46 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 
 scheduler.start();
+
+// ---------- auto token refresh (biliLive-tools pattern) ----------
+function startTokenRefreshLoop() {
+  const CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+  async function checkAndRefresh() {
+    try {
+      const users = userStore.list();
+      for (const user of users) {
+        // Refresh if expires in less than 10 days, or if we have refreshToken
+        const tenDays = 10 * 24 * 60 * 60 * 1000;
+        if (user.refreshToken && user.accessToken) {
+          if (!user.expires || user.expires - Date.now() < tenDays) {
+            console.log(`[Auth] Refreshing token for user ${user.name} (${user.id})`);
+            const newCookie = await refreshUserAuth(user.accessToken, user.refreshToken);
+            if (newCookie) {
+              // Parse new expiry
+              const sessdataExpires = (newCookie as any)._sessdata_expires;
+              userStore.updatePartial(user.id, {
+                cookie: newCookie,
+                accessToken: newCookie.accessToken || user.accessToken,
+                refreshToken: (newCookie as any).refreshToken || user.refreshToken,
+                expires: sessdataExpires ? sessdataExpires * 1000 : user.expires,
+              } as any);
+              console.log(`[Auth] Token refreshed for user ${user.name}`);
+            }
+          }
+        }
+      }
+    } catch (error: any) {
+      console.error("[Auth] Token refresh check failed:", error.message || error);
+    } finally {
+      setTimeout(checkAndRefresh, CHECK_INTERVAL);
+    }
+  }
+
+  // Start first check after 1 minute (let server settle)
+  setTimeout(checkAndRefresh, 60_000);
+}
+startTokenRefreshLoop();
 
 const app = express();
 app.use(express.json());
@@ -204,16 +245,29 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
 
     login.emitter.on("completed", async (result: any) => {
       try {
-        const cookieArray = result?.data?.cookie_info?.cookies || [];
-        const accessToken = result?.data?.token_info?.access_token;
-        const cookie = {
-          SESSDATA: cookieArray.find((c: any) => c.name === "SESSDATA")?.value || "",
-          bili_jct: cookieArray.find((c: any) => c.name === "bili_jct")?.value || "",
-          DedeUserID: cookieArray.find((c: any) => c.name === "DedeUserID")?.value || "",
-          accessToken: accessToken || "",
+        const rawData = result?.data || {};
+        const cookieArray = rawData?.cookie_info?.cookies || [];
+        const tokenInfo = rawData?.token_info || {};
+
+        // Build full cookie object from ALL returned cookies (like biliLive-tools)
+        const cookie: BiliCookie = {
+          SESSDATA: "",
+          bili_jct: "",
+          DedeUserID: "",
         };
+        for (const c of cookieArray) {
+          cookie[c.name] = c.value;
+        }
+        // Also store accessToken at top level for convenience
+        cookie.accessToken = tokenInfo.access_token || "";
+
         const info = await getUserInfo(cookie);
         const userId = String(info.uid);
+
+        // Parse SESSDATA expiry
+        const sessdataExpires = cookieArray.find((c: any) => c.name === "SESSDATA")?.expires;
+        const expires = sessdataExpires ? sessdataExpires * 1000 : 0;
+
         userStore.upsert({
           id: userId,
           uid: info.uid,
@@ -222,6 +276,10 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
           favorites: [],
           enabled: true,
           lastLoginAt: new Date().toISOString(),
+          rawAuth: JSON.stringify(rawData),
+          accessToken: tokenInfo.access_token || "",
+          refreshToken: tokenInfo.refresh_token || "",
+          expires,
         });
         loginSessions.set(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {

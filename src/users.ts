@@ -22,6 +22,14 @@ export interface BiliUser {
   favorites: FavoriteFolder[];
   enabled: boolean;
   lastLoginAt: string;
+  /** Full TV login response (JSON string) — needed for token refresh */
+  rawAuth?: string;
+  /** OAuth2 access token for TV client API */
+  accessToken?: string;
+  /** OAuth2 refresh token for auto-renewal */
+  refreshToken?: string;
+  /** Timestamp (ms) when the cookie expires */
+  expires?: number;
 }
 
 const usersPath = path.join(dataDir, "users.json");
