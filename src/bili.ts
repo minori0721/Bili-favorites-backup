@@ -251,8 +251,21 @@ export async function listFavoriteItems(
         break;
       } catch (error: any) {
         lastError = error;
+        // 412/risk-control: exponential backoff retry instead of giving up
         if (error instanceof BiliRiskOrLoginError) {
-          throw error;
+          if (attempt < maxPageRetries) {
+            const cooldownMs = Math.min(10000 * Math.pow(2, attempt), 120000);
+            console.warn(
+              `[Bili] Page ${page} of favorite ${mediaId} hit risk control, cooling down ${cooldownMs / 1000}s before retry ${attempt + 1}/${maxPageRetries + 1}`
+            );
+            await delay(cooldownMs);
+            continue;
+          }
+          // All retries exhausted — return what we have
+          console.warn(
+            `[Bili] Page ${page} of favorite ${mediaId} risk control retries exhausted, returning ${items.length} items`
+          );
+          return items;
         }
         if (attempt < maxPageRetries) {
           const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
@@ -273,8 +286,10 @@ export async function listFavoriteItems(
       return items;
     }
 
+    // Random delay 1-3s between pages to avoid pattern detection
     if (page < maxPages) {
-      await delay(300);
+      const jitter = 1000 + Math.floor(Math.random() * 2000);
+      await delay(jitter);
     }
   }
 

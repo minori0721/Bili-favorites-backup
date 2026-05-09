@@ -6,6 +6,10 @@ import { resolveRemotePath } from "./uploader.js";
 import { TaskQueue } from "./queue.js";
 import { DownloadTask, UploadTask } from "./tasks.js";
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class SyncScheduler {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -133,6 +137,10 @@ export class SyncScheduler {
           this.downloadQueue.addTask(task);
           existingDownloadTaskBvids.add(item.bvid);
         }
+
+        // 2-5s random delay between folders to avoid rate limiting
+        const jitter = 2000 + Math.floor(Math.random() * 3000);
+        await delay(jitter);
       }
     }
   }
