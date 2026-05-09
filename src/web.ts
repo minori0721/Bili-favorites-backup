@@ -434,7 +434,9 @@ function getAppScript() {
       const container = document.getElementById('toastContainer');
       const toast = document.createElement('div');
       toast.className = 'toast ' + type;
-      toast.innerHTML = '<div>' + message + '</div>';
+      const text = document.createElement('div');
+      text.textContent = String(message || '');
+      toast.appendChild(text);
       container.appendChild(toast);
       setTimeout(() => {
         toast.classList.add('fade-out');
@@ -538,7 +540,12 @@ function getAppScript() {
       const box = document.getElementById('selectedTags');
       box.innerHTML = '';
       if (!selectedKeys.length) {
-        box.innerHTML = '<span style="color:var(--muted);font-size:13px;padding:4px;">点击上方标签添加到此处</span>';
+        const hint = document.createElement('span');
+        hint.style.color = 'var(--muted)';
+        hint.style.fontSize = '13px';
+        hint.style.padding = '4px';
+        hint.textContent = '点击上方标签添加到此处';
+        box.appendChild(hint);
         return;
       }
       selectedKeys.forEach((key, i) => {
@@ -547,7 +554,11 @@ function getAppScript() {
         const t = document.createElement('span');
         t.className = 'template-tag selected';
         t.draggable = true;
-        t.innerHTML = v.label + '<span class="remove-x">\u00d7</span>';
+        t.textContent = v.label;
+        const remove = document.createElement('span');
+        remove.className = 'remove-x';
+        remove.textContent = '\u00d7';
+        t.appendChild(remove);
         t.addEventListener('dragstart', () => { dragSrcIdx = i; t.classList.add('dragging'); });
         t.addEventListener('dragend', () => { t.classList.remove('dragging'); dragSrcIdx = null; box.querySelectorAll('.drag-over').forEach(x => x.classList.remove('drag-over')); });
         t.addEventListener('dragover', (e) => { e.preventDefault(); t.classList.add('drag-over'); });
@@ -559,7 +570,7 @@ function getAppScript() {
           selectedKeys.splice(i, 0, moved);
           syncFromSelected(); renderSelected();
         });
-        t.querySelector('.remove-x').addEventListener('click', (e) => {
+        remove.addEventListener('click', (e) => {
           e.stopPropagation();
           selectedKeys.splice(i, 1);
           syncFromSelected(); renderSelected();
@@ -592,22 +603,71 @@ function getAppScript() {
       const el = document.getElementById('userList');
       el.innerHTML = '';
       users.forEach(user => {
-        const favHtml = (user.favorites||[]).map(f =>
-          '<span style="display:inline-block;padding:4px 10px;background:rgba(57,197,187,0.1);border-radius:8px;font-size:12px;margin:2px;">' +
-          f.title + '</span>'
-        ).join('');
         const item = document.createElement('div');
         item.className = 'user-item';
-        item.innerHTML =
-          '<strong style="font-size:16px;color:var(--accent);">' + user.name + '</strong>' +
-          '<div class="muted" style="margin:0;">UID: ' + user.uid + ' | 收藏夹: ' + user.favoritesCount + '</div>' +
-          '<div style="margin:4px 0;">' + favHtml + '</div>' +
-          '<div class="row" style="margin-top:4px;">' +
-            '<button data-action="favorites" data-id="'+user.id+'">选择同步收藏夹</button>' +
-            '<button class="ghost" data-action="unavailable" data-id="'+user.id+'">下架清单</button>' +
-            '<button class="ghost" data-action="toggle" data-id="'+user.id+'">' + (user.enabled?'暂停同步':'启用同步') + '</button>' +
-            '<button class="ghost" style="border-color:#E57373;color:#E57373;" data-action="remove" data-id="'+user.id+'">删除账号</button>' +
-          '</div>';
+
+        const name = document.createElement('strong');
+        name.style.fontSize = '16px';
+        name.style.color = 'var(--accent)';
+        name.textContent = user.name || '';
+
+        const meta = document.createElement('div');
+        meta.className = 'muted';
+        meta.style.margin = '0';
+        meta.textContent = 'UID: ' + user.uid + ' | 收藏夹: ' + user.favoritesCount;
+
+        const favoritesWrap = document.createElement('div');
+        favoritesWrap.style.margin = '4px 0';
+        for (const favorite of (user.favorites || [])) {
+          const chip = document.createElement('span');
+          chip.style.display = 'inline-block';
+          chip.style.padding = '4px 10px';
+          chip.style.background = 'rgba(57,197,187,0.1)';
+          chip.style.borderRadius = '8px';
+          chip.style.fontSize = '12px';
+          chip.style.margin = '2px';
+          chip.textContent = favorite.title || '';
+          favoritesWrap.appendChild(chip);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'row';
+        actions.style.marginTop = '4px';
+
+        const favoritesBtn = document.createElement('button');
+        favoritesBtn.dataset.action = 'favorites';
+        favoritesBtn.dataset.id = String(user.id || '');
+        favoritesBtn.textContent = '选择同步收藏夹';
+
+        const unavailableBtn = document.createElement('button');
+        unavailableBtn.className = 'ghost';
+        unavailableBtn.dataset.action = 'unavailable';
+        unavailableBtn.dataset.id = String(user.id || '');
+        unavailableBtn.textContent = '下架清单';
+
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'ghost';
+        toggleBtn.dataset.action = 'toggle';
+        toggleBtn.dataset.id = String(user.id || '');
+        toggleBtn.textContent = user.enabled ? '暂停同步' : '启用同步';
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'ghost';
+        removeBtn.style.borderColor = '#E57373';
+        removeBtn.style.color = '#E57373';
+        removeBtn.dataset.action = 'remove';
+        removeBtn.dataset.id = String(user.id || '');
+        removeBtn.textContent = '删除账号';
+
+        actions.appendChild(favoritesBtn);
+        actions.appendChild(unavailableBtn);
+        actions.appendChild(toggleBtn);
+        actions.appendChild(removeBtn);
+
+        item.appendChild(name);
+        item.appendChild(meta);
+        item.appendChild(favoritesWrap);
+        item.appendChild(actions);
         el.appendChild(item);
       });
     }
@@ -646,7 +706,12 @@ function getAppScript() {
       favoritesUserId = userId;
       document.getElementById('favoritesStatus').textContent = '';
       const list = document.getElementById('favoritesList');
-      list.innerHTML = '<div class="muted" style="text-align:center;">加载中...</div>';
+      list.innerHTML = '';
+      const loading = document.createElement('div');
+      loading.className = 'muted';
+      loading.style.textAlign = 'center';
+      loading.textContent = '加载中...';
+      list.appendChild(loading);
       document.getElementById('favoritesModal').classList.add('active');
       const data = await fetchJson('/api/users/'+userId+'/favorites');
       list.innerHTML = '';
@@ -654,14 +719,51 @@ function getAppScript() {
         const lbl = document.createElement('label');
         lbl.className = 'fav-label';
         const coverUrl = folder.cover ? folder.cover.replace('http://','https://') : '';
-        lbl.innerHTML =
-          '<input type="checkbox" value="'+folder.mediaId+'" '+(folder.selected?'checked':'')+' />' +
-          (coverUrl ? '<img class="fav-cover" src="'+coverUrl+'" referrerpolicy="no-referrer" loading="lazy" />' : '<div class="fav-cover"></div>') +
-          '<div style="flex:1;min-width:0;">' +
-            '<div style="font-weight:600;">'+folder.title+'</div>' +
-            '<div style="font-size:12px;color:var(--muted);">'+folder.mediaCount+' 个视频</div>' +
-          '</div>' +
-          '<button class="ghost" style="padding:4px 12px;font-size:12px;flex-shrink:0;" data-detail-media="'+folder.mediaId+'" data-detail-title="'+folder.title+'">查看详情</button>';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = String(folder.mediaId);
+        checkbox.checked = Boolean(folder.selected);
+        lbl.appendChild(checkbox);
+
+        if (coverUrl) {
+          const img = document.createElement('img');
+          img.className = 'fav-cover';
+          img.src = coverUrl;
+          img.referrerPolicy = 'no-referrer';
+          img.loading = 'lazy';
+          lbl.appendChild(img);
+        } else {
+          const cover = document.createElement('div');
+          cover.className = 'fav-cover';
+          lbl.appendChild(cover);
+        }
+
+        const content = document.createElement('div');
+        content.style.flex = '1';
+        content.style.minWidth = '0';
+
+        const title = document.createElement('div');
+        title.style.fontWeight = '600';
+        title.textContent = folder.title || '';
+
+        const count = document.createElement('div');
+        count.style.fontSize = '12px';
+        count.style.color = 'var(--muted)';
+        count.textContent = String(folder.mediaCount || 0) + ' 个视频';
+
+        content.appendChild(title);
+        content.appendChild(count);
+        lbl.appendChild(content);
+
+        const detail = document.createElement('button');
+        detail.className = 'ghost';
+        detail.style.padding = '4px 12px';
+        detail.style.fontSize = '12px';
+        detail.style.flexShrink = '0';
+        detail.dataset.detailMedia = String(folder.mediaId);
+        detail.dataset.detailTitle = folder.title || '';
+        detail.textContent = '查看详情';
+        lbl.appendChild(detail);
         list.appendChild(lbl);
       });
     }

@@ -42,8 +42,10 @@ export class BiliRiskOrLoginError extends Error {
 /** build a biliAPI Client from stored cookies — same pattern as biliLive-tools */
 function createBiliClient(cookie: BiliCookie, uid: number, accessToken?: string) {
   const auth = new Auth();
-  // Pass ALL cookie fields (biliLive-tools pattern: Object.entries(cookie).join("; "))
-  auth.setAuth(cookie, uid, accessToken || undefined);
+  const { accessToken: _accessToken, refreshToken: _refreshToken, ...cookieOnly } = cookie as BiliCookie & {
+    refreshToken?: string;
+  };
+  auth.setAuth(cookieOnly, uid, accessToken || undefined);
   return new Client(auth);
 }
 

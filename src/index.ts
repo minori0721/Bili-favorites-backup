@@ -34,6 +34,7 @@ const favoriteItemsCache = new Map<
   }
 >();
 const favoriteItemsCacheTtlMs = 60 * 1000;
+const loginSessionTtlMs = 10 * 60 * 1000;
 
 scheduler.start();
 
@@ -139,40 +140,98 @@ function withProcessedStatus(userId: string, pageResult: Awaited<ReturnType<type
 
 function getBiliListErrorMessage(error: unknown) {
   if (error instanceof BiliRiskOrLoginError) {
-    return "B 站返回了非 JSON 页面，可能是登录失效或触发风控。请稍后重试，必要时重新扫码登录。";
+    return "B 站返回了风控/登录异常响应，请稍后重试；如持续失败请重新扫码登录。";
   }
   return error instanceof Error && error.message ? error.message : "Failed to list items";
 }
 
 function parseUnavailableCursor(value: unknown) {
   if (!value) {
-    return { folderIndex: 0, page: 1 };
+    return { offset: 0 };
   }
   try {
     const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
     if (typeof parsed !== "object" || parsed === null) {
-      return { folderIndex: 0, page: 1 };
+      return { offset: 0 };
     }
-    const folderIndex = Math.max(0, parsePositiveInteger(parsed.folderIndex, 0));
-    const page = parsePositiveInteger(parsed.page, 1);
-    // Validate bounds: prevent malicious cursors from causing excessive API calls
-    if (folderIndex > 10000 || page > 10000) {
-      return { folderIndex: 0, page: 1 };
+    const offset = Math.max(0, Number(parsed.offset) || 0);
+    if (offset > 1_000_000) {
+      return { offset: 0 };
     }
-    return { folderIndex, page };
+    return { offset };
   } catch {
-    return { folderIndex: 0, page: 1 };
+    return { offset: 0 };
   }
 }
 
-function encodeUnavailableCursor(folderIndex: number, page: number) {
-  return Buffer.from(JSON.stringify({ folderIndex, page }), "utf8").toString("base64url");
+function encodeUnavailableCursor(offset: number) {
+  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
 }
 
 const loginSessions = new Map<
   string,
-  { status: "pending" | "completed" | "error"; qrDataUrl?: string; message?: string; userId?: string }
+  {
+    status: "pending" | "completed" | "error";
+    qrDataUrl?: string;
+    message?: string;
+    userId?: string;
+    createdAt: number;
+    updatedAt: number;
+  }
 >();
+
+function pruneFavoriteItemsCache(now = Date.now()) {
+  for (const [key, value] of favoriteItemsCache) {
+    if (value.expiresAt <= now) {
+      favoriteItemsCache.delete(key);
+    }
+  }
+}
+
+function pruneLoginSessions(now = Date.now()) {
+  for (const [key, value] of loginSessions) {
+    if (now - value.updatedAt > loginSessionTtlMs) {
+      loginSessions.delete(key);
+    }
+  }
+}
+
+function setLoginSession(
+  loginId: string,
+  patch: Partial<{
+    status: "pending" | "completed" | "error";
+    qrDataUrl?: string;
+    message?: string;
+    userId?: string;
+  }>
+) {
+  const now = Date.now();
+  const previous = loginSessions.get(loginId);
+  if (!previous) {
+    loginSessions.set(loginId, {
+      status: patch.status || "pending",
+      qrDataUrl: patch.qrDataUrl,
+      message: patch.message,
+      userId: patch.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return;
+  }
+  loginSessions.set(loginId, {
+    ...previous,
+    ...patch,
+    updatedAt: now,
+  });
+}
+
+function asyncHandler(
+  handler: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void> | void
+) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
 
 app.get("/login", (req, res) => {
   if (req.session.user) {
@@ -234,14 +293,15 @@ app.get("/api/users", requireAuth, (req, res) => {
   res.json({ success: true, data: users });
 });
 
-app.post("/api/users/login/start", requireAuth, async (req, res) => {
+app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) => {
   try {
+    pruneLoginSessions();
     const loginId = crypto.randomUUID();
     const login = new TvQrcodeLogin();
     const url = await login.login();
     const qrDataUrl = await QRCode.toDataURL(url);
 
-    loginSessions.set(loginId, { status: "pending", qrDataUrl });
+    setLoginSession(loginId, { status: "pending", qrDataUrl });
 
     login.emitter.on("completed", async (result: any) => {
       try {
@@ -281,24 +341,25 @@ app.post("/api/users/login/start", requireAuth, async (req, res) => {
           refreshToken: tokenInfo.refresh_token || "",
           expires,
         });
-        loginSessions.set(loginId, { status: "completed", qrDataUrl, userId });
+        setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
-        loginSessions.set(loginId, { status: "error", qrDataUrl, message: error?.message || "Failed to save user" });
+        setLoginSession(loginId, { status: "error", qrDataUrl, message: error?.message || "Failed to save user" });
       }
     });
 
     login.emitter.on("error", (error: any) => {
       const msg = error?.data?.message || error?.message || "Login failed";
-      loginSessions.set(loginId, { status: "error", qrDataUrl, message: msg });
+      setLoginSession(loginId, { status: "error", qrDataUrl, message: msg });
     });
 
     res.json({ success: true, data: { loginId, qrDataUrl } });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Failed to start login" });
   }
-});
+}));
 
 app.get("/api/users/login/status", requireAuth, (req, res) => {
+  pruneLoginSessions();
   const loginId = String(req.query.loginId || "");
   const current = loginSessions.get(loginId);
   if (!current) {
@@ -308,7 +369,7 @@ app.get("/api/users/login/status", requireAuth, (req, res) => {
   res.json({ success: true, data: { status: current.status, message: current.message } });
 });
 
-app.get("/api/users/:id/favorites", requireAuth, async (req, res) => {
+app.get("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -321,15 +382,16 @@ app.get("/api/users/:id/favorites", requireAuth, async (req, res) => {
     selected: selected.has(folder.mediaId),
   }));
   res.json({ success: true, data });
-});
+}));
 
-app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
   try {
+    pruneFavoriteItemsCache();
     const mediaId = Number(req.params.mediaId);
     if (!Number.isFinite(mediaId) || mediaId < 1) {
       res.status(400).json({ success: false, message: "Invalid mediaId" });
@@ -357,9 +419,9 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, async (req, res)
   } catch (err: any) {
     res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
   }
-});
+}));
 
-app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
+app.get("/api/users/:id/unavailable", requireAuth, asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -369,58 +431,19 @@ app.get("/api/users/:id/unavailable", requireAuth, async (req, res) => {
   try {
     const pageSize = normalizePageSize(req.query.pageSize);
     const cursor = parseUnavailableCursor(req.query.cursor);
-    const results: Array<{
-      bvid: string;
-      title: string;
-      upperName: string;
-      cover?: string;
-      unavailable?: boolean;
-      processed: boolean;
-      failed: boolean;
-      mediaId: number;
-      folderTitle: string;
-    }> = [];
-
-    let folderIndex = cursor.folderIndex;
-    let page = cursor.page;
-    while (folderIndex < user.favorites.length && results.length < pageSize) {
-      const folder = user.favorites[folderIndex];
-      const pageResult = await listFavoriteItemsPage(user.cookie, folder.mediaId, page, 20);
-      for (const item of pageResult.items) {
-        if (!item.unavailable) continue;
-        results.push({
-          ...item,
-          processed: stateManager.isProcessed(user.id, item.bvid),
-          failed: stateManager.isFailed(user.id, item.bvid),
-          mediaId: folder.mediaId,
-          folderTitle: folder.title,
-        });
-        if (results.length >= pageSize) {
-          break;
-        }
-      }
-
-      if (pageResult.hasMore) {
-        page += 1;
-      } else {
-        folderIndex += 1;
-        page = 1;
-      }
-    }
-
-    const hasMore = folderIndex < user.favorites.length;
+    const page = stateManager.listUnavailableForUser(user.id, cursor.offset, pageSize);
     res.json({
       success: true,
       data: {
-        items: results,
-        hasMore,
-        nextCursor: hasMore ? encodeUnavailableCursor(folderIndex, page) : null,
+        items: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.hasMore && page.nextOffset !== null ? encodeUnavailableCursor(page.nextOffset) : null,
       },
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
   }
-});
+}));
 
 app.get("/api/state", requireAuth, (req, res) => {
   res.json({
@@ -428,22 +451,27 @@ app.get("/api/state", requireAuth, (req, res) => {
     data: {
       processed: stateManager.getAllProcessed(),
       failed: stateManager.getAllFailed(),
+      cooldowns: stateManager.getAllCooldowns(),
     },
   });
 });
 
-app.put("/api/users/:id/favorites", requireAuth, async (req, res) => {
+app.put("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  const mediaIds = (req.body.mediaIds || []) as number[];
+  const mediaIds = Array.isArray(req.body.mediaIds)
+    ? req.body.mediaIds
+        .map((value: unknown) => Number(value))
+      .filter((value: number) => Number.isInteger(value) && value > 0)
+    : [];
   const folders = await listFavoriteFolders(user.cookie);
   const selected = folders.filter((folder) => mediaIds.includes(folder.mediaId));
   userStore.updateFavorites(user.id, selected.map((folder) => ({ mediaId: folder.mediaId, title: folder.title })));
   res.json({ success: true, data: selected });
-});
+}));
 
 app.patch("/api/users/:id", requireAuth, (req, res) => {
   const user = userStore.getById(req.params.id);
@@ -464,14 +492,14 @@ app.delete("/api/users/:id", requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-app.post("/api/sync/now", requireAuth, async (req, res) => {
+app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
   try {
     scheduler.runNow();
     res.json({ success: true, data: { message: "Sync triggered" } });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Sync failed" });
   }
-});
+}));
 
 app.get("/api/logs/stream", requireAuth, (req, res) => {
   res.writeHead(200, {
@@ -504,7 +532,7 @@ app.post("/api/cache/clear", requireAuth, (req, res) => {
   res.json({ success: true, message: "Favorite items cache cleared" });
 });
 
-app.post("/api/rename", requireAuth, async (req, res) => {
+app.post("/api/rename", requireAuth, asyncHandler(async (req, res) => {
   const { remotePath, renameMap } = req.body as {
     remotePath: string;
     renameMap: Array<{ oldName: string; newName: string }>;
@@ -520,9 +548,9 @@ app.post("/api/rename", requireAuth, async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Rename failed" });
   }
-});
+}));
 
-app.get("/api/remote/list", requireAuth, async (req, res) => {
+app.get("/api/remote/list", requireAuth, asyncHandler(async (req, res) => {
   const remotePath = String(req.query.path || "/");
   try {
     const config = configStore.get();
@@ -531,6 +559,14 @@ app.get("/api/remote/list", requireAuth, async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Failed to list" });
   }
+}));
+
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[HTTP] Unhandled route error:", err?.message || err);
+  if (res.headersSent) {
+    return;
+  }
+  res.status(500).json({ success: false, message: err?.message || "Internal server error" });
 });
 
 

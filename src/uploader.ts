@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
+import { RemoteFileRecord } from "./state.js";
 
 function buildDavClient(config: AppConfig): WebDAVClient {
   const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
@@ -52,8 +53,14 @@ async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
   }
 }
 
-export async function uploadWithAList(localDir: string, remotePath: string, config: AppConfig) {
+export interface UploadResult {
+  remotePath: string;
+  files: RemoteFileRecord[];
+}
+
+export async function uploadWithAList(localDir: string, remotePath: string, config: AppConfig): Promise<UploadResult> {
   const client = buildDavClient(config);
+  const uploadedFiles: RemoteFileRecord[] = [];
 
   await ensureRemoteDir(client, remotePath);
 
@@ -106,6 +113,11 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
       }
       
       if (uploadSuccessful) {
+        uploadedFiles.push({
+          name: entry.name,
+          path: remoteFile,
+          size: stat.size,
+        });
         await fs.promises.rm(localFile);
       }
     }
@@ -113,6 +125,28 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
 
   // Cleanup local dir
   await fs.promises.rm(localDir, { recursive: true, force: true });
+  return { remotePath, files: uploadedFiles };
+}
+
+export async function verifyRemoteFiles(
+  config: AppConfig,
+  files: RemoteFileRecord[]
+): Promise<{ ok: boolean; missing: string[] }> {
+  if (files.length === 0) {
+    return { ok: false, missing: ["<no uploaded files recorded>"] };
+  }
+  const client = buildDavClient(config);
+  const missing: string[] = [];
+  for (const file of files) {
+    try {
+      if ((await client.exists(file.path)) === false) {
+        missing.push(file.path);
+      }
+    } catch {
+      missing.push(file.path);
+    }
+  }
+  return { ok: missing.length === 0, missing };
 }
 
 /** Batch rename files on remote storage via WebDAV MOVE */
