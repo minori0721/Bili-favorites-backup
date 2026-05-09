@@ -131,7 +131,13 @@ export async function listFavoriteItemsPage(
       unavailable: media.attr !== undefined && media.attr !== 0,
     }));
   const total = data?.info?.media_count as number | undefined;
-  const hasMore = data?.has_more === 1 ? true : data?.has_more === 0 ? false : (page * pageSize < (total || 0));
+  // has_more can be 1/0 (number), true/false (boolean), or missing
+  const rawHasMore = data?.has_more;
+  const hasMore = rawHasMore === 1 || rawHasMore === true
+    ? true
+    : rawHasMore === 0 || rawHasMore === false
+      ? false
+      : (page * pageSize < (total || 0));
 
   return {
     items,
@@ -156,6 +162,7 @@ export async function listFavoriteItems(
       try {
         const result = await listFavoriteItemsPage(cookie, mediaId, page, 20);
         items.push(...result.items);
+        console.log(`[Bili] Favorite ${mediaId} page ${page}: got ${result.items.length} items, hasMore=${result.hasMore}, total=${result.total}`);
         if (!result.hasMore || result.items.length === 0) {
           return items;
         }
