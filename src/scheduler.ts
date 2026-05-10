@@ -50,7 +50,10 @@ export class SyncScheduler {
     this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1);
     this.uploadQueue = new TaskQueue(config.concurrentUploads || 2);
 
-    const logTaskError = (task: any, error: any) => console.error(`[Queue] Task ${task.name} permanently failed:`, error);
+    const logTaskError = (task: any, error: any) => {
+      const label = error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed";
+      console.error(`[Queue] Task ${task.name} ${label}:`, error);
+    };
     const logTaskRetry = (task: any, error: any) => console.warn(`[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}):`, error.message || error);
 
     this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
@@ -59,8 +62,8 @@ export class SyncScheduler {
         timestamp: new Date().toISOString(),
         type: "download",
         level: "error",
-        summary: `下载失败 ${task.bvid}: ${error?.message || error}${error?.permanent ? "（已停止自动重试）" : ""}`,
-        raw: `[Queue] Task ${task.name} permanently failed: ${error?.message || error}`,
+        summary: `下载失败 ${task.bvid}: ${error?.message || error}${error?.permanent ? "（已停止自动重试）" : (error?.deferToNextCycle ? "（下一轮再试）" : "")}`,
+        raw: `[Queue] Task ${task.name} ${error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed"}: ${error?.message || error}`,
         bvid: task.bvid,
         simpleVisible: true,
       });
@@ -437,7 +440,7 @@ export class SyncScheduler {
       return false;
     }
     const key = this.backupKey(user.id, mediaId, bvid);
-    if (this.queuedBackupKeys.has(key) || !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId)) {
+    if (this.queuedBackupKeys.has(key) || !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId, this.cycleContext?.startedAt)) {
       return false;
     }
     const config = this.configStore.get();

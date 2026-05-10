@@ -337,10 +337,21 @@ export class StateManager {
     return true;
   }
 
-  shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number) {
+  shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry || entry.biliStatus === "unavailable") {
       return false;
+    }
+    const failed = userId ? this.state.failedByUser?.[userId]?.[bvid] : undefined;
+    if (failed?.permanent) {
+      return false;
+    }
+    if (failed && cycleStartedAt) {
+      const failedAt = Date.parse(failed.failedAt);
+      const cycleStarted = Date.parse(cycleStartedAt);
+      if (Number.isFinite(failedAt) && Number.isFinite(cycleStarted) && failedAt >= cycleStarted) {
+        return false;
+      }
     }
     const relation = userId && mediaId ? this.state.relations?.[relationKey(userId, mediaId, bvid)] : undefined;
     const status = relation?.backupStatus || entry.backupStatus;
@@ -349,12 +360,6 @@ export class StateManager {
     }
     if (ACTIVE_BACKUP_STATUSES.has(status)) {
       return false;
-    }
-    if (status === "failed" && userId) {
-      const failed = this.state.failedByUser?.[userId]?.[bvid];
-      if (failed?.permanent) {
-        return false;
-      }
     }
     return status === "discovered" || status === "missing" || status === "failed";
   }

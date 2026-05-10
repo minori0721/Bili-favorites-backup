@@ -68,8 +68,8 @@ export class TaskQueue extends EventEmitter {
       this.emit("taskCompleted", task);
     } catch (error: any) {
       task.error = error;
-      // If error is marked as permanent (e.g. video deleted), skip retries
-      if (error?.permanent || task.retries >= task.maxRetries) {
+      // If error should leave the current queue, skip in-queue retries.
+      if (error?.permanent || error?.deferToNextCycle || task.retries >= task.maxRetries) {
         task.status = "error";
         this.emit("taskError", task, error);
       } else {
@@ -87,7 +87,7 @@ export class TaskQueue extends EventEmitter {
     } finally {
       this.activeCount--;
       
-      // Remove completed or permanently failed tasks
+      // Remove completed tasks and tasks that should leave this queue pass.
       if (task.status === "completed" || task.status === "error") {
         this.queue = this.queue.filter(t => t.id !== task.id);
       }
