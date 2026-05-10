@@ -253,7 +253,7 @@ function getAccountSection() {
       <h2>账号与同步</h2>
       <p class="muted">管理 Bilibili 账号及需同步的收藏夹。点击“立即同步”会唤起后台任务队列。</p>
       <div class="row" style="margin-bottom:20px;">
-        <button id="addUserBtn">?? B???</button>
+        <button id="addUserBtn">添加 B站账号</button>
         <button class="ghost" id="syncNowBtn">立即同步</button>
         <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
         <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
@@ -324,6 +324,9 @@ function getSettingsSection() {
         <div><label>重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
+        <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="10" /></div>
+        <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="20" step="0.5" /></div>
+        <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="500" /></div>
       </div>
       <div class="row" style="margin-top:24px;">
         <button id="saveConfigBtn">保存设置并生效</button>
@@ -476,6 +479,9 @@ function getAppScript() {
       document.getElementById('retryDelaySeconds').value = d.retryDelaySeconds ?? 5;
       document.getElementById('concurrentDownloads').value = d.concurrentDownloads ?? 1;
       document.getElementById('concurrentUploads').value = d.concurrentUploads ?? 2;
+      document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
+      document.getElementById('remoteVerifyRateLimitPerSecond').value = d.remoteVerifyRateLimitPerSecond ?? 2;
+      document.getElementById('remoteRequeueLimitPerCycle').value = d.remoteRequeueLimitPerCycle ?? 20;
       document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>';
       updateTemplatePreview();
     }
@@ -501,6 +507,9 @@ function getAppScript() {
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value),
+        remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value),
+        remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value),
+        remoteRequeueLimitPerCycle: Number(document.getElementById('remoteRequeueLimitPerCycle').value),
       };
       try {
         await fetchJson('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });

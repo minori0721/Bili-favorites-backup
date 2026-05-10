@@ -3,6 +3,7 @@ import { StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import { BiliRiskOrLoginError, listFavoriteItemsPage } from "./bili.js";
 import { logManager } from "./logger.js";
+import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { TaskQueue } from "./queue.js";
 import { DownloadTask, UploadTask } from "./tasks.js";
@@ -33,6 +34,7 @@ export class SyncScheduler {
   private readonly remoteVerifyPerTick = 25;
   private readonly remoteVerifyPerTickNoNew = 120;
   private readonly remoteVerifyPerTickManual = 200;
+  private remoteVerifyNextAllowedAt = 0;
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -86,8 +88,17 @@ export class SyncScheduler {
           task.userId,
           task.mediaId
         );
-      } else if (task.userId && task.mediaId) {
-        this.stateManager.markProcessed(task.userId, task.bvid, task.mediaId);
+      } else {
+        this.stateManager.markRetryPending(task.bvid);
+        if (task.userId && task.mediaId) {
+          this.stateManager.markFailed(
+            task.userId,
+            task.bvid,
+            task.mediaId,
+            "Upload finished without remote metadata; task moved back to discovered for retry.",
+            false
+          );
+        }
       }
     });
 
@@ -373,90 +384,148 @@ export class SyncScheduler {
 
     const config = this.configStore.get();
     const verifyLimit = forceFullRemoteVerify ? undefined : this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
-    const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit);
+    const includeDeferred = forceFullRemoteVerify;
+    const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit, includeDeferred);
     this.cycleContext.remoteChecked = candidates.length;
-    this.cycleContext.remoteEligible = this.stateManager.countVideosForRemoteVerify();
+    this.cycleContext.remoteEligible = this.stateManager.countVideosForRemoteVerify(includeDeferred);
+    const concurrency = Math.max(1, Math.min(10, Math.floor(config.remoteVerifyConcurrency || 3)));
+    const requeueLimit = Math.max(1, Math.floor(config.remoteRequeueLimitPerCycle || 20));
+    const rateLimit = Math.max(0.5, Number(config.remoteVerifyRateLimitPerSecond || 2));
+    let requeueCount = 0;
 
-    for (const entry of candidates) {
+    const executeOne = async (entry: VideoArchiveEntry) => {
       try {
-        const remoteFiles = await this.resolveRemoteFilesForVerify(entry);
+        await this.applyRemoteVerifyRateLimit(rateLimit);
+        const jitter = 100 + Math.floor(Math.random() * 201);
+        await delay(jitter);
+
+        const resolvedRemotePath = entry.remotePath || this.deriveRemotePathFromRelation(entry);
+        const remoteFiles = await this.resolveRemoteFilesForVerify(entry, resolvedRemotePath);
         if (!remoteFiles?.length) {
-          const confirmed = await this.confirmRemoteStillMissing(entry);
+          const confirmed = await this.confirmRemoteStillMissing(entry, undefined, resolvedRemotePath);
           if (confirmed.status === "ok") {
-            this.stateManager.markRemoteCheckOk(entry.bvid, entry.remotePath, confirmed.remoteFiles);
-            this.cycleContext.remoteOk += 1;
-            continue;
+            this.stateManager.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, confirmed.remoteFiles);
+            this.cycleContext!.remoteOk += 1;
+            return;
           }
           if (confirmed.status === "unknown") {
-            this.cycleContext.remoteErrors += 1;
-            continue;
+            const delayMs = this.computeRemoteVerifyBackoffMs(entry);
+            this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.");
+            this.cycleContext!.remoteErrors += 1;
+            return;
           }
           const missing = confirmed.missing?.length
             ? confirmed.missing
-            : [entry.remotePath || "<remote-path-unknown>"];
+            : [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"];
           this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
           this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
-          this.cycleContext.remoteMissingDetected += 1;
+          this.cycleContext!.remoteMissingDetected += 1;
           if (entry.biliStatus === "unavailable") {
-            this.cycleContext.remoteMissingUnavailable += 1;
+            this.cycleContext!.remoteMissingUnavailable += 1;
           }
-          const requeued = this.enqueueMissingIfPossible(entry);
-          if (requeued) {
-            this.cycleContext.requeuedFromRemoteMissing += 1;
+          if (requeueCount < requeueLimit) {
+            const requeued = this.enqueueMissingIfPossible(entry);
+            if (requeued) {
+              requeueCount += 1;
+              this.cycleContext!.requeuedFromRemoteMissing += 1;
+            }
           }
-          continue;
+          return;
         }
+
         const result = await verifyRemoteFiles(config, remoteFiles);
         if (result.ok) {
-          this.stateManager.markRemoteCheckOk(entry.bvid, entry.remotePath, remoteFiles);
-          this.cycleContext.remoteOk += 1;
-        } else {
-          const confirmed = await this.confirmRemoteStillMissing(entry, remoteFiles);
-          if (confirmed.status === "ok") {
-            this.stateManager.markRemoteCheckOk(entry.bvid, entry.remotePath, confirmed.remoteFiles || remoteFiles);
-            this.cycleContext.remoteOk += 1;
-            continue;
-          }
-          if (confirmed.status === "unknown") {
-            this.stateManager.markRemoteCheckMissing(entry.bvid, result.missing);
-            this.cycleContext.remoteErrors += 1;
-            continue;
-          }
-          const missing = confirmed.missing?.length ? confirmed.missing : result.missing;
-          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
-          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
-          this.cycleContext.remoteMissingDetected += 1;
-          if (entry.biliStatus === "unavailable") {
-            this.cycleContext.remoteMissingUnavailable += 1;
-          }
+          this.stateManager.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, remoteFiles);
+          this.cycleContext!.remoteOk += 1;
+          return;
+        }
+
+        const confirmed = await this.confirmRemoteStillMissing(entry, remoteFiles, resolvedRemotePath);
+        if (confirmed.status === "ok") {
+          this.stateManager.markRemoteCheckOk(
+            entry.bvid,
+            resolvedRemotePath || entry.remotePath,
+            confirmed.remoteFiles || remoteFiles
+          );
+          this.cycleContext!.remoteOk += 1;
+          return;
+        }
+        if (confirmed.status === "unknown") {
+          const delayMs = this.computeRemoteVerifyBackoffMs(entry);
+          this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.");
+          this.cycleContext!.remoteErrors += 1;
+          return;
+        }
+
+        const missing = confirmed.missing?.length ? confirmed.missing : result.missing;
+        this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+        this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+        this.cycleContext!.remoteMissingDetected += 1;
+        if (entry.biliStatus === "unavailable") {
+          this.cycleContext!.remoteMissingUnavailable += 1;
+        }
+        if (requeueCount < requeueLimit) {
           const requeued = this.enqueueMissingIfPossible(entry);
           if (requeued) {
-            this.cycleContext.requeuedFromRemoteMissing += 1;
+            requeueCount += 1;
+            this.cycleContext!.requeuedFromRemoteMissing += 1;
           }
         }
       } catch (error: any) {
-        this.cycleContext.remoteErrors += 1;
+        const delayMs = this.computeRemoteVerifyBackoffMs(entry);
+        this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, error?.message || "Remote verify failed");
+        this.cycleContext!.remoteErrors += 1;
         console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}:`, error?.message || error);
       }
-    }
+    };
+
+    let index = 0;
+    const workers = Array.from({ length: Math.min(concurrency, candidates.length) }, async () => {
+      while (index < candidates.length) {
+        const current = candidates[index];
+        index += 1;
+        await executeOne(current);
+      }
+    });
+    await Promise.all(workers);
   }
 
-  private async resolveRemoteFilesForVerify(entry: VideoArchiveEntry) {
+  private async resolveRemoteFilesForVerify(entry: VideoArchiveEntry, resolvedRemotePath?: string | null) {
     if (entry.remoteFiles?.length) {
       return entry.remoteFiles;
     }
-    if (!entry.remotePath) {
+    const pathToUse = resolvedRemotePath || entry.remotePath || this.deriveRemotePathFromRelation(entry);
+    if (!pathToUse) {
       return [];
     }
     const config = this.configStore.get();
-    const names = await listRemoteDir(config, entry.remotePath);
+    const names = await listRemoteDir(config, pathToUse);
     if (!names.length) {
       return [];
     }
     return names.map((name) => ({
       name,
-      path: entry.remotePath!.replace(/\/$/, "") + "/" + name,
+      path: pathToUse.replace(/\/$/, "") + "/" + name,
     }));
+  }
+
+  private deriveRemotePathFromRelation(entry: VideoArchiveEntry) {
+    const relation = this.findBestRelationForBvid(entry.bvid);
+    if (!relation) {
+      return null;
+    }
+    const config = this.configStore.get();
+    const userSegment = sanitizeSegment(relation.user.name) || "user";
+    const folderSegment = sanitizeSegment(relation.folderTitle) || "favorites";
+    switch (config.uploadLayout) {
+      case "user-folder-video":
+        return joinRemotePath(config.alistDest, userSegment, folderSegment);
+      case "folder-video":
+        return joinRemotePath(config.alistDest, folderSegment);
+      case "video-only":
+      default:
+        return joinRemotePath(config.alistDest);
+    }
   }
 
   private enqueueMissingIfPossible(entry: VideoArchiveEntry) {
@@ -478,16 +547,17 @@ export class SyncScheduler {
 
   private async confirmRemoteStillMissing(
     entry: VideoArchiveEntry,
-    knownFiles?: VideoArchiveEntry["remoteFiles"]
+    knownFiles?: VideoArchiveEntry["remoteFiles"],
+    resolvedRemotePath?: string | null
   ): Promise<
     | { status: "ok"; remoteFiles: NonNullable<VideoArchiveEntry["remoteFiles"]> }
     | { status: "missing"; missing: string[] }
     | { status: "unknown" }
   > {
     try {
-      const remoteFiles = knownFiles?.length ? knownFiles : await this.resolveRemoteFilesForVerify(entry);
+      const remoteFiles = knownFiles?.length ? knownFiles : await this.resolveRemoteFilesForVerify(entry, resolvedRemotePath);
       if (!remoteFiles?.length) {
-        return { status: "missing", missing: [entry.remotePath || "<remote-path-unknown>"] };
+        return { status: "missing", missing: [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"] };
       }
       const config = this.configStore.get();
       const result = await verifyRemoteFiles(config, remoteFiles);
@@ -499,6 +569,28 @@ export class SyncScheduler {
       // Treat transient errors as inconclusive to avoid false-positive "missing".
       return { status: "unknown" };
     }
+  }
+
+  private async applyRemoteVerifyRateLimit(rateLimitPerSecond: number) {
+    const intervalMs = Math.max(50, Math.floor(1000 / rateLimitPerSecond));
+    const now = Date.now();
+    if (this.remoteVerifyNextAllowedAt <= now) {
+      this.remoteVerifyNextAllowedAt = now + intervalMs;
+      return;
+    }
+    const waitMs = this.remoteVerifyNextAllowedAt - now;
+    this.remoteVerifyNextAllowedAt += intervalMs;
+    await delay(waitMs);
+  }
+
+  private computeRemoteVerifyBackoffMs(entry: VideoArchiveEntry) {
+    const missingCount = Math.max(0, entry.remoteMissingCount || 0);
+    const base = 30_000;
+    const max = 30 * 60_000;
+    const exp = Math.min(6, missingCount);
+    const backoff = Math.min(max, base * Math.pow(2, exp));
+    const jitter = Math.floor(Math.random() * 3_000);
+    return backoff + jitter;
   }
 
   private resumePersistedWork() {

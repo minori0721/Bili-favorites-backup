@@ -21,6 +21,9 @@ export interface AppConfig {
   bbdownHiRes: boolean;
   bbdownDolby: boolean;
   filenameTemplate: string;
+  remoteVerifyConcurrency: number;
+  remoteVerifyRateLimitPerSecond: number;
+  remoteRequeueLimitPerCycle: number;
 }
 
 const configPath = path.join(dataDir, "config.json");
@@ -42,6 +45,9 @@ const defaultConfig: AppConfig = {
   bbdownHiRes: false,
   bbdownDolby: false,
   filenameTemplate: "<videoTitle>",
+  remoteVerifyConcurrency: 3,
+  remoteVerifyRateLimitPerSecond: 2,
+  remoteRequeueLimitPerCycle: 20,
 };
 
 export class ConfigStore {
@@ -98,6 +104,24 @@ export function validateConfig(input: Partial<AppConfig>) {
       "video-only",
     ].includes(input.uploadLayout)) {
       return "uploadLayout is invalid";
+    }
+  }
+
+  if (input.remoteVerifyConcurrency !== undefined) {
+    if (!Number.isInteger(input.remoteVerifyConcurrency) || input.remoteVerifyConcurrency < 1 || input.remoteVerifyConcurrency > 10) {
+      return "remoteVerifyConcurrency must be an integer between 1 and 10";
+    }
+  }
+
+  if (input.remoteVerifyRateLimitPerSecond !== undefined) {
+    if (!Number.isFinite(input.remoteVerifyRateLimitPerSecond) || input.remoteVerifyRateLimitPerSecond < 0.5 || input.remoteVerifyRateLimitPerSecond > 20) {
+      return "remoteVerifyRateLimitPerSecond must be between 0.5 and 20";
+    }
+  }
+
+  if (input.remoteRequeueLimitPerCycle !== undefined) {
+    if (!Number.isInteger(input.remoteRequeueLimitPerCycle) || input.remoteRequeueLimitPerCycle < 1 || input.remoteRequeueLimitPerCycle > 500) {
+      return "remoteRequeueLimitPerCycle must be an integer between 1 and 500";
     }
   }
 

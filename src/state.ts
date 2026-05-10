@@ -2,6 +2,7 @@ import path from "node:path";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
 
+// Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
   bvid: string;
   mediaId: number;
@@ -51,8 +52,10 @@ export interface VideoArchiveEntry {
   uploadedAt?: string;
   verifiedAt?: string;
   lastRemoteCheckAt?: string;
+  nextRemoteCheckAt?: string;
   remoteMissingCount?: number;
   lastError?: string;
+  // Legacy marker kept for one-way migration cleanup.
   legacyProcessed?: boolean;
 }
 
@@ -106,7 +109,7 @@ export interface StateFile {
 
 const statePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 2,
+  schemaVersion: 4,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -149,12 +152,9 @@ export class StateManager {
     this.migrateLegacyState();
   }
 
-  isProcessed(userId: string, bvid: string) {
+  isProcessed(_userId: string, bvid: string) {
     const entry = this.state.videos?.[bvid];
-    if (entry && BACKED_UP_STATUSES.has(entry.backupStatus)) {
-      return true;
-    }
-    return Boolean(this.state.processedByUser[userId]?.[bvid]);
+    return Boolean(entry && BACKED_UP_STATUSES.has(entry.backupStatus));
   }
 
   isFailed(userId: string, bvid: string) {
@@ -287,8 +287,8 @@ export class StateManager {
     bvid: string,
     remotePath: string,
     remoteFiles: RemoteFileRecord[],
-    userId?: string,
-    mediaId?: number
+    _userId?: string,
+    _mediaId?: number
   ) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
@@ -302,35 +302,21 @@ export class StateManager {
     entry.lastRemoteCheckAt = at;
     entry.remoteMissingCount = 0;
     entry.lastError = undefined;
-
-    const relations = Object.values(this.state.relations || {}).filter((item) => item.bvid === bvid);
-    if (userId && mediaId && relations.length === 0) {
-      this.addProcessedCompat(userId, bvid, mediaId, at);
-    }
-    for (const relation of relations) {
-      this.addProcessedCompat(relation.userId, bvid, relation.mediaId, at);
-    }
     this.save();
   }
 
-  markProcessed(userId: string, bvid: string, mediaId: number) {
+  markProcessed(_userId: string, bvid: string, _mediaId: number) {
     const at = nowIso();
-    if (!this.state.videos![bvid]) {
-      this.state.videos![bvid] = {
-        bvid,
-        title: bvid,
-        upperName: "Unknown",
-        firstSeenAt: at,
-        lastSeenAt: at,
-        biliStatus: "unknown",
-        backupStatus: "uploaded",
-        legacyProcessed: true,
-      };
-    } else {
-      this.state.videos![bvid].backupStatus = "uploaded";
+    const entry = this.state.videos?.[bvid];
+    if (entry) {
+      entry.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+      entry.uploadedAt = undefined;
+      entry.verifiedAt = undefined;
+      entry.lastRemoteCheckAt = undefined;
+      entry.remoteMissingCount = 0;
+      entry.lastError = "Upload metadata missing; reset to discovered for retry.";
+      entry.lastSeenAt = at;
     }
-    this.addProcessedCompat(userId, bvid, mediaId, at);
-    delete this.state.failedByUser?.[userId]?.[bvid];
     this.save();
   }
 
@@ -368,6 +354,7 @@ export class StateManager {
     }
     entry.verifiedAt = at;
     entry.lastRemoteCheckAt = at;
+    entry.nextRemoteCheckAt = undefined;
     entry.remoteMissingCount = 0;
     entry.lastError = undefined;
     this.save();
@@ -381,6 +368,18 @@ export class StateManager {
     entry.lastError = `Remote files missing: ${missingFiles.join(", ")}`;
     if (entry.remoteMissingCount >= 2) {
       entry.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "missing";
+    }
+    this.save();
+  }
+
+  markRemoteCheckDeferred(bvid: string, delayMs: number, reason?: string) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return;
+    const at = nowIso();
+    entry.lastRemoteCheckAt = at;
+    entry.nextRemoteCheckAt = new Date(Date.now() + Math.max(1000, delayMs)).toISOString();
+    if (reason) {
+      entry.lastError = reason;
     }
     this.save();
   }
@@ -461,11 +460,12 @@ export class StateManager {
     );
   }
 
-  listVideosForRemoteVerify(limit?: number) {
+  listVideosForRemoteVerify(limit?: number, includeDeferred = false) {
+    const now = Date.now();
     const sorted = Object.values(this.state.videos || {})
       .filter((entry) =>
         (entry.backupStatus === "uploaded" || entry.backupStatus === "verified") &&
-        (Boolean(entry.remotePath) || (Array.isArray(entry.remoteFiles) && entry.remoteFiles.length > 0))
+        (includeDeferred || !entry.nextRemoteCheckAt || Date.parse(entry.nextRemoteCheckAt) <= now)
       )
       .sort((a, b) => {
         const left = a.lastRemoteCheckAt ? Date.parse(a.lastRemoteCheckAt) : 0;
@@ -476,10 +476,11 @@ export class StateManager {
     return picked.map((entry) => ({ ...entry, remoteFiles: [...(entry.remoteFiles || [])] }));
   }
 
-  countVideosForRemoteVerify() {
+  countVideosForRemoteVerify(includeDeferred = false) {
+    const now = Date.now();
     return Object.values(this.state.videos || {}).filter((entry) =>
       (entry.backupStatus === "uploaded" || entry.backupStatus === "verified") &&
-      (Boolean(entry.remotePath) || (Array.isArray(entry.remoteFiles) && entry.remoteFiles.length > 0))
+      (includeDeferred || !entry.nextRemoteCheckAt || Date.parse(entry.nextRemoteCheckAt) <= now)
     ).length;
   }
 
@@ -531,23 +532,13 @@ export class StateManager {
     };
   }
 
+  // Kept for API compatibility; legacy processed map is no longer used.
   getAllProcessed() {
-    return { ...this.state.processedByUser };
+    return {};
   }
 
   getAllFailed() {
     return { ...(this.state.failedByUser || {}) };
-  }
-
-  private addProcessedCompat(userId: string, bvid: string, mediaId: number, processedAt: string) {
-    if (!this.state.processedByUser[userId]) {
-      this.state.processedByUser[userId] = {};
-    }
-    this.state.processedByUser[userId][bvid] = {
-      bvid,
-      mediaId,
-      processedAt,
-    };
   }
 
   private migrateLegacyState() {
@@ -563,8 +554,7 @@ export class StateManager {
               firstSeenAt: entry.processedAt,
               lastSeenAt: entry.processedAt,
               biliStatus: "unknown",
-              backupStatus: "uploaded",
-              legacyProcessed: true,
+              backupStatus: "discovered",
             };
           }
           const key = relationKey(userId, entry.mediaId, entry.bvid);
@@ -610,6 +600,43 @@ export class StateManager {
         }
       }
       this.state.schemaVersion = 2;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 3) {
+      for (const entry of Object.values(this.state.videos || {})) {
+        const hasRemoteProof = Boolean(entry.remotePath) || Boolean(entry.remoteFiles?.length);
+        if ((entry.backupStatus === "uploaded" || entry.backupStatus === "verified") && !hasRemoteProof) {
+          entry.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+          entry.uploadedAt = undefined;
+          entry.verifiedAt = undefined;
+          entry.lastRemoteCheckAt = undefined;
+          entry.remoteMissingCount = 0;
+          entry.lastError = "Legacy uploaded state without remote proof has been reset and will be backed up again.";
+          changed = true;
+        }
+        if (entry.legacyProcessed) {
+          delete entry.legacyProcessed;
+          changed = true;
+        }
+      }
+      this.state.schemaVersion = 3;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 4) {
+      for (const entry of Object.values(this.state.videos || {})) {
+        if (entry.nextRemoteCheckAt) {
+          delete entry.nextRemoteCheckAt;
+          changed = true;
+        }
+      }
+      this.state.schemaVersion = 4;
+      changed = true;
+    }
+
+    if (Object.keys(this.state.processedByUser || {}).length > 0) {
+      this.state.processedByUser = {};
       changed = true;
     }
 
