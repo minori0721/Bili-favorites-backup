@@ -48,6 +48,18 @@ export class TaskQueue extends EventEmitter {
     return [...this.queue];
   }
 
+  getActiveCount() {
+    return this.activeCount;
+  }
+
+  getPendingCount() {
+    return this.queue.filter((task) => task.status === "pending").length;
+  }
+
+  isBusy() {
+    return this.getActiveCount() > 0 || this.getPendingCount() > 0;
+  }
+
   private async processQueue() {
     if (this.activeCount >= this.concurrency || this.queue.length === 0) {
       return;

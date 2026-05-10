@@ -1,7 +1,7 @@
 import { ConfigStore } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
-import { BiliRiskOrLoginError, listFavoriteItemsPage } from "./bili.js";
+import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth } from "./bili.js";
 import { logManager } from "./logger.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
@@ -229,6 +229,10 @@ export class SyncScheduler {
     return true;
   }
 
+  hasRunningTransferTasks() {
+    return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
+  }
+
   async tick(manual = false, options: TickOptions = {}) {
     if (this.running) {
       return false;
@@ -285,6 +289,53 @@ export class SyncScheduler {
     }
   }
 
+  private async listFavoriteItemsPageWithAuthRetry(
+    user: BiliUser,
+    mediaId: number,
+    page: number,
+    pageSize: number
+  ) {
+    try {
+      return await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
+    } catch (error: any) {
+      if (!(error instanceof BiliRiskOrLoginError)) {
+        throw error;
+      }
+      if (!user.accessToken || !user.refreshToken) {
+        throw error;
+      }
+      try {
+        const refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
+        if (!refreshed) {
+          throw error;
+        }
+        const updated = this.userStore.updatePartial(user.id, {
+          cookie: refreshed.cookie,
+          rawAuth: refreshed.rawAuth,
+          accessToken: refreshed.accessToken || user.accessToken,
+          refreshToken: refreshed.refreshToken || user.refreshToken,
+          expires: refreshed.expires || user.expires,
+          lastAuthRefreshAt: new Date().toISOString(),
+          lastAuthRefreshError: "",
+        });
+        if (!updated) {
+          throw error;
+        }
+        user.cookie = updated.cookie;
+        user.accessToken = updated.accessToken;
+        user.refreshToken = updated.refreshToken;
+        user.expires = updated.expires;
+        console.warn(`[Scheduler] Refreshed auth for ${user.name} after login/risk error; retrying page ${page}.`);
+        return await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
+      } catch (refreshError: any) {
+        this.userStore.updatePartial(user.id, {
+          lastAuthRefreshError: refreshError?.message || String(refreshError),
+        });
+        throw error;
+      }
+    }
+  }
+
   private backupKey(userId: string, mediaId: number, bvid: string) {
     return `${userId}:${mediaId}:${bvid}`;
   }
@@ -304,7 +355,7 @@ export class SyncScheduler {
   private async scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
     let page = 1;
     while (true) {
-      const result = await listFavoriteItemsPage(user.cookie, mediaId, page, 20);
+      const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
       this.recordPage(user, mediaId, folderTitle, result.items);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
@@ -330,7 +381,7 @@ export class SyncScheduler {
     const maxPages = manual ? 40 : this.hotScanMaxPages;
     let lastPage = 0;
     for (let page = 1; page <= maxPages; page += 1) {
-      const result = await listFavoriteItemsPage(user.cookie, mediaId, page, 20);
+      const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
       const pageStats = this.recordPage(user, mediaId, folderTitle, result.items);
       lastPage = page;
       const previousScan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
@@ -380,7 +431,7 @@ export class SyncScheduler {
       : (manual ? this.manualHistoryPagesPerTick : this.initialHistoryPagesPerTick);
 
     for (let i = 0; i < pagesThisRun; i += 1) {
-      const result = await listFavoriteItemsPage(user.cookie, mediaId, page, 20);
+      const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
       this.recordPage(user, mediaId, folderTitle, result.items);
 
       if (!result.hasMore || result.items.length === 0) {
@@ -525,7 +576,6 @@ export class SyncScheduler {
             ? confirmed.missing
             : [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"];
           this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
-          this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
           this.cycleContext!.remoteMissingDetected += 1;
           if (entry.biliStatus === "unavailable") {
             this.cycleContext!.remoteMissingUnavailable += 1;
@@ -567,7 +617,6 @@ export class SyncScheduler {
         }
 
         const missing = confirmed.missing?.length ? confirmed.missing : result.missing;
-        this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
         this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
         this.cycleContext!.remoteMissingDetected += 1;
         if (entry.biliStatus === "unavailable") {

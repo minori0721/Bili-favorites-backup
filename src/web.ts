@@ -380,6 +380,13 @@ function getModals() {
   <div class="modal" id="videoDetailModal">
     <div class="panel" style="max-width:800px;">
       <h2 id="videoDetailTitle">收藏夹详情</h2>
+      <div class="filter-toggle" id="videoDetailFilterBar">
+        <button id="vdFilterAllBtn" class="active">全部 (0)</button>
+        <button id="vdFilterUploadedBtn">已上传 (0)</button>
+        <button id="vdFilterPendingBtn">未上传 (0)</button>
+        <button id="vdFilterPendingUnavailableBtn">未上传并失效 (0)</button>
+        <button id="vdFilterUploadedUnavailableBtn">已上传且失效 (0)</button>
+      </div>
       <div class="video-grid" id="videoGrid"></div>
       <div class="row" style="margin-top:24px;justify-content:center;">
         <button id="closeVideoDetailBtn" class="ghost" style="width:100%;">关闭</button>
@@ -428,6 +435,8 @@ function getAppScript() {
     let videoDetailState = {
       userId: null,
       mediaId: null,
+      filter: 'all',
+      summary: null,
       page: 0,
       pageSize: 20,
       hasMore: true,
@@ -625,7 +634,7 @@ function getAppScript() {
         const meta = document.createElement('div');
         meta.className = 'muted';
         meta.style.margin = '0';
-        meta.textContent = 'UID: ' + user.uid + ' | 收藏夹: ' + user.favoritesCount;
+        meta.textContent = 'UID: ' + user.uid + ' | 收藏夹: ' + user.favoritesCount + ' | ' + (user.expiresText || '未知过期时间');
 
         const favoritesWrap = document.createElement('div');
         favoritesWrap.style.margin = '4px 0';
@@ -656,6 +665,24 @@ function getAppScript() {
         unavailableBtn.dataset.id = String(user.id || '');
         unavailableBtn.textContent = '下架清单';
 
+        const refreshInfoBtn = document.createElement('button');
+        refreshInfoBtn.className = 'ghost';
+        refreshInfoBtn.dataset.action = 'refresh_info';
+        refreshInfoBtn.dataset.id = String(user.id || '');
+        refreshInfoBtn.textContent = '刷新信息';
+
+        const refreshAuthBtn = document.createElement('button');
+        refreshAuthBtn.className = 'ghost';
+        refreshAuthBtn.dataset.action = 'refresh_auth';
+        refreshAuthBtn.dataset.id = String(user.id || '');
+        refreshAuthBtn.textContent = '更新授权';
+
+        const copyCookieBtn = document.createElement('button');
+        copyCookieBtn.className = 'ghost';
+        copyCookieBtn.dataset.action = 'copy_cookie';
+        copyCookieBtn.dataset.id = String(user.id || '');
+        copyCookieBtn.textContent = '复制Cookie';
+
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'ghost';
         toggleBtn.dataset.action = 'toggle';
@@ -672,11 +699,23 @@ function getAppScript() {
 
         actions.appendChild(favoritesBtn);
         actions.appendChild(unavailableBtn);
+        actions.appendChild(refreshInfoBtn);
+        actions.appendChild(refreshAuthBtn);
+        actions.appendChild(copyCookieBtn);
         actions.appendChild(toggleBtn);
         actions.appendChild(removeBtn);
 
         item.appendChild(name);
         item.appendChild(meta);
+        if (user.lastAuthRefreshError) {
+          const authErr = document.createElement('div');
+          authErr.className = 'muted';
+          authErr.style.margin = '0';
+          authErr.style.color = '#E57373';
+          authErr.style.fontSize = '12px';
+          authErr.textContent = '授权刷新失败: ' + user.lastAuthRefreshError;
+          item.appendChild(authErr);
+        }
         item.appendChild(favoritesWrap);
         item.appendChild(actions);
         el.appendChild(item);
@@ -859,6 +898,53 @@ function getAppScript() {
       setGridStatus('videoGrid', 'video-detail', text, isError);
     }
 
+    const videoDetailFilterButtons = [
+      { id: 'vdFilterAllBtn', filter: 'all' },
+      { id: 'vdFilterUploadedBtn', filter: 'uploaded' },
+      { id: 'vdFilterPendingBtn', filter: 'pending' },
+      { id: 'vdFilterPendingUnavailableBtn', filter: 'pending_unavailable' },
+      { id: 'vdFilterUploadedUnavailableBtn', filter: 'uploaded_unavailable' },
+    ];
+
+    function setVideoDetailFilterActive(filter) {
+      videoDetailFilterButtons.forEach(({ id, filter: value }) => {
+        const btn = document.getElementById(id);
+        if (btn) {
+          btn.classList.toggle('active', value === filter);
+        }
+      });
+    }
+
+    function updateVideoDetailFilterCounts(summary) {
+      const s = summary || {
+        total: 0,
+        uploaded: 0,
+        pending: 0,
+        pendingUnavailable: 0,
+        uploadedUnavailable: 0,
+      };
+      document.getElementById('vdFilterAllBtn').textContent = '全部 (' + (s.total || 0) + ')';
+      document.getElementById('vdFilterUploadedBtn').textContent = '已上传 (' + (s.uploaded || 0) + ')';
+      document.getElementById('vdFilterPendingBtn').textContent = '未上传 (' + (s.pending || 0) + ')';
+      document.getElementById('vdFilterPendingUnavailableBtn').textContent = '未上传并失效 (' + (s.pendingUnavailable || 0) + ')';
+      document.getElementById('vdFilterUploadedUnavailableBtn').textContent = '已上传且失效 (' + (s.uploadedUnavailable || 0) + ')';
+    }
+
+    async function applyVideoDetailFilter(filter) {
+      if (!videoDetailState.userId || !videoDetailState.mediaId) return;
+      if (videoDetailState.loading) return;
+      videoDetailState.token += 1;
+      videoDetailState.filter = filter;
+      videoDetailState.page = 0;
+      videoDetailState.hasMore = true;
+      videoDetailState.loading = false;
+      setVideoDetailFilterActive(filter);
+      const grid = document.getElementById('videoGrid');
+      grid.innerHTML = '';
+      grid.scrollTop = 0;
+      await loadNextVideoDetailPage();
+    }
+
     let videoDetailThrottleTimer = null;
     async function loadNextVideoDetailPage() {
       if (videoDetailState.loading || !videoDetailState.hasMore) return;
@@ -871,10 +957,13 @@ function getAppScript() {
         const data = await fetchJson(
           '/api/users/' + videoDetailState.userId +
           '/favorites/' + videoDetailState.mediaId +
-          '/items?page=' + nextPage +
-          '&pageSize=' + videoDetailState.pageSize
+          '/state-items?page=' + nextPage +
+          '&pageSize=' + videoDetailState.pageSize +
+          '&filter=' + encodeURIComponent(videoDetailState.filter || 'all')
         );
         if (token !== videoDetailState.token) return;
+        videoDetailState.summary = data.summary || null;
+        updateVideoDetailFilterCounts(videoDetailState.summary);
         const items = Array.isArray(data.items) ? data.items : [];
         if (nextPage === 1 && items.length === 0) {
           grid.innerHTML = '';
@@ -913,6 +1002,8 @@ function getAppScript() {
       videoDetailState = {
         userId,
         mediaId,
+        filter: 'all',
+        summary: null,
         page: 0,
         pageSize: 20,
         hasMore: true,
@@ -920,6 +1011,8 @@ function getAppScript() {
         token: videoDetailState.token
       };
       document.getElementById('videoDetailTitle').textContent = '📁 ' + title;
+      setVideoDetailFilterActive('all');
+      updateVideoDetailFilterCounts(null);
       const grid = document.getElementById('videoGrid');
       grid.innerHTML = '';
       grid.scrollTop = 0;
@@ -1074,6 +1167,11 @@ function getAppScript() {
     });
     document.getElementById('filterMissingBtn').addEventListener('click', () => setUnavailableFilter('missing'));
     document.getElementById('filterUploadedBtn').addEventListener('click', () => setUnavailableFilter('uploaded'));
+    document.getElementById('vdFilterAllBtn').addEventListener('click', () => applyVideoDetailFilter('all'));
+    document.getElementById('vdFilterUploadedBtn').addEventListener('click', () => applyVideoDetailFilter('uploaded'));
+    document.getElementById('vdFilterPendingBtn').addEventListener('click', () => applyVideoDetailFilter('pending'));
+    document.getElementById('vdFilterPendingUnavailableBtn').addEventListener('click', () => applyVideoDetailFilter('pending_unavailable'));
+    document.getElementById('vdFilterUploadedUnavailableBtn').addEventListener('click', () => applyVideoDetailFilter('uploaded_unavailable'));
     document.getElementById('videoGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('videoGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
@@ -1104,6 +1202,32 @@ function getAppScript() {
       if (action === 'unavailable') await openUnavailable(userId);
       if (action === 'remove' && confirm('确定要删除这个账号吗？')) { await fetchJson('/api/users/'+userId,{method:'DELETE'}); await loadUsers(); }
       if (action === 'toggle') { await fetchJson('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})}); await loadUsers(); }
+      if (action === 'refresh_info') {
+        await fetchJson('/api/users/'+userId+'/refresh-info',{method:'POST'});
+        showToast('账号信息已刷新', 'success');
+        await loadUsers();
+      }
+      if (action === 'refresh_auth') {
+        await fetchJson('/api/users/'+userId+'/refresh-auth',{method:'POST'});
+        showToast('授权已更新', 'success');
+        await loadUsers();
+      }
+      if (action === 'copy_cookie') {
+        const resp = await fetchJson('/api/users/'+userId+'/cookie');
+        const text = String(resp.cookie || '');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          showToast('Cookie 已复制', 'success');
+        } else {
+          const input = document.createElement('textarea');
+          input.value = text;
+          document.body.appendChild(input);
+          input.select();
+          document.execCommand('copy');
+          document.body.removeChild(input);
+          showToast('Cookie 已复制', 'success');
+        }
+      }
     });
 
     // Favorites list: handle detail button clicks

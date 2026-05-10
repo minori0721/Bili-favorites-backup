@@ -5,6 +5,7 @@ import { delay } from "./utils.js";
 export interface BiliUserInfo {
   uid: number;
   name: string;
+  avatar?: string;
 }
 
 export interface FavoriteFolderInfo {
@@ -42,26 +43,85 @@ export class BiliRiskOrLoginError extends Error {
 /** build a biliAPI Client from stored cookies — same pattern as biliLive-tools */
 function createBiliClient(cookie: BiliCookie, uid: number, accessToken?: string) {
   const auth = new Auth();
-  const { accessToken: _accessToken, refreshToken: _refreshToken, ...cookieOnly } = cookie as BiliCookie & {
+  const { accessToken: _accessToken, refreshToken: _refreshToken, ...rawCookieOnly } = cookie as BiliCookie & {
     refreshToken?: string;
   };
-  auth.setAuth(cookieOnly, uid, accessToken || undefined);
+  const cookieOnly = Object.fromEntries(
+    Object.entries(rawCookieOnly).filter(([, value]) => value !== undefined && value !== null)
+  ) as Record<string, string | number>;
+  auth.setAuth(
+    {
+      ...cookieOnly,
+      SESSDATA: String(cookieOnly.SESSDATA || ""),
+      bili_jct: String(cookieOnly.bili_jct || ""),
+    },
+    uid,
+    accessToken || undefined
+  );
   return new Client(auth);
+}
+
+export interface NormalizedTvAuth {
+  rawAuth: string;
+  cookie: BiliCookie;
+  accessToken: string;
+  refreshToken: string;
+  expires: number;
+  uid?: number;
 }
 
 // ---------- core API ----------
 
 export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
-  const client = createBiliClient(cookie, Number(cookie.DedeUserID), cookie.accessToken);
+  const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
   const res = await client.user.getMyInfo();
   return {
     uid: res.profile?.mid || Number(cookie.DedeUserID),
     name: res.profile?.name || "Unknown",
+    avatar: res.profile?.face || undefined,
+  };
+}
+
+export function normalizeTvAuthResult(result: any): NormalizedTvAuth {
+  const rawData = result?.data || result || {};
+  const tokenInfo = rawData?.token_info || {};
+  const merged = { ...rawData, ...tokenInfo };
+  const cookieArray = merged?.cookie_info?.cookies || [];
+  const cookie: BiliCookie = {
+    SESSDATA: "",
+    bili_jct: "",
+    DedeUserID: "",
+  };
+
+  for (const item of cookieArray) {
+    if (!item?.name) {
+      continue;
+    }
+    cookie[item.name] = item.value ?? "";
+  }
+
+  const accessToken = String(merged.access_token || "");
+  const refreshToken = String(merged.refresh_token || "");
+  if (accessToken) {
+    cookie.accessToken = accessToken;
+  }
+
+  const uid = Number(merged.mid || cookie.DedeUserID || 0) || undefined;
+  const sessdataExpires = cookieArray.find((item: any) => item?.name === "SESSDATA")?.expires;
+  const expires = Number(sessdataExpires || 0) > 0 ? Number(sessdataExpires) * 1000 : 0;
+
+  return {
+    rawAuth: JSON.stringify(rawData),
+    cookie,
+    accessToken,
+    refreshToken,
+    expires,
+    uid,
   };
 }
 
 export async function listFavoriteFolders(cookie: BiliCookie): Promise<FavoriteFolderInfo[]> {
-  const client = createBiliClient(cookie, Number(cookie.DedeUserID), cookie.accessToken);
+  const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
   const res = await client.video.listFavoriteBox({ aid: 0, type: 2 });
   const list = res.list || [];
   return list.map((item) => ({
@@ -78,7 +138,8 @@ export async function listFavoriteItemsPage(
   page = 1,
   pageSize = 20
 ): Promise<FavoriteItemsPage> {
-  const client = createBiliClient(cookie, Number(cookie.DedeUserID), cookie.accessToken);
+  const clientAccess = String(cookie.accessToken || "");
+  const client = createBiliClient(cookie, Number(cookie.DedeUserID), clientAccess);
 
   // Build URL with params directly (biliAPI's axios doesn't support { params } well)
   const params = new URLSearchParams({
@@ -225,25 +286,13 @@ export async function listFavoriteItems(
 export async function refreshUserAuth(
   accessToken: string,
   refreshToken: string
-): Promise<BiliCookie | null> {
+): Promise<NormalizedTvAuth | null> {
   try {
     const tv = new TvQrcodeLogin();
     const result: any = await tv.refresh(accessToken, refreshToken);
-    const data = { ...result, ...result?.token_info };
-
-    const cookieObj: BiliCookie = {
-      SESSDATA: "",
-      bili_jct: "",
-      DedeUserID: "",
-    };
-    const cookieArray = data?.cookie_info?.cookies || [];
-    for (const c of cookieArray) {
-      cookieObj[c.name] = c.value;
-    }
-    cookieObj.accessToken = data.access_token || "";
-
+    const auth = normalizeTvAuthResult(result);
     console.log("[Bili] Token refreshed successfully");
-    return cookieObj;
+    return auth;
   } catch (error: any) {
     console.error("[Bili] Token refresh failed:", error.message || error);
     return null;

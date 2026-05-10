@@ -45,7 +45,7 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
     if (!cookie.accessToken) {
       throw new Error("下载 Hi-Res/杜比音效需要 APP access token。请重新扫码登录后再启用该选项。");
     }
-    args.push("-app", "--access-token", cookie.accessToken);
+    args.push("-app", "--access-token", String(cookie.accessToken));
   }
 
   await runCommand("BBDown", args, downloadDir, bvid);

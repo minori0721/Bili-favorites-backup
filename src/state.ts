@@ -106,6 +106,35 @@ export interface ObservedFavoriteItem {
   unavailable?: boolean;
 }
 
+export type FolderDetailFilter =
+  | "all"
+  | "uploaded"
+  | "pending"
+  | "pending_unavailable"
+  | "uploaded_unavailable";
+
+export interface FolderDetailItem {
+  bvid: string;
+  title: string;
+  upperName: string;
+  cover?: string;
+  unavailable: boolean;
+  processed: boolean;
+  failed: boolean;
+  mediaId: number;
+  folderTitle: string;
+  lastSeenAt: string;
+  activeInFavorite: boolean;
+}
+
+export interface FolderDetailSummary {
+  total: number;
+  uploaded: number;
+  pending: number;
+  pendingUnavailable: number;
+  uploadedUnavailable: number;
+}
+
 export interface StateFile {
   schemaVersion?: number;
   processedByUser: Record<string, Record<string, ProcessedEntry>>;
@@ -719,6 +748,79 @@ export class StateManager {
     return Object.values(this.state.relations || {})
       .filter((item) => item.bvid === bvid)
       .map((item) => ({ ...item }));
+  }
+
+  listFolderItemsForUser(
+    userId: string,
+    mediaId: number,
+    offset: number,
+    limit: number,
+    filter: FolderDetailFilter = "all"
+  ) {
+    const normalizedOffset = Math.max(0, Math.floor(offset));
+    const normalizedLimit = Math.max(1, Math.floor(limit));
+    const rows = Object.values(this.state.relations || {})
+      .filter((relation) => relation.userId === userId && relation.mediaId === mediaId)
+      .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
+      .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => Boolean(item.video))
+      .sort((a, b) => Date.parse(b.relation.lastSeenAt) - Date.parse(a.relation.lastSeenAt));
+
+    const allItems = rows.map(({ relation, video }) => {
+      const unavailable = video.biliStatus === "unavailable";
+      const processed = this.isProcessed(userId, video.bvid, mediaId);
+      const item: FolderDetailItem = {
+        bvid: video.bvid,
+        title: video.title,
+        upperName: video.upperName,
+        cover: video.cover,
+        unavailable,
+        processed,
+        failed: this.isFailed(userId, video.bvid),
+        mediaId: relation.mediaId,
+        folderTitle: relation.folderTitle,
+        lastSeenAt: relation.lastSeenAt,
+        activeInFavorite: relation.activeInFavorite,
+      };
+      return item;
+    });
+
+    const summary: FolderDetailSummary = {
+      total: allItems.length,
+      uploaded: 0,
+      pending: 0,
+      pendingUnavailable: 0,
+      uploadedUnavailable: 0,
+    };
+    for (const item of allItems) {
+      if (item.processed) {
+        summary.uploaded += 1;
+      } else {
+        summary.pending += 1;
+      }
+      if (item.unavailable && item.processed) {
+        summary.uploadedUnavailable += 1;
+      } else if (item.unavailable && !item.processed) {
+        summary.pendingUnavailable += 1;
+      }
+    }
+
+    const filtered = allItems.filter((item) => {
+      if (filter === "all") return true;
+      if (filter === "uploaded") return item.processed;
+      if (filter === "pending") return !item.processed;
+      if (filter === "pending_unavailable") return !item.processed && item.unavailable;
+      if (filter === "uploaded_unavailable") return item.processed && item.unavailable;
+      return true;
+    });
+
+    const page = filtered.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+    return {
+      items: page,
+      summary,
+      hasMore: normalizedOffset + normalizedLimit < filtered.length,
+      nextOffset: normalizedOffset + normalizedLimit < filtered.length ? normalizedOffset + normalizedLimit : null,
+      totalFiltered: filtered.length,
+    };
   }
 
   listUnavailableForUser(userId: string, offset: number, limit: number) {

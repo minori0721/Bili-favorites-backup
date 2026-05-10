@@ -5,13 +5,14 @@ import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
-import { UserStore, BiliCookie } from "./users.js";
-import { StateManager } from "./state.js";
+import { UserStore } from "./users.js";
+import { FolderDetailFilter, StateManager } from "./state.js";
 import {
   BiliRiskOrLoginError,
   getUserInfo,
   listFavoriteFolders,
   listFavoriteItemsPage,
+  normalizeTvAuthResult,
   refreshUserAuth,
 } from "./bili.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
@@ -38,12 +39,62 @@ const loginSessionTtlMs = 10 * 60 * 1000;
 
 scheduler.start();
 
+function formatExpiresText(expires?: number) {
+  if (!expires || expires <= 0) {
+    return "未知过期时间";
+  }
+  const diff = expires - Date.now();
+  if (diff <= 0) {
+    return "已过期";
+  }
+  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+  return `${days}天后过期`;
+}
+
+async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto" | "on_error") {
+  const user = userStore.getById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+  if (!user.accessToken || !user.refreshToken) {
+    throw new Error("当前账号缺少 accessToken 或 refreshToken，请重新扫码登录。");
+  }
+
+  const refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
+  if (!refreshed) {
+    throw new Error("当前登录会话已经失效，请重新登录!");
+  }
+
+  const info = await getUserInfo(refreshed.cookie);
+  const nowIso = new Date().toISOString();
+  userStore.updatePartial(user.id, {
+    name: info.name,
+    avatar: info.avatar,
+    cookie: refreshed.cookie,
+    rawAuth: refreshed.rawAuth,
+    accessToken: refreshed.accessToken || user.accessToken,
+    refreshToken: refreshed.refreshToken || user.refreshToken,
+    expires: refreshed.expires || user.expires,
+    lastAuthRefreshAt: nowIso,
+    lastAuthRefreshError: "",
+    lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
+  });
+}
+
 // ---------- auto token refresh (biliLive-tools pattern) ----------
 function startTokenRefreshLoop() {
   const CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+  const RETRY_INTERVAL_ON_BUSY = 60 * 60 * 1000; // 1 hour
 
   async function checkAndRefresh() {
+    let nextInterval = CHECK_INTERVAL;
     try {
+      if (scheduler.hasRunningTransferTasks()) {
+        console.warn("[Auth] Skip auto refresh because transfer tasks are running; retry in 1 hour.");
+        nextInterval = RETRY_INTERVAL_ON_BUSY;
+        return;
+      }
+
       const users = userStore.list();
       for (const user of users) {
         // Refresh if expires in less than 10 days, or if we have refreshToken
@@ -51,25 +102,23 @@ function startTokenRefreshLoop() {
         if (user.refreshToken && user.accessToken) {
           if (!user.expires || user.expires - Date.now() < tenDays) {
             console.log(`[Auth] Refreshing token for user ${user.name} (${user.id})`);
-            const newCookie = await refreshUserAuth(user.accessToken, user.refreshToken);
-            if (newCookie) {
-              // Parse new expiry
-              const sessdataExpires = (newCookie as any)._sessdata_expires;
-              userStore.updatePartial(user.id, {
-                cookie: newCookie,
-                accessToken: newCookie.accessToken || user.accessToken,
-                refreshToken: (newCookie as any).refreshToken || user.refreshToken,
-                expires: sessdataExpires ? sessdataExpires * 1000 : user.expires,
-              } as any);
+            try {
+              await refreshUserAuthForStore(user.id, "auto");
               console.log(`[Auth] Token refreshed for user ${user.name}`);
+            } catch (error: any) {
+              userStore.updatePartial(user.id, {
+                lastAuthRefreshError: error?.message || String(error),
+              });
+              console.warn(`[Auth] Token refresh failed for user ${user.name}:`, error?.message || error);
             }
           }
         }
       }
     } catch (error: any) {
       console.error("[Auth] Token refresh check failed:", error.message || error);
+      nextInterval = RETRY_INTERVAL_ON_BUSY;
     } finally {
-      setTimeout(checkAndRefresh, CHECK_INTERVAL);
+      setTimeout(checkAndRefresh, nextInterval);
     }
   }
 
@@ -123,18 +172,40 @@ function normalizePageSize(value: unknown) {
   return Math.min(parsePositiveInteger(value, 20), 50);
 }
 
-function markFavoriteItemProcessed(userId: string, item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]) {
+function parseFolderDetailFilter(value: unknown): FolderDetailFilter {
+  const raw = String(value || "all");
+  if (
+    raw === "all" ||
+    raw === "uploaded" ||
+    raw === "pending" ||
+    raw === "pending_unavailable" ||
+    raw === "uploaded_unavailable"
+  ) {
+    return raw;
+  }
+  return "all";
+}
+
+function markFavoriteItemProcessed(
+  userId: string,
+  mediaId: number,
+  item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]
+) {
   return {
     ...item,
-    processed: stateManager.isProcessed(userId, item.bvid),
+    processed: stateManager.isProcessed(userId, item.bvid, mediaId),
     failed: stateManager.isFailed(userId, item.bvid),
   };
 }
 
-function withProcessedStatus(userId: string, pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>) {
+function withProcessedStatus(
+  userId: string,
+  mediaId: number,
+  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
+) {
   return {
     ...pageResult,
-    items: pageResult.items.map((item) => markFavoriteItemProcessed(userId, item)),
+    items: pageResult.items.map((item) => markFavoriteItemProcessed(userId, mediaId, item)),
   };
 }
 
@@ -289,6 +360,11 @@ app.get("/api/users", requireAuth, (req, res) => {
     favorites: user.favorites,
     enabled: user.enabled,
     lastLoginAt: user.lastLoginAt,
+    avatar: user.avatar || "",
+    expires: user.expires || 0,
+    expiresText: formatExpiresText(user.expires),
+    lastAuthRefreshAt: user.lastAuthRefreshAt || "",
+    lastAuthRefreshError: user.lastAuthRefreshError || "",
   }));
   res.json({ success: true, data: users });
 });
@@ -305,41 +381,25 @@ app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) =>
 
     login.emitter.on("completed", async (result: any) => {
       try {
-        const rawData = result?.data || {};
-        const cookieArray = rawData?.cookie_info?.cookies || [];
-        const tokenInfo = rawData?.token_info || {};
-
-        // Build full cookie object from ALL returned cookies (like biliLive-tools)
-        const cookie: BiliCookie = {
-          SESSDATA: "",
-          bili_jct: "",
-          DedeUserID: "",
-        };
-        for (const c of cookieArray) {
-          cookie[c.name] = c.value;
-        }
-        // Also store accessToken at top level for convenience
-        cookie.accessToken = tokenInfo.access_token || "";
-
-        const info = await getUserInfo(cookie);
+        const authData = normalizeTvAuthResult(result);
+        const info = await getUserInfo(authData.cookie);
         const userId = String(info.uid);
-
-        // Parse SESSDATA expiry
-        const sessdataExpires = cookieArray.find((c: any) => c.name === "SESSDATA")?.expires;
-        const expires = sessdataExpires ? sessdataExpires * 1000 : 0;
 
         userStore.upsert({
           id: userId,
           uid: info.uid,
           name: info.name,
-          cookie,
+          avatar: info.avatar,
+          cookie: authData.cookie,
           favorites: [],
           enabled: true,
           lastLoginAt: new Date().toISOString(),
-          rawAuth: JSON.stringify(rawData),
-          accessToken: tokenInfo.access_token || "",
-          refreshToken: tokenInfo.refresh_token || "",
-          expires,
+          rawAuth: authData.rawAuth,
+          accessToken: authData.accessToken,
+          refreshToken: authData.refreshToken,
+          expires: authData.expires,
+          lastAuthRefreshAt: new Date().toISOString(),
+          lastAuthRefreshError: "",
         });
         setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
@@ -357,6 +417,52 @@ app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) =>
     res.status(500).json({ success: false, message: err?.message || "Failed to start login" });
   }
 }));
+
+app.post("/api/users/:id/refresh-info", requireAuth, asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const info = await getUserInfo(user.cookie);
+  userStore.updatePartial(user.id, {
+    name: info.name,
+    avatar: info.avatar,
+  });
+  res.json({ success: true, data: { name: info.name, avatar: info.avatar } });
+}));
+
+app.post("/api/users/:id/refresh-auth", requireAuth, asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  await refreshUserAuthForStore(user.id, "manual");
+  const updated = userStore.getById(user.id);
+  res.json({
+    success: true,
+    data: {
+      expires: updated?.expires || 0,
+      expiresText: formatExpiresText(updated?.expires),
+      lastAuthRefreshAt: updated?.lastAuthRefreshAt || "",
+    },
+  });
+}));
+
+app.get("/api/users/:id/cookie", requireAuth, (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const entries = Object.entries(user.cookie || {}).filter(([key, value]) => {
+    if (key === "accessToken" || key === "refreshToken") return false;
+    return value !== undefined && value !== null && String(value).length > 0;
+  });
+  const cookie = entries.map(([key, value]) => `${key}=${value}`).join("; ");
+  res.json({ success: true, data: { cookie } });
+});
 
 app.get("/api/users/login/status", requireAuth, (req, res) => {
   pruneLoginSessions();
@@ -403,7 +509,7 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(asy
     const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
     const cached = favoriteItemsCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-      res.json({ success: true, data: withProcessedStatus(user.id, cached.data) });
+      res.json({ success: true, data: withProcessedStatus(user.id, mediaId, cached.data) });
       return;
     }
     if (cached) {
@@ -415,10 +521,40 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(asy
       expiresAt: Date.now() + favoriteItemsCacheTtlMs,
       data: pageResult,
     });
-    res.json({ success: true, data: withProcessedStatus(user.id, pageResult) });
+    res.json({ success: true, data: withProcessedStatus(user.id, mediaId, pageResult) });
   } catch (err: any) {
     res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
   }
+}));
+
+app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const mediaId = Number(req.params.mediaId);
+  if (!Number.isFinite(mediaId) || mediaId < 1) {
+    res.status(400).json({ success: false, message: "Invalid mediaId" });
+    return;
+  }
+
+  const pageSize = normalizePageSize(req.query.pageSize);
+  const page = parsePositiveInteger(req.query.page, 1);
+  const filter = parseFolderDetailFilter(req.query.filter);
+  const offset = (page - 1) * pageSize;
+  const result = stateManager.listFolderItemsForUser(user.id, mediaId, offset, pageSize, filter);
+  res.json({
+    success: true,
+    data: {
+      items: result.items,
+      summary: result.summary,
+      page,
+      pageSize,
+      hasMore: result.hasMore,
+      total: result.totalFiltered,
+    },
+  });
 }));
 
 app.get("/api/users/:id/unavailable", requireAuth, asyncHandler(async (req, res) => {
