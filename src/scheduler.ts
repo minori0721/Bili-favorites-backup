@@ -137,7 +137,20 @@ export class SyncScheduler {
     if (this.running) {
       return false;
     }
-    void this.tick(true, { trigger: "reconcile", forceFullRemoteVerify: true });
+    void this.tick(true, { trigger: "reconcile", forceFullRemoteVerify: true, forceFullFavoriteScan: true });
+    return true;
+  }
+
+  runRemoteReconcileNow() {
+    console.log("[Scheduler] Manual remote-only reconcile triggered");
+    if (this.running) {
+      return false;
+    }
+    void this.tick(true, {
+      trigger: "remote_reconcile",
+      forceFullRemoteVerify: true,
+      skipFavoriteScan: true,
+    });
     return true;
   }
 
@@ -149,7 +162,9 @@ export class SyncScheduler {
     this.running = true;
     this.cycleContext = this.createCycleStats(trigger);
     try {
-      await this.runOnce(manual);
+      if (!options.skipFavoriteScan) {
+        await this.runOnce(manual, options.forceFullFavoriteScan === true);
+      }
       await this.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true);
       this.logCycleSummary(this.cycleContext);
     } catch (error: any) {
@@ -163,7 +178,7 @@ export class SyncScheduler {
     return true;
   }
 
-  private async runOnce(manual: boolean) {
+  private async runOnce(manual: boolean, forceFullFavoriteScan: boolean) {
     const users = this.userStore.list().filter((user) => user.enabled);
     for (const user of users) {
       const cooldown = this.stateManager.getUserCooldown(user.id);
@@ -174,8 +189,12 @@ export class SyncScheduler {
 
       for (const folder of user.favorites) {
         try {
-          const hotLastPage = await this.scanHotPages(user, folder.mediaId, folder.title, manual);
-          await this.scanHistoryPages(user, folder.mediaId, folder.title, manual, hotLastPage);
+          if (forceFullFavoriteScan) {
+            await this.scanAllPages(user, folder.mediaId, folder.title);
+          } else {
+            const hotLastPage = await this.scanHotPages(user, folder.mediaId, folder.title, manual);
+            await this.scanHistoryPages(user, folder.mediaId, folder.title, manual, hotLastPage);
+          }
         } catch (error: any) {
           if (error instanceof BiliRiskOrLoginError) {
             this.stateManager.setUserCooldown(user.id, error.message, cooldownMs());
@@ -188,6 +207,28 @@ export class SyncScheduler {
         const jitter = 2000 + Math.floor(Math.random() * 3000);
         await delay(jitter);
       }
+    }
+  }
+
+  private async scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
+    let page = 1;
+    while (true) {
+      const result = await listFavoriteItemsPage(user.cookie, mediaId, page, 20);
+      this.recordPage(user, mediaId, folderTitle, result.items);
+      this.stateManager.updateFolderScan(user.id, mediaId, {
+        folderTitle,
+        initStatus: "complete",
+        nextHistoryPage: 1,
+        catchupPage: 1,
+        lastHotScanAt: new Date().toISOString(),
+        lastHistoryScanAt: new Date().toISOString(),
+        total: result.total,
+      });
+      if (!result.hasMore || result.items.length === 0) {
+        break;
+      }
+      page += 1;
+      await delay(1000 + Math.floor(Math.random() * 2000));
     }
   }
 
@@ -524,16 +565,18 @@ export class SyncScheduler {
   private logCycleSummary(stats: SyncCycleStats | null) {
     if (!stats) return;
     const isNoNew = stats.newItems === 0 && !stats.error;
-    const modeLabel = stats.trigger === "reconcile" ? "reconcile" : (stats.trigger === "manual" ? "manual" : "auto");
+    const modeLabel = stats.trigger === "reconcile"
+      ? "reconcile"
+      : (stats.trigger === "remote_reconcile" ? "remote_reconcile" : (stats.trigger === "manual" ? "manual" : "auto"));
     const durationMs = Math.max(0, Date.now() - Date.parse(stats.startedAt));
     const durationSec = (durationMs / 1000).toFixed(1);
 
-    if (stats.trigger === "reconcile") {
+    if (stats.trigger === "reconcile" || stats.trigger === "remote_reconcile") {
       const level = stats.error ? "error" : "info";
       const summary = stats.error
         ? `${modeLabel} failed: ${stats.error}`
-        : `${modeLabel} done: remote ${stats.remoteChecked}/${stats.remoteEligible}, missing ${stats.remoteMissingDetected}, requeued ${stats.requeuedFromRemoteMissing}, ${durationSec}s`;
-      const raw = `[Scheduler] reconcile done. remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, remoteOk=${stats.remoteOk}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}${stats.error ? `, error=${stats.error}` : ""}`;
+        : `${modeLabel} done: new ${stats.newItems}, queued ${stats.queuedItems}, remote ${stats.remoteChecked}/${stats.remoteEligible}, missing ${stats.remoteMissingDetected}, requeued ${stats.requeuedFromRemoteMissing}, ${durationSec}s`;
+      const raw = `[Scheduler] ${modeLabel} done. remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, remoteOk=${stats.remoteOk}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}${stats.error ? `, error=${stats.error}` : ""}`;
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
@@ -589,9 +632,11 @@ interface SyncCycleStats {
   error?: string;
 }
 
-type SyncTrigger = "auto" | "manual" | "reconcile";
+type SyncTrigger = "auto" | "manual" | "reconcile" | "remote_reconcile";
 
 interface TickOptions {
   trigger?: SyncTrigger;
   forceFullRemoteVerify?: boolean;
+  forceFullFavoriteScan?: boolean;
+  skipFavoriteScan?: boolean;
 }

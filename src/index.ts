@@ -518,6 +518,19 @@ app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
   }
 }));
 
+app.post("/api/sync/reconcile-remote", requireAuth, asyncHandler(async (_req, res) => {
+  try {
+    const accepted = scheduler.runRemoteReconcileNow();
+    if (!accepted) {
+      res.status(409).json({ success: false, message: "A sync task is already running" });
+      return;
+    }
+    res.json({ success: true, data: { message: "Remote-only reconcile triggered" } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Remote reconcile failed" });
+  }
+}));
+
 app.get("/api/logs/stream", requireAuth, (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",

@@ -253,9 +253,10 @@ function getAccountSection() {
       <h2>账号与同步</h2>
       <p class="muted">管理 Bilibili 账号及需同步的收藏夹。点击“立即同步”会唤起后台任务队列。</p>
       <div class="row" style="margin-bottom:20px;">
-        <button id="addUserBtn">添加 B站账号</button>
+        <button id="addUserBtn">?? B???</button>
         <button class="ghost" id="syncNowBtn">立即同步</button>
-        <button class="ghost" id="reconcileBtn">Full Reconcile</button>
+        <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
+        <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
       </div>
       <div class="user-list" id="userList"></div>
     </section>`;
@@ -1109,22 +1110,37 @@ function getAppScript() {
       }
     });
 
+    document.getElementById('syncNowBtn').textContent = '\u7acb\u5373\u540c\u6b65';
+    document.getElementById('reconcileRemoteBtn').textContent = '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5AList\uff09';
+    document.getElementById('reconcileBtn').textContent = '\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26';
+
     document.getElementById('syncNowBtn').addEventListener('click', async () => {
       const btn = document.getElementById('syncNowBtn');
-      const defaultText = btn.dataset.defaultText || btn.textContent || 'Sync Now';
+      const defaultText = btn.dataset.defaultText || btn.textContent || '\u7acb\u5373\u540c\u6b65';
       btn.dataset.defaultText = defaultText;
-      btn.textContent = 'Syncing...';
+      btn.textContent = '\u540c\u6b65\u4e2d...';
       try { await fetchJson('/api/sync/now', { method:'POST' }); } catch(e) {}
-      btn.textContent = 'Triggered';
+      btn.textContent = '\u5df2\u89e6\u53d1';
+      setTimeout(() => btn.textContent = defaultText, 2000);
+    });
+    document.getElementById('reconcileRemoteBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('reconcileRemoteBtn');
+      const defaultText = btn.dataset.defaultText || btn.textContent || '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5AList\uff09';
+      btn.dataset.defaultText = defaultText;
+      btn.textContent = '\u5bf9\u8d26\u4e2d...';
+      try { await fetchJson('/api/sync/reconcile-remote', { method:'POST' }); } catch(e) {}
+      btn.textContent = '\u5df2\u89e6\u53d1';
       setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('reconcileBtn').addEventListener('click', async () => {
+      const ok = confirm('\u9ad8\u98ce\u9669\u64cd\u4f5c\uff1a\u5c06\u5168\u91cf\u626b\u63cfB\u7ad9\u6536\u85cf\u5939\u6240\u6709\u9875\uff0c\u53ef\u80fd\u89e6\u53d1\u98ce\u63a7\uff08\u5982412/\u767b\u5f55\u6821\u9a8c\uff09\u3002\u5efa\u8bae\u4ec5\u5728\u5fc5\u8981\u65f6\u4f7f\u7528\u3002\u662f\u5426\u7ee7\u7eed\uff1f');
+      if (!ok) return;
       const btn = document.getElementById('reconcileBtn');
-      const defaultText = btn.dataset.defaultText || btn.textContent || 'Full Reconcile';
+      const defaultText = btn.dataset.defaultText || btn.textContent || '\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26';
       btn.dataset.defaultText = defaultText;
-      btn.textContent = 'Reconciling...';
+      btn.textContent = '\u5168\u91cf\u626b\u63cf\u4e2d...';
       try { await fetchJson('/api/sync/reconcile', { method:'POST' }); } catch(e) {}
-      btn.textContent = 'Triggered';
+      btn.textContent = '\u5df2\u89e6\u53d1';
       setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('logoutBtn').addEventListener('click', async () => {
