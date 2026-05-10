@@ -58,7 +58,12 @@ export interface UploadResult {
   files: RemoteFileRecord[];
 }
 
-export async function uploadWithAList(localDir: string, remotePath: string, config: AppConfig): Promise<UploadResult> {
+export async function uploadWithAList(
+  localDir: string,
+  remotePath: string,
+  config: AppConfig,
+  options: { cleanupLocal?: boolean } = {}
+): Promise<UploadResult> {
   const client = buildDavClient(config);
   const uploadedFiles: RemoteFileRecord[] = [];
 
@@ -126,8 +131,9 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
     }
   }
 
-  // Cleanup local dir
-  await fs.promises.rm(localDir, { recursive: true, force: true });
+  if (options.cleanupLocal !== false) {
+    await fs.promises.rm(localDir, { recursive: true, force: true });
+  }
   return { remotePath, files: uploadedFiles };
 }
 

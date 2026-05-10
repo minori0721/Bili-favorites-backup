@@ -4,6 +4,13 @@ import { uploadWithAList, UploadResult } from "./uploader.js";
 import { AppConfig } from "./config.js";
 import { BiliCookie } from "./users.js";
 
+export interface UploadTarget {
+  userId: string;
+  mediaId: number;
+  folderTitle: string;
+  remotePath: string;
+}
+
 export class DownloadTask extends Task {
   bvid: string;
   cookie: BiliCookie;
@@ -11,7 +18,9 @@ export class DownloadTask extends Task {
   downloadDir?: string;
   userId?: string;
   mediaId?: number;
+  folderTitle?: string;
   remotePath?: string;
+  targets?: UploadTarget[];
   onDownloading?: (task: DownloadTask) => void;
   onDownloaded?: (task: DownloadTask, downloadDir: string) => void;
 
@@ -39,21 +48,32 @@ export class UploadTask extends Task {
   config: AppConfig;
   userId?: string;
   mediaId?: number;
+  folderTitle?: string;
   result?: UploadResult;
   onUploading?: (task: UploadTask) => void;
+  cleanupLocal: boolean;
 
-  constructor(bvid: string, downloadDir: string, remotePath: string, config: AppConfig) {
+  constructor(
+    bvid: string,
+    downloadDir: string,
+    remotePath: string,
+    config: AppConfig,
+    options: { cleanupLocal?: boolean } = {}
+  ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
     this.downloadDir = downloadDir;
     this.remotePath = remotePath;
     this.config = config;
+    this.cleanupLocal = options.cleanupLocal !== false;
   }
 
   async run() {
     console.log(`[Task] Starting upload for ${this.bvid} to ${this.remotePath}`);
     this.onUploading?.(this);
-    this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config);
+    this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
+      cleanupLocal: this.cleanupLocal,
+    });
     console.log(`[Task] Completed upload for ${this.bvid}`);
   }
 }

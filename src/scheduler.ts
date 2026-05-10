@@ -1,12 +1,12 @@
 import { ConfigStore } from "./config.js";
-import { StateManager, VideoArchiveEntry } from "./state.js";
+import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import { BiliRiskOrLoginError, listFavoriteItemsPage } from "./bili.js";
 import { logManager } from "./logger.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { TaskQueue } from "./queue.js";
-import { DownloadTask, UploadTask } from "./tasks.js";
+import { DownloadTask, UploadTarget, UploadTask } from "./tasks.js";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,11 +26,14 @@ export class SyncScheduler {
 
   private downloadQueue: TaskQueue;
   private uploadQueue: TaskQueue;
-  private queuedBackupBvids = new Set<string>();
+  private queuedBackupKeys = new Set<string>();
+  private activeDownloadTargets = new Map<string, UploadTarget[]>();
   private readonly hotScanMinPages = 3;
   private readonly hotScanMaxPages = 12;
   private readonly hotScanBurstBudget = 3;
   private readonly historyPagesPerTick = 2;
+  private readonly initialHistoryPagesPerTick = 12;
+  private readonly manualHistoryPagesPerTick = 20;
   private readonly remoteVerifyPerTick = 25;
   private readonly remoteVerifyPerTickNoNew = 120;
   private readonly remoteVerifyPerTickManual = 200;
@@ -52,17 +55,21 @@ export class SyncScheduler {
 
     this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
       logTaskError(task, error);
-      this.queuedBackupBvids.delete(task.bvid);
-      this.stateManager.markRetryPending(task.bvid);
-      if (task.userId && task.mediaId) {
-        this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Download failure", Boolean(error?.permanent));
+      const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
+      for (const target of targets) {
+        this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
+        this.stateManager.markRelationRetryPending(task.bvid, target.userId, target.mediaId, error.message || "Download failure");
+        this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", Boolean(error?.permanent));
       }
+      this.activeDownloadTargets.delete(task.bvid);
     });
     this.downloadQueue.on("taskRetry", logTaskRetry);
     this.uploadQueue.on("taskError", (task: UploadTask, error: any) => {
       logTaskError(task, error);
-      this.queuedBackupBvids.delete(task.bvid);
-      this.stateManager.markRetryPending(task.bvid);
+      if (task.userId && task.mediaId) {
+        this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
+        this.stateManager.markRelationRetryPending(task.bvid, task.userId, task.mediaId, error.message || "Upload failure");
+      }
       if (task.userId && task.mediaId) {
         this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Upload failure", false);
       }
@@ -70,16 +77,25 @@ export class SyncScheduler {
     this.uploadQueue.on("taskRetry", logTaskRetry);
 
     this.downloadQueue.on("taskCompleted", (task: DownloadTask) => {
-      if (!task.downloadDir || !task.remotePath) return;
-      const uploadTask = new UploadTask(task.bvid, task.downloadDir, task.remotePath, this.configStore.get());
-      uploadTask.userId = task.userId;
-      uploadTask.mediaId = task.mediaId;
-      uploadTask.onUploading = () => this.stateManager.markUploading(task.bvid);
-      this.uploadQueue.addTask(uploadTask);
+      if (!task.downloadDir) return;
+      const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
+      this.activeDownloadTargets.delete(task.bvid);
+      targets.forEach((target, index) => {
+        const uploadTask = new UploadTask(task.bvid, task.downloadDir!, target.remotePath, this.configStore.get(), {
+          cleanupLocal: index === targets.length - 1,
+        });
+        uploadTask.userId = target.userId;
+        uploadTask.mediaId = target.mediaId;
+        uploadTask.folderTitle = target.folderTitle;
+        uploadTask.onUploading = () => this.stateManager.markUploading(task.bvid, target.userId, target.mediaId);
+        this.uploadQueue.addTask(uploadTask);
+      });
     });
 
     this.uploadQueue.on("taskCompleted", (task: UploadTask) => {
-      this.queuedBackupBvids.delete(task.bvid);
+      if (task.userId && task.mediaId) {
+        this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
+      }
       if (task.result) {
         this.stateManager.markVerifiedUpload(
           task.bvid,
@@ -89,8 +105,13 @@ export class SyncScheduler {
           task.mediaId
         );
       } else {
-        this.stateManager.markRetryPending(task.bvid);
         if (task.userId && task.mediaId) {
+          this.stateManager.markRelationRetryPending(
+            task.bvid,
+            task.userId,
+            task.mediaId,
+            "Upload finished without remote metadata; task moved back to discovered for retry."
+          );
           this.stateManager.markFailed(
             task.userId,
             task.bvid,
@@ -221,6 +242,22 @@ export class SyncScheduler {
     }
   }
 
+  private backupKey(userId: string, mediaId: number, bvid: string) {
+    return `${userId}:${mediaId}:${bvid}`;
+  }
+
+  private makeSingleTarget(task: DownloadTask): UploadTarget[] {
+    if (!task.userId || !task.mediaId || !task.remotePath) {
+      return [];
+    }
+    return [{
+      userId: task.userId,
+      mediaId: task.mediaId,
+      folderTitle: task.folderTitle || "favorites",
+      remotePath: task.remotePath,
+    }];
+  }
+
   private async scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
     let page = 1;
     while (true) {
@@ -253,9 +290,10 @@ export class SyncScheduler {
       const result = await listFavoriteItemsPage(user.cookie, mediaId, page, 20);
       const pageStats = this.recordPage(user, mediaId, folderTitle, result.items);
       lastPage = page;
+      const previousScan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
-        initStatus: "initializing",
+        initStatus: previousScan.initStatus === "complete" ? "complete" : "initializing",
         lastHotScanAt: new Date().toISOString(),
         total: result.total,
       });
@@ -294,7 +332,9 @@ export class SyncScheduler {
     let page = inCatchupMode
       ? Math.max(scan.catchupPage || 1, 1)
       : Math.max(scan.nextHistoryPage || 1, startAfterPage + 1, 1);
-    const pagesThisRun = inCatchupMode ? 1 : (manual ? this.historyPagesPerTick * 3 : this.historyPagesPerTick);
+    const pagesThisRun = inCatchupMode
+      ? this.historyPagesPerTick
+      : (manual ? this.manualHistoryPagesPerTick : this.initialHistoryPagesPerTick);
 
     for (let i = 0; i < pagesThisRun; i += 1) {
       const result = await listFavoriteItemsPage(user.cookie, mediaId, page, 20);
@@ -318,10 +358,11 @@ export class SyncScheduler {
       if (inCatchupMode && totalPages) {
         nextCatchupPage = page > historyLoopPage ? 1 : page;
       }
+      const hasCompletedInitialScan = Boolean(totalPages && page > totalPages);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
-        initStatus: totalPages ? (inCatchupMode ? "complete" : "initializing") : "initializing",
-        nextHistoryPage: inCatchupMode ? (scan.nextHistoryPage || 1) : page,
+        initStatus: totalPages ? (inCatchupMode || hasCompletedInitialScan ? "complete" : "initializing") : "initializing",
+        nextHistoryPage: inCatchupMode ? (scan.nextHistoryPage || 1) : (hasCompletedInitialScan ? 1 : page),
         catchupPage: nextCatchupPage,
         lastHistoryScanAt: new Date().toISOString(),
         total: result.total,
@@ -355,7 +396,8 @@ export class SyncScheduler {
     if (!user.enabled) {
       return false;
     }
-    if (this.queuedBackupBvids.has(bvid) || !this.stateManager.shouldEnqueueBackup(bvid)) {
+    const key = this.backupKey(user.id, mediaId, bvid);
+    if (this.queuedBackupKeys.has(key) || !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId)) {
       return false;
     }
     const config = this.configStore.get();
@@ -365,16 +407,33 @@ export class SyncScheduler {
       userName: user.name,
       folderName: folderTitle,
     });
+    const target: UploadTarget = {
+      userId: user.id,
+      mediaId,
+      folderTitle,
+      remotePath,
+    };
+
+    const activeTargets = this.activeDownloadTargets.get(bvid);
+    if (activeTargets) {
+      activeTargets.push(target);
+      this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+      this.queuedBackupKeys.add(key);
+      return true;
+    }
 
     const task = new DownloadTask(bvid, user.cookie, config);
     task.userId = user.id;
     task.mediaId = mediaId;
+    task.folderTitle = folderTitle;
     task.remotePath = remotePath;
-    task.onDownloading = () => this.stateManager.markDownloading(bvid);
-    task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir);
+    task.targets = [target];
+    task.onDownloading = () => this.stateManager.markDownloading(bvid, task.targets);
+    task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir, task.targets);
 
-    this.stateManager.markQueued(bvid, remotePath);
-    this.queuedBackupBvids.add(bvid);
+    this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+    this.queuedBackupKeys.add(key);
+    this.activeDownloadTargets.set(bvid, task.targets);
     this.downloadQueue.addTask(task);
     return true;
   }
@@ -393,38 +452,39 @@ export class SyncScheduler {
     const rateLimit = Math.max(0.5, Number(config.remoteVerifyRateLimitPerSecond || 2));
     let requeueCount = 0;
 
-    const executeOne = async (entry: VideoArchiveEntry) => {
+    const executeOne = async (entry: RemoteVerifyCandidate) => {
       try {
         await this.applyRemoteVerifyRateLimit(rateLimit);
         const jitter = 100 + Math.floor(Math.random() * 201);
         await delay(jitter);
 
-        const resolvedRemotePath = entry.remotePath || this.deriveRemotePathFromRelation(entry);
-        const remoteFiles = await this.resolveRemoteFilesForVerify(entry, resolvedRemotePath);
+        const relation = entry.relation;
+        const resolvedRemotePath = relation.remotePath || entry.remotePath || this.deriveRemotePathFromRelation(entry, relation);
+        const remoteFiles = await this.resolveRemoteFilesForVerify(entry, relation, resolvedRemotePath);
         if (!remoteFiles?.length) {
-          const confirmed = await this.confirmRemoteStillMissing(entry, undefined, resolvedRemotePath);
+          const confirmed = await this.confirmRemoteStillMissing(entry, relation, undefined, resolvedRemotePath);
           if (confirmed.status === "ok") {
-            this.stateManager.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, confirmed.remoteFiles);
+            this.stateManager.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, confirmed.remoteFiles, relation.userId, relation.mediaId);
             this.cycleContext!.remoteOk += 1;
             return;
           }
           if (confirmed.status === "unknown") {
             const delayMs = this.computeRemoteVerifyBackoffMs(entry);
-            this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.");
+            this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
             this.cycleContext!.remoteErrors += 1;
             return;
           }
           const missing = confirmed.missing?.length
             ? confirmed.missing
             : [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"];
-          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
-          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+          this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
+          this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
           this.cycleContext!.remoteMissingDetected += 1;
           if (entry.biliStatus === "unavailable") {
             this.cycleContext!.remoteMissingUnavailable += 1;
           }
           if (requeueCount < requeueLimit) {
-            const requeued = this.enqueueMissingIfPossible(entry);
+            const requeued = this.enqueueMissingIfPossible(entry, relation);
             if (requeued) {
               requeueCount += 1;
               this.cycleContext!.requeuedFromRemoteMissing += 1;
@@ -435,37 +495,39 @@ export class SyncScheduler {
 
         const result = await verifyRemoteFiles(config, remoteFiles);
         if (result.ok) {
-          this.stateManager.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, remoteFiles);
+          this.stateManager.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, remoteFiles, relation.userId, relation.mediaId);
           this.cycleContext!.remoteOk += 1;
           return;
         }
 
-        const confirmed = await this.confirmRemoteStillMissing(entry, remoteFiles, resolvedRemotePath);
+        const confirmed = await this.confirmRemoteStillMissing(entry, relation, remoteFiles, resolvedRemotePath);
         if (confirmed.status === "ok") {
           this.stateManager.markRemoteCheckOk(
             entry.bvid,
             resolvedRemotePath || entry.remotePath,
-            confirmed.remoteFiles || remoteFiles
+            confirmed.remoteFiles || remoteFiles,
+            relation.userId,
+            relation.mediaId
           );
           this.cycleContext!.remoteOk += 1;
           return;
         }
         if (confirmed.status === "unknown") {
           const delayMs = this.computeRemoteVerifyBackoffMs(entry);
-          this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.");
+          this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
           this.cycleContext!.remoteErrors += 1;
           return;
         }
 
         const missing = confirmed.missing?.length ? confirmed.missing : result.missing;
-        this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
-        this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+        this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
+        this.stateManager.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
         this.cycleContext!.remoteMissingDetected += 1;
         if (entry.biliStatus === "unavailable") {
           this.cycleContext!.remoteMissingUnavailable += 1;
         }
         if (requeueCount < requeueLimit) {
-          const requeued = this.enqueueMissingIfPossible(entry);
+          const requeued = this.enqueueMissingIfPossible(entry, relation);
           if (requeued) {
             requeueCount += 1;
             this.cycleContext!.requeuedFromRemoteMissing += 1;
@@ -473,7 +535,8 @@ export class SyncScheduler {
         }
       } catch (error: any) {
         const delayMs = this.computeRemoteVerifyBackoffMs(entry);
-        this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, error?.message || "Remote verify failed");
+        const relation = entry.relation;
+        this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, error?.message || "Remote verify failed", relation.userId, relation.mediaId);
         this.cycleContext!.remoteErrors += 1;
         console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}:`, error?.message || error);
       }
@@ -490,11 +553,16 @@ export class SyncScheduler {
     await Promise.all(workers);
   }
 
-  private async resolveRemoteFilesForVerify(entry: VideoArchiveEntry, resolvedRemotePath?: string | null) {
-    if (entry.remoteFiles?.length) {
-      return entry.remoteFiles;
+  private async resolveRemoteFilesForVerify(
+    entry: VideoArchiveEntry,
+    relation?: FavoriteRelation,
+    resolvedRemotePath?: string | null
+  ) {
+    const recordedFiles = relation?.remoteFiles?.length ? relation.remoteFiles : entry.remoteFiles;
+    if (recordedFiles?.length) {
+      return recordedFiles;
     }
-    const pathToUse = resolvedRemotePath || entry.remotePath || this.deriveRemotePathFromRelation(entry);
+    const pathToUse = resolvedRemotePath || relation?.remotePath || entry.remotePath || this.deriveRemotePathFromRelation(entry, relation);
     if (!pathToUse) {
       return [];
     }
@@ -503,20 +571,24 @@ export class SyncScheduler {
     if (!names.length) {
       return [];
     }
-    return names.map((name) => ({
+    const matchedNames = names.filter((name) => name.includes(entry.bvid));
+    if (!matchedNames.length) {
+      return [];
+    }
+    return matchedNames.map((name) => ({
       name,
       path: pathToUse.replace(/\/$/, "") + "/" + name,
     }));
   }
 
-  private deriveRemotePathFromRelation(entry: VideoArchiveEntry) {
-    const relation = this.findBestRelationForBvid(entry.bvid);
-    if (!relation) {
+  private deriveRemotePathFromRelation(entry: VideoArchiveEntry, relation?: FavoriteRelation) {
+    const resolvedRelation = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
+    if (!resolvedRelation) {
       return null;
     }
     const config = this.configStore.get();
-    const userSegment = sanitizeSegment(relation.user.name) || "user";
-    const folderSegment = sanitizeSegment(relation.folderTitle) || "favorites";
+    const userSegment = sanitizeSegment(resolvedRelation.user.name) || "user";
+    const folderSegment = sanitizeSegment(resolvedRelation.folderTitle) || "favorites";
     switch (config.uploadLayout) {
       case "user-folder-video":
         return joinRemotePath(config.alistDest, userSegment, folderSegment);
@@ -528,17 +600,16 @@ export class SyncScheduler {
     }
   }
 
-  private enqueueMissingIfPossible(entry: VideoArchiveEntry) {
+  private enqueueMissingIfPossible(entry: VideoArchiveEntry, targetRelation?: FavoriteRelation) {
     if (entry.biliStatus === "unavailable") return false;
-    const relations = this.stateManager.listRelationsForBvid(entry.bvid);
+    const relations = targetRelation ? [targetRelation] : this.stateManager.listRelationsForBvid(entry.bvid);
     for (const relation of relations) {
-      const user = this.userStore.getById(relation.userId);
-      if (!user || !user.enabled) continue;
-      const folder = user.favorites.find((item) => item.mediaId === relation.mediaId);
+      const resolved = this.resolveRelation(relation);
+      if (!resolved) continue;
       return this.enqueueIfNeeded(
-        user,
-        folder?.mediaId ?? relation.mediaId,
-        folder?.title ?? relation.folderTitle,
+        resolved.user,
+        resolved.mediaId,
+        resolved.folderTitle,
         entry.bvid
       );
     }
@@ -547,6 +618,7 @@ export class SyncScheduler {
 
   private async confirmRemoteStillMissing(
     entry: VideoArchiveEntry,
+    relation?: FavoriteRelation,
     knownFiles?: VideoArchiveEntry["remoteFiles"],
     resolvedRemotePath?: string | null
   ): Promise<
@@ -555,7 +627,7 @@ export class SyncScheduler {
     | { status: "unknown" }
   > {
     try {
-      const remoteFiles = knownFiles?.length ? knownFiles : await this.resolveRemoteFilesForVerify(entry, resolvedRemotePath);
+      const remoteFiles = knownFiles?.length ? knownFiles : await this.resolveRemoteFilesForVerify(entry, relation, resolvedRemotePath);
       if (!remoteFiles?.length) {
         return { status: "missing", missing: [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"] };
       }
@@ -594,23 +666,40 @@ export class SyncScheduler {
   }
 
   private resumePersistedWork() {
-    for (const entry of this.stateManager.listBackupsToResume()) {
-      const relation = this.findBestRelationForBvid(entry.bvid);
-      if ((entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && entry.remotePath) {
-        if (relation?.user && !relation.user.enabled) {
+    for (const item of this.stateManager.listBackupsToResume()) {
+      const entry = item.video;
+      const relation = item.relation;
+      const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
+      const remotePath = relation?.remotePath || entry.remotePath;
+      if ((relation?.backupStatus === "downloaded" || relation?.backupStatus === "uploading" || entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && remotePath) {
+        if (resolved?.user && !resolved.user.enabled) {
           continue;
         }
-        const uploadTask = new UploadTask(entry.bvid, entry.localDir, entry.remotePath, this.configStore.get());
-        uploadTask.userId = relation?.user.id;
-        uploadTask.mediaId = relation?.mediaId;
-        uploadTask.onUploading = () => this.stateManager.markUploading(entry.bvid);
-        this.queuedBackupBvids.add(entry.bvid);
+        const uploadTask = new UploadTask(entry.bvid, entry.localDir, remotePath, this.configStore.get());
+        uploadTask.userId = resolved?.user.id || relation?.userId;
+        uploadTask.mediaId = resolved?.mediaId || relation?.mediaId;
+        uploadTask.folderTitle = resolved?.folderTitle || relation?.folderTitle;
+        uploadTask.onUploading = () => this.stateManager.markUploading(entry.bvid, uploadTask.userId, uploadTask.mediaId);
+        if (uploadTask.userId && uploadTask.mediaId) {
+          this.queuedBackupKeys.add(this.backupKey(uploadTask.userId, uploadTask.mediaId, entry.bvid));
+        }
         this.uploadQueue.addTask(uploadTask);
       } else {
-        if (!relation) continue;
-        this.enqueueIfNeeded(relation.user, relation.mediaId, relation.folderTitle, entry.bvid);
+        if (!resolved) continue;
+        this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid);
       }
     }
+  }
+
+  private resolveRelation(relation: FavoriteRelation) {
+    const user = this.userStore.getById(relation.userId);
+    if (!user || !user.enabled) return null;
+    const folder = user.favorites.find((item) => item.mediaId === relation.mediaId);
+    return {
+      user,
+      mediaId: folder?.mediaId ?? relation.mediaId,
+      folderTitle: folder?.title ?? relation.folderTitle,
+    };
   }
 
   private findBestRelationForBvid(bvid: string) {
@@ -723,6 +812,8 @@ interface SyncCycleStats {
   remoteErrors: number;
   error?: string;
 }
+
+type RemoteVerifyCandidate = VideoArchiveEntry & { relation: FavoriteRelation };
 
 type SyncTrigger = "auto" | "manual" | "reconcile" | "remote_reconcile";
 
