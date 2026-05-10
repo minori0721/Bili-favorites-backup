@@ -118,7 +118,7 @@ export interface StateFile {
 
 const statePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -299,6 +299,44 @@ export class StateManager {
     return { wasKnown, entry: this.state.videos![item.bvid] };
   }
 
+  canBootstrapRelationFromGlobalProof(bvid: string, userId: string, mediaId: number) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!entry || !relation || entry.biliStatus === "unavailable") {
+      return false;
+    }
+    const status = relation?.backupStatus || entry.backupStatus;
+    if (BACKED_UP_STATUSES.has(status)) {
+      return false;
+    }
+    if (ACTIVE_BACKUP_STATUSES.has(status)) {
+      return false;
+    }
+    if (status === "missing" || status === "lost") {
+      return false;
+    }
+    const hasGlobalProof = Boolean(entry.remoteFiles?.length) ||
+      Boolean(entry.uploadedAt) ||
+      Boolean(entry.verifiedAt);
+    return hasGlobalProof;
+  }
+
+  bootstrapRelationFromGlobalProof(bvid: string, userId: string, mediaId: number, remotePath: string) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!entry || !relation) return false;
+    relation.backupStatus = "verified";
+    relation.remotePath = remotePath;
+    relation.remoteFiles = undefined;
+    relation.lastRemoteCheckAt = undefined;
+    relation.nextRemoteCheckAt = undefined;
+    relation.remoteMissingCount = 0;
+    relation.lastError = "Imported legacy global backup state; waiting for AList verification.";
+    this.refreshVideoAggregateStatus(bvid);
+    this.save();
+    return true;
+  }
+
   shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (!entry || entry.biliStatus === "unavailable") {
@@ -311,6 +349,12 @@ export class StateManager {
     }
     if (ACTIVE_BACKUP_STATUSES.has(status)) {
       return false;
+    }
+    if (status === "failed" && userId) {
+      const failed = this.state.failedByUser?.[userId]?.[bvid];
+      if (failed?.permanent) {
+        return false;
+      }
     }
     return status === "discovered" || status === "missing" || status === "failed";
   }
@@ -639,15 +683,18 @@ export class StateManager {
         return left - right;
       });
     const picked = typeof limit === "number" ? sorted.slice(0, limit) : sorted;
-    return picked.map(({ relation, video }) => ({
-      ...video,
-      remotePath: relation.remotePath || video.remotePath,
-      remoteFiles: [...(relation.remoteFiles || video.remoteFiles || [])],
-      lastRemoteCheckAt: relation.lastRemoteCheckAt || video.lastRemoteCheckAt,
-      nextRemoteCheckAt: relation.nextRemoteCheckAt || video.nextRemoteCheckAt,
-      remoteMissingCount: relation.remoteMissingCount || video.remoteMissingCount,
-      relation: { ...relation, remoteFiles: [...(relation.remoteFiles || [])] },
-    }));
+    return picked.map(({ relation, video }) => {
+      const relationFiles = relation.remoteFiles || [];
+      return {
+        ...video,
+        remotePath: relation.remotePath,
+        remoteFiles: [...relationFiles],
+        lastRemoteCheckAt: relation.lastRemoteCheckAt || video.lastRemoteCheckAt,
+        nextRemoteCheckAt: relation.nextRemoteCheckAt || video.nextRemoteCheckAt,
+        remoteMissingCount: relation.remoteMissingCount || video.remoteMissingCount,
+        relation: { ...relation, remoteFiles: [...relationFiles] },
+      };
+    });
   }
 
   countVideosForRemoteVerify(includeDeferred = false) {
@@ -822,6 +869,29 @@ export class StateManager {
         }
       }
       this.state.schemaVersion = 5;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 6) {
+      for (const relation of Object.values(this.state.relations || {})) {
+        const video = this.state.videos?.[relation.bvid];
+        if (!video || video.biliStatus === "unavailable") continue;
+        const hasGlobalProof = Boolean(video.remoteFiles?.length) ||
+          Boolean(video.uploadedAt) ||
+          Boolean(video.verifiedAt);
+        if (!hasGlobalProof) continue;
+        if (relation.backupStatus === "missing" || relation.backupStatus === "lost") continue;
+        if (relation.backupStatus !== "uploaded" && relation.backupStatus !== "verified") {
+          relation.backupStatus = "verified";
+          relation.remoteFiles = undefined;
+          relation.lastRemoteCheckAt = undefined;
+          relation.nextRemoteCheckAt = undefined;
+          relation.remoteMissingCount = 0;
+          relation.lastError = "Imported legacy global backup state; waiting for AList verification.";
+          changed = true;
+        }
+      }
+      this.state.schemaVersion = 6;
       changed = true;
     }
 

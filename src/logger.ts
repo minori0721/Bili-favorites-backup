@@ -97,12 +97,13 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
       }
     }
 
-    // Task done
+    // BBDown may print "任务完成" before a later "解析此分P失败", so the
+    // final success line is emitted only after downloader validation.
     if (normalized.includes("任务完成")) {
-      entries.push({
-        timestamp: now(), type: "download", level: "info",
-        summary: `下载完成 ${bvid}`, raw: line, bvid,
-      });
+      continue;
+    }
+
+    if (normalized.includes("解析此分P失败")) {
       continue;
     }
     

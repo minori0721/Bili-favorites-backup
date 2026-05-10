@@ -50,10 +50,22 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
 
   await runCommand("BBDown", args, downloadDir, bvid);
 
-  const entries = await fs.promises.readdir(downloadDir);
-  if (entries.length === 0) {
-    throw new Error("BBDown did not produce any files");
+  const entries = await fs.promises.readdir(downloadDir, { withFileTypes: true });
+  const mediaFiles = entries.filter((entry) => entry.isFile() && isMediaOutputFile(entry.name));
+  if (mediaFiles.length === 0) {
+    const err = new Error("BBDown did not produce any media files");
+    (err as any).permanent = true;
+    throw err;
   }
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: "download",
+    level: "info",
+    summary: `下载完成 ${bvid}`,
+    raw: `BBDown produced ${mediaFiles.length} media file(s)`,
+    bvid,
+    simpleVisible: true,
+  });
 
   return { downloadDir };
 }
@@ -96,13 +108,36 @@ function buildDfnPriority(config: AppConfig) {
   return deduped.join(",");
 }
 
-function isPermanentBBDownError(stderr: string) {
+function isMediaOutputFile(name: string) {
+  return /\.(mp4|mkv|flv|mov|m4v)$/i.test(name) && !/\.(part|tmp|download)$/i.test(name);
+}
+
+function findBBDownFailure(output: string) {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) =>
+      line.includes("解析此分P失败") ||
+      line.includes("Arg_KeyNotFound") ||
+      line.includes("未找到此 EP/SS") ||
+      line.includes("视频不存在") ||
+      line.includes("稿件不可见") ||
+      line.includes("已失效") ||
+      line.includes("资源不可用") ||
+      line.includes("请尝试升级到最新版本后重试")
+    );
+}
+
+function isPermanentBBDownError(output: string) {
   return (
-    stderr.includes("Arg_KeyNotFound") ||
-    stderr.includes("未找到此 EP/SS") ||
-    stderr.includes("视频不存在") ||
-    stderr.includes("稿件不可见") ||
-    stderr.includes("已失效")
+    output.includes("解析此分P失败") ||
+    output.includes("Arg_KeyNotFound") ||
+    output.includes("未找到此 EP/SS") ||
+    output.includes("视频不存在") ||
+    output.includes("稿件不可见") ||
+    output.includes("已失效") ||
+    output.includes("资源不可用") ||
+    output.includes("请尝试升级到最新版本后重试")
   );
 }
 
@@ -110,6 +145,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd });
     let stderr = "";
+    let stdoutAll = "";
     let stdoutPending = "";
 
     const rawSimpleHiddenPatterns = [
@@ -183,6 +219,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString();
       process.stdout.write(chunk);
+      stdoutAll += text;
       stdoutPending += text;
       flushStdoutBuffer(false);
     });
@@ -207,13 +244,30 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
 
     child.on("close", (code) => {
       flushStdoutBuffer(true);
+      const combinedOutput = `${stdoutAll}\n${stderr}`;
+      const failureLine = findBBDownFailure(combinedOutput);
+      if (failureLine) {
+        const err = new Error(`BBDown reported failure: ${failureLine}`);
+        (err as any).permanent = isPermanentBBDownError(combinedOutput);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "download",
+          level: "error",
+          summary: `下载失败 ${bvid}: ${failureLine}`,
+          raw: failureLine,
+          bvid,
+          simpleVisible: true,
+        });
+        reject(err);
+        return;
+      }
       if (code === 0) {
         resolve();
         return;
       }
 
-      const errMsg = stderr || `Command failed with code ${code}`;
-      if (isPermanentBBDownError(stderr)) {
+      const errMsg = stderr || combinedOutput || `Command failed with code ${code}`;
+      if (isPermanentBBDownError(combinedOutput)) {
         const err = new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`);
         (err as any).permanent = true;
         reject(err);

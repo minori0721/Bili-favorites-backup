@@ -55,6 +55,15 @@ export class SyncScheduler {
 
     this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
       logTaskError(task, error);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "error",
+        summary: `下载失败 ${task.bvid}: ${error?.message || error}${error?.permanent ? "（已停止自动重试）" : ""}`,
+        raw: `[Queue] Task ${task.name} permanently failed: ${error?.message || error}`,
+        bvid: task.bvid,
+        simpleVisible: true,
+      });
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
       for (const target of targets) {
         this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
@@ -63,9 +72,29 @@ export class SyncScheduler {
       }
       this.activeDownloadTargets.delete(task.bvid);
     });
-    this.downloadQueue.on("taskRetry", logTaskRetry);
+    this.downloadQueue.on("taskRetry", (task: DownloadTask, error: any) => {
+      logTaskRetry(task, error);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "warn",
+        summary: `下载失败，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        bvid: task.bvid,
+        simpleVisible: true,
+      });
+    });
     this.uploadQueue.on("taskError", (task: UploadTask, error: any) => {
       logTaskError(task, error);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "upload",
+        level: "error",
+        summary: `上传失败 ${task.bvid}: ${error?.message || error}`,
+        raw: `[Queue] Task ${task.name} permanently failed: ${error?.message || error}`,
+        bvid: task.bvid,
+        simpleVisible: true,
+      });
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
         this.stateManager.markRelationRetryPending(task.bvid, task.userId, task.mediaId, error.message || "Upload failure");
@@ -74,7 +103,18 @@ export class SyncScheduler {
         this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Upload failure", false);
       }
     });
-    this.uploadQueue.on("taskRetry", logTaskRetry);
+    this.uploadQueue.on("taskRetry", (task: UploadTask, error: any) => {
+      logTaskRetry(task, error);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "upload",
+        level: "warn",
+        summary: `上传失败，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        bvid: task.bvid,
+        simpleVisible: true,
+      });
+    });
 
     this.downloadQueue.on("taskCompleted", (task: DownloadTask) => {
       if (!task.downloadDir) return;
@@ -407,6 +447,10 @@ export class SyncScheduler {
       userName: user.name,
       folderName: folderTitle,
     });
+    if (this.stateManager.canBootstrapRelationFromGlobalProof(bvid, user.id, mediaId)) {
+      this.stateManager.bootstrapRelationFromGlobalProof(bvid, user.id, mediaId, remotePath);
+      return false;
+    }
     const target: UploadTarget = {
       userId: user.id,
       mediaId,
