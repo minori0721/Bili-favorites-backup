@@ -82,6 +82,7 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
         level: "info",
         summary: `正在上传: ${entry.name} (${sizeKB} KB) → ${remotePath}`,
         raw: `[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`,
+        simpleVisible: true,
       });
       
       let uploadSuccessful = false;
@@ -99,6 +100,7 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
           level: "info",
           summary: `上传完成: ${entry.name}`,
           raw: `[AList] Upload completed for ${entry.name}`,
+          simpleVisible: true,
         });
       } catch (err) {
         console.error(`[AList] Failed to upload ${entry.name}`, err);
@@ -108,6 +110,7 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
           level: "error",
           summary: `上传失败: ${entry.name} - ${(err as Error).message}`,
           raw: `[AList] Failed to upload ${entry.name}: ${(err as Error).message}`,
+          simpleVisible: true,
         });
         throw err;
       }
@@ -176,6 +179,7 @@ export async function batchRenameRemote(
         level: "info",
         summary: `重命名: ${oldName} → ${newName}`,
         raw: `[Rename] ${oldPath} -> ${newPath}`,
+        simpleVisible: true,
       });
     } catch (err) {
       failed++;
@@ -187,6 +191,7 @@ export async function batchRenameRemote(
         level: "error",
         summary: `重命名失败: ${msg}`,
         raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${(err as Error).message}`,
+        simpleVisible: true,
       });
     }
   }
@@ -199,7 +204,10 @@ export async function listRemoteDir(config: AppConfig, remotePath: string): Prom
   const client = buildDavClient(config);
   try {
     const items = await client.getDirectoryContents(remotePath) as any[];
-    return items.map((item: any) => item.basename);
+    return items
+      .filter((item: any) => item && item.type !== "directory")
+      .map((item: any) => item?.basename)
+      .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
   } catch {
     return [];
   }

@@ -9,6 +9,8 @@ export interface LogEntry {
   /** Raw terminal output lines that produced this entry */
   raw: string;
   bvid?: string;
+  /** Whether this line should be shown in simple mode (default true). */
+  simpleVisible?: boolean;
 }
 
 const MAX_LOG_ENTRIES = 500;
@@ -35,6 +37,12 @@ class LogManager extends EventEmitter {
 
 export const logManager = new LogManager();
 
+function stripTimestampPrefix(line: string) {
+  return line
+    .replace(/^\[\d{4}-\d{2}-\d{2} [^\]]+\]\s*-\s*/, "")
+    .trim();
+}
+
 /** Parse structured info from a chunk of BBDown stdout lines */
 export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: LogEntry[], unmatched: string[] } {
   const entries: LogEntry[] = [];
@@ -43,8 +51,10 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
   const lines = rawChunk.split("\n").map((l) => l.trim()).filter(Boolean);
 
   for (const line of lines) {
+    const normalized = stripTimestampPrefix(line);
+
     // Video title
-    const titleMatch = line.match(/视频标题:\s*(.+)/);
+    const titleMatch = normalized.match(/视频标题:\s*(.+)/);
     if (titleMatch) {
       entries.push({
         timestamp: now(), type: "download", level: "info",
@@ -54,7 +64,7 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
     }
 
     // Selected stream line: [视频] [1080P 高清] [1080x1920] [HEVC] ...
-    const streamMatch = line.match(/\[视频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
+    const streamMatch = normalized.match(/\[视频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
     if (streamMatch) {
       entries.push({
         timestamp: now(), type: "download", level: "info",
@@ -65,7 +75,7 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
     }
 
     // Audio stream
-    const audioMatch = line.match(/\[音频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
+    const audioMatch = normalized.match(/\[音频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
     if (audioMatch) {
       entries.push({
         timestamp: now(), type: "download", level: "info",
@@ -74,28 +84,21 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
       continue;
     }
 
-    // Download start
-    if (line.includes("开始下载P")) {
-      const pMatch = line.match(/开始下载(P\d+)(视频|音频)/);
-      entries.push({
-        timestamp: now(), type: "download", level: "info",
-        summary: `正在下载 ${pMatch ? pMatch[1] + pMatch[2] : "分片"}...`,
-        raw: line, bvid,
-      });
-      continue;
-    }
-
-    // Merge
-    if (line.includes("开始合并音视频")) {
-      entries.push({
-        timestamp: now(), type: "download", level: "info",
-        summary: "正在合并音视频...", raw: line, bvid,
-      });
-      continue;
+    // Download start (only keep the video track in simple mode)
+    if (normalized.includes("开始下载P")) {
+      const pMatch = normalized.match(/开始下载(P\d+)(视频|音频)/);
+      if (pMatch && pMatch[2] === "视频") {
+        entries.push({
+          timestamp: now(), type: "download", level: "info",
+          summary: `正在下载 ${pMatch[1]}视频...`,
+          raw: line, bvid,
+        });
+        continue;
+      }
     }
 
     // Task done
-    if (line.includes("任务完成")) {
+    if (normalized.includes("任务完成")) {
       entries.push({
         timestamp: now(), type: "download", level: "info",
         summary: `下载完成 ${bvid}`, raw: line, bvid,

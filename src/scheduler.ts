@@ -2,7 +2,8 @@ import { ConfigStore } from "./config.js";
 import { StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import { BiliRiskOrLoginError, listFavoriteItemsPage } from "./bili.js";
-import { resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
+import { logManager } from "./logger.js";
+import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { TaskQueue } from "./queue.js";
 import { DownloadTask, UploadTask } from "./tasks.js";
 
@@ -30,6 +31,10 @@ export class SyncScheduler {
   private readonly hotScanBurstBudget = 3;
   private readonly historyPagesPerTick = 2;
   private readonly remoteVerifyPerTick = 25;
+  private readonly remoteVerifyPerTickNoNew = 120;
+  private readonly remoteVerifyPerTickManual = 200;
+
+  private cycleContext: SyncCycleStats | null = null;
 
   constructor(configStore: ConfigStore, userStore: UserStore, stateManager: StateManager) {
     this.configStore = configStore;
@@ -128,12 +133,17 @@ export class SyncScheduler {
       return;
     }
     this.running = true;
+    this.cycleContext = this.createCycleStats(manual);
     try {
-      await this.verifyRemoteSamples();
       await this.runOnce(manual);
+      await this.verifyRemoteSamples(manual);
+      this.logCycleSummary(this.cycleContext);
     } catch (error: any) {
       console.error("[Scheduler] Tick failed:", error?.message || error);
+      this.cycleContext.error = error?.message || String(error);
+      this.logCycleSummary(this.cycleContext);
     } finally {
+      this.cycleContext = null;
       this.running = false;
     }
   }
@@ -264,18 +274,22 @@ export class SyncScheduler {
       const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item);
       if (!result.wasKnown) {
         newItems += 1;
+        this.cycleContext!.newItems += 1;
       }
-      this.enqueueIfNeeded(user, mediaId, folderTitle, item.bvid);
+      const queued = this.enqueueIfNeeded(user, mediaId, folderTitle, item.bvid);
+      if (queued) {
+        this.cycleContext!.queuedItems += 1;
+      }
     }
     return { newItems };
   }
 
   private enqueueIfNeeded(user: BiliUser, mediaId: number, folderTitle: string, bvid: string) {
     if (!user.enabled) {
-      return;
+      return false;
     }
     if (this.queuedBackupBvids.has(bvid) || !this.stateManager.shouldEnqueueBackup(bvid)) {
-      return;
+      return false;
     }
     const config = this.configStore.get();
     const remotePath = resolveRemotePath({
@@ -295,41 +309,139 @@ export class SyncScheduler {
     this.stateManager.markQueued(bvid, remotePath);
     this.queuedBackupBvids.add(bvid);
     this.downloadQueue.addTask(task);
+    return true;
   }
 
-  private async verifyRemoteSamples() {
+  private async verifyRemoteSamples(manual: boolean) {
+    if (!this.cycleContext) return;
+
     const config = this.configStore.get();
-    const candidates = this.stateManager.listVideosForRemoteVerify(this.remoteVerifyPerTick);
+    const verifyLimit = this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
+    const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit);
+    this.cycleContext.remoteChecked = candidates.length;
+    this.cycleContext.remoteEligible = this.stateManager.countVideosForRemoteVerify();
+
     for (const entry of candidates) {
-      if (!entry.remoteFiles?.length) continue;
       try {
-        const result = await verifyRemoteFiles(config, entry.remoteFiles);
+        const remoteFiles = await this.resolveRemoteFilesForVerify(entry);
+        if (!remoteFiles?.length) {
+          const confirmed = await this.confirmRemoteStillMissing(entry);
+          if (confirmed.status === "ok") {
+            this.stateManager.markRemoteCheckOk(entry.bvid, entry.remotePath, confirmed.remoteFiles);
+            this.cycleContext.remoteOk += 1;
+            continue;
+          }
+          if (confirmed.status === "unknown") {
+            this.cycleContext.remoteErrors += 1;
+            continue;
+          }
+          const missing = confirmed.missing?.length
+            ? confirmed.missing
+            : [entry.remotePath || "<remote-path-unknown>"];
+          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+          this.cycleContext.remoteMissingDetected += 1;
+          if (entry.biliStatus === "unavailable") {
+            this.cycleContext.remoteMissingUnavailable += 1;
+          }
+          const requeued = this.enqueueMissingIfPossible(entry);
+          if (requeued) {
+            this.cycleContext.requeuedFromRemoteMissing += 1;
+          }
+          continue;
+        }
+        const result = await verifyRemoteFiles(config, remoteFiles);
         if (result.ok) {
-          this.stateManager.markRemoteCheckOk(entry.bvid);
+          this.stateManager.markRemoteCheckOk(entry.bvid, entry.remotePath, remoteFiles);
+          this.cycleContext.remoteOk += 1;
         } else {
-          this.stateManager.markRemoteCheckMissing(entry.bvid, result.missing);
-          this.enqueueMissingIfPossible(entry);
+          const confirmed = await this.confirmRemoteStillMissing(entry, remoteFiles);
+          if (confirmed.status === "ok") {
+            this.stateManager.markRemoteCheckOk(entry.bvid, entry.remotePath, confirmed.remoteFiles || remoteFiles);
+            this.cycleContext.remoteOk += 1;
+            continue;
+          }
+          if (confirmed.status === "unknown") {
+            this.stateManager.markRemoteCheckMissing(entry.bvid, result.missing);
+            this.cycleContext.remoteErrors += 1;
+            continue;
+          }
+          const missing = confirmed.missing?.length ? confirmed.missing : result.missing;
+          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+          this.stateManager.markRemoteCheckMissing(entry.bvid, missing);
+          this.cycleContext.remoteMissingDetected += 1;
+          if (entry.biliStatus === "unavailable") {
+            this.cycleContext.remoteMissingUnavailable += 1;
+          }
+          const requeued = this.enqueueMissingIfPossible(entry);
+          if (requeued) {
+            this.cycleContext.requeuedFromRemoteMissing += 1;
+          }
         }
       } catch (error: any) {
+        this.cycleContext.remoteErrors += 1;
         console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}:`, error?.message || error);
       }
     }
   }
 
+  private async resolveRemoteFilesForVerify(entry: VideoArchiveEntry) {
+    if (entry.remoteFiles?.length) {
+      return entry.remoteFiles;
+    }
+    if (!entry.remotePath) {
+      return [];
+    }
+    const config = this.configStore.get();
+    const names = await listRemoteDir(config, entry.remotePath);
+    if (!names.length) {
+      return [];
+    }
+    return names.map((name) => ({
+      name,
+      path: entry.remotePath!.replace(/\/$/, "") + "/" + name,
+    }));
+  }
+
   private enqueueMissingIfPossible(entry: VideoArchiveEntry) {
-    if (entry.biliStatus === "unavailable") return;
+    if (entry.biliStatus === "unavailable") return false;
     const relations = this.stateManager.listRelationsForBvid(entry.bvid);
     for (const relation of relations) {
       const user = this.userStore.getById(relation.userId);
       if (!user || !user.enabled) continue;
       const folder = user.favorites.find((item) => item.mediaId === relation.mediaId);
-      this.enqueueIfNeeded(
+      return this.enqueueIfNeeded(
         user,
         folder?.mediaId ?? relation.mediaId,
         folder?.title ?? relation.folderTitle,
         entry.bvid
       );
-      return;
+    }
+    return false;
+  }
+
+  private async confirmRemoteStillMissing(
+    entry: VideoArchiveEntry,
+    knownFiles?: VideoArchiveEntry["remoteFiles"]
+  ): Promise<
+    | { status: "ok"; remoteFiles: NonNullable<VideoArchiveEntry["remoteFiles"]> }
+    | { status: "missing"; missing: string[] }
+    | { status: "unknown" }
+  > {
+    try {
+      const remoteFiles = knownFiles?.length ? knownFiles : await this.resolveRemoteFilesForVerify(entry);
+      if (!remoteFiles?.length) {
+        return { status: "missing", missing: [entry.remotePath || "<remote-path-unknown>"] };
+      }
+      const config = this.configStore.get();
+      const result = await verifyRemoteFiles(config, remoteFiles);
+      if (result.ok) {
+        return { status: "ok", remoteFiles };
+      }
+      return { status: "missing", missing: result.missing };
+    } catch {
+      // Treat transient errors as inconclusive to avoid false-positive "missing".
+      return { status: "unknown" };
     }
   }
 
@@ -367,4 +479,79 @@ export class SyncScheduler {
     }
     return null;
   }
+
+  private createCycleStats(manual: boolean): SyncCycleStats {
+    return {
+      startedAt: new Date().toISOString(),
+      manual,
+      newItems: 0,
+      queuedItems: 0,
+      remoteEligible: 0,
+      remoteChecked: 0,
+      remoteOk: 0,
+      remoteMissingDetected: 0,
+      remoteMissingUnavailable: 0,
+      requeuedFromRemoteMissing: 0,
+      remoteErrors: 0,
+    };
+  }
+
+  private getRemoteVerifyLimit(manual: boolean, newItems: number) {
+    if (manual) {
+      return this.remoteVerifyPerTickManual;
+    }
+    if (newItems === 0) {
+      return this.remoteVerifyPerTickNoNew;
+    }
+    return this.remoteVerifyPerTick;
+  }
+
+  private logCycleSummary(stats: SyncCycleStats | null) {
+    if (!stats) return;
+    const isNoNew = stats.newItems === 0 && !stats.error;
+    const modeLabel = stats.manual ? "手动" : "自动";
+    const durationMs = Math.max(0, Date.now() - Date.parse(stats.startedAt));
+    const durationSec = (durationMs / 1000).toFixed(1);
+
+    if (isNoNew) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `本轮${modeLabel}同步完成：无新增视频（远端核验 ${stats.remoteChecked}/${stats.remoteEligible}，缺失 ${stats.remoteMissingDetected}，耗时 ${durationSec}s）`,
+        raw: `[Scheduler] no new videos this cycle. mode=${modeLabel}, remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}`,
+        simpleVisible: true,
+      });
+      return;
+    }
+
+    const level = stats.error ? "error" : "info";
+    const summary = stats.error
+      ? `本轮${modeLabel}同步异常：${stats.error}`
+      : `本轮${modeLabel}同步完成：新增 ${stats.newItems}，入队 ${stats.queuedItems}，远端缺失回补 ${stats.requeuedFromRemoteMissing}（耗时 ${durationSec}s）`;
+    const raw = `[Scheduler] cycle done. mode=${modeLabel}, new=${stats.newItems}, queued=${stats.queuedItems}, remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, remoteOk=${stats.remoteOk}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}${stats.error ? `, error=${stats.error}` : ""}`;
+    logManager.push({
+      timestamp: new Date().toISOString(),
+      type: "system",
+      level,
+      summary,
+      raw,
+      simpleVisible: true,
+    });
+  }
+}
+
+interface SyncCycleStats {
+  startedAt: string;
+  manual: boolean;
+  newItems: number;
+  queuedItems: number;
+  remoteEligible: number;
+  remoteChecked: number;
+  remoteOk: number;
+  remoteMissingDetected: number;
+  remoteMissingUnavailable: number;
+  requeuedFromRemoteMissing: number;
+  remoteErrors: number;
+  error?: string;
 }

@@ -355,11 +355,17 @@ export class StateManager {
     this.save();
   }
 
-  markRemoteCheckOk(bvid: string) {
+  markRemoteCheckOk(bvid: string, remotePath?: string, remoteFiles?: RemoteFileRecord[]) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
     const at = nowIso();
     entry.backupStatus = "verified";
+    if (remotePath) {
+      entry.remotePath = remotePath;
+    }
+    if (Array.isArray(remoteFiles) && remoteFiles.length > 0) {
+      entry.remoteFiles = remoteFiles;
+    }
     entry.verifiedAt = at;
     entry.lastRemoteCheckAt = at;
     entry.remoteMissingCount = 0;
@@ -459,8 +465,7 @@ export class StateManager {
     return Object.values(this.state.videos || {})
       .filter((entry) =>
         (entry.backupStatus === "uploaded" || entry.backupStatus === "verified") &&
-        Array.isArray(entry.remoteFiles) &&
-        entry.remoteFiles.length > 0
+        (Boolean(entry.remotePath) || (Array.isArray(entry.remoteFiles) && entry.remoteFiles.length > 0))
       )
       .sort((a, b) => {
         const left = a.lastRemoteCheckAt ? Date.parse(a.lastRemoteCheckAt) : 0;
@@ -469,6 +474,13 @@ export class StateManager {
       })
       .slice(0, limit)
       .map((entry) => ({ ...entry, remoteFiles: [...(entry.remoteFiles || [])] }));
+  }
+
+  countVideosForRemoteVerify() {
+    return Object.values(this.state.videos || {}).filter((entry) =>
+      (entry.backupStatus === "uploaded" || entry.backupStatus === "verified") &&
+      (Boolean(entry.remotePath) || (Array.isArray(entry.remoteFiles) && entry.remoteFiles.length > 0))
+    ).length;
   }
 
   findRelationForBvid(bvid: string) {

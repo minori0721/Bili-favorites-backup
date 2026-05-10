@@ -1023,8 +1023,7 @@ function getAppScript() {
       const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString('zh-CN') : '';
 
       if (logMode === 'simple') {
-        // Show only structured summaries, skip raw duplicates
-        if (entry.raw && !entry.summary) return;
+        if (entry.simpleVisible === false) return;
         div.className = cls;
         div.textContent = time + ' ' + (entry.summary || entry.raw || '');
       } else {

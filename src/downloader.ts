@@ -91,30 +91,81 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd });
     let stderr = "";
-    let stdoutBuffer = "";
+    let stdoutPending = "";
 
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      process.stdout.write(chunk);
-      stdoutBuffer += text;
+    const rawSimpleHiddenPatterns = [
+      /^BBDown version/i,
+      /^遇到问题请首先到以下地址查阅有无相关信息[:：]?$/i,
+      /^https:\/\/github\.com\/nilaoda\/BBDown\/issues$/i,
+      /检测账号登录/,
+      /获取aid/,
+      /获取视频信息/,
+      /发布时间/,
+      /UP主页/,
+      /^P\d+:/,
+      /共计\s*\d+\s*个分P/,
+      /开始解析P\d+/,
+      /共计\d+条视频流/,
+      /共计\d+条音频流/,
+      /^\d+\.\s*\[/,
+      /已选择的流/,
+      /尝试将视频流强制替换/,
+      /尝试将音频流强制替换/,
+      /合并视频分片/,
+      /合并音频分片/,
+      /开始下载P\d+音频/,
+      /开始合并音视频/,
+      /清理分片/,
+      /下载P\d+完毕/,
+      /清理临时文件/,
+      /跳过下载AI字幕/,
+    ];
 
-      const parsed = parseBBDownOutput(stdoutBuffer, bvid);
+    const shouldHideInSimple = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      return rawSimpleHiddenPatterns.some((pattern) => pattern.test(trimmed));
+    };
+
+    const flushStdoutBuffer = (force = false) => {
+      const combined = stdoutPending;
+      const normalized = combined.replace(/\r/g, "\n");
+      const lines = normalized.split("\n");
+      if (!force) {
+        stdoutPending = lines.pop() || "";
+      } else {
+        stdoutPending = "";
+      }
+
+      if (lines.length === 0) {
+        return;
+      }
+
+      const parsed = parseBBDownOutput(lines.join("\n"), bvid);
       for (const entry of parsed.entries) {
         logManager.push(entry);
       }
 
       for (const rawLine of parsed.unmatched) {
+        const line = rawLine.trim();
+        if (!line) continue;
         logManager.push({
           timestamp: new Date().toISOString(),
           type: "download",
           level: "info",
-          summary: rawLine,
-          raw: rawLine,
+          summary: line,
+          raw: line,
           bvid,
+          simpleVisible: !shouldHideInSimple(line),
         });
       }
+    };
 
-      stdoutBuffer = "";
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      process.stdout.write(chunk);
+      stdoutPending += text;
+      flushStdoutBuffer(false);
     });
 
     child.stderr.on("data", (chunk) => {
@@ -136,6 +187,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
     });
 
     child.on("close", (code) => {
+      flushStdoutBuffer(true);
       if (code === 0) {
         resolve();
         return;
