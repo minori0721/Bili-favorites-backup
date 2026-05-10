@@ -125,18 +125,32 @@ export class SyncScheduler {
 
   runNow() {
     console.log("[Scheduler] Manual sync triggered");
-    void this.tick(true);
+    if (this.running) {
+      return false;
+    }
+    void this.tick(true, { trigger: "manual" });
+    return true;
   }
 
-  async tick(manual = false) {
+  runReconcileNow() {
+    console.log("[Scheduler] Manual reconcile triggered");
     if (this.running) {
-      return;
+      return false;
     }
+    void this.tick(true, { trigger: "reconcile", forceFullRemoteVerify: true });
+    return true;
+  }
+
+  async tick(manual = false, options: TickOptions = {}) {
+    if (this.running) {
+      return false;
+    }
+    const trigger: SyncTrigger = options.trigger || (manual ? "manual" : "auto");
     this.running = true;
-    this.cycleContext = this.createCycleStats(manual);
+    this.cycleContext = this.createCycleStats(trigger);
     try {
       await this.runOnce(manual);
-      await this.verifyRemoteSamples(manual);
+      await this.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true);
       this.logCycleSummary(this.cycleContext);
     } catch (error: any) {
       console.error("[Scheduler] Tick failed:", error?.message || error);
@@ -146,6 +160,7 @@ export class SyncScheduler {
       this.cycleContext = null;
       this.running = false;
     }
+    return true;
   }
 
   private async runOnce(manual: boolean) {
@@ -312,11 +327,11 @@ export class SyncScheduler {
     return true;
   }
 
-  private async verifyRemoteSamples(manual: boolean) {
+  private async verifyRemoteSamples(manual: boolean, forceFullRemoteVerify: boolean) {
     if (!this.cycleContext) return;
 
     const config = this.configStore.get();
-    const verifyLimit = this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
+    const verifyLimit = forceFullRemoteVerify ? undefined : this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
     const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit);
     this.cycleContext.remoteChecked = candidates.length;
     this.cycleContext.remoteEligible = this.stateManager.countVideosForRemoteVerify();
@@ -480,10 +495,10 @@ export class SyncScheduler {
     return null;
   }
 
-  private createCycleStats(manual: boolean): SyncCycleStats {
+  private createCycleStats(trigger: SyncTrigger): SyncCycleStats {
     return {
       startedAt: new Date().toISOString(),
-      manual,
+      trigger,
       newItems: 0,
       queuedItems: 0,
       remoteEligible: 0,
@@ -509,16 +524,33 @@ export class SyncScheduler {
   private logCycleSummary(stats: SyncCycleStats | null) {
     if (!stats) return;
     const isNoNew = stats.newItems === 0 && !stats.error;
-    const modeLabel = stats.manual ? "手动" : "自动";
+    const modeLabel = stats.trigger === "reconcile" ? "reconcile" : (stats.trigger === "manual" ? "manual" : "auto");
     const durationMs = Math.max(0, Date.now() - Date.parse(stats.startedAt));
     const durationSec = (durationMs / 1000).toFixed(1);
+
+    if (stats.trigger === "reconcile") {
+      const level = stats.error ? "error" : "info";
+      const summary = stats.error
+        ? `${modeLabel} failed: ${stats.error}`
+        : `${modeLabel} done: remote ${stats.remoteChecked}/${stats.remoteEligible}, missing ${stats.remoteMissingDetected}, requeued ${stats.requeuedFromRemoteMissing}, ${durationSec}s`;
+      const raw = `[Scheduler] reconcile done. remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, remoteOk=${stats.remoteOk}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}${stats.error ? `, error=${stats.error}` : ""}`;
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level,
+        summary,
+        raw,
+        simpleVisible: true,
+      });
+      return;
+    }
 
     if (isNoNew) {
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
         level: "info",
-        summary: `本轮${modeLabel}同步完成：无新增视频（远端核验 ${stats.remoteChecked}/${stats.remoteEligible}，缺失 ${stats.remoteMissingDetected}，耗时 ${durationSec}s）`,
+        summary: `${modeLabel} done: no new videos, remote ${stats.remoteChecked}/${stats.remoteEligible}, missing ${stats.remoteMissingDetected}, ${durationSec}s`,
         raw: `[Scheduler] no new videos this cycle. mode=${modeLabel}, remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}`,
         simpleVisible: true,
       });
@@ -527,8 +559,8 @@ export class SyncScheduler {
 
     const level = stats.error ? "error" : "info";
     const summary = stats.error
-      ? `本轮${modeLabel}同步异常：${stats.error}`
-      : `本轮${modeLabel}同步完成：新增 ${stats.newItems}，入队 ${stats.queuedItems}，远端缺失回补 ${stats.requeuedFromRemoteMissing}（耗时 ${durationSec}s）`;
+      ? `${modeLabel} failed: ${stats.error}`
+      : `${modeLabel} done: new ${stats.newItems}, queued ${stats.queuedItems}, requeued ${stats.requeuedFromRemoteMissing}, ${durationSec}s`;
     const raw = `[Scheduler] cycle done. mode=${modeLabel}, new=${stats.newItems}, queued=${stats.queuedItems}, remoteChecked=${stats.remoteChecked}/${stats.remoteEligible}, remoteOk=${stats.remoteOk}, missing=${stats.remoteMissingDetected}, missingUnavailable=${stats.remoteMissingUnavailable}, requeued=${stats.requeuedFromRemoteMissing}, remoteErrors=${stats.remoteErrors}, durationSec=${durationSec}${stats.error ? `, error=${stats.error}` : ""}`;
     logManager.push({
       timestamp: new Date().toISOString(),
@@ -539,11 +571,12 @@ export class SyncScheduler {
       simpleVisible: true,
     });
   }
+
 }
 
 interface SyncCycleStats {
   startedAt: string;
-  manual: boolean;
+  trigger: SyncTrigger;
   newItems: number;
   queuedItems: number;
   remoteEligible: number;
@@ -554,4 +587,11 @@ interface SyncCycleStats {
   requeuedFromRemoteMissing: number;
   remoteErrors: number;
   error?: string;
+}
+
+type SyncTrigger = "auto" | "manual" | "reconcile";
+
+interface TickOptions {
+  trigger?: SyncTrigger;
+  forceFullRemoteVerify?: boolean;
 }

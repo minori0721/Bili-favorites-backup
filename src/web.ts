@@ -255,6 +255,7 @@ function getAccountSection() {
       <div class="row" style="margin-bottom:20px;">
         <button id="addUserBtn">添加 B站账号</button>
         <button class="ghost" id="syncNowBtn">立即同步</button>
+        <button class="ghost" id="reconcileBtn">Full Reconcile</button>
       </div>
       <div class="user-list" id="userList"></div>
     </section>`;
@@ -1110,10 +1111,21 @@ function getAppScript() {
 
     document.getElementById('syncNowBtn').addEventListener('click', async () => {
       const btn = document.getElementById('syncNowBtn');
-      btn.textContent = '同步中...';
+      const defaultText = btn.dataset.defaultText || btn.textContent || 'Sync Now';
+      btn.dataset.defaultText = defaultText;
+      btn.textContent = 'Syncing...';
       try { await fetchJson('/api/sync/now', { method:'POST' }); } catch(e) {}
-      btn.textContent = '已触发';
-      setTimeout(() => btn.textContent = '触发立即同步', 2000);
+      btn.textContent = 'Triggered';
+      setTimeout(() => btn.textContent = defaultText, 2000);
+    });
+    document.getElementById('reconcileBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('reconcileBtn');
+      const defaultText = btn.dataset.defaultText || btn.textContent || 'Full Reconcile';
+      btn.dataset.defaultText = defaultText;
+      btn.textContent = 'Reconciling...';
+      try { await fetchJson('/api/sync/reconcile', { method:'POST' }); } catch(e) {}
+      btn.textContent = 'Triggered';
+      setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       await fetchJson('/api/logout', { method:'POST' });

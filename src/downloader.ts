@@ -34,8 +34,9 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
   if (config.bbdownEncoding) {
     args.push("--encoding-priority", normalizeEncodingPriority(config.bbdownEncoding));
   }
-  if (config.bbdownQuality) {
-    args.push("--dfn-priority", normalizeQualityPriority(config.bbdownQuality));
+  const dfnPriority = buildDfnPriority(config);
+  if (dfnPriority) {
+    args.push("--dfn-priority", dfnPriority);
   }
   if (config.perVideoDelaySeconds > 0) {
     args.push("--delay-per-page", String(config.perVideoDelaySeconds));
@@ -75,6 +76,24 @@ function normalizeQualityPriority(value: string) {
     "720P": "720P \u9ad8\u6e05",
   };
   return map[value] || value;
+}
+
+function buildDfnPriority(config: AppConfig) {
+  const priorities: string[] = [];
+  if (config.bbdownDolby) {
+    priorities.push("\u675c\u6bd4\u5168\u666f\u58f0");
+  }
+  if (config.bbdownHiRes) {
+    priorities.push("Hi-Res\u65e0\u635f");
+  }
+  if (config.bbdownQuality) {
+    priorities.push(normalizeQualityPriority(config.bbdownQuality));
+  }
+  if (priorities.length === 0) {
+    return "";
+  }
+  const deduped = [...new Set(priorities)];
+  return deduped.join(",");
 }
 
 function isPermanentBBDownError(stderr: string) {

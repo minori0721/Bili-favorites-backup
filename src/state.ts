@@ -461,8 +461,8 @@ export class StateManager {
     );
   }
 
-  listVideosForRemoteVerify(limit: number) {
-    return Object.values(this.state.videos || {})
+  listVideosForRemoteVerify(limit?: number) {
+    const sorted = Object.values(this.state.videos || {})
       .filter((entry) =>
         (entry.backupStatus === "uploaded" || entry.backupStatus === "verified") &&
         (Boolean(entry.remotePath) || (Array.isArray(entry.remoteFiles) && entry.remoteFiles.length > 0))
@@ -471,9 +471,9 @@ export class StateManager {
         const left = a.lastRemoteCheckAt ? Date.parse(a.lastRemoteCheckAt) : 0;
         const right = b.lastRemoteCheckAt ? Date.parse(b.lastRemoteCheckAt) : 0;
         return left - right;
-      })
-      .slice(0, limit)
-      .map((entry) => ({ ...entry, remoteFiles: [...(entry.remoteFiles || [])] }));
+      });
+    const picked = typeof limit === "number" ? sorted.slice(0, limit) : sorted;
+    return picked.map((entry) => ({ ...entry, remoteFiles: [...(entry.remoteFiles || [])] }));
   }
 
   countVideosForRemoteVerify() {

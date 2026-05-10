@@ -494,10 +494,27 @@ app.delete("/api/users/:id", requireAuth, (req, res) => {
 
 app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
   try {
-    scheduler.runNow();
+    const accepted = scheduler.runNow();
+    if (!accepted) {
+      res.status(409).json({ success: false, message: "A sync task is already running" });
+      return;
+    }
     res.json({ success: true, data: { message: "Sync triggered" } });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Sync failed" });
+  }
+}));
+
+app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
+  try {
+    const accepted = scheduler.runReconcileNow();
+    if (!accepted) {
+      res.status(409).json({ success: false, message: "A sync task is already running" });
+      return;
+    }
+    res.json({ success: true, data: { message: "Reconcile triggered" } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Reconcile failed" });
   }
 }));
 
