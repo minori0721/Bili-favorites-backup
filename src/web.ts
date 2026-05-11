@@ -228,18 +228,24 @@ function getAppStyles() {
     .log-toggle { display:flex; gap:8px; margin-bottom:12px; }
     .log-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
-    .queue-board { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; max-height:400px; overflow:auto; }
-    .queue-col { border:1px solid var(--border); border-radius:10px; background:#fafdfc; padding:8px; min-height:180px; }
-    .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; }
-    .queue-list { display:grid; gap:8px; }
-    .queue-empty { color:var(--muted); font-size:12px; text-align:center; padding:12px 4px; }
-    .queue-card { display:flex; gap:8px; padding:8px; border-radius:10px; border:1px solid var(--border); background:white; transition:transform .18s ease, box-shadow .18s ease; }
-    .queue-card:hover { transform:translateY(-1px); box-shadow:0 6px 16px rgba(57,197,187,0.12); }
-    .queue-cover { width:64px; height:40px; object-fit:cover; border-radius:6px; background:#eee; flex-shrink:0; }
+    .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
+    .queue-col { min-width:0; border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; }
+    .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
+    .queue-col-count { min-width:28px; text-align:right; }
+    .queue-list { display:grid; gap:8px; overflow-y:auto; padding-right:4px; min-height:0; align-content:start; flex:1; }
+    .queue-more { color:var(--muted); font-size:12px; text-align:center; padding:8px 4px; border:1px dashed var(--border); border-radius:10px; background:rgba(57,197,187,0.04); }
+    .queue-empty { color:var(--muted); font-size:12px; text-align:center; padding:24px 4px; align-self:center; opacity:0.72; }
+    .queue-card { min-width:0; max-width:100%; display:flex; gap:8px; padding:8px; border-radius:10px; border:1px solid var(--border); background:white; transition:box-shadow .18s ease, opacity .2s ease, border-color .2s ease; will-change:transform; }
+    .queue-card.entering { animation:queueCardIn .22s cubic-bezier(0.16,1,0.3,1); }
+    .queue-card.leaving { opacity:0; transform:scale(.98); }
+    .queue-card:hover { box-shadow:0 6px 16px rgba(57,197,187,0.12); border-color:var(--accent); }
+    .queue-cover { width:64px; height:44px; object-fit:cover; border-radius:6px; background:#eee; flex-shrink:0; }
     .queue-info { min-width:0; flex:1; }
-    .queue-title { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .queue-title { font-size:12px; font-weight:700; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .queue-meta { font-size:11px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .queue-extra { font-size:11px; color:var(--muted); margin-top:2px; }
+    .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
+    .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
+    @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
     .rename-btn { background:#FF7043!important; }
     .rename-btn:hover { background:#F4511E!important; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
@@ -440,6 +446,11 @@ function getAppScript() {
     let logMode = 'simple';
     let logEntries = [];
     let queueBoardPollTimer = null;
+    const queueBoardState = {
+      columns: {},
+      cards: new Map(),
+      renderLimit: 80,
+    };
     let unavailableItems = [];
     let unavailableUserId = null;
     let unavailableFilter = 'missing';
@@ -1208,9 +1219,57 @@ function getAppScript() {
       return m + 'm ' + s + 's';
     }
 
+    function makeQueueCardKey(item) {
+      const userId = item.userId || '';
+      const mediaId = item.mediaId || '';
+      const bvid = item.bvid || item.id || '';
+      const remotePath = item.remotePath || '';
+      return [userId, mediaId, bvid, remotePath].join(':');
+    }
+
+    function updateQueueCard(card, item, nowMs) {
+      card.dataset.queueStage = item.stage || '';
+      const titleEl = card.querySelector('.queue-title');
+      const metaEl = card.querySelector('.queue-meta');
+      const extraEl = card.querySelector('.queue-extra');
+      const coverEl = card.querySelector('.queue-cover');
+      const coverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      if (coverEl instanceof HTMLImageElement) {
+        if (coverUrl && coverEl.src !== coverUrl) coverEl.src = coverUrl;
+      } else if (coverUrl && coverEl) {
+        const img = document.createElement('img');
+        img.className = 'queue-cover';
+        img.src = coverUrl;
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        coverEl.replaceWith(img);
+      }
+      if (titleEl) {
+        titleEl.textContent = item.title || item.bvid || 'Unknown';
+        titleEl.title = item.title || item.bvid || '';
+      }
+      if (metaEl) {
+        metaEl.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + (item.bvid || '');
+      }
+      if (extraEl) {
+        const t0 = Number(item.startedAt || item.queuedAt || 0);
+        const elapsed = t0 > 0 ? formatElapsed(nowMs - t0) : '0s';
+        extraEl.innerHTML = '';
+        const retry = document.createElement('span');
+        retry.className = 'queue-pill';
+        retry.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0);
+        const time = document.createElement('span');
+        time.className = 'queue-pill';
+        time.textContent = elapsed;
+        extraEl.appendChild(retry);
+        extraEl.appendChild(time);
+      }
+    }
+
     function renderQueueCard(item, nowMs) {
       const card = document.createElement('div');
       card.className = 'queue-card';
+      card.dataset.queueKey = makeQueueCardKey(item);
       const coverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
       if (coverUrl) {
         const img = document.createElement('img');
@@ -1232,43 +1291,104 @@ function getAppScript() {
       title.title = item.title || item.bvid || '';
       const meta = document.createElement('div');
       meta.className = 'queue-meta';
-      meta.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + (item.bvid || '');
       const extra = document.createElement('div');
       extra.className = 'queue-extra';
-      const t0 = Number(item.startedAt || item.queuedAt || 0);
-      const elapsed = t0 > 0 ? formatElapsed(nowMs - t0) : '0s';
-      extra.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0) + ' | ' + elapsed;
       info.appendChild(title);
       info.appendChild(meta);
       info.appendChild(extra);
       card.appendChild(info);
+      updateQueueCard(card, item, nowMs);
       return card;
     }
 
-    function renderQueueColumn(parent, title, items, nowMs) {
+    function ensureQueueColumn(parent, id, title) {
+      const existing = queueBoardState.columns[id];
+      if (existing && existing.root && existing.root.parentElement === parent) {
+        return existing;
+      }
       const col = document.createElement('div');
       col.className = 'queue-col';
+      col.dataset.queueColumn = id;
       const h = document.createElement('div');
       h.className = 'queue-col-title';
       const left = document.createElement('span');
       left.textContent = title;
       const right = document.createElement('span');
-      right.textContent = String((items || []).length);
+      right.className = 'queue-col-count';
+      right.textContent = '0';
       h.appendChild(left);
       h.appendChild(right);
       col.appendChild(h);
       const list = document.createElement('div');
       list.className = 'queue-list';
-      if (!items || items.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'queue-empty';
-        empty.textContent = '空队列';
-        list.appendChild(empty);
-      } else {
-        items.forEach((item) => list.appendChild(renderQueueCard(item, nowMs)));
-      }
       col.appendChild(list);
       parent.appendChild(col);
+      queueBoardState.columns[id] = { root: col, list, count: right };
+      return queueBoardState.columns[id];
+    }
+
+    function setQueueEmptyState(column, isEmpty) {
+      let empty = column.list.querySelector('[data-queue-empty="1"]');
+      if (isEmpty) {
+        if (!empty) {
+          empty = document.createElement('div');
+          empty.className = 'queue-empty';
+          empty.dataset.queueEmpty = '1';
+          empty.textContent = '空队列';
+          column.list.appendChild(empty);
+        }
+      } else if (empty) {
+        empty.remove();
+      }
+    }
+
+    function renderQueueColumn(parent, id, title, items, nowMs, seenKeys) {
+      const column = ensureQueueColumn(parent, id, title);
+      const allItems = Array.isArray(items) ? items : [];
+      const visibleItems = allItems.slice(0, queueBoardState.renderLimit);
+      column.count.textContent = String(allItems.length);
+      setQueueEmptyState(column, visibleItems.length === 0);
+      const oldMore = column.list.querySelector('[data-queue-more="1"]');
+      if (oldMore) oldMore.remove();
+      visibleItems.forEach((item) => {
+        const key = makeQueueCardKey(item);
+        seenKeys.add(key);
+        let card = queueBoardState.cards.get(key);
+        if (!card) {
+          card = renderQueueCard(item, nowMs);
+          card.classList.add('entering');
+          queueBoardState.cards.set(key, card);
+          setTimeout(() => card.classList.remove('entering'), 260);
+        } else {
+          updateQueueCard(card, item, nowMs);
+        }
+        column.list.appendChild(card);
+      });
+      if (allItems.length > visibleItems.length) {
+        const more = document.createElement('div');
+        more.className = 'queue-more';
+        more.dataset.queueMore = '1';
+        more.textContent = '还有 ' + (allItems.length - visibleItems.length) + ' 个任务未展开';
+        column.list.appendChild(more);
+      }
+    }
+
+    function animateQueueBoard(firstRects) {
+      for (const [key, card] of queueBoardState.cards.entries()) {
+        const first = firstRects.get(key);
+        if (!first || !card.isConnected) continue;
+        const last = card.getBoundingClientRect();
+        const dx = first.left - last.left;
+        const dy = first.top - last.top;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+        card.animate(
+          [
+            { transform: 'translate(' + dx + 'px,' + dy + 'px)' },
+            { transform: 'translate(0,0)' }
+          ],
+          { duration: 260, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
+        );
+      }
     }
 
     async function refreshQueueBoard() {
@@ -1280,16 +1400,36 @@ function getAppScript() {
         if (logMode !== 'queue') return;
         const snapshot = data || {};
         const nowMs = Date.now();
-        board.innerHTML = '';
-        const grid = document.createElement('div');
-        grid.className = 'queue-board';
-        renderQueueColumn(grid, '待下载', snapshot.downloadPending || [], nowMs);
-        renderQueueColumn(grid, '下载中', snapshot.downloadRunning || [], nowMs);
-        renderQueueColumn(grid, '待上传', snapshot.uploadPending || [], nowMs);
-        renderQueueColumn(grid, '上传中', snapshot.uploadRunning || [], nowMs);
-        board.appendChild(grid);
+        let grid = board.querySelector('.queue-board');
+        if (!grid) {
+          board.innerHTML = '';
+          grid = document.createElement('div');
+          grid.className = 'queue-board';
+          board.appendChild(grid);
+          queueBoardState.columns = {};
+        }
+        const firstRects = new Map();
+        for (const [key, card] of queueBoardState.cards.entries()) {
+          if (card.isConnected) firstRects.set(key, card.getBoundingClientRect());
+        }
+        const seenKeys = new Set();
+        renderQueueColumn(grid, 'downloadPending', '待下载', snapshot.downloadPending || [], nowMs, seenKeys);
+        renderQueueColumn(grid, 'downloadRunning', '下载中', snapshot.downloadRunning || [], nowMs, seenKeys);
+        renderQueueColumn(grid, 'uploadPending', '待上传', snapshot.uploadPending || [], nowMs, seenKeys);
+        renderQueueColumn(grid, 'uploadRunning', '上传中', snapshot.uploadRunning || [], nowMs, seenKeys);
+        for (const [key, card] of Array.from(queueBoardState.cards.entries())) {
+          if (seenKeys.has(key)) continue;
+          queueBoardState.cards.delete(key);
+          if (card.isConnected) {
+            card.classList.add('leaving');
+            setTimeout(() => card.remove(), 220);
+          }
+        }
+        requestAnimationFrame(() => animateQueueBoard(firstRects));
       } catch (e) {
         board.innerHTML = '<div class="queue-empty">队列看板加载失败</div>';
+        queueBoardState.columns = {};
+        queueBoardState.cards.clear();
       }
     }
 
@@ -1298,6 +1438,13 @@ function getAppScript() {
         clearInterval(queueBoardPollTimer);
         queueBoardPollTimer = null;
       }
+    }
+
+    function resetQueueBoardState() {
+      queueBoardState.columns = {};
+      queueBoardState.cards.clear();
+      const board = document.getElementById('queueBoard');
+      if (board) board.innerHTML = '';
     }
 
     function startQueueBoardPolling() {
@@ -1328,6 +1475,7 @@ function getAppScript() {
       }
       stopQueueBoardPolling();
       if (queueBoard) queueBoard.style.display = 'none';
+      resetQueueBoardState();
       if (logConsole) logConsole.style.display = 'block';
       rebuildLog();
     }
