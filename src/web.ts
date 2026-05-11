@@ -193,6 +193,7 @@ function getAppStyles() {
     .video-item { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); align-items:center; transition:all 0.2s; }
     .video-detail-status { text-align:center; padding:10px; color:var(--muted); font-size:13px; }
     .video-detail-status.error { color:#E57373; }
+    .video-detail-hint { color:var(--muted); font-size:12px; margin:-4px 0 10px; line-height:1.6; }
     .video-item.processed { background:var(--success-bg); border-color:var(--success); }
     .video-item.unavailable-uploaded { background:#FFF8E1; border-color:#FFC107; box-shadow:0 0 0 1px #FFC107; }
     .video-item.unavailable-missing { background:#FFEBEE; border-color:#FFCDD2; }
@@ -962,6 +963,31 @@ function getAppScript() {
       document.getElementById('vdFilterUploadedUnavailableBtn').textContent = '已上传且失效 (' + (s.uploadedUnavailable || 0) + ')';
     }
 
+    function updateVideoDetailIndexHint(indexSummary, filter) {
+      let hint = document.getElementById('videoDetailIndexHint');
+      const grid = document.getElementById('videoGrid');
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.id = 'videoDetailIndexHint';
+        hint.className = 'video-detail-hint';
+        grid.parentElement.insertBefore(hint, grid);
+      }
+      const indexed = Number(indexSummary && indexSummary.indexed || 0);
+      const biliTotal = Number(indexSummary && indexSummary.biliTotal || 0);
+      const complete = Boolean(indexSummary && indexSummary.complete);
+      if (!indexSummary || complete || !biliTotal || indexed >= biliTotal) {
+        hint.textContent = '';
+        hint.style.display = 'none';
+        return;
+      }
+      hint.style.display = 'block';
+      if (filter === 'all') {
+        hint.textContent = '全部列表来自 B 站实时数据；状态计数基于已索引 ' + indexed + '/' + biliTotal + ' 条，继续滚动浏览或执行全量扫描并对账后会补齐。';
+      } else {
+        hint.textContent = '当前筛选基于已索引 ' + indexed + '/' + biliTotal + ' 条，不代表整个收藏夹的最终数量。';
+      }
+    }
+
     async function applyVideoDetailFilter(filter) {
       if (!videoDetailState.userId || !videoDetailState.mediaId) return;
       if (videoDetailState.loading) return;
@@ -986,22 +1012,27 @@ function getAppScript() {
       videoDetailState.loading = true;
       setVideoDetailStatus(nextPage === 1 ? '加载视频列表...' : '加载更多...');
       try {
-        const data = await fetchJson(
+        const usingLiveSource = (videoDetailState.filter || 'all') === 'all';
+        const endpoint = usingLiveSource ? '/detail-items' : '/state-items';
+        let url =
           '/api/users/' + videoDetailState.userId +
           '/favorites/' + videoDetailState.mediaId +
-          '/state-items?page=' + nextPage +
+          endpoint + '?page=' + nextPage +
           '&pageSize=' + videoDetailState.pageSize +
-          '&filter=' + encodeURIComponent(videoDetailState.filter || 'all')
-        );
+          '&filter=' + encodeURIComponent(videoDetailState.filter || 'all');
+        url += '&folderTitle=' + encodeURIComponent(videoDetailState.title || 'favorites');
+        const data = await fetchJson(url);
         if (token !== videoDetailState.token) return;
         videoDetailState.summary = data.summary || null;
+        videoDetailState.indexSummary = data.indexSummary || videoDetailState.indexSummary || null;
         updateVideoDetailFilterCounts(videoDetailState.summary);
+        updateVideoDetailIndexHint(videoDetailState.indexSummary, videoDetailState.filter || 'all');
         const items = Array.isArray(data.items) ? data.items : [];
         if (nextPage === 1 && items.length === 0) {
           grid.innerHTML = '';
           videoDetailState.page = data.page || nextPage;
           videoDetailState.hasMore = false;
-          setVideoDetailStatus('此收藏夹为空');
+          setVideoDetailStatus(usingLiveSource ? '此收藏夹为空' : '已索引范围内没有匹配视频');
         } else if (Array.isArray(data.items)) {
           const oldStatus = grid.querySelector('[data-status-marker="video-detail"]');
           if (oldStatus) oldStatus.remove();
@@ -1034,8 +1065,10 @@ function getAppScript() {
       videoDetailState = {
         userId,
         mediaId,
+        title,
         filter: 'all',
         summary: null,
+        indexSummary: null,
         page: 0,
         pageSize: 20,
         hasMore: true,

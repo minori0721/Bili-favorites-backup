@@ -143,6 +143,12 @@ export interface FolderDetailSummary {
   uploadedUnavailable: number;
 }
 
+export interface FolderIndexSummary extends FolderDetailSummary {
+  indexed: number;
+  biliTotal?: number;
+  complete: boolean;
+}
+
 export interface StateFile {
   schemaVersion?: number;
   processedByUser: Record<string, Record<string, ProcessedEntry>>;
@@ -948,6 +954,38 @@ export class StateManager {
   getRelationStatus(userId: string, mediaId: number, bvid: string) {
     const relation = this.state.relations?.[relationKey(userId, mediaId, bvid)];
     return relation ? { ...relation, remoteFiles: [...(relation.remoteFiles || [])] } : null;
+  }
+
+  getFolderIndexSummary(userId: string, mediaId: number, biliTotal?: number): FolderIndexSummary {
+    const rows = Object.values(this.state.relations || {})
+      .filter((relation) => relation.userId === userId && relation.mediaId === mediaId)
+      .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
+      .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => Boolean(item.video));
+    const summary: FolderIndexSummary = {
+      total: rows.length,
+      indexed: rows.length,
+      biliTotal,
+      complete: typeof biliTotal === "number" ? rows.length >= biliTotal : false,
+      uploaded: 0,
+      pending: 0,
+      pendingUnavailable: 0,
+      uploadedUnavailable: 0,
+    };
+    for (const { relation, video } of rows) {
+      const unavailable = video.biliStatus === "unavailable";
+      const processed = this.isProcessed(userId, video.bvid, mediaId);
+      if (processed) {
+        summary.uploaded += 1;
+      } else if (!unavailable) {
+        summary.pending += 1;
+      }
+      if (unavailable && processed) {
+        summary.uploadedUnavailable += 1;
+      } else if (unavailable && !processed) {
+        summary.pendingUnavailable += 1;
+      }
+    }
+    return summary;
   }
 
   getVideoMeta(bvid: string) {

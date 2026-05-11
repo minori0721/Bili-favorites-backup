@@ -209,6 +209,22 @@ function withProcessedStatus(
   };
 }
 
+function recordFavoritePageMetadata(
+  userId: string,
+  mediaId: number,
+  folderTitle: string,
+  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
+) {
+  pageResult.items.forEach((item, indexInPage) => {
+    const favOrder = (Math.max(1, pageResult.page) - 1) * Math.max(1, pageResult.pageSize) + indexInPage + 1;
+    stateManager.recordFavoriteItem(userId, mediaId, folderTitle, item, {
+      favOrder,
+      favPage: pageResult.page,
+      favIndexInPage: indexInPage,
+    });
+  });
+}
+
 function getBiliListErrorMessage(error: unknown) {
   if (error instanceof BiliRiskOrLoginError) {
     return "B 站返回了风控/登录异常响应，请稍后重试；如持续失败请重新扫码登录。";
@@ -527,6 +543,62 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(asy
   }
 }));
 
+app.get("/api/users/:id/favorites/:mediaId/detail-items", requireAuth, asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  try {
+    pruneFavoriteItemsCache();
+    const mediaId = Number(req.params.mediaId);
+    if (!Number.isFinite(mediaId) || mediaId < 1) {
+      res.status(400).json({ success: false, message: "Invalid mediaId" });
+      return;
+    }
+
+    const page = parsePositiveInteger(req.query.page, 1);
+    const pageSize = normalizePageSize(req.query.pageSize);
+    const folderTitle = String(req.query.folderTitle || "favorites");
+    const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
+    const cached = favoriteItemsCache.get(cacheKey);
+    let pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>;
+    if (cached && cached.expiresAt > Date.now()) {
+      pageResult = cached.data;
+    } else {
+      if (cached) {
+        favoriteItemsCache.delete(cacheKey);
+      }
+      pageResult = await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
+      favoriteItemsCache.set(cacheKey, {
+        expiresAt: Date.now() + favoriteItemsCacheTtlMs,
+        data: pageResult,
+      });
+    }
+
+    recordFavoritePageMetadata(user.id, mediaId, folderTitle, pageResult);
+    const withStatus = withProcessedStatus(user.id, mediaId, pageResult);
+    const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, pageResult.total);
+    res.json({
+      success: true,
+      data: {
+        ...withStatus,
+        summary: {
+          total: pageResult.total ?? withStatus.items.length,
+          uploaded: indexSummary.uploaded,
+          pending: indexSummary.pending,
+          pendingUnavailable: indexSummary.pendingUnavailable,
+          uploadedUnavailable: indexSummary.uploadedUnavailable,
+        },
+        indexSummary,
+        source: "bili",
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
+  }
+}));
+
 app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
@@ -544,11 +616,15 @@ app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandl
   const filter = parseFolderDetailFilter(req.query.filter);
   const offset = (page - 1) * pageSize;
   const result = stateManager.listFolderItemsForUser(user.id, mediaId, offset, pageSize, filter);
+  const folderTitle = String(req.query.folderTitle || "favorites");
+  const scan = stateManager.getFolderScan(user.id, mediaId, folderTitle);
+  const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, scan.total);
   res.json({
     success: true,
     data: {
       items: result.items,
       summary: result.summary,
+      indexSummary,
       page,
       pageSize,
       hasMore: result.hasMore,
