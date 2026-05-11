@@ -38,6 +38,10 @@ export class SyncScheduler {
   private readonly remoteVerifyPerTickNoNew = 120;
   private readonly remoteVerifyPerTickManual = 200;
   private remoteVerifyNextAllowedAt = 0;
+  private remoteDirListingCache = new Map<string, { expiresAt: number; names: string[] }>();
+  private readonly remoteDirListingCacheTtlMs = 30_000;
+  private remoteVerifyPathQueue = new Map<string, number>();
+  private pendingTickOptions: TickOptions | null = null;
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -200,33 +204,26 @@ export class SyncScheduler {
 
   runNow() {
     console.log("[Scheduler] Manual sync triggered");
-    if (this.running) {
-      return false;
-    }
-    void this.tick(true, { trigger: "manual" });
-    return true;
+    return this.triggerOrQueueTick({ trigger: "manual", skipFavoriteScan: false });
   }
 
   runReconcileNow() {
     console.log("[Scheduler] Manual reconcile triggered");
-    if (this.running) {
-      return false;
-    }
-    void this.tick(true, { trigger: "reconcile", forceFullRemoteVerify: true, forceFullFavoriteScan: true });
-    return true;
+    return this.triggerOrQueueTick({
+      trigger: "reconcile",
+      forceFullRemoteVerify: true,
+      forceFullFavoriteScan: true,
+      skipFavoriteScan: false,
+    });
   }
 
   runRemoteReconcileNow() {
     console.log("[Scheduler] Manual remote-only reconcile triggered");
-    if (this.running) {
-      return false;
-    }
-    void this.tick(true, {
+    return this.triggerOrQueueTick({
       trigger: "remote_reconcile",
       forceFullRemoteVerify: true,
       skipFavoriteScan: true,
     });
-    return true;
   }
 
   hasRunningTransferTasks() {
@@ -241,7 +238,9 @@ export class SyncScheduler {
     this.running = true;
     this.cycleContext = this.createCycleStats(trigger);
     try {
+      this.remoteDirListingCache.clear();
       if (!options.skipFavoriteScan) {
+        this.requeueRetryPendingBeforeScan();
         await this.runOnce(manual, options.forceFullFavoriteScan === true);
       }
       await this.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true);
@@ -253,6 +252,14 @@ export class SyncScheduler {
     } finally {
       this.cycleContext = null;
       this.running = false;
+      const queued = this.pendingTickOptions;
+      this.pendingTickOptions = null;
+      if (queued) {
+        setTimeout(() => {
+          const queuedManual = (queued.trigger || "auto") !== "auto";
+          void this.tick(queuedManual, queued);
+        }, 0);
+      }
     }
     return true;
   }
@@ -501,10 +508,6 @@ export class SyncScheduler {
       userName: user.name,
       folderName: folderTitle,
     });
-    if (this.stateManager.canBootstrapRelationFromGlobalProof(bvid, user.id, mediaId)) {
-      this.stateManager.bootstrapRelationFromGlobalProof(bvid, user.id, mediaId, remotePath);
-      return false;
-    }
     const target: UploadTarget = {
       userId: user.id,
       mediaId,
@@ -536,10 +539,63 @@ export class SyncScheduler {
     return true;
   }
 
+  private requeueRetryPendingBeforeScan() {
+    const users = this.userStore.list().filter((user) => user.enabled);
+    for (const user of users) {
+      for (const folder of user.favorites) {
+        const bvids = this.stateManager.listRetryCandidatesForFolder(user.id, folder.mediaId, 1000);
+        for (const bvid of bvids) {
+          const queued = this.enqueueIfNeeded(user, folder.mediaId, folder.title, bvid);
+          if (queued) {
+            this.cycleContext!.queuedItems += 1;
+          }
+        }
+      }
+    }
+  }
+
+  private triggerOrQueueTick(options: TickOptions) {
+    if (this.running) {
+      this.pendingTickOptions = this.mergeTickOptions(this.pendingTickOptions, options);
+      return { started: false, queued: true };
+    }
+    const manual = (options.trigger || "auto") !== "auto";
+    void this.tick(manual, options);
+    return { started: true, queued: false };
+  }
+
+  private mergeTickOptions(current: TickOptions | null, incoming: TickOptions): TickOptions {
+    if (!current) {
+      return { ...incoming };
+    }
+    const triggerPriority: Record<SyncTrigger, number> = {
+      auto: 0,
+      remote_reconcile: 1,
+      manual: 2,
+      reconcile: 3,
+    };
+    const currentTrigger = (current.trigger || "auto") as SyncTrigger;
+    const incomingTrigger = (incoming.trigger || "auto") as SyncTrigger;
+    const trigger = triggerPriority[incomingTrigger] >= triggerPriority[currentTrigger] ? incomingTrigger : currentTrigger;
+
+    const forceFullFavoriteScan = Boolean(current.forceFullFavoriteScan || incoming.forceFullFavoriteScan);
+    const skipFavoriteScan = forceFullFavoriteScan
+      ? false
+      : Boolean(current.skipFavoriteScan && incoming.skipFavoriteScan);
+
+    return {
+      trigger,
+      forceFullRemoteVerify: Boolean(current.forceFullRemoteVerify || incoming.forceFullRemoteVerify),
+      forceFullFavoriteScan,
+      skipFavoriteScan,
+    };
+  }
+
   private async verifyRemoteSamples(manual: boolean, forceFullRemoteVerify: boolean) {
     if (!this.cycleContext) return;
 
     const config = this.configStore.get();
+    this.remoteVerifyPathQueue.clear();
     const verifyLimit = forceFullRemoteVerify ? undefined : this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
     const includeDeferred = forceFullRemoteVerify;
     const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit, includeDeferred);
@@ -552,12 +608,11 @@ export class SyncScheduler {
 
     const executeOne = async (entry: RemoteVerifyCandidate) => {
       try {
-        await this.applyRemoteVerifyRateLimit(rateLimit);
-        const jitter = 100 + Math.floor(Math.random() * 201);
-        await delay(jitter);
-
         const relation = entry.relation;
         const resolvedRemotePath = relation.remotePath || entry.remotePath || this.deriveRemotePathFromRelation(entry, relation);
+        await this.applyRemoteVerifyRateLimit(rateLimit, resolvedRemotePath || "<remote-unknown>");
+        const jitter = 100 + Math.floor(Math.random() * 201);
+        await delay(jitter);
         const remoteFiles = await this.resolveRemoteFilesForVerify(entry, relation, resolvedRemotePath);
         if (!remoteFiles?.length) {
           const confirmed = await this.confirmRemoteStillMissing(entry, relation, undefined, resolvedRemotePath);
@@ -662,8 +717,7 @@ export class SyncScheduler {
     if (!pathToUse) {
       return [];
     }
-    const config = this.configStore.get();
-    const names = await listRemoteDir(config, pathToUse);
+    const names = await this.getRemoteDirListing(pathToUse);
     if (!names.length) {
       return [];
     }
@@ -694,6 +748,21 @@ export class SyncScheduler {
       default:
         return joinRemotePath(config.alistDest);
     }
+  }
+
+  private async getRemoteDirListing(pathToUse: string) {
+    const now = Date.now();
+    const cached = this.remoteDirListingCache.get(pathToUse);
+    if (cached && cached.expiresAt > now) {
+      return cached.names;
+    }
+    const config = this.configStore.get();
+    const names = await listRemoteDir(config, pathToUse);
+    this.remoteDirListingCache.set(pathToUse, {
+      expiresAt: now + this.remoteDirListingCacheTtlMs,
+      names,
+    });
+    return names;
   }
 
   private enqueueMissingIfPossible(entry: VideoArchiveEntry, targetRelation?: FavoriteRelation) {
@@ -739,15 +808,21 @@ export class SyncScheduler {
     }
   }
 
-  private async applyRemoteVerifyRateLimit(rateLimitPerSecond: number) {
+  private async applyRemoteVerifyRateLimit(rateLimitPerSecond: number, remotePath: string) {
     const intervalMs = Math.max(50, Math.floor(1000 / rateLimitPerSecond));
     const now = Date.now();
-    if (this.remoteVerifyNextAllowedAt <= now) {
-      this.remoteVerifyNextAllowedAt = now + intervalMs;
+    const pathNextAllowed = this.remoteVerifyPathQueue.get(remotePath) || 0;
+    const nextAllowed = Math.max(this.remoteVerifyNextAllowedAt, pathNextAllowed);
+    if (nextAllowed <= now) {
+      const next = now + intervalMs;
+      this.remoteVerifyNextAllowedAt = next;
+      this.remoteVerifyPathQueue.set(remotePath, next + Math.floor(intervalMs / 2));
       return;
     }
-    const waitMs = this.remoteVerifyNextAllowedAt - now;
-    this.remoteVerifyNextAllowedAt += intervalMs;
+    const waitMs = nextAllowed - now;
+    const next = nextAllowed + intervalMs;
+    this.remoteVerifyNextAllowedAt = next;
+    this.remoteVerifyPathQueue.set(remotePath, next + Math.floor(intervalMs / 2));
     await delay(waitMs);
   }
 

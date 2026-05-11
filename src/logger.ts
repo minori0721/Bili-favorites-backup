@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
+import { dataDir } from "./paths.js";
+import { readJsonFile, writeJsonFile } from "./storage.js";
 
 export interface LogEntry {
   timestamp: string;
@@ -11,18 +14,23 @@ export interface LogEntry {
   bvid?: string;
   /** Whether this line should be shown in simple mode (default true). */
   simpleVisible?: boolean;
+  /** Whether this line should be shown in debug mode (default false). */
+  debugVisible?: boolean;
 }
 
 const MAX_LOG_ENTRIES = 500;
+const logsPath = path.join(dataDir, "logs.json");
 
 class LogManager extends EventEmitter {
-  private entries: LogEntry[] = [];
+  private entries: LogEntry[] = readJsonFile<LogEntry[]>(logsPath, []);
+  private persistTimer: NodeJS.Timeout | null = null;
 
   push(entry: LogEntry) {
     this.entries.push(entry);
     if (this.entries.length > MAX_LOG_ENTRIES) {
       this.entries.splice(0, this.entries.length - MAX_LOG_ENTRIES);
     }
+    this.schedulePersist();
     this.emit("log", entry);
   }
 
@@ -32,6 +40,17 @@ class LogManager extends EventEmitter {
 
   clear() {
     this.entries = [];
+    this.schedulePersist();
+  }
+
+  private schedulePersist() {
+    if (this.persistTimer) {
+      return;
+    }
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      writeJsonFile(logsPath, this.entries);
+    }, 300);
   }
 }
 

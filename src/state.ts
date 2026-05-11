@@ -147,7 +147,7 @@ export interface StateFile {
 
 const statePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -184,6 +184,10 @@ function relationKey(userId: string, mediaId: number, bvid: string) {
   return `${userId}:${mediaId}:${bvid}`;
 }
 
+function failedKey(mediaId: number, bvid: string) {
+  return `${mediaId}:${bvid}`;
+}
+
 function folderKey(userId: string, mediaId: number) {
   return `${userId}:${mediaId}`;
 }
@@ -205,6 +209,18 @@ export class StateManager {
   private getRelation(userId: string | undefined, mediaId: number | undefined, bvid: string) {
     if (!userId || !mediaId) return null;
     return this.state.relations?.[relationKey(userId, mediaId, bvid)] || null;
+  }
+
+  private getFailedEntry(userId: string, bvid: string, mediaId?: number) {
+    const userEntries = this.state.failedByUser?.[userId];
+    if (!userEntries) return undefined;
+    if (typeof mediaId === "number") {
+      return userEntries[failedKey(mediaId, bvid)] || userEntries[bvid];
+    }
+    if (userEntries[bvid]) {
+      return userEntries[bvid];
+    }
+    return Object.values(userEntries).find((entry) => entry?.bvid === bvid);
   }
 
   private updateTargetRelations(
@@ -257,12 +273,12 @@ export class StateManager {
     return Boolean(entry && BACKED_UP_STATUSES.has(entry.backupStatus));
   }
 
-  isFailed(userId: string, bvid: string) {
+  isFailed(userId: string, bvid: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (entry?.backupStatus === "failed" || entry?.backupStatus === "lost") {
       return true;
     }
-    return Boolean(this.state.failedByUser?.[userId]?.[bvid]);
+    return Boolean(this.getFailedEntry(userId, bvid, mediaId));
   }
 
   recordFavoriteItem(
@@ -328,42 +344,13 @@ export class StateManager {
     return { wasKnown, entry: this.state.videos![item.bvid] };
   }
 
-  canBootstrapRelationFromGlobalProof(bvid: string, userId: string, mediaId: number) {
-    const entry = this.state.videos?.[bvid];
-    const relation = this.getRelation(userId, mediaId, bvid);
-    if (!entry || !relation || entry.biliStatus === "unavailable") {
-      return false;
-    }
-    const status = relation?.backupStatus || entry.backupStatus;
-    if (BACKED_UP_STATUSES.has(status)) {
-      return false;
-    }
-    if (ACTIVE_BACKUP_STATUSES.has(status)) {
-      return false;
-    }
-    if (status === "missing" || status === "lost") {
-      return false;
-    }
-    const hasGlobalProof = Boolean(entry.remoteFiles?.length) ||
-      Boolean(entry.uploadedAt) ||
-      Boolean(entry.verifiedAt);
-    return hasGlobalProof;
+  canBootstrapRelationFromGlobalProof(_bvid: string, _userId: string, _mediaId: number) {
+    // Disabled to avoid false-positive "uploaded" status caused by cross-folder global proof.
+    return false;
   }
 
-  bootstrapRelationFromGlobalProof(bvid: string, userId: string, mediaId: number, remotePath: string) {
-    const entry = this.state.videos?.[bvid];
-    const relation = this.getRelation(userId, mediaId, bvid);
-    if (!entry || !relation) return false;
-    relation.backupStatus = "verified";
-    relation.remotePath = remotePath;
-    relation.remoteFiles = undefined;
-    relation.lastRemoteCheckAt = undefined;
-    relation.nextRemoteCheckAt = undefined;
-    relation.remoteMissingCount = 0;
-    relation.lastError = "Imported legacy global backup state; waiting for AList verification.";
-    this.refreshVideoAggregateStatus(bvid);
-    this.save();
-    return true;
+  bootstrapRelationFromGlobalProof(_bvid: string, _userId: string, _mediaId: number, _remotePath: string) {
+    return false;
   }
 
   shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string) {
@@ -371,7 +358,7 @@ export class StateManager {
     if (!entry || entry.biliStatus === "unavailable") {
       return false;
     }
-    const failed = userId ? this.state.failedByUser?.[userId]?.[bvid] : undefined;
+    const failed = userId ? this.getFailedEntry(userId, bvid, mediaId) : undefined;
     if (failed?.permanent) {
       return false;
     }
@@ -523,7 +510,7 @@ export class StateManager {
     if (!this.state.failedByUser[userId]) {
       this.state.failedByUser[userId] = {};
     }
-    this.state.failedByUser[userId][bvid] = {
+    this.state.failedByUser[userId][failedKey(mediaId, bvid)] = {
       bvid,
       mediaId,
       reason,
@@ -539,6 +526,22 @@ export class StateManager {
     if (relation) {
       relation.backupStatus = permanent && entry?.biliStatus === "unavailable" ? "lost" : "failed";
       relation.lastError = reason;
+    }
+    this.save();
+  }
+
+  clearFailed(userId: string, mediaId: number, bvid: string) {
+    const entries = this.state.failedByUser?.[userId];
+    if (!entries) return;
+    const scoped = failedKey(mediaId, bvid);
+    if (entries[scoped]) {
+      delete entries[scoped];
+    }
+    if (entries[bvid]) {
+      delete entries[bvid];
+    }
+    if (Object.keys(entries).length === 0) {
+      delete this.state.failedByUser?.[userId];
     }
     this.save();
   }
@@ -569,6 +572,9 @@ export class StateManager {
       relation.nextRemoteCheckAt = undefined;
       relation.remoteMissingCount = 0;
       relation.lastError = undefined;
+    }
+    if (userId && mediaId) {
+      this.clearFailed(userId, mediaId, bvid);
     }
     this.save();
   }
@@ -750,6 +756,39 @@ export class StateManager {
       .map((item) => ({ ...item }));
   }
 
+  listRetryCandidatesForFolder(userId: string, mediaId: number, limit = 500) {
+    const normalizedLimit = Math.max(1, Math.floor(limit));
+    const rows: Array<{ relation: FavoriteRelation; video: VideoArchiveEntry; failed?: FailedEntry }> = [];
+    for (const relation of Object.values(this.state.relations || {})) {
+      if (relation.userId !== userId || relation.mediaId !== mediaId) {
+        continue;
+      }
+      const video = this.state.videos?.[relation.bvid];
+      if (!video) {
+        continue;
+      }
+      const failed = this.getFailedEntry(userId, relation.bvid, mediaId);
+      rows.push({ relation, video, failed });
+    }
+
+    const candidates = rows
+      .filter(({ relation, video, failed }) => {
+        if (video.biliStatus === "unavailable") return false;
+        const status = relation.backupStatus || video.backupStatus;
+        if (BACKED_UP_STATUSES.has(status) || ACTIVE_BACKUP_STATUSES.has(status)) return false;
+        if (status === "failed" || status === "missing") return true;
+        if (status === "discovered" && (Boolean(failed) || Boolean(relation.lastError))) return true;
+        return false;
+      })
+      .sort((a, b) => {
+        const left = Date.parse(a.failed?.failedAt || a.relation.lastSeenAt || a.video.lastSeenAt || "");
+        const right = Date.parse(b.failed?.failedAt || b.relation.lastSeenAt || b.video.lastSeenAt || "");
+        return right - left;
+      })
+      .slice(0, normalizedLimit);
+    return candidates.map((item) => item.relation.bvid);
+  }
+
   listFolderItemsForUser(
     userId: string,
     mediaId: number,
@@ -775,7 +814,7 @@ export class StateManager {
         cover: video.cover,
         unavailable,
         processed,
-        failed: this.isFailed(userId, video.bvid),
+        failed: this.isFailed(userId, video.bvid, mediaId),
         mediaId: relation.mediaId,
         folderTitle: relation.folderTitle,
         lastSeenAt: relation.lastSeenAt,
@@ -848,7 +887,7 @@ export class StateManager {
       cover: video.cover,
       unavailable: true,
       processed: this.isProcessed(userId, video.bvid, relation.mediaId),
-      failed: this.isFailed(userId, video.bvid),
+      failed: this.isFailed(userId, video.bvid, relation.mediaId),
       mediaId: relation.mediaId,
       folderTitle: relation.folderTitle,
     }));
@@ -999,6 +1038,51 @@ export class StateManager {
         }
       }
       this.state.schemaVersion = 6;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 7) {
+      for (const [userId, entries] of Object.entries(this.state.failedByUser || {})) {
+        const migrated: Record<string, FailedEntry> = {};
+        for (const [key, entry] of Object.entries(entries || {})) {
+          if (!entry) continue;
+          const normalizedBvid = entry.bvid || key;
+          const normalizedMediaId = Number(entry.mediaId || 0);
+          if (!Number.isFinite(normalizedMediaId) || normalizedMediaId <= 0) {
+            continue;
+          }
+          const targetKey = failedKey(normalizedMediaId, normalizedBvid);
+          const prev = migrated[targetKey];
+          if (!prev) {
+            migrated[targetKey] = { ...entry, bvid: normalizedBvid, mediaId: normalizedMediaId };
+            continue;
+          }
+          const prevAt = Date.parse(prev.failedAt || "");
+          const nextAt = Date.parse(entry.failedAt || "");
+          if (!Number.isFinite(prevAt) || (Number.isFinite(nextAt) && nextAt > prevAt)) {
+            migrated[targetKey] = { ...entry, bvid: normalizedBvid, mediaId: normalizedMediaId };
+          }
+        }
+        this.state.failedByUser![userId] = migrated;
+      }
+
+      for (const relation of Object.values(this.state.relations || {})) {
+        if (relation.lastError !== "Imported legacy global backup state; waiting for AList verification.") {
+          continue;
+        }
+        const video = this.state.videos?.[relation.bvid];
+        relation.backupStatus = video?.biliStatus === "unavailable" ? "lost" : "discovered";
+        relation.remoteFiles = undefined;
+        relation.uploadedAt = undefined;
+        relation.verifiedAt = undefined;
+        relation.lastRemoteCheckAt = undefined;
+        relation.nextRemoteCheckAt = undefined;
+        relation.remoteMissingCount = 0;
+        relation.lastError = "Legacy relation status reset; waiting for real remote verification.";
+        this.refreshVideoAggregateStatus(relation.bvid);
+      }
+
+      this.state.schemaVersion = 7;
       changed = true;
     }
 

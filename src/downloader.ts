@@ -132,6 +132,48 @@ function classifyBBDownFailure(output: string) {
   return null;
 }
 
+function createDebugLogPath(bvid: string) {
+  const debugDir = path.join(process.cwd(), "data", "debug");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(debugDir, `${stamp}_${bvid}.log`);
+}
+
+async function runDebugProbe(
+  bvid: string,
+  baseArgs: string[],
+  cwd: string
+) {
+  const debugLogPath = createDebugLogPath(bvid);
+  await fs.promises.mkdir(path.dirname(debugLogPath), { recursive: true });
+  const args = [...baseArgs, "--debug", "--only-show-info"];
+  return new Promise<string>((resolve) => {
+    const child = spawn("BBDown", args, { cwd });
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      out += chunk.toString();
+    });
+    child.on("close", async () => {
+      try {
+        await fs.promises.writeFile(debugLogPath, out, "utf8");
+      } catch {
+        // ignore write failure
+      }
+      resolve(debugLogPath);
+    });
+    child.on("error", async (error) => {
+      try {
+        await fs.promises.writeFile(debugLogPath, `${out}\n[debug probe error] ${error?.message || error}`, "utf8");
+      } catch {
+        // ignore write failure
+      }
+      resolve(debugLogPath);
+    });
+  });
+}
+
 function runCommand(command: string, args: string[], cwd: string, bvid: string) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd });
@@ -238,19 +280,47 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       const combinedOutput = `${stdoutAll}\n${stderr}`;
       const failure = classifyBBDownFailure(combinedOutput);
       if (failure) {
-        const err = new Error(`BBDown reported failure: ${failure.line}`);
-        (err as any).permanent = failure.permanent;
-        (err as any).deferToNextCycle = failure.deferToNextCycle;
-        logManager.push({
-          timestamp: new Date().toISOString(),
-          type: "download",
-          level: "error",
-          summary: `下载失败 ${bvid}: ${failure.line}`,
-          raw: failure.line,
-          bvid,
-          simpleVisible: true,
-        });
-        reject(err);
+        const finalizeFailure = (finalLine: string) => {
+          const err = new Error(`BBDown reported failure: ${finalLine}`);
+          (err as any).permanent = failure.permanent;
+          (err as any).deferToNextCycle = failure.deferToNextCycle;
+          logManager.push({
+            timestamp: new Date().toISOString(),
+            type: "download",
+            level: "error",
+            summary: `下载失败 ${bvid}: ${finalLine}`,
+            raw: finalLine,
+            bvid,
+            simpleVisible: true,
+            debugVisible: true,
+          });
+          reject(err);
+        };
+
+        if (!failure.deferToNextCycle) {
+          finalizeFailure(failure.line);
+          return;
+        }
+
+        runDebugProbe(bvid, args, cwd)
+          .then((debugLogPath) => {
+            const finalLine = `${failure.line} (debug: ${debugLogPath})`;
+            logManager.push({
+              timestamp: new Date().toISOString(),
+              type: "download",
+              level: "warn",
+              summary: `Debug 日志已保存: ${path.basename(debugLogPath)}`,
+              raw: `Debug log saved: ${debugLogPath}`,
+              bvid,
+              simpleVisible: false,
+              debugVisible: true,
+            });
+            finalizeFailure(finalLine);
+          })
+          .catch((probeError) => {
+            const finalLine = `${failure.line} [debug probe failed: ${probeError?.message || probeError}]`;
+            finalizeFailure(finalLine);
+          });
         return;
       }
       if (code === 0) {

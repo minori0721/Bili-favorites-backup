@@ -343,6 +343,7 @@ function getLogSection() {
       <div class="log-toggle">
         <button id="logSimpleBtn" class="active">精简模式</button>
         <button id="logRawBtn">原始输出</button>
+        <button id="logDebugBtn">调试模式</button>
       </div>
       <div class="log-console" id="logConsole"><span class="log-info">等待日志...</span></div>
     </section>`;
@@ -1130,6 +1131,10 @@ function getAppScript() {
         if (entry.simpleVisible === false) return;
         div.className = cls;
         div.textContent = time + ' ' + (entry.summary || entry.raw || '');
+      } else if (logMode === 'debug') {
+        if (entry.debugVisible !== true && entry.level !== 'error' && entry.level !== 'warn') return;
+        div.className = cls;
+        div.textContent = time + ' ' + (entry.raw || entry.summary || '');
       } else {
         div.className = cls;
         div.textContent = time + ' ' + (entry.raw || entry.summary || '');
@@ -1252,8 +1257,12 @@ function getAppScript() {
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u7acb\u5373\u540c\u6b65';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u540c\u6b65\u4e2d...';
-      try { await fetchJson('/api/sync/now', { method:'POST' }); } catch(e) {}
-      btn.textContent = '\u5df2\u89e6\u53d1';
+      try {
+        const data = await fetchJson('/api/sync/now', { method:'POST' });
+        btn.textContent = data && data.queued ? '\u5df2\u6392\u961f' : '\u5df2\u89e6\u53d1';
+      } catch(e) {
+        btn.textContent = '\u89e6\u53d1\u5931\u8d25';
+      }
       setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('reconcileRemoteBtn').addEventListener('click', async () => {
@@ -1261,8 +1270,12 @@ function getAppScript() {
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5AList\uff09';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u5bf9\u8d26\u4e2d...';
-      try { await fetchJson('/api/sync/reconcile-remote', { method:'POST' }); } catch(e) {}
-      btn.textContent = '\u5df2\u89e6\u53d1';
+      try {
+        const data = await fetchJson('/api/sync/reconcile-remote', { method:'POST' });
+        btn.textContent = data && data.queued ? '\u5df2\u6392\u961f' : '\u5df2\u89e6\u53d1';
+      } catch(e) {
+        btn.textContent = '\u89e6\u53d1\u5931\u8d25';
+      }
       setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('reconcileBtn').addEventListener('click', async () => {
@@ -1272,8 +1285,12 @@ function getAppScript() {
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u5168\u91cf\u626b\u63cf\u4e2d...';
-      try { await fetchJson('/api/sync/reconcile', { method:'POST' }); } catch(e) {}
-      btn.textContent = '\u5df2\u89e6\u53d1';
+      try {
+        const data = await fetchJson('/api/sync/reconcile', { method:'POST' });
+        btn.textContent = data && data.queued ? '\u5df2\u6392\u961f' : '\u5df2\u89e6\u53d1';
+      } catch(e) {
+        btn.textContent = '\u89e6\u53d1\u5931\u8d25';
+      }
       setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('logoutBtn').addEventListener('click', async () => {
@@ -1287,11 +1304,20 @@ function getAppScript() {
       logMode = 'simple';
       document.getElementById('logSimpleBtn').classList.add('active');
       document.getElementById('logRawBtn').classList.remove('active');
+      document.getElementById('logDebugBtn').classList.remove('active');
       rebuildLog();
     });
     document.getElementById('logRawBtn').addEventListener('click', () => {
       logMode = 'raw';
       document.getElementById('logRawBtn').classList.add('active');
+      document.getElementById('logSimpleBtn').classList.remove('active');
+      document.getElementById('logDebugBtn').classList.remove('active');
+      rebuildLog();
+    });
+    document.getElementById('logDebugBtn').addEventListener('click', () => {
+      logMode = 'debug';
+      document.getElementById('logDebugBtn').classList.add('active');
+      document.getElementById('logRawBtn').classList.remove('active');
       document.getElementById('logSimpleBtn').classList.remove('active');
       rebuildLog();
     });

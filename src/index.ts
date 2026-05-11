@@ -630,12 +630,16 @@ app.delete("/api/users/:id", requireAuth, (req, res) => {
 
 app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
   try {
-    const accepted = scheduler.runNow();
-    if (!accepted) {
-      res.status(409).json({ success: false, message: "A sync task is already running" });
+    const result = scheduler.runNow();
+    if (result.started) {
+      res.json({ success: true, data: { message: "Sync triggered", queued: false } });
       return;
     }
-    res.json({ success: true, data: { message: "Sync triggered" } });
+    if (result.queued) {
+      res.json({ success: true, data: { message: "Sync queued", queued: true } });
+      return;
+    }
+    res.status(409).json({ success: false, message: "A sync task is already running" });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Sync failed" });
   }
@@ -643,12 +647,16 @@ app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
 
 app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
   try {
-    const accepted = scheduler.runReconcileNow();
-    if (!accepted) {
-      res.status(409).json({ success: false, message: "A sync task is already running" });
+    const result = scheduler.runReconcileNow();
+    if (result.started) {
+      res.json({ success: true, data: { message: "Reconcile triggered", queued: false } });
       return;
     }
-    res.json({ success: true, data: { message: "Reconcile triggered" } });
+    if (result.queued) {
+      res.json({ success: true, data: { message: "Reconcile queued", queued: true } });
+      return;
+    }
+    res.status(409).json({ success: false, message: "A sync task is already running" });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Reconcile failed" });
   }
@@ -656,12 +664,16 @@ app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
 
 app.post("/api/sync/reconcile-remote", requireAuth, asyncHandler(async (_req, res) => {
   try {
-    const accepted = scheduler.runRemoteReconcileNow();
-    if (!accepted) {
-      res.status(409).json({ success: false, message: "A sync task is already running" });
+    const result = scheduler.runRemoteReconcileNow();
+    if (result.started) {
+      res.json({ success: true, data: { message: "Remote-only reconcile triggered", queued: false } });
       return;
     }
-    res.json({ success: true, data: { message: "Remote-only reconcile triggered" } });
+    if (result.queued) {
+      res.json({ success: true, data: { message: "Remote-only reconcile queued", queued: true } });
+      return;
+    }
+    res.status(409).json({ success: false, message: "A sync task is already running" });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || "Remote reconcile failed" });
   }
