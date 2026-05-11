@@ -13,9 +13,12 @@ RUN npm run build
 
 FROM node:18-bullseye-slim AS runner
 WORKDIR /app
-# Use Tsinghua mirror for better network stability in China
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list \
-  && sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list \
+# Optional mirror for CN network. Default keeps Debian official sources for CI stability.
+ARG APT_MIRROR=official
+RUN if [ "$APT_MIRROR" = "tuna" ]; then \
+      sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g' /etc/apt/sources.list; \
+      sed -i 's|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list; \
+    fi \
   && apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg curl unzip ca-certificates \
   && rm -rf /var/lib/apt/lists/*

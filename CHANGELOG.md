@@ -2,6 +2,12 @@
 
 本项目遵循语义化版本（SemVer）。
 
+## [2.1.9] - 2026-05-11
+
+### 修复
+- 修复 Docker 构建阶段 `apt-get install` 大量 `403 Forbidden` 导致镜像构建失败的问题。
+- Dockerfile 调整为：默认使用 Debian 官方源（CI 稳定），国内环境可通过 `ARG APT_MIRROR=tuna` 显式切换清华镜像。
+
 ## [2.1.8] - 2026-05-11
 
 ### 优化
