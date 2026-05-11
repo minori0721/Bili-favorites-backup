@@ -48,7 +48,34 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
     args.push("-app", "--access-token", String(cookie.accessToken));
   }
 
-  await runCommand("BBDown", args, downloadDir, bvid);
+  let retriedWithTruncate = false;
+  try {
+    await runCommand("BBDown", args, downloadDir, bvid);
+  } catch (error: any) {
+    if (!Boolean(error?.filenameTooLong)) {
+      throw error;
+    }
+
+    retriedWithTruncate = true;
+    const safeTitle = await fetchSafeVideoTitle(bvid, cookieString);
+    const fallbackBase = buildFallbackFilePattern(safeTitle, bvid);
+    const retryArgs = replaceFilePatternArgs(args, fallbackBase);
+
+    logManager.push({
+      timestamp: new Date().toISOString(),
+      type: "download",
+      level: "warn",
+      summary: `文件名过长，自动截断后重试 ${bvid}`,
+      raw: `File name too long; retry with truncated title: ${fallbackBase}`,
+      bvid,
+      simpleVisible: true,
+      debugVisible: true,
+    });
+
+    await fs.promises.rm(downloadDir, { recursive: true, force: true });
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    await runCommand("BBDown", retryArgs, downloadDir, bvid);
+  }
 
   const entries = await fs.promises.readdir(downloadDir, { withFileTypes: true });
   const mediaFiles = entries.filter((entry) => entry.isFile() && isMediaOutputFile(entry.name));
@@ -61,7 +88,7 @@ export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, confi
     timestamp: new Date().toISOString(),
     type: "download",
     level: "info",
-    summary: `下载完成 ${bvid}`,
+    summary: `下载完成 ${bvid}${retriedWithTruncate ? "（已自动截断标题）" : ""}`,
     raw: `BBDown produced ${mediaFiles.length} media file(s)`,
     bvid,
     simpleVisible: true,
@@ -110,6 +137,74 @@ function buildDfnPriority(config: AppConfig) {
 
 function isMediaOutputFile(name: string) {
   return /\.(mp4|mkv|flv|mov|m4v)$/i.test(name) && !/\.(part|tmp|download)$/i.test(name);
+}
+
+function isFilenameTooLongError(message: string) {
+  const text = String(message || "");
+  return /File name too long|filename too long|ENAMETOOLONG/i.test(text);
+}
+
+function sanitizeTitleForPattern(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\.+$/g, "");
+}
+
+function truncateUtf8ByBytes(value: string, maxBytes: number) {
+  if (!value) return "";
+  const normalized = value.normalize("NFC");
+  let bytes = 0;
+  let out = "";
+  for (const ch of normalized) {
+    const size = Buffer.byteLength(ch, "utf8");
+    if (bytes + size > maxBytes) break;
+    out += ch;
+    bytes += size;
+  }
+  return out;
+}
+
+function buildFallbackFilePattern(safeTitle: string, bvid: string) {
+  const title = safeTitle || bvid;
+  const truncated = truncateUtf8ByBytes(title, 72) || bvid;
+  return sanitizeTitleForPattern(`${truncated}-${bvid}`);
+}
+
+function replaceFilePatternArgs(args: string[], fallbackBase: string) {
+  const next = [...args];
+  const fIndex = next.findIndex((item) => item === "-F");
+  if (fIndex >= 0 && fIndex + 1 < next.length) {
+    next[fIndex + 1] = fallbackBase;
+  } else {
+    next.push("-F", fallbackBase);
+  }
+  const mIndex = next.findIndex((item) => item === "-M");
+  if (mIndex >= 0 && mIndex + 1 < next.length) {
+    next[mIndex + 1] = `${fallbackBase}_P<pageNumberWithZero>`;
+  } else {
+    next.push("-M", `${fallbackBase}_P<pageNumberWithZero>`);
+  }
+  return next;
+}
+
+async function fetchSafeVideoTitle(bvid: string, cookieString: string) {
+  try {
+    const response = await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
+      headers: {
+        Cookie: cookieString,
+        Referer: "https://www.bilibili.com/",
+        "User-Agent": "Mozilla/5.0",
+      },
+    });
+    if (!response.ok) return bvid;
+    const data: any = await response.json();
+    const title = data?.data?.title;
+    return sanitizeTitleForPattern(typeof title === "string" ? title : bvid);
+  } catch {
+    return bvid;
+  }
 }
 
 function classifyBBDownFailure(output: string) {
@@ -278,6 +373,13 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
     child.on("close", (code) => {
       flushStdoutBuffer(true);
       const combinedOutput = `${stdoutAll}\n${stderr}`;
+      if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
+        const err = new Error(`BBDown output filename too long: ${combinedOutput || stderr || "unknown error"}`);
+        (err as any).filenameTooLong = true;
+        reject(err);
+        return;
+      }
+
       const failure = classifyBBDownFailure(combinedOutput);
       if (failure) {
         const finalizeFailure = (finalLine: string) => {
@@ -323,6 +425,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
           });
         return;
       }
+
       if (code === 0) {
         resolve();
         return;

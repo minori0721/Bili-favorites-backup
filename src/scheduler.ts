@@ -134,6 +134,9 @@ export class SyncScheduler {
         uploadTask.userId = target.userId;
         uploadTask.mediaId = target.mediaId;
         uploadTask.folderTitle = target.folderTitle;
+        uploadTask.videoTitle = task.videoTitle || "";
+        uploadTask.upperName = task.upperName || "";
+        uploadTask.cover = task.cover || "";
         uploadTask.onUploading = () => this.stateManager.markUploading(task.bvid, target.userId, target.mediaId);
         this.uploadQueue.addTask(uploadTask);
       });
@@ -228,6 +231,39 @@ export class SyncScheduler {
 
   hasRunningTransferTasks() {
     return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
+  }
+
+  getQueueSnapshot() {
+    const mapTask = (task: any, stage: "download_pending" | "download_running" | "upload_pending" | "upload_running") => ({
+      id: String(task.id || ""),
+      bvid: String(task.bvid || ""),
+      title: String(task.videoTitle || ""),
+      upperName: String(task.upperName || ""),
+      cover: task.cover ? String(task.cover) : "",
+      folderTitle: String(task.folderTitle || ""),
+      userId: task.userId ? String(task.userId) : "",
+      mediaId: Number(task.mediaId || 0),
+      retries: Number(task.retries || 0),
+      maxRetries: Number(task.maxRetries || 0),
+      queuedAt: typeof task.queuedAt === "number" ? task.queuedAt : undefined,
+      startedAt: typeof task.startedAt === "number" ? task.startedAt : undefined,
+      sequence: typeof task.sequence === "number" ? task.sequence : undefined,
+      stage,
+    });
+
+    const downloadTasks = this.downloadQueue.getTasks();
+    const uploadTasks = this.uploadQueue.getTasks();
+
+    const bySequence = (a: any, b: any) => Number(a.sequence || 0) - Number(b.sequence || 0);
+    const byStartedAt = (a: any, b: any) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
+
+    return {
+      generatedAt: Date.now(),
+      downloadPending: downloadTasks.filter((task) => task.status === "pending").sort(bySequence).map((task) => mapTask(task, "download_pending")),
+      downloadRunning: downloadTasks.filter((task) => task.status === "running").sort(byStartedAt).map((task) => mapTask(task, "download_running")),
+      uploadPending: uploadTasks.filter((task) => task.status === "pending").sort(bySequence).map((task) => mapTask(task, "upload_pending")),
+      uploadRunning: uploadTasks.filter((task) => task.status === "running").sort(byStartedAt).map((task) => mapTask(task, "upload_running")),
+    };
   }
 
   async tick(manual = false, options: TickOptions = {}) {
@@ -363,7 +399,7 @@ export class SyncScheduler {
     let page = 1;
     while (true) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
-      this.recordPage(user, mediaId, folderTitle, result.items);
+      this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
         initStatus: "complete",
@@ -389,7 +425,7 @@ export class SyncScheduler {
     let lastPage = 0;
     for (let page = 1; page <= maxPages; page += 1) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
-      const pageStats = this.recordPage(user, mediaId, folderTitle, result.items);
+      const pageStats = this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
       lastPage = page;
       const previousScan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
       this.stateManager.updateFolderScan(user.id, mediaId, {
@@ -439,7 +475,7 @@ export class SyncScheduler {
 
     for (let i = 0; i < pagesThisRun; i += 1) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
-      this.recordPage(user, mediaId, folderTitle, result.items);
+      this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
 
       if (!result.hasMore || result.items.length === 0) {
         const completeWithoutTotal = !manual && !totalPages && page > Math.max(startAfterPage + 1, 1);
@@ -476,11 +512,18 @@ export class SyncScheduler {
     user: BiliUser,
     mediaId: number,
     folderTitle: string,
-    items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"]
+    items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"],
+    page: number,
+    pageSize = 20
   ) {
     let newItems = 0;
-    for (const item of items) {
-      const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item);
+    items.forEach((item, indexInPage) => {
+      const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
+      const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
+        favOrder,
+        favPage: page,
+        favIndexInPage: indexInPage,
+      });
       if (!result.wasKnown) {
         newItems += 1;
         this.cycleContext!.newItems += 1;
@@ -489,7 +532,7 @@ export class SyncScheduler {
       if (queued) {
         this.cycleContext!.queuedItems += 1;
       }
-    }
+    });
     return { newItems };
   }
 
@@ -528,6 +571,10 @@ export class SyncScheduler {
     task.mediaId = mediaId;
     task.folderTitle = folderTitle;
     task.remotePath = remotePath;
+    const meta = this.stateManager.getVideoMeta(bvid);
+    task.videoTitle = meta?.title || "";
+    task.upperName = meta?.upperName || "";
+    task.cover = meta?.cover || "";
     task.targets = [target];
     task.onDownloading = () => this.stateManager.markDownloading(bvid, task.targets);
     task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir, task.targets);

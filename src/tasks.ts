@@ -16,6 +16,9 @@ export class DownloadTask extends Task {
   cookie: BiliCookie;
   config: AppConfig;
   downloadDir?: string;
+  videoTitle?: string;
+  upperName?: string;
+  cover?: string;
   userId?: string;
   mediaId?: number;
   folderTitle?: string;
@@ -46,6 +49,9 @@ export class UploadTask extends Task {
   downloadDir: string;
   remotePath: string;
   config: AppConfig;
+  videoTitle?: string;
+  upperName?: string;
+  cover?: string;
   userId?: string;
   mediaId?: number;
   folderTitle?: string;

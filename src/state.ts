@@ -66,6 +66,11 @@ export interface FavoriteRelation {
   folderTitle: string;
   firstSeenAt: string;
   lastSeenAt: string;
+  // Order in Bilibili favorite list (based on page + index in API response).
+  favOrder?: number;
+  favPage?: number;
+  favIndexInPage?: number;
+  favOrderUpdatedAt?: string;
   activeInFavorite: boolean;
   backupStatus?: BackupStatus;
   remotePath?: string;
@@ -118,6 +123,9 @@ export interface FolderDetailItem {
   title: string;
   upperName: string;
   cover?: string;
+  favOrder?: number;
+  favPage?: number;
+  favIndexInPage?: number;
   unavailable: boolean;
   processed: boolean;
   failed: boolean;
@@ -285,7 +293,12 @@ export class StateManager {
     userId: string,
     mediaId: number,
     folderTitle: string,
-    item: ObservedFavoriteItem
+    item: ObservedFavoriteItem,
+    orderInfo?: {
+      favOrder?: number;
+      favPage?: number;
+      favIndexInPage?: number;
+    }
   ) {
     const seenAt = nowIso();
     const existing = this.state.videos![item.bvid];
@@ -324,6 +337,14 @@ export class StateManager {
       relation.folderTitle = folderTitle;
       relation.lastSeenAt = seenAt;
       relation.activeInFavorite = true;
+      if (Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0) {
+        relation.favOrder = Number(orderInfo!.favOrder);
+        relation.favPage = Number.isInteger(orderInfo?.favPage) && Number(orderInfo!.favPage) > 0 ? Number(orderInfo!.favPage) : relation.favPage;
+        relation.favIndexInPage = Number.isInteger(orderInfo?.favIndexInPage) && Number(orderInfo!.favIndexInPage) >= 0
+          ? Number(orderInfo!.favIndexInPage)
+          : relation.favIndexInPage;
+        relation.favOrderUpdatedAt = seenAt;
+      }
       if (!relation.backupStatus) {
         relation.backupStatus = this.initialRelationStatus(item.bvid);
       }
@@ -335,6 +356,12 @@ export class StateManager {
         folderTitle,
         firstSeenAt: seenAt,
         lastSeenAt: seenAt,
+        favOrder: Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0 ? Number(orderInfo!.favOrder) : undefined,
+        favPage: Number.isInteger(orderInfo?.favPage) && Number(orderInfo!.favPage) > 0 ? Number(orderInfo!.favPage) : undefined,
+        favIndexInPage: Number.isInteger(orderInfo?.favIndexInPage) && Number(orderInfo!.favIndexInPage) >= 0
+          ? Number(orderInfo!.favIndexInPage)
+          : undefined,
+        favOrderUpdatedAt: Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0 ? seenAt : undefined,
         activeInFavorite: true,
         backupStatus: item.unavailable ? "lost" : "discovered",
       };
@@ -802,7 +829,14 @@ export class StateManager {
       .filter((relation) => relation.userId === userId && relation.mediaId === mediaId)
       .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => Boolean(item.video))
-      .sort((a, b) => Date.parse(b.relation.lastSeenAt) - Date.parse(a.relation.lastSeenAt));
+      .sort((a, b) => {
+        const leftOrder = Number.isInteger(a.relation.favOrder) ? Number(a.relation.favOrder) : Number.POSITIVE_INFINITY;
+        const rightOrder = Number.isInteger(b.relation.favOrder) ? Number(b.relation.favOrder) : Number.POSITIVE_INFINITY;
+        if (leftOrder !== rightOrder) {
+          return leftOrder - rightOrder;
+        }
+        return Date.parse(b.relation.lastSeenAt) - Date.parse(a.relation.lastSeenAt);
+      });
 
     const allItems = rows.map(({ relation, video }) => {
       const unavailable = video.biliStatus === "unavailable";
@@ -812,6 +846,9 @@ export class StateManager {
         title: video.title,
         upperName: video.upperName,
         cover: video.cover,
+        favOrder: relation.favOrder,
+        favPage: relation.favPage,
+        favIndexInPage: relation.favIndexInPage,
         unavailable,
         processed,
         failed: this.isFailed(userId, video.bvid, mediaId),
@@ -833,7 +870,7 @@ export class StateManager {
     for (const item of allItems) {
       if (item.processed) {
         summary.uploaded += 1;
-      } else {
+      } else if (!item.unavailable) {
         summary.pending += 1;
       }
       if (item.unavailable && item.processed) {
@@ -846,7 +883,7 @@ export class StateManager {
     const filtered = allItems.filter((item) => {
       if (filter === "all") return true;
       if (filter === "uploaded") return item.processed;
-      if (filter === "pending") return !item.processed;
+      if (filter === "pending") return !item.processed && !item.unavailable;
       if (filter === "pending_unavailable") return !item.processed && item.unavailable;
       if (filter === "uploaded_unavailable") return item.processed && item.unavailable;
       return true;
@@ -911,6 +948,16 @@ export class StateManager {
   getRelationStatus(userId: string, mediaId: number, bvid: string) {
     const relation = this.state.relations?.[relationKey(userId, mediaId, bvid)];
     return relation ? { ...relation, remoteFiles: [...(relation.remoteFiles || [])] } : null;
+  }
+
+  getVideoMeta(bvid: string) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return null;
+    return {
+      title: entry.title,
+      upperName: entry.upperName,
+      cover: entry.cover,
+    };
   }
 
   private migrateLegacyState() {

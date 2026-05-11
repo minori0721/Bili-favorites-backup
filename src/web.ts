@@ -228,6 +228,18 @@ function getAppStyles() {
     .log-toggle { display:flex; gap:8px; margin-bottom:12px; }
     .log-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
+    .queue-board { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; max-height:400px; overflow:auto; }
+    .queue-col { border:1px solid var(--border); border-radius:10px; background:#fafdfc; padding:8px; min-height:180px; }
+    .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; }
+    .queue-list { display:grid; gap:8px; }
+    .queue-empty { color:var(--muted); font-size:12px; text-align:center; padding:12px 4px; }
+    .queue-card { display:flex; gap:8px; padding:8px; border-radius:10px; border:1px solid var(--border); background:white; transition:transform .18s ease, box-shadow .18s ease; }
+    .queue-card:hover { transform:translateY(-1px); box-shadow:0 6px 16px rgba(57,197,187,0.12); }
+    .queue-cover { width:64px; height:40px; object-fit:cover; border-radius:6px; background:#eee; flex-shrink:0; }
+    .queue-info { min-width:0; flex:1; }
+    .queue-title { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .queue-meta { font-size:11px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .queue-extra { font-size:11px; color:var(--muted); margin-top:2px; }
     .rename-btn { background:#FF7043!important; }
     .rename-btn:hover { background:#F4511E!important; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
@@ -427,6 +439,7 @@ function getAppScript() {
     let favoritesUserId = null;
     let logMode = 'simple';
     let logEntries = [];
+    let queueBoardPollTimer = null;
     let unavailableItems = [];
     let unavailableUserId = null;
     let unavailableFilter = 'missing';
@@ -469,6 +482,13 @@ function getAppScript() {
         showToast(e.message || String(e), 'error');
         throw e;
       }
+    }
+
+    async function fetchJsonSilent(url, options) {
+      const res = await fetch(url, options);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || '请求失败');
+      return data.data;
     }
 
     // ---- Config ----
@@ -1152,6 +1172,166 @@ function getAppScript() {
       recent.forEach(e => appendLogEntry(e));
     }
 
+    function ensureQueueBoardHost() {
+      const logConsole = document.getElementById('logConsole');
+      let board = document.getElementById('queueBoard');
+      if (!board) {
+        board = document.createElement('div');
+        board.id = 'queueBoard';
+        board.style.display = 'none';
+        if (logConsole && logConsole.parentElement) {
+          logConsole.parentElement.appendChild(board);
+        }
+      }
+      return board;
+    }
+
+    function ensureQueueModeButton() {
+      let btn = document.getElementById('logQueueBtn');
+      if (btn) return btn;
+      const simpleBtn = document.getElementById('logSimpleBtn');
+      const wrap = simpleBtn ? simpleBtn.parentElement : null;
+      if (!wrap) return null;
+      btn = document.createElement('button');
+      btn.id = 'logQueueBtn';
+      btn.textContent = '队列看板';
+      wrap.insertBefore(btn, simpleBtn);
+      return btn;
+    }
+
+    function formatElapsed(ms) {
+      if (!Number.isFinite(ms) || ms < 0) return '0s';
+      const sec = Math.floor(ms / 1000);
+      if (sec < 60) return sec + 's';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m + 'm ' + s + 's';
+    }
+
+    function renderQueueCard(item, nowMs) {
+      const card = document.createElement('div');
+      card.className = 'queue-card';
+      const coverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      if (coverUrl) {
+        const img = document.createElement('img');
+        img.className = 'queue-cover';
+        img.src = coverUrl;
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        card.appendChild(img);
+      } else {
+        const cover = document.createElement('div');
+        cover.className = 'queue-cover';
+        card.appendChild(cover);
+      }
+      const info = document.createElement('div');
+      info.className = 'queue-info';
+      const title = document.createElement('div');
+      title.className = 'queue-title';
+      title.textContent = item.title || item.bvid || 'Unknown';
+      title.title = item.title || item.bvid || '';
+      const meta = document.createElement('div');
+      meta.className = 'queue-meta';
+      meta.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + (item.bvid || '');
+      const extra = document.createElement('div');
+      extra.className = 'queue-extra';
+      const t0 = Number(item.startedAt || item.queuedAt || 0);
+      const elapsed = t0 > 0 ? formatElapsed(nowMs - t0) : '0s';
+      extra.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0) + ' | ' + elapsed;
+      info.appendChild(title);
+      info.appendChild(meta);
+      info.appendChild(extra);
+      card.appendChild(info);
+      return card;
+    }
+
+    function renderQueueColumn(parent, title, items, nowMs) {
+      const col = document.createElement('div');
+      col.className = 'queue-col';
+      const h = document.createElement('div');
+      h.className = 'queue-col-title';
+      const left = document.createElement('span');
+      left.textContent = title;
+      const right = document.createElement('span');
+      right.textContent = String((items || []).length);
+      h.appendChild(left);
+      h.appendChild(right);
+      col.appendChild(h);
+      const list = document.createElement('div');
+      list.className = 'queue-list';
+      if (!items || items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'queue-empty';
+        empty.textContent = '空队列';
+        list.appendChild(empty);
+      } else {
+        items.forEach((item) => list.appendChild(renderQueueCard(item, nowMs)));
+      }
+      col.appendChild(list);
+      parent.appendChild(col);
+    }
+
+    async function refreshQueueBoard() {
+      if (logMode !== 'queue') return;
+      const board = ensureQueueBoardHost();
+      if (!board) return;
+      try {
+        const data = await fetchJsonSilent('/api/queue/state');
+        if (logMode !== 'queue') return;
+        const snapshot = data || {};
+        const nowMs = Date.now();
+        board.innerHTML = '';
+        const grid = document.createElement('div');
+        grid.className = 'queue-board';
+        renderQueueColumn(grid, '待下载', snapshot.downloadPending || [], nowMs);
+        renderQueueColumn(grid, '下载中', snapshot.downloadRunning || [], nowMs);
+        renderQueueColumn(grid, '待上传', snapshot.uploadPending || [], nowMs);
+        renderQueueColumn(grid, '上传中', snapshot.uploadRunning || [], nowMs);
+        board.appendChild(grid);
+      } catch (e) {
+        board.innerHTML = '<div class="queue-empty">队列看板加载失败</div>';
+      }
+    }
+
+    function stopQueueBoardPolling() {
+      if (queueBoardPollTimer) {
+        clearInterval(queueBoardPollTimer);
+        queueBoardPollTimer = null;
+      }
+    }
+
+    function startQueueBoardPolling() {
+      stopQueueBoardPolling();
+      void refreshQueueBoard();
+      queueBoardPollTimer = setInterval(() => {
+        void refreshQueueBoard();
+      }, 1000);
+    }
+
+    function setLogMode(mode) {
+      logMode = mode;
+      const simpleBtn = document.getElementById('logSimpleBtn');
+      const rawBtn = document.getElementById('logRawBtn');
+      const debugBtn = document.getElementById('logDebugBtn');
+      const queueBtn = document.getElementById('logQueueBtn');
+      if (simpleBtn) simpleBtn.classList.toggle('active', mode === 'simple');
+      if (rawBtn) rawBtn.classList.toggle('active', mode === 'raw');
+      if (debugBtn) debugBtn.classList.toggle('active', mode === 'debug');
+      if (queueBtn) queueBtn.classList.toggle('active', mode === 'queue');
+      const logConsole = document.getElementById('logConsole');
+      const queueBoard = ensureQueueBoardHost();
+      if (mode === 'queue') {
+        if (logConsole) logConsole.style.display = 'none';
+        if (queueBoard) queueBoard.style.display = 'block';
+        startQueueBoardPolling();
+        return;
+      }
+      stopQueueBoardPolling();
+      if (queueBoard) queueBoard.style.display = 'none';
+      if (logConsole) logConsole.style.display = 'block';
+      rebuildLog();
+    }
+
     // ---- Event Bindings ----
     document.getElementById('addUserBtn').addEventListener('click', startLogin);
     document.getElementById('closeLoginBtn').addEventListener('click', () => {
@@ -1298,29 +1478,16 @@ function getAppScript() {
       window.location.href = '/login';
     });
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+    ensureQueueBoardHost();
 
     // Log mode toggle
-    document.getElementById('logSimpleBtn').addEventListener('click', () => {
-      logMode = 'simple';
-      document.getElementById('logSimpleBtn').classList.add('active');
-      document.getElementById('logRawBtn').classList.remove('active');
-      document.getElementById('logDebugBtn').classList.remove('active');
-      rebuildLog();
-    });
-    document.getElementById('logRawBtn').addEventListener('click', () => {
-      logMode = 'raw';
-      document.getElementById('logRawBtn').classList.add('active');
-      document.getElementById('logSimpleBtn').classList.remove('active');
-      document.getElementById('logDebugBtn').classList.remove('active');
-      rebuildLog();
-    });
-    document.getElementById('logDebugBtn').addEventListener('click', () => {
-      logMode = 'debug';
-      document.getElementById('logDebugBtn').classList.add('active');
-      document.getElementById('logRawBtn').classList.remove('active');
-      document.getElementById('logSimpleBtn').classList.remove('active');
-      rebuildLog();
-    });
+    const queueBtn = ensureQueueModeButton();
+    if (queueBtn) {
+      queueBtn.addEventListener('click', () => setLogMode('queue'));
+    }
+    document.getElementById('logSimpleBtn').addEventListener('click', () => setLogMode('simple'));
+    document.getElementById('logRawBtn').addEventListener('click', () => setLogMode('raw'));
+    document.getElementById('logDebugBtn').addEventListener('click', () => setLogMode('debug'));
 
     // Rename button
     document.getElementById('renameBtn').addEventListener('click', async () => {

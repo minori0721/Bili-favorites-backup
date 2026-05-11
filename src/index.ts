@@ -194,7 +194,7 @@ function markFavoriteItemProcessed(
   return {
     ...item,
     processed: stateManager.isProcessed(userId, item.bvid, mediaId),
-    failed: stateManager.isFailed(userId, item.bvid),
+    failed: stateManager.isFailed(userId, item.bvid, mediaId),
   };
 }
 
@@ -703,6 +703,10 @@ app.get("/api/logs/stream", requireAuth, (req, res) => {
 
 app.get("/api/logs", requireAuth, (req, res) => {
   res.json({ success: true, data: logManager.getAll() });
+});
+
+app.get("/api/queue/state", requireAuth, (_req, res) => {
+  res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
 app.post("/api/cache/clear", requireAuth, (req, res) => {

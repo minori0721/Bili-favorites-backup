@@ -27,6 +27,7 @@ export class TaskQueue extends EventEmitter {
   private queue: Task[] = [];
   private activeCount: number = 0;
   private concurrency: number;
+  private sequenceCounter = 0;
 
   constructor(concurrency: number = 1) {
     super();
@@ -39,6 +40,13 @@ export class TaskQueue extends EventEmitter {
   }
 
   addTask(task: Task) {
+    if (typeof task.queuedAt !== "number") {
+      task.queuedAt = Date.now();
+    }
+    if (typeof task.sequence !== "number") {
+      this.sequenceCounter += 1;
+      task.sequence = this.sequenceCounter;
+    }
     this.queue.push(task);
     this.emit("taskAdded", task);
     this.processQueue();
@@ -72,6 +80,7 @@ export class TaskQueue extends EventEmitter {
 
     this.activeCount++;
     task.status = "running";
+    task.startedAt = Date.now();
     this.emit("taskStart", task);
 
     try {
@@ -87,6 +96,7 @@ export class TaskQueue extends EventEmitter {
       } else {
         task.retries++;
         task.status = "pending";
+        task.startedAt = undefined;
         this.emit("taskRetry", task, error);
         
         // Push to end of queue after delay
