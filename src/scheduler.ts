@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { ConfigStore } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
@@ -42,6 +43,7 @@ export class SyncScheduler {
   private readonly remoteDirListingCacheTtlMs = 30_000;
   private remoteVerifyPathQueue = new Map<string, number>();
   private pendingTickOptions: TickOptions | null = null;
+  private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -109,6 +111,7 @@ export class SyncScheduler {
       if (task.userId && task.mediaId) {
         this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Upload failure", false);
       }
+      void this.completeSharedUploadTask(task);
     });
     this.uploadQueue.on("taskRetry", (task: UploadTask, error: any) => {
       logTaskRetry(task, error);
@@ -127,10 +130,12 @@ export class SyncScheduler {
       if (!task.downloadDir) return;
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
       this.activeDownloadTargets.delete(task.bvid);
-      targets.forEach((target, index) => {
+      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length);
+      targets.forEach((target) => {
         const uploadTask = new UploadTask(task.bvid, task.downloadDir!, target.remotePath, this.configStore.get(), {
-          cleanupLocal: index === targets.length - 1,
+          cleanupLocal: false,
         });
+        uploadTask.sharedDownloadDir = task.downloadDir;
         uploadTask.userId = target.userId;
         uploadTask.mediaId = target.mediaId;
         uploadTask.folderTitle = target.folderTitle;
@@ -140,13 +145,16 @@ export class SyncScheduler {
         uploadTask.onUploading = () => this.stateManager.markUploading(task.bvid, target.userId, target.mediaId);
         this.uploadQueue.addTask(uploadTask);
       });
+      if (tracker.remaining === 0) {
+        void this.cleanupSharedUploadDir(task.downloadDir);
+      }
     });
 
     this.uploadQueue.on("taskCompleted", (task: UploadTask) => {
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
       }
-      if (task.result) {
+      if (task.result?.files.length) {
         this.stateManager.markVerifiedUpload(
           task.bvid,
           task.result.remotePath,
@@ -171,6 +179,7 @@ export class SyncScheduler {
           );
         }
       }
+      void this.completeSharedUploadTask(task);
     });
 
     this.resumePersistedWork();
@@ -395,18 +404,55 @@ export class SyncScheduler {
     }];
   }
 
+  private createSharedUploadDirTracker(downloadDir: string, uploadCount: number) {
+    const normalizedCount = Math.max(0, uploadCount);
+    const existing = this.sharedUploadDirs.get(downloadDir);
+    if (existing) {
+      existing.remaining += normalizedCount;
+      return existing;
+    }
+    const tracker: SharedUploadDirTracker = {
+      remaining: normalizedCount,
+      cleanupStarted: false,
+    };
+    this.sharedUploadDirs.set(downloadDir, tracker);
+    return tracker;
+  }
+
+  private async completeSharedUploadTask(task: UploadTask) {
+    const downloadDir = task.sharedDownloadDir || "";
+    if (!downloadDir) return;
+    const tracker = this.sharedUploadDirs.get(downloadDir);
+    if (!tracker) return;
+    tracker.remaining = Math.max(0, tracker.remaining - 1);
+    if (tracker.remaining > 0 || tracker.cleanupStarted) return;
+    tracker.cleanupStarted = true;
+    this.sharedUploadDirs.delete(downloadDir);
+    await this.cleanupSharedUploadDir(downloadDir);
+  }
+
+  private async cleanupSharedUploadDir(downloadDir: string) {
+    try {
+      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+    } catch (error: any) {
+      console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
+    }
+  }
+
   private async scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
     let page = 1;
+    const scanStartedAt = new Date().toISOString();
+    const seenBvids = new Set<string>();
     while (true) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
-      this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
+      this.recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
         initStatus: "complete",
         nextHistoryPage: 1,
         catchupPage: 1,
-        lastHotScanAt: new Date().toISOString(),
-        lastHistoryScanAt: new Date().toISOString(),
+        lastHotScanAt: scanStartedAt,
+        lastHistoryScanAt: scanStartedAt,
         total: result.total,
       });
       if (!result.hasMore || result.items.length === 0) {
@@ -415,6 +461,7 @@ export class SyncScheduler {
       page += 1;
       await delay(1000 + Math.floor(Math.random() * 2000));
     }
+    this.stateManager.markMissingFavoritesInactive(user.id, mediaId, seenBvids);
   }
 
   private async scanHotPages(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean) {
@@ -514,16 +561,19 @@ export class SyncScheduler {
     folderTitle: string,
     items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"],
     page: number,
-    pageSize = 20
+    pageSize = 20,
+    seenAt = new Date().toISOString(),
+    seenBvids?: Set<string>
   ) {
     let newItems = 0;
     items.forEach((item, indexInPage) => {
+      seenBvids?.add(item.bvid);
       const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
       const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
         favOrder,
         favPage: page,
         favIndexInPage: indexInPage,
-      });
+      }, seenAt);
       if (!result.wasKnown) {
         newItems += 1;
         this.cycleContext!.newItems += 1;
@@ -884,16 +934,35 @@ export class SyncScheduler {
   }
 
   private resumePersistedWork() {
-    for (const item of this.stateManager.listBackupsToResume()) {
+    const uploadItems = this.stateManager.listBackupsToResume();
+    const uploadCountsByDir = new Map<string, number>();
+    for (const item of uploadItems) {
+      const entry = item.video;
+      const relation = item.relation;
+      const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
+      const remotePath = relation?.remotePath || entry.remotePath;
+      const shouldUpload = (relation?.backupStatus === "downloaded" || relation?.backupStatus === "uploading" || entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && remotePath;
+      if (shouldUpload && (!relation || resolved)) {
+        uploadCountsByDir.set(entry.localDir!, (uploadCountsByDir.get(entry.localDir!) || 0) + 1);
+      }
+    }
+    for (const [downloadDir, count] of uploadCountsByDir) {
+      this.createSharedUploadDirTracker(downloadDir, count);
+    }
+
+    for (const item of uploadItems) {
       const entry = item.video;
       const relation = item.relation;
       const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
       const remotePath = relation?.remotePath || entry.remotePath;
       if ((relation?.backupStatus === "downloaded" || relation?.backupStatus === "uploading" || entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && remotePath) {
-        if (resolved?.user && !resolved.user.enabled) {
+        if (relation && !resolved) {
           continue;
         }
-        const uploadTask = new UploadTask(entry.bvid, entry.localDir, remotePath, this.configStore.get());
+        const uploadTask = new UploadTask(entry.bvid, entry.localDir, remotePath, this.configStore.get(), {
+          cleanupLocal: false,
+        });
+        uploadTask.sharedDownloadDir = entry.localDir;
         uploadTask.userId = resolved?.user.id || relation?.userId;
         uploadTask.mediaId = resolved?.mediaId || relation?.mediaId;
         uploadTask.folderTitle = resolved?.folderTitle || relation?.folderTitle;
@@ -1032,6 +1101,11 @@ interface SyncCycleStats {
 }
 
 type RemoteVerifyCandidate = VideoArchiveEntry & { relation: FavoriteRelation };
+
+interface SharedUploadDirTracker {
+  remaining: number;
+  cleanupStarted: boolean;
+}
 
 type SyncTrigger = "auto" | "manual" | "reconcile" | "remote_reconcile";
 

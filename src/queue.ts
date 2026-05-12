@@ -68,16 +68,17 @@ export class TaskQueue extends EventEmitter {
     return this.getActiveCount() > 0 || this.getPendingCount() > 0;
   }
 
-  private async processQueue() {
-    if (this.activeCount >= this.concurrency || this.queue.length === 0) {
-      return;
+  private processQueue() {
+    while (this.activeCount < this.concurrency) {
+      const task = this.queue.find((t) => t.status === "pending");
+      if (!task) {
+        return;
+      }
+      void this.runTask(task);
     }
+  }
 
-    const task = this.queue.find((t) => t.status === "pending");
-    if (!task) {
-      return;
-    }
-
+  private async runTask(task: Task) {
     this.activeCount++;
     task.status = "running";
     task.startedAt = Date.now();
@@ -89,7 +90,6 @@ export class TaskQueue extends EventEmitter {
       this.emit("taskCompleted", task);
     } catch (error: any) {
       task.error = error;
-      // If error should leave the current queue, skip in-queue retries.
       if (error?.permanent || error?.deferToNextCycle || task.retries >= task.maxRetries) {
         task.status = "error";
         this.emit("taskError", task, error);
@@ -98,8 +98,6 @@ export class TaskQueue extends EventEmitter {
         task.status = "pending";
         task.startedAt = undefined;
         this.emit("taskRetry", task, error);
-        
-        // Push to end of queue after delay
         this.queue = this.queue.filter(t => t.id !== task.id);
         setTimeout(() => {
           this.queue.push(task);
@@ -108,8 +106,6 @@ export class TaskQueue extends EventEmitter {
       }
     } finally {
       this.activeCount--;
-      
-      // Remove completed tasks and tasks that should leave this queue pass.
       if (task.status === "completed" || task.status === "error") {
         this.queue = this.queue.filter(t => t.id !== task.id);
       }

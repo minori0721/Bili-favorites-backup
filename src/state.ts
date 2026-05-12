@@ -304,9 +304,9 @@ export class StateManager {
       favOrder?: number;
       favPage?: number;
       favIndexInPage?: number;
-    }
+    },
+    seenAt = nowIso()
   ) {
-    const seenAt = nowIso();
     const existing = this.state.videos![item.bvid];
     const wasKnown = Boolean(existing);
     const biliStatus: BiliStatus = item.unavailable ? "unavailable" : "available";
@@ -375,6 +375,20 @@ export class StateManager {
 
     this.save();
     return { wasKnown, entry: this.state.videos![item.bvid] };
+  }
+
+  markMissingFavoritesInactive(userId: string, mediaId: number, seenBvids: Set<string>) {
+    let changed = false;
+    for (const relation of Object.values(this.state.relations || {})) {
+      if (relation.userId !== userId || relation.mediaId !== mediaId || !relation.activeInFavorite || seenBvids.has(relation.bvid)) {
+        continue;
+      }
+      relation.activeInFavorite = false;
+      changed = true;
+    }
+    if (changed) {
+      this.save();
+    }
   }
 
   canBootstrapRelationFromGlobalProof(_bvid: string, _userId: string, _mediaId: number) {
@@ -497,6 +511,22 @@ export class StateManager {
   ) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
+    if (remoteFiles.length === 0) {
+      const reason = "Upload finished without remote file records; reset to discovered for retry.";
+      const relation = this.getRelation(_userId, _mediaId, bvid);
+      if (relation) {
+        relation.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+        relation.remotePath = remotePath;
+        relation.lastError = reason;
+        this.refreshVideoAggregateStatus(bvid);
+      } else {
+        entry.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+        entry.remotePath = remotePath;
+        entry.lastError = reason;
+      }
+      this.save();
+      return;
+    }
     const at = nowIso();
     entry.backupStatus = "verified";
     entry.remotePath = remotePath;

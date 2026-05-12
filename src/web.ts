@@ -524,7 +524,7 @@ function getAppScript() {
       document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
       document.getElementById('remoteVerifyRateLimitPerSecond').value = d.remoteVerifyRateLimitPerSecond ?? 2;
       document.getElementById('remoteRequeueLimitPerCycle').value = d.remoteRequeueLimitPerCycle ?? 20;
-      document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>';
+      document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>-<bvid>';
       updateTemplatePreview();
     }
 
@@ -544,7 +544,7 @@ function getAppScript() {
         bbdownQuality: document.getElementById('bbdownQuality').value,
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
         bbdownDolby: document.getElementById('bbdownDolby').checked,
-        filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>',
+        filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
         maxRetries: Number(document.getElementById('maxRetries').value),
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value),
@@ -582,7 +582,7 @@ function getAppScript() {
         });
         avail.appendChild(tag);
       });
-      const init = document.getElementById('filenameTemplate').value || '<videoTitle>';
+      const init = document.getElementById('filenameTemplate').value || '<videoTitle>-<bvid>';
       selectedKeys = TEMPLATE_VARS.filter(v => init.includes(v.key)).map(v => v.key);
       selectedKeys.sort((a,b) => init.indexOf(a) - init.indexOf(b));
       renderSelected();
@@ -638,7 +638,7 @@ function getAppScript() {
     }
 
     function updateTemplatePreview() {
-      const tpl = document.getElementById('filenameTemplate').value || '<videoTitle>';
+      const tpl = document.getElementById('filenameTemplate').value || '<videoTitle>-<bvid>';
       const preview = tpl
         .replace(/<videoTitle>/g, '\u89c6\u9891\u6807\u9898\u793a\u4f8b')
         .replace(/<ownerName>/g, 'UP\u4e3b\u540d')
@@ -1579,7 +1579,13 @@ function getAppScript() {
         await loadUsers();
       }
       if (action === 'copy_cookie') {
-        const resp = await fetchJson('/api/users/'+userId+'/cookie');
+        const confirmed = prompt('Cookie 等同于 B 站登录凭据。确认导出请输入 EXPORT_COOKIE');
+        if (confirmed !== 'EXPORT_COOKIE') return;
+        const resp = await fetchJson('/api/users/'+userId+'/cookie/export', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({confirm:'EXPORT_COOKIE'})
+        });
         const text = String(resp.cookie || '');
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(text);

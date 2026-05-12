@@ -134,6 +134,10 @@ app.use(express.urlencoded({ extended: true }));
 const sessionSecret = process.env.SESSION_SECRET || "dev-secret";
 const adminUser = process.env.ADMIN_USER || "admin";
 const adminPass = process.env.ADMIN_PASS || "admin";
+const cookieExportEnabled = process.env.ALLOW_COOKIE_EXPORT !== "false";
+const secureSessionCookie = process.env.COOKIE_SECURE === "true";
+
+app.set("trust proxy", 1);
 
 app.use(
   session({
@@ -143,6 +147,7 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
+      secure: secureSessionCookie,
     },
   })
 );
@@ -158,6 +163,27 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
     return next();
   }
   return res.status(401).json({ success: false, message: "Unauthorized" });
+}
+
+function requireSameOrigin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    return next();
+  }
+  const source = req.get("origin") || req.get("referer") || "";
+  if (!source) {
+    res.status(403).json({ success: false, message: "Missing request origin" });
+    return;
+  }
+  try {
+    const sourceUrl = new URL(source);
+    if (sourceUrl.host === req.get("host")) {
+      return next();
+    }
+  } catch {
+    res.status(403).json({ success: false, message: "Invalid request origin" });
+    return;
+  }
+  res.status(403).json({ success: false, message: "Invalid request origin" });
 }
 
 function parsePositiveInteger(value: unknown, fallback: number) {
@@ -336,27 +362,35 @@ app.get("/", (req, res) => {
   res.send(renderAppPage());
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", requireSameOrigin, (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
   if (username === adminUser && password === adminPass) {
-    req.session.user = { name: username };
-    res.json({ success: true });
+    req.session.regenerate((error) => {
+      if (error) {
+        res.status(500).json({ success: false, message: "Failed to create session" });
+        return;
+      }
+      req.session.user = { name: username };
+      res.json({ success: true });
+    });
     return;
   }
   res.status(401).json({ success: false, message: "Invalid credentials" });
 });
 
-app.post("/api/logout", requireAuth, (req, res) => {
+app.use("/api", requireAuth, requireSameOrigin);
+
+app.post("/api/logout", (req, res) => {
   req.session.destroy(() => {
     res.json({ success: true });
   });
 });
 
-app.get("/api/config", requireAuth, (req, res) => {
+app.get("/api/config", (req, res) => {
   res.json({ success: true, data: configStore.get() });
 });
 
-app.put("/api/config", requireAuth, (req, res) => {
+app.put("/api/config", (req, res) => {
   const error = validateConfig(req.body);
   if (error) {
     res.status(400).json({ success: false, message: error });
@@ -367,7 +401,7 @@ app.put("/api/config", requireAuth, (req, res) => {
   res.json({ success: true, data: updated });
 });
 
-app.get("/api/users", requireAuth, (req, res) => {
+app.get("/api/users", (req, res) => {
   const users = userStore.list().map((user) => ({
     id: user.id,
     uid: user.uid,
@@ -385,7 +419,7 @@ app.get("/api/users", requireAuth, (req, res) => {
   res.json({ success: true, data: users });
 });
 
-app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/users/login/start", asyncHandler(async (req, res) => {
   try {
     pruneLoginSessions();
     const loginId = crypto.randomUUID();
@@ -434,7 +468,7 @@ app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) =>
   }
 }));
 
-app.post("/api/users/:id/refresh-info", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/users/:id/refresh-info", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -448,7 +482,7 @@ app.post("/api/users/:id/refresh-info", requireAuth, asyncHandler(async (req, re
   res.json({ success: true, data: { name: info.name, avatar: info.avatar } });
 }));
 
-app.post("/api/users/:id/refresh-auth", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/users/:id/refresh-auth", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -466,7 +500,15 @@ app.post("/api/users/:id/refresh-auth", requireAuth, asyncHandler(async (req, re
   });
 }));
 
-app.get("/api/users/:id/cookie", requireAuth, (req, res) => {
+app.post("/api/users/:id/cookie/export", (req, res) => {
+  if (!cookieExportEnabled) {
+    res.status(403).json({ success: false, message: "Cookie export is disabled" });
+    return;
+  }
+  if (req.body.confirm !== "EXPORT_COOKIE") {
+    res.status(400).json({ success: false, message: "Cookie export confirmation required" });
+    return;
+  }
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -477,10 +519,18 @@ app.get("/api/users/:id/cookie", requireAuth, (req, res) => {
     return value !== undefined && value !== null && String(value).length > 0;
   });
   const cookie = entries.map(([key, value]) => `${key}=${value}`).join("; ");
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: "system",
+    level: "warn",
+    summary: `Cookie 已导出: ${user.name}`,
+    raw: `[Security] Cookie exported for user ${user.id}`,
+    simpleVisible: true,
+  });
   res.json({ success: true, data: { cookie } });
 });
 
-app.get("/api/users/login/status", requireAuth, (req, res) => {
+app.get("/api/users/login/status", (req, res) => {
   pruneLoginSessions();
   const loginId = String(req.query.loginId || "");
   const current = loginSessions.get(loginId);
@@ -491,7 +541,7 @@ app.get("/api/users/login/status", requireAuth, (req, res) => {
   res.json({ success: true, data: { status: current.status, message: current.message } });
 });
 
-app.get("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -506,7 +556,7 @@ app.get("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) =
   res.json({ success: true, data });
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/items", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -543,7 +593,7 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(asy
   }
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/detail-items", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/detail-items", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -599,7 +649,7 @@ app.get("/api/users/:id/favorites/:mediaId/detail-items", requireAuth, asyncHand
   }
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/state-items", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -633,7 +683,7 @@ app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandl
   });
 }));
 
-app.get("/api/users/:id/unavailable", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -657,7 +707,7 @@ app.get("/api/users/:id/unavailable", requireAuth, asyncHandler(async (req, res)
   }
 }));
 
-app.get("/api/state", requireAuth, (req, res) => {
+app.get("/api/state", (req, res) => {
   res.json({
     success: true,
     data: {
@@ -668,7 +718,7 @@ app.get("/api/state", requireAuth, (req, res) => {
   });
 });
 
-app.put("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
+app.put("/api/users/:id/favorites", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -685,7 +735,7 @@ app.put("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) =
   res.json({ success: true, data: selected });
 }));
 
-app.patch("/api/users/:id", requireAuth, (req, res) => {
+app.patch("/api/users/:id", (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -699,12 +749,12 @@ app.patch("/api/users/:id", requireAuth, (req, res) => {
   res.json({ success: true, data: user });
 });
 
-app.delete("/api/users/:id", requireAuth, (req, res) => {
+app.delete("/api/users/:id", (req, res) => {
   userStore.remove(req.params.id);
   res.json({ success: true });
 });
 
-app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/sync/now", asyncHandler(async (req, res) => {
   try {
     const result = scheduler.runNow();
     if (result.started) {
@@ -721,7 +771,7 @@ app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
   }
 }));
 
-app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
+app.post("/api/sync/reconcile", asyncHandler(async (_req, res) => {
   try {
     const result = scheduler.runReconcileNow();
     if (result.started) {
@@ -738,7 +788,7 @@ app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
   }
 }));
 
-app.post("/api/sync/reconcile-remote", requireAuth, asyncHandler(async (_req, res) => {
+app.post("/api/sync/reconcile-remote", asyncHandler(async (_req, res) => {
   try {
     const result = scheduler.runRemoteReconcileNow();
     if (result.started) {
@@ -755,7 +805,7 @@ app.post("/api/sync/reconcile-remote", requireAuth, asyncHandler(async (_req, re
   }
 }));
 
-app.get("/api/logs/stream", requireAuth, (req, res) => {
+app.get("/api/logs/stream", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -777,20 +827,20 @@ app.get("/api/logs/stream", requireAuth, (req, res) => {
   });
 });
 
-app.get("/api/logs", requireAuth, (req, res) => {
+app.get("/api/logs", (req, res) => {
   res.json({ success: true, data: logManager.getAll() });
 });
 
-app.get("/api/queue/state", requireAuth, (_req, res) => {
+app.get("/api/queue/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
-app.post("/api/cache/clear", requireAuth, (req, res) => {
+app.post("/api/cache/clear", (req, res) => {
   favoriteItemsCache.clear();
   res.json({ success: true, message: "Favorite items cache cleared" });
 });
 
-app.post("/api/rename", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/rename", asyncHandler(async (req, res) => {
   const { remotePath, renameMap } = req.body as {
     remotePath: string;
     renameMap: Array<{ oldName: string; newName: string }>;
@@ -808,7 +858,7 @@ app.post("/api/rename", requireAuth, asyncHandler(async (req, res) => {
   }
 }));
 
-app.get("/api/remote/list", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/remote/list", asyncHandler(async (req, res) => {
   const remotePath = String(req.query.path || "/");
   try {
     const config = configStore.get();

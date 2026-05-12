@@ -126,9 +126,14 @@ export async function uploadWithAList(
           path: remoteFile,
           size: stat.size,
         });
-        await fs.promises.rm(localFile);
       }
     }
+  }
+
+  if (uploadedFiles.length === 0) {
+    const err = new Error(`No files were uploaded from ${localDir}`);
+    (err as any).deferToNextCycle = true;
+    throw err;
   }
 
   if (options.cleanupLocal !== false) {
@@ -208,13 +213,9 @@ export async function batchRenameRemote(
 /** List remote directory contents */
 export async function listRemoteDir(config: AppConfig, remotePath: string): Promise<string[]> {
   const client = buildDavClient(config);
-  try {
-    const items = await client.getDirectoryContents(remotePath) as any[];
-    return items
-      .filter((item: any) => item && item.type !== "directory")
-      .map((item: any) => item?.basename)
-      .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
-  } catch {
-    return [];
-  }
+  const items = await client.getDirectoryContents(remotePath) as any[];
+  return items
+    .filter((item: any) => item && item.type !== "directory")
+    .map((item: any) => item?.basename)
+    .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
 }
