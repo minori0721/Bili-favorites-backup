@@ -2,6 +2,43 @@
 
 本项目遵循语义化版本（SemVer）。
 
+## [Unreleased] - dev
+
+> 当前条目对应 `dev` 分支测试内容；合并到 `main` 并正式发布时，再整理为具体版本号。
+
+### 修复
+- 修复同一 BV 同时存在于多个收藏夹时，共享下载目录被提前清理导致后续收藏夹目录漏传的问题。
+- 修复上传没有产出远端文件记录时仍可能被误标记为已上传/已验证的问题。
+- 修复 AList 目录读取失败被当成空目录，进而误判远端文件缺失的问题。
+- 修复已有旧文件名模板缺少 `<bvid>` 时仍可能继续产生同名冲突的问题。
+- 修复命令行登录仍使用 Web 扫码，与 Web 面板 TV 登录不一致的问题。
+
+### 优化
+- 下载结果会在所有目标上传完成后再统一清理，支持同一视频复用到多个收藏夹目录。
+- 全量扫描完成后会把本轮未再出现的收藏夹关系标记为非当前收藏，改善取消收藏后的状态展示。
+- 默认文件名模板改为 `<videoTitle>-<bvid>`，并对旧配置做加载时迁移。
+- BBDown 画质与音频优先级映射调整：Hi-Res / 杜比走 `--encoding-priority`，清晰度走 `--dfn-priority`。
+- 任务队列提高并发数后会立即补满可用并发槽。
+- B 站风控/登录异常识别覆盖更多 HTTP 状态码、API code 与中文错误文本。
+
+### 安全
+- JSON 配置/状态读取失败时不再静默重置默认值，会保留 `.corrupt-*` 备份并报错。
+- BBDown Cookie / APP access token 不再通过命令行参数传入，改为每次下载使用临时配置文件，并对输出与 debug 日志脱敏。
+- 登录成功后重新生成 session，降低 session fixation 风险。
+- `/api` 下非 GET 请求增加同源校验。
+- Cookie 导出改为 POST + `EXPORT_COOKIE` 手动确认，并支持 `ALLOW_COOKIE_EXPORT=false` 关闭。
+- Session Cookie 支持通过 `COOKIE_SECURE=true` 启用 secure 标记。
+
+### Docker / 发布
+- GitHub Actions 支持 `dev` 分支发布 `minori0721/bili-favorites-backup:dev`，`latest` 仍只由 `main` 发布。
+- Docker Node 基础镜像更新到 `node:20-bookworm-slim`，并保留 `NODE_IMAGE` 构建参数。
+- BBDown 下载支持固定 `BBDOWN_VERSION` 和可选 `BBDOWN_SHA256` 校验。
+- Compose 示例改用 `please-change-*` 默认值，并将 AList 示例镜像固定到 `xhofe/alist:v3.41.0`。
+
+### 已知事项
+- `npm audit --omit=dev` 仍会报告 `@renmu/bili-api` 传递依赖 `fast-xml-parser` 的中危项；自动修复会降级主依赖，本轮未强行处理。
+- 默认 `ADMIN_PASS` / `SESSION_SECRET` 只做文档提示，不做启动拒绝。
+
 ## [2.2.2] - 2026-05-12
 
 ### 修复
