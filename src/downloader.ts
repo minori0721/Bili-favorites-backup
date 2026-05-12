@@ -278,6 +278,38 @@ function classifyBBDownFailure(output: string) {
   return null;
 }
 
+const lowSpeedWatchdog = {
+  sampleIntervalMs: 60_000,
+  minRuntimeMs: 30 * 60_000,
+  windowMs: 10 * 60_000,
+  minBytesPerSecond: 10 * 1024,
+};
+
+async function getDirectoryTotalSize(dir: string): Promise<number> {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await getDirectoryTotalSize(fullPath);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      const stat = await fs.promises.stat(fullPath);
+      total += stat.size;
+    } catch {
+      // file may be renamed by BBDown while sampling
+    }
+  }
+  return total;
+}
+
 function createDebugLogPath(bvid: string) {
   const debugDir = path.join(process.cwd(), "data", "debug");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -328,6 +360,11 @@ async function runDebugProbe(
 function runCommand(command: string, args: string[], cwd: string, bvid: string, sensitiveValues: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd });
+    const commandStartedAt = Date.now();
+    const sizeSamples: Array<{ at: number; size: number }> = [];
+    let watchdogTimer: NodeJS.Timeout | null = null;
+    let killedByWatchdog = false;
+    let settled = false;
     let stderr = "";
     let stdoutAll = "";
     let stdoutPending = "";
@@ -364,6 +401,66 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       const trimmed = line.trim();
       if (!trimmed) return true;
       return rawSimpleHiddenPatterns.some((pattern) => pattern.test(trimmed));
+    };
+
+    const cleanupWatchdog = () => {
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanupWatchdog();
+      reject(error);
+    };
+
+    const resolveOnce = () => {
+      if (settled) return;
+      settled = true;
+      cleanupWatchdog();
+      resolve();
+    };
+
+    const sampleDownloadSize = async () => {
+      const now = Date.now();
+      const size = await getDirectoryTotalSize(cwd);
+      sizeSamples.push({ at: now, size });
+      while (sizeSamples.length > 0 && now - sizeSamples[0].at > lowSpeedWatchdog.windowMs) {
+        sizeSamples.shift();
+      }
+      if (now - commandStartedAt < lowSpeedWatchdog.minRuntimeMs || sizeSamples.length < 2) {
+        return;
+      }
+      const first = sizeSamples[0];
+      const last = sizeSamples[sizeSamples.length - 1];
+      const seconds = Math.max(1, (last.at - first.at) / 1000);
+      const bytesPerSecond = Math.max(0, (last.size - first.size) / seconds);
+      if (bytesPerSecond >= lowSpeedWatchdog.minBytesPerSecond) {
+        return;
+      }
+      killedByWatchdog = true;
+      cleanupWatchdog();
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "warn",
+        summary: `下载低速卡住，已自动重试 ${bvid}`,
+        raw: `Low speed watchdog: ${(bytesPerSecond / 1024).toFixed(2)}KB/s for ${Math.round(seconds)}s after ${Math.round((now - commandStartedAt) / 1000)}s`,
+        bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      child.kill("SIGTERM");
+    };
+
+    const startWatchdog = () => {
+      void sampleDownloadSize();
+      watchdogTimer = setInterval(() => {
+        void sampleDownloadSize().catch(() => undefined);
+      }, lowSpeedWatchdog.sampleIntervalMs);
     };
 
     const flushStdoutBuffer = (force = false) => {
@@ -422,17 +519,24 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       });
     });
 
+    startWatchdog();
+
     child.on("error", (error) => {
-      reject(error);
+      rejectOnce(error);
     });
 
     child.on("close", (code) => {
       flushStdoutBuffer(true);
+      cleanupWatchdog();
+      if (killedByWatchdog) {
+        rejectOnce(new Error("下载运行超过30分钟且最近10分钟平均速度低于10KB/s，自动重试"));
+        return;
+      }
       const combinedOutput = `${stdoutAll}\n${stderr}`;
       if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
         const err = new Error(`BBDown output filename too long: ${combinedOutput || stderr || "unknown error"}`);
         (err as any).filenameTooLong = true;
-        reject(err);
+        rejectOnce(err);
         return;
       }
 
@@ -452,7 +556,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
             simpleVisible: true,
             debugVisible: true,
           });
-          reject(err);
+          rejectOnce(err);
         };
 
         if (!failure.deferToNextCycle) {
@@ -483,7 +587,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       }
 
       if (code === 0) {
-        resolve();
+        resolveOnce();
         return;
       }
 
@@ -492,16 +596,16 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       if (nonZeroFailure?.permanent) {
         const err = new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`);
         (err as any).permanent = true;
-        reject(err);
+        rejectOnce(err);
         return;
       }
       if (nonZeroFailure?.deferToNextCycle) {
         const err = new Error(`BBDown reported failure: ${nonZeroFailure.line}`);
         (err as any).deferToNextCycle = true;
-        reject(err);
+        rejectOnce(err);
         return;
       }
-      reject(new Error(errMsg));
+      rejectOnce(new Error(errMsg));
     });
   });
 }

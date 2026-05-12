@@ -164,6 +164,19 @@ export async function verifyRemoteFiles(
 }
 
 /** Batch rename files on remote storage via WebDAV MOVE */
+export interface RemoteListedFile {
+  name: string;
+  path: string;
+  dir: string;
+  size?: number;
+}
+
+export interface RenameRemoteItem {
+  bvid?: string;
+  oldPath: string;
+  newPath: string;
+}
+
 export async function batchRenameRemote(
   config: AppConfig,
   remotePath: string,
@@ -218,4 +231,128 @@ export async function listRemoteDir(config: AppConfig, remotePath: string): Prom
     .filter((item: any) => item && item.type !== "directory")
     .map((item: any) => item?.basename)
     .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+}
+
+function normalizeRemotePath(value: string) {
+  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.startsWith("/") ? normalized || "/" : `/${normalized}`;
+}
+
+function remoteBasename(value: string) {
+  const normalized = normalizeRemotePath(value);
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] || "";
+}
+
+function remoteDirname(value: string) {
+  const normalized = normalizeRemotePath(value);
+  const index = normalized.lastIndexOf("/");
+  return index <= 0 ? "/" : normalized.slice(0, index);
+}
+
+export async function listRemoteFilesRecursive(
+  config: AppConfig,
+  rootPath: string,
+  options: { maxDepth?: number; maxFiles?: number } = {}
+): Promise<{ files: RemoteListedFile[]; skipped: Array<{ path: string; reason: string }> }> {
+  const client = buildDavClient(config);
+  const root = normalizeRemotePath(rootPath);
+  const maxDepth = Math.max(0, Math.floor(options.maxDepth ?? 4));
+  const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 2000));
+  const files: RemoteListedFile[] = [];
+  const skipped: Array<{ path: string; reason: string }> = [];
+  const videoExt = /\.(mp4|mkv|flv|mov|m4v)$/i;
+  const tempExt = /\.(part|tmp|download)$/i;
+
+  async function walk(dir: string, depth: number) {
+    if (files.length >= maxFiles) return;
+    let items: any[];
+    try {
+      items = await client.getDirectoryContents(dir) as any[];
+    } catch (error: any) {
+      skipped.push({ path: dir, reason: `远端目录读取失败：${error?.message || error}` });
+      return;
+    }
+    for (const item of items) {
+      if (files.length >= maxFiles) {
+        skipped.push({ path: dir, reason: `扫描数量超过上限 ${maxFiles}` });
+        return;
+      }
+      const itemPath = normalizeRemotePath(String(item?.filename || item?.path || `${dir.replace(/\/$/, "")}/${item?.basename || ""}`));
+      const name = String(item?.basename || remoteBasename(itemPath));
+      if (!name) continue;
+      if (item?.type === "directory") {
+        if (depth >= maxDepth) {
+          skipped.push({ path: itemPath, reason: `超过最大扫描深度 ${maxDepth}` });
+          continue;
+        }
+        await walk(itemPath, depth + 1);
+        continue;
+      }
+      if (!videoExt.test(name)) {
+        skipped.push({ path: itemPath, reason: "不是支持的视频文件" });
+        continue;
+      }
+      if (tempExt.test(name)) {
+        skipped.push({ path: itemPath, reason: "临时下载文件" });
+        continue;
+      }
+      files.push({
+        name,
+        path: itemPath,
+        dir: remoteDirname(itemPath),
+        size: Number.isFinite(Number(item?.size)) ? Number(item.size) : undefined,
+      });
+    }
+  }
+
+  await walk(root, 0);
+  return { files, skipped };
+}
+
+export async function batchRenameRemotePaths(
+  config: AppConfig,
+  items: RenameRemoteItem[]
+): Promise<{ success: number; failed: number; results: Array<{ oldPath: string; newPath: string; ok: boolean; error?: string }> }> {
+  const client = buildDavClient(config);
+  let success = 0;
+  let failed = 0;
+  const results: Array<{ oldPath: string; newPath: string; ok: boolean; error?: string }> = [];
+
+  for (const item of items) {
+    const oldPath = normalizeRemotePath(item.oldPath);
+    const newPath = normalizeRemotePath(item.newPath);
+    try {
+      await client.moveFile(oldPath, newPath);
+      success++;
+      results.push({ oldPath, newPath, ok: true });
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `重命名: ${remoteBasename(oldPath)} → ${remoteBasename(newPath)}`,
+        raw: `[Rename] ${oldPath} -> ${newPath}`,
+        simpleVisible: true,
+      });
+    } catch (error: any) {
+      failed++;
+      const message = error?.message || String(error);
+      results.push({ oldPath, newPath, ok: false, error: message });
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "error",
+        summary: `重命名失败: ${remoteBasename(oldPath)} - ${message}`,
+        raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${message}`,
+        simpleVisible: true,
+      });
+    }
+  }
+
+  return { success, failed, results };
+}
+
+export async function remotePathExists(config: AppConfig, remotePath: string) {
+  const client = buildDavClient(config);
+  return client.exists(normalizeRemotePath(remotePath));
 }

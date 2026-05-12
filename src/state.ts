@@ -149,6 +149,21 @@ export interface FolderIndexSummary extends FolderDetailSummary {
   complete: boolean;
 }
 
+export interface RenamePreviewVideoRecord {
+  bvid: string;
+  title: string;
+  upperName: string;
+  remotePath?: string;
+  remoteFiles: RemoteFileRecord[];
+  relations: Array<{
+    userId: string;
+    mediaId: number;
+    folderTitle: string;
+    remotePath?: string;
+    remoteFiles: RemoteFileRecord[];
+  }>;
+}
+
 export interface StateFile {
   schemaVersion?: number;
   processedByUser: Record<string, Record<string, ProcessedEntry>>;
@@ -811,6 +826,104 @@ export class StateManager {
   findRelationForBvid(bvid: string) {
     const relation = Object.values(this.state.relations || {}).find((item) => item.bvid === bvid);
     return relation ? { ...relation } : null;
+  }
+
+  getRenamePreviewRecords() {
+    const records = new Map<string, RenamePreviewVideoRecord>();
+    for (const entry of Object.values(this.state.videos || {})) {
+      records.set(entry.bvid, {
+        bvid: entry.bvid,
+        title: entry.title,
+        upperName: entry.upperName,
+        remotePath: entry.remotePath,
+        remoteFiles: [...(entry.remoteFiles || [])],
+        relations: [],
+      });
+    }
+    for (const relation of Object.values(this.state.relations || {})) {
+      const video = this.state.videos?.[relation.bvid];
+      if (!video) continue;
+      const record = records.get(relation.bvid) || {
+        bvid: relation.bvid,
+        title: video.title,
+        upperName: video.upperName,
+        remotePath: video.remotePath,
+        remoteFiles: [...(video.remoteFiles || [])],
+        relations: [],
+      };
+      record.relations.push({
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: relation.folderTitle,
+        remotePath: relation.remotePath,
+        remoteFiles: [...(relation.remoteFiles || [])],
+      });
+      records.set(relation.bvid, record);
+    }
+    return Array.from(records.values());
+  }
+
+  renameRemoteFile(bvid: string, oldPath: string, newPath: string) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return false;
+    const at = nowIso();
+    const oldName = path.posix.basename(oldPath);
+    const newName = path.posix.basename(newPath);
+    const oldDir = path.posix.dirname(oldPath);
+    const newDir = path.posix.dirname(newPath);
+    const updateFiles = (files?: RemoteFileRecord[]) => {
+      if (!Array.isArray(files)) return false;
+      let changed = false;
+      for (const file of files) {
+        if (file.path === oldPath) {
+          file.path = newPath;
+          file.name = newName;
+          changed = true;
+        } else if (file.name === oldName && path.posix.dirname(file.path) === oldDir) {
+          file.path = newPath;
+          file.name = newName;
+          changed = true;
+        }
+      }
+      return changed;
+    };
+    let changed = updateFiles(entry.remoteFiles);
+    if (!changed) {
+      entry.remoteFiles ||= [];
+      if (!entry.remoteFiles.some((file) => file.path === newPath)) {
+        entry.remoteFiles.push({ name: newName, path: newPath });
+        changed = true;
+      }
+    }
+    entry.remotePath = newDir;
+    entry.verifiedAt = at;
+    entry.lastRemoteCheckAt = at;
+    entry.nextRemoteCheckAt = undefined;
+    entry.remoteMissingCount = 0;
+    entry.lastError = undefined;
+    for (const relation of Object.values(this.state.relations || {}).filter((item) => item.bvid === bvid)) {
+      const relationChanged = updateFiles(relation.remoteFiles);
+      const relationDir = relation.remotePath || path.posix.dirname(relation.remoteFiles?.[0]?.path || "");
+      if (!relationChanged && (!relationDir || relationDir === oldDir || relationDir === newDir)) {
+        relation.remoteFiles ||= [];
+        if (!relation.remoteFiles.some((file) => file.path === newPath)) {
+          relation.remoteFiles.push({ name: newName, path: newPath });
+        }
+      }
+      if (relationChanged || relationDir === oldDir || relationDir === newDir || !relationDir) {
+        relation.remotePath = newDir;
+        relation.verifiedAt = at;
+        relation.lastRemoteCheckAt = at;
+        relation.nextRemoteCheckAt = undefined;
+        relation.remoteMissingCount = 0;
+        relation.lastError = undefined;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.save();
+    }
+    return changed;
   }
 
   listRelationsForBvid(bvid: string) {

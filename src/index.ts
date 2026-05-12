@@ -18,7 +18,14 @@ import {
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager } from "./logger.js";
-import { batchRenameRemote, listRemoteDir } from "./uploader.js";
+import {
+  batchRenameRemote,
+  batchRenameRemotePaths,
+  listRemoteDir,
+  listRemoteFilesRecursive,
+  remotePathExists,
+} from "./uploader.js";
+import { sanitizeSegment } from "./utils.js";
 
 ensureAppDirs();
 
@@ -840,17 +847,187 @@ app.post("/api/cache/clear", (req, res) => {
   res.json({ success: true, message: "Favorite items cache cleared" });
 });
 
+function normalizeRemotePath(value: string) {
+  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.startsWith("/") ? normalized || "/" : `/${normalized}`;
+}
+
+function remoteBasename(value: string) {
+  const parts = normalizeRemotePath(value).split("/").filter(Boolean);
+  return parts[parts.length - 1] || "";
+}
+
+function remoteDirname(value: string) {
+  const normalized = normalizeRemotePath(value);
+  const index = normalized.lastIndexOf("/");
+  return index <= 0 ? "/" : normalized.slice(0, index);
+}
+
+function isRemotePathUnder(root: string, target: string) {
+  const normalizedRoot = normalizeRemotePath(root);
+  const normalizedTarget = normalizeRemotePath(target);
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+
+function extractBvid(value: string) {
+  return String(value || "").match(/BV[0-9A-Za-z]+/)?.[0] || "";
+}
+
+function fillFilenameTemplate(template: string, record: { bvid: string; title: string; upperName: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const name = String(template || "<videoTitle>-<bvid>")
+    .replace(/<videoTitle>/g, record.title || record.bvid)
+    .replace(/<ownerName>/g, record.upperName || "Unknown")
+    .replace(/<bvid>/g, record.bvid)
+    .replace(/<publishDate>/g, today)
+    .replace(/<videoDate>/g, today)
+    .replace(/<dfn>/g, "")
+    .replace(/<videoCodecs>/g, "");
+  return sanitizeSegment(name).replace(/\.+$/g, "").trim();
+}
+
+app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
+  const config = configStore.get();
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+  const records = new Map(stateManager.getRenamePreviewRecords().map((record) => [record.bvid, record]));
+  const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 4, maxFiles: 2000 });
+  const candidates: Array<{
+    bvid: string;
+    title: string;
+    ownerName: string;
+    remoteDir: string;
+    oldName: string;
+    newName: string;
+    oldPath: string;
+    newPath: string;
+    reason: string;
+  }> = [];
+  const skipped = [...scanned.skipped];
+  const namesByDir = new Map<string, Set<string>>();
+
+  for (const file of scanned.files) {
+    const set = namesByDir.get(file.dir) || new Set<string>();
+    set.add(file.name);
+    namesByDir.set(file.dir, set);
+  }
+
+  for (const file of scanned.files) {
+    if (!isRemotePathUnder(root, file.path)) {
+      skipped.push({ path: file.path, reason: "路径不在当前 AList 目标路径下" });
+      continue;
+    }
+    const bvid = extractBvid(file.name);
+    if (!bvid) {
+      skipped.push({ path: file.path, reason: "文件名没有 BV 号" });
+      continue;
+    }
+    const record = records.get(bvid);
+    if (!record) {
+      skipped.push({ path: file.path, reason: "BV 号在本地状态中找不到" });
+      continue;
+    }
+    const baseName = fillFilenameTemplate(config.filenameTemplate, record);
+    if (!baseName) {
+      skipped.push({ path: file.path, reason: "无法根据当前模板生成目标文件名" });
+      continue;
+    }
+    const ext = file.name.match(/\.[^.]+$/)?.[0] || ".mp4";
+    const newName = `${baseName}${ext}`;
+    if (newName === file.name) {
+      skipped.push({ path: file.path, reason: "当前文件名已经符合模板" });
+      continue;
+    }
+    const dirNames = namesByDir.get(file.dir) || new Set<string>();
+    if (dirNames.has(newName)) {
+      skipped.push({ path: file.path, reason: `目标文件已存在：${newName}` });
+      continue;
+    }
+    dirNames.add(newName);
+    namesByDir.set(file.dir, dirNames);
+    candidates.push({
+      bvid,
+      title: record.title,
+      ownerName: record.upperName,
+      remoteDir: file.dir,
+      oldName: file.name,
+      newName,
+      oldPath: file.path,
+      newPath: `${file.dir.replace(/\/$/, "")}/${newName}`,
+      reason: "同目录内按当前命名模板重命名",
+    });
+  }
+
+  res.json({ success: true, data: { candidates, skipped } });
+}));
+
 app.post("/api/rename", asyncHandler(async (req, res) => {
-  const { remotePath, renameMap } = req.body as {
-    remotePath: string;
-    renameMap: Array<{ oldName: string; newName: string }>;
+  const { remotePath, renameMap, items } = req.body as {
+    remotePath?: string;
+    renameMap?: Array<{ oldName: string; newName: string }>;
+    items?: Array<{ bvid?: string; oldPath: string; newPath: string }>;
   };
+  const config = configStore.get();
+  if (Array.isArray(items)) {
+    if (items.length === 0 || items.length > 200) {
+      res.status(400).json({ success: false, message: "items must contain 1-200 entries" });
+      return;
+    }
+    const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+    const records = new Map(stateManager.getRenamePreviewRecords().map((record) => [record.bvid, record]));
+    const requestedTargets = new Set<string>();
+    const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string }> = [];
+    for (const item of items) {
+      const oldPath = normalizeRemotePath(item.oldPath);
+      const newPath = normalizeRemotePath(item.newPath);
+      if (!isRemotePathUnder(root, oldPath) || !isRemotePathUnder(root, newPath)) {
+        res.status(400).json({ success: false, message: "rename path must stay under current alistDest" });
+        return;
+      }
+      if (remoteDirname(oldPath) !== remoteDirname(newPath)) {
+        res.status(400).json({ success: false, message: "rename cannot move files across directories" });
+        return;
+      }
+      if (oldPath === newPath) {
+        res.status(400).json({ success: false, message: "oldPath and newPath must be different" });
+        return;
+      }
+      const bvid = extractBvid(item.bvid || oldPath);
+      if (!bvid) {
+        res.status(400).json({ success: false, message: "each rename item must include a BV id" });
+        return;
+      }
+      if (!records.has(bvid)) {
+        res.status(400).json({ success: false, message: `local state does not contain ${bvid}` });
+        return;
+      }
+      if (requestedTargets.has(newPath)) {
+        res.status(400).json({ success: false, message: `duplicate target path: ${newPath}` });
+        return;
+      }
+      requestedTargets.add(newPath);
+      if (await remotePathExists(config, newPath)) {
+        res.status(400).json({ success: false, message: `target exists: ${newPath}` });
+        return;
+      }
+      safeItems.push({ bvid, oldPath, newPath });
+    }
+    const result = await batchRenameRemotePaths(config, safeItems);
+    for (const item of result.results) {
+      if (!item.ok) continue;
+      const source = safeItems.find((candidate) => candidate.oldPath === item.oldPath && candidate.newPath === item.newPath);
+      const bvid = source?.bvid || extractBvid(item.oldPath) || extractBvid(item.newPath);
+      if (bvid) {
+        stateManager.renameRemoteFile(bvid, item.oldPath, item.newPath);
+      }
+    }
+    res.json({ success: true, data: result });
+    return;
+  }
   if (!remotePath || !renameMap || !Array.isArray(renameMap)) {
-    res.status(400).json({ success: false, message: "remotePath and renameMap required" });
+    res.status(400).json({ success: false, message: "items or remotePath and renameMap required" });
     return;
   }
   try {
-    const config = configStore.get();
     const result = await batchRenameRemote(config, remotePath, renameMap);
     res.json({ success: true, data: result });
   } catch (err: any) {
