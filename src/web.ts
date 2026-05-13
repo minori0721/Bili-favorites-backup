@@ -1119,13 +1119,23 @@ function getAppScript() {
       resultBlock.style.display = 'block';
       resultBlock.textContent = '正在提交画质重调任务...';
       try {
-        const result = await fetchJson('/api/quality-upgrade', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({ items:selected.map((item) => ({ key:item.key })) })
-        });
-        const queued = Array.isArray(result.queued) ? result.queued : [];
-        const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        const payload = selected.map((item) => ({ key:item.key }));
+        const chunkSize = 50;
+        const queued = [];
+        const skipped = [];
+        for (let start = 0; start < payload.length; start += chunkSize) {
+          const chunk = payload.slice(start, start + chunkSize);
+          const batchIndex = Math.floor(start / chunkSize) + 1;
+          const batchTotal = Math.ceil(payload.length / chunkSize);
+          resultBlock.textContent = '正在提交画质重调任务：第 ' + batchIndex + '/' + batchTotal + ' 批（已处理 ' + start + '/' + payload.length + '）...';
+          const result = await fetchJson('/api/quality-upgrade', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ items:chunk })
+          });
+          if (Array.isArray(result.queued)) queued.push(...result.queued);
+          if (Array.isArray(result.skipped)) skipped.push(...result.skipped);
+        }
         const lines = ['已提交：' + queued.length + ' 个；跳过：' + skipped.length + ' 个。任务会在后台逐个执行，可在日志中查看进度。'];
         queued.forEach((item) => lines.push('已提交：' + item.bvid + ' ' + (item.title || '')));
         skipped.forEach((item) => lines.push('跳过：' + (item.key || '<未知>') + '，原因：' + (item.reason || '未知')));
