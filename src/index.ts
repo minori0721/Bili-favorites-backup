@@ -6,7 +6,7 @@ import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
 import { UserStore } from "./users.js";
-import { FolderDetailFilter, StateManager } from "./state.js";
+import { FolderDetailFilter, RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import {
   BiliRiskOrLoginError,
   getUserInfo,
@@ -18,14 +18,19 @@ import {
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager } from "./logger.js";
+import { TaskQueue } from "./queue.js";
+import { QualityUpgradeTask } from "./tasks.js";
 import {
   batchRenameRemote,
   batchRenameRemotePaths,
+  deleteRemoteFiles,
   listRemoteDir,
   listRemoteFilesRecursive,
+  isRemoteNotFoundError,
+  moveRemoteFile,
   remotePathExists,
 } from "./uploader.js";
-import { sanitizeSegment } from "./utils.js";
+import { joinRemotePath, sanitizeSegment } from "./utils.js";
 
 ensureAppDirs();
 
@@ -33,6 +38,16 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
+const qualityUpgradeTaskQueue = new TaskQueue(1);
+const qualityUpgradeQueue = new Map<string, QualityUpgradeTask>();
+const completedQualityUpgrades: Array<{
+  id: string;
+  bvid: string;
+  title: string;
+  status: "completed" | "error";
+  error?: string;
+  completedAt: string;
+}> = [];
 
 const favoriteItemsCache = new Map<
   string,
@@ -44,7 +59,13 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
 
-scheduler.start();
+startAfterRecovery();
+
+async function startAfterRecovery() {
+  await recoverInterruptedQualityUpgrades();
+  scheduler.resumePersistedWorkOnStartup();
+  scheduler.start();
+}
 
 function formatExpiresText(expires?: number) {
   if (!expires || expires <= 0) {
@@ -873,6 +894,70 @@ function extractBvid(value: string) {
   return String(value || "").match(/BV[0-9A-Za-z]+/)?.[0] || "";
 }
 
+async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManager["listInterruptedQualityUpgrades"]>[number]) {
+  const operation = relation.qualityUpgrade;
+  const config = configStore.get();
+  if (operation.finalizedAt && operation.newFiles?.length) {
+    const cleanup = await deleteRemoteFiles(config, operation.oldFiles.map((file) => ({
+      ...file,
+      path: joinRemotePath(operation.backupRemotePath, file.name),
+    })));
+    if (cleanup.failed > 0) {
+      throw new Error(`Failed to clean interrupted quality-upgrade backups for ${relation.bvid}`);
+    }
+    stateManager.completeQualityUpgrade(relation.bvid, relation.userId, relation.mediaId, operation.oldRemotePath, operation.newFiles);
+    return;
+  }
+  for (const newFile of operation.newFiles || []) {
+    await moveRemoteFile(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name));
+  }
+  for (let i = (operation.backupFiles || []).length - 1; i >= 0; i -= 1) {
+    const backupFile = operation.backupFiles![i];
+    const oldFile = operation.oldFiles.find((file) => file.name === backupFile.name);
+    if (oldFile) {
+      await moveRemoteFile(config, backupFile.path, oldFile.path);
+    }
+  }
+  const cleanup = await deleteRemoteFiles(config, operation.oldFiles.map((file) => ({
+    ...file,
+    path: joinRemotePath(operation.stageRemotePath, file.name),
+  })));
+  if (cleanup.failed > 0) {
+    throw new Error(`Failed to clean interrupted quality-upgrade stage files for ${relation.bvid}`);
+  }
+  stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Interrupted quality upgrade was restored for retry.");
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: "system",
+    level: "warn",
+    summary: `已恢复中断的画质重调任务 ${relation.bvid}`,
+    raw: `[QualityUpgrade] restored interrupted upgrade ${relation.userId}/${relation.mediaId}/${relation.bvid}`,
+    bvid: relation.bvid,
+    simpleVisible: true,
+    debugVisible: true,
+  });
+}
+
+async function recoverInterruptedQualityUpgrades() {
+  const interrupted = stateManager.listInterruptedQualityUpgrades();
+  for (const relation of interrupted) {
+    try {
+      await restoreInterruptedQualityUpgrade(relation);
+    } catch (error: any) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "error",
+        summary: `恢复中断的画质重调失败 ${relation.bvid}: ${error?.message || error}`,
+        raw: `[QualityUpgrade] interrupted restore failed ${relation.userId}/${relation.mediaId}/${relation.bvid}: ${error?.message || error}`,
+        bvid: relation.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+  }
+}
+
 function fillFilenameTemplate(template: string, record: { bvid: string; title: string; upperName: string }) {
   const today = new Date().toISOString().slice(0, 10);
   const name = String(template || "<videoTitle>-<bvid>")
@@ -886,10 +971,231 @@ function fillFilenameTemplate(template: string, record: { bvid: string; title: s
   return sanitizeSegment(name).replace(/\.+$/g, "").trim();
 }
 
+function describeUpgradeReason(config: ReturnType<ConfigStore["get"]>) {
+  const parts: string[] = [];
+  if (config.bbdownQuality) parts.push(`目标清晰度 ${config.bbdownQuality}`);
+  if (config.bbdownEncoding) parts.push(`编码优先 ${config.bbdownEncoding}`);
+  if (config.bbdownHiRes) parts.push("Hi-Res 音频");
+  if (config.bbdownDolby) parts.push("杜比音效");
+  return parts.length ? parts.join(" / ") : "按当前 BBDown 画质设置重新下载";
+}
+
+function buildQualityUpgradePreview() {
+  const config = configStore.get();
+  const reason = describeUpgradeReason(config);
+  const records = stateManager.getRemoteFilePreviewRecords();
+  const candidates: Array<{
+    key: string;
+    bvid: string;
+    title: string;
+    ownerName: string;
+    userId: string;
+    mediaId: number;
+    folderTitle: string;
+    remotePath: string;
+    oldFiles: RemoteFileRecord[];
+    reason: string;
+  }> = [];
+  const skipped: Array<{ bvid?: string; title?: string; folderTitle?: string; reason: string }> = [];
+
+  for (const record of records) {
+    for (const relation of record.relations) {
+      const oldFiles = relation.remoteFiles?.length ? relation.remoteFiles : [];
+      const remotePath = relation.remotePath || remoteDirname(oldFiles[0]?.path || "");
+      if (relation.hasInterruptedQualityUpgrade) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
+        continue;
+      }
+      if (relation.backupStatus !== "uploaded" && relation.backupStatus !== "verified") {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "只有已上传/已验证的视频才能重调画质" });
+        continue;
+      }
+      if (!oldFiles.length || !remotePath) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "没有可替换的远端文件记录" });
+        continue;
+      }
+      const key = relationKey(relation.userId, relation.mediaId, record.bvid);
+      if (qualityUpgradeQueue.has(key)) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
+        continue;
+      }
+      candidates.push({
+        key,
+        bvid: record.bvid,
+        title: record.title,
+        ownerName: record.upperName,
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: relation.folderTitle,
+        remotePath,
+        oldFiles,
+        reason,
+      });
+    }
+  }
+
+  return { candidates, skipped, target: {
+    quality: config.bbdownQuality,
+    encoding: config.bbdownEncoding,
+    hiRes: config.bbdownHiRes,
+    dolby: config.bbdownDolby,
+  } };
+}
+
+app.post("/api/quality-upgrade/preview", asyncHandler(async (_req, res) => {
+  res.json({ success: true, data: buildQualityUpgradePreview() });
+}));
+
+qualityUpgradeTaskQueue.on("taskError", (task: QualityUpgradeTask, error: any) => {
+  const key = relationKey(task.target.userId, task.target.mediaId, task.bvid);
+  qualityUpgradeQueue.delete(key);
+  completedQualityUpgrades.unshift({ id: task.id, bvid: task.bvid, title: String(task.videoTitle || task.bvid), status: "error", error: error?.message || String(error), completedAt: new Date().toISOString() });
+  completedQualityUpgrades.splice(50);
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: "download",
+    level: "error",
+    summary: `重调画质失败 ${task.bvid}: ${error?.message || error}`,
+    raw: `[QualityUpgrade] failed ${key}: ${error?.message || error}`,
+    bvid: task.bvid,
+    simpleVisible: true,
+    debugVisible: true,
+  });
+});
+
+app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
+  const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string }> };
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
+    res.status(400).json({ success: false, message: "items must contain 1-50 entries" });
+    return;
+  }
+  const preview = buildQualityUpgradePreview();
+  const candidates = new Map(preview.candidates.map((item) => [item.key, item]));
+  const config = configStore.get();
+  const queued: Array<{ key: string; bvid: string; title: string }> = [];
+  const skipped: Array<{ key: string; reason: string }> = [];
+  const requestedKeys = new Set<string>();
+
+  for (const item of items) {
+    const key = item.key || (item.userId && item.mediaId && item.bvid ? relationKey(item.userId, Number(item.mediaId), item.bvid) : "");
+    if (!key || requestedKeys.has(key)) {
+      skipped.push({ key, reason: key ? "重复提交" : "缺少任务标识" });
+      continue;
+    }
+    requestedKeys.add(key);
+    const candidate = candidates.get(key);
+    if (!candidate) {
+      skipped.push({ key, reason: "预览候选不存在或已在队列中" });
+      continue;
+    }
+    const user = userStore.getById(candidate.userId);
+    if (!user || !user.enabled) {
+      skipped.push({ key, reason: "账号不存在或未启用" });
+      continue;
+    }
+    const task = new QualityUpgradeTask(candidate.bvid, user.cookie, config, {
+      userId: candidate.userId,
+      mediaId: candidate.mediaId,
+      folderTitle: candidate.folderTitle,
+      remotePath: candidate.remotePath,
+      oldFiles: candidate.oldFiles,
+    });
+    task.videoTitle = candidate.title;
+    task.folderTitle = candidate.folderTitle;
+    task.userId = candidate.userId;
+    task.mediaId = candidate.mediaId;
+    task.onStartUpgrade = () => {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "info",
+        summary: `开始重调画质 ${candidate.bvid}: ${candidate.title}`,
+        raw: `[QualityUpgrade] start ${key}`,
+        bvid: candidate.bvid,
+        simpleVisible: true,
+      });
+    };
+    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => {
+      stateManager.markQualityUpgradeReplacing(candidate.bvid, candidate.userId, candidate.mediaId, {
+        stageRemotePath,
+        backupRemotePath,
+        oldRemotePath: candidate.remotePath,
+        oldFiles: candidate.oldFiles,
+      });
+    };
+    task.onBackupFileMoved = (_task, file) => {
+      stateManager.recordQualityUpgradeBackupFile(candidate.bvid, candidate.userId, candidate.mediaId, file);
+    };
+    task.onFinalFileMoved = (_task, file) => {
+      stateManager.recordQualityUpgradeFinalFile(candidate.bvid, candidate.userId, candidate.mediaId, file);
+    };
+    task.onUploaded = (_task, result) => {
+      stateManager.finalizeQualityUpgradeRemoteFiles(candidate.bvid, candidate.userId, candidate.mediaId, result.remotePath, result.files);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "upload",
+        level: "info",
+        summary: `新版文件已上传并验证 ${candidate.bvid}`,
+        raw: `[QualityUpgrade] uploaded ${key}`,
+        bvid: candidate.bvid,
+        simpleVisible: true,
+      });
+    };
+    task.onCompletedUpgrade = () => {
+      const backupDeleteFailed = Number(task.deleteResult?.failed || 0);
+      stateManager.completeQualityUpgrade(candidate.bvid, candidate.userId, candidate.mediaId, candidate.remotePath, task.finalFiles || []);
+      completedQualityUpgrades.unshift({
+        id: task.id,
+        bvid: candidate.bvid,
+        title: candidate.title,
+        status: "completed",
+        error: backupDeleteFailed > 0 ? `新版已完成，旧文件备份清理失败 ${backupDeleteFailed} 个，请手动检查临时备份目录。` : undefined,
+        completedAt: new Date().toISOString(),
+      });
+      completedQualityUpgrades.splice(50);
+      qualityUpgradeQueue.delete(key);
+      if (backupDeleteFailed > 0) {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: "warn",
+          summary: `重调画质已完成，但旧文件备份清理失败 ${backupDeleteFailed} 个`,
+          raw: `[QualityUpgrade] backup cleanup failed ${key}: ${backupDeleteFailed}`,
+          bvid: candidate.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+      }
+    };
+    qualityUpgradeQueue.set(key, task);
+    qualityUpgradeTaskQueue.addTask(task);
+    queued.push({ key, bvid: candidate.bvid, title: candidate.title });
+  }
+
+  res.json({ success: true, data: { queued, skipped } });
+}));
+
+app.get("/api/quality-upgrade/state", (_req, res) => {
+  const running = Array.from(qualityUpgradeQueue.entries()).map(([key, task]) => ({
+    key,
+    id: task.id,
+    bvid: task.bvid,
+    title: String(task.videoTitle || ""),
+    folderTitle: String(task.folderTitle || ""),
+    userId: String(task.userId || ""),
+    mediaId: Number(task.mediaId || 0),
+    status: task.status,
+    error: task.error?.message,
+    startedAt: task.startedAt,
+    queuedAt: task.queuedAt,
+  }));
+  res.json({ success: true, data: { running, completed: completedQualityUpgrades.slice(0, 20) } });
+});
+
 app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
   const config = configStore.get();
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
-  const records = new Map(stateManager.getRenamePreviewRecords().map((record) => [record.bvid, record]));
+  const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
   const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 4, maxFiles: 2000 });
   const candidates: Array<{
     bvid: string;
@@ -973,7 +1279,7 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
       return;
     }
     const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
-    const records = new Map(stateManager.getRenamePreviewRecords().map((record) => [record.bvid, record]));
+    const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
     const requestedTargets = new Set<string>();
     const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string }> = [];
     for (const item of items) {

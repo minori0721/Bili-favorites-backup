@@ -356,3 +356,62 @@ export async function remotePathExists(config: AppConfig, remotePath: string) {
   const client = buildDavClient(config);
   return client.exists(normalizeRemotePath(remotePath));
 }
+
+export async function moveRemoteFile(config: AppConfig, oldPath: string, newPath: string) {
+  const client = buildDavClient(config);
+  const targetPath = normalizeRemotePath(newPath);
+  await ensureRemoteDir(client, remoteDirname(targetPath));
+  await client.moveFile(normalizeRemotePath(oldPath), targetPath, { overwrite: false });
+}
+
+export function isRemoteNotFoundError(error: any) {
+  const status = error?.status || error?.response?.status || error?.statusCode;
+  const message = String(error?.message || error || "").toLowerCase();
+  return status === 404 || message.includes("not found") || message.includes("enoent");
+}
+
+export async function deleteRemoteFiles(
+  config: AppConfig,
+  files: RemoteFileRecord[]
+): Promise<{ success: number; failed: number; results: Array<{ path: string; ok: boolean; error?: string }> }> {
+  const client = buildDavClient(config);
+  let success = 0;
+  let failed = 0;
+  const results: Array<{ path: string; ok: boolean; error?: string }> = [];
+
+  for (const file of files) {
+    const targetPath = normalizeRemotePath(file.path);
+    try {
+      await client.deleteFile(targetPath);
+      success++;
+      results.push({ path: targetPath, ok: true });
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `删除旧远端文件: ${remoteBasename(targetPath)}`,
+        raw: `[Delete] ${targetPath}`,
+        simpleVisible: true,
+      });
+    } catch (error: any) {
+      if (isRemoteNotFoundError(error)) {
+        success++;
+        results.push({ path: targetPath, ok: true });
+        continue;
+      }
+      failed++;
+      const message = error?.message || String(error);
+      results.push({ path: targetPath, ok: false, error: message });
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "error",
+        summary: `删除旧远端文件失败: ${remoteBasename(targetPath)} - ${message}`,
+        raw: `[Delete] Failed: ${targetPath}: ${message}`,
+        simpleVisible: true,
+      });
+    }
+  }
+
+  return { success, failed, results };
+}

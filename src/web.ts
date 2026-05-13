@@ -384,9 +384,11 @@ function getSettingsSection() {
       <div class="row" style="margin-top:24px;">
         <button id="saveConfigBtn">保存设置并生效</button>
         <button id="renameBtn" class="rename-btn" style="border:none;color:white;padding:10px 16px;border-radius:12px;cursor:pointer;font-weight:600;transition:all 0.2s;">检查旧命名文件</button>
+        <button id="qualityUpgradeBtn" class="ghost" type="button">检查可升级画质</button>
       </div>
       <div class="muted" id="configStatus" style="margin-top:12px;color:var(--accent);"></div>
       <div class="muted" id="renameStatus" style="margin-top:8px;"></div>
+      <div class="muted" id="qualityUpgradeStatus" style="margin-top:8px;"></div>
     </section>`;
 }
 
@@ -508,6 +510,29 @@ function getModals() {
         <button id="closeRenamePreviewBtn" class="ghost" type="button" style="flex:1;">关闭</button>
       </div>
     </div>
+  </div>
+
+  <div class="modal" id="qualityUpgradeModal">
+    <div class="panel" style="max-width:980px;">
+      <h2>检查可升级画质</h2>
+      <p class="muted">按当前 BBDown 画质、编码、Hi-Res、杜比设置重新下载。新版文件上传并验证成功后，才会删除旧远端文件。</p>
+      <div id="qualityUpgradeSummary" class="muted"></div>
+      <div class="row" style="margin:8px 0 12px;">
+        <button id="qualityUpgradeSelectAllBtn" class="ghost" type="button">全选</button>
+        <button id="qualityUpgradeSelectNoneBtn" class="ghost" type="button">取消全选</button>
+        <button id="refreshQualityUpgradeBtn" class="ghost" type="button">重新预览</button>
+      </div>
+      <div class="rename-list" id="qualityUpgradeList"></div>
+      <div id="qualityUpgradeSkippedBlock" style="display:none;margin-top:14px;">
+        <strong style="color:var(--ink);display:block;margin-bottom:8px;">跳过的项目</strong>
+        <div class="rename-skip-list" id="qualityUpgradeSkippedList"></div>
+      </div>
+      <div id="qualityUpgradeResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="executeQualityUpgradeBtn" type="button" style="flex:1;">确认重调所选视频</button>
+        <button id="closeQualityUpgradeBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -553,6 +578,7 @@ function getAppScript() {
     };
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
+    let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
 
     function showToast(message, type = 'error') {
       const container = document.getElementById('toastContainer');
@@ -926,22 +952,192 @@ function getAppScript() {
       resultBlock.style.display = 'block';
       resultBlock.textContent = '正在执行远端重命名...';
       try {
-        const result = await fetchJson('/api/rename', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({ items:selected.map((item) => ({ bvid:item.bvid, oldPath:item.oldPath, newPath:item.newPath })) })
-        });
-        const lines = ['完成：成功 ' + result.success + ' 个，失败 ' + result.failed + ' 个。'];
-        (result.results || []).forEach((item) => {
+        const payload = selected.map((item) => ({ bvid:item.bvid, oldPath:item.oldPath, newPath:item.newPath }));
+        const chunkSize = 100;
+        const allResults = [];
+        let success = 0;
+        let failed = 0;
+        for (let start = 0; start < payload.length; start += chunkSize) {
+          const chunk = payload.slice(start, start + chunkSize);
+          const batchIndex = Math.floor(start / chunkSize) + 1;
+          const batchTotal = Math.ceil(payload.length / chunkSize);
+          resultBlock.textContent = '正在执行远端重命名：第 ' + batchIndex + '/' + batchTotal + ' 批（已处理 ' + start + '/' + payload.length + '）...';
+          const result = await fetchJson('/api/rename', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ items:chunk })
+          });
+          success += Number(result.success || 0);
+          failed += Number(result.failed || 0);
+          if (Array.isArray(result.results)) {
+            allResults.push(...result.results);
+          }
+        }
+        const lines = ['完成：成功 ' + success + ' 个，失败 ' + failed + ' 个。'];
+        allResults.forEach((item) => {
           lines.push((item.ok ? '成功：' : '失败：') + item.oldPath + ' → ' + item.newPath + (item.error ? '，原因：' + item.error : ''));
         });
         resultBlock.textContent = lines.join('\\n');
-        showToast('远端重命名完成', result.failed ? 'info' : 'success');
+        showToast('远端重命名完成', failed ? 'info' : 'success');
       } catch(e) {
         resultBlock.textContent = '重命名失败：' + e.message;
       } finally {
         btn.textContent = '确认重命名所选文件';
         btn.disabled = false;
+      }
+    }
+
+    async function openQualityUpgradePreview() {
+      document.getElementById('qualityUpgradeModal').classList.add('active');
+      await loadQualityUpgradePreview();
+    }
+
+    async function loadQualityUpgradePreview() {
+      const btn = document.getElementById('qualityUpgradeBtn');
+      const st = document.getElementById('qualityUpgradeStatus');
+      const summary = document.getElementById('qualityUpgradeSummary');
+      const list = document.getElementById('qualityUpgradeList');
+      const resultBlock = document.getElementById('qualityUpgradeResultBlock');
+      btn.textContent = '检查中...';
+      st.textContent = '';
+      summary.textContent = '正在读取本地远端记录...';
+      list.innerHTML = '';
+      resultBlock.style.display = 'none';
+      try {
+        qualityUpgradePreviewState = await fetchJson('/api/quality-upgrade/preview', { method:'POST' });
+        renderQualityUpgradePreview();
+        st.textContent = '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。';
+        st.style.color = 'var(--muted)';
+      } catch(e) {
+        summary.textContent = '预览失败：' + e.message;
+        st.textContent = '预览失败: ' + e.message;
+        st.style.color = '#E57373';
+      } finally {
+        btn.textContent = '检查可升级画质';
+      }
+    }
+
+    function renderQualityUpgradePreview() {
+      const candidates = Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : [];
+      const skipped = Array.isArray(qualityUpgradePreviewState.skipped) ? qualityUpgradePreviewState.skipped : [];
+      const target = qualityUpgradePreviewState.target || {};
+      const summary = document.getElementById('qualityUpgradeSummary');
+      const list = document.getElementById('qualityUpgradeList');
+      const skippedBlock = document.getElementById('qualityUpgradeSkippedBlock');
+      const skippedList = document.getElementById('qualityUpgradeSkippedList');
+      const targetText = [target.quality ? '清晰度 ' + target.quality : '', target.encoding ? '编码 ' + target.encoding : '', target.hiRes ? 'Hi-Res' : '', target.dolby ? '杜比' : ''].filter(Boolean).join(' / ') || '当前默认画质设置';
+      summary.textContent = '目标：' + targetText + '。发现 ' + candidates.length + ' 个可重新下载并替换的远端记录，' + skipped.length + ' 个项目已跳过。';
+      list.innerHTML = '';
+      if (!candidates.length) {
+        const empty = document.createElement('div');
+        empty.className = 'queue-empty';
+        empty.textContent = '没有找到可重调画质的已上传视频记录。';
+        list.appendChild(empty);
+      }
+      candidates.forEach((item, index) => {
+        const row = document.createElement('label');
+        row.className = 'rename-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = false;
+        checkbox.dataset.qualityUpgradeIndex = String(index);
+        const body = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'rename-title';
+        title.textContent = (item.title || item.bvid || '未知视频') + ' · ' + (item.ownerName || '未知UP');
+        const folder = document.createElement('div');
+        folder.className = 'rename-path';
+        folder.textContent = '收藏夹：' + (item.folderTitle || 'favorites') + '；目录：' + (item.remotePath || '');
+        const files = document.createElement('div');
+        files.className = 'rename-path';
+        files.textContent = '将替换旧文件：' + (item.oldFiles || []).map((file) => file.name || file.path).join('，');
+        const reason = document.createElement('div');
+        reason.className = 'rename-path';
+        reason.textContent = item.reason || '按当前画质设置重新下载，上传验证成功后删除旧文件。';
+        body.appendChild(title);
+        body.appendChild(folder);
+        body.appendChild(files);
+        body.appendChild(reason);
+        row.appendChild(checkbox);
+        row.appendChild(body);
+        list.appendChild(row);
+      });
+      if (skipped.length) {
+        skippedBlock.style.display = 'block';
+        skippedList.innerHTML = '';
+        skipped.forEach((item) => {
+          const div = document.createElement('div');
+          div.textContent = (item.title || item.bvid || item.folderTitle || '<未知项目>') + '：' + (item.reason || '已跳过');
+          skippedList.appendChild(div);
+        });
+      } else {
+        skippedBlock.style.display = 'none';
+        skippedList.innerHTML = '';
+      }
+    }
+
+    function setQualityUpgradeSelection(checked) {
+      document.querySelectorAll('#qualityUpgradeList input[type="checkbox"]').forEach((input) => {
+        input.checked = checked;
+      });
+    }
+
+    async function executeSelectedQualityUpgrade() {
+      const candidates = Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : [];
+      const selected = [];
+      document.querySelectorAll('#qualityUpgradeList input[type="checkbox"]').forEach((input) => {
+        const index = Number(input.dataset.qualityUpgradeIndex);
+        if (input.checked && Number.isInteger(index) && candidates[index]) {
+          selected.push(candidates[index]);
+        }
+      });
+      if (!selected.length) {
+        showToast('请先勾选需要重调画质的视频', 'info');
+        return;
+      }
+      if (!confirm('将为 ' + selected.length + ' 个视频重新下载并上传新版文件。新版验证成功后会删除旧远端文件，是否继续？')) {
+        return;
+      }
+      const btn = document.getElementById('executeQualityUpgradeBtn');
+      const resultBlock = document.getElementById('qualityUpgradeResultBlock');
+      btn.textContent = '提交中...';
+      btn.disabled = true;
+      resultBlock.style.display = 'block';
+      resultBlock.textContent = '正在提交画质重调任务...';
+      try {
+        const result = await fetchJson('/api/quality-upgrade', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ items:selected.map((item) => ({ key:item.key })) })
+        });
+        const queued = Array.isArray(result.queued) ? result.queued : [];
+        const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        const lines = ['已提交：' + queued.length + ' 个；跳过：' + skipped.length + ' 个。任务会在后台逐个执行，可在日志中查看进度。'];
+        queued.forEach((item) => lines.push('已提交：' + item.bvid + ' ' + (item.title || '')));
+        skipped.forEach((item) => lines.push('跳过：' + (item.key || '<未知>') + '，原因：' + (item.reason || '未知')));
+        resultBlock.textContent = lines.join('\\n');
+        showToast('画质重调任务已提交', 'success');
+        await loadQualityUpgradeState();
+      } catch(e) {
+        resultBlock.textContent = '提交失败：' + e.message;
+      } finally {
+        btn.textContent = '确认重调所选视频';
+        btn.disabled = false;
+      }
+    }
+
+    async function loadQualityUpgradeState() {
+      const st = document.getElementById('qualityUpgradeStatus');
+      try {
+        const data = await fetchJsonSilent('/api/quality-upgrade/state');
+        const running = Array.isArray(data.running) ? data.running : [];
+        const completed = Array.isArray(data.completed) ? data.completed : [];
+        if (!running.length && !completed.length) return;
+        st.textContent = '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。';
+        st.style.color = 'var(--muted)';
+      } catch(e) {
+        st.textContent = '画质重调状态读取失败: ' + e.message;
+        st.style.color = '#E57373';
       }
     }
 
@@ -1269,17 +1465,20 @@ function getAppScript() {
       }
       const indexed = Number(indexSummary && indexSummary.indexed || 0);
       const biliTotal = Number(indexSummary && indexSummary.biliTotal || 0);
-      const complete = Boolean(indexSummary && indexSummary.complete);
-      if (!indexSummary || complete || !biliTotal || indexed >= biliTotal) {
+      const scanComplete = Boolean(indexSummary && indexSummary.scanComplete);
+      const unreturnedCount = Number(indexSummary && indexSummary.unreturnedCount || 0);
+      if (!indexSummary || !biliTotal || indexed >= biliTotal) {
         hint.textContent = '';
         hint.style.display = 'none';
         return;
       }
       hint.style.display = 'block';
-      if (filter === 'all') {
-        hint.textContent = '全部列表来自 B 站实时数据；状态计数基于已索引 ' + indexed + '/' + biliTotal + ' 条，继续滚动浏览或执行全量扫描并对账后会补齐。';
+      if (scanComplete && unreturnedCount > 0) {
+        hint.textContent = 'B 站报告收藏夹总数 ' + biliTotal + ' 条；当前接口可索引到 ' + indexed + ' 条视频。全量扫描已完成，剩余 ' + unreturnedCount + ' 条未返回具体视频信息，可能是隐藏、失效、非视频或接口过滤项，不会再提示“继续扫描后补齐”。';
+      } else if (filter === 'all') {
+        hint.textContent = '全部列表来自 B 站实时数据；状态计数基于已索引 ' + indexed + '/' + biliTotal + ' 条，当前全量扫描尚未完成，继续滚动浏览或执行全量扫描并对账后会补齐。';
       } else {
-        hint.textContent = '当前筛选基于已索引 ' + indexed + '/' + biliTotal + ' 条，不代表整个收藏夹的最终数量。';
+        hint.textContent = '当前筛选基于已索引 ' + indexed + '/' + biliTotal + ' 条；全量扫描完成前不代表整个收藏夹的最终数量。';
       }
     }
 
@@ -1844,6 +2043,11 @@ function getAppScript() {
     document.getElementById('renameSelectNoneBtn').addEventListener('click', () => setRenameSelection(false));
     document.getElementById('refreshRenamePreviewBtn').addEventListener('click', loadRenamePreview);
     document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
+    document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => document.getElementById('qualityUpgradeModal').classList.remove('active'));
+    document.getElementById('qualityUpgradeSelectAllBtn').addEventListener('click', () => setQualityUpgradeSelection(true));
+    document.getElementById('qualityUpgradeSelectNoneBtn').addEventListener('click', () => setQualityUpgradeSelection(false));
+    document.getElementById('refreshQualityUpgradeBtn').addEventListener('click', loadQualityUpgradePreview);
+    document.getElementById('executeQualityUpgradeBtn').addEventListener('click', executeSelectedQualityUpgrade);
     document.getElementById('filterMissingBtn').addEventListener('click', () => setUnavailableFilter('missing'));
     document.getElementById('filterUploadedBtn').addEventListener('click', () => setUnavailableFilter('uploaded'));
     document.getElementById('vdFilterAllBtn').addEventListener('click', () => applyVideoDetailFilter('all'));
@@ -1989,13 +2193,15 @@ function getAppScript() {
     document.getElementById('logRawBtn').addEventListener('click', () => setLogMode('raw'));
     document.getElementById('logDebugBtn').addEventListener('click', () => setLogMode('debug'));
 
-    // Rename button
+    // Rename and quality upgrade buttons
     document.getElementById('renameBtn').addEventListener('click', openRenamePreview);
+    document.getElementById('qualityUpgradeBtn').addEventListener('click', openQualityUpgradePreview);
 
     // Init
     loadConfig();
     loadUsers();
     initTemplateEditor();
     initLogStream();
+    loadQualityUpgradeState();
   `;
 }

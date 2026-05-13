@@ -10,8 +10,13 @@ export interface DownloadResult {
   downloadDir: string;
 }
 
-export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, config: AppConfig): Promise<DownloadResult> {
-  const downloadDir = path.join(tempDir, bvid);
+export async function downloadWithBBDown(
+  bvid: string,
+  cookie: BiliCookie,
+  config: AppConfig,
+  options: { downloadDir?: string } = {}
+): Promise<DownloadResult> {
+  const downloadDir = options.downloadDir || path.join(tempDir, bvid);
   await fs.promises.rm(downloadDir, { recursive: true, force: true });
   await fs.promises.mkdir(downloadDir, { recursive: true });
 

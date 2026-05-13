@@ -38,6 +38,7 @@ export class SyncScheduler {
   private readonly remoteVerifyPerTick = 25;
   private readonly remoteVerifyPerTickNoNew = 120;
   private readonly remoteVerifyPerTickManual = 200;
+  private readonly staleActiveBackupMs = 20 * 60_000;
   private remoteVerifyNextAllowedAt = 0;
   private remoteDirListingCache = new Map<string, { expiresAt: number; names: string[] }>();
   private readonly remoteDirListingCacheTtlMs = 30_000;
@@ -182,6 +183,9 @@ export class SyncScheduler {
       void this.completeSharedUploadTask(task);
     });
 
+  }
+
+  resumePersistedWorkOnStartup() {
     this.resumePersistedWork();
   }
 
@@ -285,6 +289,7 @@ export class SyncScheduler {
     try {
       this.remoteDirListingCache.clear();
       if (!options.skipFavoriteScan) {
+        this.recoverStaleActiveBackups();
         this.requeueRetryPendingBeforeScan();
         await this.runOnce(manual, options.forceFullFavoriteScan === true);
       }
@@ -443,13 +448,21 @@ export class SyncScheduler {
     let page = 1;
     const scanStartedAt = new Date().toISOString();
     const seenBvids = new Set<string>();
+    let lastTotal: number | undefined;
+    this.stateManager.updateFolderScan(user.id, mediaId, {
+      folderTitle,
+      initStatus: "initializing",
+      lastHotScanAt: scanStartedAt,
+      lastHistoryScanAt: scanStartedAt,
+    });
     while (true) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+      lastTotal = result.total;
       this.recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
-        initStatus: "complete",
-        nextHistoryPage: 1,
+        initStatus: "initializing",
+        nextHistoryPage: page + 1,
         catchupPage: 1,
         lastHotScanAt: scanStartedAt,
         lastHistoryScanAt: scanStartedAt,
@@ -461,6 +474,15 @@ export class SyncScheduler {
       page += 1;
       await delay(1000 + Math.floor(Math.random() * 2000));
     }
+    this.stateManager.updateFolderScan(user.id, mediaId, {
+      folderTitle,
+      initStatus: "complete",
+      nextHistoryPage: 1,
+      catchupPage: 1,
+      lastHotScanAt: scanStartedAt,
+      lastHistoryScanAt: scanStartedAt,
+      total: lastTotal,
+    });
     this.stateManager.markMissingFavoritesInactive(user.id, mediaId, seenBvids);
   }
 
@@ -878,6 +900,36 @@ export class SyncScheduler {
     return false;
   }
 
+  private recoverStaleActiveBackups() {
+    const items = this.stateManager.listStaleActiveBackups(this.staleActiveBackupMs);
+    for (const item of items) {
+      const relation = item.relation;
+      const key = this.backupKey(relation.userId, relation.mediaId, relation.bvid);
+      if (this.queuedBackupKeys.has(key)) {
+        continue;
+      }
+      const resolved = this.resolveRelation(relation);
+      if (!resolved) {
+        continue;
+      }
+      this.stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Active backup state became stale and was re-queued.");
+      const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid);
+      if (queued && this.cycleContext) {
+        this.cycleContext.queuedItems += 1;
+      }
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: queued ? "warn" : "error",
+        summary: queued ? `已恢复卡住的备份任务 ${relation.bvid}` : `备份任务恢复失败 ${relation.bvid}`,
+        raw: `[Recovery] stale active backup ${relation.userId}/${relation.mediaId}/${relation.bvid} queued=${queued}`,
+        bvid: relation.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+  }
+
   private async confirmRemoteStillMissing(
     entry: VideoArchiveEntry,
     relation?: FavoriteRelation,
@@ -941,7 +993,9 @@ export class SyncScheduler {
       const relation = item.relation;
       const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
       const remotePath = relation?.remotePath || entry.remotePath;
-      const shouldUpload = (relation?.backupStatus === "downloaded" || relation?.backupStatus === "uploading" || entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && remotePath;
+      const status = relation?.backupStatus || entry.backupStatus;
+      const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
+      const shouldUpload = (status === "downloaded" || status === "uploading") && hasLocalDir && remotePath;
       if (shouldUpload && (!relation || resolved)) {
         uploadCountsByDir.set(entry.localDir!, (uploadCountsByDir.get(entry.localDir!) || 0) + 1);
       }
@@ -955,14 +1009,17 @@ export class SyncScheduler {
       const relation = item.relation;
       const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
       const remotePath = relation?.remotePath || entry.remotePath;
-      if ((relation?.backupStatus === "downloaded" || relation?.backupStatus === "uploading" || entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && remotePath) {
+      const status = relation?.backupStatus || entry.backupStatus;
+      const localDir = entry.localDir;
+      const hasLocalDir = Boolean(localDir && fs.existsSync(localDir));
+      if ((status === "downloaded" || status === "uploading") && hasLocalDir && localDir && remotePath) {
         if (relation && !resolved) {
           continue;
         }
-        const uploadTask = new UploadTask(entry.bvid, entry.localDir, remotePath, this.configStore.get(), {
+        const uploadTask = new UploadTask(entry.bvid, localDir, remotePath, this.configStore.get(), {
           cleanupLocal: false,
         });
-        uploadTask.sharedDownloadDir = entry.localDir;
+        uploadTask.sharedDownloadDir = localDir;
         uploadTask.userId = resolved?.user.id || relation?.userId;
         uploadTask.mediaId = resolved?.mediaId || relation?.mediaId;
         uploadTask.folderTitle = resolved?.folderTitle || relation?.folderTitle;
@@ -971,9 +1028,33 @@ export class SyncScheduler {
           this.queuedBackupKeys.add(this.backupKey(uploadTask.userId, uploadTask.mediaId, entry.bvid));
         }
         this.uploadQueue.addTask(uploadTask);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: "info",
+          summary: `恢复上传任务 ${entry.bvid}`,
+          raw: `[Recovery] resume upload ${entry.bvid} from ${entry.localDir} to ${remotePath}`,
+          bvid: entry.bvid,
+          debugVisible: true,
+        });
       } else {
         if (!resolved) continue;
-        this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid);
+        if (relation) {
+          this.stateManager.resetRelationForRetry(entry.bvid, relation.userId, relation.mediaId, "Persisted active backup state was restored after restart.");
+        } else {
+          this.stateManager.markRetryPending(entry.bvid);
+        }
+        const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: queued ? "warn" : "error",
+          summary: queued ? `恢复下载任务 ${entry.bvid}` : `下载任务恢复失败 ${entry.bvid}`,
+          raw: `[Recovery] resume download ${entry.bvid} status=${status} queued=${queued}`,
+          bvid: entry.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
       }
     }
   }
