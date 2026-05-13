@@ -5,7 +5,7 @@ import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
 import { ConfigStore, validateConfig } from "./config.js";
-import { UserStore } from "./users.js";
+import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import {
   BiliRiskOrLoginError,
@@ -77,6 +77,45 @@ function formatExpiresText(expires?: number) {
   }
   const days = Math.floor(diff / (24 * 60 * 60 * 1000));
   return `${days}天后过期`;
+}
+
+function buildAuthHealth(user: BiliUser) {
+  const autoRefreshEnabled = Boolean(user.accessToken && user.refreshToken);
+  const lastError = user.lastAuthRefreshError || "";
+  const expired = Boolean(user.expires && user.expires <= Date.now());
+  const expiringSoon = Boolean(user.expires && user.expires > Date.now() && user.expires - Date.now() < 10 * 24 * 60 * 60 * 1000);
+  const needsManualLogin = !autoRefreshEnabled || Boolean(lastError);
+  let level: "ok" | "warn" | "error" = "ok";
+  let summary = "自动刷新已启用";
+  let detail = "普通登录过期会自动刷新，无需人工处理。";
+
+  if (!autoRefreshEnabled) {
+    level = "error";
+    summary = "需要重新扫码登录";
+    detail = "当前账号缺少自动刷新凭据，无法无人值守续期。";
+  } else if (lastError) {
+    level = "error";
+    summary = "自动刷新失败，需要人工确认";
+    detail = lastError;
+  } else if (expired) {
+    level = "warn";
+    summary = "登录态已过期，等待自动刷新";
+    detail = "账号保留了 refreshToken，后台会自动尝试恢复。";
+  } else if (expiringSoon) {
+    level = "warn";
+    summary = "登录态临近过期，将自动刷新";
+    detail = "后台会在任务空闲时刷新授权。";
+  }
+
+  return {
+    level,
+    summary,
+    detail,
+    autoRefreshEnabled,
+    needsManualLogin,
+    lastSuccessAt: user.lastAuthRefreshAt || "",
+    lastError,
+  };
 }
 
 async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto" | "on_error") {
@@ -443,6 +482,7 @@ app.get("/api/users", (req, res) => {
     expiresText: formatExpiresText(user.expires),
     lastAuthRefreshAt: user.lastAuthRefreshAt || "",
     lastAuthRefreshError: user.lastAuthRefreshError || "",
+    authHealth: buildAuthHealth(user),
   }));
   res.json({ success: true, data: users });
 });
@@ -524,6 +564,8 @@ app.post("/api/users/:id/refresh-auth", asyncHandler(async (req, res) => {
       expires: updated?.expires || 0,
       expiresText: formatExpiresText(updated?.expires),
       lastAuthRefreshAt: updated?.lastAuthRefreshAt || "",
+      lastAuthRefreshError: updated?.lastAuthRefreshError || "",
+      authHealth: updated ? buildAuthHealth(updated) : null,
     },
   });
 }));

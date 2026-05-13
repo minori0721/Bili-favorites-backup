@@ -172,6 +172,13 @@ function getAppStyles() {
     .row .ghost:hover { background:rgba(57,197,187,0.1); }
     .user-list { display:grid; gap:16px; }
     .user-item { border:1px solid var(--border); border-radius:16px; padding:16px; display:grid; gap:12px; background:#fafdfc; }
+    .auth-health { border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:white; font-size:12px; line-height:1.7; }
+    .auth-health.ok { border-color:var(--success); background:var(--success-bg); }
+    .auth-health.warn { border-color:#FFB74D; background:#FFF8E1; }
+    .auth-health.error { border-color:#E57373; background:#FFEBEE; }
+    .auth-health-title { font-weight:800; color:var(--ink); }
+    .auth-health-detail { color:var(--muted); }
+    .auth-health.error .auth-health-detail { color:#C62828; }
     .settings-grid { display:grid; gap:16px; grid-template-columns:1fr 1fr; }
     .settings-group { grid-column:1/-1; padding-top:16px; border-top:1px dashed var(--border); margin-top:8px; }
     .settings-group-title { font-weight:700; color:var(--ink); margin-bottom:12px; }
@@ -611,6 +618,13 @@ function getAppScript() {
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '请求失败');
       return data.data;
+    }
+
+    function formatDateTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleString('zh-CN', { hour12: false });
     }
 
     // ---- Config ----
@@ -1231,15 +1245,30 @@ function getAppScript() {
 
         item.appendChild(name);
         item.appendChild(meta);
-        if (user.lastAuthRefreshError) {
-          const authErr = document.createElement('div');
-          authErr.className = 'muted';
-          authErr.style.margin = '0';
-          authErr.style.color = '#E57373';
-          authErr.style.fontSize = '12px';
-          authErr.textContent = '授权刷新失败: ' + user.lastAuthRefreshError;
-          item.appendChild(authErr);
+        const health = user.authHealth || {};
+        const authHealth = document.createElement('div');
+        authHealth.className = 'auth-health ' + (health.level || 'warn');
+        const authTitle = document.createElement('div');
+        authTitle.className = 'auth-health-title';
+        authTitle.textContent = health.summary || '授权状态未知';
+        const authDetail = document.createElement('div');
+        authDetail.className = 'auth-health-detail';
+        authDetail.textContent = health.detail || '无法判断当前账号是否支持自动刷新。';
+        authHealth.appendChild(authTitle);
+        authHealth.appendChild(authDetail);
+        if (health.lastSuccessAt) {
+          const lastSuccess = document.createElement('div');
+          lastSuccess.className = 'auth-health-detail';
+          lastSuccess.textContent = '最近刷新成功：' + formatDateTime(health.lastSuccessAt);
+          authHealth.appendChild(lastSuccess);
         }
+        if (health.autoRefreshEnabled) {
+          const autoRefresh = document.createElement('div');
+          autoRefresh.className = 'auth-health-detail';
+          autoRefresh.textContent = health.needsManualLogin ? '自动刷新凭据存在，但当前失败需要处理。' : '自动刷新凭据完整，适合无人值守运行。';
+          authHealth.appendChild(autoRefresh);
+        }
+        item.appendChild(authHealth);
         item.appendChild(favoritesWrap);
         item.appendChild(actions);
         el.appendChild(item);
