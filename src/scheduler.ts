@@ -6,7 +6,7 @@ import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth } from "./
 import { logManager } from "./logger.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
-import { TaskQueue } from "./queue.js";
+import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { DownloadTask, UploadTarget, UploadTask } from "./tasks.js";
 
 function delay(ms: number) {
@@ -45,6 +45,9 @@ export class SyncScheduler {
   private remoteVerifyPathQueue = new Map<string, number>();
   private pendingTickOptions: TickOptions | null = null;
   private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
+  private schedulerProgress: SchedulerSnapshot | null = null;
+  private nextAutoRunAt?: number;
+  private lastSchedulerError = "";
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -193,11 +196,16 @@ export class SyncScheduler {
     const { pollIntervalMinutes } = this.configStore.get();
     this.stop();
     const intervalMs = pollIntervalMinutes * 60 * 1000;
+    const startupJitter = 30_000 + Math.floor(Math.random() * 90_000);
+    this.nextAutoRunAt = Date.now() + startupJitter;
     this.timer = setInterval(() => {
+      this.nextAutoRunAt = Date.now() + intervalMs;
       void this.tick();
     }, intervalMs);
-    const startupJitter = 30_000 + Math.floor(Math.random() * 90_000);
-    this.startupTimer = setTimeout(() => void this.tick(), startupJitter);
+    this.startupTimer = setTimeout(() => {
+      this.nextAutoRunAt = Date.now() + intervalMs;
+      void this.tick();
+    }, startupJitter);
   }
 
   updateInterval() {
@@ -246,36 +254,120 @@ export class SyncScheduler {
     return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
   }
 
+  private triggerLabel(trigger?: SyncTrigger) {
+    switch (trigger) {
+      case "manual":
+        return "立即同步";
+      case "reconcile":
+        return "全量扫描并对账";
+      case "remote_reconcile":
+        return "状态对账（仅AList）";
+      case "auto":
+      default:
+        return "自动同步";
+    }
+  }
+
+  private buildSchedulerSnapshot() {
+    const queuedActions = this.pendingTickOptions ? [this.triggerLabel(this.pendingTickOptions.trigger || "auto")] : [];
+    if (this.schedulerProgress) {
+      return {
+        ...this.schedulerProgress,
+        queuedActions,
+        lastError: this.lastSchedulerError,
+        nextRunAt: this.nextAutoRunAt,
+      };
+    }
+
+    const cooldowns = this.stateManager.getAllCooldowns();
+    const cooldown = Object.values(cooldowns)[0];
+    if (cooldown) {
+      const user = this.userStore.getById(cooldown.userId);
+      return {
+        status: "cooldown" as const,
+        mode: "cooldown",
+        title: "账号冷却中",
+        detail: cooldown.reason,
+        userName: user?.name || cooldown.userId,
+        queuedActions,
+        lastError: cooldown.reason,
+        updatedAt: Date.now(),
+        nextRunAt: cooldown.until,
+      };
+    }
+
+    return {
+      status: queuedActions.length ? "queued" as const : "idle" as const,
+      mode: queuedActions.length ? "queued" : "idle",
+      title: queuedActions.length ? "调度任务已排队" : "当前调度空闲",
+      detail: queuedActions.length ? "已有同步/扫描/对账任务在等待当前任务结束后执行。" : "当前没有正在运行的同步、扫描或对账任务。",
+      queuedActions,
+      lastError: this.lastSchedulerError,
+      updatedAt: Date.now(),
+      nextRunAt: this.nextAutoRunAt,
+    };
+  }
+
+  private updateSchedulerProgress(patch: Partial<SchedulerSnapshot>) {
+    const previous = this.schedulerProgress;
+    const snapshot: SchedulerSnapshot = {
+      status: "running",
+      mode: patch.mode ?? previous?.mode ?? this.cycleContext?.trigger ?? "auto",
+      title: patch.title ?? previous?.title ?? this.triggerLabel(this.cycleContext?.trigger || "auto"),
+      detail: patch.detail ?? previous?.detail ?? "正在运行调度任务。",
+      startedAt: previous?.startedAt || Date.now(),
+      updatedAt: Date.now(),
+      queuedActions: this.pendingTickOptions ? [this.triggerLabel(this.pendingTickOptions.trigger || "auto")] : [],
+    };
+    if ("userName" in patch) snapshot.userName = patch.userName;
+    if ("folderTitle" in patch) snapshot.folderTitle = patch.folderTitle;
+    if ("mediaId" in patch) snapshot.mediaId = patch.mediaId;
+    if ("page" in patch) snapshot.page = patch.page;
+    if ("pageSize" in patch) snapshot.pageSize = patch.pageSize;
+    if ("indexed" in patch) snapshot.indexed = patch.indexed;
+    if ("biliTotal" in patch) snapshot.biliTotal = patch.biliTotal;
+    if ("checked" in patch) snapshot.checked = patch.checked;
+    if ("total" in patch) snapshot.total = patch.total;
+    if ("lastError" in patch) snapshot.lastError = patch.lastError;
+    if ("nextRunAt" in patch) snapshot.nextRunAt = patch.nextRunAt;
+    this.schedulerProgress = snapshot;
+  }
+
   getQueueSnapshot() {
-    const mapTask = (task: any, stage: "download_pending" | "download_running" | "upload_pending" | "upload_running") => ({
-      id: String(task.id || ""),
-      bvid: String(task.bvid || ""),
-      title: String(task.videoTitle || ""),
-      upperName: String(task.upperName || ""),
-      cover: task.cover ? String(task.cover) : "",
-      folderTitle: String(task.folderTitle || ""),
-      userId: task.userId ? String(task.userId) : "",
-      mediaId: Number(task.mediaId || 0),
-      retries: Number(task.retries || 0),
-      maxRetries: Number(task.maxRetries || 0),
-      queuedAt: typeof task.queuedAt === "number" ? task.queuedAt : undefined,
-      startedAt: typeof task.startedAt === "number" ? task.startedAt : undefined,
-      sequence: typeof task.sequence === "number" ? task.sequence : undefined,
-      stage,
-    });
+    const downloadPending: QueueBoardItem[] = [];
+    const downloadRunning: QueueBoardItem[] = [];
+    const uploadPending: QueueBoardItem[] = [];
+    const uploadRunning: QueueBoardItem[] = [];
 
-    const downloadTasks = this.downloadQueue.getTasks();
-    const uploadTasks = this.uploadQueue.getTasks();
+    for (const task of this.downloadQueue.getTasks()) {
+      if (task.status === "running") {
+        downloadRunning.push(mapQueueBoardTask(task, "download_running"));
+      } else if (task.status === "pending" || task.status === "retry_wait") {
+        downloadPending.push(mapQueueBoardTask(task, "download_pending"));
+      }
+    }
+    for (const task of this.uploadQueue.getTasks()) {
+      if (task.status === "running") {
+        uploadRunning.push(mapQueueBoardTask(task, "upload_running"));
+      } else if (task.status === "pending" || task.status === "retry_wait") {
+        uploadPending.push(mapQueueBoardTask(task, "upload_pending"));
+      }
+    }
 
-    const bySequence = (a: any, b: any) => Number(a.sequence || 0) - Number(b.sequence || 0);
-    const byStartedAt = (a: any, b: any) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
+    const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.sequence || 0) - Number(b.sequence || 0);
+    const byStartedAt = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
+    downloadPending.sort(bySequence);
+    uploadPending.sort(bySequence);
+    downloadRunning.sort(byStartedAt);
+    uploadRunning.sort(byStartedAt);
 
     return {
       generatedAt: Date.now(),
-      downloadPending: downloadTasks.filter((task) => task.status === "pending").sort(bySequence).map((task) => mapTask(task, "download_pending")),
-      downloadRunning: downloadTasks.filter((task) => task.status === "running").sort(byStartedAt).map((task) => mapTask(task, "download_running")),
-      uploadPending: uploadTasks.filter((task) => task.status === "pending").sort(bySequence).map((task) => mapTask(task, "upload_pending")),
-      uploadRunning: uploadTasks.filter((task) => task.status === "running").sort(byStartedAt).map((task) => mapTask(task, "upload_running")),
+      downloadPending,
+      downloadRunning,
+      uploadPending,
+      uploadRunning,
+      scheduler: this.buildSchedulerSnapshot(),
     };
   }
 
@@ -286,6 +378,16 @@ export class SyncScheduler {
     const trigger: SyncTrigger = options.trigger || (manual ? "manual" : "auto");
     this.running = true;
     this.cycleContext = this.createCycleStats(trigger);
+    this.schedulerProgress = {
+      status: "running",
+      mode: trigger,
+      title: this.triggerLabel(trigger),
+      detail: "正在准备调度任务。",
+      queuedActions: this.pendingTickOptions ? [this.triggerLabel(this.pendingTickOptions.trigger || "auto")] : [],
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.lastSchedulerError = "";
     try {
       this.remoteDirListingCache.clear();
       if (!options.skipFavoriteScan) {
@@ -296,12 +398,15 @@ export class SyncScheduler {
       await this.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true);
       this.logCycleSummary(this.cycleContext);
     } catch (error: any) {
-      console.error("[Scheduler] Tick failed:", error?.message || error);
-      this.cycleContext.error = error?.message || String(error);
+      const message = error?.message || String(error);
+      console.error("[Scheduler] Tick failed:", message);
+      this.cycleContext.error = message;
+      this.lastSchedulerError = message;
       this.logCycleSummary(this.cycleContext);
     } finally {
       this.cycleContext = null;
       this.running = false;
+      this.schedulerProgress = null;
       const queued = this.pendingTickOptions;
       this.pendingTickOptions = null;
       if (queued) {
@@ -316,6 +421,7 @@ export class SyncScheduler {
 
   private async runOnce(manual: boolean, forceFullFavoriteScan: boolean) {
     const users = this.userStore.list().filter((user) => user.enabled);
+    this.updateSchedulerProgress({ detail: `正在检查 ${users.length} 个启用账号。` });
     for (const user of users) {
       const cooldown = this.stateManager.getUserCooldown(user.id);
       if (cooldown) {
@@ -325,6 +431,12 @@ export class SyncScheduler {
 
       for (const folder of user.favorites) {
         try {
+          this.updateSchedulerProgress({
+            userName: user.name,
+            folderTitle: folder.title,
+            mediaId: folder.mediaId,
+            detail: forceFullFavoriteScan ? "准备全量扫描收藏夹。" : "准备同步收藏夹。",
+          });
           if (forceFullFavoriteScan) {
             await this.scanAllPages(user, folder.mediaId, folder.title);
           } else {
@@ -445,6 +557,15 @@ export class SyncScheduler {
   }
 
   private async scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
+    this.updateSchedulerProgress({
+      mode: "reconcile",
+      title: "全量扫描并对账",
+      userName: user.name,
+      folderTitle,
+      mediaId,
+      page: 1,
+      detail: "正在全量扫描 B 站收藏夹。",
+    });
     let page = 1;
     const scanStartedAt = new Date().toISOString();
     const seenBvids = new Set<string>();
@@ -458,6 +579,16 @@ export class SyncScheduler {
     while (true) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
       lastTotal = result.total;
+      this.updateSchedulerProgress({
+        userName: user.name,
+        folderTitle,
+        mediaId,
+        page,
+        pageSize: 20,
+        indexed: seenBvids.size + result.items.length,
+        biliTotal: result.total,
+        detail: `正在全量扫描第 ${page} 页。`,
+      });
       this.recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
@@ -487,6 +618,14 @@ export class SyncScheduler {
   }
 
   private async scanHotPages(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean) {
+    this.updateSchedulerProgress({
+      mode: manual ? "manual" : "auto",
+      title: this.triggerLabel(manual ? "manual" : "auto"),
+      userName: user.name,
+      folderTitle,
+      mediaId,
+      detail: "正在扫描收藏夹近期页面。",
+    });
     let consecutiveKnownPages = 0;
     let burstBudget = 0;
     const minPages = manual ? 10 : this.hotScanMinPages;
@@ -494,6 +633,15 @@ export class SyncScheduler {
     let lastPage = 0;
     for (let page = 1; page <= maxPages; page += 1) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+      this.updateSchedulerProgress({
+        userName: user.name,
+        folderTitle,
+        mediaId,
+        page,
+        pageSize: 20,
+        biliTotal: result.total,
+        detail: `正在扫描近期第 ${page} 页。`,
+      });
       const pageStats = this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
       lastPage = page;
       const previousScan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
@@ -530,6 +678,12 @@ export class SyncScheduler {
     manual: boolean,
     startAfterPage = 0
   ) {
+    this.updateSchedulerProgress({
+      userName: user.name,
+      folderTitle,
+      mediaId,
+      detail: "正在补扫收藏夹历史页面。",
+    });
     const scan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
     const hasKnownTotal = typeof scan.total === "number" && scan.total > 0;
     const totalPages = hasKnownTotal ? Math.max(1, Math.ceil((scan.total || 0) / 20)) : null;
@@ -544,6 +698,15 @@ export class SyncScheduler {
 
     for (let i = 0; i < pagesThisRun; i += 1) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+      this.updateSchedulerProgress({
+        userName: user.name,
+        folderTitle,
+        mediaId,
+        page,
+        pageSize: 20,
+        biliTotal: result.total,
+        detail: `正在补扫历史第 ${page} 页。`,
+      });
       this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
 
       if (!result.hasMore || result.items.length === 0) {
@@ -714,6 +877,20 @@ export class SyncScheduler {
     if (!this.cycleContext) return;
 
     const config = this.configStore.get();
+    this.updateSchedulerProgress({
+      mode: forceFullRemoteVerify ? (manual ? "remote_reconcile" : this.cycleContext.trigger) : this.cycleContext.trigger,
+      title: forceFullRemoteVerify ? "状态对账" : this.triggerLabel(this.cycleContext.trigger),
+      detail: forceFullRemoteVerify ? "正在准备 AList 远端状态对账。" : "正在抽样验证 AList 远端文件。",
+      userName: undefined,
+      folderTitle: undefined,
+      mediaId: undefined,
+      page: undefined,
+      pageSize: undefined,
+      indexed: undefined,
+      biliTotal: undefined,
+      checked: undefined,
+      total: undefined,
+    });
     this.remoteVerifyPathQueue.clear();
     const verifyLimit = forceFullRemoteVerify ? undefined : this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
     const includeDeferred = forceFullRemoteVerify;
@@ -817,6 +994,11 @@ export class SyncScheduler {
       while (index < candidates.length) {
         const current = candidates[index];
         index += 1;
+        this.updateSchedulerProgress({
+          checked: index,
+          total: candidates.length,
+          detail: `正在对账 AList 远端文件 ${index}/${candidates.length}。`,
+        });
         await executeOne(current);
       }
     });
@@ -1164,6 +1346,27 @@ export class SyncScheduler {
     });
   }
 
+}
+
+interface SchedulerSnapshot {
+  status: "idle" | "queued" | "running" | "cooldown";
+  mode: string | null;
+  title: string;
+  detail: string;
+  userName?: string;
+  folderTitle?: string;
+  mediaId?: number;
+  page?: number;
+  pageSize?: number;
+  indexed?: number;
+  biliTotal?: number;
+  checked?: number;
+  total?: number;
+  queuedActions: string[];
+  lastError?: string;
+  startedAt?: number;
+  updatedAt?: number;
+  nextRunAt?: number;
 }
 
 interface SyncCycleStats {

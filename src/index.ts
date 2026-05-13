@@ -18,7 +18,7 @@ import {
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager } from "./logger.js";
-import { TaskQueue } from "./queue.js";
+import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { QualityUpgradeTask } from "./tasks.js";
 import {
   batchRenameRemote,
@@ -902,7 +902,33 @@ app.get("/api/logs", (req, res) => {
 });
 
 app.get("/api/queue/state", (_req, res) => {
-  res.json({ success: true, data: scheduler.getQueueSnapshot() });
+  const snapshot = scheduler.getQueueSnapshot();
+  const qualityDownloadPending: QueueBoardItem[] = [];
+  const qualityDownloadRunning: QueueBoardItem[] = [];
+  const qualityUploadPending: QueueBoardItem[] = [];
+  const qualityUploadRunning: QueueBoardItem[] = [];
+
+  for (const task of qualityUpgradeQueue.values()) {
+    const inUploadStage = task.qualityStage === "upload";
+    const detail = task.qualityStageLabel || (inUploadStage ? "等待上传替换" : "等待画质重调");
+    if (task.status === "running" && inUploadStage) {
+      qualityUploadRunning.push(mapQueueBoardTask(task, "upload_running", { upperName: "画质重调", detail }));
+    } else if (task.status === "retry_wait" && inUploadStage) {
+      qualityUploadPending.push(mapQueueBoardTask(task, "upload_pending", { upperName: "画质重调", detail }));
+    } else if (task.status === "running") {
+      qualityDownloadRunning.push(mapQueueBoardTask(task, "download_running", { upperName: "画质重调", detail }));
+    } else if (task.status === "pending" || task.status === "retry_wait") {
+      qualityDownloadPending.push(mapQueueBoardTask(task, "download_pending", { upperName: "画质重调", detail }));
+    }
+  }
+
+  const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.sequence || 0) - Number(b.sequence || 0);
+  const byStartedAt = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
+  snapshot.downloadPending.push(...qualityDownloadPending.sort(bySequence));
+  snapshot.downloadRunning.push(...qualityDownloadRunning.sort(byStartedAt));
+  snapshot.uploadPending.push(...qualityUploadPending.sort(bySequence));
+  snapshot.uploadRunning.push(...qualityUploadRunning.sort(byStartedAt));
+  res.json({ success: true, data: snapshot });
 });
 
 app.post("/api/cache/clear", (req, res) => {

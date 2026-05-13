@@ -236,6 +236,14 @@ function getAppStyles() {
     .log-toggle { display:flex; gap:8px; margin-bottom:12px; }
     .log-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
+    .scheduler-status { border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:12px; margin-bottom:12px; font-size:13px; }
+    .scheduler-status-main { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
+    .scheduler-status-title { font-weight:800; color:var(--accent); }
+    .scheduler-status-detail { color:var(--muted); margin-top:4px; }
+    .scheduler-status.running { border-color:var(--accent); background:rgba(57,197,187,0.08); }
+    .scheduler-status.queued,.scheduler-status.cooldown { border-color:#FFB74D; background:#FFF8E1; }
+    .scheduler-status-grid { display:grid; gap:6px 14px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); margin-top:10px; color:var(--muted); }
+    .scheduler-status-grid strong { color:var(--ink); }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
     .queue-col { min-width:0; border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
@@ -561,6 +569,7 @@ function getAppScript() {
     let logMode = 'simple';
     let logEntries = [];
     let queueBoardPollTimer = null;
+    let queueBoardRequestInFlight = false;
     const queueBoardState = {
       columns: {},
       cards: new Map(),
@@ -1825,15 +1834,23 @@ function getAppScript() {
         metaEl.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + (item.bvid || '');
       }
       if (extraEl) {
-        const t0 = Number(item.startedAt || item.queuedAt || 0);
-        const elapsed = t0 > 0 ? formatElapsed(nowMs - t0) : '0s';
+        const retryAt = Number(item.retryAt || 0);
+        const retryWaiting = retryAt > nowMs;
+        const t0 = Number((retryWaiting ? retryAt : 0) || item.startedAt || item.queuedAt || 0);
+        const elapsed = t0 > 0 ? formatElapsed(Math.abs(nowMs - t0)) : '0s';
         extraEl.innerHTML = '';
+        if (item.detail) {
+          const detail = document.createElement('span');
+          detail.className = 'queue-pill';
+          detail.textContent = String(item.detail);
+          extraEl.appendChild(detail);
+        }
         const retry = document.createElement('span');
         retry.className = 'queue-pill';
         retry.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0);
         const time = document.createElement('span');
         time.className = 'queue-pill';
-        time.textContent = queueElapsedLabel(item) + ' ' + elapsed;
+        time.textContent = retryWaiting ? '等待重试 ' + elapsed : queueElapsedLabel(item) + ' ' + elapsed;
         extraEl.appendChild(retry);
         extraEl.appendChild(time);
       }
@@ -1915,6 +1932,61 @@ function getAppScript() {
       }
     }
 
+    function renderSchedulerStatus(parent, scheduler) {
+      let box = document.getElementById('schedulerStatusBox');
+      if (!box) {
+        box = document.createElement('details');
+        box.id = 'schedulerStatusBox';
+        parent.parentElement.insertBefore(box, parent);
+      }
+      const status = scheduler || {};
+      box.className = 'scheduler-status ' + (status.status || 'idle');
+      const queued = Array.isArray(status.queuedActions) && status.queuedActions.length ? status.queuedActions.join('、') : '无';
+      const nextRun = status.nextRunAt ? formatDateTime(status.nextRunAt) : '未知';
+      const started = status.startedAt ? formatDateTime(status.startedAt) : '未运行';
+      const progress = status.total ? String(status.checked || 0) + '/' + String(status.total) : (status.biliTotal ? String(status.indexed || 0) + '/' + String(status.biliTotal) : '无');
+      box.innerHTML = '';
+      const summary = document.createElement('summary');
+      summary.className = 'scheduler-status-main';
+      const left = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'scheduler-status-title';
+      title.textContent = status.title || '当前调度空闲';
+      const detail = document.createElement('div');
+      detail.className = 'scheduler-status-detail';
+      detail.textContent = status.detail || '当前没有正在运行的同步、扫描或对账任务。';
+      left.appendChild(title);
+      left.appendChild(detail);
+      const right = document.createElement('div');
+      right.className = 'scheduler-status-detail';
+      right.textContent = status.status === 'idle' ? '下次自动同步：' + nextRun : '排队：' + queued;
+      summary.appendChild(left);
+      summary.appendChild(right);
+      box.appendChild(summary);
+      const grid = document.createElement('div');
+      grid.className = 'scheduler-status-grid';
+      const rows = [
+        ['任务状态', status.status || 'idle'],
+        ['账号', status.userName || '无'],
+        ['收藏夹', status.folderTitle || '无'],
+        ['页码', status.page ? String(status.page) : '无'],
+        ['进度', progress],
+        ['已排队操作', queued],
+        ['开始时间', started],
+        ['下次自动同步', nextRun],
+        ['最近错误', status.lastError || '无']
+      ];
+      rows.forEach(([label, value]) => {
+        const item = document.createElement('div');
+        const name = document.createElement('strong');
+        name.textContent = label + '：';
+        item.appendChild(name);
+        item.appendChild(document.createTextNode(String(value || '无')));
+        grid.appendChild(item);
+      });
+      box.appendChild(grid);
+    }
+
     function renderQueueColumn(parent, id, title, items, nowMs, seenKeys) {
       const column = ensureQueueColumn(parent, id, title);
       const allItems = Array.isArray(items) ? items : [];
@@ -1965,9 +2037,10 @@ function getAppScript() {
     }
 
     async function refreshQueueBoard() {
-      if (logMode !== 'queue') return;
+      if (logMode !== 'queue' || queueBoardRequestInFlight) return;
       const board = ensureQueueBoardHost();
       if (!board) return;
+      queueBoardRequestInFlight = true;
       try {
         const data = await fetchJsonSilent('/api/queue/state');
         if (logMode !== 'queue') return;
@@ -1981,6 +2054,7 @@ function getAppScript() {
           board.appendChild(grid);
           queueBoardState.columns = {};
         }
+        renderSchedulerStatus(grid, snapshot.scheduler || {});
         const firstRects = new Map();
         for (const [key, card] of queueBoardState.cards.entries()) {
           if (card.isConnected) firstRects.set(key, card.getBoundingClientRect());
@@ -2003,6 +2077,8 @@ function getAppScript() {
         board.innerHTML = '<div class="queue-empty">队列看板加载失败</div>';
         queueBoardState.columns = {};
         queueBoardState.cards.clear();
+      } finally {
+        queueBoardRequestInFlight = false;
       }
     }
 
@@ -2011,6 +2087,7 @@ function getAppScript() {
         clearInterval(queueBoardPollTimer);
         queueBoardPollTimer = null;
       }
+      queueBoardRequestInFlight = false;
     }
 
     function resetQueueBoardState() {

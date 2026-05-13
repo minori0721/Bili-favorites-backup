@@ -66,6 +66,8 @@ export class QualityUpgradeTask extends Task {
   deleteResult?: Awaited<ReturnType<typeof deleteRemoteFiles>>;
   finalFiles?: RemoteFileRecord[];
   backupFiles?: RemoteFileRecord[];
+  qualityStage?: "download" | "upload";
+  qualityStageLabel?: string;
   onStartUpgrade?: (task: QualityUpgradeTask) => void;
   onReplacing?: (task: QualityUpgradeTask, stageRemotePath: string, backupRemotePath: string) => void;
   onBackupFileMoved?: (task: QualityUpgradeTask, file: RemoteFileRecord) => void;
@@ -83,17 +85,22 @@ export class QualityUpgradeTask extends Task {
 
   async run() {
     console.log(`[Task] Starting quality upgrade for ${this.bvid}`);
+    this.qualityStage = "download";
+    this.qualityStageLabel = "下载新版";
     this.onStartUpgrade?.(this);
     const runId = `${Date.now()}-${this.id}`;
     const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
       downloadDir: path.join(tempDir, `quality-upgrade-${runId}-${this.bvid}`),
     });
     this.downloadDir = result.downloadDir;
+    this.qualityStage = "upload";
+    this.qualityStageLabel = "上传新版到临时目录";
     const targetRemotePath = this.target.remotePath;
     const stageRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
     this.uploadResult = await uploadWithAList(result.downloadDir, stageRemotePath, this.config, {
       cleanupLocal: true,
     });
+    this.qualityStageLabel = "验证临时新版文件";
     const stagedVerifyResult = await verifyRemoteFiles(this.config, this.uploadResult.files);
     if (!stagedVerifyResult.ok) {
       throw new Error(`New upgraded files missing after staged upload: ${stagedVerifyResult.missing.join(", ")}`);
@@ -114,6 +121,7 @@ export class QualityUpgradeTask extends Task {
     this.finalFiles = [];
     this.onReplacing?.(this, stageRemotePath, backupRemotePath);
     try {
+      this.qualityStageLabel = "备份旧远端文件";
       for (const oldFile of this.target.oldFiles) {
         const backupFile = {
           ...oldFile,
@@ -123,6 +131,7 @@ export class QualityUpgradeTask extends Task {
         this.backupFiles.push(backupFile);
         this.onBackupFileMoved?.(this, backupFile);
       }
+      this.qualityStageLabel = "移动新版到正式目录";
       for (let i = 0; i < this.uploadResult.files.length; i += 1) {
         const stagedFile = this.uploadResult.files[i];
         const finalFile = plannedFinalFiles[i];
@@ -130,6 +139,7 @@ export class QualityUpgradeTask extends Task {
         this.finalFiles.push(finalFile);
         this.onFinalFileMoved?.(this, finalFile);
       }
+      this.qualityStageLabel = "验证正式目录新版文件";
       const finalVerifyResult = await verifyRemoteFiles(this.config, this.finalFiles);
       if (!finalVerifyResult.ok) {
         throw new Error(`Moved upgraded files missing after final rename: ${finalVerifyResult.missing.join(", ")}`);
@@ -160,8 +170,11 @@ export class QualityUpgradeTask extends Task {
     }
     const finalResult = { remotePath: targetRemotePath, files: this.finalFiles };
     this.uploadResult = finalResult;
+    this.qualityStageLabel = "写入新版远端状态";
     this.onUploaded?.(this, finalResult);
+    this.qualityStageLabel = "清理旧文件备份";
     this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles);
+    this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
   }
