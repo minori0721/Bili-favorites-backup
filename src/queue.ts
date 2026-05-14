@@ -115,7 +115,7 @@ export class TaskQueue extends EventEmitter {
   }
 
   isBusy() {
-    return this.getActiveCount() > 0 || this.getPendingCount() > 0;
+    return this.getActiveCount() > 0 || this.getPendingCount() > 0 || this.getRetryWaitCount() > 0;
   }
 
   private processQueue() {

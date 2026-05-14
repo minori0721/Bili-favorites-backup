@@ -43,6 +43,7 @@ services:
   app:
     image: minori0721/bili-favorites-backup:latest
     container_name: bili-favorites-backup
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -60,7 +61,7 @@ services:
   alist:
     image: xhofe/alist:v3.41.0
     container_name: bili-favorites-backup-alist
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./alist:/opt/alist/data
     ports:
@@ -95,6 +96,7 @@ services:
   app:
     image: minori0721/bili-favorites-backup:latest
     container_name: bili-favorites-backup
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -159,6 +161,9 @@ docker compose up -d --build
 ## 🐳 Docker 运行建议
 
 - 请**持久化挂载** `./data:/app/data` 与 `./temp:/app/temp`，否则容器更新后会丢失任务状态与恢复能力。
+- 推荐为 app 和 AList 都设置 `restart: unless-stopped`，异常退出或宿主机重启后会自动拉起；如果你手动停止容器，它不会反复自启。
+- Web 面板的「清理数据」可清理页面缓存、临时文件、网页日志、Debug 日志、备份状态、账号和配置；重要数据需要二次确认，且同步/扫描/对账或下载/上传运行中不会允许清理关键数据。
+- 「清理数据」只处理本项目 app 侧的 `data` 与 `temp`，不会删除 AList 的 `alist` 目录；如果要连 AList 数据一起清掉，请停容器后手动删除宿主机上的 `alist` 目录。
 - 更新镜像建议继续使用：
 
 ```bash

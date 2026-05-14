@@ -978,6 +978,13 @@ async function removeCleanupTarget(item: CleanupItem) {
   await fs.promises.rm(targetPath, { recursive: true, force: true });
   if (item === "temp") {
     await fs.promises.mkdir(tempDir, { recursive: true });
+  } else if (item === "state") {
+    stateManager.clear();
+  } else if (item === "users") {
+    userStore.clear();
+  } else if (item === "config") {
+    configStore.reset();
+    scheduler.updateInterval();
   }
 }
 
@@ -988,7 +995,14 @@ app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
     important: cleanupItems[key].important,
     bytes: cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
   })));
-  res.json({ success: true, data: { items, runningTransfers: scheduler.hasRunningTransferTasks() } });
+  res.json({
+    success: true,
+    data: {
+      items,
+      runningTransfers: scheduler.hasRunningTransferTasks(),
+      activeScheduler: scheduler.hasActiveOrQueuedSchedulerWork(),
+    },
+  });
 }));
 
 app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
@@ -997,8 +1011,9 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     res.status(400).json({ success: false, message: "请选择要清理的内容" });
     return;
   }
-  if (cleanupRequiresIdle(items) && scheduler.hasRunningTransferTasks()) {
-    res.status(409).json({ success: false, message: "当前有下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
+  const requiresIdle = cleanupRequiresIdle(items);
+  if (requiresIdle && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
+    res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
     return;
   }
   const required = cleanupConfirmationRequired(items);
@@ -1006,15 +1021,19 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     res.status(400).json({ success: false, message: `请输入 ${required} 确认清理` });
     return;
   }
-  const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string }> = [];
-  for (const item of items) {
-    try {
-      await removeCleanupTarget(item);
-      results.push({ key: item, label: cleanupItems[item].label, ok: true });
-    } catch (error: any) {
-      results.push({ key: item, label: cleanupItems[item].label, ok: false, error: error?.message || String(error) });
+  const runCleanup = async () => {
+    const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string }> = [];
+    for (const item of items) {
+      try {
+        await removeCleanupTarget(item);
+        results.push({ key: item, label: cleanupItems[item].label, ok: true });
+      } catch (error: any) {
+        results.push({ key: item, label: cleanupItems[item].label, ok: false, error: error?.message || String(error) });
+      }
     }
-  }
+    return results;
+  };
+  const results = requiresIdle ? await scheduler.withCleanupLock(runCleanup) : await runCleanup();
   const failed = results.filter((item) => !item.ok);
   if (failed.length > 0) {
     res.status(500).json({ success: false, message: `有 ${failed.length} 项清理失败`, data: { results } });

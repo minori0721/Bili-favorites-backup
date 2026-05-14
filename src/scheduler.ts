@@ -51,6 +51,7 @@ export class SyncScheduler {
   private readonly remoteDirListingCacheTtlMs = 30_000;
   private remoteVerifyPathQueue = new Map<string, number>();
   private pendingTickOptions: TickOptions | null = null;
+  private cleanupLocked = false;
   private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
   private schedulerProgress: SchedulerSnapshot | null = null;
   private nextAutoRunAt?: number;
@@ -310,6 +311,20 @@ export class SyncScheduler {
     return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
   }
 
+  hasActiveOrQueuedSchedulerWork() {
+    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked;
+  }
+
+  withCleanupLock<T>(fn: () => Promise<T>) {
+    if (this.cleanupLocked || this.running || this.pendingTickOptions || this.hasRunningTransferTasks()) {
+      throw new Error("当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。");
+    }
+    this.cleanupLocked = true;
+    return fn().finally(() => {
+      this.cleanupLocked = false;
+    });
+  }
+
   enqueueQualityUpgrade(task: QualityUpgradeTask) {
     task.status = "pending";
     task.error = undefined;
@@ -451,7 +466,7 @@ export class SyncScheduler {
   }
 
   async tick(manual = false, options: TickOptions = {}) {
-    if (this.running) {
+    if (this.cleanupLocked || this.running) {
       return false;
     }
     const trigger: SyncTrigger = options.trigger || (manual ? "manual" : "auto");
@@ -916,6 +931,9 @@ export class SyncScheduler {
   }
 
   private triggerOrQueueTick(options: TickOptions) {
+    if (this.cleanupLocked) {
+      return { started: false, queued: false };
+    }
     if (this.running) {
       this.pendingTickOptions = this.mergeTickOptions(this.pendingTickOptions, options);
       return { started: false, queued: true };

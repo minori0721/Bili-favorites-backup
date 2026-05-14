@@ -295,6 +295,7 @@ function getAppStyles() {
     .cleanup-list { display:grid; gap:10px; margin:12px 0; }
     .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
     .cleanup-item.important { border-color:#FFB74D; background:#FFF8E1; }
+    .cleanup-item.disabled { opacity:.58; cursor:not-allowed; }
     .cleanup-item-title { font-weight:800; color:var(--ink); }
     .cleanup-item-desc { color:var(--muted); font-size:12px; line-height:1.6; margin-top:3px; }
     .cleanup-size { color:var(--accent); font-size:12px; font-weight:800; white-space:nowrap; }
@@ -644,7 +645,7 @@ function getAppScript() {
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
     let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
-    let cleanupState = { items: [], runningTransfers: false };
+    let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
 
     function showToast(message, type = 'error') {
       const container = document.getElementById('toastContainer');
@@ -943,6 +944,14 @@ function getAppScript() {
       return Array.from(document.querySelectorAll('.cleanup-check:checked')).map((item) => item.value);
     }
 
+    function cleanupItemRequiresIdle(key) {
+      return key !== 'memory-cache' && key !== 'logs' && key !== 'debug-logs';
+    }
+
+    function cleanupBusy() {
+      return Boolean(cleanupState.runningTransfers || cleanupState.activeScheduler);
+    }
+
     function renderCleanupConfirm() {
       const selected = selectedCleanupItems();
       const required = cleanupRequiredConfirmation(selected);
@@ -964,18 +973,20 @@ function getAppScript() {
       const list = document.getElementById('cleanupList');
       const st = document.getElementById('cleanupStatus');
       list.innerHTML = '';
-      if (cleanupState.runningTransfers) {
-        st.textContent = '当前有下载/上传任务在跑，临时文件和重要数据先保护起来，不让清理。';
+      if (cleanupState.runningTransfers || cleanupState.activeScheduler) {
+        st.textContent = '当前有同步/扫描/对账或下载/上传任务在跑，临时文件和重要数据先保护起来，不让清理。';
       } else {
         st.textContent = '选择要清理的内容。重要项目会要求二次确认。';
       }
       cleanupState.items.forEach((item) => {
+        const disabled = cleanupBusy() && cleanupItemRequiresIdle(item.key);
         const label = document.createElement('label');
-        label.className = 'cleanup-item' + (item.important ? ' important' : '');
+        label.className = 'cleanup-item' + (item.important ? ' important' : '') + (disabled ? ' disabled' : '');
         const check = document.createElement('input');
         check.type = 'checkbox';
         check.value = item.key;
         check.className = 'cleanup-check';
+        check.disabled = disabled;
         check.addEventListener('change', renderCleanupConfirm);
         const body = document.createElement('div');
         const title = document.createElement('div');
@@ -983,7 +994,7 @@ function getAppScript() {
         title.textContent = item.label + (item.important ? '（重要）' : '');
         const desc = document.createElement('div');
         desc.className = 'cleanup-item-desc';
-        desc.textContent = cleanupDescriptions[item.key] || '';
+        desc.textContent = (cleanupDescriptions[item.key] || '') + (disabled ? ' 现在有任务在忙，这个小抽屉先上锁。' : '');
         body.appendChild(title);
         body.appendChild(desc);
         const size = document.createElement('div');
@@ -1026,7 +1037,9 @@ function getAppScript() {
     }
 
     function setCleanupSelection(value) {
-      document.querySelectorAll('.cleanup-check').forEach((item) => { item.checked = value; });
+      document.querySelectorAll('.cleanup-check').forEach((item) => {
+        if (!item.disabled) item.checked = value;
+      });
       renderCleanupConfirm();
     }
 
@@ -1056,7 +1069,7 @@ function getAppScript() {
         });
         const lines = ['清理完成：'];
         (data.results || []).forEach((item) => lines.push('已清理：' + item.label));
-        resultBlock.textContent = lines.join('\n');
+        resultBlock.textContent = lines.join('\\n');
         showToast('清理完成，小扫帚收工啦', 'success');
         await loadCleanupState();
       } catch(e) {

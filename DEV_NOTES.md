@@ -54,6 +54,9 @@
 - BBDown 下载支持固定 `BBDOWN_VERSION` 和可选 `BBDOWN_SHA256` 校验，不再默认跟随 latest。
 - AList 示例镜像从 `latest` 固定为 `xhofe/alist:v3.41.0`。
 - Docker Compose 示例改用 `please-change-*` 环境变量默认值，但不会拒绝启动。
+- Docker Compose 中 app 与 AList 服务改为 `restart: unless-stopped`，异常退出或宿主机重启后会自动拉起。
+- Web 面板新增「清理数据」入口，可选择清理页面缓存、临时文件、日志、Debug 日志、备份状态、账号和配置；重要数据需要二次确认。
+- 清理数据只处理 app 侧 `data` / `temp`，不删除 AList 的 `alist` 数据目录；同步/扫描/对账或下载/上传运行中会拦截关键清理。
 
 ## 测试重点
 

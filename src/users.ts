@@ -96,6 +96,10 @@ export class UserStore {
     this.save();
   }
 
+  clear() {
+    this.users = [];
+  }
+
   private save() {
     writeJsonFile(usersPath, this.users);
   }

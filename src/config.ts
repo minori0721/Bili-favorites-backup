@@ -103,6 +103,10 @@ export class ConfigStore {
     writeJsonFile(configPath, this.config);
     return this.get();
   }
+
+  reset() {
+    this.config = { ...defaultConfig };
+  }
 }
 
 const allowedKeys = new Set<keyof AppConfig>([

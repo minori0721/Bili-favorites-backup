@@ -1523,6 +1523,18 @@ export class StateManager {
     }
   }
 
+  clear() {
+    this.state = {
+      schemaVersion: defaultState.schemaVersion,
+      processedByUser: {},
+      failedByUser: {},
+      videos: {},
+      relations: {},
+      folderScans: {},
+      userCooldowns: {},
+    };
+  }
+
   private save() {
     writeJsonFile(statePath, this.state);
   }
