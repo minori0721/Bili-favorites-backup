@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -18,7 +19,7 @@ services:
   alist:
     image: xhofe/alist:v3.41.0
     container_name: bili-favorites-backup-alist
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./alist:/opt/alist/data
     ports:

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
@@ -19,7 +20,7 @@ export interface LogEntry {
 }
 
 const MAX_LOG_ENTRIES = 500;
-const logsPath = path.join(dataDir, "logs.json");
+export const logsPath = path.join(dataDir, "logs.json");
 
 class LogManager extends EventEmitter {
   private entries: LogEntry[] = readJsonFile<LogEntry[]>(logsPath, []);
@@ -40,7 +41,15 @@ class LogManager extends EventEmitter {
 
   clear() {
     this.entries = [];
-    this.schedulePersist();
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    try {
+      fs.rmSync(logsPath, { force: true });
+    } catch {
+      // ignore log cleanup failure
+    }
   }
 
   private schedulePersist() {

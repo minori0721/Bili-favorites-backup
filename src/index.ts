@@ -1,9 +1,11 @@
 import express from "express";
 import session from "express-session";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { ensureAppDirs } from "./paths.js";
+import { dataDir, ensureAppDirs, tempDir } from "./paths.js";
 import { type AppConfig, ConfigStore, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
@@ -18,7 +20,7 @@ import {
 import { normalizeEncodingPriority, normalizeQualityPriority } from "./downloader.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
-import { logManager } from "./logger.js";
+import { logManager, logsPath } from "./logger.js";
 import { QualityUpgradeTask } from "./tasks.js";
 import {
   batchRenameRemote,
@@ -57,6 +59,20 @@ const favoriteItemsCache = new Map<
 >();
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
+
+type CleanupItem = "memory-cache" | "temp" | "logs" | "debug-logs" | "state" | "users" | "config";
+
+const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
+  "memory-cache": { label: "页面缓存", important: false },
+  temp: { label: "临时下载文件", important: false, path: tempDir },
+  logs: { label: "网页日志", important: false, path: logsPath },
+  "debug-logs": { label: "Debug 日志", important: false, path: path.join(dataDir, "debug") },
+  state: { label: "备份状态", important: true, path: path.join(dataDir, "state.json") },
+  users: { label: "账号登录信息", important: true, path: path.join(dataDir, "users.json") },
+  config: { label: "全局配置", important: true, path: path.join(dataDir, "config.json") },
+};
+
+const allCleanupKeys = Object.keys(cleanupItems) as CleanupItem[];
 
 startAfterRecovery();
 
@@ -908,6 +924,104 @@ app.post("/api/cache/clear", (req, res) => {
   favoriteItemsCache.clear();
   res.json({ success: true, message: "Favorite items cache cleared" });
 });
+
+async function pathSize(targetPath: string): Promise<number> {
+  try {
+    const stat = await fs.promises.stat(targetPath);
+    if (stat.isFile()) return stat.size;
+    if (!stat.isDirectory()) return 0;
+    const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
+    let total = 0;
+    for (const entry of entries) {
+      total += await pathSize(path.join(targetPath, entry.name));
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizeCleanupItems(value: unknown): CleanupItem[] {
+  if (!Array.isArray(value)) return [];
+  const picked = new Set<CleanupItem>();
+  for (const item of value) {
+    if (typeof item === "string" && allCleanupKeys.includes(item as CleanupItem)) {
+      picked.add(item as CleanupItem);
+    }
+  }
+  return [...picked];
+}
+
+function cleanupRequiresIdle(items: CleanupItem[]) {
+  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs");
+}
+
+function cleanupConfirmationRequired(items: CleanupItem[]) {
+  const important = items.some((item) => cleanupItems[item].important);
+  const full = allCleanupKeys.every((key) => items.includes(key));
+  if (full) return "DELETE ALL PROJECT DATA";
+  if (important) return "DELETE";
+  return "";
+}
+
+async function removeCleanupTarget(item: CleanupItem) {
+  if (item === "memory-cache") {
+    favoriteItemsCache.clear();
+    return;
+  }
+  if (item === "logs") {
+    logManager.clear();
+    return;
+  }
+  const targetPath = cleanupItems[item].path;
+  if (!targetPath) return;
+  await fs.promises.rm(targetPath, { recursive: true, force: true });
+  if (item === "temp") {
+    await fs.promises.mkdir(tempDir, { recursive: true });
+  }
+}
+
+app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
+  const items = await Promise.all(allCleanupKeys.map(async (key) => ({
+    key,
+    label: cleanupItems[key].label,
+    important: cleanupItems[key].important,
+    bytes: cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
+  })));
+  res.json({ success: true, data: { items, runningTransfers: scheduler.hasRunningTransferTasks() } });
+}));
+
+app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
+  const items = normalizeCleanupItems(req.body?.items);
+  if (items.length === 0) {
+    res.status(400).json({ success: false, message: "请选择要清理的内容" });
+    return;
+  }
+  if (cleanupRequiresIdle(items) && scheduler.hasRunningTransferTasks()) {
+    res.status(409).json({ success: false, message: "当前有下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
+    return;
+  }
+  const required = cleanupConfirmationRequired(items);
+  if (required && String(req.body?.confirmation || "") !== required) {
+    res.status(400).json({ success: false, message: `请输入 ${required} 确认清理` });
+    return;
+  }
+  const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string }> = [];
+  for (const item of items) {
+    try {
+      await removeCleanupTarget(item);
+      results.push({ key: item, label: cleanupItems[item].label, ok: true });
+    } catch (error: any) {
+      results.push({ key: item, label: cleanupItems[item].label, ok: false, error: error?.message || String(error) });
+    }
+  }
+  const failed = results.filter((item) => !item.ok);
+  if (failed.length > 0) {
+    res.status(500).json({ success: false, message: `有 ${failed.length} 项清理失败`, data: { results } });
+    return;
+  }
+  res.json({ success: true, data: { results } });
+}));
 
 function normalizeRemotePath(value: string) {
   const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");

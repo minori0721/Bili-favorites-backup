@@ -292,6 +292,16 @@ function getAppStyles() {
     .rename-arrow { color:var(--accent); font-weight:800; }
     .rename-skip-list { max-height:180px; overflow:auto; border:1px dashed var(--border); border-radius:12px; padding:10px; background:#fffaf5; color:var(--muted); font-size:12px; line-height:1.7; word-break:break-all; }
     .rename-result { border-radius:12px; padding:10px; background:#f5fbfa; border:1px solid var(--border); color:var(--muted); font-size:13px; line-height:1.7; max-height:160px; overflow:auto; }
+    .cleanup-list { display:grid; gap:10px; margin:12px 0; }
+    .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .cleanup-item.important { border-color:#FFB74D; background:#FFF8E1; }
+    .cleanup-item-title { font-weight:800; color:var(--ink); }
+    .cleanup-item-desc { color:var(--muted); font-size:12px; line-height:1.6; margin-top:3px; }
+    .cleanup-size { color:var(--accent); font-size:12px; font-weight:800; white-space:nowrap; }
+    .cleanup-confirm { border:1px dashed #FFB74D; border-radius:14px; padding:12px; background:#FFFDF5; margin-top:12px; }
+    .cleanup-help-list { display:grid; gap:10px; margin-top:12px; }
+    .cleanup-help-item { border:1px solid var(--border); border-radius:14px; padding:12px; background:linear-gradient(135deg,#fff,#f6fffd); color:var(--muted); font-size:13px; line-height:1.7; }
+    .cleanup-help-item strong { color:var(--accent); display:block; margin-bottom:4px; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
     .toast { background:white; color:var(--ink); padding:16px 20px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:center; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:400px; word-break:break-word; pointer-events:auto; }
     .toast.success { border-left-color:var(--success); }
@@ -400,6 +410,7 @@ function getSettingsSection() {
         <button id="saveConfigBtn">保存设置并生效</button>
         <button id="renameBtn" class="rename-btn" style="border:none;color:white;padding:10px 16px;border-radius:12px;cursor:pointer;font-weight:600;transition:all 0.2s;">检查旧命名文件</button>
         <button id="qualityUpgradeBtn" class="ghost" type="button">检查可升级画质</button>
+        <button id="cleanupDataBtn" class="ghost" type="button">清理数据</button>
       </div>
       <div class="muted" id="configStatus" style="margin-top:12px;color:var(--accent);"></div>
       <div class="muted" id="renameStatus" style="margin-top:8px;"></div>
@@ -548,6 +559,44 @@ function getModals() {
         <button id="closeQualityUpgradeBtn" class="ghost" type="button" style="flex:1;">关闭</button>
       </div>
     </div>
+  </div>
+
+  <div class="modal" id="cleanupDataModal">
+    <div class="panel" style="max-width:860px;">
+      <div class="section-title-row">
+        <h2>清理数据</h2>
+        <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么">?</button>
+      </div>
+      <p class="muted">勾选要清理的小抽屉。清理只会碰本项目的 <code>data</code> 和 <code>temp</code>，不会乱动别的地方。</p>
+      <div class="row" style="margin:8px 0 12px;">
+        <button id="cleanupSelectAllBtn" class="ghost" type="button">全选：完全清除</button>
+        <button id="cleanupSelectNoneBtn" class="ghost" type="button">取消全选</button>
+        <button id="refreshCleanupBtn" class="ghost" type="button">刷新占用</button>
+      </div>
+      <div id="cleanupStatus" class="muted"></div>
+      <div class="cleanup-list" id="cleanupList"></div>
+      <div id="cleanupConfirmBlock" class="cleanup-confirm" style="display:none;">
+        <div class="muted" id="cleanupConfirmHint" style="margin-bottom:8px;"></div>
+        <input id="cleanupConfirmInput" type="text" autocomplete="off" placeholder="按提示输入确认文字" />
+      </div>
+      <div id="cleanupResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="executeCleanupBtn" type="button" style="flex:1;">确认清理</button>
+        <button id="closeCleanupDataBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="cleanupHelpModal">
+    <div class="panel" style="max-width:760px;">
+      <h2>清理小贴士</h2>
+      <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
+      <div id="cleanupHelpContent" class="cleanup-help-list"></div>
+      <p class="muted" style="margin-top:14px;">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。</p>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="closeCleanupHelpBtn" class="ghost" type="button" style="width:100%;">知道啦</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -595,6 +644,7 @@ function getAppScript() {
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
     let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
+    let cleanupState = { items: [], runningTransfers: false };
 
     function showToast(message, type = 'error') {
       const container = document.getElementById('toastContainer');
@@ -634,6 +684,19 @@ function getAppScript() {
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return '';
       return date.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let size = bytes;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+      }
+      return (unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 10 ? 1 : 2)) + ' ' + units[unit];
     }
 
     // ---- Config ----
@@ -857,6 +920,151 @@ function getAppScript() {
     function openSettingsHelp() {
       renderSettingsFlow();
       document.getElementById('settingsHelpModal').classList.add('active');
+    }
+
+    const cleanupDescriptions = {
+      'memory-cache': '只清掉页面临时记住的收藏夹分页，刷新一下就会重新拿，像擦掉便签纸。',
+      temp: '清掉临时下载目录。未上传完的视频碎片会消失，所以有任务跑着时不让动它。',
+      logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
+      'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
+      state: '清掉备份状态、收藏夹索引、远端文件记录和重试记录。项目会忘记自己备份过什么。',
+      users: '清掉 B 站账号登录信息。下次需要重新扫码登录。',
+      config: '清掉全局配置。AList 地址、画质、并发等会回到默认值。',
+    };
+
+    function cleanupRequiredConfirmation(selected) {
+      const all = cleanupState.items.length > 0 && cleanupState.items.every((item) => selected.includes(item.key));
+      if (all) return 'DELETE ALL PROJECT DATA';
+      if (cleanupState.items.some((item) => selected.includes(item.key) && item.important)) return 'DELETE';
+      return '';
+    }
+
+    function selectedCleanupItems() {
+      return Array.from(document.querySelectorAll('.cleanup-check:checked')).map((item) => item.value);
+    }
+
+    function renderCleanupConfirm() {
+      const selected = selectedCleanupItems();
+      const required = cleanupRequiredConfirmation(selected);
+      const block = document.getElementById('cleanupConfirmBlock');
+      const hint = document.getElementById('cleanupConfirmHint');
+      if (!required) {
+        block.style.display = 'none';
+        hint.textContent = '';
+        document.getElementById('cleanupConfirmInput').value = '';
+        return;
+      }
+      block.style.display = 'block';
+      hint.textContent = required === 'DELETE ALL PROJECT DATA'
+        ? '你选择了完全清除。请输入 DELETE ALL PROJECT DATA，小扫帚才会认真开工。'
+        : '你选择了重要数据。请输入 DELETE 确认，避免手滑把小仓库钥匙丢掉。';
+    }
+
+    function renderCleanupList() {
+      const list = document.getElementById('cleanupList');
+      const st = document.getElementById('cleanupStatus');
+      list.innerHTML = '';
+      if (cleanupState.runningTransfers) {
+        st.textContent = '当前有下载/上传任务在跑，临时文件和重要数据先保护起来，不让清理。';
+      } else {
+        st.textContent = '选择要清理的内容。重要项目会要求二次确认。';
+      }
+      cleanupState.items.forEach((item) => {
+        const label = document.createElement('label');
+        label.className = 'cleanup-item' + (item.important ? ' important' : '');
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.value = item.key;
+        check.className = 'cleanup-check';
+        check.addEventListener('change', renderCleanupConfirm);
+        const body = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'cleanup-item-title';
+        title.textContent = item.label + (item.important ? '（重要）' : '');
+        const desc = document.createElement('div');
+        desc.className = 'cleanup-item-desc';
+        desc.textContent = cleanupDescriptions[item.key] || '';
+        body.appendChild(title);
+        body.appendChild(desc);
+        const size = document.createElement('div');
+        size.className = 'cleanup-size';
+        size.textContent = formatBytes(item.bytes);
+        label.appendChild(check);
+        label.appendChild(body);
+        label.appendChild(size);
+        list.appendChild(label);
+      });
+      renderCleanupConfirm();
+    }
+
+    function renderCleanupHelp() {
+      const content = document.getElementById('cleanupHelpContent');
+      content.innerHTML = '';
+      cleanupState.items.forEach((item) => {
+        const div = document.createElement('div');
+        div.className = 'cleanup-help-item';
+        const title = document.createElement('strong');
+        title.textContent = item.label + (item.important ? '：这是重要小抽屉' : '：这是普通小灰尘');
+        const text = document.createElement('div');
+        text.textContent = cleanupDescriptions[item.key] || '';
+        div.appendChild(title);
+        div.appendChild(text);
+        content.appendChild(div);
+      });
+    }
+
+    async function loadCleanupState() {
+      cleanupState = await fetchJson('/api/storage/cleanup');
+      renderCleanupList();
+      renderCleanupHelp();
+    }
+
+    async function openCleanupData() {
+      document.getElementById('cleanupDataModal').classList.add('active');
+      document.getElementById('cleanupResultBlock').style.display = 'none';
+      await loadCleanupState();
+    }
+
+    function setCleanupSelection(value) {
+      document.querySelectorAll('.cleanup-check').forEach((item) => { item.checked = value; });
+      renderCleanupConfirm();
+    }
+
+    async function executeCleanup() {
+      const selected = selectedCleanupItems();
+      const resultBlock = document.getElementById('cleanupResultBlock');
+      if (!selected.length) {
+        showToast('先勾选要清理的小抽屉', 'info');
+        return;
+      }
+      const required = cleanupRequiredConfirmation(selected);
+      const confirmation = document.getElementById('cleanupConfirmInput').value.trim();
+      if (required && confirmation !== required) {
+        showToast('确认文字不对，小扫帚先不动。', 'error');
+        return;
+      }
+      const btn = document.getElementById('executeCleanupBtn');
+      btn.disabled = true;
+      btn.textContent = '清理中...';
+      resultBlock.style.display = 'block';
+      resultBlock.textContent = '正在清理，请稍等...';
+      try {
+        const data = await fetchJson('/api/storage/cleanup', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ items: selected, confirmation })
+        });
+        const lines = ['清理完成：'];
+        (data.results || []).forEach((item) => lines.push('已清理：' + item.label));
+        resultBlock.textContent = lines.join('\n');
+        showToast('清理完成，小扫帚收工啦', 'success');
+        await loadCleanupState();
+      } catch(e) {
+        resultBlock.textContent = '清理失败：' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '确认清理';
+      }
     }
 
     async function openRenamePreview() {
@@ -2160,6 +2368,14 @@ function getAppScript() {
     document.getElementById('refreshRenamePreviewBtn').addEventListener('click', loadRenamePreview);
     document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
     document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => document.getElementById('qualityUpgradeModal').classList.remove('active'));
+    document.getElementById('cleanupDataBtn').addEventListener('click', openCleanupData);
+    document.getElementById('closeCleanupDataBtn').addEventListener('click', () => document.getElementById('cleanupDataModal').classList.remove('active'));
+    document.getElementById('cleanupHelpBtn').addEventListener('click', () => document.getElementById('cleanupHelpModal').classList.add('active'));
+    document.getElementById('closeCleanupHelpBtn').addEventListener('click', () => document.getElementById('cleanupHelpModal').classList.remove('active'));
+    document.getElementById('cleanupSelectAllBtn').addEventListener('click', () => setCleanupSelection(true));
+    document.getElementById('cleanupSelectNoneBtn').addEventListener('click', () => setCleanupSelection(false));
+    document.getElementById('refreshCleanupBtn').addEventListener('click', loadCleanupState);
+    document.getElementById('executeCleanupBtn').addEventListener('click', executeCleanup);
     document.getElementById('qualityUpgradeSelectAllBtn').addEventListener('click', () => setQualityUpgradeSelection(true));
     document.getElementById('qualityUpgradeSelectNoneBtn').addEventListener('click', () => setQualityUpgradeSelection(false));
     document.getElementById('refreshQualityUpgradeBtn').addEventListener('click', loadQualityUpgradePreview);
