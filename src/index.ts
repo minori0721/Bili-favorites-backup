@@ -4,9 +4,9 @@ import crypto from "node:crypto";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { ensureAppDirs } from "./paths.js";
-import { ConfigStore, validateConfig } from "./config.js";
+import { type AppConfig, ConfigStore, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
-import { FolderDetailFilter, RemoteFileRecord, StateManager, relationKey } from "./state.js";
+import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import {
   BiliRiskOrLoginError,
   getUserInfo,
@@ -15,10 +15,10 @@ import {
   normalizeTvAuthResult,
   refreshUserAuth,
 } from "./bili.js";
+import { normalizeEncodingPriority, normalizeQualityPriority } from "./downloader.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager } from "./logger.js";
-import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { QualityUpgradeTask } from "./tasks.js";
 import {
   batchRenameRemote,
@@ -38,7 +38,6 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
-const qualityUpgradeTaskQueue = new TaskQueue(1);
 const qualityUpgradeQueue = new Map<string, QualityUpgradeTask>();
 const completedQualityUpgrades: Array<{
   id: string;
@@ -902,33 +901,7 @@ app.get("/api/logs", (req, res) => {
 });
 
 app.get("/api/queue/state", (_req, res) => {
-  const snapshot = scheduler.getQueueSnapshot();
-  const qualityDownloadPending: QueueBoardItem[] = [];
-  const qualityDownloadRunning: QueueBoardItem[] = [];
-  const qualityUploadPending: QueueBoardItem[] = [];
-  const qualityUploadRunning: QueueBoardItem[] = [];
-
-  for (const task of qualityUpgradeQueue.values()) {
-    const inUploadStage = task.qualityStage === "upload";
-    const detail = task.qualityStageLabel || (inUploadStage ? "等待上传替换" : "等待画质重调");
-    if (task.status === "running" && inUploadStage) {
-      qualityUploadRunning.push(mapQueueBoardTask(task, "upload_running", { upperName: "画质重调", detail }));
-    } else if (task.status === "retry_wait" && inUploadStage) {
-      qualityUploadPending.push(mapQueueBoardTask(task, "upload_pending", { upperName: "画质重调", detail }));
-    } else if (task.status === "running") {
-      qualityDownloadRunning.push(mapQueueBoardTask(task, "download_running", { upperName: "画质重调", detail }));
-    } else if (task.status === "pending" || task.status === "retry_wait") {
-      qualityDownloadPending.push(mapQueueBoardTask(task, "download_pending", { upperName: "画质重调", detail }));
-    }
-  }
-
-  const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.sequence || 0) - Number(b.sequence || 0);
-  const byStartedAt = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
-  snapshot.downloadPending.push(...qualityDownloadPending.sort(bySequence));
-  snapshot.downloadRunning.push(...qualityDownloadRunning.sort(byStartedAt));
-  snapshot.uploadPending.push(...qualityUploadPending.sort(bySequence));
-  snapshot.uploadRunning.push(...qualityUploadRunning.sort(byStartedAt));
-  res.json({ success: true, data: snapshot });
+  res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
 app.post("/api/cache/clear", (req, res) => {
@@ -1048,6 +1021,124 @@ function describeUpgradeReason(config: ReturnType<ConfigStore["get"]>) {
   return parts.length ? parts.join(" / ") : "按当前 BBDown 画质设置重新下载";
 }
 
+function getQualityProfile(config: AppConfig) {
+  return {
+    quality: String(config.bbdownQuality || ""),
+    encoding: String(config.bbdownEncoding || ""),
+    hiRes: Boolean(config.bbdownHiRes),
+    dolby: Boolean(config.bbdownDolby),
+  };
+}
+
+function isMediaRemoteFile(file: RemoteFileRecord) {
+  return /\.(mp4|mkv|flv|mov|m4v)$/i.test(file.name);
+}
+
+function qualityProfilesMatch(files: RemoteFileRecord[], config: AppConfig) {
+  const mediaFiles = files.filter(isMediaRemoteFile);
+  if (mediaFiles.length === 0 || mediaFiles.some((file) => !file.qualityProfile)) {
+    return "unknown" as const;
+  }
+  const target = getQualityProfile(config);
+  return mediaFiles.every((file) =>
+    file.qualityProfile?.quality === target.quality &&
+    file.qualityProfile?.encoding === target.encoding &&
+    file.qualityProfile?.hiRes === target.hiRes &&
+    file.qualityProfile?.dolby === target.dolby
+  ) ? "same" as const : "different" as const;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildTemplateMetadataRegex(template: string, bvid: string) {
+  const tokenPattern = /<videoTitle>|<ownerName>|<bvid>|<publishDate>|<videoDate>|<dfn>|<videoCodecs>/g;
+  let output = "^";
+  let lastIndex = 0;
+  let hasQuality = false;
+  let hasEncoding = false;
+  for (const match of template.matchAll(tokenPattern)) {
+    output += escapeRegExp(template.slice(lastIndex, match.index));
+    switch (match[0]) {
+      case "<bvid>":
+        output += escapeRegExp(bvid);
+        break;
+      case "<dfn>":
+        output += "(?<dfn>[^\\/\\.]+?)";
+        hasQuality = true;
+        break;
+      case "<videoCodecs>":
+        output += "(?<videoCodecs>[^\\/\\.]+?)";
+        hasEncoding = true;
+        break;
+      default:
+        output += ".+?";
+        break;
+    }
+    lastIndex = (match.index || 0) + match[0].length;
+  }
+  output += escapeRegExp(template.slice(lastIndex));
+  output += "(?:_P\\d+)?$";
+  if (!hasQuality && !hasEncoding) {
+    return null;
+  }
+  return { regex: new RegExp(output, "i"), hasQuality, hasEncoding };
+}
+
+function textMatchesQuality(value: string, target: string) {
+  return value.trim().toLowerCase() === normalizeQualityPriority(target).toLowerCase();
+}
+
+function textMatchesEncoding(value: string, target: string) {
+  return value.trim().toLowerCase() === normalizeEncodingPriority(target).toLowerCase();
+}
+
+function qualityFilenameMatchStatus(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
+  const needsQuality = Boolean(config.bbdownQuality);
+  const needsEncoding = Boolean(config.bbdownEncoding);
+  if (!needsQuality && !needsEncoding) {
+    return "unknown" as const;
+  }
+  const mediaFiles = files.filter(isMediaRemoteFile);
+  if (mediaFiles.length === 0) {
+    return "unknown" as const;
+  }
+  const templateRegex = buildTemplateMetadataRegex(config.filenameTemplate || "<videoTitle>-<bvid>", bvid);
+  if (!templateRegex) {
+    return "unknown" as const;
+  }
+  if ((needsQuality && !templateRegex.hasQuality) || (needsEncoding && !templateRegex.hasEncoding)) {
+    return "unknown" as const;
+  }
+  let matched = false;
+  for (const file of mediaFiles) {
+    const parsed = templateRegex.regex.exec(file.name.replace(/\.[^.]+$/, ""));
+    if (!parsed?.groups) {
+      return "unknown" as const;
+    }
+    if (needsQuality && !textMatchesQuality(parsed.groups.dfn || "", config.bbdownQuality)) {
+      return "different" as const;
+    }
+    if (needsEncoding && !textMatchesEncoding(parsed.groups.videoCodecs || "", config.bbdownEncoding)) {
+      return "different" as const;
+    }
+    matched = true;
+  }
+  return matched ? "same" as const : "unknown" as const;
+}
+
+function getQualityUpgradeMatchStatus(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
+  const profileStatus = qualityProfilesMatch(files, config);
+  if (profileStatus !== "unknown") {
+    return profileStatus;
+  }
+  if (config.bbdownHiRes || config.bbdownDolby) {
+    return "unknown" as const;
+  }
+  return qualityFilenameMatchStatus(files, bvid, config);
+}
+
 function buildQualityUpgradePreview() {
   const config = configStore.get();
   const reason = describeUpgradeReason(config);
@@ -1087,6 +1178,10 @@ function buildQualityUpgradePreview() {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
         continue;
       }
+      if (getQualityUpgradeMatchStatus(oldFiles, record.bvid, config) === "same") {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "远端文件已符合当前画质设置" });
+        continue;
+      }
       candidates.push({
         key,
         bvid: record.bvid,
@@ -1114,14 +1209,17 @@ app.post("/api/quality-upgrade/preview", asyncHandler(async (_req, res) => {
   res.json({ success: true, data: buildQualityUpgradePreview() });
 }));
 
-qualityUpgradeTaskQueue.on("taskError", (task: QualityUpgradeTask, error: any) => {
+function markQualityUpgradeFailed(task: QualityUpgradeTask, error: any) {
   const key = relationKey(task.target.userId, task.target.mediaId, task.bvid);
+  if (!qualityUpgradeQueue.has(key)) {
+    return;
+  }
   qualityUpgradeQueue.delete(key);
   completedQualityUpgrades.unshift({ id: task.id, bvid: task.bvid, title: String(task.videoTitle || task.bvid), status: "error", error: error?.message || String(error), completedAt: new Date().toISOString() });
   completedQualityUpgrades.splice(50);
   logManager.push({
     timestamp: new Date().toISOString(),
-    type: "download",
+    type: task.qualityStage === "upload" ? "upload" : "download",
     level: "error",
     summary: `重调画质失败 ${task.bvid}: ${error?.message || error}`,
     raw: `[QualityUpgrade] failed ${key}: ${error?.message || error}`,
@@ -1129,7 +1227,7 @@ qualityUpgradeTaskQueue.on("taskError", (task: QualityUpgradeTask, error: any) =
     simpleVisible: true,
     debugVisible: true,
   });
-});
+}
 
 app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
   const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string }> };
@@ -1210,6 +1308,9 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
       });
     };
     task.onCompletedUpgrade = () => {
+      if (!qualityUpgradeQueue.has(key)) {
+        return;
+      }
       const backupDeleteFailed = Number(task.deleteResult?.failed || 0);
       stateManager.completeQualityUpgrade(candidate.bvid, candidate.userId, candidate.mediaId, candidate.remotePath, task.finalFiles || []);
       completedQualityUpgrades.unshift({
@@ -1235,8 +1336,9 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
         });
       }
     };
+    task.onFailed = markQualityUpgradeFailed;
     qualityUpgradeQueue.set(key, task);
-    qualityUpgradeTaskQueue.addTask(task);
+    scheduler.enqueueQualityUpgrade(task);
     queued.push({ key, bvid: candidate.bvid, title: candidate.title });
   }
 

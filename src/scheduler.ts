@@ -7,7 +7,14 @@ import { logManager } from "./logger.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
-import { DownloadTask, UploadTarget, UploadTask } from "./tasks.js";
+import {
+  DownloadTask,
+  QualityUpgradeDownloadTask,
+  QualityUpgradeTask,
+  QualityUpgradeUploadReplaceTask,
+  UploadTarget,
+  UploadTask,
+} from "./tasks.js";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,8 +73,29 @@ export class SyncScheduler {
     };
     const logTaskRetry = (task: any, error: any) => console.warn(`[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}):`, error.message || error);
 
-    this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
+    this.downloadQueue.on("taskStart", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      if (task instanceof QualityUpgradeDownloadTask) {
+        task.control.qualityStage = "download";
+        task.control.qualityStageLabel = "下载新版";
+        this.syncQualityUpgradeControl(task, "running");
+      }
+    });
+    this.uploadQueue.on("taskStart", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        task.control.qualityStage = "upload";
+        task.control.qualityStageLabel = "上传新版到临时目录";
+        this.syncQualityUpgradeControl(task, "running");
+      }
+    });
+
+    this.downloadQueue.on("taskError", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskError(task, error);
+      if (task instanceof QualityUpgradeDownloadTask) {
+        this.syncQualityUpgradeControl(task, "error");
+        task.control.error = error;
+        task.control.onFailed?.(task.control, error);
+        return;
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "download",
@@ -85,20 +113,31 @@ export class SyncScheduler {
       }
       this.activeDownloadTargets.delete(task.bvid);
     });
-    this.downloadQueue.on("taskRetry", (task: DownloadTask, error: any) => {
+    this.downloadQueue.on("taskRetry", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskRetry(task, error);
+      if (task instanceof QualityUpgradeDownloadTask) {
+        this.syncQualityUpgradeControl(task, "retry_wait");
+        task.control.qualityStage = "download";
+        task.control.qualityStageLabel = "等待重试下载新版";
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "download",
         level: "warn",
-        summary: `下载失败，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        summary: `${task instanceof QualityUpgradeDownloadTask ? "画质重调下载失败" : "下载失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         bvid: task.bvid,
         simpleVisible: true,
       });
     });
-    this.uploadQueue.on("taskError", (task: UploadTask, error: any) => {
+    this.uploadQueue.on("taskError", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
       logTaskError(task, error);
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        this.syncQualityUpgradeControl(task, "error");
+        task.control.error = error;
+        task.control.onFailed?.(task.control, error);
+        return;
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
@@ -117,20 +156,33 @@ export class SyncScheduler {
       }
       void this.completeSharedUploadTask(task);
     });
-    this.uploadQueue.on("taskRetry", (task: UploadTask, error: any) => {
+    this.uploadQueue.on("taskRetry", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
       logTaskRetry(task, error);
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        this.syncQualityUpgradeControl(task, "retry_wait");
+        task.control.qualityStage = "upload";
+        task.control.qualityStageLabel = "等待重试上传替换";
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "warn",
-        summary: `上传失败，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        summary: `${task instanceof QualityUpgradeUploadReplaceTask ? "画质重调上传替换失败" : "上传失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         bvid: task.bvid,
         simpleVisible: true,
       });
     });
 
-    this.downloadQueue.on("taskCompleted", (task: DownloadTask) => {
+    this.downloadQueue.on("taskCompleted", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      if (task instanceof QualityUpgradeDownloadTask) {
+        task.control.qualityStage = "upload";
+        task.control.qualityStageLabel = "等待上传替换";
+        const uploadTask = new QualityUpgradeUploadReplaceTask(task.control);
+        this.uploadQueue.addTask(uploadTask);
+        this.syncQualityUpgradeControl(uploadTask, uploadTask.status);
+        return;
+      }
       if (!task.downloadDir) return;
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
       this.activeDownloadTargets.delete(task.bvid);
@@ -154,7 +206,11 @@ export class SyncScheduler {
       }
     });
 
-    this.uploadQueue.on("taskCompleted", (task: UploadTask) => {
+    this.uploadQueue.on("taskCompleted", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        this.syncQualityUpgradeControl(task, "completed");
+        return;
+      }
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
       }
@@ -252,6 +308,29 @@ export class SyncScheduler {
 
   hasRunningTransferTasks() {
     return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
+  }
+
+  enqueueQualityUpgrade(task: QualityUpgradeTask) {
+    task.status = "pending";
+    task.error = undefined;
+    task.qualityStage = "download";
+    task.qualityStageLabel = "等待下载新版";
+    const downloadTask = new QualityUpgradeDownloadTask(task);
+    this.downloadQueue.addTask(downloadTask);
+    this.syncQualityUpgradeControl(downloadTask, downloadTask.status);
+  }
+
+  private syncQualityUpgradeControl(
+    phaseTask: QualityUpgradeDownloadTask | QualityUpgradeUploadReplaceTask,
+    status: QualityUpgradeTask["status"]
+  ) {
+    const control = phaseTask.control;
+    control.status = status;
+    control.retries = phaseTask.retries;
+    control.queuedAt = phaseTask.queuedAt;
+    control.startedAt = phaseTask.startedAt;
+    control.retryAt = phaseTask.retryAt;
+    control.sequence = phaseTask.sequence;
   }
 
   private triggerLabel(trigger?: SyncTrigger) {
@@ -897,9 +976,9 @@ export class SyncScheduler {
     const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit, includeDeferred);
     this.cycleContext.remoteChecked = candidates.length;
     this.cycleContext.remoteEligible = this.stateManager.countVideosForRemoteVerify(includeDeferred);
-    const concurrency = Math.max(1, Math.min(10, Math.floor(config.remoteVerifyConcurrency || 3)));
-    const requeueLimit = Math.max(1, Math.floor(config.remoteRequeueLimitPerCycle || 20));
-    const rateLimit = Math.max(0.5, Number(config.remoteVerifyRateLimitPerSecond || 2));
+    const concurrency = Math.max(1, Math.min(100, Math.floor(config.remoteVerifyConcurrency || 3)));
+    const requeueLimit = Math.max(1, Math.min(1000, Math.floor(config.remoteRequeueLimitPerCycle || 20)));
+    const rateLimit = Math.max(0.5, Math.min(100, Number(config.remoteVerifyRateLimitPerSecond || 2)));
     let requeueCount = 0;
 
     const executeOne = async (entry: RemoteVerifyCandidate) => {

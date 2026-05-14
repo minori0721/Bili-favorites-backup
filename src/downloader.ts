@@ -110,7 +110,7 @@ export async function downloadWithBBDown(
   }
 }
 
-function normalizeEncodingPriority(value: string) {
+export function normalizeEncodingPriority(value: string) {
   const map: Record<string, string> = {
     HEVC: "hevc",
     AVC: "avc",
@@ -119,7 +119,7 @@ function normalizeEncodingPriority(value: string) {
   return map[value] || value.toLowerCase();
 }
 
-function normalizeQualityPriority(value: string) {
+export function normalizeQualityPriority(value: string) {
   const map: Record<string, string> = {
     "8K": "8K \u8d85\u9ad8\u6e05",
     "4K": "4K \u8d85\u6e05",
@@ -130,7 +130,7 @@ function normalizeQualityPriority(value: string) {
   return map[value] || value;
 }
 
-function buildEncodingPriority(config: AppConfig) {
+export function buildEncodingPriority(config: AppConfig) {
   const priorities: string[] = [];
   if (config.bbdownDolby) {
     priorities.push("eac3");
@@ -144,7 +144,7 @@ function buildEncodingPriority(config: AppConfig) {
   return [...new Set(priorities)].join(",");
 }
 
-function buildDfnPriority(config: AppConfig) {
+export function buildDfnPriority(config: AppConfig) {
   const priorities: string[] = [];
   if (config.bbdownQuality) {
     priorities.push(normalizeQualityPriority(config.bbdownQuality));

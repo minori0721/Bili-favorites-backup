@@ -31,10 +31,18 @@ export type BackupStatus =
 
 export type BiliStatus = "available" | "unavailable" | "unknown";
 
+export interface RemoteFileQualityProfile {
+  quality: string;
+  encoding: string;
+  hiRes: boolean;
+  dolby: boolean;
+}
+
 export interface RemoteFileRecord {
   name: string;
   path: string;
   size?: number;
+  qualityProfile?: RemoteFileQualityProfile;
 }
 
 export interface VideoArchiveEntry {

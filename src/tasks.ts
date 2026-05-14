@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
@@ -61,6 +62,7 @@ export class QualityUpgradeTask extends Task {
   cookie: BiliCookie;
   config: AppConfig;
   target: QualityUpgradeTarget;
+  runId?: string;
   downloadDir?: string;
   uploadResult?: UploadResult;
   deleteResult?: Awaited<ReturnType<typeof deleteRemoteFiles>>;
@@ -68,12 +70,24 @@ export class QualityUpgradeTask extends Task {
   backupFiles?: RemoteFileRecord[];
   qualityStage?: "download" | "upload";
   qualityStageLabel?: string;
+  videoTitle?: string;
+  folderTitle?: string;
+  userId?: string;
+  mediaId?: number;
+  status: "pending" | "running" | "retry_wait" | "completed" | "error" = "pending";
+  error?: Error;
+  queuedAt?: number;
+  startedAt?: number;
+  retryAt?: number;
+  sequence?: number;
+  retries: number = 0;
   onStartUpgrade?: (task: QualityUpgradeTask) => void;
   onReplacing?: (task: QualityUpgradeTask, stageRemotePath: string, backupRemotePath: string) => void;
   onBackupFileMoved?: (task: QualityUpgradeTask, file: RemoteFileRecord) => void;
   onFinalFileMoved?: (task: QualityUpgradeTask, file: RemoteFileRecord) => void;
   onUploaded?: (task: QualityUpgradeTask, result: UploadResult) => void;
   onCompletedUpgrade?: (task: QualityUpgradeTask) => void;
+  onFailed?: (task: QualityUpgradeTask, error: any) => void;
 
   constructor(bvid: string, cookie: BiliCookie, config: AppConfig, target: QualityUpgradeTarget) {
     super(`Quality upgrade ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
@@ -84,21 +98,33 @@ export class QualityUpgradeTask extends Task {
   }
 
   async run() {
-    console.log(`[Task] Starting quality upgrade for ${this.bvid}`);
+    this.runId = `${Date.now()}-${this.id}`;
+    await this.runDownloadPhase(this.runId);
+    await this.runUploadReplacePhase(this.runId);
+  }
+
+  async runDownloadPhase(runId: string) {
+    console.log(`[Task] Starting quality-upgrade download for ${this.bvid}`);
     this.qualityStage = "download";
     this.qualityStageLabel = "下载新版";
     this.onStartUpgrade?.(this);
-    const runId = `${Date.now()}-${this.id}`;
     const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
       downloadDir: path.join(tempDir, `quality-upgrade-${runId}-${this.bvid}`),
     });
     this.downloadDir = result.downloadDir;
+  }
+
+  async runUploadReplacePhase(runId: string) {
+    if (!this.downloadDir) {
+      throw new Error("Quality upgrade download directory is missing");
+    }
+    console.log(`[Task] Starting quality-upgrade upload/replace for ${this.bvid}`);
     this.qualityStage = "upload";
     this.qualityStageLabel = "上传新版到临时目录";
     const targetRemotePath = this.target.remotePath;
     const stageRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
-    this.uploadResult = await uploadWithAList(result.downloadDir, stageRemotePath, this.config, {
-      cleanupLocal: true,
+    this.uploadResult = await uploadWithAList(this.downloadDir, stageRemotePath, this.config, {
+      cleanupLocal: false,
     });
     this.qualityStageLabel = "验证临时新版文件";
     const stagedVerifyResult = await verifyRemoteFiles(this.config, this.uploadResult.files);
@@ -176,7 +202,60 @@ export class QualityUpgradeTask extends Task {
     this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles);
     this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
+    await fs.promises.rm(this.downloadDir, { recursive: true, force: true });
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
+  }
+}
+
+abstract class QualityUpgradePhaseTask extends Task {
+  control: QualityUpgradeTask;
+  bvid: string;
+  videoTitle?: string;
+  upperName = "画质重调";
+  folderTitle?: string;
+  remotePath?: string;
+  userId?: string;
+  mediaId?: number;
+
+  constructor(name: string, control: QualityUpgradeTask) {
+    super(name, { maxRetries: control.maxRetries, retryDelaySeconds: control.retryDelaySeconds });
+    this.control = control;
+    this.bvid = control.bvid;
+    this.videoTitle = control.videoTitle || control.bvid;
+    this.folderTitle = control.folderTitle || control.target.folderTitle;
+    this.remotePath = control.target.remotePath;
+    this.userId = control.target.userId;
+    this.mediaId = control.target.mediaId;
+  }
+
+  get detail() {
+    return this.control.qualityStageLabel || "画质重调中";
+  }
+}
+
+export class QualityUpgradeDownloadTask extends QualityUpgradePhaseTask {
+  constructor(control: QualityUpgradeTask) {
+    super(`Quality upgrade download ${control.bvid}`, control);
+  }
+
+  async run() {
+    const runId = this.control.runId || `${Date.now()}-${this.control.id}`;
+    this.control.runId = runId;
+    await this.control.runDownloadPhase(runId);
+  }
+}
+
+export class QualityUpgradeUploadReplaceTask extends QualityUpgradePhaseTask {
+  constructor(control: QualityUpgradeTask) {
+    super(`Quality upgrade upload ${control.bvid}`, control);
+  }
+
+  async run() {
+    const runId = this.control.runId;
+    if (!runId) {
+      throw new Error("Quality upgrade run id is missing");
+    }
+    await this.control.runUploadReplacePhase(runId);
   }
 }
 

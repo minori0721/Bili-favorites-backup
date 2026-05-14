@@ -392,9 +392,9 @@ function getSettingsSection() {
         <div><label>重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
-        <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="10" /></div>
-        <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="20" step="0.5" /></div>
-        <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="500" /></div>
+        <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
+        <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
+        <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
       </div>
       <div class="row" style="margin-top:24px;">
         <button id="saveConfigBtn">保存设置并生效</button>
@@ -847,11 +847,11 @@ function getAppScript() {
           '<div class="flow-step"><div class="badge">\u72b6\u6001\u5bf9\u8d26</div><div class="desc">AList \u5bf9\u8d26\u5e76\u53d1 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>\uff0c\u9650\u901f <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' \u6b21/\u79d2</strong>\uff0c\u6bcf\u8f6e\u6700\u591a\u8865\u4f20 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> \u4e2a\u7f3a\u5931\u89c6\u9891\u3002</div></div>' +
         '</div>' +
         '<div class="effect-groups">' +
-          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\uff1b\u753b\u8d28\u91cd\u8c03\u7684\u4e0b\u8f7d\u9636\u6bb5\u5171\u4eab\u4e0b\u8f7d\u961f\u5217\uff0c\u4e0a\u4f20\u66ff\u6362\u9636\u6bb5\u5171\u4eab\u4e0a\u4f20\u961f\u5217\u3002</div></div>' +
           '<div class="effect-group"><strong>\u65b0\u4efb\u52a1\u751f\u6548</strong><div>\u753b\u8d28\u3001\u7f16\u7801\u3001Hi-Res / Dolby\u3001\u547d\u540d\u6a21\u677f\u3001AList \u8def\u5f84\u3001\u4e0a\u4f20\u76ee\u5f55\u7ed3\u6784\u3001\u5931\u8d25\u91cd\u8bd5\u6b21\u6570\u3001\u91cd\u8bd5\u95f4\u9694\u3002</div></div>' +
           '<div class="effect-group"><strong>\u5bf9\u8d26\u65f6\u751f\u6548</strong><div>AList \u5bf9\u8d26\u5e76\u53d1\u6570\u3001AList \u5bf9\u8d26\u9650\u901f\u3001\u6bcf\u8f6e\u6700\u591a\u8865\u4f20\u6570\u91cf\u3002</div></div>' +
         '</div>' +
-        '<p class="muted" style="margin-top:14px;">\u4fee\u6539 AList \u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002</p>';
+        '<p class="muted" style="margin-top:14px;">\u4fee\u6539 AList \u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002AList \u5bf9\u8d26\u9ad8\u5e76\u53d1/\u9ad8\u9650\u901f\u4f1a\u589e\u52a0 AList \u4e0e\u7f51\u76d8\u540e\u7aef\u538b\u529b\uff0c\u5efa\u8bae\u9010\u6b65\u8c03\u9ad8\u3002</p>';
     }
 
     function openSettingsHelp() {

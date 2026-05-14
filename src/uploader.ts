@@ -28,7 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
-import { RemoteFileRecord } from "./state.js";
+import { type RemoteFileQualityProfile, type RemoteFileRecord } from "./state.js";
 
 function buildDavClient(config: AppConfig): WebDAVClient {
   const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
@@ -58,6 +58,15 @@ export interface UploadResult {
   files: RemoteFileRecord[];
 }
 
+function buildRemoteFileQualityProfile(config: AppConfig): RemoteFileQualityProfile {
+  return {
+    quality: String(config.bbdownQuality || ""),
+    encoding: String(config.bbdownEncoding || ""),
+    hiRes: Boolean(config.bbdownHiRes),
+    dolby: Boolean(config.bbdownDolby),
+  };
+}
+
 export async function uploadWithAList(
   localDir: string,
   remotePath: string,
@@ -66,6 +75,7 @@ export async function uploadWithAList(
 ): Promise<UploadResult> {
   const client = buildDavClient(config);
   const uploadedFiles: RemoteFileRecord[] = [];
+  const qualityProfile = buildRemoteFileQualityProfile(config);
 
   await ensureRemoteDir(client, remotePath);
 
@@ -125,6 +135,7 @@ export async function uploadWithAList(
           name: entry.name,
           path: remoteFile,
           size: stat.size,
+          qualityProfile,
         });
       }
     }

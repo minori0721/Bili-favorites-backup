@@ -248,20 +248,20 @@ export function validateConfig(input: Partial<AppConfig>) {
   }
 
   if (input.remoteVerifyConcurrency !== undefined) {
-    if (!Number.isInteger(input.remoteVerifyConcurrency) || input.remoteVerifyConcurrency < 1 || input.remoteVerifyConcurrency > 10) {
-      return "remoteVerifyConcurrency must be an integer between 1 and 10";
+    if (!Number.isInteger(input.remoteVerifyConcurrency) || input.remoteVerifyConcurrency < 1 || input.remoteVerifyConcurrency > 100) {
+      return "remoteVerifyConcurrency must be an integer between 1 and 100";
     }
   }
 
   if (input.remoteVerifyRateLimitPerSecond !== undefined) {
-    if (!Number.isFinite(input.remoteVerifyRateLimitPerSecond) || input.remoteVerifyRateLimitPerSecond < 0.5 || input.remoteVerifyRateLimitPerSecond > 20) {
-      return "remoteVerifyRateLimitPerSecond must be between 0.5 and 20";
+    if (!Number.isFinite(input.remoteVerifyRateLimitPerSecond) || input.remoteVerifyRateLimitPerSecond < 0.5 || input.remoteVerifyRateLimitPerSecond > 100) {
+      return "remoteVerifyRateLimitPerSecond must be between 0.5 and 100";
     }
   }
 
   if (input.remoteRequeueLimitPerCycle !== undefined) {
-    if (!Number.isInteger(input.remoteRequeueLimitPerCycle) || input.remoteRequeueLimitPerCycle < 1 || input.remoteRequeueLimitPerCycle > 500) {
-      return "remoteRequeueLimitPerCycle must be an integer between 1 and 500";
+    if (!Number.isInteger(input.remoteRequeueLimitPerCycle) || input.remoteRequeueLimitPerCycle < 1 || input.remoteRequeueLimitPerCycle > 1000) {
+      return "remoteRequeueLimitPerCycle must be an integer between 1 and 1000";
     }
   }
 
