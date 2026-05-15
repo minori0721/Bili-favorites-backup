@@ -1,12 +1,14 @@
 import express from "express";
 import session from "express-session";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { ensureAppDirs } from "./paths.js";
-import { ConfigStore, validateConfig } from "./config.js";
-import { UserStore } from "./users.js";
-import { FolderDetailFilter, StateManager } from "./state.js";
+import { dataDir, ensureAppDirs, tempDir } from "./paths.js";
+import { type AppConfig, ConfigStore, validateConfig } from "./config.js";
+import { type BiliUser, UserStore } from "./users.js";
+import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import {
   BiliRiskOrLoginError,
   getUserInfo,
@@ -15,10 +17,22 @@ import {
   normalizeTvAuthResult,
   refreshUserAuth,
 } from "./bili.js";
+import { normalizeEncodingPriority, normalizeQualityPriority } from "./downloader.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
-import { logManager } from "./logger.js";
-import { batchRenameRemote, listRemoteDir } from "./uploader.js";
+import { logManager, logsPath } from "./logger.js";
+import { QualityUpgradeTask } from "./tasks.js";
+import {
+  batchRenameRemote,
+  batchRenameRemotePaths,
+  deleteRemoteFiles,
+  listRemoteDir,
+  listRemoteFilesRecursive,
+  isRemoteNotFoundError,
+  moveRemoteFile,
+  remotePathExists,
+} from "./uploader.js";
+import { joinRemotePath, sanitizeSegment } from "./utils.js";
 
 ensureAppDirs();
 
@@ -26,6 +40,15 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
+const qualityUpgradeQueue = new Map<string, QualityUpgradeTask>();
+const completedQualityUpgrades: Array<{
+  id: string;
+  bvid: string;
+  title: string;
+  status: "completed" | "error";
+  error?: string;
+  completedAt: string;
+}> = [];
 
 const favoriteItemsCache = new Map<
   string,
@@ -37,7 +60,27 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
 
-scheduler.start();
+type CleanupItem = "memory-cache" | "temp" | "logs" | "debug-logs" | "state" | "users" | "config";
+
+const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
+  "memory-cache": { label: "页面缓存", important: false },
+  temp: { label: "临时下载文件", important: false, path: tempDir },
+  logs: { label: "网页日志", important: false, path: logsPath },
+  "debug-logs": { label: "Debug 日志", important: false, path: path.join(dataDir, "debug") },
+  state: { label: "备份状态", important: true, path: path.join(dataDir, "state.json") },
+  users: { label: "账号登录信息", important: true, path: path.join(dataDir, "users.json") },
+  config: { label: "全局配置", important: true, path: path.join(dataDir, "config.json") },
+};
+
+const allCleanupKeys = Object.keys(cleanupItems) as CleanupItem[];
+
+startAfterRecovery();
+
+async function startAfterRecovery() {
+  await recoverInterruptedQualityUpgrades();
+  scheduler.resumePersistedWorkOnStartup();
+  scheduler.start();
+}
 
 function formatExpiresText(expires?: number) {
   if (!expires || expires <= 0) {
@@ -49,6 +92,45 @@ function formatExpiresText(expires?: number) {
   }
   const days = Math.floor(diff / (24 * 60 * 60 * 1000));
   return `${days}天后过期`;
+}
+
+function buildAuthHealth(user: BiliUser) {
+  const autoRefreshEnabled = Boolean(user.accessToken && user.refreshToken);
+  const lastError = user.lastAuthRefreshError || "";
+  const expired = Boolean(user.expires && user.expires <= Date.now());
+  const expiringSoon = Boolean(user.expires && user.expires > Date.now() && user.expires - Date.now() < 10 * 24 * 60 * 60 * 1000);
+  const needsManualLogin = !autoRefreshEnabled || Boolean(lastError);
+  let level: "ok" | "warn" | "error" = "ok";
+  let summary = "自动刷新已启用";
+  let detail = "普通登录过期会自动刷新，无需人工处理。";
+
+  if (!autoRefreshEnabled) {
+    level = "error";
+    summary = "需要重新扫码登录";
+    detail = "当前账号缺少自动刷新凭据，无法无人值守续期。";
+  } else if (lastError) {
+    level = "error";
+    summary = "自动刷新失败，需要人工确认";
+    detail = lastError;
+  } else if (expired) {
+    level = "warn";
+    summary = "登录态已过期，等待自动刷新";
+    detail = "账号保留了 refreshToken，后台会自动尝试恢复。";
+  } else if (expiringSoon) {
+    level = "warn";
+    summary = "登录态临近过期，将自动刷新";
+    detail = "后台会在任务空闲时刷新授权。";
+  }
+
+  return {
+    level,
+    summary,
+    detail,
+    autoRefreshEnabled,
+    needsManualLogin,
+    lastSuccessAt: user.lastAuthRefreshAt || "",
+    lastError,
+  };
 }
 
 async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto" | "on_error") {
@@ -134,6 +216,10 @@ app.use(express.urlencoded({ extended: true }));
 const sessionSecret = process.env.SESSION_SECRET || "dev-secret";
 const adminUser = process.env.ADMIN_USER || "admin";
 const adminPass = process.env.ADMIN_PASS || "admin";
+const cookieExportEnabled = process.env.ALLOW_COOKIE_EXPORT !== "false";
+const secureSessionCookie = process.env.COOKIE_SECURE === "true";
+
+app.set("trust proxy", 1);
 
 app.use(
   session({
@@ -143,6 +229,7 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
+      secure: secureSessionCookie,
     },
   })
 );
@@ -158,6 +245,27 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
     return next();
   }
   return res.status(401).json({ success: false, message: "Unauthorized" });
+}
+
+function requireSameOrigin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    return next();
+  }
+  const source = req.get("origin") || req.get("referer") || "";
+  if (!source) {
+    res.status(403).json({ success: false, message: "Missing request origin" });
+    return;
+  }
+  try {
+    const sourceUrl = new URL(source);
+    if (sourceUrl.host === req.get("host")) {
+      return next();
+    }
+  } catch {
+    res.status(403).json({ success: false, message: "Invalid request origin" });
+    return;
+  }
+  res.status(403).json({ success: false, message: "Invalid request origin" });
 }
 
 function parsePositiveInteger(value: unknown, fallback: number) {
@@ -336,27 +444,35 @@ app.get("/", (req, res) => {
   res.send(renderAppPage());
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", requireSameOrigin, (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
   if (username === adminUser && password === adminPass) {
-    req.session.user = { name: username };
-    res.json({ success: true });
+    req.session.regenerate((error) => {
+      if (error) {
+        res.status(500).json({ success: false, message: "Failed to create session" });
+        return;
+      }
+      req.session.user = { name: username };
+      res.json({ success: true });
+    });
     return;
   }
   res.status(401).json({ success: false, message: "Invalid credentials" });
 });
 
-app.post("/api/logout", requireAuth, (req, res) => {
+app.use("/api", requireAuth, requireSameOrigin);
+
+app.post("/api/logout", (req, res) => {
   req.session.destroy(() => {
     res.json({ success: true });
   });
 });
 
-app.get("/api/config", requireAuth, (req, res) => {
+app.get("/api/config", (req, res) => {
   res.json({ success: true, data: configStore.get() });
 });
 
-app.put("/api/config", requireAuth, (req, res) => {
+app.put("/api/config", (req, res) => {
   const error = validateConfig(req.body);
   if (error) {
     res.status(400).json({ success: false, message: error });
@@ -367,7 +483,7 @@ app.put("/api/config", requireAuth, (req, res) => {
   res.json({ success: true, data: updated });
 });
 
-app.get("/api/users", requireAuth, (req, res) => {
+app.get("/api/users", (req, res) => {
   const users = userStore.list().map((user) => ({
     id: user.id,
     uid: user.uid,
@@ -381,11 +497,12 @@ app.get("/api/users", requireAuth, (req, res) => {
     expiresText: formatExpiresText(user.expires),
     lastAuthRefreshAt: user.lastAuthRefreshAt || "",
     lastAuthRefreshError: user.lastAuthRefreshError || "",
+    authHealth: buildAuthHealth(user),
   }));
   res.json({ success: true, data: users });
 });
 
-app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/users/login/start", asyncHandler(async (req, res) => {
   try {
     pruneLoginSessions();
     const loginId = crypto.randomUUID();
@@ -434,7 +551,7 @@ app.post("/api/users/login/start", requireAuth, asyncHandler(async (req, res) =>
   }
 }));
 
-app.post("/api/users/:id/refresh-info", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/users/:id/refresh-info", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -448,7 +565,7 @@ app.post("/api/users/:id/refresh-info", requireAuth, asyncHandler(async (req, re
   res.json({ success: true, data: { name: info.name, avatar: info.avatar } });
 }));
 
-app.post("/api/users/:id/refresh-auth", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/users/:id/refresh-auth", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -462,11 +579,21 @@ app.post("/api/users/:id/refresh-auth", requireAuth, asyncHandler(async (req, re
       expires: updated?.expires || 0,
       expiresText: formatExpiresText(updated?.expires),
       lastAuthRefreshAt: updated?.lastAuthRefreshAt || "",
+      lastAuthRefreshError: updated?.lastAuthRefreshError || "",
+      authHealth: updated ? buildAuthHealth(updated) : null,
     },
   });
 }));
 
-app.get("/api/users/:id/cookie", requireAuth, (req, res) => {
+app.post("/api/users/:id/cookie/export", (req, res) => {
+  if (!cookieExportEnabled) {
+    res.status(403).json({ success: false, message: "Cookie export is disabled" });
+    return;
+  }
+  if (req.body.confirm !== "EXPORT_COOKIE") {
+    res.status(400).json({ success: false, message: "Cookie export confirmation required" });
+    return;
+  }
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -477,10 +604,18 @@ app.get("/api/users/:id/cookie", requireAuth, (req, res) => {
     return value !== undefined && value !== null && String(value).length > 0;
   });
   const cookie = entries.map(([key, value]) => `${key}=${value}`).join("; ");
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: "system",
+    level: "warn",
+    summary: `Cookie 已导出: ${user.name}`,
+    raw: `[Security] Cookie exported for user ${user.id}`,
+    simpleVisible: true,
+  });
   res.json({ success: true, data: { cookie } });
 });
 
-app.get("/api/users/login/status", requireAuth, (req, res) => {
+app.get("/api/users/login/status", (req, res) => {
   pruneLoginSessions();
   const loginId = String(req.query.loginId || "");
   const current = loginSessions.get(loginId);
@@ -491,7 +626,7 @@ app.get("/api/users/login/status", requireAuth, (req, res) => {
   res.json({ success: true, data: { status: current.status, message: current.message } });
 });
 
-app.get("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -506,7 +641,7 @@ app.get("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) =
   res.json({ success: true, data });
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/items", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -543,7 +678,7 @@ app.get("/api/users/:id/favorites/:mediaId/items", requireAuth, asyncHandler(asy
   }
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/detail-items", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/detail-items", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -599,7 +734,7 @@ app.get("/api/users/:id/favorites/:mediaId/detail-items", requireAuth, asyncHand
   }
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/favorites/:mediaId/state-items", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -633,7 +768,7 @@ app.get("/api/users/:id/favorites/:mediaId/state-items", requireAuth, asyncHandl
   });
 }));
 
-app.get("/api/users/:id/unavailable", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -657,7 +792,7 @@ app.get("/api/users/:id/unavailable", requireAuth, asyncHandler(async (req, res)
   }
 }));
 
-app.get("/api/state", requireAuth, (req, res) => {
+app.get("/api/state", (req, res) => {
   res.json({
     success: true,
     data: {
@@ -668,7 +803,7 @@ app.get("/api/state", requireAuth, (req, res) => {
   });
 });
 
-app.put("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
+app.put("/api/users/:id/favorites", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -685,7 +820,7 @@ app.put("/api/users/:id/favorites", requireAuth, asyncHandler(async (req, res) =
   res.json({ success: true, data: selected });
 }));
 
-app.patch("/api/users/:id", requireAuth, (req, res) => {
+app.patch("/api/users/:id", (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -699,12 +834,12 @@ app.patch("/api/users/:id", requireAuth, (req, res) => {
   res.json({ success: true, data: user });
 });
 
-app.delete("/api/users/:id", requireAuth, (req, res) => {
+app.delete("/api/users/:id", (req, res) => {
   userStore.remove(req.params.id);
   res.json({ success: true });
 });
 
-app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/sync/now", asyncHandler(async (req, res) => {
   try {
     const result = scheduler.runNow();
     if (result.started) {
@@ -721,7 +856,7 @@ app.post("/api/sync/now", requireAuth, asyncHandler(async (req, res) => {
   }
 }));
 
-app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
+app.post("/api/sync/reconcile", asyncHandler(async (_req, res) => {
   try {
     const result = scheduler.runReconcileNow();
     if (result.started) {
@@ -738,7 +873,7 @@ app.post("/api/sync/reconcile", requireAuth, asyncHandler(async (_req, res) => {
   }
 }));
 
-app.post("/api/sync/reconcile-remote", requireAuth, asyncHandler(async (_req, res) => {
+app.post("/api/sync/reconcile-remote", asyncHandler(async (_req, res) => {
   try {
     const result = scheduler.runRemoteReconcileNow();
     if (result.started) {
@@ -755,7 +890,7 @@ app.post("/api/sync/reconcile-remote", requireAuth, asyncHandler(async (_req, re
   }
 }));
 
-app.get("/api/logs/stream", requireAuth, (req, res) => {
+app.get("/api/logs/stream", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -777,30 +912,731 @@ app.get("/api/logs/stream", requireAuth, (req, res) => {
   });
 });
 
-app.get("/api/logs", requireAuth, (req, res) => {
+app.get("/api/logs", (req, res) => {
   res.json({ success: true, data: logManager.getAll() });
 });
 
-app.get("/api/queue/state", requireAuth, (_req, res) => {
+app.get("/api/queue/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
-app.post("/api/cache/clear", requireAuth, (req, res) => {
+app.post("/api/cache/clear", (req, res) => {
   favoriteItemsCache.clear();
   res.json({ success: true, message: "Favorite items cache cleared" });
 });
 
-app.post("/api/rename", requireAuth, asyncHandler(async (req, res) => {
-  const { remotePath, renameMap } = req.body as {
-    remotePath: string;
-    renameMap: Array<{ oldName: string; newName: string }>;
+async function pathSize(targetPath: string): Promise<number> {
+  try {
+    const stat = await fs.promises.stat(targetPath);
+    if (stat.isFile()) return stat.size;
+    if (!stat.isDirectory()) return 0;
+    const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
+    let total = 0;
+    for (const entry of entries) {
+      total += await pathSize(path.join(targetPath, entry.name));
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizeCleanupItems(value: unknown): CleanupItem[] {
+  if (!Array.isArray(value)) return [];
+  const picked = new Set<CleanupItem>();
+  for (const item of value) {
+    if (typeof item === "string" && allCleanupKeys.includes(item as CleanupItem)) {
+      picked.add(item as CleanupItem);
+    }
+  }
+  return [...picked];
+}
+
+function cleanupRequiresIdle(items: CleanupItem[]) {
+  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs");
+}
+
+function cleanupConfirmationRequired(items: CleanupItem[]) {
+  const important = items.some((item) => cleanupItems[item].important);
+  const full = allCleanupKeys.every((key) => items.includes(key));
+  if (full) return "DELETE ALL PROJECT DATA";
+  if (important) return "DELETE";
+  return "";
+}
+
+async function removeCleanupTarget(item: CleanupItem) {
+  if (item === "memory-cache") {
+    favoriteItemsCache.clear();
+    return;
+  }
+  if (item === "logs") {
+    logManager.clear();
+    return;
+  }
+  const targetPath = cleanupItems[item].path;
+  if (!targetPath) return;
+  await fs.promises.rm(targetPath, { recursive: true, force: true });
+  if (item === "temp") {
+    await fs.promises.mkdir(tempDir, { recursive: true });
+  } else if (item === "state") {
+    stateManager.clear();
+  } else if (item === "users") {
+    userStore.clear();
+  } else if (item === "config") {
+    configStore.reset();
+    scheduler.updateInterval();
+  }
+}
+
+app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
+  const items = await Promise.all(allCleanupKeys.map(async (key) => ({
+    key,
+    label: cleanupItems[key].label,
+    important: cleanupItems[key].important,
+    bytes: cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
+  })));
+  res.json({
+    success: true,
+    data: {
+      items,
+      runningTransfers: scheduler.hasRunningTransferTasks(),
+      activeScheduler: scheduler.hasActiveOrQueuedSchedulerWork(),
+    },
+  });
+}));
+
+app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
+  const items = normalizeCleanupItems(req.body?.items);
+  if (items.length === 0) {
+    res.status(400).json({ success: false, message: "请选择要清理的内容" });
+    return;
+  }
+  const requiresIdle = cleanupRequiresIdle(items);
+  if (requiresIdle && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
+    res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
+    return;
+  }
+  const required = cleanupConfirmationRequired(items);
+  if (required && String(req.body?.confirmation || "") !== required) {
+    res.status(400).json({ success: false, message: `请输入 ${required} 确认清理` });
+    return;
+  }
+  const runCleanup = async () => {
+    const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string }> = [];
+    for (const item of items) {
+      try {
+        await removeCleanupTarget(item);
+        results.push({ key: item, label: cleanupItems[item].label, ok: true });
+      } catch (error: any) {
+        results.push({ key: item, label: cleanupItems[item].label, ok: false, error: error?.message || String(error) });
+      }
+    }
+    return results;
   };
+  const results = requiresIdle ? await scheduler.withCleanupLock(runCleanup) : await runCleanup();
+  const failed = results.filter((item) => !item.ok);
+  if (failed.length > 0) {
+    res.status(500).json({ success: false, message: `有 ${failed.length} 项清理失败`, data: { results } });
+    return;
+  }
+  res.json({ success: true, data: { results } });
+}));
+
+function normalizeRemotePath(value: string) {
+  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.startsWith("/") ? normalized || "/" : `/${normalized}`;
+}
+
+function remoteBasename(value: string) {
+  const parts = normalizeRemotePath(value).split("/").filter(Boolean);
+  return parts[parts.length - 1] || "";
+}
+
+function remoteDirname(value: string) {
+  const normalized = normalizeRemotePath(value);
+  const index = normalized.lastIndexOf("/");
+  return index <= 0 ? "/" : normalized.slice(0, index);
+}
+
+function isRemotePathUnder(root: string, target: string) {
+  const normalizedRoot = normalizeRemotePath(root);
+  const normalizedTarget = normalizeRemotePath(target);
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+
+function extractBvid(value: string) {
+  return String(value || "").match(/BV[0-9A-Za-z]+/)?.[0] || "";
+}
+
+async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManager["listInterruptedQualityUpgrades"]>[number]) {
+  const operation = relation.qualityUpgrade;
+  const config = configStore.get();
+  if (operation.finalizedAt && operation.newFiles?.length) {
+    const cleanup = await deleteRemoteFiles(config, operation.oldFiles.map((file) => ({
+      ...file,
+      path: joinRemotePath(operation.backupRemotePath, file.name),
+    })));
+    if (cleanup.failed > 0) {
+      throw new Error(`Failed to clean interrupted quality-upgrade backups for ${relation.bvid}`);
+    }
+    stateManager.completeQualityUpgrade(relation.bvid, relation.userId, relation.mediaId, operation.oldRemotePath, operation.newFiles);
+    return;
+  }
+  for (const newFile of operation.newFiles || []) {
+    await moveRemoteFile(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name));
+  }
+  for (let i = (operation.backupFiles || []).length - 1; i >= 0; i -= 1) {
+    const backupFile = operation.backupFiles![i];
+    const oldFile = operation.oldFiles.find((file) => file.name === backupFile.name);
+    if (oldFile) {
+      await moveRemoteFile(config, backupFile.path, oldFile.path);
+    }
+  }
+  const cleanup = await deleteRemoteFiles(config, operation.oldFiles.map((file) => ({
+    ...file,
+    path: joinRemotePath(operation.stageRemotePath, file.name),
+  })));
+  if (cleanup.failed > 0) {
+    throw new Error(`Failed to clean interrupted quality-upgrade stage files for ${relation.bvid}`);
+  }
+  stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Interrupted quality upgrade was restored for retry.");
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: "system",
+    level: "warn",
+    summary: `已恢复中断的画质重调任务 ${relation.bvid}`,
+    raw: `[QualityUpgrade] restored interrupted upgrade ${relation.userId}/${relation.mediaId}/${relation.bvid}`,
+    bvid: relation.bvid,
+    simpleVisible: true,
+    debugVisible: true,
+  });
+}
+
+async function recoverInterruptedQualityUpgrades() {
+  const interrupted = stateManager.listInterruptedQualityUpgrades();
+  for (const relation of interrupted) {
+    try {
+      await restoreInterruptedQualityUpgrade(relation);
+    } catch (error: any) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "error",
+        summary: `恢复中断的画质重调失败 ${relation.bvid}: ${error?.message || error}`,
+        raw: `[QualityUpgrade] interrupted restore failed ${relation.userId}/${relation.mediaId}/${relation.bvid}: ${error?.message || error}`,
+        bvid: relation.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+  }
+}
+
+function fillFilenameTemplate(template: string, record: { bvid: string; title: string; upperName: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const name = String(template || "<videoTitle>-<bvid>")
+    .replace(/<videoTitle>/g, record.title || record.bvid)
+    .replace(/<ownerName>/g, record.upperName || "Unknown")
+    .replace(/<bvid>/g, record.bvid)
+    .replace(/<publishDate>/g, today)
+    .replace(/<videoDate>/g, today)
+    .replace(/<dfn>/g, "")
+    .replace(/<videoCodecs>/g, "");
+  return sanitizeSegment(name).replace(/\.+$/g, "").trim();
+}
+
+function describeUpgradeReason(config: ReturnType<ConfigStore["get"]>) {
+  const parts: string[] = [];
+  if (config.bbdownQuality) parts.push(`目标清晰度 ${config.bbdownQuality}`);
+  if (config.bbdownEncoding) parts.push(`编码优先 ${config.bbdownEncoding}`);
+  if (config.bbdownHiRes) parts.push("Hi-Res 音频");
+  if (config.bbdownDolby) parts.push("杜比音效");
+  return parts.length ? parts.join(" / ") : "按当前 BBDown 画质设置重新下载";
+}
+
+function getQualityProfile(config: AppConfig) {
+  return {
+    quality: String(config.bbdownQuality || ""),
+    encoding: String(config.bbdownEncoding || ""),
+    hiRes: Boolean(config.bbdownHiRes),
+    dolby: Boolean(config.bbdownDolby),
+  };
+}
+
+function isMediaRemoteFile(file: RemoteFileRecord) {
+  return /\.(mp4|mkv|flv|mov|m4v)$/i.test(file.name);
+}
+
+function qualityProfilesMatch(files: RemoteFileRecord[], config: AppConfig) {
+  const mediaFiles = files.filter(isMediaRemoteFile);
+  if (mediaFiles.length === 0 || mediaFiles.some((file) => !file.qualityProfile)) {
+    return "unknown" as const;
+  }
+  const target = getQualityProfile(config);
+  return mediaFiles.every((file) =>
+    file.qualityProfile?.quality === target.quality &&
+    file.qualityProfile?.encoding === target.encoding &&
+    file.qualityProfile?.hiRes === target.hiRes &&
+    file.qualityProfile?.dolby === target.dolby
+  ) ? "same" as const : "different" as const;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildTemplateMetadataRegex(template: string, bvid: string) {
+  const tokenPattern = /<videoTitle>|<ownerName>|<bvid>|<publishDate>|<videoDate>|<dfn>|<videoCodecs>/g;
+  let output = "^";
+  let lastIndex = 0;
+  let hasQuality = false;
+  let hasEncoding = false;
+  for (const match of template.matchAll(tokenPattern)) {
+    output += escapeRegExp(template.slice(lastIndex, match.index));
+    switch (match[0]) {
+      case "<bvid>":
+        output += escapeRegExp(bvid);
+        break;
+      case "<dfn>":
+        output += "(?<dfn>[^\\/\\.]+?)";
+        hasQuality = true;
+        break;
+      case "<videoCodecs>":
+        output += "(?<videoCodecs>[^\\/\\.]+?)";
+        hasEncoding = true;
+        break;
+      default:
+        output += ".+?";
+        break;
+    }
+    lastIndex = (match.index || 0) + match[0].length;
+  }
+  output += escapeRegExp(template.slice(lastIndex));
+  output += "(?:_P\\d+)?$";
+  if (!hasQuality && !hasEncoding) {
+    return null;
+  }
+  return { regex: new RegExp(output, "i"), hasQuality, hasEncoding };
+}
+
+function textMatchesQuality(value: string, target: string) {
+  return value.trim().toLowerCase() === normalizeQualityPriority(target).toLowerCase();
+}
+
+function textMatchesEncoding(value: string, target: string) {
+  return value.trim().toLowerCase() === normalizeEncodingPriority(target).toLowerCase();
+}
+
+function qualityFilenameMatchStatus(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
+  const needsQuality = Boolean(config.bbdownQuality);
+  const needsEncoding = Boolean(config.bbdownEncoding);
+  if (!needsQuality && !needsEncoding) {
+    return "unknown" as const;
+  }
+  const mediaFiles = files.filter(isMediaRemoteFile);
+  if (mediaFiles.length === 0) {
+    return "unknown" as const;
+  }
+  const templateRegex = buildTemplateMetadataRegex(config.filenameTemplate || "<videoTitle>-<bvid>", bvid);
+  if (!templateRegex) {
+    return "unknown" as const;
+  }
+  if ((needsQuality && !templateRegex.hasQuality) || (needsEncoding && !templateRegex.hasEncoding)) {
+    return "unknown" as const;
+  }
+  let matched = false;
+  for (const file of mediaFiles) {
+    const parsed = templateRegex.regex.exec(file.name.replace(/\.[^.]+$/, ""));
+    if (!parsed?.groups) {
+      return "unknown" as const;
+    }
+    if (needsQuality && !textMatchesQuality(parsed.groups.dfn || "", config.bbdownQuality)) {
+      return "different" as const;
+    }
+    if (needsEncoding && !textMatchesEncoding(parsed.groups.videoCodecs || "", config.bbdownEncoding)) {
+      return "different" as const;
+    }
+    matched = true;
+  }
+  return matched ? "same" as const : "unknown" as const;
+}
+
+function getQualityUpgradeMatchStatus(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
+  const profileStatus = qualityProfilesMatch(files, config);
+  if (profileStatus !== "unknown") {
+    return profileStatus;
+  }
+  if (config.bbdownHiRes || config.bbdownDolby) {
+    return "unknown" as const;
+  }
+  return qualityFilenameMatchStatus(files, bvid, config);
+}
+
+function buildQualityUpgradePreview() {
+  const config = configStore.get();
+  const reason = describeUpgradeReason(config);
+  const records = stateManager.getRemoteFilePreviewRecords();
+  const candidates: Array<{
+    key: string;
+    bvid: string;
+    title: string;
+    ownerName: string;
+    userId: string;
+    mediaId: number;
+    folderTitle: string;
+    remotePath: string;
+    oldFiles: RemoteFileRecord[];
+    reason: string;
+  }> = [];
+  const skipped: Array<{ bvid?: string; title?: string; folderTitle?: string; reason: string }> = [];
+
+  for (const record of records) {
+    for (const relation of record.relations) {
+      const oldFiles = relation.remoteFiles?.length ? relation.remoteFiles : [];
+      const remotePath = relation.remotePath || remoteDirname(oldFiles[0]?.path || "");
+      if (relation.hasInterruptedQualityUpgrade) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
+        continue;
+      }
+      if (relation.backupStatus !== "uploaded" && relation.backupStatus !== "verified") {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "只有已上传/已验证的视频才能重调画质" });
+        continue;
+      }
+      if (!oldFiles.length || !remotePath) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "没有可替换的远端文件记录" });
+        continue;
+      }
+      const key = relationKey(relation.userId, relation.mediaId, record.bvid);
+      if (qualityUpgradeQueue.has(key)) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
+        continue;
+      }
+      if (getQualityUpgradeMatchStatus(oldFiles, record.bvid, config) === "same") {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "远端文件已符合当前画质设置" });
+        continue;
+      }
+      candidates.push({
+        key,
+        bvid: record.bvid,
+        title: record.title,
+        ownerName: record.upperName,
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: relation.folderTitle,
+        remotePath,
+        oldFiles,
+        reason,
+      });
+    }
+  }
+
+  return { candidates, skipped, target: {
+    quality: config.bbdownQuality,
+    encoding: config.bbdownEncoding,
+    hiRes: config.bbdownHiRes,
+    dolby: config.bbdownDolby,
+  } };
+}
+
+app.post("/api/quality-upgrade/preview", asyncHandler(async (_req, res) => {
+  res.json({ success: true, data: buildQualityUpgradePreview() });
+}));
+
+function markQualityUpgradeFailed(task: QualityUpgradeTask, error: any) {
+  const key = relationKey(task.target.userId, task.target.mediaId, task.bvid);
+  if (!qualityUpgradeQueue.has(key)) {
+    return;
+  }
+  qualityUpgradeQueue.delete(key);
+  completedQualityUpgrades.unshift({ id: task.id, bvid: task.bvid, title: String(task.videoTitle || task.bvid), status: "error", error: error?.message || String(error), completedAt: new Date().toISOString() });
+  completedQualityUpgrades.splice(50);
+  logManager.push({
+    timestamp: new Date().toISOString(),
+    type: task.qualityStage === "upload" ? "upload" : "download",
+    level: "error",
+    summary: `重调画质失败 ${task.bvid}: ${error?.message || error}`,
+    raw: `[QualityUpgrade] failed ${key}: ${error?.message || error}`,
+    bvid: task.bvid,
+    simpleVisible: true,
+    debugVisible: true,
+  });
+}
+
+app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
+  const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string }> };
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
+    res.status(400).json({ success: false, message: "items must contain 1-50 entries" });
+    return;
+  }
+  const preview = buildQualityUpgradePreview();
+  const candidates = new Map(preview.candidates.map((item) => [item.key, item]));
+  const config = configStore.get();
+  const queued: Array<{ key: string; bvid: string; title: string }> = [];
+  const skipped: Array<{ key: string; reason: string }> = [];
+  const requestedKeys = new Set<string>();
+
+  for (const item of items) {
+    const key = item.key || (item.userId && item.mediaId && item.bvid ? relationKey(item.userId, Number(item.mediaId), item.bvid) : "");
+    if (!key || requestedKeys.has(key)) {
+      skipped.push({ key, reason: key ? "重复提交" : "缺少任务标识" });
+      continue;
+    }
+    requestedKeys.add(key);
+    const candidate = candidates.get(key);
+    if (!candidate) {
+      skipped.push({ key, reason: "预览候选不存在或已在队列中" });
+      continue;
+    }
+    const user = userStore.getById(candidate.userId);
+    if (!user || !user.enabled) {
+      skipped.push({ key, reason: "账号不存在或未启用" });
+      continue;
+    }
+    const task = new QualityUpgradeTask(candidate.bvid, user.cookie, config, {
+      userId: candidate.userId,
+      mediaId: candidate.mediaId,
+      folderTitle: candidate.folderTitle,
+      remotePath: candidate.remotePath,
+      oldFiles: candidate.oldFiles,
+    });
+    task.videoTitle = candidate.title;
+    task.folderTitle = candidate.folderTitle;
+    task.userId = candidate.userId;
+    task.mediaId = candidate.mediaId;
+    task.onStartUpgrade = () => {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "info",
+        summary: `开始重调画质 ${candidate.bvid}: ${candidate.title}`,
+        raw: `[QualityUpgrade] start ${key}`,
+        bvid: candidate.bvid,
+        simpleVisible: true,
+      });
+    };
+    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => {
+      stateManager.markQualityUpgradeReplacing(candidate.bvid, candidate.userId, candidate.mediaId, {
+        stageRemotePath,
+        backupRemotePath,
+        oldRemotePath: candidate.remotePath,
+        oldFiles: candidate.oldFiles,
+      });
+    };
+    task.onBackupFileMoved = (_task, file) => {
+      stateManager.recordQualityUpgradeBackupFile(candidate.bvid, candidate.userId, candidate.mediaId, file);
+    };
+    task.onFinalFileMoved = (_task, file) => {
+      stateManager.recordQualityUpgradeFinalFile(candidate.bvid, candidate.userId, candidate.mediaId, file);
+    };
+    task.onUploaded = (_task, result) => {
+      stateManager.finalizeQualityUpgradeRemoteFiles(candidate.bvid, candidate.userId, candidate.mediaId, result.remotePath, result.files);
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "upload",
+        level: "info",
+        summary: `新版文件已上传并验证 ${candidate.bvid}`,
+        raw: `[QualityUpgrade] uploaded ${key}`,
+        bvid: candidate.bvid,
+        simpleVisible: true,
+      });
+    };
+    task.onCompletedUpgrade = () => {
+      if (!qualityUpgradeQueue.has(key)) {
+        return;
+      }
+      const backupDeleteFailed = Number(task.deleteResult?.failed || 0);
+      stateManager.completeQualityUpgrade(candidate.bvid, candidate.userId, candidate.mediaId, candidate.remotePath, task.finalFiles || []);
+      completedQualityUpgrades.unshift({
+        id: task.id,
+        bvid: candidate.bvid,
+        title: candidate.title,
+        status: "completed",
+        error: backupDeleteFailed > 0 ? `新版已完成，旧文件备份清理失败 ${backupDeleteFailed} 个，请手动检查临时备份目录。` : undefined,
+        completedAt: new Date().toISOString(),
+      });
+      completedQualityUpgrades.splice(50);
+      qualityUpgradeQueue.delete(key);
+      if (backupDeleteFailed > 0) {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: "warn",
+          summary: `重调画质已完成，但旧文件备份清理失败 ${backupDeleteFailed} 个`,
+          raw: `[QualityUpgrade] backup cleanup failed ${key}: ${backupDeleteFailed}`,
+          bvid: candidate.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+      }
+    };
+    task.onFailed = markQualityUpgradeFailed;
+    qualityUpgradeQueue.set(key, task);
+    scheduler.enqueueQualityUpgrade(task);
+    queued.push({ key, bvid: candidate.bvid, title: candidate.title });
+  }
+
+  res.json({ success: true, data: { queued, skipped } });
+}));
+
+app.get("/api/quality-upgrade/state", (_req, res) => {
+  const running = Array.from(qualityUpgradeQueue.entries()).map(([key, task]) => ({
+    key,
+    id: task.id,
+    bvid: task.bvid,
+    title: String(task.videoTitle || ""),
+    folderTitle: String(task.folderTitle || ""),
+    userId: String(task.userId || ""),
+    mediaId: Number(task.mediaId || 0),
+    status: task.status,
+    error: task.error?.message,
+    startedAt: task.startedAt,
+    queuedAt: task.queuedAt,
+  }));
+  res.json({ success: true, data: { running, completed: completedQualityUpgrades.slice(0, 20) } });
+});
+
+app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
+  const config = configStore.get();
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+  const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
+  const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 4, maxFiles: 2000 });
+  const candidates: Array<{
+    bvid: string;
+    title: string;
+    ownerName: string;
+    remoteDir: string;
+    oldName: string;
+    newName: string;
+    oldPath: string;
+    newPath: string;
+    reason: string;
+  }> = [];
+  const skipped = [...scanned.skipped];
+  const namesByDir = new Map<string, Set<string>>();
+
+  for (const file of scanned.files) {
+    const set = namesByDir.get(file.dir) || new Set<string>();
+    set.add(file.name);
+    namesByDir.set(file.dir, set);
+  }
+
+  for (const file of scanned.files) {
+    if (!isRemotePathUnder(root, file.path)) {
+      skipped.push({ path: file.path, reason: "路径不在当前 AList 目标路径下" });
+      continue;
+    }
+    const bvid = extractBvid(file.name);
+    if (!bvid) {
+      skipped.push({ path: file.path, reason: "文件名没有 BV 号" });
+      continue;
+    }
+    const record = records.get(bvid);
+    if (!record) {
+      skipped.push({ path: file.path, reason: "BV 号在本地状态中找不到" });
+      continue;
+    }
+    const baseName = fillFilenameTemplate(config.filenameTemplate, record);
+    if (!baseName) {
+      skipped.push({ path: file.path, reason: "无法根据当前模板生成目标文件名" });
+      continue;
+    }
+    const ext = file.name.match(/\.[^.]+$/)?.[0] || ".mp4";
+    const newName = `${baseName}${ext}`;
+    if (newName === file.name) {
+      skipped.push({ path: file.path, reason: "当前文件名已经符合模板" });
+      continue;
+    }
+    const dirNames = namesByDir.get(file.dir) || new Set<string>();
+    if (dirNames.has(newName)) {
+      skipped.push({ path: file.path, reason: `目标文件已存在：${newName}` });
+      continue;
+    }
+    dirNames.add(newName);
+    namesByDir.set(file.dir, dirNames);
+    candidates.push({
+      bvid,
+      title: record.title,
+      ownerName: record.upperName,
+      remoteDir: file.dir,
+      oldName: file.name,
+      newName,
+      oldPath: file.path,
+      newPath: `${file.dir.replace(/\/$/, "")}/${newName}`,
+      reason: "同目录内按当前命名模板重命名",
+    });
+  }
+
+  res.json({ success: true, data: { candidates, skipped } });
+}));
+
+app.post("/api/rename", asyncHandler(async (req, res) => {
+  const { remotePath, renameMap, items } = req.body as {
+    remotePath?: string;
+    renameMap?: Array<{ oldName: string; newName: string }>;
+    items?: Array<{ bvid?: string; oldPath: string; newPath: string }>;
+  };
+  const config = configStore.get();
+  if (Array.isArray(items)) {
+    if (items.length === 0 || items.length > 200) {
+      res.status(400).json({ success: false, message: "items must contain 1-200 entries" });
+      return;
+    }
+    const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+    const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
+    const requestedTargets = new Set<string>();
+    const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string }> = [];
+    for (const item of items) {
+      const oldPath = normalizeRemotePath(item.oldPath);
+      const newPath = normalizeRemotePath(item.newPath);
+      if (!isRemotePathUnder(root, oldPath) || !isRemotePathUnder(root, newPath)) {
+        res.status(400).json({ success: false, message: "rename path must stay under current alistDest" });
+        return;
+      }
+      if (remoteDirname(oldPath) !== remoteDirname(newPath)) {
+        res.status(400).json({ success: false, message: "rename cannot move files across directories" });
+        return;
+      }
+      if (oldPath === newPath) {
+        res.status(400).json({ success: false, message: "oldPath and newPath must be different" });
+        return;
+      }
+      const bvid = extractBvid(item.bvid || oldPath);
+      if (!bvid) {
+        res.status(400).json({ success: false, message: "each rename item must include a BV id" });
+        return;
+      }
+      if (!records.has(bvid)) {
+        res.status(400).json({ success: false, message: `local state does not contain ${bvid}` });
+        return;
+      }
+      if (requestedTargets.has(newPath)) {
+        res.status(400).json({ success: false, message: `duplicate target path: ${newPath}` });
+        return;
+      }
+      requestedTargets.add(newPath);
+      if (await remotePathExists(config, newPath)) {
+        res.status(400).json({ success: false, message: `target exists: ${newPath}` });
+        return;
+      }
+      safeItems.push({ bvid, oldPath, newPath });
+    }
+    const result = await batchRenameRemotePaths(config, safeItems);
+    for (const item of result.results) {
+      if (!item.ok) continue;
+      const source = safeItems.find((candidate) => candidate.oldPath === item.oldPath && candidate.newPath === item.newPath);
+      const bvid = source?.bvid || extractBvid(item.oldPath) || extractBvid(item.newPath);
+      if (bvid) {
+        stateManager.renameRemoteFile(bvid, item.oldPath, item.newPath);
+      }
+    }
+    res.json({ success: true, data: result });
+    return;
+  }
   if (!remotePath || !renameMap || !Array.isArray(renameMap)) {
-    res.status(400).json({ success: false, message: "remotePath and renameMap required" });
+    res.status(400).json({ success: false, message: "items or remotePath and renameMap required" });
     return;
   }
   try {
-    const config = configStore.get();
     const result = await batchRenameRemote(config, remotePath, renameMap);
     res.json({ success: true, data: result });
   } catch (err: any) {
@@ -808,7 +1644,7 @@ app.post("/api/rename", requireAuth, asyncHandler(async (req, res) => {
   }
 }));
 
-app.get("/api/remote/list", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/remote/list", asyncHandler(async (req, res) => {
   const remotePath = String(req.query.path || "/");
   try {
     const config = configStore.get();

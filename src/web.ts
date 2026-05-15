@@ -172,6 +172,13 @@ function getAppStyles() {
     .row .ghost:hover { background:rgba(57,197,187,0.1); }
     .user-list { display:grid; gap:16px; }
     .user-item { border:1px solid var(--border); border-radius:16px; padding:16px; display:grid; gap:12px; background:#fafdfc; }
+    .auth-health { border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:white; font-size:12px; line-height:1.7; }
+    .auth-health.ok { border-color:var(--success); background:var(--success-bg); }
+    .auth-health.warn { border-color:#FFB74D; background:#FFF8E1; }
+    .auth-health.error { border-color:#E57373; background:#FFEBEE; }
+    .auth-health-title { font-weight:800; color:var(--ink); }
+    .auth-health-detail { color:var(--muted); }
+    .auth-health.error .auth-health-detail { color:#C62828; }
     .settings-grid { display:grid; gap:16px; grid-template-columns:1fr 1fr; }
     .settings-group { grid-column:1/-1; padding-top:16px; border-top:1px dashed var(--border); margin-top:8px; }
     .settings-group-title { font-weight:700; color:var(--ink); margin-bottom:12px; }
@@ -183,13 +190,13 @@ function getAppStyles() {
     .checkbox-label input { width:auto; margin:0; }
     .modal { position:fixed; inset:0; background:rgba(26,47,45,0.6); backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; padding:16px; z-index:100; }
     .modal.active { display:flex; }
-    .modal .panel { background:white; padding:32px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(0,0,0,0.1); border:1px solid var(--border); max-height:90vh; overflow-y:auto; }
+    .modal .panel { background:white; padding:32px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(0,0,0,0.1); border:1px solid var(--border); max-height:90vh; overflow-y:auto; overflow-x:hidden; }
     .favorites-list { max-height:400px; overflow:auto; border:2px solid var(--border); border-radius:16px; padding:12px; background:#fafdfc; }
     .fav-label { font-weight:500; display:flex; gap:12px; align-items:center; margin:0; padding:12px; border-radius:12px; transition:background 0.2s; cursor:pointer; }
     .fav-label:hover { background:rgba(57,197,187,0.1); }
     .fav-cover { width:64px; height:40px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
     /* Video items in detail modal */
-    .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; }
+    .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; overflow-x:hidden; }
     .video-item { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); align-items:center; transition:all 0.2s; }
     .video-detail-status { text-align:center; padding:10px; color:var(--muted); font-size:13px; }
     .video-detail-status.error { color:#E57373; }
@@ -206,7 +213,7 @@ function getAppStyles() {
     .video-badge.pending { background:var(--border); color:var(--muted); }
     .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
     .video-badge.removed-missing { background:#EF9A9A; color:white; }
-    .filter-toggle { display:flex; gap:8px; margin-bottom:12px; }
+    .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     .filter-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .filter-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
     /* Template tags */
@@ -229,6 +236,14 @@ function getAppStyles() {
     .log-toggle { display:flex; gap:8px; margin-bottom:12px; }
     .log-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
+    .scheduler-status { border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:12px; margin-bottom:12px; font-size:13px; }
+    .scheduler-status-main { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
+    .scheduler-status-title { font-weight:800; color:var(--accent); }
+    .scheduler-status-detail { color:var(--muted); margin-top:4px; }
+    .scheduler-status.running { border-color:var(--accent); background:rgba(57,197,187,0.08); }
+    .scheduler-status.queued,.scheduler-status.cooldown { border-color:#FFB74D; background:#FFF8E1; }
+    .scheduler-status-grid { display:grid; gap:6px 14px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); margin-top:10px; color:var(--muted); }
+    .scheduler-status-grid strong { color:var(--ink); }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
     .queue-col { min-width:0; border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
@@ -247,8 +262,47 @@ function getAppStyles() {
     .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
     .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
     @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
+    .help-icon-btn { width:32px; height:32px; border-radius:50%; border:2px solid var(--accent); background:white; color:var(--accent); font-weight:800; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; }
+    .help-icon-btn:hover { background:rgba(57,197,187,0.1); transform:translateY(-1px); }
+    .section-title-row { display:flex; align-items:center; gap:8px; margin:0 0 16px; }
+    .section-title-row h2 { margin:0; }
+    .section-title-row .help-icon-btn { width:28px; height:28px; font-size:14px; }
+    .help-tabs { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 16px; }
+    .help-tabs button { padding:7px 14px; border-radius:999px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:700; }
+    .help-tabs button.active { border-color:var(--accent); background:rgba(57,197,187,0.12); color:var(--accent); }
+    .help-card-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+    .help-card { border:1px solid var(--border); border-radius:16px; padding:14px; background:#fafdfc; }
+    .help-card strong { color:var(--accent); display:block; margin-bottom:6px; }
+    .help-card ul { margin:8px 0 0 18px; padding:0; color:var(--muted); font-size:13px; line-height:1.7; }
+    .flow-visual { display:grid; gap:10px; margin:12px 0; }
+    .flow-step { display:grid; grid-template-columns:92px 1fr; gap:12px; align-items:center; border:1px solid var(--border); border-radius:18px; padding:12px; background:linear-gradient(135deg,#ffffff,#f2fbfa); }
+    .flow-step .badge { border-radius:999px; padding:8px 10px; background:var(--accent); color:white; text-align:center; font-weight:800; font-size:12px; }
+    .flow-step .desc { color:var(--ink); font-size:14px; line-height:1.6; }
+    .effect-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-top:14px; }
+    .effect-group { border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .effect-group strong { color:var(--accent); display:block; margin-bottom:6px; }
+    .effect-group div { color:var(--muted); font-size:13px; line-height:1.7; }
     .rename-btn { background:#FF7043!important; }
     .rename-btn:hover { background:#F4511E!important; }
+    .rename-list { display:grid; gap:10px; max-height:360px; overflow:auto; padding-right:4px; }
+    .rename-item { display:grid; grid-template-columns:auto 1fr; gap:10px; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .rename-item input { margin-top:4px; }
+    .rename-title { font-weight:700; color:var(--ink); word-break:break-word; }
+    .rename-path { color:var(--muted); font-size:12px; line-height:1.6; word-break:break-all; }
+    .rename-arrow { color:var(--accent); font-weight:800; }
+    .rename-skip-list { max-height:180px; overflow:auto; border:1px dashed var(--border); border-radius:12px; padding:10px; background:#fffaf5; color:var(--muted); font-size:12px; line-height:1.7; word-break:break-all; }
+    .rename-result { border-radius:12px; padding:10px; background:#f5fbfa; border:1px solid var(--border); color:var(--muted); font-size:13px; line-height:1.7; max-height:160px; overflow:auto; }
+    .cleanup-list { display:grid; gap:10px; margin:12px 0; }
+    .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .cleanup-item.important { border-color:#FFB74D; background:#FFF8E1; }
+    .cleanup-item.disabled { opacity:.58; cursor:not-allowed; }
+    .cleanup-item-title { font-weight:800; color:var(--ink); }
+    .cleanup-item-desc { color:var(--muted); font-size:12px; line-height:1.6; margin-top:3px; }
+    .cleanup-size { color:var(--accent); font-size:12px; font-weight:800; white-space:nowrap; }
+    .cleanup-confirm { border:1px dashed #FFB74D; border-radius:14px; padding:12px; background:#FFFDF5; margin-top:12px; }
+    .cleanup-help-list { display:grid; gap:10px; margin-top:12px; }
+    .cleanup-help-item { border:1px solid var(--border); border-radius:14px; padding:12px; background:linear-gradient(135deg,#fff,#f6fffd); color:var(--muted); font-size:13px; line-height:1.7; }
+    .cleanup-help-item strong { color:var(--accent); display:block; margin-bottom:4px; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
     .toast { background:white; color:var(--ink); padding:16px 20px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:center; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:400px; word-break:break-word; pointer-events:auto; }
     .toast.success { border-left-color:var(--success); }
@@ -271,11 +325,12 @@ function getAccountSection() {
   return `<section class="card">
       <h2>账号与同步</h2>
       <p class="muted">管理 Bilibili 账号及需同步的收藏夹。点击“立即同步”会唤起后台任务队列。</p>
-      <div class="row" style="margin-bottom:20px;">
+      <div class="row" style="margin-bottom:20px;align-items:center;">
         <button id="addUserBtn">添加 B站账号</button>
         <button class="ghost" id="syncNowBtn">立即同步</button>
         <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
         <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
+        <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明">?</button>
       </div>
       <div class="user-list" id="userList"></div>
     </section>`;
@@ -283,22 +338,26 @@ function getAccountSection() {
 
 function getSettingsSection() {
   return `<section class="card">
-      <h2>全局设置</h2>
+      <div class="section-title-row">
+        <h2>全局设置</h2>
+        <button class="help-icon-btn" id="settingsHelpBtn" type="button" title="查看当前设置如何执行">?</button>
+      </div>
       <div class="settings-grid">
         <div><label>轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
-        <div><label>视频间延迟 (秒)</label><input id="delaySeconds" type="number" min="0" /></div>
+        <div><label>BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" /><p class="muted" style="margin:6px 0 0;font-size:12px;">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
 
         <div class="settings-group"><div class="settings-group-title">AList 云盘设置</div></div>
         <div class="field-full"><label>AList 内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244" autocomplete="off" /></div>
         <div><label>AList 账号 (WebDAV 用户名)</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
         <div><label>AList 密码 (WebDAV 密码)</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
-        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /></div>
+        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted" style="margin:6px 0 0;font-size:12px;">修改目标路径只影响后续新上传，已有网盘文件不会自动迁移。修改后建议执行 AList 状态对账。</p></div>
         <div class="field-full"><label>上传目录结构</label>
           <select id="uploadLayout">
             <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
             <option value="folder-video">收藏夹名 / 视频</option>
             <option value="video-only">仅视频文件</option>
           </select>
+          <p class="muted" style="margin:6px 0 0;font-size:12px;">目录结构变化只影响新任务，不会移动已有远端文件。</p>
         </div>
 
         <div class="settings-group"><div class="settings-group-title">下载控制 (BBDown)</div></div>
@@ -323,6 +382,7 @@ function getSettingsSection() {
         <div class="field-full row">
           <label class="checkbox-label"><input type="checkbox" id="bbdownHiRes" /> 下载 Hi-Res 音质</label>
           <label class="checkbox-label"><input type="checkbox" id="bbdownDolby" /> 下载 杜比音效 (Dolby)</label>
+          <p class="muted" style="width:100%;margin:0;font-size:12px;">Hi-Res / Dolby 需要扫码登录获得 APP token；旧账号如果没有 token，请重新登录后再启用。</p>
         </div>
 
         <div class="settings-group"><div class="settings-group-title">📌 视频命名模板</div></div>
@@ -343,16 +403,19 @@ function getSettingsSection() {
         <div><label>重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
-        <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="10" /></div>
-        <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="20" step="0.5" /></div>
-        <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="500" /></div>
+        <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
+        <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
+        <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
       </div>
       <div class="row" style="margin-top:24px;">
         <button id="saveConfigBtn">保存设置并生效</button>
-        <button id="renameBtn" class="rename-btn" style="border:none;color:white;padding:10px 16px;border-radius:12px;cursor:pointer;font-weight:600;transition:all 0.2s;">🔄 一键重命名网盘文件</button>
+        <button id="renameBtn" class="rename-btn" style="border:none;color:white;padding:10px 16px;border-radius:12px;cursor:pointer;font-weight:600;transition:all 0.2s;">检查旧命名文件</button>
+        <button id="qualityUpgradeBtn" class="ghost" type="button">检查可升级画质</button>
+        <button id="cleanupDataBtn" class="ghost" type="button">清理数据</button>
       </div>
       <div class="muted" id="configStatus" style="margin-top:12px;color:var(--accent);"></div>
       <div class="muted" id="renameStatus" style="margin-top:8px;"></div>
+      <div class="muted" id="qualityUpgradeStatus" style="margin-top:8px;"></div>
     </section>`;
 }
 
@@ -426,6 +489,115 @@ function getModals() {
         <button id="closeUnavailableBtn" class="ghost" style="width:100%;">关闭</button>
       </div>
     </div>
+  </div>
+
+  <div class="modal" id="syncHelpModal">
+    <div class="panel" style="max-width:860px;">
+      <h2>同步与对账说明</h2>
+      <div class="help-tabs">
+        <button id="syncHelpSimpleBtn" class="active" type="button">简要介绍</button>
+        <button id="syncHelpDetailBtn" type="button">详细介绍</button>
+      </div>
+      <div id="syncHelpContent"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="closeSyncHelpBtn" class="ghost" style="width:100%;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="settingsHelpModal">
+    <div class="panel" style="max-width:920px;">
+      <h2>当前设置执行流程</h2>
+      <p class="muted">这里不会保存设置，也不会触发同步，只按当前表单里的值生成说明。</p>
+      <div id="settingsFlowContent"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="closeSettingsHelpBtn" class="ghost" style="width:100%;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="renamePreviewModal">
+    <div class="panel" style="max-width:980px;">
+      <h2>检查旧命名文件</h2>
+      <p class="muted">先预览会改哪些远端文件。只有勾选并二次确认后，才会真正修改 AList 网盘文件名。</p>
+      <div id="renamePreviewSummary" class="muted"></div>
+      <div class="row" style="margin:8px 0 12px;">
+        <button id="renameSelectAllBtn" class="ghost" type="button">全选</button>
+        <button id="renameSelectNoneBtn" class="ghost" type="button">取消全选</button>
+        <button id="refreshRenamePreviewBtn" class="ghost" type="button">重新预览</button>
+      </div>
+      <div class="rename-list" id="renamePreviewList"></div>
+      <div id="renameSkippedBlock" style="display:none;margin-top:14px;">
+        <strong style="color:var(--ink);display:block;margin-bottom:8px;">跳过的文件</strong>
+        <div class="rename-skip-list" id="renameSkippedList"></div>
+      </div>
+      <div id="renameResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="executeRenameBtn" type="button" style="flex:1;">确认重命名所选文件</button>
+        <button id="closeRenamePreviewBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="qualityUpgradeModal">
+    <div class="panel" style="max-width:980px;">
+      <h2>检查可升级画质</h2>
+      <p class="muted">按当前 BBDown 画质、编码、Hi-Res、杜比设置重新下载。新版文件上传并验证成功后，才会删除旧远端文件。</p>
+      <div id="qualityUpgradeSummary" class="muted"></div>
+      <div class="row" style="margin:8px 0 12px;">
+        <button id="qualityUpgradeSelectAllBtn" class="ghost" type="button">全选</button>
+        <button id="qualityUpgradeSelectNoneBtn" class="ghost" type="button">取消全选</button>
+        <button id="refreshQualityUpgradeBtn" class="ghost" type="button">重新预览</button>
+      </div>
+      <div class="rename-list" id="qualityUpgradeList"></div>
+      <div id="qualityUpgradeSkippedBlock" style="display:none;margin-top:14px;">
+        <strong style="color:var(--ink);display:block;margin-bottom:8px;">跳过的项目</strong>
+        <div class="rename-skip-list" id="qualityUpgradeSkippedList"></div>
+      </div>
+      <div id="qualityUpgradeResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="executeQualityUpgradeBtn" type="button" style="flex:1;">确认重调所选视频</button>
+        <button id="closeQualityUpgradeBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="cleanupDataModal">
+    <div class="panel" style="max-width:860px;">
+      <div class="section-title-row">
+        <h2>清理数据</h2>
+        <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么">?</button>
+      </div>
+      <p class="muted">勾选要清理的小抽屉。清理只会碰本项目的 <code>data</code> 和 <code>temp</code>，不会乱动别的地方。</p>
+      <div class="row" style="margin:8px 0 12px;">
+        <button id="cleanupSelectAllBtn" class="ghost" type="button">全选：完全清除</button>
+        <button id="cleanupSelectNoneBtn" class="ghost" type="button">取消全选</button>
+        <button id="refreshCleanupBtn" class="ghost" type="button">刷新占用</button>
+      </div>
+      <div id="cleanupStatus" class="muted"></div>
+      <div class="cleanup-list" id="cleanupList"></div>
+      <div id="cleanupConfirmBlock" class="cleanup-confirm" style="display:none;">
+        <div class="muted" id="cleanupConfirmHint" style="margin-bottom:8px;"></div>
+        <input id="cleanupConfirmInput" type="text" autocomplete="off" placeholder="按提示输入确认文字" />
+      </div>
+      <div id="cleanupResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="executeCleanupBtn" type="button" style="flex:1;">确认清理</button>
+        <button id="closeCleanupDataBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="cleanupHelpModal">
+    <div class="panel" style="max-width:760px;">
+      <h2>清理小贴士</h2>
+      <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
+      <div id="cleanupHelpContent" class="cleanup-help-list"></div>
+      <p class="muted" style="margin-top:14px;">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。</p>
+      <div class="row" style="margin-top:24px;justify-content:center;">
+        <button id="closeCleanupHelpBtn" class="ghost" type="button" style="width:100%;">知道啦</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -447,6 +619,7 @@ function getAppScript() {
     let logMode = 'simple';
     let logEntries = [];
     let queueBoardPollTimer = null;
+    let queueBoardRequestInFlight = false;
     const queueBoardState = {
       columns: {},
       cards: new Map(),
@@ -469,6 +642,10 @@ function getAppScript() {
       loading: false,
       token: 0
     };
+    let syncHelpMode = 'simple';
+    let renamePreviewState = { candidates: [], skipped: [] };
+    let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
+    let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
 
     function showToast(message, type = 'error') {
       const container = document.getElementById('toastContainer');
@@ -503,6 +680,26 @@ function getAppScript() {
       return data.data;
     }
 
+    function formatDateTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let size = bytes;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+      }
+      return (unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 10 ? 1 : 2)) + ' ' + units[unit];
+    }
+
     // ---- Config ----
     async function loadConfig() {
       const d = await fetchJson('/api/config');
@@ -524,7 +721,7 @@ function getAppScript() {
       document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
       document.getElementById('remoteVerifyRateLimitPerSecond').value = d.remoteVerifyRateLimitPerSecond ?? 2;
       document.getElementById('remoteRequeueLimitPerCycle').value = d.remoteRequeueLimitPerCycle ?? 20;
-      document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>';
+      document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>-<bvid>';
       updateTemplatePreview();
     }
 
@@ -544,7 +741,7 @@ function getAppScript() {
         bbdownQuality: document.getElementById('bbdownQuality').value,
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
         bbdownDolby: document.getElementById('bbdownDolby').checked,
-        filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>',
+        filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
         maxRetries: Number(document.getElementById('maxRetries').value),
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value),
@@ -555,7 +752,7 @@ function getAppScript() {
       };
       try {
         await fetchJson('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-        st.textContent = '设置已保存并生效。'; st.style.color = 'var(--accent)';
+        st.textContent = '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、AList 路径等对新任务生效，正在运行的任务不会中途切换。'; st.style.color = 'var(--accent)';
       } catch(e) {
         st.textContent = '保存失败: '+e.message; st.style.color = '#E57373';
       } finally {
@@ -582,7 +779,7 @@ function getAppScript() {
         });
         avail.appendChild(tag);
       });
-      const init = document.getElementById('filenameTemplate').value || '<videoTitle>';
+      const init = document.getElementById('filenameTemplate').value || '<videoTitle>-<bvid>';
       selectedKeys = TEMPLATE_VARS.filter(v => init.includes(v.key)).map(v => v.key);
       selectedKeys.sort((a,b) => init.indexOf(a) - init.indexOf(b));
       renderSelected();
@@ -638,7 +835,7 @@ function getAppScript() {
     }
 
     function updateTemplatePreview() {
-      const tpl = document.getElementById('filenameTemplate').value || '<videoTitle>';
+      const tpl = document.getElementById('filenameTemplate').value || '<videoTitle>-<bvid>';
       const preview = tpl
         .replace(/<videoTitle>/g, '\u89c6\u9891\u6807\u9898\u793a\u4f8b')
         .replace(/<ownerName>/g, 'UP\u4e3b\u540d')
@@ -648,6 +845,554 @@ function getAppScript() {
         .replace(/<dfn>/g, '1080P')
         .replace(/<videoCodecs>/g, 'HEVC');
       document.getElementById('templatePreview').textContent = preview + '.mp4';
+    }
+
+    function readCurrentConfigForm() {
+      return {
+        pollIntervalMinutes: Number(document.getElementById('pollInterval').value || 10),
+        perVideoDelaySeconds: Number(document.getElementById('delaySeconds').value || 0),
+        uploadLayout: document.getElementById('uploadLayout').value,
+        alistDest: document.getElementById('alistDest').value.trim() || '/bili-backup/videos',
+        bbdownEncoding: document.getElementById('bbdownEncoding').value || '\u81ea\u52a8',
+        bbdownQuality: document.getElementById('bbdownQuality').value || '\u81ea\u52a8\u6700\u9ad8',
+        bbdownHiRes: document.getElementById('bbdownHiRes').checked,
+        bbdownDolby: document.getElementById('bbdownDolby').checked,
+        filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
+        maxRetries: Number(document.getElementById('maxRetries').value || 3),
+        retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value || 5),
+        concurrentDownloads: Number(document.getElementById('concurrentDownloads').value || 1),
+        concurrentUploads: Number(document.getElementById('concurrentUploads').value || 2),
+        remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value || 3),
+        remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value || 2),
+        remoteRequeueLimitPerCycle: Number(document.getElementById('remoteRequeueLimitPerCycle').value || 20),
+      };
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+    }
+
+    function renderSyncHelp() {
+      const content = document.getElementById('syncHelpContent');
+      document.getElementById('syncHelpSimpleBtn').classList.toggle('active', syncHelpMode === 'simple');
+      document.getElementById('syncHelpDetailBtn').classList.toggle('active', syncHelpMode === 'detail');
+      if (syncHelpMode === 'simple') {
+        content.innerHTML = '<div class="help-card-grid">' +
+          '<div class="help-card"><strong>\u7acb\u5373\u540c\u6b65</strong><div>\u73b0\u5728\u5c31\u770b\u4e00\u773c\u4f60\u9009\u4e2d\u7684\u6536\u85cf\u5939\uff0c\u6709\u65b0\u89c6\u9891\u5c31\u653e\u8fdb\u4e0b\u8f7d\u548c\u4e0a\u4f20\u961f\u5217\u3002\u9002\u5408\u5e73\u65f6\u65e5\u5e38\u66f4\u65b0\u3002</div></div>' +
+          '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5 AList\uff09</strong><div>\u4e0d\u91cd\u65b0\u7ffb B \u7ad9\u6536\u85cf\u5939\uff0c\u4e3b\u8981\u68c0\u67e5\u7a0b\u5e8f\u8bb0\u5f55\u8fc7\u7684\u7f51\u76d8\u6587\u4ef6\u8fd8\u5728\u4e0d\u5728\u3002\u9002\u5408\u6000\u7591\u7f51\u76d8\u6587\u4ef6\u88ab\u79fb\u52a8\u6216\u5220\u9664\u65f6\u4f7f\u7528\u3002</div></div>' +
+          '<div class="help-card"><strong>\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26</strong><div>\u4ece\u5934\u66f4\u5b8c\u6574\u5730\u626b\u63cf\u6536\u85cf\u5939\uff0c\u5e76\u68c0\u67e5 AList \u8fdc\u7aef\u72b6\u6001\u3002\u6700\u5168\u9762\u4f46\u66f4\u6162\uff0c\u8bf7\u6c42\u4e5f\u66f4\u591a\u3002</div></div>' +
+          '</div>';
+        return;
+      }
+      content.innerHTML = '<div class="help-card-grid">' +
+        '<div class="help-card"><strong>\u7acb\u5373\u540c\u6b65</strong><ul><li>\u6309\u5f53\u524d\u8c03\u5ea6\u7b56\u7565\u626b\u63cf\u70ed\u95e8\u9875\u548c\u90e8\u5206\u5386\u53f2\u9875\u3002</li><li>\u53d1\u73b0\u672a\u5907\u4efd\u89c6\u9891\u540e\u8fdb\u5165\u4e0b\u8f7d\u961f\u5217\u3002</li><li>\u9002\u5408\u65e5\u5e38\u589e\u91cf\u540c\u6b65\uff0c\u6210\u672c\u6700\u4f4e\u3002</li></ul></div>' +
+        '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5 AList\uff09</strong><ul><li>\u8df3\u8fc7 B \u7ad9\u6536\u85cf\u5939\u5168\u91cf\u626b\u63cf\u3002</li><li>\u6839\u636e\u672c\u5730 state.json \u4e2d\u7684 remoteFiles \u68c0\u67e5\u8fdc\u7aef\u6587\u4ef6\u662f\u5426\u5b58\u5728\u3002</li><li>\u53d1\u73b0\u7f3a\u5931\u540e\u6309\u8865\u4f20\u4e0a\u9650\u91cd\u65b0\u6392\u961f\u3002</li></ul></div>' +
+        '<div class="help-card"><strong>\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26</strong><ul><li>\u5c3d\u53ef\u80fd\u91cd\u65b0\u626b\u63cf\u6536\u85cf\u5939\u6240\u6709\u9875\u9762\u3002</li><li>\u540c\u65f6\u6267\u884c\u8fdc\u7aef\u6587\u4ef6\u6821\u9a8c\uff0c\u9002\u5408\u9996\u6b21\u8865\u9f50\u6216\u8fc1\u79fb\u76ee\u5f55\u540e\u4f7f\u7528\u3002</li><li>\u8bf7\u6c42\u91cf\u66f4\u5927\uff0c\u53ef\u80fd\u89e6\u53d1 412\u3001\u767b\u5f55\u6821\u9a8c\u6216\u98ce\u63a7\u3002</li></ul></div>' +
+        '</div>';
+    }
+
+    function openSyncHelp() {
+      syncHelpMode = 'simple';
+      renderSyncHelp();
+      document.getElementById('syncHelpModal').classList.add('active');
+    }
+
+    function renderSettingsFlow() {
+      const c = readCurrentConfigForm();
+      const layoutText = c.uploadLayout === 'user-folder-video' ? '\u7528\u6237\u540d / \u6536\u85cf\u5939\u540d / \u89c6\u9891' : (c.uploadLayout === 'folder-video' ? '\u6536\u85cf\u5939\u540d / \u89c6\u9891' : '\u4ec5\u89c6\u9891\u6587\u4ef6');
+      const audioText = [c.bbdownHiRes ? 'Hi-Res' : '', c.bbdownDolby ? 'Dolby' : ''].filter(Boolean).join(' + ') || '\u666e\u901a\u97f3\u9891';
+      document.getElementById('settingsFlowContent').innerHTML =
+        '<div class="flow-visual">' +
+          '<div class="flow-step"><div class="badge">\u81ea\u52a8\u8f6e\u8be2</div><div class="desc">\u7a0b\u5e8f\u6bcf <strong>' + escapeHtml(c.pollIntervalMinutes) + ' \u5206\u949f</strong>\u81ea\u52a8\u68c0\u67e5\u4e00\u6b21\uff1b\u624b\u52a8\u6309\u94ae\u4f1a\u989d\u5916\u63d2\u961f\u89e6\u53d1\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u626b\u63cf\u6536\u85cf\u5939</div><div class="desc">\u53d1\u73b0\u65b0\u89c6\u9891\u540e\u6309\u5f53\u524d\u547d\u540d\u6a21\u677f\u51c6\u5907\u4efb\u52a1\uff1a<code>' + escapeHtml(c.filenameTemplate) + '</code></div></div>' +
+          '<div class="flow-step"><div class="badge">\u4e0b\u8f7d\u961f\u5217</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0b\u8f7d <strong>' + escapeHtml(c.concurrentDownloads) + '</strong> \u4e2a\uff1b\u753b\u8d28\u4e3a <strong>' + escapeHtml(c.bbdownQuality) + '</strong>\uff0c\u7f16\u7801\u4e3a <strong>' + escapeHtml(c.bbdownEncoding) + '</strong>\uff0c\u97f3\u9891\u9009\u9879\u4e3a <strong>' + escapeHtml(audioText) + '</strong>\uff1b\u5206P\u4e4b\u95f4\u5ef6\u8fdf <strong>' + escapeHtml(c.perVideoDelaySeconds) + ' \u79d2</strong>\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u5931\u8d25\u91cd\u8bd5</div><div class="desc">\u4e0b\u8f7d\u6216\u4e0a\u4f20\u5931\u8d25\u540e\u6700\u591a\u91cd\u8bd5 <strong>' + escapeHtml(c.maxRetries) + '</strong> \u6b21\uff0c\u6bcf\u6b21\u95f4\u9694 <strong>' + escapeHtml(c.retryDelaySeconds) + ' \u79d2</strong>\uff1b\u4e0b\u8f7d\u5361\u4f4f\u8d85\u8fc7 30 \u5206\u949f\u4e14\u6700\u8fd1 10 \u5206\u949f\u4f4e\u4e8e 10KB/s \u4f1a\u81ea\u52a8\u8fdb\u5165\u91cd\u8bd5\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u4e0a\u4f20 AList</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0a\u4f20 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> \u4e2a\uff1b\u76ee\u6807\u8def\u5f84\u662f <code>' + escapeHtml(c.alistDest) + '</code>\uff0c\u76ee\u5f55\u7ed3\u6784\u662f <strong>' + escapeHtml(layoutText) + '</strong>\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u72b6\u6001\u5bf9\u8d26</div><div class="desc">AList \u5bf9\u8d26\u5e76\u53d1 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>\uff0c\u9650\u901f <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' \u6b21/\u79d2</strong>\uff0c\u6bcf\u8f6e\u6700\u591a\u8865\u4f20 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> \u4e2a\u7f3a\u5931\u89c6\u9891\u3002</div></div>' +
+        '</div>' +
+        '<div class="effect-groups">' +
+          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\uff1b\u753b\u8d28\u91cd\u8c03\u7684\u4e0b\u8f7d\u9636\u6bb5\u5171\u4eab\u4e0b\u8f7d\u961f\u5217\uff0c\u4e0a\u4f20\u66ff\u6362\u9636\u6bb5\u5171\u4eab\u4e0a\u4f20\u961f\u5217\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u65b0\u4efb\u52a1\u751f\u6548</strong><div>\u753b\u8d28\u3001\u7f16\u7801\u3001Hi-Res / Dolby\u3001\u547d\u540d\u6a21\u677f\u3001AList \u8def\u5f84\u3001\u4e0a\u4f20\u76ee\u5f55\u7ed3\u6784\u3001\u5931\u8d25\u91cd\u8bd5\u6b21\u6570\u3001\u91cd\u8bd5\u95f4\u9694\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u5bf9\u8d26\u65f6\u751f\u6548</strong><div>AList \u5bf9\u8d26\u5e76\u53d1\u6570\u3001AList \u5bf9\u8d26\u9650\u901f\u3001\u6bcf\u8f6e\u6700\u591a\u8865\u4f20\u6570\u91cf\u3002</div></div>' +
+        '</div>' +
+        '<p class="muted" style="margin-top:14px;">\u4fee\u6539 AList \u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002AList \u5bf9\u8d26\u9ad8\u5e76\u53d1/\u9ad8\u9650\u901f\u4f1a\u589e\u52a0 AList \u4e0e\u7f51\u76d8\u540e\u7aef\u538b\u529b\uff0c\u5efa\u8bae\u9010\u6b65\u8c03\u9ad8\u3002</p>';
+    }
+
+    function openSettingsHelp() {
+      renderSettingsFlow();
+      document.getElementById('settingsHelpModal').classList.add('active');
+    }
+
+    const cleanupDescriptions = {
+      'memory-cache': '只清掉页面临时记住的收藏夹分页，刷新一下就会重新拿，像擦掉便签纸。',
+      temp: '清掉临时下载目录。未上传完的视频碎片会消失，所以有任务跑着时不让动它。',
+      logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
+      'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
+      state: '清掉备份状态、收藏夹索引、远端文件记录和重试记录。项目会忘记自己备份过什么。',
+      users: '清掉 B 站账号登录信息。下次需要重新扫码登录。',
+      config: '清掉全局配置。AList 地址、画质、并发等会回到默认值。',
+    };
+
+    function cleanupRequiredConfirmation(selected) {
+      const all = cleanupState.items.length > 0 && cleanupState.items.every((item) => selected.includes(item.key));
+      if (all) return 'DELETE ALL PROJECT DATA';
+      if (cleanupState.items.some((item) => selected.includes(item.key) && item.important)) return 'DELETE';
+      return '';
+    }
+
+    function selectedCleanupItems() {
+      return Array.from(document.querySelectorAll('.cleanup-check:checked')).map((item) => item.value);
+    }
+
+    function cleanupItemRequiresIdle(key) {
+      return key !== 'memory-cache' && key !== 'logs' && key !== 'debug-logs';
+    }
+
+    function cleanupBusy() {
+      return Boolean(cleanupState.runningTransfers || cleanupState.activeScheduler);
+    }
+
+    function renderCleanupConfirm() {
+      const selected = selectedCleanupItems();
+      const required = cleanupRequiredConfirmation(selected);
+      const block = document.getElementById('cleanupConfirmBlock');
+      const hint = document.getElementById('cleanupConfirmHint');
+      if (!required) {
+        block.style.display = 'none';
+        hint.textContent = '';
+        document.getElementById('cleanupConfirmInput').value = '';
+        return;
+      }
+      block.style.display = 'block';
+      hint.textContent = required === 'DELETE ALL PROJECT DATA'
+        ? '你选择了完全清除。请输入 DELETE ALL PROJECT DATA，小扫帚才会认真开工。'
+        : '你选择了重要数据。请输入 DELETE 确认，避免手滑把小仓库钥匙丢掉。';
+    }
+
+    function renderCleanupList() {
+      const list = document.getElementById('cleanupList');
+      const st = document.getElementById('cleanupStatus');
+      list.innerHTML = '';
+      if (cleanupState.runningTransfers || cleanupState.activeScheduler) {
+        st.textContent = '当前有同步/扫描/对账或下载/上传任务在跑，临时文件和重要数据先保护起来，不让清理。';
+      } else {
+        st.textContent = '选择要清理的内容。重要项目会要求二次确认。';
+      }
+      cleanupState.items.forEach((item) => {
+        const disabled = cleanupBusy() && cleanupItemRequiresIdle(item.key);
+        const label = document.createElement('label');
+        label.className = 'cleanup-item' + (item.important ? ' important' : '') + (disabled ? ' disabled' : '');
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.value = item.key;
+        check.className = 'cleanup-check';
+        check.disabled = disabled;
+        check.addEventListener('change', renderCleanupConfirm);
+        const body = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'cleanup-item-title';
+        title.textContent = item.label + (item.important ? '（重要）' : '');
+        const desc = document.createElement('div');
+        desc.className = 'cleanup-item-desc';
+        desc.textContent = (cleanupDescriptions[item.key] || '') + (disabled ? ' 现在有任务在忙，这个小抽屉先上锁。' : '');
+        body.appendChild(title);
+        body.appendChild(desc);
+        const size = document.createElement('div');
+        size.className = 'cleanup-size';
+        size.textContent = formatBytes(item.bytes);
+        label.appendChild(check);
+        label.appendChild(body);
+        label.appendChild(size);
+        list.appendChild(label);
+      });
+      renderCleanupConfirm();
+    }
+
+    function renderCleanupHelp() {
+      const content = document.getElementById('cleanupHelpContent');
+      content.innerHTML = '';
+      cleanupState.items.forEach((item) => {
+        const div = document.createElement('div');
+        div.className = 'cleanup-help-item';
+        const title = document.createElement('strong');
+        title.textContent = item.label + (item.important ? '：这是重要小抽屉' : '：这是普通小灰尘');
+        const text = document.createElement('div');
+        text.textContent = cleanupDescriptions[item.key] || '';
+        div.appendChild(title);
+        div.appendChild(text);
+        content.appendChild(div);
+      });
+    }
+
+    async function loadCleanupState() {
+      cleanupState = await fetchJson('/api/storage/cleanup');
+      renderCleanupList();
+      renderCleanupHelp();
+    }
+
+    async function openCleanupData() {
+      document.getElementById('cleanupDataModal').classList.add('active');
+      document.getElementById('cleanupResultBlock').style.display = 'none';
+      await loadCleanupState();
+    }
+
+    function setCleanupSelection(value) {
+      document.querySelectorAll('.cleanup-check').forEach((item) => {
+        if (!item.disabled) item.checked = value;
+      });
+      renderCleanupConfirm();
+    }
+
+    async function executeCleanup() {
+      const selected = selectedCleanupItems();
+      const resultBlock = document.getElementById('cleanupResultBlock');
+      if (!selected.length) {
+        showToast('先勾选要清理的小抽屉', 'info');
+        return;
+      }
+      const required = cleanupRequiredConfirmation(selected);
+      const confirmation = document.getElementById('cleanupConfirmInput').value.trim();
+      if (required && confirmation !== required) {
+        showToast('确认文字不对，小扫帚先不动。', 'error');
+        return;
+      }
+      const btn = document.getElementById('executeCleanupBtn');
+      btn.disabled = true;
+      btn.textContent = '清理中...';
+      resultBlock.style.display = 'block';
+      resultBlock.textContent = '正在清理，请稍等...';
+      try {
+        const data = await fetchJson('/api/storage/cleanup', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ items: selected, confirmation })
+        });
+        const lines = ['清理完成：'];
+        (data.results || []).forEach((item) => lines.push('已清理：' + item.label));
+        resultBlock.textContent = lines.join('\\n');
+        showToast('清理完成，小扫帚收工啦', 'success');
+        await loadCleanupState();
+      } catch(e) {
+        resultBlock.textContent = '清理失败：' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '确认清理';
+      }
+    }
+
+    async function openRenamePreview() {
+      document.getElementById('renamePreviewModal').classList.add('active');
+      await loadRenamePreview();
+    }
+
+    async function loadRenamePreview() {
+      const btn = document.getElementById('renameBtn');
+      const st = document.getElementById('renameStatus');
+      const summary = document.getElementById('renamePreviewSummary');
+      const list = document.getElementById('renamePreviewList');
+      const resultBlock = document.getElementById('renameResultBlock');
+      btn.textContent = '检查中...';
+      st.textContent = '';
+      summary.textContent = '正在扫描 AList 远端文件...';
+      list.innerHTML = '';
+      resultBlock.style.display = 'none';
+      try {
+        renamePreviewState = await fetchJson('/api/rename/preview', { method:'POST' });
+        renderRenamePreview();
+        st.textContent = '已生成重命名预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewState.skipped.length + ' 个跳过。';
+        st.style.color = 'var(--muted)';
+      } catch(e) {
+        summary.textContent = '预览失败：' + e.message;
+        st.textContent = '预览失败: ' + e.message;
+        st.style.color = '#E57373';
+      } finally {
+        btn.textContent = '检查旧命名文件';
+      }
+    }
+
+    function renderRenamePreview() {
+      const candidates = Array.isArray(renamePreviewState.candidates) ? renamePreviewState.candidates : [];
+      const skipped = Array.isArray(renamePreviewState.skipped) ? renamePreviewState.skipped : [];
+      const summary = document.getElementById('renamePreviewSummary');
+      const list = document.getElementById('renamePreviewList');
+      const skippedBlock = document.getElementById('renameSkippedBlock');
+      const skippedList = document.getElementById('renameSkippedList');
+      summary.textContent = '发现 ' + candidates.length + ' 个可安全重命名的远端文件，' + skipped.length + ' 个文件已跳过。';
+      list.innerHTML = '';
+      if (!candidates.length) {
+        const empty = document.createElement('div');
+        empty.className = 'queue-empty';
+        empty.textContent = '没有找到可安全重命名的旧命名文件。';
+        list.appendChild(empty);
+      }
+      candidates.forEach((item, index) => {
+        const row = document.createElement('label');
+        row.className = 'rename-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.dataset.renameIndex = String(index);
+        const body = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'rename-title';
+        title.textContent = (item.title || item.bvid || '未知视频') + ' · ' + (item.ownerName || '未知UP');
+        const name = document.createElement('div');
+        name.className = 'rename-path';
+        name.innerHTML = '<strong>旧文件：</strong>' + escapeHtml(item.oldName || '') + '<br><span class="rename-arrow">→</span> <strong>新文件：</strong>' + escapeHtml(item.newName || '');
+        const path = document.createElement('div');
+        path.className = 'rename-path';
+        path.textContent = '目录：' + (item.remoteDir || '');
+        const reason = document.createElement('div');
+        reason.className = 'rename-path';
+        reason.textContent = item.reason || '文件名和本地状态匹配，可重命名。';
+        body.appendChild(title);
+        body.appendChild(name);
+        body.appendChild(path);
+        body.appendChild(reason);
+        row.appendChild(checkbox);
+        row.appendChild(body);
+        list.appendChild(row);
+      });
+      if (skipped.length) {
+        skippedBlock.style.display = 'block';
+        skippedList.innerHTML = '';
+        skipped.forEach((item) => {
+          const div = document.createElement('div');
+          div.textContent = (item.path || '<未知路径>') + '：' + (item.reason || '已跳过');
+          skippedList.appendChild(div);
+        });
+      } else {
+        skippedBlock.style.display = 'none';
+        skippedList.innerHTML = '';
+      }
+    }
+
+    function setRenameSelection(checked) {
+      document.querySelectorAll('#renamePreviewList input[type="checkbox"]').forEach((input) => {
+        input.checked = checked;
+      });
+    }
+
+    async function executeSelectedRename() {
+      const candidates = Array.isArray(renamePreviewState.candidates) ? renamePreviewState.candidates : [];
+      const selected = [];
+      document.querySelectorAll('#renamePreviewList input[type="checkbox"]').forEach((input) => {
+        const index = Number(input.dataset.renameIndex);
+        if (input.checked && Number.isInteger(index) && candidates[index]) {
+          selected.push(candidates[index]);
+        }
+      });
+      if (!selected.length) {
+        showToast('请先勾选需要重命名的文件', 'info');
+        return;
+      }
+      if (!confirm('将重命名 ' + selected.length + ' 个远端文件。此操作会修改 AList 网盘文件名，是否继续？')) {
+        return;
+      }
+      const btn = document.getElementById('executeRenameBtn');
+      const resultBlock = document.getElementById('renameResultBlock');
+      btn.textContent = '重命名中...';
+      btn.disabled = true;
+      resultBlock.style.display = 'block';
+      resultBlock.textContent = '正在执行远端重命名...';
+      try {
+        const payload = selected.map((item) => ({ bvid:item.bvid, oldPath:item.oldPath, newPath:item.newPath }));
+        const chunkSize = 100;
+        const allResults = [];
+        let success = 0;
+        let failed = 0;
+        for (let start = 0; start < payload.length; start += chunkSize) {
+          const chunk = payload.slice(start, start + chunkSize);
+          const batchIndex = Math.floor(start / chunkSize) + 1;
+          const batchTotal = Math.ceil(payload.length / chunkSize);
+          resultBlock.textContent = '正在执行远端重命名：第 ' + batchIndex + '/' + batchTotal + ' 批（已处理 ' + start + '/' + payload.length + '）...';
+          const result = await fetchJson('/api/rename', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ items:chunk })
+          });
+          success += Number(result.success || 0);
+          failed += Number(result.failed || 0);
+          if (Array.isArray(result.results)) {
+            allResults.push(...result.results);
+          }
+        }
+        const lines = ['完成：成功 ' + success + ' 个，失败 ' + failed + ' 个。'];
+        allResults.forEach((item) => {
+          lines.push((item.ok ? '成功：' : '失败：') + item.oldPath + ' → ' + item.newPath + (item.error ? '，原因：' + item.error : ''));
+        });
+        resultBlock.textContent = lines.join('\\n');
+        showToast('远端重命名完成', failed ? 'info' : 'success');
+      } catch(e) {
+        resultBlock.textContent = '重命名失败：' + e.message;
+      } finally {
+        btn.textContent = '确认重命名所选文件';
+        btn.disabled = false;
+      }
+    }
+
+    async function openQualityUpgradePreview() {
+      document.getElementById('qualityUpgradeModal').classList.add('active');
+      await loadQualityUpgradePreview();
+    }
+
+    async function loadQualityUpgradePreview() {
+      const btn = document.getElementById('qualityUpgradeBtn');
+      const st = document.getElementById('qualityUpgradeStatus');
+      const summary = document.getElementById('qualityUpgradeSummary');
+      const list = document.getElementById('qualityUpgradeList');
+      const resultBlock = document.getElementById('qualityUpgradeResultBlock');
+      btn.textContent = '检查中...';
+      st.textContent = '';
+      summary.textContent = '正在读取本地远端记录...';
+      list.innerHTML = '';
+      resultBlock.style.display = 'none';
+      try {
+        qualityUpgradePreviewState = await fetchJson('/api/quality-upgrade/preview', { method:'POST' });
+        renderQualityUpgradePreview();
+        st.textContent = '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。';
+        st.style.color = 'var(--muted)';
+      } catch(e) {
+        summary.textContent = '预览失败：' + e.message;
+        st.textContent = '预览失败: ' + e.message;
+        st.style.color = '#E57373';
+      } finally {
+        btn.textContent = '检查可升级画质';
+      }
+    }
+
+    function renderQualityUpgradePreview() {
+      const candidates = Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : [];
+      const skipped = Array.isArray(qualityUpgradePreviewState.skipped) ? qualityUpgradePreviewState.skipped : [];
+      const target = qualityUpgradePreviewState.target || {};
+      const summary = document.getElementById('qualityUpgradeSummary');
+      const list = document.getElementById('qualityUpgradeList');
+      const skippedBlock = document.getElementById('qualityUpgradeSkippedBlock');
+      const skippedList = document.getElementById('qualityUpgradeSkippedList');
+      const targetText = [target.quality ? '清晰度 ' + target.quality : '', target.encoding ? '编码 ' + target.encoding : '', target.hiRes ? 'Hi-Res' : '', target.dolby ? '杜比' : ''].filter(Boolean).join(' / ') || '当前默认画质设置';
+      summary.textContent = '目标：' + targetText + '。发现 ' + candidates.length + ' 个可重新下载并替换的远端记录，' + skipped.length + ' 个项目已跳过。';
+      list.innerHTML = '';
+      if (!candidates.length) {
+        const empty = document.createElement('div');
+        empty.className = 'queue-empty';
+        empty.textContent = '没有找到可重调画质的已上传视频记录。';
+        list.appendChild(empty);
+      }
+      candidates.forEach((item, index) => {
+        const row = document.createElement('label');
+        row.className = 'rename-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = false;
+        checkbox.dataset.qualityUpgradeIndex = String(index);
+        const body = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'rename-title';
+        title.textContent = (item.title || item.bvid || '未知视频') + ' · ' + (item.ownerName || '未知UP');
+        const folder = document.createElement('div');
+        folder.className = 'rename-path';
+        folder.textContent = '收藏夹：' + (item.folderTitle || 'favorites') + '；目录：' + (item.remotePath || '');
+        const files = document.createElement('div');
+        files.className = 'rename-path';
+        files.textContent = '将替换旧文件：' + (item.oldFiles || []).map((file) => file.name || file.path).join('，');
+        const reason = document.createElement('div');
+        reason.className = 'rename-path';
+        reason.textContent = item.reason || '按当前画质设置重新下载，上传验证成功后删除旧文件。';
+        body.appendChild(title);
+        body.appendChild(folder);
+        body.appendChild(files);
+        body.appendChild(reason);
+        row.appendChild(checkbox);
+        row.appendChild(body);
+        list.appendChild(row);
+      });
+      if (skipped.length) {
+        skippedBlock.style.display = 'block';
+        skippedList.innerHTML = '';
+        skipped.forEach((item) => {
+          const div = document.createElement('div');
+          div.textContent = (item.title || item.bvid || item.folderTitle || '<未知项目>') + '：' + (item.reason || '已跳过');
+          skippedList.appendChild(div);
+        });
+      } else {
+        skippedBlock.style.display = 'none';
+        skippedList.innerHTML = '';
+      }
+    }
+
+    function setQualityUpgradeSelection(checked) {
+      document.querySelectorAll('#qualityUpgradeList input[type="checkbox"]').forEach((input) => {
+        input.checked = checked;
+      });
+    }
+
+    async function executeSelectedQualityUpgrade() {
+      const candidates = Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : [];
+      const selected = [];
+      document.querySelectorAll('#qualityUpgradeList input[type="checkbox"]').forEach((input) => {
+        const index = Number(input.dataset.qualityUpgradeIndex);
+        if (input.checked && Number.isInteger(index) && candidates[index]) {
+          selected.push(candidates[index]);
+        }
+      });
+      if (!selected.length) {
+        showToast('请先勾选需要重调画质的视频', 'info');
+        return;
+      }
+      if (!confirm('将为 ' + selected.length + ' 个视频重新下载并上传新版文件。新版验证成功后会删除旧远端文件，是否继续？')) {
+        return;
+      }
+      const btn = document.getElementById('executeQualityUpgradeBtn');
+      const resultBlock = document.getElementById('qualityUpgradeResultBlock');
+      btn.textContent = '提交中...';
+      btn.disabled = true;
+      resultBlock.style.display = 'block';
+      resultBlock.textContent = '正在提交画质重调任务...';
+      try {
+        const payload = selected.map((item) => ({ key:item.key }));
+        const chunkSize = 50;
+        const queued = [];
+        const skipped = [];
+        for (let start = 0; start < payload.length; start += chunkSize) {
+          const chunk = payload.slice(start, start + chunkSize);
+          const batchIndex = Math.floor(start / chunkSize) + 1;
+          const batchTotal = Math.ceil(payload.length / chunkSize);
+          resultBlock.textContent = '正在提交画质重调任务：第 ' + batchIndex + '/' + batchTotal + ' 批（已处理 ' + start + '/' + payload.length + '）...';
+          const result = await fetchJson('/api/quality-upgrade', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ items:chunk })
+          });
+          if (Array.isArray(result.queued)) queued.push(...result.queued);
+          if (Array.isArray(result.skipped)) skipped.push(...result.skipped);
+        }
+        const lines = ['已提交：' + queued.length + ' 个；跳过：' + skipped.length + ' 个。任务会在后台逐个执行，可在日志中查看进度。'];
+        queued.forEach((item) => lines.push('已提交：' + item.bvid + ' ' + (item.title || '')));
+        skipped.forEach((item) => lines.push('跳过：' + (item.key || '<未知>') + '，原因：' + (item.reason || '未知')));
+        resultBlock.textContent = lines.join('\\n');
+        showToast('画质重调任务已提交', 'success');
+        await loadQualityUpgradeState();
+      } catch(e) {
+        resultBlock.textContent = '提交失败：' + e.message;
+      } finally {
+        btn.textContent = '确认重调所选视频';
+        btn.disabled = false;
+      }
+    }
+
+    async function loadQualityUpgradeState() {
+      const st = document.getElementById('qualityUpgradeStatus');
+      try {
+        const data = await fetchJsonSilent('/api/quality-upgrade/state');
+        const running = Array.isArray(data.running) ? data.running : [];
+        const completed = Array.isArray(data.completed) ? data.completed : [];
+        if (!running.length && !completed.length) return;
+        st.textContent = '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。';
+        st.style.color = 'var(--muted)';
+      } catch(e) {
+        st.textContent = '画质重调状态读取失败: ' + e.message;
+        st.style.color = '#E57373';
+      }
     }
 
     // ---- Users ----
@@ -740,15 +1485,30 @@ function getAppScript() {
 
         item.appendChild(name);
         item.appendChild(meta);
-        if (user.lastAuthRefreshError) {
-          const authErr = document.createElement('div');
-          authErr.className = 'muted';
-          authErr.style.margin = '0';
-          authErr.style.color = '#E57373';
-          authErr.style.fontSize = '12px';
-          authErr.textContent = '授权刷新失败: ' + user.lastAuthRefreshError;
-          item.appendChild(authErr);
+        const health = user.authHealth || {};
+        const authHealth = document.createElement('div');
+        authHealth.className = 'auth-health ' + (health.level || 'warn');
+        const authTitle = document.createElement('div');
+        authTitle.className = 'auth-health-title';
+        authTitle.textContent = health.summary || '授权状态未知';
+        const authDetail = document.createElement('div');
+        authDetail.className = 'auth-health-detail';
+        authDetail.textContent = health.detail || '无法判断当前账号是否支持自动刷新。';
+        authHealth.appendChild(authTitle);
+        authHealth.appendChild(authDetail);
+        if (health.lastSuccessAt) {
+          const lastSuccess = document.createElement('div');
+          lastSuccess.className = 'auth-health-detail';
+          lastSuccess.textContent = '最近刷新成功：' + formatDateTime(health.lastSuccessAt);
+          authHealth.appendChild(lastSuccess);
         }
+        if (health.autoRefreshEnabled) {
+          const autoRefresh = document.createElement('div');
+          autoRefresh.className = 'auth-health-detail';
+          autoRefresh.textContent = health.needsManualLogin ? '自动刷新凭据存在，但当前失败需要处理。' : '自动刷新凭据完整，适合无人值守运行。';
+          authHealth.appendChild(autoRefresh);
+        }
+        item.appendChild(authHealth);
         item.appendChild(favoritesWrap);
         item.appendChild(actions);
         el.appendChild(item);
@@ -974,17 +1734,20 @@ function getAppScript() {
       }
       const indexed = Number(indexSummary && indexSummary.indexed || 0);
       const biliTotal = Number(indexSummary && indexSummary.biliTotal || 0);
-      const complete = Boolean(indexSummary && indexSummary.complete);
-      if (!indexSummary || complete || !biliTotal || indexed >= biliTotal) {
+      const scanComplete = Boolean(indexSummary && indexSummary.scanComplete);
+      const unreturnedCount = Number(indexSummary && indexSummary.unreturnedCount || 0);
+      if (!indexSummary || !biliTotal || indexed >= biliTotal) {
         hint.textContent = '';
         hint.style.display = 'none';
         return;
       }
       hint.style.display = 'block';
-      if (filter === 'all') {
-        hint.textContent = '全部列表来自 B 站实时数据；状态计数基于已索引 ' + indexed + '/' + biliTotal + ' 条，继续滚动浏览或执行全量扫描并对账后会补齐。';
+      if (scanComplete && unreturnedCount > 0) {
+        hint.textContent = 'B 站报告收藏夹总数 ' + biliTotal + ' 条；当前接口可索引到 ' + indexed + ' 条视频。全量扫描已完成，剩余 ' + unreturnedCount + ' 条未返回具体视频信息，可能是隐藏、失效、非视频或接口过滤项，不会再提示“继续扫描后补齐”。';
+      } else if (filter === 'all') {
+        hint.textContent = '全部列表来自 B 站实时数据；状态计数基于已索引 ' + indexed + '/' + biliTotal + ' 条，当前全量扫描尚未完成，继续滚动浏览或执行全量扫描并对账后会补齐。';
       } else {
-        hint.textContent = '当前筛选基于已索引 ' + indexed + '/' + biliTotal + ' 条，不代表整个收藏夹的最终数量。';
+        hint.textContent = '当前筛选基于已索引 ' + indexed + '/' + biliTotal + ' 条；全量扫描完成前不代表整个收藏夹的最终数量。';
       }
     }
 
@@ -1252,6 +2015,13 @@ function getAppScript() {
       return m + 'm ' + s + 's';
     }
 
+    function queueElapsedLabel(item) {
+      const stage = item.stage || '';
+      if (stage === 'download_running') return '运行';
+      if (stage === 'upload_running') return '上传';
+      return '等待';
+    }
+
     function makeQueueCardKey(item) {
       const userId = item.userId || '';
       const mediaId = item.mediaId || '';
@@ -1285,15 +2055,23 @@ function getAppScript() {
         metaEl.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + (item.bvid || '');
       }
       if (extraEl) {
-        const t0 = Number(item.startedAt || item.queuedAt || 0);
-        const elapsed = t0 > 0 ? formatElapsed(nowMs - t0) : '0s';
+        const retryAt = Number(item.retryAt || 0);
+        const retryWaiting = retryAt > nowMs;
+        const t0 = Number((retryWaiting ? retryAt : 0) || item.startedAt || item.queuedAt || 0);
+        const elapsed = t0 > 0 ? formatElapsed(Math.abs(nowMs - t0)) : '0s';
         extraEl.innerHTML = '';
+        if (item.detail) {
+          const detail = document.createElement('span');
+          detail.className = 'queue-pill';
+          detail.textContent = String(item.detail);
+          extraEl.appendChild(detail);
+        }
         const retry = document.createElement('span');
         retry.className = 'queue-pill';
         retry.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0);
         const time = document.createElement('span');
         time.className = 'queue-pill';
-        time.textContent = elapsed;
+        time.textContent = retryWaiting ? '等待重试 ' + elapsed : queueElapsedLabel(item) + ' ' + elapsed;
         extraEl.appendChild(retry);
         extraEl.appendChild(time);
       }
@@ -1375,6 +2153,61 @@ function getAppScript() {
       }
     }
 
+    function renderSchedulerStatus(parent, scheduler) {
+      let box = document.getElementById('schedulerStatusBox');
+      if (!box) {
+        box = document.createElement('details');
+        box.id = 'schedulerStatusBox';
+        parent.parentElement.insertBefore(box, parent);
+      }
+      const status = scheduler || {};
+      box.className = 'scheduler-status ' + (status.status || 'idle');
+      const queued = Array.isArray(status.queuedActions) && status.queuedActions.length ? status.queuedActions.join('、') : '无';
+      const nextRun = status.nextRunAt ? formatDateTime(status.nextRunAt) : '未知';
+      const started = status.startedAt ? formatDateTime(status.startedAt) : '未运行';
+      const progress = status.total ? String(status.checked || 0) + '/' + String(status.total) : (status.biliTotal ? String(status.indexed || 0) + '/' + String(status.biliTotal) : '无');
+      box.innerHTML = '';
+      const summary = document.createElement('summary');
+      summary.className = 'scheduler-status-main';
+      const left = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'scheduler-status-title';
+      title.textContent = status.title || '当前调度空闲';
+      const detail = document.createElement('div');
+      detail.className = 'scheduler-status-detail';
+      detail.textContent = status.detail || '当前没有正在运行的同步、扫描或对账任务。';
+      left.appendChild(title);
+      left.appendChild(detail);
+      const right = document.createElement('div');
+      right.className = 'scheduler-status-detail';
+      right.textContent = status.status === 'idle' ? '下次自动同步：' + nextRun : '排队：' + queued;
+      summary.appendChild(left);
+      summary.appendChild(right);
+      box.appendChild(summary);
+      const grid = document.createElement('div');
+      grid.className = 'scheduler-status-grid';
+      const rows = [
+        ['任务状态', status.status || 'idle'],
+        ['账号', status.userName || '无'],
+        ['收藏夹', status.folderTitle || '无'],
+        ['页码', status.page ? String(status.page) : '无'],
+        ['进度', progress],
+        ['已排队操作', queued],
+        ['开始时间', started],
+        ['下次自动同步', nextRun],
+        ['最近错误', status.lastError || '无']
+      ];
+      rows.forEach(([label, value]) => {
+        const item = document.createElement('div');
+        const name = document.createElement('strong');
+        name.textContent = label + '：';
+        item.appendChild(name);
+        item.appendChild(document.createTextNode(String(value || '无')));
+        grid.appendChild(item);
+      });
+      box.appendChild(grid);
+    }
+
     function renderQueueColumn(parent, id, title, items, nowMs, seenKeys) {
       const column = ensureQueueColumn(parent, id, title);
       const allItems = Array.isArray(items) ? items : [];
@@ -1425,9 +2258,10 @@ function getAppScript() {
     }
 
     async function refreshQueueBoard() {
-      if (logMode !== 'queue') return;
+      if (logMode !== 'queue' || queueBoardRequestInFlight) return;
       const board = ensureQueueBoardHost();
       if (!board) return;
+      queueBoardRequestInFlight = true;
       try {
         const data = await fetchJsonSilent('/api/queue/state');
         if (logMode !== 'queue') return;
@@ -1441,6 +2275,7 @@ function getAppScript() {
           board.appendChild(grid);
           queueBoardState.columns = {};
         }
+        renderSchedulerStatus(grid, snapshot.scheduler || {});
         const firstRects = new Map();
         for (const [key, card] of queueBoardState.cards.entries()) {
           if (card.isConnected) firstRects.set(key, card.getBoundingClientRect());
@@ -1463,6 +2298,8 @@ function getAppScript() {
         board.innerHTML = '<div class="queue-empty">队列看板加载失败</div>';
         queueBoardState.columns = {};
         queueBoardState.cards.clear();
+      } finally {
+        queueBoardRequestInFlight = false;
       }
     }
 
@@ -1471,6 +2308,7 @@ function getAppScript() {
         clearInterval(queueBoardPollTimer);
         queueBoardPollTimer = null;
       }
+      queueBoardRequestInFlight = false;
     }
 
     function resetQueueBoardState() {
@@ -1531,6 +2369,30 @@ function getAppScript() {
       unavailableLoading = false;
       document.getElementById('unavailableModal').classList.remove('active');
     });
+    document.getElementById('syncHelpBtn').addEventListener('click', openSyncHelp);
+    document.getElementById('settingsHelpBtn').addEventListener('click', openSettingsHelp);
+    document.getElementById('closeSyncHelpBtn').addEventListener('click', () => document.getElementById('syncHelpModal').classList.remove('active'));
+    document.getElementById('closeSettingsHelpBtn').addEventListener('click', () => document.getElementById('settingsHelpModal').classList.remove('active'));
+    document.getElementById('syncHelpSimpleBtn').addEventListener('click', () => { syncHelpMode = 'simple'; renderSyncHelp(); });
+    document.getElementById('syncHelpDetailBtn').addEventListener('click', () => { syncHelpMode = 'detail'; renderSyncHelp(); });
+    document.getElementById('closeRenamePreviewBtn').addEventListener('click', () => document.getElementById('renamePreviewModal').classList.remove('active'));
+    document.getElementById('renameSelectAllBtn').addEventListener('click', () => setRenameSelection(true));
+    document.getElementById('renameSelectNoneBtn').addEventListener('click', () => setRenameSelection(false));
+    document.getElementById('refreshRenamePreviewBtn').addEventListener('click', loadRenamePreview);
+    document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
+    document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => document.getElementById('qualityUpgradeModal').classList.remove('active'));
+    document.getElementById('cleanupDataBtn').addEventListener('click', openCleanupData);
+    document.getElementById('closeCleanupDataBtn').addEventListener('click', () => document.getElementById('cleanupDataModal').classList.remove('active'));
+    document.getElementById('cleanupHelpBtn').addEventListener('click', () => document.getElementById('cleanupHelpModal').classList.add('active'));
+    document.getElementById('closeCleanupHelpBtn').addEventListener('click', () => document.getElementById('cleanupHelpModal').classList.remove('active'));
+    document.getElementById('cleanupSelectAllBtn').addEventListener('click', () => setCleanupSelection(true));
+    document.getElementById('cleanupSelectNoneBtn').addEventListener('click', () => setCleanupSelection(false));
+    document.getElementById('refreshCleanupBtn').addEventListener('click', loadCleanupState);
+    document.getElementById('executeCleanupBtn').addEventListener('click', executeCleanup);
+    document.getElementById('qualityUpgradeSelectAllBtn').addEventListener('click', () => setQualityUpgradeSelection(true));
+    document.getElementById('qualityUpgradeSelectNoneBtn').addEventListener('click', () => setQualityUpgradeSelection(false));
+    document.getElementById('refreshQualityUpgradeBtn').addEventListener('click', loadQualityUpgradePreview);
+    document.getElementById('executeQualityUpgradeBtn').addEventListener('click', executeSelectedQualityUpgrade);
     document.getElementById('filterMissingBtn').addEventListener('click', () => setUnavailableFilter('missing'));
     document.getElementById('filterUploadedBtn').addEventListener('click', () => setUnavailableFilter('uploaded'));
     document.getElementById('vdFilterAllBtn').addEventListener('click', () => applyVideoDetailFilter('all'));
@@ -1579,7 +2441,13 @@ function getAppScript() {
         await loadUsers();
       }
       if (action === 'copy_cookie') {
-        const resp = await fetchJson('/api/users/'+userId+'/cookie');
+        const confirmed = prompt('Cookie 等同于 B 站登录凭据。确认导出请输入 EXPORT_COOKIE');
+        if (confirmed !== 'EXPORT_COOKIE') return;
+        const resp = await fetchJson('/api/users/'+userId+'/cookie/export', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({confirm:'EXPORT_COOKIE'})
+        });
         const text = String(resp.cookie || '');
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(text);
@@ -1670,40 +2538,15 @@ function getAppScript() {
     document.getElementById('logRawBtn').addEventListener('click', () => setLogMode('raw'));
     document.getElementById('logDebugBtn').addEventListener('click', () => setLogMode('debug'));
 
-    // Rename button
-    document.getElementById('renameBtn').addEventListener('click', async () => {
-      const btn = document.getElementById('renameBtn');
-      const st = document.getElementById('renameStatus');
-      if (!confirm('此操作会将网盘中已有的视频文件按当前模板重新命名。确认继续？')) return;
-      btn.textContent = '重命名中...';
-      st.textContent = '';
-      try {
-        const config = await fetchJson('/api/config');
-        const remotePath = config.alistDest || '/bili-backup';
-        const files = await fetchJson('/api/remote/list?path=' + encodeURIComponent(remotePath));
-        // Find .mp4 files that look like BV IDs
-        const bvFiles = files.filter(f => /^BV[A-Za-z0-9]+\.mp4$/.test(f));
-        if (bvFiles.length === 0) {
-          st.textContent = '未找到需要重命名的 BV 号文件';
-          st.style.color = 'var(--muted)';
-          btn.textContent = '🔄 一键重命名网盘文件';
-          return;
-        }
-        // For now, we can't resolve titles from BV locally, just inform user
-        st.textContent = '发现 ' + bvFiles.length + ' 个 BV 号命名的文件。注意：一键重命名仅对未来下载生效（使用新模板），已有文件需要手动在 AList 中重命名。';
-        st.style.color = 'var(--muted)';
-      } catch(e) {
-        st.textContent = '操作失败: ' + e.message;
-        st.style.color = '#E57373';
-      } finally {
-        btn.textContent = '🔄 一键重命名网盘文件';
-      }
-    });
+    // Rename and quality upgrade buttons
+    document.getElementById('renameBtn').addEventListener('click', openRenamePreview);
+    document.getElementById('qualityUpgradeBtn').addEventListener('click', openQualityUpgradePreview);
 
     // Init
     loadConfig();
     loadUsers();
     initTemplateEditor();
     initLogStream();
+    loadQualityUpgradeState();
   `;
 }

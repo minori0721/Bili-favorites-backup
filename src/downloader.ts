@@ -10,94 +10,107 @@ export interface DownloadResult {
   downloadDir: string;
 }
 
-export async function downloadWithBBDown(bvid: string, cookie: BiliCookie, config: AppConfig): Promise<DownloadResult> {
-  const downloadDir = path.join(tempDir, bvid);
+export async function downloadWithBBDown(
+  bvid: string,
+  cookie: BiliCookie,
+  config: AppConfig,
+  options: { downloadDir?: string } = {}
+): Promise<DownloadResult> {
+  const downloadDir = options.downloadDir || path.join(tempDir, bvid);
   await fs.promises.rm(downloadDir, { recursive: true, force: true });
   await fs.promises.mkdir(downloadDir, { recursive: true });
 
   const url = `https://www.bilibili.com/video/${bvid}`;
   const cookieString = buildCookieString(cookie);
-  const filePattern = config.filenameTemplate || "<videoTitle>";
-
-  const args = [
-    url,
-    "-c",
-    cookieString,
-    "--work-dir",
-    downloadDir,
-    "-F",
-    filePattern,
-    "-M",
-    `${filePattern}_P<pageNumberWithZero>`,
-  ];
-
-  if (config.bbdownEncoding) {
-    args.push("--encoding-priority", normalizeEncodingPriority(config.bbdownEncoding));
-  }
-  const dfnPriority = buildDfnPriority(config);
-  if (dfnPriority) {
-    args.push("--dfn-priority", dfnPriority);
-  }
-  if (config.perVideoDelaySeconds > 0) {
-    args.push("--delay-per-page", String(config.perVideoDelaySeconds));
-  }
-  if (config.bbdownHiRes || config.bbdownDolby) {
-    if (!cookie.accessToken) {
-      throw new Error("下载 Hi-Res/杜比音效需要 APP access token。请重新扫码登录后再启用该选项。");
-    }
-    args.push("-app", "--access-token", String(cookie.accessToken));
+  const filePattern = config.filenameTemplate || "<videoTitle>-<bvid>";
+  const needsAppToken = config.bbdownHiRes || config.bbdownDolby;
+  const appAccessToken = needsAppToken ? String(cookie.accessToken || "") : "";
+  if (needsAppToken && !appAccessToken) {
+    throw new Error("下载 Hi-Res/杜比音效需要 APP access token。请重新扫码登录后再启用该选项。");
   }
 
-  let retriedWithTruncate = false;
+  const credentialConfig = await createBBDownCredentialConfig(cookieString, appAccessToken);
   try {
-    await runCommand("BBDown", args, downloadDir, bvid);
-  } catch (error: any) {
-    if (!Boolean(error?.filenameTooLong)) {
-      throw error;
+    const args = [
+      url,
+      "--config-file",
+      credentialConfig.configPath,
+      "--work-dir",
+      downloadDir,
+      "-F",
+      filePattern,
+      "-M",
+      `${filePattern}_P<pageNumberWithZero>`,
+    ];
+
+    const encodingPriority = buildEncodingPriority(config);
+    if (encodingPriority) {
+      args.push("--encoding-priority", encodingPriority);
+    }
+    const dfnPriority = buildDfnPriority(config);
+    if (dfnPriority) {
+      args.push("--dfn-priority", dfnPriority);
+    }
+    if (config.perVideoDelaySeconds > 0) {
+      args.push("--delay-per-page", String(config.perVideoDelaySeconds));
+    }
+    if (needsAppToken) {
+      args.push("-app");
     }
 
-    retriedWithTruncate = true;
-    const safeTitle = await fetchSafeVideoTitle(bvid, cookieString);
-    const fallbackBase = buildFallbackFilePattern(safeTitle, bvid);
-    const retryArgs = replaceFilePatternArgs(args, fallbackBase);
+    let retriedWithTruncate = false;
+    try {
+      await runCommand("BBDown", args, downloadDir, bvid, credentialConfig.sensitiveValues);
+    } catch (error: any) {
+      if (!Boolean(error?.filenameTooLong)) {
+        throw error;
+      }
 
+      retriedWithTruncate = true;
+      const safeTitle = await fetchSafeVideoTitle(bvid, cookieString);
+      const fallbackBase = buildFallbackFilePattern(safeTitle, bvid);
+      const retryArgs = replaceFilePatternArgs(args, fallbackBase);
+
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "warn",
+        summary: `文件名过长，自动截断后重试 ${bvid}`,
+        raw: `File name too long; retry with truncated title: ${fallbackBase}`,
+        bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+
+      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+      await fs.promises.mkdir(downloadDir, { recursive: true });
+      await runCommand("BBDown", retryArgs, downloadDir, bvid, credentialConfig.sensitiveValues);
+    }
+
+    const entries = await fs.promises.readdir(downloadDir, { withFileTypes: true });
+    const mediaFiles = entries.filter((entry) => entry.isFile() && isMediaOutputFile(entry.name));
+    if (mediaFiles.length === 0) {
+      const err = new Error("BBDown did not produce any media files");
+      (err as any).deferToNextCycle = true;
+      throw err;
+    }
     logManager.push({
       timestamp: new Date().toISOString(),
       type: "download",
-      level: "warn",
-      summary: `文件名过长，自动截断后重试 ${bvid}`,
-      raw: `File name too long; retry with truncated title: ${fallbackBase}`,
+      level: "info",
+      summary: `下载完成 ${bvid}${retriedWithTruncate ? "（已自动截断标题）" : ""}`,
+      raw: `BBDown produced ${mediaFiles.length} media file(s)`,
       bvid,
       simpleVisible: true,
-      debugVisible: true,
     });
 
-    await fs.promises.rm(downloadDir, { recursive: true, force: true });
-    await fs.promises.mkdir(downloadDir, { recursive: true });
-    await runCommand("BBDown", retryArgs, downloadDir, bvid);
+    return { downloadDir };
+  } finally {
+    await credentialConfig.cleanup();
   }
-
-  const entries = await fs.promises.readdir(downloadDir, { withFileTypes: true });
-  const mediaFiles = entries.filter((entry) => entry.isFile() && isMediaOutputFile(entry.name));
-  if (mediaFiles.length === 0) {
-    const err = new Error("BBDown did not produce any media files");
-    (err as any).deferToNextCycle = true;
-    throw err;
-  }
-  logManager.push({
-    timestamp: new Date().toISOString(),
-    type: "download",
-    level: "info",
-    summary: `下载完成 ${bvid}${retriedWithTruncate ? "（已自动截断标题）" : ""}`,
-    raw: `BBDown produced ${mediaFiles.length} media file(s)`,
-    bvid,
-    simpleVisible: true,
-  });
-
-  return { downloadDir };
 }
 
-function normalizeEncodingPriority(value: string) {
+export function normalizeEncodingPriority(value: string) {
   const map: Record<string, string> = {
     HEVC: "hevc",
     AVC: "avc",
@@ -106,25 +119,33 @@ function normalizeEncodingPriority(value: string) {
   return map[value] || value.toLowerCase();
 }
 
-function normalizeQualityPriority(value: string) {
+export function normalizeQualityPriority(value: string) {
   const map: Record<string, string> = {
     "8K": "8K \u8d85\u9ad8\u6e05",
     "4K": "4K \u8d85\u6e05",
-    "1080P60": "1080P 60\u5e27",
+    "1080P60": "1080P \u9ad8\u5e27\u7387",
     "1080P": "1080P \u9ad8\u6e05",
     "720P": "720P \u9ad8\u6e05",
   };
   return map[value] || value;
 }
 
-function buildDfnPriority(config: AppConfig) {
+export function buildEncodingPriority(config: AppConfig) {
   const priorities: string[] = [];
   if (config.bbdownDolby) {
-    priorities.push("\u675c\u6bd4\u5168\u666f\u58f0");
+    priorities.push("eac3");
   }
   if (config.bbdownHiRes) {
-    priorities.push("Hi-Res\u65e0\u635f");
+    priorities.push("flac");
   }
+  if (config.bbdownEncoding) {
+    priorities.push(normalizeEncodingPriority(config.bbdownEncoding));
+  }
+  return [...new Set(priorities)].join(",");
+}
+
+export function buildDfnPriority(config: AppConfig) {
+  const priorities: string[] = [];
   if (config.bbdownQuality) {
     priorities.push(normalizeQualityPriority(config.bbdownQuality));
   }
@@ -137,6 +158,41 @@ function buildDfnPriority(config: AppConfig) {
 
 function isMediaOutputFile(name: string) {
   return /\.(mp4|mkv|flv|mov|m4v)$/i.test(name) && !/\.(part|tmp|download)$/i.test(name);
+}
+
+async function createBBDownCredentialConfig(cookieString: string, appAccessToken: string) {
+  await fs.promises.mkdir(tempDir, { recursive: true });
+  const configDir = await fs.promises.mkdtemp(path.join(tempDir, "bbdown-credentials-"));
+  const configPath = path.join(configDir, "BBDown.config");
+  const lines: string[] = [];
+  if (cookieString) {
+    lines.push(`--cookie ${sanitizeCredentialLine(cookieString)}`);
+  }
+  if (appAccessToken) {
+    lines.push(`--access-token ${sanitizeCredentialLine(appAccessToken)}`);
+  }
+  await fs.promises.writeFile(configPath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+  return {
+    configPath,
+    sensitiveValues: [cookieString, appAccessToken].filter((value) => value.length > 0),
+    cleanup: () => fs.promises.rm(configDir, { recursive: true, force: true }),
+  };
+}
+
+function sanitizeCredentialLine(value: string) {
+  return value.replace(/[\r\n\0]/g, " ");
+}
+
+function redactSensitiveOutput(value: string, sensitiveValues: string[]) {
+  let output = value;
+  for (const sensitiveValue of sensitiveValues) {
+    output = output.split(sensitiveValue).join("[REDACTED]");
+    const sanitized = sanitizeCredentialLine(sensitiveValue);
+    if (sanitized !== sensitiveValue) {
+      output = output.split(sanitized).join("[REDACTED]");
+    }
+  }
+  return output;
 }
 
 function isFilenameTooLongError(message: string) {
@@ -227,6 +283,38 @@ function classifyBBDownFailure(output: string) {
   return null;
 }
 
+const lowSpeedWatchdog = {
+  sampleIntervalMs: 60_000,
+  minRuntimeMs: 30 * 60_000,
+  windowMs: 10 * 60_000,
+  minBytesPerSecond: 10 * 1024,
+};
+
+async function getDirectoryTotalSize(dir: string): Promise<number> {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await getDirectoryTotalSize(fullPath);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      const stat = await fs.promises.stat(fullPath);
+      total += stat.size;
+    } catch {
+      // file may be renamed by BBDown while sampling
+    }
+  }
+  return total;
+}
+
 function createDebugLogPath(bvid: string) {
   const debugDir = path.join(process.cwd(), "data", "debug");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -236,7 +324,8 @@ function createDebugLogPath(bvid: string) {
 async function runDebugProbe(
   bvid: string,
   baseArgs: string[],
-  cwd: string
+  cwd: string,
+  sensitiveValues: string[]
 ) {
   const debugLogPath = createDebugLogPath(bvid);
   await fs.promises.mkdir(path.dirname(debugLogPath), { recursive: true });
@@ -252,7 +341,7 @@ async function runDebugProbe(
     });
     child.on("close", async () => {
       try {
-        await fs.promises.writeFile(debugLogPath, out, "utf8");
+        await fs.promises.writeFile(debugLogPath, redactSensitiveOutput(out, sensitiveValues), "utf8");
       } catch {
         // ignore write failure
       }
@@ -260,7 +349,11 @@ async function runDebugProbe(
     });
     child.on("error", async (error) => {
       try {
-        await fs.promises.writeFile(debugLogPath, `${out}\n[debug probe error] ${error?.message || error}`, "utf8");
+        await fs.promises.writeFile(
+          debugLogPath,
+          redactSensitiveOutput(`${out}\n[debug probe error] ${error?.message || error}`, sensitiveValues),
+          "utf8"
+        );
       } catch {
         // ignore write failure
       }
@@ -269,9 +362,14 @@ async function runDebugProbe(
   });
 }
 
-function runCommand(command: string, args: string[], cwd: string, bvid: string) {
+function runCommand(command: string, args: string[], cwd: string, bvid: string, sensitiveValues: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd });
+    const commandStartedAt = Date.now();
+    const sizeSamples: Array<{ at: number; size: number }> = [];
+    let watchdogTimer: NodeJS.Timeout | null = null;
+    let killedByWatchdog = false;
+    let settled = false;
     let stderr = "";
     let stdoutAll = "";
     let stdoutPending = "";
@@ -310,6 +408,66 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       return rawSimpleHiddenPatterns.some((pattern) => pattern.test(trimmed));
     };
 
+    const cleanupWatchdog = () => {
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanupWatchdog();
+      reject(error);
+    };
+
+    const resolveOnce = () => {
+      if (settled) return;
+      settled = true;
+      cleanupWatchdog();
+      resolve();
+    };
+
+    const sampleDownloadSize = async () => {
+      const now = Date.now();
+      const size = await getDirectoryTotalSize(cwd);
+      sizeSamples.push({ at: now, size });
+      while (sizeSamples.length > 0 && now - sizeSamples[0].at > lowSpeedWatchdog.windowMs) {
+        sizeSamples.shift();
+      }
+      if (now - commandStartedAt < lowSpeedWatchdog.minRuntimeMs || sizeSamples.length < 2) {
+        return;
+      }
+      const first = sizeSamples[0];
+      const last = sizeSamples[sizeSamples.length - 1];
+      const seconds = Math.max(1, (last.at - first.at) / 1000);
+      const bytesPerSecond = Math.max(0, (last.size - first.size) / seconds);
+      if (bytesPerSecond >= lowSpeedWatchdog.minBytesPerSecond) {
+        return;
+      }
+      killedByWatchdog = true;
+      cleanupWatchdog();
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "warn",
+        summary: `下载低速卡住，已自动重试 ${bvid}`,
+        raw: `Low speed watchdog: ${(bytesPerSecond / 1024).toFixed(2)}KB/s for ${Math.round(seconds)}s after ${Math.round((now - commandStartedAt) / 1000)}s`,
+        bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      child.kill("SIGTERM");
+    };
+
+    const startWatchdog = () => {
+      void sampleDownloadSize();
+      watchdogTimer = setInterval(() => {
+        void sampleDownloadSize().catch(() => undefined);
+      }, lowSpeedWatchdog.sampleIntervalMs);
+    };
+
     const flushStdoutBuffer = (force = false) => {
       const combined = stdoutPending;
       const normalized = combined.replace(/\r/g, "\n");
@@ -345,17 +503,17 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
     };
 
     child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      process.stdout.write(chunk);
+      const text = redactSensitiveOutput(chunk.toString(), sensitiveValues);
+      process.stdout.write(text);
       stdoutAll += text;
       stdoutPending += text;
       flushStdoutBuffer(false);
     });
 
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
+      const text = redactSensitiveOutput(chunk.toString(), sensitiveValues);
       stderr += text;
-      process.stderr.write(chunk);
+      process.stderr.write(text);
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "download",
@@ -366,17 +524,24 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       });
     });
 
+    startWatchdog();
+
     child.on("error", (error) => {
-      reject(error);
+      rejectOnce(error);
     });
 
     child.on("close", (code) => {
       flushStdoutBuffer(true);
+      cleanupWatchdog();
+      if (killedByWatchdog) {
+        rejectOnce(new Error("下载运行超过30分钟且最近10分钟平均速度低于10KB/s，自动重试"));
+        return;
+      }
       const combinedOutput = `${stdoutAll}\n${stderr}`;
       if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
         const err = new Error(`BBDown output filename too long: ${combinedOutput || stderr || "unknown error"}`);
         (err as any).filenameTooLong = true;
-        reject(err);
+        rejectOnce(err);
         return;
       }
 
@@ -396,7 +561,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
             simpleVisible: true,
             debugVisible: true,
           });
-          reject(err);
+          rejectOnce(err);
         };
 
         if (!failure.deferToNextCycle) {
@@ -404,7 +569,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
           return;
         }
 
-        runDebugProbe(bvid, args, cwd)
+        runDebugProbe(bvid, args, cwd, sensitiveValues)
           .then((debugLogPath) => {
             const finalLine = `${failure.line} (debug: ${debugLogPath})`;
             logManager.push({
@@ -427,7 +592,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       }
 
       if (code === 0) {
-        resolve();
+        resolveOnce();
         return;
       }
 
@@ -436,16 +601,16 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string) 
       if (nonZeroFailure?.permanent) {
         const err = new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`);
         (err as any).permanent = true;
-        reject(err);
+        rejectOnce(err);
         return;
       }
       if (nonZeroFailure?.deferToNextCycle) {
         const err = new Error(`BBDown reported failure: ${nonZeroFailure.line}`);
         (err as any).deferToNextCycle = true;
-        reject(err);
+        rejectOnce(err);
         return;
       }
-      reject(new Error(errMsg));
+      rejectOnce(new Error(errMsg));
     });
   });
 }

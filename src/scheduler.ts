@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { ConfigStore } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
@@ -5,8 +6,15 @@ import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth } from "./
 import { logManager } from "./logger.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
-import { TaskQueue } from "./queue.js";
-import { DownloadTask, UploadTarget, UploadTask } from "./tasks.js";
+import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
+import {
+  DownloadTask,
+  QualityUpgradeDownloadTask,
+  QualityUpgradeTask,
+  QualityUpgradeUploadReplaceTask,
+  UploadTarget,
+  UploadTask,
+} from "./tasks.js";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,11 +45,17 @@ export class SyncScheduler {
   private readonly remoteVerifyPerTick = 25;
   private readonly remoteVerifyPerTickNoNew = 120;
   private readonly remoteVerifyPerTickManual = 200;
+  private readonly staleActiveBackupMs = 20 * 60_000;
   private remoteVerifyNextAllowedAt = 0;
   private remoteDirListingCache = new Map<string, { expiresAt: number; names: string[] }>();
   private readonly remoteDirListingCacheTtlMs = 30_000;
   private remoteVerifyPathQueue = new Map<string, number>();
   private pendingTickOptions: TickOptions | null = null;
+  private cleanupLocked = false;
+  private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
+  private schedulerProgress: SchedulerSnapshot | null = null;
+  private nextAutoRunAt?: number;
+  private lastSchedulerError = "";
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -60,8 +74,29 @@ export class SyncScheduler {
     };
     const logTaskRetry = (task: any, error: any) => console.warn(`[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}):`, error.message || error);
 
-    this.downloadQueue.on("taskError", (task: DownloadTask, error: any) => {
+    this.downloadQueue.on("taskStart", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      if (task instanceof QualityUpgradeDownloadTask) {
+        task.control.qualityStage = "download";
+        task.control.qualityStageLabel = "下载新版";
+        this.syncQualityUpgradeControl(task, "running");
+      }
+    });
+    this.uploadQueue.on("taskStart", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        task.control.qualityStage = "upload";
+        task.control.qualityStageLabel = "上传新版到临时目录";
+        this.syncQualityUpgradeControl(task, "running");
+      }
+    });
+
+    this.downloadQueue.on("taskError", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskError(task, error);
+      if (task instanceof QualityUpgradeDownloadTask) {
+        this.syncQualityUpgradeControl(task, "error");
+        task.control.error = error;
+        task.control.onFailed?.(task.control, error);
+        return;
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "download",
@@ -79,20 +114,31 @@ export class SyncScheduler {
       }
       this.activeDownloadTargets.delete(task.bvid);
     });
-    this.downloadQueue.on("taskRetry", (task: DownloadTask, error: any) => {
+    this.downloadQueue.on("taskRetry", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskRetry(task, error);
+      if (task instanceof QualityUpgradeDownloadTask) {
+        this.syncQualityUpgradeControl(task, "retry_wait");
+        task.control.qualityStage = "download";
+        task.control.qualityStageLabel = "等待重试下载新版";
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "download",
         level: "warn",
-        summary: `下载失败，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        summary: `${task instanceof QualityUpgradeDownloadTask ? "画质重调下载失败" : "下载失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         bvid: task.bvid,
         simpleVisible: true,
       });
     });
-    this.uploadQueue.on("taskError", (task: UploadTask, error: any) => {
+    this.uploadQueue.on("taskError", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
       logTaskError(task, error);
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        this.syncQualityUpgradeControl(task, "error");
+        task.control.error = error;
+        task.control.onFailed?.(task.control, error);
+        return;
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
@@ -109,28 +155,44 @@ export class SyncScheduler {
       if (task.userId && task.mediaId) {
         this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Upload failure", false);
       }
+      void this.completeSharedUploadTask(task);
     });
-    this.uploadQueue.on("taskRetry", (task: UploadTask, error: any) => {
+    this.uploadQueue.on("taskRetry", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
       logTaskRetry(task, error);
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        this.syncQualityUpgradeControl(task, "retry_wait");
+        task.control.qualityStage = "upload";
+        task.control.qualityStageLabel = "等待重试上传替换";
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "warn",
-        summary: `上传失败，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        summary: `${task instanceof QualityUpgradeUploadReplaceTask ? "画质重调上传替换失败" : "上传失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
         bvid: task.bvid,
         simpleVisible: true,
       });
     });
 
-    this.downloadQueue.on("taskCompleted", (task: DownloadTask) => {
+    this.downloadQueue.on("taskCompleted", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      if (task instanceof QualityUpgradeDownloadTask) {
+        task.control.qualityStage = "upload";
+        task.control.qualityStageLabel = "等待上传替换";
+        const uploadTask = new QualityUpgradeUploadReplaceTask(task.control);
+        this.uploadQueue.addTask(uploadTask);
+        this.syncQualityUpgradeControl(uploadTask, uploadTask.status);
+        return;
+      }
       if (!task.downloadDir) return;
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
       this.activeDownloadTargets.delete(task.bvid);
-      targets.forEach((target, index) => {
+      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length);
+      targets.forEach((target) => {
         const uploadTask = new UploadTask(task.bvid, task.downloadDir!, target.remotePath, this.configStore.get(), {
-          cleanupLocal: index === targets.length - 1,
+          cleanupLocal: false,
         });
+        uploadTask.sharedDownloadDir = task.downloadDir;
         uploadTask.userId = target.userId;
         uploadTask.mediaId = target.mediaId;
         uploadTask.folderTitle = target.folderTitle;
@@ -140,13 +202,20 @@ export class SyncScheduler {
         uploadTask.onUploading = () => this.stateManager.markUploading(task.bvid, target.userId, target.mediaId);
         this.uploadQueue.addTask(uploadTask);
       });
+      if (tracker.remaining === 0) {
+        void this.cleanupSharedUploadDir(task.downloadDir);
+      }
     });
 
-    this.uploadQueue.on("taskCompleted", (task: UploadTask) => {
+    this.uploadQueue.on("taskCompleted", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
+      if (task instanceof QualityUpgradeUploadReplaceTask) {
+        this.syncQualityUpgradeControl(task, "completed");
+        return;
+      }
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
       }
-      if (task.result) {
+      if (task.result?.files.length) {
         this.stateManager.markVerifiedUpload(
           task.bvid,
           task.result.remotePath,
@@ -171,8 +240,12 @@ export class SyncScheduler {
           );
         }
       }
+      void this.completeSharedUploadTask(task);
     });
 
+  }
+
+  resumePersistedWorkOnStartup() {
     this.resumePersistedWork();
   }
 
@@ -180,11 +253,16 @@ export class SyncScheduler {
     const { pollIntervalMinutes } = this.configStore.get();
     this.stop();
     const intervalMs = pollIntervalMinutes * 60 * 1000;
+    const startupJitter = 30_000 + Math.floor(Math.random() * 90_000);
+    this.nextAutoRunAt = Date.now() + startupJitter;
     this.timer = setInterval(() => {
+      this.nextAutoRunAt = Date.now() + intervalMs;
       void this.tick();
     }, intervalMs);
-    const startupJitter = 30_000 + Math.floor(Math.random() * 90_000);
-    this.startupTimer = setTimeout(() => void this.tick(), startupJitter);
+    this.startupTimer = setTimeout(() => {
+      this.nextAutoRunAt = Date.now() + intervalMs;
+      void this.tick();
+    }, startupJitter);
   }
 
   updateInterval() {
@@ -233,61 +311,196 @@ export class SyncScheduler {
     return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
   }
 
-  getQueueSnapshot() {
-    const mapTask = (task: any, stage: "download_pending" | "download_running" | "upload_pending" | "upload_running") => ({
-      id: String(task.id || ""),
-      bvid: String(task.bvid || ""),
-      title: String(task.videoTitle || ""),
-      upperName: String(task.upperName || ""),
-      cover: task.cover ? String(task.cover) : "",
-      folderTitle: String(task.folderTitle || ""),
-      userId: task.userId ? String(task.userId) : "",
-      mediaId: Number(task.mediaId || 0),
-      retries: Number(task.retries || 0),
-      maxRetries: Number(task.maxRetries || 0),
-      queuedAt: typeof task.queuedAt === "number" ? task.queuedAt : undefined,
-      startedAt: typeof task.startedAt === "number" ? task.startedAt : undefined,
-      sequence: typeof task.sequence === "number" ? task.sequence : undefined,
-      stage,
+  hasActiveOrQueuedSchedulerWork() {
+    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked;
+  }
+
+  withCleanupLock<T>(fn: () => Promise<T>) {
+    if (this.cleanupLocked || this.running || this.pendingTickOptions || this.hasRunningTransferTasks()) {
+      throw new Error("当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。");
+    }
+    this.cleanupLocked = true;
+    return fn().finally(() => {
+      this.cleanupLocked = false;
     });
+  }
 
-    const downloadTasks = this.downloadQueue.getTasks();
-    const uploadTasks = this.uploadQueue.getTasks();
+  enqueueQualityUpgrade(task: QualityUpgradeTask) {
+    task.status = "pending";
+    task.error = undefined;
+    task.qualityStage = "download";
+    task.qualityStageLabel = "等待下载新版";
+    const downloadTask = new QualityUpgradeDownloadTask(task);
+    this.downloadQueue.addTask(downloadTask);
+    this.syncQualityUpgradeControl(downloadTask, downloadTask.status);
+  }
 
-    const bySequence = (a: any, b: any) => Number(a.sequence || 0) - Number(b.sequence || 0);
-    const byStartedAt = (a: any, b: any) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
+  private syncQualityUpgradeControl(
+    phaseTask: QualityUpgradeDownloadTask | QualityUpgradeUploadReplaceTask,
+    status: QualityUpgradeTask["status"]
+  ) {
+    const control = phaseTask.control;
+    control.status = status;
+    control.retries = phaseTask.retries;
+    control.queuedAt = phaseTask.queuedAt;
+    control.startedAt = phaseTask.startedAt;
+    control.retryAt = phaseTask.retryAt;
+    control.sequence = phaseTask.sequence;
+  }
+
+  private triggerLabel(trigger?: SyncTrigger) {
+    switch (trigger) {
+      case "manual":
+        return "立即同步";
+      case "reconcile":
+        return "全量扫描并对账";
+      case "remote_reconcile":
+        return "状态对账（仅AList）";
+      case "auto":
+      default:
+        return "自动同步";
+    }
+  }
+
+  private buildSchedulerSnapshot() {
+    const queuedActions = this.pendingTickOptions ? [this.triggerLabel(this.pendingTickOptions.trigger || "auto")] : [];
+    if (this.schedulerProgress) {
+      return {
+        ...this.schedulerProgress,
+        queuedActions,
+        lastError: this.lastSchedulerError,
+        nextRunAt: this.nextAutoRunAt,
+      };
+    }
+
+    const cooldowns = this.stateManager.getAllCooldowns();
+    const cooldown = Object.values(cooldowns)[0];
+    if (cooldown) {
+      const user = this.userStore.getById(cooldown.userId);
+      return {
+        status: "cooldown" as const,
+        mode: "cooldown",
+        title: "账号冷却中",
+        detail: cooldown.reason,
+        userName: user?.name || cooldown.userId,
+        queuedActions,
+        lastError: cooldown.reason,
+        updatedAt: Date.now(),
+        nextRunAt: cooldown.until,
+      };
+    }
+
+    return {
+      status: queuedActions.length ? "queued" as const : "idle" as const,
+      mode: queuedActions.length ? "queued" : "idle",
+      title: queuedActions.length ? "调度任务已排队" : "当前调度空闲",
+      detail: queuedActions.length ? "已有同步/扫描/对账任务在等待当前任务结束后执行。" : "当前没有正在运行的同步、扫描或对账任务。",
+      queuedActions,
+      lastError: this.lastSchedulerError,
+      updatedAt: Date.now(),
+      nextRunAt: this.nextAutoRunAt,
+    };
+  }
+
+  private updateSchedulerProgress(patch: Partial<SchedulerSnapshot>) {
+    const previous = this.schedulerProgress;
+    const snapshot: SchedulerSnapshot = {
+      status: "running",
+      mode: patch.mode ?? previous?.mode ?? this.cycleContext?.trigger ?? "auto",
+      title: patch.title ?? previous?.title ?? this.triggerLabel(this.cycleContext?.trigger || "auto"),
+      detail: patch.detail ?? previous?.detail ?? "正在运行调度任务。",
+      startedAt: previous?.startedAt || Date.now(),
+      updatedAt: Date.now(),
+      queuedActions: this.pendingTickOptions ? [this.triggerLabel(this.pendingTickOptions.trigger || "auto")] : [],
+    };
+    if ("userName" in patch) snapshot.userName = patch.userName;
+    if ("folderTitle" in patch) snapshot.folderTitle = patch.folderTitle;
+    if ("mediaId" in patch) snapshot.mediaId = patch.mediaId;
+    if ("page" in patch) snapshot.page = patch.page;
+    if ("pageSize" in patch) snapshot.pageSize = patch.pageSize;
+    if ("indexed" in patch) snapshot.indexed = patch.indexed;
+    if ("biliTotal" in patch) snapshot.biliTotal = patch.biliTotal;
+    if ("checked" in patch) snapshot.checked = patch.checked;
+    if ("total" in patch) snapshot.total = patch.total;
+    if ("lastError" in patch) snapshot.lastError = patch.lastError;
+    if ("nextRunAt" in patch) snapshot.nextRunAt = patch.nextRunAt;
+    this.schedulerProgress = snapshot;
+  }
+
+  getQueueSnapshot() {
+    const downloadPending: QueueBoardItem[] = [];
+    const downloadRunning: QueueBoardItem[] = [];
+    const uploadPending: QueueBoardItem[] = [];
+    const uploadRunning: QueueBoardItem[] = [];
+
+    for (const task of this.downloadQueue.getTasks()) {
+      if (task.status === "running") {
+        downloadRunning.push(mapQueueBoardTask(task, "download_running"));
+      } else if (task.status === "pending" || task.status === "retry_wait") {
+        downloadPending.push(mapQueueBoardTask(task, "download_pending"));
+      }
+    }
+    for (const task of this.uploadQueue.getTasks()) {
+      if (task.status === "running") {
+        uploadRunning.push(mapQueueBoardTask(task, "upload_running"));
+      } else if (task.status === "pending" || task.status === "retry_wait") {
+        uploadPending.push(mapQueueBoardTask(task, "upload_pending"));
+      }
+    }
+
+    const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.sequence || 0) - Number(b.sequence || 0);
+    const byStartedAt = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
+    downloadPending.sort(bySequence);
+    uploadPending.sort(bySequence);
+    downloadRunning.sort(byStartedAt);
+    uploadRunning.sort(byStartedAt);
 
     return {
       generatedAt: Date.now(),
-      downloadPending: downloadTasks.filter((task) => task.status === "pending").sort(bySequence).map((task) => mapTask(task, "download_pending")),
-      downloadRunning: downloadTasks.filter((task) => task.status === "running").sort(byStartedAt).map((task) => mapTask(task, "download_running")),
-      uploadPending: uploadTasks.filter((task) => task.status === "pending").sort(bySequence).map((task) => mapTask(task, "upload_pending")),
-      uploadRunning: uploadTasks.filter((task) => task.status === "running").sort(byStartedAt).map((task) => mapTask(task, "upload_running")),
+      downloadPending,
+      downloadRunning,
+      uploadPending,
+      uploadRunning,
+      scheduler: this.buildSchedulerSnapshot(),
     };
   }
 
   async tick(manual = false, options: TickOptions = {}) {
-    if (this.running) {
+    if (this.cleanupLocked || this.running) {
       return false;
     }
     const trigger: SyncTrigger = options.trigger || (manual ? "manual" : "auto");
     this.running = true;
     this.cycleContext = this.createCycleStats(trigger);
+    this.schedulerProgress = {
+      status: "running",
+      mode: trigger,
+      title: this.triggerLabel(trigger),
+      detail: "正在准备调度任务。",
+      queuedActions: this.pendingTickOptions ? [this.triggerLabel(this.pendingTickOptions.trigger || "auto")] : [],
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.lastSchedulerError = "";
     try {
       this.remoteDirListingCache.clear();
       if (!options.skipFavoriteScan) {
+        this.recoverStaleActiveBackups();
         this.requeueRetryPendingBeforeScan();
         await this.runOnce(manual, options.forceFullFavoriteScan === true);
       }
       await this.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true);
       this.logCycleSummary(this.cycleContext);
     } catch (error: any) {
-      console.error("[Scheduler] Tick failed:", error?.message || error);
-      this.cycleContext.error = error?.message || String(error);
+      const message = error?.message || String(error);
+      console.error("[Scheduler] Tick failed:", message);
+      this.cycleContext.error = message;
+      this.lastSchedulerError = message;
       this.logCycleSummary(this.cycleContext);
     } finally {
       this.cycleContext = null;
       this.running = false;
+      this.schedulerProgress = null;
       const queued = this.pendingTickOptions;
       this.pendingTickOptions = null;
       if (queued) {
@@ -302,6 +515,7 @@ export class SyncScheduler {
 
   private async runOnce(manual: boolean, forceFullFavoriteScan: boolean) {
     const users = this.userStore.list().filter((user) => user.enabled);
+    this.updateSchedulerProgress({ detail: `正在检查 ${users.length} 个启用账号。` });
     for (const user of users) {
       const cooldown = this.stateManager.getUserCooldown(user.id);
       if (cooldown) {
@@ -311,6 +525,12 @@ export class SyncScheduler {
 
       for (const folder of user.favorites) {
         try {
+          this.updateSchedulerProgress({
+            userName: user.name,
+            folderTitle: folder.title,
+            mediaId: folder.mediaId,
+            detail: forceFullFavoriteScan ? "准备全量扫描收藏夹。" : "准备同步收藏夹。",
+          });
           if (forceFullFavoriteScan) {
             await this.scanAllPages(user, folder.mediaId, folder.title);
           } else {
@@ -395,18 +615,82 @@ export class SyncScheduler {
     }];
   }
 
+  private createSharedUploadDirTracker(downloadDir: string, uploadCount: number) {
+    const normalizedCount = Math.max(0, uploadCount);
+    const existing = this.sharedUploadDirs.get(downloadDir);
+    if (existing) {
+      existing.remaining += normalizedCount;
+      return existing;
+    }
+    const tracker: SharedUploadDirTracker = {
+      remaining: normalizedCount,
+      cleanupStarted: false,
+    };
+    this.sharedUploadDirs.set(downloadDir, tracker);
+    return tracker;
+  }
+
+  private async completeSharedUploadTask(task: UploadTask) {
+    const downloadDir = task.sharedDownloadDir || "";
+    if (!downloadDir) return;
+    const tracker = this.sharedUploadDirs.get(downloadDir);
+    if (!tracker) return;
+    tracker.remaining = Math.max(0, tracker.remaining - 1);
+    if (tracker.remaining > 0 || tracker.cleanupStarted) return;
+    tracker.cleanupStarted = true;
+    this.sharedUploadDirs.delete(downloadDir);
+    await this.cleanupSharedUploadDir(downloadDir);
+  }
+
+  private async cleanupSharedUploadDir(downloadDir: string) {
+    try {
+      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+    } catch (error: any) {
+      console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
+    }
+  }
+
   private async scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
+    this.updateSchedulerProgress({
+      mode: "reconcile",
+      title: "全量扫描并对账",
+      userName: user.name,
+      folderTitle,
+      mediaId,
+      page: 1,
+      detail: "正在全量扫描 B 站收藏夹。",
+    });
     let page = 1;
+    const scanStartedAt = new Date().toISOString();
+    const seenBvids = new Set<string>();
+    let lastTotal: number | undefined;
+    this.stateManager.updateFolderScan(user.id, mediaId, {
+      folderTitle,
+      initStatus: "initializing",
+      lastHotScanAt: scanStartedAt,
+      lastHistoryScanAt: scanStartedAt,
+    });
     while (true) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
-      this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
+      lastTotal = result.total;
+      this.updateSchedulerProgress({
+        userName: user.name,
+        folderTitle,
+        mediaId,
+        page,
+        pageSize: 20,
+        indexed: seenBvids.size + result.items.length,
+        biliTotal: result.total,
+        detail: `正在全量扫描第 ${page} 页。`,
+      });
+      this.recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
-        initStatus: "complete",
-        nextHistoryPage: 1,
+        initStatus: "initializing",
+        nextHistoryPage: page + 1,
         catchupPage: 1,
-        lastHotScanAt: new Date().toISOString(),
-        lastHistoryScanAt: new Date().toISOString(),
+        lastHotScanAt: scanStartedAt,
+        lastHistoryScanAt: scanStartedAt,
         total: result.total,
       });
       if (!result.hasMore || result.items.length === 0) {
@@ -415,9 +699,27 @@ export class SyncScheduler {
       page += 1;
       await delay(1000 + Math.floor(Math.random() * 2000));
     }
+    this.stateManager.updateFolderScan(user.id, mediaId, {
+      folderTitle,
+      initStatus: "complete",
+      nextHistoryPage: 1,
+      catchupPage: 1,
+      lastHotScanAt: scanStartedAt,
+      lastHistoryScanAt: scanStartedAt,
+      total: lastTotal,
+    });
+    this.stateManager.markMissingFavoritesInactive(user.id, mediaId, seenBvids);
   }
 
   private async scanHotPages(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean) {
+    this.updateSchedulerProgress({
+      mode: manual ? "manual" : "auto",
+      title: this.triggerLabel(manual ? "manual" : "auto"),
+      userName: user.name,
+      folderTitle,
+      mediaId,
+      detail: "正在扫描收藏夹近期页面。",
+    });
     let consecutiveKnownPages = 0;
     let burstBudget = 0;
     const minPages = manual ? 10 : this.hotScanMinPages;
@@ -425,6 +727,15 @@ export class SyncScheduler {
     let lastPage = 0;
     for (let page = 1; page <= maxPages; page += 1) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+      this.updateSchedulerProgress({
+        userName: user.name,
+        folderTitle,
+        mediaId,
+        page,
+        pageSize: 20,
+        biliTotal: result.total,
+        detail: `正在扫描近期第 ${page} 页。`,
+      });
       const pageStats = this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
       lastPage = page;
       const previousScan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
@@ -461,6 +772,12 @@ export class SyncScheduler {
     manual: boolean,
     startAfterPage = 0
   ) {
+    this.updateSchedulerProgress({
+      userName: user.name,
+      folderTitle,
+      mediaId,
+      detail: "正在补扫收藏夹历史页面。",
+    });
     const scan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
     const hasKnownTotal = typeof scan.total === "number" && scan.total > 0;
     const totalPages = hasKnownTotal ? Math.max(1, Math.ceil((scan.total || 0) / 20)) : null;
@@ -475,6 +792,15 @@ export class SyncScheduler {
 
     for (let i = 0; i < pagesThisRun; i += 1) {
       const result = await this.listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+      this.updateSchedulerProgress({
+        userName: user.name,
+        folderTitle,
+        mediaId,
+        page,
+        pageSize: 20,
+        biliTotal: result.total,
+        detail: `正在补扫历史第 ${page} 页。`,
+      });
       this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
 
       if (!result.hasMore || result.items.length === 0) {
@@ -514,16 +840,19 @@ export class SyncScheduler {
     folderTitle: string,
     items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"],
     page: number,
-    pageSize = 20
+    pageSize = 20,
+    seenAt = new Date().toISOString(),
+    seenBvids?: Set<string>
   ) {
     let newItems = 0;
     items.forEach((item, indexInPage) => {
+      seenBvids?.add(item.bvid);
       const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
       const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
         favOrder,
         favPage: page,
         favIndexInPage: indexInPage,
-      });
+      }, seenAt);
       if (!result.wasKnown) {
         newItems += 1;
         this.cycleContext!.newItems += 1;
@@ -602,6 +931,9 @@ export class SyncScheduler {
   }
 
   private triggerOrQueueTick(options: TickOptions) {
+    if (this.cleanupLocked) {
+      return { started: false, queued: false };
+    }
     if (this.running) {
       this.pendingTickOptions = this.mergeTickOptions(this.pendingTickOptions, options);
       return { started: false, queued: true };
@@ -642,15 +974,29 @@ export class SyncScheduler {
     if (!this.cycleContext) return;
 
     const config = this.configStore.get();
+    this.updateSchedulerProgress({
+      mode: forceFullRemoteVerify ? (manual ? "remote_reconcile" : this.cycleContext.trigger) : this.cycleContext.trigger,
+      title: forceFullRemoteVerify ? "状态对账" : this.triggerLabel(this.cycleContext.trigger),
+      detail: forceFullRemoteVerify ? "正在准备 AList 远端状态对账。" : "正在抽样验证 AList 远端文件。",
+      userName: undefined,
+      folderTitle: undefined,
+      mediaId: undefined,
+      page: undefined,
+      pageSize: undefined,
+      indexed: undefined,
+      biliTotal: undefined,
+      checked: undefined,
+      total: undefined,
+    });
     this.remoteVerifyPathQueue.clear();
     const verifyLimit = forceFullRemoteVerify ? undefined : this.getRemoteVerifyLimit(manual, this.cycleContext.newItems);
     const includeDeferred = forceFullRemoteVerify;
     const candidates = this.stateManager.listVideosForRemoteVerify(verifyLimit, includeDeferred);
     this.cycleContext.remoteChecked = candidates.length;
     this.cycleContext.remoteEligible = this.stateManager.countVideosForRemoteVerify(includeDeferred);
-    const concurrency = Math.max(1, Math.min(10, Math.floor(config.remoteVerifyConcurrency || 3)));
-    const requeueLimit = Math.max(1, Math.floor(config.remoteRequeueLimitPerCycle || 20));
-    const rateLimit = Math.max(0.5, Number(config.remoteVerifyRateLimitPerSecond || 2));
+    const concurrency = Math.max(1, Math.min(100, Math.floor(config.remoteVerifyConcurrency || 3)));
+    const requeueLimit = Math.max(1, Math.min(1000, Math.floor(config.remoteRequeueLimitPerCycle || 20)));
+    const rateLimit = Math.max(0.5, Math.min(100, Number(config.remoteVerifyRateLimitPerSecond || 2)));
     let requeueCount = 0;
 
     const executeOne = async (entry: RemoteVerifyCandidate) => {
@@ -745,6 +1091,11 @@ export class SyncScheduler {
       while (index < candidates.length) {
         const current = candidates[index];
         index += 1;
+        this.updateSchedulerProgress({
+          checked: index,
+          total: candidates.length,
+          detail: `正在对账 AList 远端文件 ${index}/${candidates.length}。`,
+        });
         await executeOne(current);
       }
     });
@@ -828,6 +1179,36 @@ export class SyncScheduler {
     return false;
   }
 
+  private recoverStaleActiveBackups() {
+    const items = this.stateManager.listStaleActiveBackups(this.staleActiveBackupMs);
+    for (const item of items) {
+      const relation = item.relation;
+      const key = this.backupKey(relation.userId, relation.mediaId, relation.bvid);
+      if (this.queuedBackupKeys.has(key)) {
+        continue;
+      }
+      const resolved = this.resolveRelation(relation);
+      if (!resolved) {
+        continue;
+      }
+      this.stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Active backup state became stale and was re-queued.");
+      const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid);
+      if (queued && this.cycleContext) {
+        this.cycleContext.queuedItems += 1;
+      }
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: queued ? "warn" : "error",
+        summary: queued ? `已恢复卡住的备份任务 ${relation.bvid}` : `备份任务恢复失败 ${relation.bvid}`,
+        raw: `[Recovery] stale active backup ${relation.userId}/${relation.mediaId}/${relation.bvid} queued=${queued}`,
+        bvid: relation.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+  }
+
   private async confirmRemoteStillMissing(
     entry: VideoArchiveEntry,
     relation?: FavoriteRelation,
@@ -884,16 +1265,40 @@ export class SyncScheduler {
   }
 
   private resumePersistedWork() {
-    for (const item of this.stateManager.listBackupsToResume()) {
+    const uploadItems = this.stateManager.listBackupsToResume();
+    const uploadCountsByDir = new Map<string, number>();
+    for (const item of uploadItems) {
       const entry = item.video;
       const relation = item.relation;
       const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
       const remotePath = relation?.remotePath || entry.remotePath;
-      if ((relation?.backupStatus === "downloaded" || relation?.backupStatus === "uploading" || entry.backupStatus === "downloaded" || entry.backupStatus === "uploading") && entry.localDir && remotePath) {
-        if (resolved?.user && !resolved.user.enabled) {
+      const status = relation?.backupStatus || entry.backupStatus;
+      const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
+      const shouldUpload = (status === "downloaded" || status === "uploading") && hasLocalDir && remotePath;
+      if (shouldUpload && (!relation || resolved)) {
+        uploadCountsByDir.set(entry.localDir!, (uploadCountsByDir.get(entry.localDir!) || 0) + 1);
+      }
+    }
+    for (const [downloadDir, count] of uploadCountsByDir) {
+      this.createSharedUploadDirTracker(downloadDir, count);
+    }
+
+    for (const item of uploadItems) {
+      const entry = item.video;
+      const relation = item.relation;
+      const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
+      const remotePath = relation?.remotePath || entry.remotePath;
+      const status = relation?.backupStatus || entry.backupStatus;
+      const localDir = entry.localDir;
+      const hasLocalDir = Boolean(localDir && fs.existsSync(localDir));
+      if ((status === "downloaded" || status === "uploading") && hasLocalDir && localDir && remotePath) {
+        if (relation && !resolved) {
           continue;
         }
-        const uploadTask = new UploadTask(entry.bvid, entry.localDir, remotePath, this.configStore.get());
+        const uploadTask = new UploadTask(entry.bvid, localDir, remotePath, this.configStore.get(), {
+          cleanupLocal: false,
+        });
+        uploadTask.sharedDownloadDir = localDir;
         uploadTask.userId = resolved?.user.id || relation?.userId;
         uploadTask.mediaId = resolved?.mediaId || relation?.mediaId;
         uploadTask.folderTitle = resolved?.folderTitle || relation?.folderTitle;
@@ -902,9 +1307,33 @@ export class SyncScheduler {
           this.queuedBackupKeys.add(this.backupKey(uploadTask.userId, uploadTask.mediaId, entry.bvid));
         }
         this.uploadQueue.addTask(uploadTask);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: "info",
+          summary: `恢复上传任务 ${entry.bvid}`,
+          raw: `[Recovery] resume upload ${entry.bvid} from ${entry.localDir} to ${remotePath}`,
+          bvid: entry.bvid,
+          debugVisible: true,
+        });
       } else {
         if (!resolved) continue;
-        this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid);
+        if (relation) {
+          this.stateManager.resetRelationForRetry(entry.bvid, relation.userId, relation.mediaId, "Persisted active backup state was restored after restart.");
+        } else {
+          this.stateManager.markRetryPending(entry.bvid);
+        }
+        const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: queued ? "warn" : "error",
+          summary: queued ? `恢复下载任务 ${entry.bvid}` : `下载任务恢复失败 ${entry.bvid}`,
+          raw: `[Recovery] resume download ${entry.bvid} status=${status} queued=${queued}`,
+          bvid: entry.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
       }
     }
   }
@@ -1016,6 +1445,27 @@ export class SyncScheduler {
 
 }
 
+interface SchedulerSnapshot {
+  status: "idle" | "queued" | "running" | "cooldown";
+  mode: string | null;
+  title: string;
+  detail: string;
+  userName?: string;
+  folderTitle?: string;
+  mediaId?: number;
+  page?: number;
+  pageSize?: number;
+  indexed?: number;
+  biliTotal?: number;
+  checked?: number;
+  total?: number;
+  queuedActions: string[];
+  lastError?: string;
+  startedAt?: number;
+  updatedAt?: number;
+  nextRunAt?: number;
+}
+
 interface SyncCycleStats {
   startedAt: string;
   trigger: SyncTrigger;
@@ -1032,6 +1482,11 @@ interface SyncCycleStats {
 }
 
 type RemoteVerifyCandidate = VideoArchiveEntry & { relation: FavoriteRelation };
+
+interface SharedUploadDirTracker {
+  remaining: number;
+  cleanupStarted: boolean;
+}
 
 type SyncTrigger = "auto" | "manual" | "reconcile" | "remote_reconcile";
 

@@ -31,10 +31,18 @@ export type BackupStatus =
 
 export type BiliStatus = "available" | "unavailable" | "unknown";
 
+export interface RemoteFileQualityProfile {
+  quality: string;
+  encoding: string;
+  hiRes: boolean;
+  dolby: boolean;
+}
+
 export interface RemoteFileRecord {
   name: string;
   path: string;
   size?: number;
+  qualityProfile?: RemoteFileQualityProfile;
 }
 
 export interface VideoArchiveEntry {
@@ -46,6 +54,7 @@ export interface VideoArchiveEntry {
   lastSeenAt: string;
   biliStatus: BiliStatus;
   backupStatus: BackupStatus;
+  statusUpdatedAt?: string;
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
   localDir?: string;
@@ -57,6 +66,17 @@ export interface VideoArchiveEntry {
   lastError?: string;
   // Legacy marker kept for one-way migration cleanup.
   legacyProcessed?: boolean;
+}
+
+export interface QualityUpgradeOperation {
+  stageRemotePath: string;
+  backupRemotePath: string;
+  oldRemotePath: string;
+  oldFiles: RemoteFileRecord[];
+  backupFiles?: RemoteFileRecord[];
+  newFiles?: RemoteFileRecord[];
+  finalizedAt?: string;
+  startedAt: string;
 }
 
 export interface FavoriteRelation {
@@ -73,8 +93,10 @@ export interface FavoriteRelation {
   favOrderUpdatedAt?: string;
   activeInFavorite: boolean;
   backupStatus?: BackupStatus;
+  statusUpdatedAt?: string;
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
+  qualityUpgrade?: QualityUpgradeOperation;
   uploadedAt?: string;
   verifiedAt?: string;
   lastRemoteCheckAt?: string;
@@ -147,6 +169,27 @@ export interface FolderIndexSummary extends FolderDetailSummary {
   indexed: number;
   biliTotal?: number;
   complete: boolean;
+  scanStatus: FolderScanState["initStatus"];
+  scanComplete: boolean;
+  scannedTotal: number;
+  unreturnedCount: number;
+}
+
+export interface RemoteFilePreviewVideoRecord {
+  bvid: string;
+  title: string;
+  upperName: string;
+  remotePath?: string;
+  remoteFiles: RemoteFileRecord[];
+  relations: Array<{
+    userId: string;
+    mediaId: number;
+    folderTitle: string;
+    backupStatus?: BackupStatus;
+    hasInterruptedQualityUpgrade: boolean;
+    remotePath?: string;
+    remoteFiles: RemoteFileRecord[];
+  }>;
 }
 
 export interface StateFile {
@@ -194,7 +237,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function relationKey(userId: string, mediaId: number, bvid: string) {
+export function relationKey(userId: string, mediaId: number, bvid: string) {
   return `${userId}:${mediaId}:${bvid}`;
 }
 
@@ -250,6 +293,27 @@ export class StateManager {
     }
   }
 
+  private setVideoStatus(entry: VideoArchiveEntry, status: BackupStatus, at = nowIso()) {
+    if (entry.backupStatus !== status || !entry.statusUpdatedAt) {
+      entry.statusUpdatedAt = at;
+    }
+    entry.backupStatus = status;
+  }
+
+  private setRelationStatus(relation: FavoriteRelation, status: BackupStatus, at = nowIso()) {
+    if (relation.backupStatus !== status || !relation.statusUpdatedAt) {
+      relation.statusUpdatedAt = at;
+    }
+    relation.backupStatus = status;
+  }
+
+  private isStaleActiveStatus(status: BackupStatus | undefined, statusUpdatedAt: string | undefined, maxAgeMs: number) {
+    if (!status || !ACTIVE_BACKUP_STATUSES.has(status)) return false;
+    if (!statusUpdatedAt) return true;
+    const updatedAt = Date.parse(statusUpdatedAt);
+    return !Number.isFinite(updatedAt) || Date.now() - updatedAt >= maxAgeMs;
+  }
+
   private initialRelationStatus(bvid: string): BackupStatus {
     const entry = this.state.videos?.[bvid];
     if (!entry) return "discovered";
@@ -267,12 +331,12 @@ export class StateManager {
     const statuses = relations.map((relation) => relation.backupStatus || this.initialRelationStatus(bvid));
     const active = statuses.find((status) => ACTIVE_BACKUP_STATUSES.has(status));
     if (active) {
-      entry.backupStatus = active;
+      this.setVideoStatus(entry, active);
       return;
     }
     for (const status of RELATION_BACKUP_PRIORITY) {
       if (statuses.includes(status)) {
-        entry.backupStatus = status;
+        this.setVideoStatus(entry, status);
         return;
       }
     }
@@ -304,9 +368,9 @@ export class StateManager {
       favOrder?: number;
       favPage?: number;
       favIndexInPage?: number;
-    }
+    },
+    seenAt = nowIso()
   ) {
-    const seenAt = nowIso();
     const existing = this.state.videos![item.bvid];
     const wasKnown = Boolean(existing);
     const biliStatus: BiliStatus = item.unavailable ? "unavailable" : "available";
@@ -321,6 +385,7 @@ export class StateManager {
         lastSeenAt: seenAt,
         biliStatus,
         backupStatus: item.unavailable ? "lost" : "discovered",
+        statusUpdatedAt: seenAt,
       };
     } else {
       existing.title = item.title || existing.title;
@@ -329,10 +394,10 @@ export class StateManager {
       existing.lastSeenAt = seenAt;
       existing.biliStatus = biliStatus;
       if (item.unavailable && !BACKED_UP_STATUSES.has(existing.backupStatus)) {
-        existing.backupStatus = "lost";
+        this.setVideoStatus(existing, "lost", seenAt);
         existing.lastError = "Video became unavailable before a verified backup was found.";
       } else if (!item.unavailable && existing.backupStatus === "lost") {
-        existing.backupStatus = "discovered";
+        this.setVideoStatus(existing, "discovered", seenAt);
         existing.lastError = undefined;
       }
     }
@@ -352,7 +417,7 @@ export class StateManager {
         relation.favOrderUpdatedAt = seenAt;
       }
       if (!relation.backupStatus) {
-        relation.backupStatus = this.initialRelationStatus(item.bvid);
+        this.setRelationStatus(relation, this.initialRelationStatus(item.bvid), seenAt);
       }
     } else {
       this.state.relations![key] = {
@@ -370,11 +435,26 @@ export class StateManager {
         favOrderUpdatedAt: Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0 ? seenAt : undefined,
         activeInFavorite: true,
         backupStatus: item.unavailable ? "lost" : "discovered",
+        statusUpdatedAt: seenAt,
       };
     }
 
     this.save();
     return { wasKnown, entry: this.state.videos![item.bvid] };
+  }
+
+  markMissingFavoritesInactive(userId: string, mediaId: number, seenBvids: Set<string>) {
+    let changed = false;
+    for (const relation of Object.values(this.state.relations || {})) {
+      if (relation.userId !== userId || relation.mediaId !== mediaId || !relation.activeInFavorite || seenBvids.has(relation.bvid)) {
+        continue;
+      }
+      relation.activeInFavorite = false;
+      changed = true;
+    }
+    if (changed) {
+      this.save();
+    }
   }
 
   canBootstrapRelationFromGlobalProof(_bvid: string, _userId: string, _mediaId: number) {
@@ -416,12 +496,13 @@ export class StateManager {
   markQueued(bvid: string, remotePath: string, userId?: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    entry.backupStatus = "queued";
+    const at = nowIso();
+    this.setVideoStatus(entry, "queued", at);
     entry.remotePath = remotePath;
     entry.lastError = undefined;
     const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      relation.backupStatus = "queued";
+      this.setRelationStatus(relation, "queued", at);
       relation.remotePath = remotePath;
       relation.lastError = undefined;
     }
@@ -431,9 +512,10 @@ export class StateManager {
   markDownloading(bvid: string, targets?: Array<{ userId: string; mediaId: number }>) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    entry.backupStatus = "downloading";
+    const at = nowIso();
+    this.setVideoStatus(entry, "downloading", at);
     this.updateTargetRelations(bvid, targets, (relation) => {
-      relation.backupStatus = "downloading";
+      this.setRelationStatus(relation, "downloading", at);
     });
     this.save();
   }
@@ -441,10 +523,11 @@ export class StateManager {
   markDownloaded(bvid: string, localDir: string, targets?: Array<{ userId: string; mediaId: number }>) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    entry.backupStatus = "downloaded";
+    const at = nowIso();
+    this.setVideoStatus(entry, "downloaded", at);
     entry.localDir = localDir;
     this.updateTargetRelations(bvid, targets, (relation) => {
-      relation.backupStatus = "downloaded";
+      this.setRelationStatus(relation, "downloaded", at);
     });
     this.save();
   }
@@ -452,10 +535,11 @@ export class StateManager {
   markUploading(bvid: string, userId?: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    entry.backupStatus = "uploading";
+    const at = nowIso();
+    this.setVideoStatus(entry, "uploading", at);
     const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      relation.backupStatus = "uploading";
+      this.setRelationStatus(relation, "uploading", at);
     }
     this.save();
   }
@@ -464,12 +548,12 @@ export class StateManager {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
     if (entry.biliStatus === "unavailable") {
-      entry.backupStatus = "lost";
+      this.setVideoStatus(entry, "lost");
       entry.lastError ||= "Video unavailable while resuming backup.";
       this.save();
       return;
     }
-    entry.backupStatus = "discovered";
+    this.setVideoStatus(entry, "discovered");
     entry.localDir = undefined;
     this.save();
   }
@@ -481,11 +565,41 @@ export class StateManager {
       this.markRetryPending(bvid);
       return;
     }
-    relation.backupStatus = entry?.biliStatus === "unavailable" ? "lost" : "discovered";
+    this.setRelationStatus(relation, entry?.biliStatus === "unavailable" ? "lost" : "discovered");
     relation.lastError = reason;
     relation.nextRemoteCheckAt = undefined;
     this.refreshVideoAggregateStatus(bvid);
     this.save();
+  }
+
+  private applyVerifiedRemoteFiles(
+    entry: VideoArchiveEntry,
+    relation: FavoriteRelation | null,
+    remotePath: string,
+    remoteFiles: RemoteFileRecord[],
+    at: string
+  ) {
+    this.setVideoStatus(entry, "verified", at);
+    entry.remotePath = remotePath;
+    entry.remoteFiles = remoteFiles;
+    entry.localDir = undefined;
+    entry.uploadedAt = at;
+    entry.verifiedAt = at;
+    entry.lastRemoteCheckAt = at;
+    entry.nextRemoteCheckAt = undefined;
+    entry.remoteMissingCount = 0;
+    entry.lastError = undefined;
+    if (relation) {
+      this.setRelationStatus(relation, "verified", at);
+      relation.remotePath = remotePath;
+      relation.remoteFiles = remoteFiles;
+      relation.uploadedAt = at;
+      relation.verifiedAt = at;
+      relation.lastRemoteCheckAt = at;
+      relation.nextRemoteCheckAt = undefined;
+      relation.remoteMissingCount = 0;
+      relation.lastError = undefined;
+    }
   }
 
   markVerifiedUpload(
@@ -497,28 +611,25 @@ export class StateManager {
   ) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    const at = nowIso();
-    entry.backupStatus = "verified";
-    entry.remotePath = remotePath;
-    entry.remoteFiles = remoteFiles;
-    entry.localDir = undefined;
-    entry.uploadedAt = at;
-    entry.verifiedAt = at;
-    entry.lastRemoteCheckAt = at;
-    entry.remoteMissingCount = 0;
-    entry.lastError = undefined;
-    const relation = this.getRelation(_userId, _mediaId, bvid);
-    if (relation) {
-      relation.backupStatus = "verified";
-      relation.remotePath = remotePath;
-      relation.remoteFiles = remoteFiles;
-      relation.uploadedAt = at;
-      relation.verifiedAt = at;
-      relation.lastRemoteCheckAt = at;
-      relation.nextRemoteCheckAt = undefined;
-      relation.remoteMissingCount = 0;
-      relation.lastError = undefined;
+    if (remoteFiles.length === 0) {
+      const reason = "Upload finished without remote file records; reset to discovered for retry.";
+      const relation = this.getRelation(_userId, _mediaId, bvid);
+      const status = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+      entry.localDir = undefined;
+      if (relation) {
+        this.setRelationStatus(relation, status);
+        relation.remotePath = remotePath;
+        relation.lastError = reason;
+        this.refreshVideoAggregateStatus(bvid);
+      } else {
+        this.setVideoStatus(entry, status);
+        entry.remotePath = remotePath;
+        entry.lastError = reason;
+      }
+      this.save();
+      return;
     }
+    this.applyVerifiedRemoteFiles(entry, this.getRelation(_userId, _mediaId, bvid), remotePath, remoteFiles, nowIso());
     this.save();
   }
 
@@ -526,7 +637,7 @@ export class StateManager {
     const at = nowIso();
     const entry = this.state.videos?.[bvid];
     if (entry) {
-      entry.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+      this.setVideoStatus(entry, entry.biliStatus === "unavailable" ? "lost" : "discovered", at);
       entry.uploadedAt = undefined;
       entry.verifiedAt = undefined;
       entry.lastRemoteCheckAt = undefined;
@@ -552,38 +663,48 @@ export class StateManager {
     };
     const entry = this.state.videos?.[bvid];
     if (entry) {
-      entry.backupStatus = permanent && entry.biliStatus === "unavailable" ? "lost" : "failed";
+      this.setVideoStatus(entry, permanent && entry.biliStatus === "unavailable" ? "lost" : "failed", at);
       entry.lastError = reason;
     }
     const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      relation.backupStatus = permanent && entry?.biliStatus === "unavailable" ? "lost" : "failed";
+      this.setRelationStatus(relation, permanent && entry?.biliStatus === "unavailable" ? "lost" : "failed", at);
       relation.lastError = reason;
     }
     this.save();
   }
 
-  clearFailed(userId: string, mediaId: number, bvid: string) {
+  private clearFailedEntry(userId: string, mediaId: number, bvid: string) {
     const entries = this.state.failedByUser?.[userId];
-    if (!entries) return;
+    if (!entries) return false;
+    let changed = false;
     const scoped = failedKey(mediaId, bvid);
     if (entries[scoped]) {
       delete entries[scoped];
+      changed = true;
     }
     if (entries[bvid]) {
       delete entries[bvid];
+      changed = true;
     }
     if (Object.keys(entries).length === 0) {
       delete this.state.failedByUser?.[userId];
+      changed = true;
     }
-    this.save();
+    return changed;
+  }
+
+  clearFailed(userId: string, mediaId: number, bvid: string) {
+    if (this.clearFailedEntry(userId, mediaId, bvid)) {
+      this.save();
+    }
   }
 
   markRemoteCheckOk(bvid: string, remotePath?: string, remoteFiles?: RemoteFileRecord[], userId?: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
     const at = nowIso();
-    entry.backupStatus = "verified";
+    this.setVideoStatus(entry, "verified", at);
     if (remotePath) {
       entry.remotePath = remotePath;
     }
@@ -597,7 +718,7 @@ export class StateManager {
     entry.lastError = undefined;
     const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      relation.backupStatus = "verified";
+      this.setRelationStatus(relation, "verified", at);
       if (remotePath) relation.remotePath = remotePath;
       if (Array.isArray(remoteFiles) && remoteFiles.length > 0) relation.remoteFiles = remoteFiles;
       relation.verifiedAt = at;
@@ -615,23 +736,24 @@ export class StateManager {
   markRemoteCheckMissing(bvid: string, missingFiles: string[], userId?: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
+    const at = nowIso();
     const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      relation.lastRemoteCheckAt = nowIso();
+      relation.lastRemoteCheckAt = at;
       relation.remoteMissingCount = (relation.remoteMissingCount || 0) + 1;
       relation.lastError = `Remote files missing: ${missingFiles.join(", ")}`;
       if (relation.remoteMissingCount >= 2) {
-        relation.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "missing";
+        this.setRelationStatus(relation, entry.biliStatus === "unavailable" ? "lost" : "missing", at);
       }
       this.refreshVideoAggregateStatus(bvid);
       this.save();
       return;
     }
-    entry.lastRemoteCheckAt = nowIso();
+    entry.lastRemoteCheckAt = at;
     entry.remoteMissingCount = (entry.remoteMissingCount || 0) + 1;
     entry.lastError = `Remote files missing: ${missingFiles.join(", ")}`;
     if (entry.remoteMissingCount >= 2) {
-      entry.backupStatus = entry.biliStatus === "unavailable" ? "lost" : "missing";
+      this.setVideoStatus(entry, entry.biliStatus === "unavailable" ? "lost" : "missing", at);
     }
     this.save();
   }
@@ -741,6 +863,48 @@ export class StateManager {
       .map((video) => ({ video: { ...video }, relation: this.findRelationForBvid(video.bvid) }));
   }
 
+  listStaleActiveBackups(maxAgeMs: number) {
+    const relationItems = Object.values(this.state.relations || {})
+      .filter((relation) => this.isStaleActiveStatus(relation.backupStatus, relation.statusUpdatedAt, maxAgeMs))
+      .flatMap((relation) => {
+        const video = this.state.videos?.[relation.bvid];
+        return video ? [{ relation: { ...relation }, video }] : [];
+      });
+    const relationKeys = new Set(relationItems.map((item) => relationKey(item.relation.userId, item.relation.mediaId, item.relation.bvid)));
+    const videoItems = Object.values(this.state.videos || {})
+      .filter((entry) => this.isStaleActiveStatus(entry.backupStatus, entry.statusUpdatedAt, maxAgeMs))
+      .flatMap((video) => {
+        const relation = this.findRelationForBvid(video.bvid);
+        if (!relation || relationKeys.has(relationKey(relation.userId, relation.mediaId, relation.bvid))) {
+          return [];
+        }
+        return [{ video: { ...video }, relation }];
+      });
+    return [...relationItems, ...videoItems];
+  }
+
+  resetRelationForRetry(bvid: string, userId: string, mediaId: number, reason: string) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    const at = nowIso();
+    if (relation) {
+      this.setRelationStatus(relation, entry?.biliStatus === "unavailable" ? "lost" : "discovered", at);
+      relation.lastError = reason;
+      relation.nextRemoteCheckAt = undefined;
+      relation.qualityUpgrade = undefined;
+    }
+    if (entry) {
+      entry.localDir = undefined;
+      entry.lastError = reason;
+      this.refreshVideoAggregateStatus(bvid);
+      if (!relation) {
+        this.setVideoStatus(entry, entry.biliStatus === "unavailable" ? "lost" : "discovered", at);
+        entry.lastError = reason;
+      }
+    }
+    this.save();
+  }
+
   listVideosForRemoteVerify(limit?: number, includeDeferred = false) {
     const now = Date.now();
     const sorted = Object.values(this.state.relations || {})
@@ -781,6 +945,176 @@ export class StateManager {
   findRelationForBvid(bvid: string) {
     const relation = Object.values(this.state.relations || {}).find((item) => item.bvid === bvid);
     return relation ? { ...relation } : null;
+  }
+
+  getRemoteFilePreviewRecords() {
+    const records = new Map<string, RemoteFilePreviewVideoRecord>();
+    for (const entry of Object.values(this.state.videos || {})) {
+      records.set(entry.bvid, {
+        bvid: entry.bvid,
+        title: entry.title,
+        upperName: entry.upperName,
+        remotePath: entry.remotePath,
+        remoteFiles: [...(entry.remoteFiles || [])],
+        relations: [],
+      });
+    }
+    for (const relation of Object.values(this.state.relations || {})) {
+      if (!relation.activeInFavorite) continue;
+      const video = this.state.videos?.[relation.bvid];
+      if (!video) continue;
+      const record = records.get(relation.bvid) || {
+        bvid: relation.bvid,
+        title: video.title,
+        upperName: video.upperName,
+        remotePath: video.remotePath,
+        remoteFiles: [...(video.remoteFiles || [])],
+        relations: [],
+      };
+      record.relations.push({
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: relation.folderTitle,
+        backupStatus: relation.backupStatus,
+        hasInterruptedQualityUpgrade: Boolean(relation.qualityUpgrade),
+        remotePath: relation.remotePath,
+        remoteFiles: [...(relation.remoteFiles || [])],
+      });
+      records.set(relation.bvid, record);
+    }
+    return Array.from(records.values());
+  }
+
+  markQualityUpgradeReplacing(
+    bvid: string,
+    userId: string,
+    mediaId: number,
+    operation: Omit<QualityUpgradeOperation, "startedAt" | "finalizedAt">
+  ) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!relation) return false;
+    relation.qualityUpgrade = { ...operation, startedAt: nowIso() };
+    relation.lastError = "Quality upgrade is replacing remote files.";
+    this.save();
+    return true;
+  }
+
+  listInterruptedQualityUpgrades() {
+    return Object.values(this.state.relations || {})
+      .filter((relation) => Boolean(relation.qualityUpgrade))
+      .map((relation) => ({ ...relation, remoteFiles: [...(relation.remoteFiles || [])], qualityUpgrade: relation.qualityUpgrade! }));
+  }
+
+  recordQualityUpgradeBackupFile(bvid: string, userId: string, mediaId: number, backupFile: RemoteFileRecord) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!relation?.qualityUpgrade) return false;
+    const files = relation.qualityUpgrade.backupFiles || [];
+    relation.qualityUpgrade = {
+      ...relation.qualityUpgrade,
+      backupFiles: [...files.filter((file) => file.path !== backupFile.path), backupFile],
+    };
+    this.save();
+    return true;
+  }
+
+  recordQualityUpgradeFinalFile(bvid: string, userId: string, mediaId: number, remoteFile: RemoteFileRecord) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!relation?.qualityUpgrade) return false;
+    const files = relation.qualityUpgrade.newFiles || [];
+    relation.qualityUpgrade = {
+      ...relation.qualityUpgrade,
+      newFiles: [...files.filter((file) => file.path !== remoteFile.path), remoteFile],
+    };
+    this.save();
+    return true;
+  }
+
+  finalizeQualityUpgradeRemoteFiles(bvid: string, userId: string, mediaId: number, remotePath: string, remoteFiles: RemoteFileRecord[]) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!relation?.qualityUpgrade || remoteFiles.length === 0) return false;
+    relation.qualityUpgrade = {
+      ...relation.qualityUpgrade,
+      newFiles: remoteFiles,
+      finalizedAt: nowIso(),
+    };
+    this.save();
+    return true;
+  }
+
+  completeQualityUpgrade(bvid: string, userId: string, mediaId: number, remotePath: string, remoteFiles: RemoteFileRecord[]) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!entry || !relation || remoteFiles.length === 0) return false;
+    this.applyVerifiedRemoteFiles(entry, relation, remotePath, remoteFiles, nowIso());
+    relation.qualityUpgrade = undefined;
+    this.clearFailedEntry(userId, mediaId, bvid);
+    this.save();
+    return true;
+  }
+
+  renameRemoteFile(bvid: string, oldPath: string, newPath: string) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return false;
+    const at = nowIso();
+    const oldName = path.posix.basename(oldPath);
+    const newName = path.posix.basename(newPath);
+    const oldDir = path.posix.dirname(oldPath);
+    const newDir = path.posix.dirname(newPath);
+    const updateFiles = (files?: RemoteFileRecord[]) => {
+      if (!Array.isArray(files)) return false;
+      let changed = false;
+      for (const file of files) {
+        if (file.path === oldPath) {
+          file.path = newPath;
+          file.name = newName;
+          changed = true;
+        } else if (file.name === oldName && path.posix.dirname(file.path) === oldDir) {
+          file.path = newPath;
+          file.name = newName;
+          changed = true;
+        }
+      }
+      return changed;
+    };
+    let changed = updateFiles(entry.remoteFiles);
+    if (!changed) {
+      entry.remoteFiles ||= [];
+      if (!entry.remoteFiles.some((file) => file.path === newPath)) {
+        entry.remoteFiles.push({ name: newName, path: newPath });
+        changed = true;
+      }
+    }
+    this.setVideoStatus(entry, "verified", at);
+    entry.remotePath = newDir;
+    entry.verifiedAt = at;
+    entry.lastRemoteCheckAt = at;
+    entry.nextRemoteCheckAt = undefined;
+    entry.remoteMissingCount = 0;
+    entry.lastError = undefined;
+    for (const relation of Object.values(this.state.relations || {}).filter((item) => item.bvid === bvid)) {
+      const relationChanged = updateFiles(relation.remoteFiles);
+      const relationDir = relation.remotePath || path.posix.dirname(relation.remoteFiles?.[0]?.path || "");
+      if (!relationChanged && (!relationDir || relationDir === oldDir || relationDir === newDir)) {
+        relation.remoteFiles ||= [];
+        if (!relation.remoteFiles.some((file) => file.path === newPath)) {
+          relation.remoteFiles.push({ name: newName, path: newPath });
+        }
+      }
+      if (relationChanged || relationDir === oldDir || relationDir === newDir || !relationDir) {
+        this.setRelationStatus(relation, "verified", at);
+        relation.remotePath = newDir;
+        relation.verifiedAt = at;
+        relation.lastRemoteCheckAt = at;
+        relation.nextRemoteCheckAt = undefined;
+        relation.remoteMissingCount = 0;
+        relation.lastError = undefined;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.save();
+    }
+    return changed;
   }
 
   listRelationsForBvid(bvid: string) {
@@ -961,11 +1295,19 @@ export class StateManager {
       .filter((relation) => relation.userId === userId && relation.mediaId === mediaId)
       .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => Boolean(item.video));
+    const scan = this.state.folderScans?.[folderKey(userId, mediaId)];
+    const effectiveBiliTotal = typeof biliTotal === "number" ? biliTotal : scan?.total;
+    const scanComplete = scan?.initStatus === "complete";
+    const unreturnedCount = scanComplete && typeof effectiveBiliTotal === "number" ? Math.max(0, effectiveBiliTotal - rows.length) : 0;
     const summary: FolderIndexSummary = {
       total: rows.length,
       indexed: rows.length,
-      biliTotal,
-      complete: typeof biliTotal === "number" ? rows.length >= biliTotal : false,
+      biliTotal: effectiveBiliTotal,
+      complete: scanComplete || (typeof effectiveBiliTotal === "number" ? rows.length >= effectiveBiliTotal : false),
+      scanStatus: scan?.initStatus || "pending",
+      scanComplete,
+      scannedTotal: rows.length,
+      unreturnedCount,
       uploaded: 0,
       pending: 0,
       pendingUnavailable: 0,
@@ -1179,6 +1521,18 @@ export class StateManager {
     if (changed) {
       this.save();
     }
+  }
+
+  clear() {
+    this.state = {
+      schemaVersion: defaultState.schemaVersion,
+      processedByUser: {},
+      failedByUser: {},
+      videos: {},
+      relations: {},
+      folderScans: {},
+      userCooldowns: {},
+    };
   }
 
   private save() {

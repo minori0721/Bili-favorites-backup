@@ -72,6 +72,17 @@ export interface NormalizedTvAuth {
 
 // ---------- core API ----------
 
+function isRiskOrLoginStatus(statusCode: number) {
+  return [401, 403, 406, 412, 429, 509].includes(statusCode);
+}
+
+function isRiskOrLoginApiError(apiCode: number, message: string) {
+  if ([-101, -102, -111, -352, -403, -412, -509, -653].includes(apiCode)) {
+    return true;
+  }
+  return /cookie|登录|登陆|鉴权|csrf|sessdata|风控|验证|访问权限|账号异常|请求被拦截|risk/i.test(message);
+}
+
 export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
   const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
   const res = await client.user.getMyInfo();
@@ -163,7 +174,7 @@ export async function listFavoriteItemsPage(
   } catch (error: any) {
     const statusCode = error?.statusCode || error?.response?.status;
     const errMsg = error?.message || String(error);
-    if (statusCode === 412 || statusCode === 406 || statusCode === 509 || statusCode === 403) {
+    if (isRiskOrLoginStatus(Number(statusCode || 0)) || isRiskOrLoginApiError(0, errMsg)) {
       throw new BiliRiskOrLoginError(
         `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
       );
@@ -176,7 +187,7 @@ export async function listFavoriteItemsPage(
 
   if (apiCode !== 0) {
     const msg = body.message || `Bili API returned code ${apiCode}`;
-    if (apiCode === -101 || apiCode === -111 || /cookie|登录|鉴权/i.test(msg)) {
+    if (isRiskOrLoginApiError(apiCode, msg)) {
       throw new BiliRiskOrLoginError(`Bili API code ${apiCode}: ${msg}`);
     }
     throw new Error(msg);

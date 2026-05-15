@@ -1,6 +1,6 @@
 ﻿# Bili-favorites-backup
 
-## v2.2.0 备份策略说明
+## v2.3.0 备份策略说明
 
 - 备份状态按“账号 + 收藏夹 + BV号”记录，同一个视频如果同时存在于多个收藏夹，会分别保证每个收藏夹对应的 AList 目录都有文件。
 - 自动同步会持续扫描收藏夹深处内容。初始化阶段每轮会补扫更多历史页；手动“立即同步”也会比普通自动轮询扫得更深。
@@ -43,12 +43,14 @@ services:
   app:
     image: minori0721/bili-favorites-backup:latest
     container_name: bili-favorites-backup
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - ADMIN_USER=admin
-      - ADMIN_PASS=admin
-      - SESSION_SECRET=change-me
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASS=${ADMIN_PASS:-please-change-admin-pass}
+      - SESSION_SECRET=${SESSION_SECRET:-please-change-session-secret}
+      - ALLOW_COOKIE_EXPORT=${ALLOW_COOKIE_EXPORT:-true}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
@@ -57,9 +59,9 @@ services:
       - alist
 
   alist:
-    image: xhofe/alist:latest
+    image: xhofe/alist:v3.41.0
     container_name: bili-favorites-backup-alist
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./alist:/opt/alist/data
     ports:
@@ -68,7 +70,7 @@ services:
       - PUID=0
       - PGID=0
       - UMASK=022
-      - ALIST_ADMIN_PASSWORD=admin123  # 这里是你的 AList 初始管理员密码
+      - ALIST_ADMIN_PASSWORD=${ALIST_ADMIN_PASSWORD:-please-change-alist-pass}
 ```
 
 然后执行：
@@ -94,12 +96,14 @@ services:
   app:
     image: minori0721/bili-favorites-backup:latest
     container_name: bili-favorites-backup
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - ADMIN_USER=admin
-      - ADMIN_PASS=admin
-      - SESSION_SECRET=change-me
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASS=${ADMIN_PASS:-please-change-admin-pass}
+      - SESSION_SECRET=${SESSION_SECRET:-please-change-session-secret}
+      - ALLOW_COOKIE_EXPORT=${ALLOW_COOKIE_EXPORT:-true}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
@@ -108,6 +112,14 @@ services:
 部署完成后，在我们的 Web 面板里，把"AList 内部通信地址"填成你**已有 AList 的公网/局域网地址**（例如 `http://192.168.1.100:5244`），再填上你的账号密码，系统就能无缝对接到你现有的 AList 里！
 
 > **注意**：此方式下，任务日志控制台仍然正常工作（显示下载进度、上传进度等），因为日志来自本程序自身的 BBDown 下载和 WebDAV 上传过程，与 AList 容器无关。
+
+### 镜像标签
+
+- `minori0721/bili-favorites-backup:latest`：稳定版，对应 `main` 分支。
+- `minori0721/bili-favorites-backup:dev`：测试版，对应 `dev` 分支，可通过 `docker compose pull && docker compose up -d` 更新到最新 dev。
+- `v*.*.*` 版本标签会发布对应版本镜像。
+
+正式版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ### 日常更新
 
@@ -123,12 +135,12 @@ docker compose up -d --build
 - 主控制面板：http://localhost:3000
 - AList 管理后台：http://localhost:5244（仅方式一/二）
 
-默认管理员登录：`admin / admin`（强烈建议在 docker-compose 中修改环境变量 `ADMIN_USER` 和 `ADMIN_PASS`）。
+默认管理员用户名仍是 `admin`；请在 docker-compose 中修改 `ADMIN_PASS` 和 `SESSION_SECRET`。如不希望网页导出 B 站 Cookie，可设置 `ALLOW_COOKIE_EXPORT=false`。
 
 ## ⚙️ AList 网盘挂载指南
 
 本系统使用 AList 的 WebDAV 接口进行原生上传。
-1. 访问 AList 面板（默认 http://localhost:5244 ），使用初始默认账号 `admin` 和密码 `admin123` 登录（你可以在 docker-compose 的 `ALIST_ADMIN_PASSWORD` 中修改此初始密码）。
+1. 访问 AList 面板（默认 http://localhost:5244 ），使用账号 `admin` 和 docker-compose 中 `ALIST_ADMIN_PASSWORD` 指定的初始密码登录。
 2. 在 AList 的【存储】页面中添加你的目标网盘（例如阿里云盘，挂载路径设为 `/阿里云盘`）。
 3. 回到主控制面板的 **[全局设置]**，将 AList 目标存储路径设置为 `/阿里云盘/bili-backup/videos`。系统便会自动将下载好的视频推送到你的网盘！
 
@@ -149,6 +161,9 @@ docker compose up -d --build
 ## 🐳 Docker 运行建议
 
 - 请**持久化挂载** `./data:/app/data` 与 `./temp:/app/temp`，否则容器更新后会丢失任务状态与恢复能力。
+- 推荐为 app 和 AList 都设置 `restart: unless-stopped`，异常退出或宿主机重启后会自动拉起；如果你手动停止容器，它不会反复自启。
+- Web 面板的「清理数据」可清理页面缓存、临时文件、网页日志、Debug 日志、备份状态、账号和配置；重要数据需要二次确认，且同步/扫描/对账或下载/上传运行中不会允许清理关键数据。
+- 「清理数据」只处理本项目 app 侧的 `data` 与 `temp`，不会删除 AList 的 `alist` 目录；如果要连 AList 数据一起清掉，请停容器后手动删除宿主机上的 `alist` 目录。
 - 更新镜像建议继续使用：
 
 ```bash
@@ -176,8 +191,8 @@ docker compose up -d
   - `仅视频文件`
 - **下载与上传并发**：独立设置下载和上传的同时进行数量（为防止风控，建议下载并发保持为 1）。
 - **手动对账**：账号卡片区“状态对账（仅 AList）”会只核验远端文件；“全量扫描并对账”会同时扫描 B 站收藏夹和 AList。
-- **视频高级参数**：自由选择是否需要 8K 画质和全景杜比音效。
-  - 勾选 Hi-Res / 杜比后会并入 BBDown 的 `--dfn-priority`，不仅启用 APP 鉴权，也会参与实际流选择优先级。
+- **视频高级参数**：自由选择是否需要 8K 画质、Hi-Res 音质和全景杜比音效。
+  - Hi-Res / 杜比会启用 APP 鉴权，并通过 BBDown 的 `--encoding-priority` 优先选择对应音频流；清晰度通过 `--dfn-priority` 控制。
 - **📁 收藏夹可视化浏览**：选择收藏夹时带封面缩略图，点击"查看详情"可展开浏览所有视频的标题、UP主和封面图。已备份的视频会自动高亮为绿色并显示 `✓ 已备份` 徽章。
 - **🏷️ 自定义命名模板**：可视化变量标签（视频标题、UP主、BV号、发布日期、清晰度、编码），点击拼接，实时预览。也支持手动编辑高级 BBDown 模板语法。
 - **📋 四档任务日志**：

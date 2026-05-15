@@ -1,12 +1,14 @@
 services:
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - ADMIN_USER=admin
-      - ADMIN_PASS=admin
-      - SESSION_SECRET=change-me
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASS=${ADMIN_PASS:-please-change-admin-pass}
+      - SESSION_SECRET=${SESSION_SECRET:-please-change-session-secret}
+      - ALLOW_COOKIE_EXPORT=${ALLOW_COOKIE_EXPORT:-true}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
@@ -15,9 +17,9 @@ services:
       - alist
 
   alist:
-    image: xhofe/alist:latest
+    image: xhofe/alist:v3.41.0
     container_name: bili-favorites-backup-alist
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./alist:/opt/alist/data
     ports:
@@ -26,4 +28,4 @@ services:
       - PUID=0
       - PGID=0
       - UMASK=022
-      - ALIST_ADMIN_PASSWORD=admin123  # 这里就是你的 AList 初始管理员密码，可以随意修改
+      - ALIST_ADMIN_PASSWORD=${ALIST_ADMIN_PASSWORD:-please-change-alist-pass}
