@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import path from "node:path";
 import { ConfigStore } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth } from "./bili.js";
 import { logManager } from "./logger.js";
+import { tempDir } from "./paths.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
@@ -22,6 +24,22 @@ function delay(ms: number) {
 
 function cooldownMs() {
   return (30 + Math.floor(Math.random() * 60)) * 60 * 1000;
+}
+
+async function pathSize(targetPath: string): Promise<number> {
+  try {
+    const stat = await fs.promises.stat(targetPath);
+    if (stat.isFile()) return stat.size;
+    if (!stat.isDirectory()) return 0;
+    const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
+    let total = 0;
+    for (const entry of entries) {
+      total += await pathSize(path.join(targetPath, entry.name));
+    }
+    return total;
+  } catch {
+    return 0;
+  }
 }
 
 export class SyncScheduler {
@@ -56,6 +74,9 @@ export class SyncScheduler {
   private schedulerProgress: SchedulerSnapshot | null = null;
   private nextAutoRunAt?: number;
   private lastSchedulerError = "";
+  private localCacheSnapshot: LocalCacheSnapshot | null = null;
+  private localCacheRefresh: Promise<LocalCacheSnapshot> | null = null;
+  private readonly localCacheSnapshotTtlMs = 10_000;
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -67,6 +88,8 @@ export class SyncScheduler {
     const config = this.configStore.get();
     this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1);
     this.uploadQueue = new TaskQueue(config.concurrentUploads || 2);
+    this.downloadQueue.setStartGate(() => this.canStartDownloadTask());
+    void this.refreshLocalCacheSnapshot(true);
 
     const logTaskError = (task: any, error: any) => {
       const label = error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed";
@@ -176,6 +199,7 @@ export class SyncScheduler {
     });
 
     this.downloadQueue.on("taskCompleted", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      this.refreshLocalCacheState();
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "等待上传替换";
@@ -210,6 +234,7 @@ export class SyncScheduler {
     this.uploadQueue.on("taskCompleted", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
       if (task instanceof QualityUpgradeUploadReplaceTask) {
         this.syncQualityUpgradeControl(task, "completed");
+        this.refreshLocalCacheState();
         return;
       }
       if (task.userId && task.mediaId) {
@@ -269,6 +294,7 @@ export class SyncScheduler {
     const config = this.configStore.get();
     this.downloadQueue.setConcurrency(config.concurrentDownloads || 1);
     this.uploadQueue.setConcurrency(config.concurrentUploads || 2);
+    void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
     this.start();
   }
 
@@ -313,6 +339,20 @@ export class SyncScheduler {
 
   hasActiveOrQueuedSchedulerWork() {
     return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked;
+  }
+
+  refreshLocalCacheState() {
+    const limitBytes = this.getLocalCacheLimitBytes();
+    const previousUsedBytes = this.localCacheSnapshot?.usedBytes ?? 0;
+    if (limitBytes > 0) {
+      this.localCacheSnapshot = {
+        limitBytes,
+        usedBytes: previousUsedBytes,
+        paused: true,
+        checkedAt: this.localCacheSnapshot?.checkedAt ?? 0,
+      };
+    }
+    void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
   }
 
   withCleanupLock<T>(fn: () => Promise<T>) {
@@ -360,6 +400,61 @@ export class SyncScheduler {
       default:
         return "自动同步";
     }
+  }
+
+  private getLocalCacheLimitBytes() {
+    const limitGB = Number(this.configStore.get().localCacheLimitGB || 0);
+    return limitGB > 0 ? limitGB * 1024 * 1024 * 1024 : 0;
+  }
+
+  private async refreshLocalCacheSnapshot(force = false) {
+    if (this.localCacheRefresh) {
+      return this.localCacheRefresh;
+    }
+    const now = Date.now();
+    const limitBytes = this.getLocalCacheLimitBytes();
+    if (!force && this.localCacheSnapshot && now - this.localCacheSnapshot.checkedAt < this.localCacheSnapshotTtlMs && this.localCacheSnapshot.limitBytes === limitBytes) {
+      return this.localCacheSnapshot;
+    }
+    this.localCacheRefresh = (async () => {
+      const usedBytes = await pathSize(tempDir);
+      const snapshot: LocalCacheSnapshot = {
+        limitBytes,
+        usedBytes,
+        paused: limitBytes > 0 && usedBytes >= limitBytes,
+        checkedAt: Date.now(),
+      };
+      this.localCacheSnapshot = snapshot;
+      this.localCacheRefresh = null;
+      return snapshot;
+    })().catch((error) => {
+      this.localCacheRefresh = null;
+      throw error;
+    });
+    return this.localCacheRefresh;
+  }
+
+  private getLocalCacheSnapshot() {
+    const limitBytes = this.getLocalCacheLimitBytes();
+    if (!this.localCacheSnapshot || this.localCacheSnapshot.limitBytes !== limitBytes) {
+      void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
+      const usedBytes = this.localCacheSnapshot?.usedBytes ?? 0;
+      return {
+        limitBytes,
+        usedBytes,
+        paused: limitBytes > 0 && (!this.localCacheSnapshot || usedBytes >= limitBytes),
+        checkedAt: this.localCacheSnapshot?.checkedAt ?? 0,
+      };
+    }
+    if (Date.now() - this.localCacheSnapshot.checkedAt >= this.localCacheSnapshotTtlMs) {
+      void this.refreshLocalCacheSnapshot().then(() => this.downloadQueue.poke());
+    }
+    return this.localCacheSnapshot;
+  }
+
+  private canStartDownloadTask() {
+    const snapshot = this.getLocalCacheSnapshot();
+    return !snapshot.paused;
   }
 
   private buildSchedulerSnapshot() {
@@ -462,6 +557,7 @@ export class SyncScheduler {
       uploadPending,
       uploadRunning,
       scheduler: this.buildSchedulerSnapshot(),
+      localCache: this.getLocalCacheSnapshot(),
     };
   }
 
@@ -647,6 +743,8 @@ export class SyncScheduler {
       await fs.promises.rm(downloadDir, { recursive: true, force: true });
     } catch (error: any) {
       console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
+    } finally {
+      void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
     }
   }
 
@@ -1486,6 +1584,13 @@ type RemoteVerifyCandidate = VideoArchiveEntry & { relation: FavoriteRelation };
 interface SharedUploadDirTracker {
   remaining: number;
   cleanupStarted: boolean;
+}
+
+interface LocalCacheSnapshot {
+  limitBytes: number;
+  usedBytes: number;
+  paused: boolean;
+  checkedAt: number;
 }
 
 type SyncTrigger = "auto" | "manual" | "reconcile" | "remote_reconcile";

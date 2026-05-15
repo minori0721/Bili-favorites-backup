@@ -16,6 +16,7 @@ export interface AppConfig {
   retryDelaySeconds: number;
   concurrentDownloads: number;
   concurrentUploads: number;
+  localCacheLimitGB: number;
   bbdownEncoding: string;
   bbdownQuality: string;
   bbdownHiRes: boolean;
@@ -40,6 +41,7 @@ const defaultConfig: AppConfig = {
   retryDelaySeconds: 5,
   concurrentDownloads: 1,
   concurrentUploads: 2,
+  localCacheLimitGB: 10,
   bbdownEncoding: "",
   bbdownQuality: "",
   bbdownHiRes: false,
@@ -121,6 +123,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "retryDelaySeconds",
   "concurrentDownloads",
   "concurrentUploads",
+  "localCacheLimitGB",
   "bbdownEncoding",
   "bbdownQuality",
   "bbdownHiRes",
@@ -174,6 +177,12 @@ export function validateConfig(input: Partial<AppConfig>) {
   if (input.concurrentUploads !== undefined) {
     if (!Number.isInteger(input.concurrentUploads) || input.concurrentUploads < 1 || input.concurrentUploads > 10) {
       return "concurrentUploads must be an integer between 1 and 10";
+    }
+  }
+
+  if (input.localCacheLimitGB !== undefined) {
+    if (!Number.isFinite(input.localCacheLimitGB) || input.localCacheLimitGB < 0 || input.localCacheLimitGB > 1024) {
+      return "localCacheLimitGB must be between 0 and 1024";
     }
   }
 

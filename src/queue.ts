@@ -74,6 +74,7 @@ export class TaskQueue extends EventEmitter {
   private activeCount: number = 0;
   private concurrency: number;
   private sequenceCounter = 0;
+  private canStartTask?: (task: Task) => boolean;
 
   constructor(concurrency: number = 1) {
     super();
@@ -82,6 +83,15 @@ export class TaskQueue extends EventEmitter {
 
   setConcurrency(concurrency: number) {
     this.concurrency = concurrency;
+    this.processQueue();
+  }
+
+  setStartGate(canStartTask?: (task: Task) => boolean) {
+    this.canStartTask = canStartTask;
+    this.processQueue();
+  }
+
+  poke() {
     this.processQueue();
   }
 
@@ -126,6 +136,9 @@ export class TaskQueue extends EventEmitter {
     for (const task of runnableTasks) {
       if (this.activeCount >= this.concurrency) {
         return;
+      }
+      if (this.canStartTask && !this.canStartTask(task)) {
+        continue;
       }
       void this.runTask(task);
     }

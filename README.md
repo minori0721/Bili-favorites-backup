@@ -1,6 +1,6 @@
 ﻿# Bili-favorites-backup
 
-## v2.2.0 备份策略说明
+## v2.3.0 备份策略说明
 
 - 备份状态按“账号 + 收藏夹 + BV号”记录，同一个视频如果同时存在于多个收藏夹，会分别保证每个收藏夹对应的 AList 目录都有文件。
 - 自动同步会持续扫描收藏夹深处内容。初始化阶段每轮会补扫更多历史页；手动“立即同步”也会比普通自动轮询扫得更深。
@@ -119,7 +119,7 @@ services:
 - `minori0721/bili-favorites-backup:dev`：测试版，对应 `dev` 分支，可通过 `docker compose pull && docker compose up -d` 更新到最新 dev。
 - `v*.*.*` 版本标签会发布对应版本镜像。
 
-正式版本变更见 [CHANGELOG.md](CHANGELOG.md)；当前 dev 测试内容见 [DEV_NOTES.md](DEV_NOTES.md)。
+正式版本变更见 [CHANGELOG.md](CHANGELOG.md)；dev 分支后续测试记录见 [DEV_NOTES.md](DEV_NOTES.md)。
 
 ### 日常更新
 
@@ -189,7 +189,7 @@ docker compose up -d
   - `用户名 / 收藏夹名 / 视频`
   - `收藏夹名 / 视频`
   - `仅视频文件`
-- **下载与上传并发**：独立设置下载和上传的同时进行数量（为防止风控，建议下载并发保持为 1）。
+- **下载与上传并发**：独立设置下载和上传的同时进行数量（为防止风控，建议下载并发保持为 1）；本地缓存软上限默认 10GB，超限时只暂停启动新下载，上传和上传后清理继续运行。
 - **手动对账**：账号卡片区“状态对账（仅 AList）”会只核验远端文件；“全量扫描并对账”会同时扫描 B 站收藏夹和 AList。
 - **视频高级参数**：自由选择是否需要 8K 画质、Hi-Res 音质和全景杜比音效。
   - Hi-Res / 杜比会启用 APP 鉴权，并通过 BBDown 的 `--encoding-priority` 优先选择对应音频流；清晰度通过 `--dfn-priority` 控制。

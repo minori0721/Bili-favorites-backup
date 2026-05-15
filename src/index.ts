@@ -978,6 +978,7 @@ async function removeCleanupTarget(item: CleanupItem) {
   await fs.promises.rm(targetPath, { recursive: true, force: true });
   if (item === "temp") {
     await fs.promises.mkdir(tempDir, { recursive: true });
+    scheduler.refreshLocalCacheState();
   } else if (item === "state") {
     stateManager.clear();
   } else if (item === "users") {
