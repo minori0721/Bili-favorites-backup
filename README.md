@@ -116,9 +116,10 @@ services:
 ### 镜像标签
 
 - `minori0721/bili-favorites-backup:latest`：稳定版，对应 `main` 分支。
+- `minori0721/bili-favorites-backup:dev`：测试版，对应 `dev` 分支，可通过 `docker compose pull && docker compose up -d` 更新到最新 dev。
 - `v*.*.*` 版本标签会发布对应版本镜像。
 
-正式版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+正式版本变更见 [CHANGELOG.md](CHANGELOG.md)；dev 分支后续测试记录见 [DEV_NOTES.md](DEV_NOTES.md)。
 
 ### 日常更新
 
