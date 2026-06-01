@@ -2,7 +2,7 @@
 
 本项目遵循语义化版本（SemVer）。
 
-## [Unreleased] - dev
+## [2.3.1] - 2026-06-01
 
 ### 新增
 - 新增本地缓存软上限设置，默认 10GB；当 `temp` 用量达到上限时只暂停启动新的下载任务，待下载任务继续留在队列中，上传与上传后清理继续运行。
@@ -58,7 +58,7 @@
 - Session Cookie 支持通过 `COOKIE_SECURE=true` 启用 secure 标记。
 
 ### Docker / 发布
-- GitHub Actions 支持 `dev` 分支发布 `minori0721/bili-favorites-backup:dev`，`latest` 仍只由 `main` 发布。
+- GitHub Actions 发布 `latest` 镜像，并支持 `v*.*.*` 标签发布版本镜像。
 - Docker Node 基础镜像更新到 `node:20-bookworm-slim`，并保留 `NODE_IMAGE` 构建参数。
 - BBDown 下载支持固定 `BBDOWN_VERSION` 和可选 `BBDOWN_SHA256` 校验。
 - Compose 示例改用 `please-change-*` 默认值，并将 AList 示例镜像固定到 `xhofe/alist:v3.41.0`。
