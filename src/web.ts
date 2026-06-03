@@ -173,8 +173,8 @@ function getAppStyles() {
     header h1 { margin:0; font-size:24px; color:var(--accent); font-weight:700; }
     header button { background:rgba(255,255,255,0.82); border:1px solid rgba(214,240,237,0.95); border-radius:999px; padding:8px 20px; cursor:pointer; font-weight:600; color:var(--ink); transition:all 0.2s; box-shadow:0 4px 16px rgba(57,197,187,0.08); }
     header button:hover { border-color:var(--accent); color:var(--accent); box-shadow:0 6px 20px rgba(57,197,187,0.12); }
-    main { padding:28px 32px 40px; display:grid; gap:22px; grid-template-columns:1fr; max-width:1200px; margin:0 auto; }
-    .card { background:var(--glass-panel); backdrop-filter:var(--glass-blur); border-radius:20px; padding:24px; box-shadow:var(--glass-shadow); border:1px solid var(--glass-border); animation:fadeUp 0.6s cubic-bezier(0.16,1,0.3,1); }
+    main { padding:28px 32px 40px; display:grid; gap:22px; grid-template-columns:1fr; max-width:1200px; min-width:0; margin:0 auto; }
+    .card { min-width:0; background:var(--glass-panel); backdrop-filter:var(--glass-blur); border-radius:20px; padding:24px; box-shadow:var(--glass-shadow); border:1px solid var(--glass-border); animation:fadeUp 0.6s cubic-bezier(0.16,1,0.3,1); }
     .card h2 { margin:0 0 14px; font-size:20px; color:var(--accent); display:flex; align-items:center; gap:8px; }
     .card h2::before { content:''; display:block; width:4px; height:18px; background:var(--accent); border-radius:4px; }
     .muted { color:var(--muted); font-size:14px; margin-bottom:14px; line-height:1.65; }
@@ -188,8 +188,15 @@ function getAppStyles() {
     .row button:hover { background:var(--accent-hover); transform:translateY(-1px); box-shadow:0 10px 24px rgba(57,197,187,0.24); }
     .row .ghost { background:rgba(255,255,255,0.66); color:var(--accent); border:1px solid rgba(57,197,187,0.45); box-shadow:none; }
     .row .ghost:hover { background:rgba(57,197,187,0.08); border-color:var(--accent); }
+    .row .danger-ghost { border-color:#E57373; color:#E57373; }
+    .row .compact-button { padding:4px 12px; font-size:12px; flex-shrink:0; }
     .user-list { display:grid; gap:16px; }
     .user-item { border:1px solid var(--glass-border); border-radius:16px; padding:15px; display:grid; gap:12px; background:var(--glass-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
+    .user-name { font-size:16px; color:var(--accent); }
+    .user-meta { margin:0; }
+    .user-actions { margin-top:4px; }
+    .favorite-chip-list { margin:4px 0; }
+    .favorite-chip { display:inline-block; padding:4px 10px; background:rgba(57,197,187,0.1); border-radius:999px; font-size:12px; margin:2px; }
     .auth-health { border:1px solid var(--glass-border); border-radius:12px; padding:10px 12px; background:rgba(255,255,255,0.76); font-size:12px; line-height:1.7; }
     .auth-health.ok { border-color:var(--success); background:var(--success-bg); }
     .auth-health.warn { border-color:#FFB74D; background:#FFF8E1; }
@@ -223,6 +230,9 @@ function getAppStyles() {
     .fav-label { font-weight:500; display:flex; gap:12px; align-items:center; margin:0; padding:12px; border-radius:12px; transition:background 0.2s; cursor:pointer; }
     .fav-label:hover { background:rgba(57,197,187,0.1); }
     .fav-cover { width:64px; height:40px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
+    .fav-content { flex:1; min-width:0; }
+    .fav-title { font-weight:600; }
+    .fav-count { font-size:12px; color:var(--muted); }
     /* Video items in detail modal */
     .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; overflow-x:hidden; }
     .video-item { display:flex; gap:12px; padding:11px; border-radius:12px; border:1px solid var(--glass-border); align-items:center; transition:all 0.2s; background:rgba(255,255,255,0.62); }
@@ -247,6 +257,7 @@ function getAppStyles() {
     /* Template tags */
     .template-tags { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
     .selected-tags { min-height:40px; border:1px dashed var(--glass-border-strong); border-radius:12px; padding:8px; background:rgba(255,255,255,0.42); }
+    .template-empty-hint { color:var(--muted); font-size:13px; padding:4px; }
     .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all 0.2s; user-select:none; }
     .template-tag:hover { border-color:var(--accent); }
     .template-tag.active { background:var(--accent); color:white; }
@@ -262,7 +273,7 @@ function getAppStyles() {
     .log-console .log-info { color:#39C5BB; }
     .log-console .log-error { color:#E57373; }
     .log-console .log-warn { color:#FFB74D; }
-    .log-toggle { display:flex; gap:8px; margin-bottom:12px; }
+    .log-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     .log-toggle button { padding:6px 16px; border-radius:999px; border:1px solid rgba(214,240,237,0.95); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
     .scheduler-status { border:1px solid var(--glass-border); border-radius:14px; background:var(--glass-surface); padding:11px 12px; margin-bottom:12px; font-size:13px; }
@@ -275,13 +286,15 @@ function getAppStyles() {
     .scheduler-status-grid strong { color:var(--ink); }
     .local-cache-status { border:1px solid var(--glass-border); border-radius:14px; padding:10px 12px; margin:0 0 10px; background:rgba(248,251,250,0.76); font-size:12px; color:var(--muted); }
     .local-cache-status.paused { border-color:#FFB74D; background:#FFF8E1; color:#8D6E00; }
-    .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
+    .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
     .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
     .queue-col-count { min-width:28px; text-align:right; }
     .queue-list { display:grid; gap:8px; overflow-y:auto; padding-right:4px; min-height:0; align-content:start; flex:1; }
     .queue-more { color:var(--muted); font-size:12px; text-align:center; padding:8px 4px; border:1px dashed var(--border); border-radius:10px; background:rgba(57,197,187,0.04); }
-    .queue-empty { color:var(--muted); font-size:12px; text-align:center; padding:24px 4px; align-self:center; opacity:0.72; }
+    .queue-empty,.empty-state { color:var(--muted); font-size:12px; text-align:center; padding:24px 4px; align-self:center; opacity:0.72; }
+    .empty-state { border:1px dashed var(--glass-border); border-radius:14px; background:rgba(255,255,255,0.46); }
+    .loading-state { color:var(--accent); opacity:1; }
     .queue-card { min-width:0; max-width:100%; display:flex; gap:8px; padding:8px; border-radius:12px; border:1px solid var(--glass-border); background:var(--glass-input); transition:box-shadow .18s ease, opacity .2s ease, border-color .2s ease; will-change:transform; }
     .queue-card.entering { animation:queueCardIn .22s cubic-bezier(0.16,1,0.3,1); }
     .queue-card.leaving { opacity:0; transform:scale(.98); }
@@ -347,7 +360,10 @@ function getAppStyles() {
     .confirm-hint { margin-bottom:8px; }
     .help-note { margin-top:14px; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
-    .toast { background:white; color:var(--ink); padding:16px 20px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:center; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:400px; word-break:break-word; pointer-events:auto; }
+    .toast { background:white; color:var(--ink); padding:14px 14px 14px 18px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:flex-start; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:420px; word-break:break-word; pointer-events:auto; }
+    .toast-message { flex:1; min-width:0; line-height:1.55; }
+    .toast-close { width:26px; height:26px; border:1px solid var(--glass-border); border-radius:50%; background:rgba(255,255,255,0.72); color:var(--muted); cursor:pointer; font-size:16px; line-height:1; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
+    .toast-close:hover { border-color:var(--accent); color:var(--accent); }
     .toast.success { border-left-color:var(--success); }
     .toast.info { border-left-color:var(--accent); }
     .toast.fade-out { animation:toastOut 0.3s cubic-bezier(0.16,1,0.3,1) forwards; }
@@ -366,12 +382,18 @@ function getAppStyles() {
       .card { padding:18px; border-radius:18px; }
       .settings-grid { grid-template-columns:1fr; gap:13px; }
       .row { gap:8px; }
-      .account-actions button,.settings-actions button,.modal-actions button,.preview-actions button { flex:1 1 150px; min-height:40px; }
+      .account-actions,.settings-actions,.modal-actions,.preview-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
+      .account-actions button,.settings-actions button,.modal-actions button,.preview-actions button { min-height:40px; }
+      .modal-actions .full-width { grid-column:1/-1; }
       .modal { padding:10px; align-items:flex-start; }
       .modal .panel { padding:20px; border-radius:20px; max-height:calc(100vh - 20px); }
       .video-item { align-items:flex-start; }
       .video-cover { width:96px; height:60px; }
-      .queue-board { grid-template-columns:repeat(4,minmax(240px,1fr)); max-height:430px; }
+      .log-toggle { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
+      .log-toggle button { min-height:36px; padding:6px 10px; }
+      .queue-board { display:block; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; scroll-snap-type:x proximity; }
+      .scheduler-status,.local-cache-status { white-space:normal; width:100%; }
+      .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
     }
@@ -711,14 +733,69 @@ function getAppScript() {
     let renamePreviewState = { candidates: [], skipped: [] };
     let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
     let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
+    let lastModalTrigger = null;
+
+    function safeText(value, fallback = '未知') {
+      const text = String(value ?? '').trim();
+      return text || fallback;
+    }
+
+    function closeModal(modalOrId) {
+      const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
+      if (!modal) return;
+      if (modal.id === 'loginModal') {
+        currentLoginId = null;
+      }
+      if (modal.id === 'videoDetailModal') {
+        videoDetailState.token += 1;
+        videoDetailState.loading = false;
+        videoDetailState.hasMore = false;
+      }
+      if (modal.id === 'unavailableModal') {
+        unavailableHasMore = false;
+        unavailableLoading = false;
+      }
+      modal.classList.remove('active');
+      modal.setAttribute('aria-hidden', 'true');
+      if (lastModalTrigger && typeof lastModalTrigger.focus === 'function' && document.contains(lastModalTrigger)) {
+        lastModalTrigger.focus();
+      }
+    }
+
+    function openModal(modalId, trigger) {
+      const modal = document.getElementById(modalId);
+      if (!modal) return;
+      lastModalTrigger = trigger || document.activeElement;
+      modal.classList.add('active');
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('aria-hidden', 'false');
+      const firstButton = modal.querySelector('button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
+      if (firstButton && typeof firstButton.focus === 'function') {
+        setTimeout(() => firstButton.focus(), 0);
+      }
+    }
+
+    function activeModal() {
+      const modals = Array.from(document.querySelectorAll('.modal.active'));
+      return modals[modals.length - 1] || null;
+    }
 
     function showToast(message, type = 'error') {
       const container = document.getElementById('toastContainer');
       const toast = document.createElement('div');
       toast.className = 'toast ' + type;
       const text = document.createElement('div');
+      text.className = 'toast-message';
       text.textContent = String(message || '');
+      const close = document.createElement('button');
+      close.className = 'toast-close';
+      close.type = 'button';
+      close.setAttribute('aria-label', '关闭提示');
+      close.textContent = '\u00d7';
+      close.addEventListener('click', () => toast.remove());
       toast.appendChild(text);
+      toast.appendChild(close);
       container.appendChild(toast);
       setTimeout(() => {
         toast.classList.add('fade-out');
@@ -858,9 +935,7 @@ function getAppScript() {
       box.innerHTML = '';
       if (!selectedKeys.length) {
         const hint = document.createElement('span');
-        hint.style.color = 'var(--muted)';
-        hint.style.fontSize = '13px';
-        hint.style.padding = '4px';
+        hint.className = 'template-empty-hint';
         hint.textContent = '点击上方标签添加到此处';
         box.appendChild(hint);
         return;
@@ -962,7 +1037,7 @@ function getAppScript() {
     function openSyncHelp() {
       syncHelpMode = 'simple';
       renderSyncHelp();
-      document.getElementById('syncHelpModal').classList.add('active');
+      openModal('syncHelpModal', document.getElementById('syncHelpBtn'));
     }
 
     function renderSettingsFlow() {
@@ -988,7 +1063,7 @@ function getAppScript() {
 
     function openSettingsHelp() {
       renderSettingsFlow();
-      document.getElementById('settingsHelpModal').classList.add('active');
+      openModal('settingsHelpModal', document.getElementById('settingsHelpBtn'));
     }
 
     const cleanupDescriptions = {
@@ -1099,7 +1174,7 @@ function getAppScript() {
     }
 
     async function openCleanupData() {
-      document.getElementById('cleanupDataModal').classList.add('active');
+      openModal('cleanupDataModal', document.getElementById('cleanupDataBtn'));
       document.getElementById('cleanupResultBlock').style.display = 'none';
       await loadCleanupState();
     }
@@ -1149,7 +1224,7 @@ function getAppScript() {
     }
 
     async function openRenamePreview() {
-      document.getElementById('renamePreviewModal').classList.add('active');
+      openModal('renamePreviewModal', document.getElementById('renameBtn'));
       await loadRenamePreview();
     }
 
@@ -1189,7 +1264,7 @@ function getAppScript() {
       list.innerHTML = '';
       if (!candidates.length) {
         const empty = document.createElement('div');
-        empty.className = 'queue-empty';
+        empty.className = 'empty-state';
         empty.textContent = '没有找到可安全重命名的旧命名文件。';
         list.appendChild(empty);
       }
@@ -1203,7 +1278,7 @@ function getAppScript() {
         const body = document.createElement('div');
         const title = document.createElement('div');
         title.className = 'rename-title';
-        title.textContent = (item.title || item.bvid || '未知视频') + ' · ' + (item.ownerName || '未知UP');
+        title.textContent = safeText(item.title || item.bvid, '未知视频') + ' · ' + safeText(item.ownerName, '未知UP');
         const name = document.createElement('div');
         name.className = 'rename-path';
         name.innerHTML = '<strong>旧文件：</strong>' + escapeHtml(item.oldName || '') + '<br><span class="rename-arrow">→</span> <strong>新文件：</strong>' + escapeHtml(item.newName || '');
@@ -1226,7 +1301,7 @@ function getAppScript() {
         skippedList.innerHTML = '';
         skipped.forEach((item) => {
           const div = document.createElement('div');
-          div.textContent = (item.path || '<未知路径>') + '：' + (item.reason || '已跳过');
+          div.textContent = safeText(item.path, '<未知路径>') + '：' + safeText(item.reason, '已跳过');
           skippedList.appendChild(div);
         });
       } else {
@@ -1300,7 +1375,7 @@ function getAppScript() {
     }
 
     async function openQualityUpgradePreview() {
-      document.getElementById('qualityUpgradeModal').classList.add('active');
+      openModal('qualityUpgradeModal', document.getElementById('qualityUpgradeBtn'));
       await loadQualityUpgradePreview();
     }
 
@@ -1342,7 +1417,7 @@ function getAppScript() {
       list.innerHTML = '';
       if (!candidates.length) {
         const empty = document.createElement('div');
-        empty.className = 'queue-empty';
+        empty.className = 'empty-state';
         empty.textContent = '没有找到可重调画质的已上传视频记录。';
         list.appendChild(empty);
       }
@@ -1356,10 +1431,10 @@ function getAppScript() {
         const body = document.createElement('div');
         const title = document.createElement('div');
         title.className = 'rename-title';
-        title.textContent = (item.title || item.bvid || '未知视频') + ' · ' + (item.ownerName || '未知UP');
+        title.textContent = safeText(item.title || item.bvid, '未知视频') + ' · ' + safeText(item.ownerName, '未知UP');
         const folder = document.createElement('div');
         folder.className = 'rename-path';
-        folder.textContent = '收藏夹：' + (item.folderTitle || 'favorites') + '；目录：' + (item.remotePath || '');
+        folder.textContent = '收藏夹：' + safeText(item.folderTitle, 'favorites') + '；目录：' + safeText(item.remotePath, '-');
         const files = document.createElement('div');
         files.className = 'rename-path';
         files.textContent = '将替换旧文件：' + (item.oldFiles || []).map((file) => file.name || file.path).join('，');
@@ -1379,7 +1454,7 @@ function getAppScript() {
         skippedList.innerHTML = '';
         skipped.forEach((item) => {
           const div = document.createElement('div');
-          div.textContent = (item.title || item.bvid || item.folderTitle || '<未知项目>') + '：' + (item.reason || '已跳过');
+          div.textContent = safeText(item.title || item.bvid || item.folderTitle, '<未知项目>') + '：' + safeText(item.reason, '已跳过');
           skippedList.appendChild(div);
         });
       } else {
@@ -1473,32 +1548,24 @@ function getAppScript() {
         item.className = 'user-item';
 
         const name = document.createElement('strong');
-        name.style.fontSize = '16px';
-        name.style.color = 'var(--accent)';
-        name.textContent = user.name || '';
+        name.className = 'user-name';
+        name.textContent = safeText(user.name, '未命名账号');
 
         const meta = document.createElement('div');
-        meta.className = 'muted';
-        meta.style.margin = '0';
-        meta.textContent = 'UID: ' + user.uid + ' | 收藏夹: ' + user.favoritesCount + ' | ' + (user.expiresText || '未知过期时间');
+        meta.className = 'muted user-meta';
+        meta.textContent = 'UID: ' + safeText(user.uid, '-') + ' | 收藏夹: ' + safeText(user.favoritesCount, '-') + ' | ' + safeText(user.expiresText, '未知过期时间');
 
         const favoritesWrap = document.createElement('div');
-        favoritesWrap.style.margin = '4px 0';
+        favoritesWrap.className = 'favorite-chip-list';
         for (const favorite of (user.favorites || [])) {
           const chip = document.createElement('span');
-          chip.style.display = 'inline-block';
-          chip.style.padding = '4px 10px';
-          chip.style.background = 'rgba(57,197,187,0.1)';
-          chip.style.borderRadius = '8px';
-          chip.style.fontSize = '12px';
-          chip.style.margin = '2px';
-          chip.textContent = favorite.title || '';
+          chip.className = 'favorite-chip';
+          chip.textContent = safeText(favorite.title, '未命名收藏夹');
           favoritesWrap.appendChild(chip);
         }
 
         const actions = document.createElement('div');
-        actions.className = 'row';
-        actions.style.marginTop = '4px';
+        actions.className = 'row user-actions';
 
         const favoritesBtn = document.createElement('button');
         favoritesBtn.dataset.action = 'favorites';
@@ -1536,9 +1603,7 @@ function getAppScript() {
         toggleBtn.textContent = user.enabled ? '暂停同步' : '启用同步';
 
         const removeBtn = document.createElement('button');
-        removeBtn.className = 'ghost';
-        removeBtn.style.borderColor = '#E57373';
-        removeBtn.style.color = '#E57373';
+        removeBtn.className = 'ghost danger-ghost';
         removeBtn.dataset.action = 'remove';
         removeBtn.dataset.id = String(user.id || '');
         removeBtn.textContent = '删除账号';
@@ -1589,7 +1654,7 @@ function getAppScript() {
       const data = await fetchJson('/api/users/login/start', { method:'POST' });
       currentLoginId = data.loginId;
       document.getElementById('loginQr').src = data.qrDataUrl;
-      document.getElementById('loginModal').classList.add('active');
+      openModal('loginModal', document.getElementById('addUserBtn'));
       pollLoginStatus();
     }
     async function pollLoginStatus() {
@@ -1602,7 +1667,7 @@ function getAppScript() {
         if (d.status==='completed') {
           document.getElementById('loginStatus').textContent = '登录成功';
           currentLoginId=null;
-          setTimeout(()=>{ document.getElementById('loginModal').classList.remove('active'); loadUsers(); },1000);
+          setTimeout(()=>{ closeModal('loginModal'); loadUsers(); },1000);
         } else if (d.status==='error') {
           document.getElementById('loginStatus').textContent = d.message||'异常'; currentLoginId=null;
         } else {
@@ -1619,11 +1684,10 @@ function getAppScript() {
       const list = document.getElementById('favoritesList');
       list.innerHTML = '';
       const loading = document.createElement('div');
-      loading.className = 'muted';
-      loading.style.textAlign = 'center';
+      loading.className = 'empty-state loading-state';
       loading.textContent = '加载中...';
       list.appendChild(loading);
-      document.getElementById('favoritesModal').classList.add('active');
+      openModal('favoritesModal');
       const data = await fetchJson('/api/users/'+userId+'/favorites');
       list.innerHTML = '';
       data.forEach(folder => {
@@ -1650,16 +1714,14 @@ function getAppScript() {
         }
 
         const content = document.createElement('div');
-        content.style.flex = '1';
-        content.style.minWidth = '0';
+        content.className = 'fav-content';
 
         const title = document.createElement('div');
-        title.style.fontWeight = '600';
-        title.textContent = folder.title || '';
+        title.className = 'fav-title';
+        title.textContent = safeText(folder.title, '未命名收藏夹');
 
         const count = document.createElement('div');
-        count.style.fontSize = '12px';
-        count.style.color = 'var(--muted)';
+        count.className = 'fav-count';
         count.textContent = String(folder.mediaCount || 0) + ' 个视频';
 
         content.appendChild(title);
@@ -1667,10 +1729,7 @@ function getAppScript() {
         lbl.appendChild(content);
 
         const detail = document.createElement('button');
-        detail.className = 'ghost';
-        detail.style.padding = '4px 12px';
-        detail.style.fontSize = '12px';
-        detail.style.flexShrink = '0';
+        detail.className = 'ghost compact-button';
         detail.dataset.detailMedia = String(folder.mediaId);
         detail.dataset.detailTitle = folder.title || '';
         detail.textContent = '查看详情';
@@ -1726,11 +1785,11 @@ function getAppScript() {
       info.className = 'video-info';
       const titleEl = document.createElement('div');
       titleEl.className = 'video-title';
-      titleEl.title = item.title || '';
-      titleEl.textContent = item.title || '';
+      titleEl.title = safeText(item.title || item.bvid, '未知视频');
+      titleEl.textContent = safeText(item.title || item.bvid, '未知视频');
       const meta = document.createElement('div');
       meta.className = 'video-meta';
-      meta.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + item.bvid;
+      meta.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-');
       info.appendChild(titleEl);
       info.appendChild(meta);
       div.appendChild(info);
@@ -1750,7 +1809,8 @@ function getAppScript() {
         status.dataset.statusMarker = marker;
         grid.appendChild(status);
       }
-      status.className = 'video-detail-status' + (isError ? ' error' : '');
+      const loading = /加载|正在/.test(String(text || ''));
+      status.className = (loading ? 'empty-state loading-state' : 'empty-state') + (isError ? ' video-detail-status error' : ' video-detail-status');
       status.textContent = text || '';
       if (!text) status.remove();
     }
@@ -1912,7 +1972,7 @@ function getAppScript() {
       const grid = document.getElementById('videoGrid');
       grid.innerHTML = '';
       grid.scrollTop = 0;
-      document.getElementById('videoDetailModal').classList.add('active');
+      openModal('videoDetailModal');
       await loadNextVideoDetailPage();
     }
 
@@ -1928,7 +1988,7 @@ function getAppScript() {
       document.getElementById('filterUploadedBtn').classList.remove('active');
       const grid = document.getElementById('unavailableGrid');
       grid.innerHTML = '';
-      document.getElementById('unavailableModal').classList.add('active');
+      openModal('unavailableModal');
       await loadMoreUnavailable();
     }
 
@@ -1972,7 +2032,7 @@ function getAppScript() {
         const div = renderVideoDetailItem(item);
         const meta = document.createElement('div');
         meta.className = 'video-meta';
-        meta.textContent = '收藏夹: ' + (item.folderTitle || '未知');
+        meta.textContent = '收藏夹: ' + safeText(item.folderTitle, '未知');
         const info = div.querySelector('.video-info');
         if (info) info.appendChild(meta);
         grid.appendChild(div);
@@ -1995,7 +2055,7 @@ function getAppScript() {
       });
       document.getElementById('saveFavoritesBtn').textContent = '保存选择';
       document.getElementById('favoritesStatus').textContent = '已保存';
-      setTimeout(()=>document.getElementById('favoritesModal').classList.remove('active'),500);
+      setTimeout(()=>closeModal('favoritesModal'),500);
       await loadUsers();
     }
 
@@ -2116,11 +2176,11 @@ function getAppScript() {
         coverEl.replaceWith(img);
       }
       if (titleEl) {
-        titleEl.textContent = item.title || item.bvid || 'Unknown';
-        titleEl.title = item.title || item.bvid || '';
+        titleEl.textContent = safeText(item.title || item.bvid, '未知任务');
+        titleEl.title = safeText(item.title || item.bvid, '未知任务');
       }
       if (metaEl) {
-        metaEl.textContent = 'UP: ' + (item.upperName || 'Unknown') + ' | ' + (item.bvid || '');
+        metaEl.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-');
       }
       if (extraEl) {
         const retryAt = Number(item.retryAt || 0);
@@ -2166,8 +2226,8 @@ function getAppScript() {
       info.className = 'queue-info';
       const title = document.createElement('div');
       title.className = 'queue-title';
-      title.textContent = item.title || item.bvid || 'Unknown';
-      title.title = item.title || item.bvid || '';
+      title.textContent = safeText(item.title || item.bvid, '未知任务');
+      title.title = safeText(item.title || item.bvid, '未知任务');
       const meta = document.createElement('div');
       meta.className = 'queue-meta';
       const extra = document.createElement('div');
@@ -2384,7 +2444,7 @@ function getAppScript() {
         }
         requestAnimationFrame(() => animateQueueBoard(firstRects));
       } catch (e) {
-        board.innerHTML = '<div class="queue-empty">队列看板加载失败</div>';
+        board.innerHTML = '<div class="empty-state video-detail-status error">队列看板加载失败</div>';
         queueBoardState.columns = {};
         queueBoardState.cards.clear();
       } finally {
@@ -2442,38 +2502,27 @@ function getAppScript() {
 
     // ---- Event Bindings ----
     document.getElementById('addUserBtn').addEventListener('click', startLogin);
-    document.getElementById('closeLoginBtn').addEventListener('click', () => {
-      document.getElementById('loginModal').classList.remove('active'); currentLoginId = null;
-    });
+    document.getElementById('closeLoginBtn').addEventListener('click', () => closeModal('loginModal'));
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
-    document.getElementById('closeFavoritesBtn').addEventListener('click', () => document.getElementById('favoritesModal').classList.remove('active'));
-    document.getElementById('closeVideoDetailBtn').addEventListener('click', () => {
-      videoDetailState.token += 1;
-      videoDetailState.loading = false;
-      videoDetailState.hasMore = false;
-      document.getElementById('videoDetailModal').classList.remove('active');
-    });
-    document.getElementById('closeUnavailableBtn').addEventListener('click', () => {
-      unavailableHasMore = false;
-      unavailableLoading = false;
-      document.getElementById('unavailableModal').classList.remove('active');
-    });
+    document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
+    document.getElementById('closeVideoDetailBtn').addEventListener('click', () => closeModal('videoDetailModal'));
+    document.getElementById('closeUnavailableBtn').addEventListener('click', () => closeModal('unavailableModal'));
     document.getElementById('syncHelpBtn').addEventListener('click', openSyncHelp);
     document.getElementById('settingsHelpBtn').addEventListener('click', openSettingsHelp);
-    document.getElementById('closeSyncHelpBtn').addEventListener('click', () => document.getElementById('syncHelpModal').classList.remove('active'));
-    document.getElementById('closeSettingsHelpBtn').addEventListener('click', () => document.getElementById('settingsHelpModal').classList.remove('active'));
+    document.getElementById('closeSyncHelpBtn').addEventListener('click', () => closeModal('syncHelpModal'));
+    document.getElementById('closeSettingsHelpBtn').addEventListener('click', () => closeModal('settingsHelpModal'));
     document.getElementById('syncHelpSimpleBtn').addEventListener('click', () => { syncHelpMode = 'simple'; renderSyncHelp(); });
     document.getElementById('syncHelpDetailBtn').addEventListener('click', () => { syncHelpMode = 'detail'; renderSyncHelp(); });
-    document.getElementById('closeRenamePreviewBtn').addEventListener('click', () => document.getElementById('renamePreviewModal').classList.remove('active'));
+    document.getElementById('closeRenamePreviewBtn').addEventListener('click', () => closeModal('renamePreviewModal'));
     document.getElementById('renameSelectAllBtn').addEventListener('click', () => setRenameSelection(true));
     document.getElementById('renameSelectNoneBtn').addEventListener('click', () => setRenameSelection(false));
     document.getElementById('refreshRenamePreviewBtn').addEventListener('click', loadRenamePreview);
     document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
-    document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => document.getElementById('qualityUpgradeModal').classList.remove('active'));
+    document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => closeModal('qualityUpgradeModal'));
     document.getElementById('cleanupDataBtn').addEventListener('click', openCleanupData);
-    document.getElementById('closeCleanupDataBtn').addEventListener('click', () => document.getElementById('cleanupDataModal').classList.remove('active'));
-    document.getElementById('cleanupHelpBtn').addEventListener('click', () => document.getElementById('cleanupHelpModal').classList.add('active'));
-    document.getElementById('closeCleanupHelpBtn').addEventListener('click', () => document.getElementById('cleanupHelpModal').classList.remove('active'));
+    document.getElementById('closeCleanupDataBtn').addEventListener('click', () => closeModal('cleanupDataModal'));
+    document.getElementById('cleanupHelpBtn').addEventListener('click', () => openModal('cleanupHelpModal', document.getElementById('cleanupHelpBtn')));
+    document.getElementById('closeCleanupHelpBtn').addEventListener('click', () => closeModal('cleanupHelpModal'));
     document.getElementById('cleanupSelectAllBtn').addEventListener('click', () => setCleanupSelection(true));
     document.getElementById('cleanupSelectNoneBtn').addEventListener('click', () => setCleanupSelection(false));
     document.getElementById('refreshCleanupBtn').addEventListener('click', loadCleanupState);
@@ -2489,6 +2538,18 @@ function getAppScript() {
     document.getElementById('vdFilterPendingBtn').addEventListener('click', () => applyVideoDetailFilter('pending'));
     document.getElementById('vdFilterPendingUnavailableBtn').addEventListener('click', () => applyVideoDetailFilter('pending_unavailable'));
     document.getElementById('vdFilterUploadedUnavailableBtn').addEventListener('click', () => applyVideoDetailFilter('uploaded_unavailable'));
+    document.querySelectorAll('.modal').forEach((modal) => {
+      modal.setAttribute('aria-hidden', 'true');
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeModal(modal);
+      });
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        const modal = activeModal();
+        if (modal) closeModal(modal);
+      }
+    });
     document.getElementById('videoGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('videoGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
