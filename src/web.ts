@@ -22,7 +22,10 @@ export function renderLoginPage() {
     body {
       margin: 0;
       font-family: "Noto Sans SC", sans-serif;
-      background: radial-gradient(circle at top, #E0F7FA 0%, var(--bg) 60%);
+      background:
+        radial-gradient(circle at 18% 0%, rgba(57, 197, 187, 0.16), transparent 34%),
+        radial-gradient(circle at 86% 10%, rgba(224, 247, 250, 0.72), transparent 30%),
+        linear-gradient(180deg, #ffffff 0%, var(--bg) 66%);
       color: var(--ink);
       display: flex;
       align-items: center;
@@ -32,12 +35,13 @@ export function renderLoginPage() {
     }
     .card {
       width: min(420px, 100%);
-      background: var(--panel);
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(18px);
       border-radius: 20px;
       padding: 36px;
-      box-shadow: var(--shadow);
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.8);
       animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-      border: 1px solid var(--border);
+      border: 1px solid rgba(214, 240, 237, 0.82);
     }
     h1 { margin: 0 0 8px; font-size: 26px; font-weight: 700; color: var(--accent); }
     p { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
@@ -46,15 +50,16 @@ export function renderLoginPage() {
       width: 100%;
       padding: 14px 16px;
       border-radius: 12px;
-      border: 2px solid var(--border);
+      border: 1px solid rgba(214, 240, 237, 0.95);
       margin-bottom: 20px;
       font-size: 15px;
       transition: all 0.2s;
       outline: none;
+      background: rgba(255, 255, 255, 0.9);
     }
     input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(57, 197, 187, 0.2);
+      box-shadow: 0 0 0 4px rgba(57, 197, 187, 0.16);
     }
     button {
       width: 100%;
@@ -67,16 +72,16 @@ export function renderLoginPage() {
       font-size: 16px;
       cursor: pointer;
       transition: all 0.2s;
-      box-shadow: 0 4px 12px rgba(57, 197, 187, 0.3);
+      box-shadow: 0 10px 22px rgba(57, 197, 187, 0.24);
     }
     button:hover {
       background: var(--accent-hover);
       transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(57, 197, 187, 0.4);
+      box-shadow: 0 12px 28px rgba(57, 197, 187, 0.30);
     }
     button:active {
       transform: translateY(1px);
-      box-shadow: 0 2px 8px rgba(57, 197, 187, 0.3);
+      box-shadow: 0 5px 14px rgba(57, 197, 187, 0.22);
     }
     .error { color: #E57373; margin-top: 16px; min-height: 20px; text-align: center; font-weight: 500; }
     @keyframes fadeUp {
@@ -152,52 +157,75 @@ function getAppStyles() {
       --bg: #F4FDFB; --panel: #ffffff; --accent: #39C5BB; --accent-hover: #2BA9A0;
       --ink: #1A2F2D; --muted: #6A7A78; --border: #D6F0ED;
       --shadow: 0 18px 45px rgba(57,197,187,0.08);
+      --glass-panel: rgba(255,255,255,0.80);
+      --glass-panel-strong: rgba(255,255,255,0.88);
+      --glass-surface: rgba(250,253,252,0.72);
+      --glass-input: rgba(255,255,255,0.78);
+      --glass-border: rgba(214,240,237,0.84);
+      --glass-border-strong: rgba(214,240,237,0.95);
+      --glass-blur: blur(18px);
+      --glass-shadow: 0 18px 48px rgba(57,197,187,0.09), inset 0 1px 0 rgba(255,255,255,0.78);
       --success: #4CAF50; --success-bg: #E8F5E9;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at top left,#E0F7FA 0%,var(--bg) 45%); color:var(--ink); }
-    header { display:flex; justify-content:space-between; align-items:center; padding:24px 32px; background:rgba(255,255,255,0.6); backdrop-filter:blur(10px); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:10; }
+    body { margin:0; font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at 10% -10%,rgba(57,197,187,0.18) 0%,transparent 30%),radial-gradient(circle at 86% 4%,rgba(224,247,250,0.68) 0%,transparent 28%),linear-gradient(180deg,#ffffff 0%,var(--bg) 52%); color:var(--ink); }
+    header { display:flex; justify-content:space-between; align-items:center; padding:20px 32px; background:rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); border-bottom:1px solid rgba(214,240,237,0.76); position:sticky; top:0; z-index:10; box-shadow:0 8px 30px rgba(57,197,187,0.05); }
     header h1 { margin:0; font-size:24px; color:var(--accent); font-weight:700; }
-    header button { background:white; border:2px solid var(--border); border-radius:999px; padding:8px 20px; cursor:pointer; font-weight:600; color:var(--ink); transition:all 0.2s; }
-    header button:hover { border-color:var(--accent); color:var(--accent); }
-    main { padding:32px; display:grid; gap:24px; grid-template-columns:1fr; max-width:1200px; margin:0 auto; }
-    .card { background:var(--panel); border-radius:20px; padding:24px; box-shadow:var(--shadow); border:1px solid var(--border); animation:fadeUp 0.6s cubic-bezier(0.16,1,0.3,1); }
-    .card h2 { margin:0 0 16px; font-size:20px; color:var(--accent); display:flex; align-items:center; gap:8px; }
+    header button { background:rgba(255,255,255,0.82); border:1px solid rgba(214,240,237,0.95); border-radius:999px; padding:8px 20px; cursor:pointer; font-weight:600; color:var(--ink); transition:all 0.2s; box-shadow:0 4px 16px rgba(57,197,187,0.08); }
+    header button:hover { border-color:var(--accent); color:var(--accent); box-shadow:0 6px 20px rgba(57,197,187,0.12); }
+    main { padding:28px 32px 40px; display:grid; gap:22px; grid-template-columns:1fr; max-width:1200px; margin:0 auto; }
+    .card { background:var(--glass-panel); backdrop-filter:var(--glass-blur); border-radius:20px; padding:24px; box-shadow:var(--glass-shadow); border:1px solid var(--glass-border); animation:fadeUp 0.6s cubic-bezier(0.16,1,0.3,1); }
+    .card h2 { margin:0 0 14px; font-size:20px; color:var(--accent); display:flex; align-items:center; gap:8px; }
     .card h2::before { content:''; display:block; width:4px; height:18px; background:var(--accent); border-radius:4px; }
-    .muted { color:var(--muted); font-size:14px; margin-bottom:16px; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; }
-    .row button { border:none; background:var(--accent); color:white; padding:10px 16px; border-radius:12px; cursor:pointer; font-weight:600; transition:all 0.2s; }
-    .row button:hover { background:var(--accent-hover); transform:translateY(-1px); }
-    .row .ghost { background:transparent; color:var(--accent); border:2px solid var(--accent); }
-    .row .ghost:hover { background:rgba(57,197,187,0.1); }
+    .muted { color:var(--muted); font-size:14px; margin-bottom:14px; line-height:1.65; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    .account-actions { margin-bottom:20px; align-items:center; }
+    .settings-actions,.modal-actions { margin-top:24px; }
+    .modal-actions { justify-content:center; }
+    .preview-actions { margin:8px 0 12px; }
+    .split-actions button { flex:1; }
+    .row button { border:none; background:var(--accent); color:white; padding:9px 15px; border-radius:14px; cursor:pointer; font-weight:600; transition:all 0.2s; box-shadow:0 8px 20px rgba(57,197,187,0.18); }
+    .row button:hover { background:var(--accent-hover); transform:translateY(-1px); box-shadow:0 10px 24px rgba(57,197,187,0.24); }
+    .row .ghost { background:rgba(255,255,255,0.66); color:var(--accent); border:1px solid rgba(57,197,187,0.45); box-shadow:none; }
+    .row .ghost:hover { background:rgba(57,197,187,0.08); border-color:var(--accent); }
     .user-list { display:grid; gap:16px; }
-    .user-item { border:1px solid var(--border); border-radius:16px; padding:16px; display:grid; gap:12px; background:#fafdfc; }
-    .auth-health { border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:white; font-size:12px; line-height:1.7; }
+    .user-item { border:1px solid var(--glass-border); border-radius:16px; padding:15px; display:grid; gap:12px; background:var(--glass-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
+    .auth-health { border:1px solid var(--glass-border); border-radius:12px; padding:10px 12px; background:rgba(255,255,255,0.76); font-size:12px; line-height:1.7; }
     .auth-health.ok { border-color:var(--success); background:var(--success-bg); }
     .auth-health.warn { border-color:#FFB74D; background:#FFF8E1; }
     .auth-health.error { border-color:#E57373; background:#FFEBEE; }
     .auth-health-title { font-weight:800; color:var(--ink); }
     .auth-health-detail { color:var(--muted); }
     .auth-health.error .auth-health-detail { color:#C62828; }
-    .settings-grid { display:grid; gap:16px; grid-template-columns:1fr 1fr; }
-    .settings-group { grid-column:1/-1; padding-top:16px; border-top:1px dashed var(--border); margin-top:8px; }
+    .settings-grid { display:grid; gap:14px 16px; grid-template-columns:1fr 1fr; }
+    .settings-group { grid-column:1/-1; padding-top:14px; border-top:1px solid rgba(214,240,237,0.78); margin-top:8px; }
     .settings-group-title { font-weight:700; color:var(--ink); margin-bottom:12px; }
     .field-full { grid-column:1/-1; }
     label { display:block; font-weight:500; margin:0 0 8px; color:var(--ink); font-size:14px; }
-    input[type="text"],input[type="number"],input[type="password"],select { width:100%; padding:12px 14px; border-radius:12px; border:2px solid var(--border); font-size:14px; outline:none; transition:all 0.2s; background:white; }
-    input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(57,197,187,0.2); }
+    .field-hint { margin:6px 0 0; font-size:12px; }
+    .row .field-hint { width:100%; margin-bottom:0; }
+    .template-note { margin-bottom:8px; }
+    .template-label { margin-top:12px; }
+    input[type="text"],input[type="number"],input[type="password"],select { width:100%; padding:11px 13px; border-radius:12px; border:1px solid var(--glass-border-strong); font-size:14px; outline:none; transition:all 0.2s; background:var(--glass-input); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
+    input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 4px rgba(57,197,187,0.14), inset 0 1px 0 rgba(255,255,255,0.8); background:white; }
     .checkbox-label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; margin:0; }
     .checkbox-label input { width:auto; margin:0; }
-    .modal { position:fixed; inset:0; background:rgba(26,47,45,0.6); backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; padding:16px; z-index:100; }
+    .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:none; align-items:center; justify-content:center; padding:16px; z-index:100; }
     .modal.active { display:flex; }
-    .modal .panel { background:white; padding:32px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(0,0,0,0.1); border:1px solid var(--border); max-height:90vh; overflow-y:auto; overflow-x:hidden; }
-    .favorites-list { max-height:400px; overflow:auto; border:2px solid var(--border); border-radius:16px; padding:12px; background:#fafdfc; }
+    .modal .panel { background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); padding:30px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(26,47,45,0.14), inset 0 1px 0 rgba(255,255,255,0.82); border:1px solid var(--glass-border); max-height:90vh; overflow-y:auto; overflow-x:hidden; }
+    .modal .panel.panel-narrow { max-width:760px; }
+    .modal .panel.panel-medium { max-width:800px; }
+    .modal .panel.panel-large { max-width:860px; }
+    .modal .panel.panel-wide { max-width:900px; }
+    .modal .panel.panel-wider { max-width:920px; }
+    .modal .panel.panel-max { max-width:980px; }
+    .favorites-list { max-height:400px; overflow:auto; border:1px solid var(--glass-border); border-radius:16px; padding:10px; background:var(--glass-surface); }
     .fav-label { font-weight:500; display:flex; gap:12px; align-items:center; margin:0; padding:12px; border-radius:12px; transition:background 0.2s; cursor:pointer; }
     .fav-label:hover { background:rgba(57,197,187,0.1); }
     .fav-cover { width:64px; height:40px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
     /* Video items in detail modal */
     .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; overflow-x:hidden; }
-    .video-item { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); align-items:center; transition:all 0.2s; }
+    .video-item { display:flex; gap:12px; padding:11px; border-radius:12px; border:1px solid var(--glass-border); align-items:center; transition:all 0.2s; background:rgba(255,255,255,0.62); }
     .video-detail-status { text-align:center; padding:10px; color:var(--muted); font-size:13px; }
     .video-detail-status.error { color:#E57373; }
     .video-detail-hint { color:var(--muted); font-size:12px; margin:-4px 0 10px; line-height:1.6; }
@@ -214,11 +242,12 @@ function getAppStyles() {
     .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
     .video-badge.removed-missing { background:#EF9A9A; color:white; }
     .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-    .filter-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
+    .filter-toggle button { padding:6px 16px; border-radius:999px; border:1px solid var(--glass-border-strong); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .filter-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
     /* Template tags */
     .template-tags { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
-    .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:8px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:2px solid transparent; transition:all 0.2s; user-select:none; }
+    .selected-tags { min-height:40px; border:1px dashed var(--glass-border-strong); border-radius:12px; padding:8px; background:rgba(255,255,255,0.42); }
+    .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all 0.2s; user-select:none; }
     .template-tag:hover { border-color:var(--accent); }
     .template-tag.active { background:var(--accent); color:white; }
     .template-tag.selected { background:var(--accent); color:white; cursor:grab; }
@@ -227,16 +256,16 @@ function getAppStyles() {
     .template-tag.drag-over { border-color:var(--accent); transform:scale(1.05); }
     .template-tag .remove-x { margin-left:4px; font-size:14px; opacity:0.7; }
     .template-tag .remove-x:hover { opacity:1; }
-    .template-preview { padding:12px; background:#f5f5f5; border-radius:8px; font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
+    .template-preview { padding:11px 12px; background:rgba(255,255,255,0.64); border:1px solid rgba(214,240,237,0.72); border-radius:12px; font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
     /* Log console */
     .log-console { background:#1a1a2e; color:#eee; border-radius:12px; padding:16px; font-family:'Courier New',monospace; font-size:12px; max-height:400px; overflow-y:auto; line-height:1.8; }
     .log-console .log-info { color:#39C5BB; }
     .log-console .log-error { color:#E57373; }
     .log-console .log-warn { color:#FFB74D; }
     .log-toggle { display:flex; gap:8px; margin-bottom:12px; }
-    .log-toggle button { padding:6px 16px; border-radius:8px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
+    .log-toggle button { padding:6px 16px; border-radius:999px; border:1px solid rgba(214,240,237,0.95); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
-    .scheduler-status { border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:12px; margin-bottom:12px; font-size:13px; }
+    .scheduler-status { border:1px solid var(--glass-border); border-radius:14px; background:var(--glass-surface); padding:11px 12px; margin-bottom:12px; font-size:13px; }
     .scheduler-status-main { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
     .scheduler-status-title { font-weight:800; color:var(--accent); }
     .scheduler-status-detail { color:var(--muted); margin-top:4px; }
@@ -244,16 +273,16 @@ function getAppStyles() {
     .scheduler-status.queued,.scheduler-status.cooldown { border-color:#FFB74D; background:#FFF8E1; }
     .scheduler-status-grid { display:grid; gap:6px 14px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); margin-top:10px; color:var(--muted); }
     .scheduler-status-grid strong { color:var(--ink); }
-    .local-cache-status { border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin:0 0 10px; background:#f8fbfa; font-size:12px; color:var(--muted); }
+    .local-cache-status { border:1px solid var(--glass-border); border-radius:14px; padding:10px 12px; margin:0 0 10px; background:rgba(248,251,250,0.76); font-size:12px; color:var(--muted); }
     .local-cache-status.paused { border-color:#FFB74D; background:#FFF8E1; color:#8D6E00; }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
-    .queue-col { min-width:0; border:1px solid var(--border); border-radius:12px; background:#fafdfc; padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; }
+    .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
     .queue-col-count { min-width:28px; text-align:right; }
     .queue-list { display:grid; gap:8px; overflow-y:auto; padding-right:4px; min-height:0; align-content:start; flex:1; }
     .queue-more { color:var(--muted); font-size:12px; text-align:center; padding:8px 4px; border:1px dashed var(--border); border-radius:10px; background:rgba(57,197,187,0.04); }
     .queue-empty { color:var(--muted); font-size:12px; text-align:center; padding:24px 4px; align-self:center; opacity:0.72; }
-    .queue-card { min-width:0; max-width:100%; display:flex; gap:8px; padding:8px; border-radius:10px; border:1px solid var(--border); background:white; transition:box-shadow .18s ease, opacity .2s ease, border-color .2s ease; will-change:transform; }
+    .queue-card { min-width:0; max-width:100%; display:flex; gap:8px; padding:8px; border-radius:12px; border:1px solid var(--glass-border); background:var(--glass-input); transition:box-shadow .18s ease, opacity .2s ease, border-color .2s ease; will-change:transform; }
     .queue-card.entering { animation:queueCardIn .22s cubic-bezier(0.16,1,0.3,1); }
     .queue-card.leaving { opacity:0; transform:scale(.98); }
     .queue-card:hover { box-shadow:0 6px 16px rgba(57,197,187,0.12); border-color:var(--accent); }
@@ -264,38 +293,38 @@ function getAppStyles() {
     .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
     .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
     @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
-    .help-icon-btn { width:32px; height:32px; border-radius:50%; border:2px solid var(--accent); background:white; color:var(--accent); font-weight:800; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; }
+    .help-icon-btn { width:32px; height:32px; border-radius:50%; border:1px solid rgba(57,197,187,0.55); background:rgba(255,255,255,0.72); color:var(--accent); font-weight:800; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; }
     .help-icon-btn:hover { background:rgba(57,197,187,0.1); transform:translateY(-1px); }
     .section-title-row { display:flex; align-items:center; gap:8px; margin:0 0 16px; }
     .section-title-row h2 { margin:0; }
     .section-title-row .help-icon-btn { width:28px; height:28px; font-size:14px; }
     .help-tabs { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 16px; }
-    .help-tabs button { padding:7px 14px; border-radius:999px; border:2px solid var(--border); background:white; color:var(--ink); cursor:pointer; font-weight:700; }
+    .help-tabs button { padding:7px 14px; border-radius:999px; border:1px solid rgba(214,240,237,0.95); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:700; }
     .help-tabs button.active { border-color:var(--accent); background:rgba(57,197,187,0.12); color:var(--accent); }
     .help-card-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
-    .help-card { border:1px solid var(--border); border-radius:16px; padding:14px; background:#fafdfc; }
+    .help-card { border:1px solid var(--glass-border); border-radius:16px; padding:14px; background:var(--glass-surface); }
     .help-card strong { color:var(--accent); display:block; margin-bottom:6px; }
     .help-card ul { margin:8px 0 0 18px; padding:0; color:var(--muted); font-size:13px; line-height:1.7; }
     .flow-visual { display:grid; gap:10px; margin:12px 0; }
-    .flow-step { display:grid; grid-template-columns:92px 1fr; gap:12px; align-items:center; border:1px solid var(--border); border-radius:18px; padding:12px; background:linear-gradient(135deg,#ffffff,#f2fbfa); }
+    .flow-step { display:grid; grid-template-columns:92px 1fr; gap:12px; align-items:center; border:1px solid var(--glass-border); border-radius:18px; padding:12px; background:linear-gradient(135deg,rgba(255,255,255,0.82),rgba(242,251,250,0.78)); }
     .flow-step .badge { border-radius:999px; padding:8px 10px; background:var(--accent); color:white; text-align:center; font-weight:800; font-size:12px; }
     .flow-step .desc { color:var(--ink); font-size:14px; line-height:1.6; }
     .effect-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-top:14px; }
-    .effect-group { border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .effect-group { border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
     .effect-group strong { color:var(--accent); display:block; margin-bottom:6px; }
     .effect-group div { color:var(--muted); font-size:13px; line-height:1.7; }
     .rename-btn { background:#FF7043!important; }
     .rename-btn:hover { background:#F4511E!important; }
     .rename-list { display:grid; gap:10px; max-height:360px; overflow:auto; padding-right:4px; }
-    .rename-item { display:grid; grid-template-columns:auto 1fr; gap:10px; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .rename-item { display:grid; grid-template-columns:auto 1fr; gap:10px; border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
     .rename-item input { margin-top:4px; }
     .rename-title { font-weight:700; color:var(--ink); word-break:break-word; }
     .rename-path { color:var(--muted); font-size:12px; line-height:1.6; word-break:break-all; }
     .rename-arrow { color:var(--accent); font-weight:800; }
     .rename-skip-list { max-height:180px; overflow:auto; border:1px dashed var(--border); border-radius:12px; padding:10px; background:#fffaf5; color:var(--muted); font-size:12px; line-height:1.7; word-break:break-all; }
-    .rename-result { border-radius:12px; padding:10px; background:#f5fbfa; border:1px solid var(--border); color:var(--muted); font-size:13px; line-height:1.7; max-height:160px; overflow:auto; }
+    .rename-result { border-radius:12px; padding:10px; background:rgba(245,251,250,0.78); border:1px solid var(--glass-border); color:var(--muted); font-size:13px; line-height:1.7; max-height:160px; overflow:auto; }
     .cleanup-list { display:grid; gap:10px; margin:12px 0; }
-    .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fafdfc; }
+    .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
     .cleanup-item.important { border-color:#FFB74D; background:#FFF8E1; }
     .cleanup-item.disabled { opacity:.58; cursor:not-allowed; }
     .cleanup-item-title { font-weight:800; color:var(--ink); }
@@ -303,8 +332,20 @@ function getAppStyles() {
     .cleanup-size { color:var(--accent); font-size:12px; font-weight:800; white-space:nowrap; }
     .cleanup-confirm { border:1px dashed #FFB74D; border-radius:14px; padding:12px; background:#FFFDF5; margin-top:12px; }
     .cleanup-help-list { display:grid; gap:10px; margin-top:12px; }
-    .cleanup-help-item { border:1px solid var(--border); border-radius:14px; padding:12px; background:linear-gradient(135deg,#fff,#f6fffd); color:var(--muted); font-size:13px; line-height:1.7; }
+    .cleanup-help-item { border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:linear-gradient(135deg,rgba(255,255,255,0.84),rgba(246,255,253,0.78)); color:var(--muted); font-size:13px; line-height:1.7; }
     .cleanup-help-item strong { color:var(--accent); display:block; margin-bottom:4px; }
+    .status-line { margin-top:8px; }
+    .status-line.primary { margin-top:12px; color:var(--accent); }
+    .center-status { text-align:center; }
+    .login-status { text-align:center; font-weight:500; font-size:16px; }
+    .qr-wrap { text-align:center; margin:24px 0; }
+    .login-qr { width:200px; height:200px; border-radius:16px; border:1px solid var(--glass-border-strong); background:white; padding:3px; }
+    .full-width { width:100%; }
+    .skipped-block { margin-top:14px; }
+    .block-title { color:var(--ink); display:block; margin-bottom:8px; }
+    .result-block { margin-top:14px; }
+    .confirm-hint { margin-bottom:8px; }
+    .help-note { margin-top:14px; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
     .toast { background:white; color:var(--ink); padding:16px 20px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:center; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:400px; word-break:break-word; pointer-events:auto; }
     .toast.success { border-left-color:var(--success); }
@@ -313,6 +354,27 @@ function getAppStyles() {
     @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
     @keyframes toastIn { from{opacity:0;transform:translateX(40px) scale(0.9)} to{opacity:1;transform:translateX(0) scale(1)} }
     @keyframes toastOut { from{opacity:1;transform:translateX(0) scale(1)} to{opacity:0;transform:translateX(40px) scale(0.9)} }
+    @supports not ((backdrop-filter: blur(1px))) {
+      header,.card,.modal .panel { background:var(--panel); }
+      .modal { background:rgba(26,47,45,0.58); }
+    }
+    @media (max-width: 760px) {
+      header { padding:16px 18px; gap:12px; }
+      header h1 { font-size:20px; }
+      header button { padding:7px 14px; }
+      main { padding:18px 12px 28px; gap:16px; }
+      .card { padding:18px; border-radius:18px; }
+      .settings-grid { grid-template-columns:1fr; gap:13px; }
+      .row { gap:8px; }
+      .account-actions button,.settings-actions button,.modal-actions button,.preview-actions button { flex:1 1 150px; min-height:40px; }
+      .modal { padding:10px; align-items:flex-start; }
+      .modal .panel { padding:20px; border-radius:20px; max-height:calc(100vh - 20px); }
+      .video-item { align-items:flex-start; }
+      .video-cover { width:96px; height:60px; }
+      .queue-board { grid-template-columns:repeat(4,minmax(240px,1fr)); max-height:430px; }
+      .toast-container { left:12px; right:12px; bottom:12px; }
+      .toast { max-width:none; }
+    }
   </style>`;
 }
 
@@ -327,7 +389,7 @@ function getAccountSection() {
   return `<section class="card">
       <h2>账号与同步</h2>
       <p class="muted">管理 Bilibili 账号及需同步的收藏夹。点击“立即同步”会唤起后台任务队列。</p>
-      <div class="row" style="margin-bottom:20px;align-items:center;">
+      <div class="row account-actions">
         <button id="addUserBtn">添加 B站账号</button>
         <button class="ghost" id="syncNowBtn">立即同步</button>
         <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
@@ -346,20 +408,20 @@ function getSettingsSection() {
       </div>
       <div class="settings-grid">
         <div><label>轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
-        <div><label>BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" /><p class="muted" style="margin:6px 0 0;font-size:12px;">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
+        <div><label>BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" /><p class="muted field-hint">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
 
         <div class="settings-group"><div class="settings-group-title">AList 云盘设置</div></div>
         <div class="field-full"><label>AList 内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244" autocomplete="off" /></div>
         <div><label>AList 账号 (WebDAV 用户名)</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
         <div><label>AList 密码 (WebDAV 密码)</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
-        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted" style="margin:6px 0 0;font-size:12px;">修改目标路径只影响后续新上传，已有网盘文件不会自动迁移。修改后建议执行 AList 状态对账。</p></div>
+        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted field-hint">修改目标路径只影响后续新上传，已有网盘文件不会自动迁移。修改后建议执行 AList 状态对账。</p></div>
         <div class="field-full"><label>上传目录结构</label>
           <select id="uploadLayout">
             <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
             <option value="folder-video">收藏夹名 / 视频</option>
             <option value="video-only">仅视频文件</option>
           </select>
-          <p class="muted" style="margin:6px 0 0;font-size:12px;">目录结构变化只影响新任务，不会移动已有远端文件。</p>
+          <p class="muted field-hint">目录结构变化只影响新任务，不会移动已有远端文件。</p>
         </div>
 
         <div class="settings-group"><div class="settings-group-title">下载控制 (BBDown)</div></div>
@@ -384,19 +446,19 @@ function getSettingsSection() {
         <div class="field-full row">
           <label class="checkbox-label"><input type="checkbox" id="bbdownHiRes" /> 下载 Hi-Res 音质</label>
           <label class="checkbox-label"><input type="checkbox" id="bbdownDolby" /> 下载 杜比音效 (Dolby)</label>
-          <p class="muted" style="width:100%;margin:0;font-size:12px;">Hi-Res / Dolby 需要扫码登录获得 APP token；旧账号如果没有 token，请重新登录后再启用。</p>
+          <p class="muted field-hint">Hi-Res / Dolby 需要扫码登录获得 APP token；旧账号如果没有 token，请重新登录后再启用。</p>
         </div>
 
         <div class="settings-group"><div class="settings-group-title">📌 视频命名模板</div></div>
         <div class="field-full">
-          <p class="muted" style="margin-bottom:8px;">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
+          <p class="muted template-note">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
           <label>可用变量</label>
           <div class="template-tags" id="templateTags"></div>
-          <label style="margin-top:12px;">已选变量（可拖拽排序）</label>
-          <div class="template-tags" id="selectedTags" style="min-height:40px;border:2px dashed var(--border);border-radius:12px;padding:8px;"></div>
-          <label style="margin-top:12px;">当前模板预览</label>
+          <label class="template-label">已选变量（可拖拽排序）</label>
+          <div class="template-tags selected-tags" id="selectedTags"></div>
+          <label class="template-label">当前模板预览</label>
           <div class="template-preview" id="templatePreview"></div>
-          <label style="margin-top:12px;">自定义模板（高级）</label>
+          <label class="template-label">自定义模板（高级）</label>
           <input id="filenameTemplate" type="text" placeholder="例如: <videoTitle>-<ownerName>-<bvid>" />
         </div>
 
@@ -410,15 +472,15 @@ function getSettingsSection() {
         <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
         <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
       </div>
-      <div class="row" style="margin-top:24px;">
+      <div class="row settings-actions">
         <button id="saveConfigBtn">保存设置并生效</button>
-        <button id="renameBtn" class="rename-btn" style="border:none;color:white;padding:10px 16px;border-radius:12px;cursor:pointer;font-weight:600;transition:all 0.2s;">检查旧命名文件</button>
+        <button id="renameBtn" class="rename-btn">检查旧命名文件</button>
         <button id="qualityUpgradeBtn" class="ghost" type="button">检查可升级画质</button>
         <button id="cleanupDataBtn" class="ghost" type="button">清理数据</button>
       </div>
-      <div class="muted" id="configStatus" style="margin-top:12px;color:var(--accent);"></div>
-      <div class="muted" id="renameStatus" style="margin-top:8px;"></div>
-      <div class="muted" id="qualityUpgradeStatus" style="margin-top:8px;"></div>
+      <div class="muted status-line primary" id="configStatus"></div>
+      <div class="muted status-line" id="renameStatus"></div>
+      <div class="muted status-line" id="qualityUpgradeStatus"></div>
     </section>`;
 }
 
@@ -440,12 +502,12 @@ function getModals() {
     <div class="panel">
       <h2>扫码登录</h2>
       <p class="muted">请使用B站APP扫码登录（TV端接口）。</p>
-      <div style="text-align:center;margin:24px 0;">
-        <img id="loginQr" alt="QR" style="width:200px;height:200px;border-radius:16px;border:4px solid var(--border);" />
+      <div class="qr-wrap">
+        <img id="loginQr" class="login-qr" alt="QR" />
       </div>
-      <div id="loginStatus" class="muted" style="text-align:center;font-weight:500;font-size:16px;"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="closeLoginBtn" class="ghost" style="width:100%;">取消登录</button>
+      <div id="loginStatus" class="muted login-status"></div>
+      <div class="row modal-actions">
+        <button id="closeLoginBtn" class="ghost full-width">取消登录</button>
       </div>
     </div>
   </div>
@@ -455,16 +517,16 @@ function getModals() {
       <h2>选择同步收藏夹</h2>
       <p class="muted">勾选你需要自动备份的收藏夹。点击收藏夹名称可查看内部视频详情。</p>
       <div class="favorites-list" id="favoritesList"></div>
-      <div class="row" style="margin-top:24px;">
-        <button id="saveFavoritesBtn" style="flex:1;">保存选择</button>
-        <button id="closeFavoritesBtn" class="ghost" style="flex:1;">取消</button>
+      <div class="row modal-actions split-actions">
+        <button id="saveFavoritesBtn">保存选择</button>
+        <button id="closeFavoritesBtn" class="ghost">取消</button>
       </div>
-      <div class="muted" id="favoritesStatus" style="margin-top:12px;text-align:center;"></div>
+      <div class="muted status-line center-status" id="favoritesStatus"></div>
     </div>
   </div>
 
   <div class="modal" id="videoDetailModal">
-    <div class="panel" style="max-width:800px;">
+    <div class="panel panel-medium">
       <h2 id="videoDetailTitle">收藏夹详情</h2>
       <div class="filter-toggle" id="videoDetailFilterBar">
         <button id="vdFilterAllBtn" class="active">全部 (0)</button>
@@ -474,105 +536,105 @@ function getModals() {
         <button id="vdFilterUploadedUnavailableBtn">已上传且失效 (0)</button>
       </div>
       <div class="video-grid" id="videoGrid"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="closeVideoDetailBtn" class="ghost" style="width:100%;">关闭</button>
+      <div class="row modal-actions">
+        <button id="closeVideoDetailBtn" class="ghost full-width">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="unavailableModal">
-    <div class="panel" style="max-width:900px;">
+    <div class="panel panel-wide">
       <h2>下架视频清单</h2>
       <div class="filter-toggle">
         <button id="filterMissingBtn" class="active">下架未上传</button>
         <button id="filterUploadedBtn">下架已上传</button>
       </div>
       <div class="video-grid" id="unavailableGrid"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="closeUnavailableBtn" class="ghost" style="width:100%;">关闭</button>
+      <div class="row modal-actions">
+        <button id="closeUnavailableBtn" class="ghost full-width">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="syncHelpModal">
-    <div class="panel" style="max-width:860px;">
+    <div class="panel panel-large">
       <h2>同步与对账说明</h2>
       <div class="help-tabs">
         <button id="syncHelpSimpleBtn" class="active" type="button">简要介绍</button>
         <button id="syncHelpDetailBtn" type="button">详细介绍</button>
       </div>
       <div id="syncHelpContent"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="closeSyncHelpBtn" class="ghost" style="width:100%;">关闭</button>
+      <div class="row modal-actions">
+        <button id="closeSyncHelpBtn" class="ghost full-width">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="settingsHelpModal">
-    <div class="panel" style="max-width:920px;">
+    <div class="panel panel-wider">
       <h2>当前设置执行流程</h2>
       <p class="muted">这里不会保存设置，也不会触发同步，只按当前表单里的值生成说明。</p>
       <div id="settingsFlowContent"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="closeSettingsHelpBtn" class="ghost" style="width:100%;">关闭</button>
+      <div class="row modal-actions">
+        <button id="closeSettingsHelpBtn" class="ghost full-width">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="renamePreviewModal">
-    <div class="panel" style="max-width:980px;">
+    <div class="panel panel-max">
       <h2>检查旧命名文件</h2>
       <p class="muted">先预览会改哪些远端文件。只有勾选并二次确认后，才会真正修改 AList 网盘文件名。</p>
       <div id="renamePreviewSummary" class="muted"></div>
-      <div class="row" style="margin:8px 0 12px;">
+      <div class="row preview-actions">
         <button id="renameSelectAllBtn" class="ghost" type="button">全选</button>
         <button id="renameSelectNoneBtn" class="ghost" type="button">取消全选</button>
         <button id="refreshRenamePreviewBtn" class="ghost" type="button">重新预览</button>
       </div>
       <div class="rename-list" id="renamePreviewList"></div>
-      <div id="renameSkippedBlock" style="display:none;margin-top:14px;">
-        <strong style="color:var(--ink);display:block;margin-bottom:8px;">跳过的文件</strong>
+      <div id="renameSkippedBlock" class="skipped-block" style="display:none;">
+        <strong class="block-title">跳过的文件</strong>
         <div class="rename-skip-list" id="renameSkippedList"></div>
       </div>
-      <div id="renameResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="executeRenameBtn" type="button" style="flex:1;">确认重命名所选文件</button>
-        <button id="closeRenamePreviewBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      <div id="renameResultBlock" class="rename-result result-block" style="display:none;"></div>
+      <div class="row modal-actions split-actions">
+        <button id="executeRenameBtn" type="button">确认重命名所选文件</button>
+        <button id="closeRenamePreviewBtn" class="ghost" type="button">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="qualityUpgradeModal">
-    <div class="panel" style="max-width:980px;">
+    <div class="panel panel-max">
       <h2>检查可升级画质</h2>
       <p class="muted">按当前 BBDown 画质、编码、Hi-Res、杜比设置重新下载。新版文件上传并验证成功后，才会删除旧远端文件。</p>
       <div id="qualityUpgradeSummary" class="muted"></div>
-      <div class="row" style="margin:8px 0 12px;">
+      <div class="row preview-actions">
         <button id="qualityUpgradeSelectAllBtn" class="ghost" type="button">全选</button>
         <button id="qualityUpgradeSelectNoneBtn" class="ghost" type="button">取消全选</button>
         <button id="refreshQualityUpgradeBtn" class="ghost" type="button">重新预览</button>
       </div>
       <div class="rename-list" id="qualityUpgradeList"></div>
-      <div id="qualityUpgradeSkippedBlock" style="display:none;margin-top:14px;">
-        <strong style="color:var(--ink);display:block;margin-bottom:8px;">跳过的项目</strong>
+      <div id="qualityUpgradeSkippedBlock" class="skipped-block" style="display:none;">
+        <strong class="block-title">跳过的项目</strong>
         <div class="rename-skip-list" id="qualityUpgradeSkippedList"></div>
       </div>
-      <div id="qualityUpgradeResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="executeQualityUpgradeBtn" type="button" style="flex:1;">确认重调所选视频</button>
-        <button id="closeQualityUpgradeBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      <div id="qualityUpgradeResultBlock" class="rename-result result-block" style="display:none;"></div>
+      <div class="row modal-actions split-actions">
+        <button id="executeQualityUpgradeBtn" type="button">确认重调所选视频</button>
+        <button id="closeQualityUpgradeBtn" class="ghost" type="button">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="cleanupDataModal">
-    <div class="panel" style="max-width:860px;">
+    <div class="panel panel-large">
       <div class="section-title-row">
         <h2>清理数据</h2>
         <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么">?</button>
       </div>
       <p class="muted">勾选要清理的小抽屉。清理只会碰本项目的 <code>data</code> 和 <code>temp</code>，不会乱动别的地方。</p>
-      <div class="row" style="margin:8px 0 12px;">
+      <div class="row preview-actions">
         <button id="cleanupSelectAllBtn" class="ghost" type="button">全选：完全清除</button>
         <button id="cleanupSelectNoneBtn" class="ghost" type="button">取消全选</button>
         <button id="refreshCleanupBtn" class="ghost" type="button">刷新占用</button>
@@ -580,25 +642,25 @@ function getModals() {
       <div id="cleanupStatus" class="muted"></div>
       <div class="cleanup-list" id="cleanupList"></div>
       <div id="cleanupConfirmBlock" class="cleanup-confirm" style="display:none;">
-        <div class="muted" id="cleanupConfirmHint" style="margin-bottom:8px;"></div>
+        <div class="muted confirm-hint" id="cleanupConfirmHint"></div>
         <input id="cleanupConfirmInput" type="text" autocomplete="off" placeholder="按提示输入确认文字" />
       </div>
-      <div id="cleanupResultBlock" class="rename-result" style="display:none;margin-top:14px;"></div>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="executeCleanupBtn" type="button" style="flex:1;">确认清理</button>
-        <button id="closeCleanupDataBtn" class="ghost" type="button" style="flex:1;">关闭</button>
+      <div id="cleanupResultBlock" class="rename-result result-block" style="display:none;"></div>
+      <div class="row modal-actions split-actions">
+        <button id="executeCleanupBtn" type="button">确认清理</button>
+        <button id="closeCleanupDataBtn" class="ghost" type="button">关闭</button>
       </div>
     </div>
   </div>
 
   <div class="modal" id="cleanupHelpModal">
-    <div class="panel" style="max-width:760px;">
+    <div class="panel panel-narrow">
       <h2>清理小贴士</h2>
       <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
       <div id="cleanupHelpContent" class="cleanup-help-list"></div>
-      <p class="muted" style="margin-top:14px;">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。</p>
-      <div class="row" style="margin-top:24px;justify-content:center;">
-        <button id="closeCleanupHelpBtn" class="ghost" type="button" style="width:100%;">知道啦</button>
+      <p class="muted help-note">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。</p>
+      <div class="row modal-actions">
+        <button id="closeCleanupHelpBtn" class="ghost full-width" type="button">知道啦</button>
       </div>
     </div>
   </div>`;
@@ -921,7 +983,7 @@ function getAppScript() {
           '<div class="effect-group"><strong>\u65b0\u4efb\u52a1\u751f\u6548</strong><div>\u753b\u8d28\u3001\u7f16\u7801\u3001Hi-Res / Dolby\u3001\u547d\u540d\u6a21\u677f\u3001AList \u8def\u5f84\u3001\u4e0a\u4f20\u76ee\u5f55\u7ed3\u6784\u3001\u5931\u8d25\u91cd\u8bd5\u6b21\u6570\u3001\u91cd\u8bd5\u95f4\u9694\u3002</div></div>' +
           '<div class="effect-group"><strong>\u5bf9\u8d26\u65f6\u751f\u6548</strong><div>AList \u5bf9\u8d26\u5e76\u53d1\u6570\u3001AList \u5bf9\u8d26\u9650\u901f\u3001\u6bcf\u8f6e\u6700\u591a\u8865\u4f20\u6570\u91cf\u3002</div></div>' +
         '</div>' +
-        '<p class="muted" style="margin-top:14px;">\u4fee\u6539 AList \u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002AList \u5bf9\u8d26\u9ad8\u5e76\u53d1/\u9ad8\u9650\u901f\u4f1a\u589e\u52a0 AList \u4e0e\u7f51\u76d8\u540e\u7aef\u538b\u529b\uff0c\u5efa\u8bae\u9010\u6b65\u8c03\u9ad8\u3002</p>';
+        '<p class="muted help-note">\u4fee\u6539 AList \u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002AList \u5bf9\u8d26\u9ad8\u5e76\u53d1/\u9ad8\u9650\u901f\u4f1a\u589e\u52a0 AList \u4e0e\u7f51\u76d8\u540e\u7aef\u538b\u529b\uff0c\u5efa\u8bae\u9010\u6b65\u8c03\u9ad8\u3002</p>';
     }
 
     function openSettingsHelp() {
