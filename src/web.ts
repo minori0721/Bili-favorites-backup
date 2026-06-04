@@ -186,9 +186,13 @@ function getAppStyles() {
     .split-actions button { flex:1; }
     .row button { border:none; background:var(--accent); color:white; padding:9px 15px; border-radius:14px; cursor:pointer; font-weight:600; transition:all 0.2s; box-shadow:0 8px 20px rgba(57,197,187,0.18); }
     .row button:hover { background:var(--accent-hover); transform:translateY(-1px); box-shadow:0 10px 24px rgba(57,197,187,0.24); }
+    .row button:disabled { opacity:.56; cursor:not-allowed; transform:none; box-shadow:none; }
+    .row button:disabled:hover { transform:none; box-shadow:none; }
     .row .ghost { background:rgba(255,255,255,0.66); color:var(--accent); border:1px solid rgba(57,197,187,0.45); box-shadow:none; }
     .row .ghost:hover { background:rgba(57,197,187,0.08); border-color:var(--accent); }
     .row .danger-ghost { border-color:#E57373; color:#E57373; }
+    .row button.danger-action { background:#E57373; box-shadow:0 8px 20px rgba(229,115,115,0.20); }
+    .row button.danger-action:hover { background:#D85C5C; box-shadow:0 10px 24px rgba(229,115,115,0.26); }
     .row .compact-button { padding:4px 12px; font-size:12px; flex-shrink:0; }
     .user-list { display:grid; gap:16px; }
     .user-item { border:1px solid var(--glass-border); border-radius:16px; padding:15px; display:grid; gap:12px; background:var(--glass-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
@@ -306,8 +310,8 @@ function getAppStyles() {
     .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
     .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
     @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
-    .help-icon-btn { width:32px; height:32px; border-radius:50%; border:1px solid rgba(57,197,187,0.55); background:rgba(255,255,255,0.72); color:var(--accent); font-weight:800; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; }
-    .help-icon-btn:hover { background:rgba(57,197,187,0.1); transform:translateY(-1px); }
+    .help-icon-btn { width:32px; height:32px; border-radius:50%; border:1px solid rgba(57,197,187,0.55); background:linear-gradient(180deg,rgba(255,255,255,0.86),rgba(244,253,251,0.72)); color:var(--accent); font-size:15px; font-weight:900; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; box-shadow:inset 0 1px 0 rgba(255,255,255,0.9),0 5px 14px rgba(57,197,187,0.10); }
+    .help-icon-btn:hover,.help-icon-btn:focus-visible { background:rgba(57,197,187,0.1); border-color:var(--accent); transform:translateY(-1px); box-shadow:0 8px 18px rgba(57,197,187,0.18); outline:none; }
     .section-title-row { display:flex; align-items:center; gap:8px; margin:0 0 16px; }
     .section-title-row h2 { margin:0; }
     .section-title-row .help-icon-btn { width:28px; height:28px; font-size:14px; }
@@ -326,8 +330,8 @@ function getAppStyles() {
     .effect-group { border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
     .effect-group strong { color:var(--accent); display:block; margin-bottom:6px; }
     .effect-group div { color:var(--muted); font-size:13px; line-height:1.7; }
-    .rename-btn { background:#FF7043!important; }
-    .rename-btn:hover { background:#F4511E!important; }
+    .row button.rename-btn { background:#FF7043; }
+    .row button.rename-btn:hover { background:#F4511E; }
     .rename-list { display:grid; gap:10px; max-height:360px; overflow:auto; padding-right:4px; }
     .rename-item { display:grid; grid-template-columns:auto 1fr; gap:10px; border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
     .rename-item input { margin-top:4px; }
@@ -359,6 +363,16 @@ function getAppStyles() {
     .result-block { margin-top:14px; }
     .confirm-hint { margin-bottom:8px; }
     .help-note { margin-top:14px; }
+    .is-hidden { display:none!important; }
+    .status-success { color:var(--accent)!important; }
+    .status-muted { color:var(--muted)!important; }
+    .status-error { color:#E57373!important; }
+    .confirm-action-message { color:var(--ink); line-height:1.7; margin:10px 0 0; }
+    .confirm-action-detail { border:1px solid var(--glass-border); border-radius:14px; background:rgba(255,255,255,0.62); color:var(--muted); line-height:1.7; padding:12px; margin-top:12px; font-size:13px; }
+    .confirm-action-input-wrap { margin-top:14px; }
+    .confirm-action-input-wrap label { color:var(--ink); }
+    .confirm-action-input-hint { margin-top:6px; font-size:12px; }
+    .clipboard-fallback-input { position:fixed; left:-9999px; top:0; width:1px; height:1px; opacity:0; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
     .toast { background:white; color:var(--ink); padding:14px 14px 14px 18px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:flex-start; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:420px; word-break:break-word; pointer-events:auto; }
     .toast-message { flex:1; min-width:0; line-height:1.55; }
@@ -416,7 +430,7 @@ function getAccountSection() {
         <button class="ghost" id="syncNowBtn">立即同步</button>
         <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
         <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
-        <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明">?</button>
+        <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明" aria-label="查看同步按钮说明">?</button>
       </div>
       <div class="user-list" id="userList"></div>
     </section>`;
@@ -426,7 +440,7 @@ function getSettingsSection() {
   return `<section class="card">
       <div class="section-title-row">
         <h2>全局设置</h2>
-        <button class="help-icon-btn" id="settingsHelpBtn" type="button" title="查看当前设置如何执行">?</button>
+        <button class="help-icon-btn" id="settingsHelpBtn" type="button" title="查看当前设置如何执行" aria-label="查看当前设置如何执行">?</button>
       </div>
       <div class="settings-grid">
         <div><label>轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
@@ -614,11 +628,11 @@ function getModals() {
         <button id="refreshRenamePreviewBtn" class="ghost" type="button">重新预览</button>
       </div>
       <div class="rename-list" id="renamePreviewList"></div>
-      <div id="renameSkippedBlock" class="skipped-block" style="display:none;">
+      <div id="renameSkippedBlock" class="skipped-block is-hidden">
         <strong class="block-title">跳过的文件</strong>
         <div class="rename-skip-list" id="renameSkippedList"></div>
       </div>
-      <div id="renameResultBlock" class="rename-result result-block" style="display:none;"></div>
+      <div id="renameResultBlock" class="rename-result result-block is-hidden"></div>
       <div class="row modal-actions split-actions">
         <button id="executeRenameBtn" type="button">确认重命名所选文件</button>
         <button id="closeRenamePreviewBtn" class="ghost" type="button">关闭</button>
@@ -637,11 +651,11 @@ function getModals() {
         <button id="refreshQualityUpgradeBtn" class="ghost" type="button">重新预览</button>
       </div>
       <div class="rename-list" id="qualityUpgradeList"></div>
-      <div id="qualityUpgradeSkippedBlock" class="skipped-block" style="display:none;">
+      <div id="qualityUpgradeSkippedBlock" class="skipped-block is-hidden">
         <strong class="block-title">跳过的项目</strong>
         <div class="rename-skip-list" id="qualityUpgradeSkippedList"></div>
       </div>
-      <div id="qualityUpgradeResultBlock" class="rename-result result-block" style="display:none;"></div>
+      <div id="qualityUpgradeResultBlock" class="rename-result result-block is-hidden"></div>
       <div class="row modal-actions split-actions">
         <button id="executeQualityUpgradeBtn" type="button">确认重调所选视频</button>
         <button id="closeQualityUpgradeBtn" class="ghost" type="button">关闭</button>
@@ -653,7 +667,7 @@ function getModals() {
     <div class="panel panel-large">
       <div class="section-title-row">
         <h2>清理数据</h2>
-        <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么">?</button>
+        <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么" aria-label="查看清理项目说明">?</button>
       </div>
       <p class="muted">勾选要清理的小抽屉。清理只会碰本项目的 <code>data</code> 和 <code>temp</code>，不会乱动别的地方。</p>
       <div class="row preview-actions">
@@ -663,11 +677,11 @@ function getModals() {
       </div>
       <div id="cleanupStatus" class="muted"></div>
       <div class="cleanup-list" id="cleanupList"></div>
-      <div id="cleanupConfirmBlock" class="cleanup-confirm" style="display:none;">
+      <div id="cleanupConfirmBlock" class="cleanup-confirm is-hidden">
         <div class="muted confirm-hint" id="cleanupConfirmHint"></div>
         <input id="cleanupConfirmInput" type="text" autocomplete="off" placeholder="按提示输入确认文字" />
       </div>
-      <div id="cleanupResultBlock" class="rename-result result-block" style="display:none;"></div>
+      <div id="cleanupResultBlock" class="rename-result result-block is-hidden"></div>
       <div class="row modal-actions split-actions">
         <button id="executeCleanupBtn" type="button">确认清理</button>
         <button id="closeCleanupDataBtn" class="ghost" type="button">关闭</button>
@@ -683,6 +697,23 @@ function getModals() {
       <p class="muted help-note">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。</p>
       <div class="row modal-actions">
         <button id="closeCleanupHelpBtn" class="ghost full-width" type="button">知道啦</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="confirmActionModal">
+    <div class="panel panel-narrow">
+      <h2 id="confirmActionTitle">确认操作</h2>
+      <div id="confirmActionMessage" class="confirm-action-message"></div>
+      <div id="confirmActionDetail" class="confirm-action-detail is-hidden"></div>
+      <div id="confirmActionInputWrap" class="confirm-action-input-wrap is-hidden">
+        <label id="confirmActionInputLabel" for="confirmActionInput">确认文字</label>
+        <input id="confirmActionInput" type="text" autocomplete="off" />
+        <div id="confirmActionInputHint" class="muted confirm-action-input-hint"></div>
+      </div>
+      <div class="row modal-actions split-actions">
+        <button id="confirmActionOkBtn" type="button">确认</button>
+        <button id="confirmActionCancelBtn" class="ghost" type="button">取消</button>
       </div>
     </div>
   </div>`;
@@ -734,10 +765,45 @@ function getAppScript() {
     let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
     let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
     let lastModalTrigger = null;
+    let pendingConfirmAction = null;
 
     function safeText(value, fallback = '未知') {
       const text = String(value ?? '').trim();
       return text || fallback;
+    }
+
+    function setHidden(elOrId, hidden) {
+      const el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
+      if (!el) return;
+      el.classList.toggle('is-hidden', Boolean(hidden));
+    }
+
+    function setStatus(elOrId, text, type = '') {
+      const el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
+      if (!el) return;
+      el.textContent = text || '';
+      el.classList.remove('status-success', 'status-muted', 'status-error');
+      if (type) el.classList.add('status-' + type);
+    }
+
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (_) {
+          // Fall through to the textarea method when browser clipboard permission is blocked.
+        }
+      }
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', 'readonly');
+      input.className = 'clipboard-fallback-input';
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(input);
+      return copied;
     }
 
     function closeModal(modalOrId) {
@@ -754,6 +820,10 @@ function getAppScript() {
       if (modal.id === 'unavailableModal') {
         unavailableHasMore = false;
         unavailableLoading = false;
+      }
+      if (modal.id === 'confirmActionModal' && pendingConfirmAction) {
+        pendingConfirmAction(false);
+        return;
       }
       modal.classList.remove('active');
       modal.setAttribute('aria-hidden', 'true');
@@ -779,6 +849,61 @@ function getAppScript() {
     function activeModal() {
       const modals = Array.from(document.querySelectorAll('.modal.active'));
       return modals[modals.length - 1] || null;
+    }
+
+    function confirmAction(options) {
+      return new Promise((resolve) => {
+        const modal = document.getElementById('confirmActionModal');
+        const okBtn = document.getElementById('confirmActionOkBtn');
+        const cancelBtn = document.getElementById('confirmActionCancelBtn');
+        const input = document.getElementById('confirmActionInput');
+        const inputWrap = document.getElementById('confirmActionInputWrap');
+        const detail = document.getElementById('confirmActionDetail');
+        const requiredText = String(options.requiredText || '');
+        const danger = options.danger !== false;
+        const previousModalTrigger = lastModalTrigger;
+        document.getElementById('confirmActionTitle').textContent = options.title || '确认操作';
+        document.getElementById('confirmActionMessage').textContent = options.message || '确认继续吗？';
+        detail.textContent = options.detail || '';
+        setHidden(detail, !options.detail);
+        document.getElementById('confirmActionInputLabel').textContent = options.inputLabel || '确认文字';
+        input.value = '';
+        input.placeholder = requiredText || '';
+        document.getElementById('confirmActionInputHint').textContent = requiredText ? '请输入 ' + requiredText + ' 后继续。' : '';
+        setHidden(inputWrap, !requiredText);
+        okBtn.textContent = options.confirmText || '确认';
+        cancelBtn.textContent = options.cancelText || '取消';
+        okBtn.classList.toggle('danger-action', danger);
+        okBtn.disabled = Boolean(requiredText);
+
+        const cleanup = (result) => {
+          input.removeEventListener('input', onInput);
+          okBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          pendingConfirmAction = null;
+          modal.classList.remove('active');
+          modal.setAttribute('aria-hidden', 'true');
+          if (options.trigger && typeof options.trigger.focus === 'function' && document.contains(options.trigger)) {
+            options.trigger.focus();
+          }
+          lastModalTrigger = previousModalTrigger;
+          resolve(result);
+        };
+        const onInput = () => {
+          okBtn.disabled = requiredText ? input.value.trim() !== requiredText : false;
+        };
+        const onOk = () => {
+          if (requiredText && input.value.trim() !== requiredText) return;
+          cleanup(true);
+        };
+        const onCancel = () => cleanup(false);
+        input.addEventListener('input', onInput);
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        pendingConfirmAction = cleanup;
+        openModal('confirmActionModal', options.trigger);
+        setTimeout(() => (requiredText ? input : okBtn).focus(), 0);
+      });
     }
 
     function showToast(message, type = 'error') {
@@ -896,12 +1021,12 @@ function getAppScript() {
       };
       try {
         await fetchJson('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-        st.textContent = '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、AList 路径等对新任务生效，正在运行的任务不会中途切换。'; st.style.color = 'var(--accent)';
+        setStatus(st, '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、AList 路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
       } catch(e) {
-        st.textContent = '保存失败: '+e.message; st.style.color = '#E57373';
+        setStatus(st, '保存失败: '+e.message, 'error');
       } finally {
         btn.textContent = '保存设置并生效';
-        setTimeout(()=>{ if(st.style.color!=='rgb(229, 115, 115)') st.textContent=''; },3000);
+        setTimeout(()=>{ if(!st.classList.contains('status-error')) setStatus(st, ''); },3000);
       }
     }
 
@@ -1101,12 +1226,12 @@ function getAppScript() {
       const block = document.getElementById('cleanupConfirmBlock');
       const hint = document.getElementById('cleanupConfirmHint');
       if (!required) {
-        block.style.display = 'none';
+        setHidden(block, true);
         hint.textContent = '';
         document.getElementById('cleanupConfirmInput').value = '';
         return;
       }
-      block.style.display = 'block';
+      setHidden(block, false);
       hint.textContent = required === 'DELETE ALL PROJECT DATA'
         ? '你选择了完全清除。请输入 DELETE ALL PROJECT DATA，小扫帚才会认真开工。'
         : '你选择了重要数据。请输入 DELETE 确认，避免手滑把小仓库钥匙丢掉。';
@@ -1175,7 +1300,7 @@ function getAppScript() {
 
     async function openCleanupData() {
       openModal('cleanupDataModal', document.getElementById('cleanupDataBtn'));
-      document.getElementById('cleanupResultBlock').style.display = 'none';
+      setHidden('cleanupResultBlock', true);
       await loadCleanupState();
     }
 
@@ -1202,7 +1327,7 @@ function getAppScript() {
       const btn = document.getElementById('executeCleanupBtn');
       btn.disabled = true;
       btn.textContent = '清理中...';
-      resultBlock.style.display = 'block';
+      setHidden(resultBlock, false);
       resultBlock.textContent = '正在清理，请稍等...';
       try {
         const data = await fetchJson('/api/storage/cleanup', {
@@ -1238,16 +1363,14 @@ function getAppScript() {
       st.textContent = '';
       summary.textContent = '正在扫描 AList 远端文件...';
       list.innerHTML = '';
-      resultBlock.style.display = 'none';
+      setHidden(resultBlock, true);
       try {
         renamePreviewState = await fetchJson('/api/rename/preview', { method:'POST' });
         renderRenamePreview();
-        st.textContent = '已生成重命名预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewState.skipped.length + ' 个跳过。';
-        st.style.color = 'var(--muted)';
+        setStatus(st, '已生成重命名预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewState.skipped.length + ' 个跳过。', 'muted');
       } catch(e) {
         summary.textContent = '预览失败：' + e.message;
-        st.textContent = '预览失败: ' + e.message;
-        st.style.color = '#E57373';
+        setStatus(st, '预览失败: ' + e.message, 'error');
       } finally {
         btn.textContent = '检查旧命名文件';
       }
@@ -1297,7 +1420,7 @@ function getAppScript() {
         list.appendChild(row);
       });
       if (skipped.length) {
-        skippedBlock.style.display = 'block';
+        setHidden(skippedBlock, false);
         skippedList.innerHTML = '';
         skipped.forEach((item) => {
           const div = document.createElement('div');
@@ -1305,7 +1428,7 @@ function getAppScript() {
           skippedList.appendChild(div);
         });
       } else {
-        skippedBlock.style.display = 'none';
+        setHidden(skippedBlock, true);
         skippedList.innerHTML = '';
       }
     }
@@ -1329,14 +1452,21 @@ function getAppScript() {
         showToast('请先勾选需要重命名的文件', 'info');
         return;
       }
-      if (!confirm('将重命名 ' + selected.length + ' 个远端文件。此操作会修改 AList 网盘文件名，是否继续？')) {
+      const confirmed = await confirmAction({
+        title: '确认远端重命名',
+        message: '将重命名 ' + selected.length + ' 个远端文件。',
+        detail: '此操作会修改 AList 网盘文件名。建议确认预览列表无误后再继续。',
+        confirmText: '确认重命名',
+        trigger: document.getElementById('executeRenameBtn')
+      });
+      if (!confirmed) {
         return;
       }
       const btn = document.getElementById('executeRenameBtn');
       const resultBlock = document.getElementById('renameResultBlock');
       btn.textContent = '重命名中...';
       btn.disabled = true;
-      resultBlock.style.display = 'block';
+      setHidden(resultBlock, false);
       resultBlock.textContent = '正在执行远端重命名...';
       try {
         const payload = selected.map((item) => ({ bvid:item.bvid, oldPath:item.oldPath, newPath:item.newPath }));
@@ -1389,16 +1519,14 @@ function getAppScript() {
       st.textContent = '';
       summary.textContent = '正在读取本地远端记录...';
       list.innerHTML = '';
-      resultBlock.style.display = 'none';
+      setHidden(resultBlock, true);
       try {
         qualityUpgradePreviewState = await fetchJson('/api/quality-upgrade/preview', { method:'POST' });
         renderQualityUpgradePreview();
-        st.textContent = '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。';
-        st.style.color = 'var(--muted)';
+        setStatus(st, '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。', 'muted');
       } catch(e) {
         summary.textContent = '预览失败：' + e.message;
-        st.textContent = '预览失败: ' + e.message;
-        st.style.color = '#E57373';
+        setStatus(st, '预览失败: ' + e.message, 'error');
       } finally {
         btn.textContent = '检查可升级画质';
       }
@@ -1450,7 +1578,7 @@ function getAppScript() {
         list.appendChild(row);
       });
       if (skipped.length) {
-        skippedBlock.style.display = 'block';
+        setHidden(skippedBlock, false);
         skippedList.innerHTML = '';
         skipped.forEach((item) => {
           const div = document.createElement('div');
@@ -1458,7 +1586,7 @@ function getAppScript() {
           skippedList.appendChild(div);
         });
       } else {
-        skippedBlock.style.display = 'none';
+        setHidden(skippedBlock, true);
         skippedList.innerHTML = '';
       }
     }
@@ -1482,14 +1610,21 @@ function getAppScript() {
         showToast('请先勾选需要重调画质的视频', 'info');
         return;
       }
-      if (!confirm('将为 ' + selected.length + ' 个视频重新下载并上传新版文件。新版验证成功后会删除旧远端文件，是否继续？')) {
+      const confirmed = await confirmAction({
+        title: '确认画质重调',
+        message: '将为 ' + selected.length + ' 个视频重新下载并上传新版文件。',
+        detail: '新版文件上传并验证成功后，才会删除旧远端文件。运行期间会占用下载和上传队列。',
+        confirmText: '确认重调',
+        trigger: document.getElementById('executeQualityUpgradeBtn')
+      });
+      if (!confirmed) {
         return;
       }
       const btn = document.getElementById('executeQualityUpgradeBtn');
       const resultBlock = document.getElementById('qualityUpgradeResultBlock');
       btn.textContent = '提交中...';
       btn.disabled = true;
-      resultBlock.style.display = 'block';
+      setHidden(resultBlock, false);
       resultBlock.textContent = '正在提交画质重调任务...';
       try {
         const payload = selected.map((item) => ({ key:item.key }));
@@ -1530,11 +1665,9 @@ function getAppScript() {
         const running = Array.isArray(data.running) ? data.running : [];
         const completed = Array.isArray(data.completed) ? data.completed : [];
         if (!running.length && !completed.length) return;
-        st.textContent = '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。';
-        st.style.color = 'var(--muted)';
+        setStatus(st, '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。', 'muted');
       } catch(e) {
-        st.textContent = '画质重调状态读取失败: ' + e.message;
-        st.style.color = '#E57373';
+        setStatus(st, '画质重调状态读取失败: ' + e.message, 'error');
       }
     }
 
@@ -1866,10 +1999,10 @@ function getAppScript() {
       const unreturnedCount = Number(indexSummary && indexSummary.unreturnedCount || 0);
       if (!indexSummary || !biliTotal || indexed >= biliTotal) {
         hint.textContent = '';
-        hint.style.display = 'none';
+        setHidden(hint, true);
         return;
       }
-      hint.style.display = 'block';
+      setHidden(hint, false);
       if (scanComplete && unreturnedCount > 0) {
         hint.textContent = 'B 站报告收藏夹总数 ' + biliTotal + ' 条；当前接口可索引到 ' + indexed + ' 条视频。全量扫描已完成，剩余 ' + unreturnedCount + ' 条未返回具体视频信息，可能是隐藏、失效、非视频或接口过滤项，不会再提示“继续扫描后补齐”。';
       } else if (filter === 'all') {
@@ -2113,7 +2246,7 @@ function getAppScript() {
       if (!board) {
         board = document.createElement('div');
         board.id = 'queueBoard';
-        board.style.display = 'none';
+        setHidden(board, true);
         if (logConsole && logConsole.parentElement) {
           logConsole.parentElement.appendChild(board);
         }
@@ -2488,15 +2621,15 @@ function getAppScript() {
       const logConsole = document.getElementById('logConsole');
       const queueBoard = ensureQueueBoardHost();
       if (mode === 'queue') {
-        if (logConsole) logConsole.style.display = 'none';
-        if (queueBoard) queueBoard.style.display = 'block';
+        setHidden(logConsole, true);
+        setHidden(queueBoard, false);
         startQueueBoardPolling();
         return;
       }
       stopQueueBoardPolling();
-      if (queueBoard) queueBoard.style.display = 'none';
+      setHidden(queueBoard, true);
       resetQueueBoardState();
-      if (logConsole) logConsole.style.display = 'block';
+      setHidden(logConsole, false);
       rebuildLog();
     }
 
@@ -2578,7 +2711,16 @@ function getAppScript() {
       const action = t.dataset.action, userId = t.dataset.id;
       if (action === 'favorites') await openFavorites(userId);
       if (action === 'unavailable') await openUnavailable(userId);
-      if (action === 'remove' && confirm('确定要删除这个账号吗？')) { await fetchJson('/api/users/'+userId,{method:'DELETE'}); await loadUsers(); }
+      if (action === 'remove') {
+        const confirmed = await confirmAction({
+          title: '删除账号',
+          message: '确定要删除这个账号吗？',
+          detail: '账号登录信息会从本项目中移除，后续需要重新扫码登录。',
+          confirmText: '删除账号',
+          trigger: t
+        });
+        if (confirmed) { await fetchJson('/api/users/'+userId,{method:'DELETE'}); await loadUsers(); }
+      }
       if (action === 'toggle') { await fetchJson('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})}); await loadUsers(); }
       if (action === 'refresh_info') {
         await fetchJson('/api/users/'+userId+'/refresh-info',{method:'POST'});
@@ -2591,25 +2733,26 @@ function getAppScript() {
         await loadUsers();
       }
       if (action === 'copy_cookie') {
-        const confirmed = prompt('Cookie 等同于 B 站登录凭据。确认导出请输入 EXPORT_COOKIE');
-        if (confirmed !== 'EXPORT_COOKIE') return;
+        const confirmed = await confirmAction({
+          title: '导出 Cookie',
+          message: 'Cookie 等同于 B 站登录凭据。',
+          detail: '导出后请只在可信环境使用，不要发送给不可信的人或服务。',
+          requiredText: 'EXPORT_COOKIE',
+          inputLabel: '输入 EXPORT_COOKIE 确认导出',
+          confirmText: '导出 Cookie',
+          trigger: t
+        });
+        if (!confirmed) return;
         const resp = await fetchJson('/api/users/'+userId+'/cookie/export', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({confirm:'EXPORT_COOKIE'})
         });
         const text = String(resp.cookie || '');
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
+        if (await copyTextToClipboard(text)) {
           showToast('Cookie 已复制', 'success');
         } else {
-          const input = document.createElement('textarea');
-          input.value = text;
-          document.body.appendChild(input);
-          input.select();
-          document.execCommand('copy');
-          document.body.removeChild(input);
-          showToast('Cookie 已复制', 'success');
+          showToast('Cookie 导出成功，但浏览器阻止了自动复制', 'info');
         }
       }
     });
@@ -2658,7 +2801,13 @@ function getAppScript() {
       setTimeout(() => btn.textContent = defaultText, 2000);
     });
     document.getElementById('reconcileBtn').addEventListener('click', async () => {
-      const ok = confirm('\u9ad8\u98ce\u9669\u64cd\u4f5c\uff1a\u5c06\u5168\u91cf\u626b\u63cfB\u7ad9\u6536\u85cf\u5939\u6240\u6709\u9875\uff0c\u53ef\u80fd\u89e6\u53d1\u98ce\u63a7\uff08\u5982412/\u767b\u5f55\u6821\u9a8c\uff09\u3002\u5efa\u8bae\u4ec5\u5728\u5fc5\u8981\u65f6\u4f7f\u7528\u3002\u662f\u5426\u7ee7\u7eed\uff1f');
+      const ok = await confirmAction({
+        title: '确认全量扫描并对账',
+        message: '将全量扫描 B 站收藏夹所有页，并执行对账。',
+        detail: '这个操作请求量较大，可能触发 412、登录校验或风控。建议仅在首轮补齐、迁移目录后或确实需要时使用。',
+        confirmText: '继续扫描',
+        trigger: document.getElementById('reconcileBtn')
+      });
       if (!ok) return;
       const btn = document.getElementById('reconcileBtn');
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26';
