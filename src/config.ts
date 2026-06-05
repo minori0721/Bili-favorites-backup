@@ -96,6 +96,12 @@ export class ConfigStore {
     return { ...this.config };
   }
 
+  reload() {
+    const stored = readJsonFile<Partial<AppConfig>>(configPath, defaultConfig);
+    this.config = normalizeLoadedConfig(stored);
+    return this.get();
+  }
+
   update(next: Partial<AppConfig>) {
     const merged: AppConfig = {
       ...this.config,

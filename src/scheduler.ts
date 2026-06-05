@@ -9,6 +9,7 @@ import { tempDir } from "./paths.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
+import { queueCoverCache } from "./cover-cache.js";
 import {
   DownloadTask,
   QualityUpgradeDownloadTask,
@@ -951,6 +952,11 @@ export class SyncScheduler {
         favPage: page,
         favIndexInPage: indexInPage,
       }, seenAt);
+      if (!item.unavailable && item.cover) {
+        queueCoverCache(item.bvid, item.cover, (coverLocalPath) => {
+          this.stateManager.recordCoverCache(item.bvid, coverLocalPath);
+        });
+      }
       if (!result.wasKnown) {
         newItems += 1;
         this.cycleContext!.newItems += 1;

@@ -39,6 +39,11 @@ class LogManager extends EventEmitter {
     return [...this.entries];
   }
 
+  reload() {
+    this.entries = readJsonFile<LogEntry[]>(logsPath, []);
+    return this.getAll();
+  }
+
   clear() {
     this.entries = [];
     if (this.persistTimer) {

@@ -512,6 +512,7 @@ function getSettingsSection() {
         <button id="saveConfigBtn">保存设置并生效</button>
         <button id="renameBtn" class="rename-btn">检查旧命名文件</button>
         <button id="qualityUpgradeBtn" class="ghost" type="button">检查可升级画质</button>
+        <button id="migrationBtn" class="ghost" type="button">数据迁移</button>
         <button id="cleanupDataBtn" class="ghost" type="button">清理数据</button>
       </div>
       <div class="muted status-line primary" id="configStatus"></div>
@@ -689,6 +690,37 @@ function getModals() {
     </div>
   </div>
 
+  <div class="modal" id="migrationModal">
+    <div class="panel panel-large">
+      <h2>数据迁移</h2>
+      <p class="muted">导出会打包本地持久化数据；包含账号登录信息时，请把压缩包当作敏感文件保管。</p>
+      <div class="cleanup-list">
+        <label class="cleanup-item"><input id="migConfig" type="checkbox" checked /><div><div class="cleanup-item-title">全局配置</div><div class="cleanup-item-desc">AList 地址、画质、并发、命名模板等设置。</div></div></label>
+        <label class="cleanup-item important"><input id="migUsers" type="checkbox" checked /><div><div class="cleanup-item-title">账号登录信息</div><div class="cleanup-item-desc">包含 B 站 Cookie / token，请勿分享导出包。</div></div></label>
+        <label class="cleanup-item important"><input id="migState" type="checkbox" checked /><div><div class="cleanup-item-title">备份状态与下架记录</div><div class="cleanup-item-desc">包含已备份、远端文件、失效视频标题与封面快照。</div></div></label>
+        <label class="cleanup-item"><input id="migCovers" type="checkbox" checked /><div><div class="cleanup-item-title">本地封面缓存</div><div class="cleanup-item-desc">半尺寸 WebP q70 封面，用于下架后继续显示。</div></div></label>
+        <label class="cleanup-item"><input id="migLogs" type="checkbox" /><div><div class="cleanup-item-title">网页日志</div><div class="cleanup-item-desc">迁移排查线索，通常不必带走。</div></div></label>
+        <label class="cleanup-item"><input id="migDebug" type="checkbox" /><div><div class="cleanup-item-title">Debug 日志</div><div class="cleanup-item-desc">BBDown 调试文件，体积可能较大。</div></div></label>
+      </div>
+      <div class="row preview-actions">
+        <button id="exportDataBtn" type="button">导出压缩包</button>
+        <button id="chooseImportBtn" class="ghost" type="button">选择导入包</button>
+        <input id="migrationFileInput" type="file" accept=".zip,application/zip" class="is-hidden" />
+      </div>
+      <div id="migrationPreviewBlock" class="cleanup-confirm is-hidden">
+        <div class="cleanup-item-title">导入预览</div>
+        <div id="migrationPreviewText" class="cleanup-item-desc"></div>
+        <div class="row preview-actions">
+          <button id="executeImportBtn" type="button">确认导入并自动备份当前数据</button>
+        </div>
+      </div>
+      <div id="migrationStatus" class="rename-result result-block is-hidden"></div>
+      <div class="row modal-actions">
+        <button id="closeMigrationBtn" class="ghost full-width" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="cleanupHelpModal">
     <div class="panel panel-narrow">
       <h2>清理小贴士</h2>
@@ -764,12 +796,18 @@ function getAppScript() {
     let renamePreviewState = { candidates: [], skipped: [] };
     let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
     let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
+    let migrationSelectedFile = null;
     let lastModalTrigger = null;
     let pendingConfirmAction = null;
 
     function safeText(value, fallback = '未知') {
       const text = String(value ?? '').trim();
       return text || fallback;
+    }
+
+    function localCoverUrl(item) {
+      const coverPath = String(item?.coverLocalPath || '').trim();
+      return coverPath ? '/' + coverPath.split('/').filter(Boolean).join('/') : '';
     }
 
     function setHidden(elOrId, hidden) {
@@ -1196,6 +1234,9 @@ function getAppScript() {
       temp: '清掉临时下载目录。未上传完的视频碎片会消失，所以有任务跑着时不让动它。',
       logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
       'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
+      covers: '清掉本地压缩封面缓存。视频下架后可能只能显示占位封面，但备份状态不受影响。',
+      exports: '清掉已经生成过的数据迁移导出压缩包。不影响当前项目运行。',
+      backups: '清掉导入前自动保存的本地备份包。导入回滚余地会少一点。',
       state: '清掉备份状态、收藏夹索引、远端文件记录和重试记录。项目会忘记自己备份过什么。',
       users: '清掉 B 站账号登录信息。下次需要重新扫码登录。',
       config: '清掉全局配置。AList 地址、画质、并发等会回到默认值。',
@@ -1213,11 +1254,160 @@ function getAppScript() {
     }
 
     function cleanupItemRequiresIdle(key) {
-      return key !== 'memory-cache' && key !== 'logs' && key !== 'debug-logs';
+      return key !== 'memory-cache' && key !== 'logs' && key !== 'debug-logs' && key !== 'covers' && key !== 'exports' && key !== 'backups';
     }
 
     function cleanupBusy() {
       return Boolean(cleanupState.runningTransfers || cleanupState.activeScheduler);
+    }
+
+    function migrationOptionsFromForm(prefix) {
+      return {
+        includeConfig: document.getElementById(prefix + 'Config').checked,
+        includeUsers: document.getElementById(prefix + 'Users').checked,
+        includeState: document.getElementById(prefix + 'State').checked,
+        includeCovers: document.getElementById(prefix + 'Covers').checked,
+        includeLogs: document.getElementById(prefix + 'Logs').checked,
+        includeDebug: document.getElementById(prefix + 'Debug').checked,
+      };
+    }
+
+    function restoreOptionsFromForm() {
+      const opts = migrationOptionsFromForm('mig');
+      return {
+        restoreConfig: opts.includeConfig,
+        restoreUsers: opts.includeUsers,
+        restoreState: opts.includeState,
+        restoreCovers: opts.includeCovers,
+        restoreLogs: opts.includeLogs,
+        restoreDebug: opts.includeDebug,
+      };
+    }
+
+    function setMigrationStatus(text, type) {
+      const block = document.getElementById('migrationStatus');
+      setHidden(block, !text);
+      block.textContent = text || '';
+      block.classList.toggle('success', type === 'success');
+      block.classList.toggle('error', type === 'error');
+    }
+
+    async function openMigration() {
+      migrationSelectedFile = null;
+      document.getElementById('migrationFileInput').value = '';
+      setHidden('migrationPreviewBlock', true);
+      setMigrationStatus('', '');
+      openModal('migrationModal', document.getElementById('migrationBtn'));
+    }
+
+    async function exportMigrationData() {
+      const btn = document.getElementById('exportDataBtn');
+      btn.disabled = true;
+      btn.textContent = '导出中...';
+      setMigrationStatus('正在生成压缩包...', '');
+      try {
+        const res = await fetch('/api/migration/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(migrationOptionsFromForm('mig')),
+        });
+        if (!res.ok) {
+          let message = '导出失败';
+          try {
+            const data = await res.json();
+            message = data.message || message;
+          } catch {}
+          throw new Error(message);
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('content-disposition') || '';
+        const match = disposition.match(/filename="?([^"]+)"?/i);
+        const filename = match ? decodeURIComponent(match[1]) : 'bili-favorites-backup-export.zip';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setMigrationStatus('导出完成。包含账号登录信息的压缩包请妥善保管。', 'success');
+      } catch (e) {
+        setMigrationStatus(e.message || String(e), 'error');
+        showToast(e.message || String(e), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '导出压缩包';
+      }
+    }
+
+    async function previewMigrationFile(file) {
+      if (!file) return;
+      const buffer = await file.arrayBuffer();
+      migrationSelectedFile = file;
+      setMigrationStatus('正在读取导入包...', '');
+      const res = await fetch('/api/migration/import-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: buffer,
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || '导入预览失败');
+      const manifest = data.data.manifest || {};
+      const counts = manifest.counts || {};
+      document.getElementById('migrationPreviewText').textContent =
+        '版本 ' + safeText(manifest.version, '-') +
+        '，导出时间 ' + safeText(formatDateTime(manifest.exportedAt), '-') +
+        '；账号 ' + (counts.users || 0) +
+        '，视频 ' + (counts.videos || 0) +
+        '，关系 ' + (counts.relations || 0) +
+        '，已失效视频 ' + (counts.unavailableVideos || 0) +
+        '。导入前会自动备份当前 data。';
+      setHidden('migrationPreviewBlock', false);
+      setMigrationStatus('预览完成，确认后才会写入本地数据。', 'success');
+    }
+
+    async function executeMigrationImport() {
+      if (!migrationSelectedFile) {
+        showToast('先选择导入包并完成预览', 'error');
+        return;
+      }
+      const confirmed = await confirmAction({
+        title: '确认导入数据',
+        message: '导入会替换你勾选的数据，并在导入前自动备份当前 data。',
+        detail: '包含账号登录信息时会恢复 Cookie / token；导入期间不能有同步、下载、上传或对账任务运行。',
+        requiredText: 'IMPORT DATA',
+        trigger: document.getElementById('executeImportBtn')
+      });
+      if (!confirmed) return;
+      const btn = document.getElementById('executeImportBtn');
+      btn.disabled = true;
+      btn.textContent = '导入中...';
+      setMigrationStatus('正在导入并备份当前数据...', '');
+      try {
+        const params = new URLSearchParams();
+        const restoreOptions = restoreOptionsFromForm();
+        Object.entries(restoreOptions).forEach(([key, value]) => {
+          params.set(key, value ? 'true' : 'false');
+        });
+        const res = await fetch('/api/migration/import?' + params.toString(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip' },
+          body: migrationSelectedFile,
+        });
+        const json = await res.json();
+        if (!res.ok || !json.success) {
+          throw new Error(json.message || '导入失败');
+        }
+        const data = json.data || {};
+        setMigrationStatus('导入完成。已恢复：' + (data.restored || []).join('、') + '；导入前备份：' + safeText(data.backupPath, '-'), 'success');
+        await Promise.all([loadConfig(), loadUsers()]);
+      } catch (e) {
+        setMigrationStatus(e.message || String(e), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '确认导入并自动备份当前数据';
+      }
     }
 
     function renderCleanupConfirm() {
@@ -1900,7 +2090,9 @@ function getAppScript() {
       }
 
       div.className = 'video-item ' + stateClass;
-      const coverUrl = item.cover ? item.cover.replace('http://','https://') : '';
+      const cachedCoverUrl = localCoverUrl(item);
+      const remoteCoverUrl = item.cover ? item.cover.replace('http://','https://') : '';
+      const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
       if (coverUrl) {
         const img = document.createElement('img');
         img.className = 'video-cover';
@@ -2297,7 +2489,9 @@ function getAppScript() {
       const metaEl = card.querySelector('.queue-meta');
       const extraEl = card.querySelector('.queue-extra');
       const coverEl = card.querySelector('.queue-cover');
-      const coverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const cachedCoverUrl = localCoverUrl(item);
+      const remoteCoverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
       if (coverEl instanceof HTMLImageElement) {
         if (coverUrl && coverEl.src !== coverUrl) coverEl.src = coverUrl;
       } else if (coverUrl && coverEl) {
@@ -2342,7 +2536,9 @@ function getAppScript() {
       const card = document.createElement('div');
       card.className = 'queue-card';
       card.dataset.queueKey = makeQueueCardKey(item);
-      const coverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const cachedCoverUrl = localCoverUrl(item);
+      const remoteCoverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
       if (coverUrl) {
         const img = document.createElement('img');
         img.className = 'queue-cover';
@@ -2652,6 +2848,22 @@ function getAppScript() {
     document.getElementById('refreshRenamePreviewBtn').addEventListener('click', loadRenamePreview);
     document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
     document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => closeModal('qualityUpgradeModal'));
+    document.getElementById('migrationBtn').addEventListener('click', openMigration);
+    document.getElementById('closeMigrationBtn').addEventListener('click', () => closeModal('migrationModal'));
+    document.getElementById('exportDataBtn').addEventListener('click', exportMigrationData);
+    document.getElementById('chooseImportBtn').addEventListener('click', () => document.getElementById('migrationFileInput').click());
+    document.getElementById('migrationFileInput').addEventListener('change', async (event) => {
+      try {
+        const file = event.target.files && event.target.files[0];
+        await previewMigrationFile(file);
+      } catch (e) {
+        migrationSelectedFile = null;
+        setHidden('migrationPreviewBlock', true);
+        setMigrationStatus(e.message || String(e), 'error');
+        showToast(e.message || String(e), 'error');
+      }
+    });
+    document.getElementById('executeImportBtn').addEventListener('click', executeMigrationImport);
     document.getElementById('cleanupDataBtn').addEventListener('click', openCleanupData);
     document.getElementById('closeCleanupDataBtn').addEventListener('click', () => closeModal('cleanupDataModal'));
     document.getElementById('cleanupHelpBtn').addEventListener('click', () => openModal('cleanupHelpModal', document.getElementById('cleanupHelpBtn')));

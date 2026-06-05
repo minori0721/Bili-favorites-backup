@@ -45,11 +45,20 @@ export interface RemoteFileRecord {
   qualityProfile?: RemoteFileQualityProfile;
 }
 
+export interface VideoMetadataSnapshot {
+  title: string;
+  upperName: string;
+  cover?: string;
+  coverLocalPath?: string;
+  capturedAt: string;
+}
+
 export interface VideoArchiveEntry {
   bvid: string;
   title: string;
   upperName: string;
   cover?: string;
+  originalMeta?: VideoMetadataSnapshot;
   firstSeenAt: string;
   lastSeenAt: string;
   biliStatus: BiliStatus;
@@ -145,6 +154,7 @@ export interface FolderDetailItem {
   title: string;
   upperName: string;
   cover?: string;
+  coverLocalPath?: string;
   favOrder?: number;
   favPage?: number;
   favIndexInPage?: number;
@@ -237,6 +247,39 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function isPlaceholderTitle(value: string | undefined) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  return /^(Untitled|Unknown|已失效视频|已删除视频|视频已失效|视频不存在)$/i.test(text);
+}
+
+function isPlaceholderUpperName(value: string | undefined) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  return /^(Unknown|未知UP|未知)$/i.test(text);
+}
+
+function hasUsableFavoriteMeta(item: ObservedFavoriteItem) {
+  if (item.unavailable) return false;
+  return !isPlaceholderTitle(item.title) || !isPlaceholderUpperName(item.upperName) || Boolean(item.cover);
+}
+
+function displayTitle(entry: VideoArchiveEntry) {
+  return entry.originalMeta?.title || entry.title || entry.bvid;
+}
+
+function displayUpperName(entry: VideoArchiveEntry) {
+  return entry.originalMeta?.upperName || entry.upperName || "Unknown";
+}
+
+function displayCover(entry: VideoArchiveEntry) {
+  return entry.originalMeta?.cover || entry.cover;
+}
+
+function displayCoverLocalPath(entry: VideoArchiveEntry) {
+  return entry.originalMeta?.coverLocalPath;
+}
+
 export function relationKey(userId: string, mediaId: number, bvid: string) {
   return `${userId}:${mediaId}:${bvid}`;
 }
@@ -253,6 +296,11 @@ export class StateManager {
   private state: StateFile;
 
   constructor() {
+    this.state = this.loadState();
+    this.migrateLegacyState();
+  }
+
+  private loadState() {
     this.state = readJsonFile<StateFile>(statePath, defaultState);
     this.state.processedByUser ||= {};
     this.state.failedByUser ||= {};
@@ -260,6 +308,11 @@ export class StateManager {
     this.state.relations ||= {};
     this.state.folderScans ||= {};
     this.state.userCooldowns ||= {};
+    return this.state;
+  }
+
+  reload() {
+    this.state = this.loadState();
     this.migrateLegacyState();
   }
 
@@ -376,11 +429,20 @@ export class StateManager {
     const biliStatus: BiliStatus = item.unavailable ? "unavailable" : "available";
 
     if (!existing) {
+      const originalMeta = hasUsableFavoriteMeta(item)
+        ? {
+            title: isPlaceholderTitle(item.title) ? item.bvid : item.title,
+            upperName: isPlaceholderUpperName(item.upperName) ? "Unknown" : item.upperName,
+            cover: item.cover,
+            capturedAt: seenAt,
+          }
+        : undefined;
       this.state.videos![item.bvid] = {
         bvid: item.bvid,
         title: item.title || "Untitled",
         upperName: item.upperName || "Unknown",
         cover: item.cover,
+        originalMeta,
         firstSeenAt: seenAt,
         lastSeenAt: seenAt,
         biliStatus,
@@ -388,9 +450,24 @@ export class StateManager {
         statusUpdatedAt: seenAt,
       };
     } else {
-      existing.title = item.title || existing.title;
-      existing.upperName = item.upperName || existing.upperName;
-      existing.cover = item.cover || existing.cover;
+      if (!isPlaceholderTitle(item.title)) {
+        existing.title = item.title || existing.title;
+      }
+      if (!isPlaceholderUpperName(item.upperName)) {
+        existing.upperName = item.upperName || existing.upperName;
+      }
+      if (item.cover) {
+        existing.cover = item.cover;
+      }
+      if (hasUsableFavoriteMeta(item)) {
+        existing.originalMeta = {
+          title: isPlaceholderTitle(item.title) ? existing.originalMeta?.title || existing.title || item.bvid : item.title,
+          upperName: isPlaceholderUpperName(item.upperName) ? existing.originalMeta?.upperName || existing.upperName || "Unknown" : item.upperName,
+          cover: item.cover || existing.originalMeta?.cover || existing.cover,
+          coverLocalPath: existing.originalMeta?.coverLocalPath,
+          capturedAt: seenAt,
+        };
+      }
       existing.lastSeenAt = seenAt;
       existing.biliStatus = biliStatus;
       if (item.unavailable && !BACKED_UP_STATUSES.has(existing.backupStatus)) {
@@ -441,6 +518,26 @@ export class StateManager {
 
     this.save();
     return { wasKnown, entry: this.state.videos![item.bvid] };
+  }
+
+  recordCoverCache(bvid: string, coverLocalPath: string, capturedAt = nowIso()) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry || !coverLocalPath) {
+      return false;
+    }
+    const snapshot: VideoMetadataSnapshot = {
+      title: entry.originalMeta?.title || entry.title || bvid,
+      upperName: entry.originalMeta?.upperName || entry.upperName || "Unknown",
+      cover: entry.originalMeta?.cover || entry.cover,
+      coverLocalPath,
+      capturedAt: entry.originalMeta?.capturedAt || capturedAt,
+    };
+    if (entry.originalMeta?.coverLocalPath === coverLocalPath) {
+      return false;
+    }
+    entry.originalMeta = snapshot;
+    this.save();
+    return true;
   }
 
   markMissingFavoritesInactive(userId: string, mediaId: number, seenBvids: Set<string>) {
@@ -1183,9 +1280,10 @@ export class StateManager {
       const processed = this.isProcessed(userId, video.bvid, mediaId);
       const item: FolderDetailItem = {
         bvid: video.bvid,
-        title: video.title,
-        upperName: video.upperName,
-        cover: video.cover,
+        title: displayTitle(video),
+        upperName: displayUpperName(video),
+        cover: displayCover(video),
+        coverLocalPath: displayCoverLocalPath(video),
         favOrder: relation.favOrder,
         favPage: relation.favPage,
         favIndexInPage: relation.favIndexInPage,
@@ -1259,9 +1357,10 @@ export class StateManager {
 
     const page = uniqueRelations.slice(offset, offset + limit).map(({ relation, video }) => ({
       bvid: video.bvid,
-      title: video.title,
-      upperName: video.upperName,
-      cover: video.cover,
+      title: displayTitle(video),
+      upperName: displayUpperName(video),
+      cover: displayCover(video),
+      coverLocalPath: displayCoverLocalPath(video),
       unavailable: true,
       processed: this.isProcessed(userId, video.bvid, relation.mediaId),
       failed: this.isFailed(userId, video.bvid, relation.mediaId),
