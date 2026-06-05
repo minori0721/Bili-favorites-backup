@@ -75,6 +75,18 @@ async function downloadCover(url: string, outputPath: string) {
   await fs.promises.writeFile(outputPath, buffer);
 }
 
+async function moveAcrossMounts(source: string, target: string) {
+  try {
+    await fs.promises.rename(source, target);
+  } catch (error: any) {
+    if (!["EXDEV", "EPERM", "EACCES"].includes(error?.code)) {
+      throw error;
+    }
+    await fs.promises.copyFile(source, target);
+    await fs.promises.unlink(source).catch(() => undefined);
+  }
+}
+
 async function cacheCoverInternal(bvid: string, coverUrl: string) {
   const normalizedBvid = safeBvid(bvid);
   if (!normalizedBvid || !coverUrl) {
@@ -93,7 +105,7 @@ async function cacheCoverInternal(bvid: string, coverUrl: string) {
   try {
     await downloadCover(coverUrl, rawPath);
     await runFfmpeg(rawPath, tempWebp);
-    await fs.promises.rename(tempWebp, finalPath);
+    await moveAcrossMounts(tempWebp, finalPath);
     return coverRelativePathForBvid(normalizedBvid);
   } finally {
     await fs.promises.rm(tempRoot, { recursive: true, force: true });
