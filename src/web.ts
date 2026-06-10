@@ -2668,7 +2668,8 @@ function getAppScript() {
     }
 
     function renderLocalCacheStatus(parent, localCache) {
-      let el = parent.querySelector('[data-local-cache-status="1"]');
+      const host = parent.parentElement || parent;
+      let el = host.querySelector('[data-local-cache-status="1"]');
       if (!localCache || !Number(localCache.limitBytes || 0)) {
         if (el) el.remove();
         return;
@@ -2677,7 +2678,7 @@ function getAppScript() {
         el = document.createElement('div');
         el.className = 'local-cache-status';
         el.dataset.localCacheStatus = '1';
-        parent.insertBefore(el, parent.firstChild || null);
+        host.insertBefore(el, parent);
       }
       const used = formatBytes(Number(localCache.usedBytes || 0));
       const limit = formatBytes(Number(localCache.limitBytes || 0));
@@ -2795,7 +2796,10 @@ function getAppScript() {
       queueBoardState.columns = {};
       queueBoardState.cards.clear();
       const board = document.getElementById('queueBoard');
-      if (board) board.innerHTML = '';
+      if (board) {
+        board.parentElement?.querySelector('[data-local-cache-status="1"]')?.remove();
+        board.innerHTML = '';
+      }
     }
 
     function startQueueBoardPolling() {
