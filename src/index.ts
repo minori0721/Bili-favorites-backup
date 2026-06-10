@@ -16,6 +16,7 @@ import {
   listFavoriteItemsPage,
   normalizeTvAuthResult,
   refreshUserAuth,
+  resolveSelfVisibleFavoriteItem,
 } from "./bili.js";
 import { normalizeEncodingPriority, normalizeQualityPriority } from "./downloader.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
@@ -307,6 +308,20 @@ function parseFolderDetailFilter(value: unknown): FolderDetailFilter {
   return "all";
 }
 
+async function resolveFavoritePageSelfVisibleItems(
+  user: BiliUser,
+  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
+) {
+  const nextItems = [];
+  for (const item of pageResult.items) {
+    nextItems.push(await resolveSelfVisibleFavoriteItem(user.cookie, user.uid, item));
+  }
+  return {
+    ...pageResult,
+    items: nextItems,
+  };
+}
+
 function markFavoriteItemProcessed(
   userId: string,
   mediaId: number,
@@ -330,20 +345,22 @@ function withProcessedStatus(
   };
 }
 
-function recordFavoritePageMetadata(
-  userId: string,
+async function recordFavoritePageMetadata(
+  user: BiliUser,
   mediaId: number,
   folderTitle: string,
   pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
 ) {
-  pageResult.items.forEach((item, indexInPage) => {
+  const resolvedPage = await resolveFavoritePageSelfVisibleItems(user, pageResult);
+  resolvedPage.items.forEach((item, indexInPage) => {
     const favOrder = (Math.max(1, pageResult.page) - 1) * Math.max(1, pageResult.pageSize) + indexInPage + 1;
-    stateManager.recordFavoriteItem(userId, mediaId, folderTitle, item, {
+    stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
       favOrder,
       favPage: pageResult.page,
       favIndexInPage: indexInPage,
     });
   });
+  return resolvedPage;
 }
 
 function getBiliListErrorMessage(error: unknown) {
@@ -732,7 +749,7 @@ app.get("/api/users/:id/favorites/:mediaId/detail-items", asyncHandler(async (re
       });
     }
 
-    recordFavoritePageMetadata(user.id, mediaId, folderTitle, pageResult);
+    pageResult = await recordFavoritePageMetadata(user, mediaId, folderTitle, pageResult);
     const withStatus = withProcessedStatus(user.id, mediaId, pageResult);
     const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, pageResult.total);
     res.json({

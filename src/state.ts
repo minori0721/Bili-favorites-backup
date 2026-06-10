@@ -50,6 +50,7 @@ export interface VideoMetadataSnapshot {
   upperName: string;
   cover?: string;
   coverLocalPath?: string;
+  description?: string;
   capturedAt: string;
 }
 
@@ -59,6 +60,7 @@ export interface VideoArchiveEntry {
   upperName: string;
   cover?: string;
   originalMeta?: VideoMetadataSnapshot;
+  description?: string;
   firstSeenAt: string;
   lastSeenAt: string;
   biliStatus: BiliStatus;
@@ -73,6 +75,8 @@ export interface VideoArchiveEntry {
   nextRemoteCheckAt?: string;
   remoteMissingCount?: number;
   lastError?: string;
+  favoriteUnavailable?: boolean;
+  selfVisible?: boolean;
   // Legacy marker kept for one-way migration cleanup.
   legacyProcessed?: boolean;
 }
@@ -112,6 +116,8 @@ export interface FavoriteRelation {
   nextRemoteCheckAt?: string;
   remoteMissingCount?: number;
   lastError?: string;
+  favoriteUnavailable?: boolean;
+  selfVisible?: boolean;
 }
 
 export interface FolderScanState {
@@ -138,8 +144,12 @@ export interface ObservedFavoriteItem {
   bvid: string;
   title: string;
   upperName: string;
+  upperMid?: number;
   cover?: string;
+  description?: string;
   unavailable?: boolean;
+  favoriteUnavailable?: boolean;
+  selfVisible?: boolean;
 }
 
 export type FolderDetailFilter =
@@ -155,6 +165,9 @@ export interface FolderDetailItem {
   upperName: string;
   cover?: string;
   coverLocalPath?: string;
+  description?: string;
+  favoriteUnavailable?: boolean;
+  selfVisible?: boolean;
   favOrder?: number;
   favPage?: number;
   favIndexInPage?: number;
@@ -214,7 +227,7 @@ export interface StateFile {
 
 const statePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 7,
+  schemaVersion: 8,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -260,7 +273,7 @@ function isPlaceholderUpperName(value: string | undefined) {
 }
 
 function hasUsableFavoriteMeta(item: ObservedFavoriteItem) {
-  if (item.unavailable) return false;
+  if (item.unavailable && !item.selfVisible) return false;
   return !isPlaceholderTitle(item.title) || !isPlaceholderUpperName(item.upperName) || Boolean(item.cover);
 }
 
@@ -278,6 +291,14 @@ function displayCover(entry: VideoArchiveEntry) {
 
 function displayCoverLocalPath(entry: VideoArchiveEntry) {
   return entry.originalMeta?.coverLocalPath;
+}
+
+function displayDescription(entry: VideoArchiveEntry) {
+  return entry.originalMeta?.description || entry.description;
+}
+
+function relationTreatsUnavailable(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
+  return entry.biliStatus === "unavailable" && !relation?.selfVisible;
 }
 
 export function relationKey(userId: string, mediaId: number, bvid: string) {
@@ -367,10 +388,10 @@ export class StateManager {
     return !Number.isFinite(updatedAt) || Date.now() - updatedAt >= maxAgeMs;
   }
 
-  private initialRelationStatus(bvid: string): BackupStatus {
+  private initialRelationStatus(bvid: string, relation?: FavoriteRelation | null): BackupStatus {
     const entry = this.state.videos?.[bvid];
     if (!entry) return "discovered";
-    if (entry.biliStatus === "unavailable") return "lost";
+    if (relationTreatsUnavailable(relation, entry)) return "lost";
     if (ACTIVE_BACKUP_STATUSES.has(entry.backupStatus)) return entry.backupStatus;
     if (entry.backupStatus === "missing" || entry.backupStatus === "failed") return entry.backupStatus;
     return "discovered";
@@ -381,7 +402,7 @@ export class StateManager {
     if (!entry) return;
     const relations = Object.values(this.state.relations || {}).filter((relation) => relation.bvid === bvid);
     if (relations.length === 0) return;
-    const statuses = relations.map((relation) => relation.backupStatus || this.initialRelationStatus(bvid));
+    const statuses = relations.map((relation) => relation.backupStatus || this.initialRelationStatus(bvid, relation));
     const active = statuses.find((status) => ACTIVE_BACKUP_STATUSES.has(status));
     if (active) {
       this.setVideoStatus(entry, active);
@@ -406,7 +427,9 @@ export class StateManager {
 
   isFailed(userId: string, bvid: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
-    if (entry?.backupStatus === "failed" || entry?.backupStatus === "lost") {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    const status = relation?.backupStatus || entry?.backupStatus;
+    if (status === "failed" || status === "lost") {
       return true;
     }
     return Boolean(this.getFailedEntry(userId, bvid, mediaId));
@@ -426,7 +449,9 @@ export class StateManager {
   ) {
     const existing = this.state.videos![item.bvid];
     const wasKnown = Boolean(existing);
-    const biliStatus: BiliStatus = item.unavailable ? "unavailable" : "available";
+    const favoriteUnavailable = Boolean(item.favoriteUnavailable || item.unavailable);
+    const biliStatus: BiliStatus = favoriteUnavailable ? "unavailable" : "available";
+    const relationStatus: BackupStatus = favoriteUnavailable && !item.selfVisible ? "lost" : "discovered";
 
     if (!existing) {
       const originalMeta = hasUsableFavoriteMeta(item)
@@ -434,6 +459,7 @@ export class StateManager {
             title: isPlaceholderTitle(item.title) ? item.bvid : item.title,
             upperName: isPlaceholderUpperName(item.upperName) ? "Unknown" : item.upperName,
             cover: item.cover,
+            description: item.description,
             capturedAt: seenAt,
           }
         : undefined;
@@ -442,12 +468,15 @@ export class StateManager {
         title: item.title || "Untitled",
         upperName: item.upperName || "Unknown",
         cover: item.cover,
+        description: item.description,
         originalMeta,
         firstSeenAt: seenAt,
         lastSeenAt: seenAt,
         biliStatus,
-        backupStatus: item.unavailable ? "lost" : "discovered",
+        backupStatus: relationStatus,
         statusUpdatedAt: seenAt,
+        favoriteUnavailable: favoriteUnavailable || undefined,
+        selfVisible: item.selfVisible || undefined,
       };
     } else {
       if (!isPlaceholderTitle(item.title)) {
@@ -459,21 +488,30 @@ export class StateManager {
       if (item.cover) {
         existing.cover = item.cover;
       }
+      if (item.description !== undefined) {
+        existing.description = item.description;
+      }
       if (hasUsableFavoriteMeta(item)) {
         existing.originalMeta = {
           title: isPlaceholderTitle(item.title) ? existing.originalMeta?.title || existing.title || item.bvid : item.title,
           upperName: isPlaceholderUpperName(item.upperName) ? existing.originalMeta?.upperName || existing.upperName || "Unknown" : item.upperName,
           cover: item.cover || existing.originalMeta?.cover || existing.cover,
           coverLocalPath: existing.originalMeta?.coverLocalPath,
+          description: item.description ?? existing.originalMeta?.description ?? existing.description,
           capturedAt: seenAt,
         };
       }
       existing.lastSeenAt = seenAt;
       existing.biliStatus = biliStatus;
-      if (item.unavailable && !BACKED_UP_STATUSES.has(existing.backupStatus)) {
+      existing.favoriteUnavailable = favoriteUnavailable || undefined;
+      existing.selfVisible = item.selfVisible || undefined;
+      if (favoriteUnavailable && !item.selfVisible && !BACKED_UP_STATUSES.has(existing.backupStatus)) {
         this.setVideoStatus(existing, "lost", seenAt);
         existing.lastError = "Video became unavailable before a verified backup was found.";
-      } else if (!item.unavailable && existing.backupStatus === "lost") {
+      } else if (!favoriteUnavailable && existing.backupStatus === "lost") {
+        this.setVideoStatus(existing, "discovered", seenAt);
+        existing.lastError = undefined;
+      } else if (item.selfVisible && existing.backupStatus === "lost") {
         this.setVideoStatus(existing, "discovered", seenAt);
         existing.lastError = undefined;
       }
@@ -485,6 +523,8 @@ export class StateManager {
       relation.folderTitle = folderTitle;
       relation.lastSeenAt = seenAt;
       relation.activeInFavorite = true;
+      relation.favoriteUnavailable = favoriteUnavailable || undefined;
+      relation.selfVisible = item.selfVisible || undefined;
       if (Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0) {
         relation.favOrder = Number(orderInfo!.favOrder);
         relation.favPage = Number.isInteger(orderInfo?.favPage) && Number(orderInfo!.favPage) > 0 ? Number(orderInfo!.favPage) : relation.favPage;
@@ -494,7 +534,13 @@ export class StateManager {
         relation.favOrderUpdatedAt = seenAt;
       }
       if (!relation.backupStatus) {
-        this.setRelationStatus(relation, this.initialRelationStatus(item.bvid), seenAt);
+        this.setRelationStatus(relation, this.initialRelationStatus(item.bvid, relation), seenAt);
+      } else if (item.selfVisible && relation.backupStatus === "lost") {
+        this.setRelationStatus(relation, "discovered", seenAt);
+        relation.lastError = undefined;
+      } else if (favoriteUnavailable && !item.selfVisible && !BACKED_UP_STATUSES.has(relation.backupStatus)) {
+        this.setRelationStatus(relation, "lost", seenAt);
+        relation.lastError = "Video became unavailable before a verified backup was found.";
       }
     } else {
       this.state.relations![key] = {
@@ -511,11 +557,14 @@ export class StateManager {
           : undefined,
         favOrderUpdatedAt: Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0 ? seenAt : undefined,
         activeInFavorite: true,
-        backupStatus: item.unavailable ? "lost" : "discovered",
+        backupStatus: relationStatus,
         statusUpdatedAt: seenAt,
+        favoriteUnavailable: favoriteUnavailable || undefined,
+        selfVisible: item.selfVisible || undefined,
       };
     }
 
+    this.refreshVideoAggregateStatus(item.bvid);
     this.save();
     return { wasKnown, entry: this.state.videos![item.bvid] };
   }
@@ -530,6 +579,7 @@ export class StateManager {
       upperName: entry.originalMeta?.upperName || entry.upperName || "Unknown",
       cover: entry.originalMeta?.cover || entry.cover,
       coverLocalPath,
+      description: entry.originalMeta?.description || entry.description,
       capturedAt: entry.originalMeta?.capturedAt || capturedAt,
     };
     if (entry.originalMeta?.coverLocalPath === coverLocalPath) {
@@ -565,7 +615,8 @@ export class StateManager {
 
   shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string) {
     const entry = this.state.videos?.[bvid];
-    if (!entry || entry.biliStatus === "unavailable") {
+    const relation = userId && mediaId ? this.state.relations?.[relationKey(userId, mediaId, bvid)] : undefined;
+    if (!entry || relationTreatsUnavailable(relation, entry)) {
       return false;
     }
     const failed = userId ? this.getFailedEntry(userId, bvid, mediaId) : undefined;
@@ -579,7 +630,6 @@ export class StateManager {
         return false;
       }
     }
-    const relation = userId && mediaId ? this.state.relations?.[relationKey(userId, mediaId, bvid)] : undefined;
     const status = relation?.backupStatus || entry.backupStatus;
     if (BACKED_UP_STATUSES.has(status)) {
       return false;
@@ -644,7 +694,7 @@ export class StateManager {
   markRetryPending(bvid: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    if (entry.biliStatus === "unavailable") {
+    if (entry.favoriteUnavailable && !entry.selfVisible) {
       this.setVideoStatus(entry, "lost");
       entry.lastError ||= "Video unavailable while resuming backup.";
       this.save();
@@ -662,7 +712,7 @@ export class StateManager {
       this.markRetryPending(bvid);
       return;
     }
-    this.setRelationStatus(relation, entry?.biliStatus === "unavailable" ? "lost" : "discovered");
+    this.setRelationStatus(relation, entry && relationTreatsUnavailable(relation, entry) ? "lost" : "discovered");
     relation.lastError = reason;
     relation.nextRemoteCheckAt = undefined;
     this.refreshVideoAggregateStatus(bvid);
@@ -711,7 +761,7 @@ export class StateManager {
     if (remoteFiles.length === 0) {
       const reason = "Upload finished without remote file records; reset to discovered for retry.";
       const relation = this.getRelation(_userId, _mediaId, bvid);
-      const status = entry.biliStatus === "unavailable" ? "lost" : "discovered";
+      const status = relationTreatsUnavailable(relation, entry) ? "lost" : "discovered";
       entry.localDir = undefined;
       if (relation) {
         this.setRelationStatus(relation, status);
@@ -733,8 +783,9 @@ export class StateManager {
   markProcessed(_userId: string, bvid: string, _mediaId: number) {
     const at = nowIso();
     const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(_userId, _mediaId, bvid);
     if (entry) {
-      this.setVideoStatus(entry, entry.biliStatus === "unavailable" ? "lost" : "discovered", at);
+      this.setVideoStatus(entry, relationTreatsUnavailable(relation, entry) ? "lost" : "discovered", at);
       entry.uploadedAt = undefined;
       entry.verifiedAt = undefined;
       entry.lastRemoteCheckAt = undefined;
@@ -759,13 +810,13 @@ export class StateManager {
       failedAt: at,
     };
     const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
     if (entry) {
-      this.setVideoStatus(entry, permanent && entry.biliStatus === "unavailable" ? "lost" : "failed", at);
+      this.setVideoStatus(entry, permanent && relationTreatsUnavailable(relation, entry) ? "lost" : "failed", at);
       entry.lastError = reason;
     }
-    const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      this.setRelationStatus(relation, permanent && entry?.biliStatus === "unavailable" ? "lost" : "failed", at);
+      this.setRelationStatus(relation, permanent && entry && relationTreatsUnavailable(relation, entry) ? "lost" : "failed", at);
       relation.lastError = reason;
     }
     this.save();
@@ -840,7 +891,7 @@ export class StateManager {
       relation.remoteMissingCount = (relation.remoteMissingCount || 0) + 1;
       relation.lastError = `Remote files missing: ${missingFiles.join(", ")}`;
       if (relation.remoteMissingCount >= 2) {
-        this.setRelationStatus(relation, entry.biliStatus === "unavailable" ? "lost" : "missing", at);
+        this.setRelationStatus(relation, relationTreatsUnavailable(relation, entry) ? "lost" : "missing", at);
       }
       this.refreshVideoAggregateStatus(bvid);
       this.save();
@@ -985,7 +1036,7 @@ export class StateManager {
     const relation = this.getRelation(userId, mediaId, bvid);
     const at = nowIso();
     if (relation) {
-      this.setRelationStatus(relation, entry?.biliStatus === "unavailable" ? "lost" : "discovered", at);
+      this.setRelationStatus(relation, entry && relationTreatsUnavailable(relation, entry) ? "lost" : "discovered", at);
       relation.lastError = reason;
       relation.nextRemoteCheckAt = undefined;
       relation.qualityUpgrade = undefined;
@@ -1237,7 +1288,7 @@ export class StateManager {
 
     const candidates = rows
       .filter(({ relation, video, failed }) => {
-        if (video.biliStatus === "unavailable") return false;
+        if (relationTreatsUnavailable(relation, video)) return false;
         const status = relation.backupStatus || video.backupStatus;
         if (BACKED_UP_STATUSES.has(status) || ACTIVE_BACKUP_STATUSES.has(status)) return false;
         if (status === "failed" || status === "missing") return true;
@@ -1276,7 +1327,7 @@ export class StateManager {
       });
 
     const allItems = rows.map(({ relation, video }) => {
-      const unavailable = video.biliStatus === "unavailable";
+      const unavailable = relationTreatsUnavailable(relation, video);
       const processed = this.isProcessed(userId, video.bvid, mediaId);
       const item: FolderDetailItem = {
         bvid: video.bvid,
@@ -1284,6 +1335,9 @@ export class StateManager {
         upperName: displayUpperName(video),
         cover: displayCover(video),
         coverLocalPath: displayCoverLocalPath(video),
+        description: displayDescription(video),
+        favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
+        selfVisible: relation.selfVisible || video.selfVisible,
         favOrder: relation.favOrder,
         favPage: relation.favPage,
         favIndexInPage: relation.favIndexInPage,
@@ -1343,7 +1397,7 @@ export class StateManager {
       .filter((relation) => relation.userId === userId)
       .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } =>
-        Boolean(item.video && item.video.biliStatus === "unavailable")
+        Boolean(item.video && relationTreatsUnavailable(item.relation, item.video))
       )
       .sort((a, b) => Date.parse(b.video.lastSeenAt) - Date.parse(a.video.lastSeenAt));
 
@@ -1361,6 +1415,9 @@ export class StateManager {
       upperName: displayUpperName(video),
       cover: displayCover(video),
       coverLocalPath: displayCoverLocalPath(video),
+      description: displayDescription(video),
+      favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
+      selfVisible: relation.selfVisible || video.selfVisible,
       unavailable: true,
       processed: this.isProcessed(userId, video.bvid, relation.mediaId),
       failed: this.isFailed(userId, video.bvid, relation.mediaId),
@@ -1413,7 +1470,7 @@ export class StateManager {
       uploadedUnavailable: 0,
     };
     for (const { relation, video } of rows) {
-      const unavailable = video.biliStatus === "unavailable";
+      const unavailable = relationTreatsUnavailable(relation, video);
       const processed = this.isProcessed(userId, video.bvid, mediaId);
       if (processed) {
         summary.uploaded += 1;
@@ -1436,6 +1493,9 @@ export class StateManager {
       title: entry.title,
       upperName: entry.upperName,
       cover: entry.cover,
+      description: entry.description,
+      favoriteUnavailable: entry.favoriteUnavailable,
+      selfVisible: entry.selfVisible,
     };
   }
 
@@ -1537,7 +1597,7 @@ export class StateManager {
       for (const relation of Object.values(this.state.relations || {})) {
         const video = this.state.videos?.[relation.bvid];
         if (!relation.backupStatus) {
-          relation.backupStatus = video?.biliStatus === "unavailable" ? "lost" : "discovered";
+          relation.backupStatus = video && relationTreatsUnavailable(relation, video) ? "lost" : "discovered";
         }
       }
       this.state.schemaVersion = 5;
@@ -1547,7 +1607,7 @@ export class StateManager {
     if ((this.state.schemaVersion || 1) < 6) {
       for (const relation of Object.values(this.state.relations || {})) {
         const video = this.state.videos?.[relation.bvid];
-        if (!video || video.biliStatus === "unavailable") continue;
+        if (!video || relationTreatsUnavailable(relation, video)) continue;
         const hasGlobalProof = Boolean(video.remoteFiles?.length) ||
           Boolean(video.uploadedAt) ||
           Boolean(video.verifiedAt);
@@ -1597,7 +1657,7 @@ export class StateManager {
           continue;
         }
         const video = this.state.videos?.[relation.bvid];
-        relation.backupStatus = video?.biliStatus === "unavailable" ? "lost" : "discovered";
+        relation.backupStatus = video && relationTreatsUnavailable(relation, video) ? "lost" : "discovered";
         relation.remoteFiles = undefined;
         relation.uploadedAt = undefined;
         relation.verifiedAt = undefined;
@@ -1609,6 +1669,28 @@ export class StateManager {
       }
 
       this.state.schemaVersion = 7;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 8) {
+      for (const relation of Object.values(this.state.relations || {})) {
+        const video = this.state.videos?.[relation.bvid];
+        if (!video) {
+          continue;
+        }
+        if (relation.selfVisible && relation.backupStatus === "lost") {
+          relation.backupStatus = "discovered";
+          relation.lastError = undefined;
+          relation.statusUpdatedAt = nowIso();
+          changed = true;
+        } else if (!relation.selfVisible && video.biliStatus === "unavailable" && relation.backupStatus === "discovered") {
+          relation.backupStatus = "lost";
+          relation.statusUpdatedAt = nowIso();
+          changed = true;
+        }
+        this.refreshVideoAggregateStatus(relation.bvid);
+      }
+      this.state.schemaVersion = 8;
       changed = true;
     }
 

@@ -19,8 +19,12 @@ export interface FavoriteItem {
   bvid: string;
   title: string;
   upperName: string;
+  upperMid?: number;
   cover?: string;
+  description?: string;
   unavailable?: boolean;
+  favoriteUnavailable?: boolean;
+  selfVisible?: boolean;
 }
 
 export interface FavoriteItemsPage {
@@ -201,6 +205,7 @@ export async function listFavoriteItemsPage(
       bvid: media.bvid as string,
       title: media.title || "Untitled",
       upperName: media.upper?.name || "Unknown",
+      upperMid: Number(media.upper?.mid || 0) || undefined,
       cover: media.cover || undefined,
       unavailable: media.attr !== undefined && media.attr !== 0,
     }));
@@ -286,6 +291,79 @@ export async function listFavoriteItems(
   }
 
   return items;
+}
+
+export async function resolveSelfVisibleFavoriteItem(
+  cookie: BiliCookie,
+  userUid: number,
+  item: FavoriteItem
+): Promise<FavoriteItem> {
+  const expectedOwnerMid = Number(userUid || 0);
+  if (!item.unavailable || !expectedOwnerMid || Number(item.upperMid || 0) !== expectedOwnerMid) {
+    return item;
+  }
+
+  const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
+  const bvid = encodeURIComponent(item.bvid);
+  const detailUrls = [
+    `https://api.bilibili.com/x/web-interface/view/detail?bvid=${bvid}`,
+    `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+  ];
+
+  for (const url of detailUrls) {
+    let responseBody: unknown;
+    try {
+      responseBody = await client.video.request.get(url, {
+        headers: { referer: `https://www.bilibili.com/video/${item.bvid}/` },
+        extra: { rawResponse: true },
+      });
+    } catch (error: any) {
+      const statusCode = error?.statusCode || error?.response?.status;
+      const errMsg = error?.message || String(error);
+      if (isRiskOrLoginStatus(Number(statusCode || 0)) || isRiskOrLoginApiError(0, errMsg)) {
+        return item;
+      }
+      continue;
+    }
+
+    const body = (responseBody as Record<string, any>)?.data ?? {};
+    const apiCode = Number(body.code ?? 0);
+    if (apiCode !== 0) {
+      const msg = String(body.message || `Bili API returned code ${apiCode}`);
+      if (isRiskOrLoginApiError(apiCode, msg)) {
+        return item;
+      }
+      continue;
+    }
+
+    const data = body.data as Record<string, any> | undefined;
+    const view = data?.View || data;
+    const ownerMid = Number(view?.owner?.mid || 0);
+    if (!view || ownerMid !== expectedOwnerMid) {
+      continue;
+    }
+
+    const title = typeof view.title === "string" && view.title.trim() ? view.title.trim() : item.title;
+    const upperName = typeof view.owner?.name === "string" && view.owner.name.trim()
+      ? view.owner.name.trim()
+      : item.upperName;
+    const cover = typeof view.pic === "string" && view.pic.trim() ? view.pic.trim() : item.cover;
+    const description = typeof view.desc === "string" ? view.desc : item.description;
+
+    return {
+      ...item,
+      title,
+      upperName,
+      upperMid: ownerMid,
+      cover,
+      description,
+      unavailable: false,
+      favoriteUnavailable: true,
+      selfVisible: true,
+    };
+  }
+
+  return item;
 }
 
 // ---------- token refresh (biliLive-tools pattern) ----------
