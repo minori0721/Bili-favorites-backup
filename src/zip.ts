@@ -10,7 +10,6 @@ for (let i = 0; i < 256; i += 1) {
   }
   crcTable[i] = c >>> 0;
 }
-
 function crc32(buffer: Buffer) {
   let crc = 0xffffffff;
   for (const byte of buffer) {
@@ -211,4 +210,3 @@ export async function extractZipBuffer(buffer: Buffer, outputDir: string) {
     await fs.promises.writeFile(resolved, content);
   }
 }
-
