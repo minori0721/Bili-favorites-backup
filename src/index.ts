@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { dataDir, ensureAppDirs, tempDir } from "./paths.js";
+import { backupsDir, coversDir, dataDir, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
 import { type AppConfig, ConfigStore, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
@@ -16,6 +16,7 @@ import {
   listFavoriteItemsPage,
   normalizeTvAuthResult,
   refreshUserAuth,
+  resolveSelfVisibleFavoriteItem,
 } from "./bili.js";
 import { normalizeEncodingPriority, normalizeQualityPriority } from "./downloader.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
@@ -33,6 +34,11 @@ import {
   remotePathExists,
 } from "./uploader.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
+import {
+  applyMigrationPackage,
+  createMigrationExport,
+  previewMigrationPackage,
+} from "./migration.js";
 
 ensureAppDirs();
 
@@ -60,13 +66,16 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
 
-type CleanupItem = "memory-cache" | "temp" | "logs" | "debug-logs" | "state" | "users" | "config";
+type CleanupItem = "memory-cache" | "temp" | "logs" | "debug-logs" | "covers" | "exports" | "backups" | "state" | "users" | "config";
 
 const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
   "memory-cache": { label: "页面缓存", important: false },
   temp: { label: "临时下载文件", important: false, path: tempDir },
   logs: { label: "网页日志", important: false, path: logsPath },
   "debug-logs": { label: "Debug 日志", important: false, path: path.join(dataDir, "debug") },
+  covers: { label: "封面缓存", important: false, path: coversDir },
+  exports: { label: "导出压缩包", important: false, path: exportsDir },
+  backups: { label: "导入前备份", important: false, path: backupsDir },
   state: { label: "备份状态", important: true, path: path.join(dataDir, "state.json") },
   users: { label: "账号登录信息", important: true, path: path.join(dataDir, "users.json") },
   config: { label: "全局配置", important: true, path: path.join(dataDir, "config.json") },
@@ -210,7 +219,7 @@ function startTokenRefreshLoop() {
 startTokenRefreshLoop();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 const sessionSecret = process.env.SESSION_SECRET || "dev-secret";
@@ -268,6 +277,11 @@ function requireSameOrigin(req: express.Request, res: express.Response, next: ex
   res.status(403).json({ success: false, message: "Invalid request origin" });
 }
 
+app.use("/covers", requireAuth, express.static(coversDir, {
+  maxAge: "30d",
+  immutable: true,
+}));
+
 function parsePositiveInteger(value: unknown, fallback: number) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -294,6 +308,20 @@ function parseFolderDetailFilter(value: unknown): FolderDetailFilter {
   return "all";
 }
 
+async function resolveFavoritePageSelfVisibleItems(
+  user: BiliUser,
+  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
+) {
+  const nextItems = [];
+  for (const item of pageResult.items) {
+    nextItems.push(await resolveSelfVisibleFavoriteItem(user.cookie, user.uid, item));
+  }
+  return {
+    ...pageResult,
+    items: nextItems,
+  };
+}
+
 function markFavoriteItemProcessed(
   userId: string,
   mediaId: number,
@@ -317,20 +345,22 @@ function withProcessedStatus(
   };
 }
 
-function recordFavoritePageMetadata(
-  userId: string,
+async function recordFavoritePageMetadata(
+  user: BiliUser,
   mediaId: number,
   folderTitle: string,
   pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
 ) {
-  pageResult.items.forEach((item, indexInPage) => {
+  const resolvedPage = await resolveFavoritePageSelfVisibleItems(user, pageResult);
+  resolvedPage.items.forEach((item, indexInPage) => {
     const favOrder = (Math.max(1, pageResult.page) - 1) * Math.max(1, pageResult.pageSize) + indexInPage + 1;
-    stateManager.recordFavoriteItem(userId, mediaId, folderTitle, item, {
+    stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
       favOrder,
       favPage: pageResult.page,
       favIndexInPage: indexInPage,
     });
   });
+  return resolvedPage;
 }
 
 function getBiliListErrorMessage(error: unknown) {
@@ -426,6 +456,14 @@ function asyncHandler(
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     Promise.resolve(handler(req, res, next)).catch(next);
   };
+}
+
+class BadRequestError extends Error {
+  statusCode = 400;
+}
+
+function badRequest(message: string) {
+  return new BadRequestError(message);
 }
 
 app.get("/login", (req, res) => {
@@ -711,7 +749,7 @@ app.get("/api/users/:id/favorites/:mediaId/detail-items", asyncHandler(async (re
       });
     }
 
-    recordFavoritePageMetadata(user.id, mediaId, folderTitle, pageResult);
+    pageResult = await recordFavoritePageMetadata(user, mediaId, folderTitle, pageResult);
     const withStatus = withProcessedStatus(user.id, mediaId, pageResult);
     const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, pageResult.total);
     res.json({
@@ -953,7 +991,7 @@ function normalizeCleanupItems(value: unknown): CleanupItem[] {
 }
 
 function cleanupRequiresIdle(items: CleanupItem[]) {
-  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs");
+  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs" && item !== "covers" && item !== "exports" && item !== "backups");
 }
 
 function cleanupConfirmationRequired(items: CleanupItem[]) {
@@ -979,6 +1017,12 @@ async function removeCleanupTarget(item: CleanupItem) {
   if (item === "temp") {
     await fs.promises.mkdir(tempDir, { recursive: true });
     scheduler.refreshLocalCacheState();
+  } else if (item === "covers") {
+    await fs.promises.mkdir(coversDir, { recursive: true });
+  } else if (item === "exports") {
+    await fs.promises.mkdir(exportsDir, { recursive: true });
+  } else if (item === "backups") {
+    await fs.promises.mkdir(backupsDir, { recursive: true });
   } else if (item === "state") {
     stateManager.clear();
   } else if (item === "users") {
@@ -1041,6 +1085,86 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     return;
   }
   res.json({ success: true, data: { results } });
+}));
+
+function parseMigrationOptions(value: any) {
+  return {
+    includeConfig: value?.includeConfig !== false,
+    includeUsers: value?.includeUsers !== false,
+    includeState: value?.includeState !== false,
+    includeLogs: Boolean(value?.includeLogs),
+    includeDebug: Boolean(value?.includeDebug),
+    includeCovers: value?.includeCovers !== false,
+  };
+}
+
+const migrationZipBody = express.raw({ type: "application/zip", limit: "512mb" });
+
+function parseBooleanOption(value: unknown, fallback: boolean) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === true || value === "true" || value === "1") return true;
+  if (value === false || value === "false" || value === "0") return false;
+  return fallback;
+}
+
+function reloadStoresAfterImport() {
+  configStore.reload();
+  userStore.reload();
+  stateManager.reload();
+  logManager.reload();
+  scheduler.updateInterval();
+}
+
+app.post("/api/migration/export", asyncHandler(async (req, res) => {
+  const result = await createMigrationExport(parseMigrationOptions(req.body));
+  const fileName = path.basename(result.outputPath);
+  res.download(result.outputPath, fileName, (error) => {
+    if (error && !res.headersSent) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+}));
+
+app.post("/api/migration/import-preview", migrationZipBody, asyncHandler(async (req, res) => {
+  const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (body.length === 0) {
+    res.status(400).json({ success: false, message: "请选择导入压缩包" });
+    return;
+  }
+  let preview: Awaited<ReturnType<typeof previewMigrationPackage>>;
+  try {
+    preview = await previewMigrationPackage(body);
+  } catch (error: any) {
+    throw badRequest(error?.message || "导入包无法解析");
+  }
+  res.json({ success: true, data: preview });
+}));
+
+app.post("/api/migration/import", migrationZipBody, asyncHandler(async (req, res) => {
+  const archive = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (archive.length === 0) {
+    res.status(400).json({ success: false, message: "导入压缩包为空" });
+    return;
+  }
+  if (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork()) {
+    res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再导入。" });
+    return;
+  }
+  let result: Awaited<ReturnType<typeof applyMigrationPackage>>;
+  try {
+    result = await scheduler.withCleanupLock(async () => applyMigrationPackage(archive, {
+      restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
+      restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
+      restoreState: parseBooleanOption(req.query.restoreState, true),
+      restoreCovers: parseBooleanOption(req.query.restoreCovers, true),
+      restoreLogs: parseBooleanOption(req.query.restoreLogs, false),
+      restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
+    }));
+  } catch (error: any) {
+    throw badRequest(error?.message || "导入包无法解析");
+  }
+  reloadStoresAfterImport();
+  res.json({ success: true, data: result });
 }));
 
 function normalizeRemotePath(value: string) {
@@ -1661,12 +1785,18 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   if (res.headersSent) {
     return;
   }
-  res.status(500).json({ success: false, message: err?.message || "Internal server error" });
+  const statusCode = Number(err?.statusCode || err?.status);
+  const safeStatus = statusCode >= 400 && statusCode < 600 ? statusCode : 500;
+  res.status(safeStatus).json({ success: false, message: err?.message || "Internal server error" });
 });
 
 
 
-const port = Number(process.env.PORT || 3000);
-app.listen(port, () => {
-  console.log(`Server listening on http://localhost:${port}`);
-});
+export { app };
+
+if (process.env.NODE_ENV !== "test") {
+  const port = Number(process.env.PORT || 3000);
+  app.listen(port, () => {
+    console.log(`Server listening on http://localhost:${port}`);
+  });
+}

@@ -52,6 +52,11 @@ export class UserStore {
     return [...this.users];
   }
 
+  reload() {
+    this.users = readJsonFile<BiliUser[]>(usersPath, defaultUsers);
+    return this.list();
+  }
+
   getById(id: string) {
     return this.users.find((user) => user.id === id) || null;
   }

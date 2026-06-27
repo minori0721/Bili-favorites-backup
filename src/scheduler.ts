@@ -3,12 +3,13 @@ import path from "node:path";
 import { ConfigStore } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
-import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth } from "./bili.js";
+import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth, resolveSelfVisibleFavoriteItem } from "./bili.js";
 import { logManager } from "./logger.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
+import { queueCoverCache } from "./cover-cache.js";
 import {
   DownloadTask,
   QualityUpgradeDownloadTask,
@@ -71,6 +72,7 @@ export class SyncScheduler {
   private pendingTickOptions: TickOptions | null = null;
   private cleanupLocked = false;
   private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
+  private selfVisibleProbeCache = new Map<string, { expiresAt: number; item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number] }>();
   private schedulerProgress: SchedulerSnapshot | null = null;
   private nextAutoRunAt?: number;
   private lastSchedulerError = "";
@@ -699,6 +701,42 @@ export class SyncScheduler {
     return `${userId}:${mediaId}:${bvid}`;
   }
 
+  private selfVisibleProbeKey(userId: string, bvid: string) {
+    return `${userId}:${bvid}`;
+  }
+
+  private async resolveSelfVisibleItemForSync(
+    user: BiliUser,
+    item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]
+  ) {
+    if (!item.unavailable || !user.uid || Number(item.upperMid || 0) !== Number(user.uid)) {
+      return item;
+    }
+    const key = this.selfVisibleProbeKey(user.id, item.bvid);
+    const cached = this.selfVisibleProbeCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.item;
+    }
+    const resolved = await resolveSelfVisibleFavoriteItem(user.cookie, user.uid, item);
+    this.selfVisibleProbeCache.set(key, {
+      expiresAt: Date.now() + 10 * 60_000,
+      item: resolved,
+    });
+    if (resolved.selfVisible) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `自稿件失效项已恢复详情 ${item.bvid}`,
+        raw: `[SelfVisible] ${user.name}/${item.bvid} resolved from favorite-unavailable to self-visible`,
+        bvid: item.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+    return resolved;
+  }
+
   private makeSingleTarget(task: DownloadTask): UploadTarget[] {
     if (!task.userId || !task.mediaId || !task.remotePath) {
       return [];
@@ -781,7 +819,7 @@ export class SyncScheduler {
         biliTotal: result.total,
         detail: `正在全量扫描第 ${page} 页。`,
       });
-      this.recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
+      await this.recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
       this.stateManager.updateFolderScan(user.id, mediaId, {
         folderTitle,
         initStatus: "initializing",
@@ -834,7 +872,7 @@ export class SyncScheduler {
         biliTotal: result.total,
         detail: `正在扫描近期第 ${page} 页。`,
       });
-      const pageStats = this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
+      const pageStats = await this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
       lastPage = page;
       const previousScan = this.stateManager.getFolderScan(user.id, mediaId, folderTitle);
       this.stateManager.updateFolderScan(user.id, mediaId, {
@@ -899,7 +937,7 @@ export class SyncScheduler {
         biliTotal: result.total,
         detail: `正在补扫历史第 ${page} 页。`,
       });
-      this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
+      await this.recordPage(user, mediaId, folderTitle, result.items, page, 20);
 
       if (!result.hasMore || result.items.length === 0) {
         const completeWithoutTotal = !manual && !totalPages && page > Math.max(startAfterPage + 1, 1);
@@ -932,7 +970,7 @@ export class SyncScheduler {
     }
   }
 
-  private recordPage(
+  private async recordPage(
     user: BiliUser,
     mediaId: number,
     folderTitle: string,
@@ -943,7 +981,8 @@ export class SyncScheduler {
     seenBvids?: Set<string>
   ) {
     let newItems = 0;
-    items.forEach((item, indexInPage) => {
+    for (const [indexInPage, rawItem] of items.entries()) {
+      const item = await this.resolveSelfVisibleItemForSync(user, rawItem);
       seenBvids?.add(item.bvid);
       const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
       const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
@@ -951,6 +990,11 @@ export class SyncScheduler {
         favPage: page,
         favIndexInPage: indexInPage,
       }, seenAt);
+      if (!item.unavailable && item.cover) {
+        queueCoverCache(item.bvid, item.cover, (coverLocalPath) => {
+          this.stateManager.recordCoverCache(item.bvid, coverLocalPath);
+        });
+      }
       if (!result.wasKnown) {
         newItems += 1;
         this.cycleContext!.newItems += 1;
@@ -959,7 +1003,7 @@ export class SyncScheduler {
       if (queued) {
         this.cycleContext!.queuedItems += 1;
       }
-    });
+    }
     return { newItems };
   }
 
