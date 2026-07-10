@@ -4,6 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import {
+  buildCompatibilityUploadName,
   ensureRemoteDir,
   uploadWithAList,
   verifyUploadedFile,
@@ -17,7 +18,12 @@ function xmlEscape(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&apos;", '"': "&quot;" }[char]!));
 }
 
-async function startWebDavServer(options: { failFirstPut?: boolean; remoteSizeOffset?: number; putStatus?: 201 | 204 } = {}) {
+async function startWebDavServer(options: {
+  failFirstPut?: boolean;
+  rejectFourByteNames?: boolean;
+  remoteSizeOffset?: number;
+  putStatus?: 201 | 204;
+} = {}) {
   const directories = new Set(["/dav"]);
   const files = new Map<string, Buffer>();
   const puts: Array<{ path: string; headers: http.IncomingHttpHeaders; body: Buffer }> = [];
@@ -58,6 +64,11 @@ async function startWebDavServer(options: { failFirstPut?: boolean; remoteSizeOf
       if (options.failFirstPut && putCount === 1) {
         res.statusCode = 500;
         res.end("temporary failure");
+        return;
+      }
+      if (options.rejectFourByteNames && Array.from(requestPath).some((character) => Buffer.byteLength(character, "utf-8") === 4)) {
+        res.statusCode = 405;
+        res.end("Method Not Allowed");
         return;
       }
       files.set(requestPath, body);
@@ -131,6 +142,65 @@ test("a failed request can be retried with a fresh full stream", async () => {
     await server.close();
     await removeTestDir(runtime);
   }
+});
+
+test("a four-byte filename falls back once and records the verified compatible remote path", async () => {
+  const runtime = await createTestDir("upload-compatible-name");
+  const server = await startWebDavServer({ rejectFourByteNames: true });
+  try {
+    const originalName = "2026-05-29_15-15-39-谁的🍷 自己来认领-爱拍照的千鹤-BV1XeVa6jEog.mp4";
+    const compatibleName = "2026-05-29_15-15-39-谁的 自己来认领-爱拍照的千鹤-BV1XeVa6jEog.mp4";
+    const payload = Buffer.from("compatible-name-content");
+    await fs.promises.writeFile(path.join(runtime, originalName), payload);
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+
+    assert.equal(server.puts.length, 2);
+    assert.equal(server.puts[0].path, `/dav/target/${originalName}`);
+    assert.equal(server.puts[1].path, `/dav/target/${compatibleName}`);
+    assert.deepEqual(server.puts[0].body, payload);
+    assert.deepEqual(server.puts[1].body, payload);
+    assert.equal(server.puts[1].headers["content-length"], String(payload.length));
+    assert.equal(server.puts[1].headers["transfer-encoding"], undefined);
+    assert.equal(result.files[0].name, compatibleName);
+    assert.equal(result.files[0].path, `/target/${compatibleName}`);
+    assert.equal(fs.existsSync(path.join(runtime, originalName)), true);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a WebDAV backend that accepts four-byte filenames keeps the original name", async () => {
+  const runtime = await createTestDir("upload-original-name");
+  const server = await startWebDavServer();
+  try {
+    const originalName = "title-🍷-BV1TEST.mp4";
+    await fs.promises.writeFile(path.join(runtime, originalName), "original-name-content");
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+
+    assert.equal(server.puts.length, 1);
+    assert.equal(result.files[0].name, originalName);
+    assert.equal(result.files[0].path, `/target/${originalName}`);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("compatible filename generation avoids collisions with existing local names", () => {
+  const reserved = new Set(["title-BV1TEST.mp4", "title-BV1TEST-compat-2.mp4"]);
+  assert.equal(
+    buildCompatibilityUploadName("title-🍷BV1TEST.mp4", reserved),
+    "title-BV1TEST-compat-3.mp4"
+  );
 });
 
 test("zero-byte and remote-size mismatch failures preserve local files", async () => {

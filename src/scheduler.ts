@@ -33,6 +33,8 @@ function cooldownMs() {
   return (30 + Math.floor(Math.random() * 60)) * 60 * 1000;
 }
 
+const ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS = 6 * 60 * 60_000;
+
 async function pathSize(targetPath: string): Promise<number> {
   try {
     const stat = await fs.promises.stat(targetPath);
@@ -198,11 +200,18 @@ export class SyncScheduler {
         this.scheduleRecoveryRefill();
         return;
       }
+      const uploadHealth = this.uploadCircuit.getSnapshot();
+      const isolatedDeterministicFailure = failure.category === "deterministic" && uploadHealth.state === "closed";
+      if (task.recoveryKey) {
+        this.priorityUploadKeys.delete(task.recoveryKey);
+      }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "error",
-        summary: `上传失败 ${task.bvid}: ${failure.summary}（本地文件已保留，等待补传）`,
+        summary: isolatedDeterministicFailure
+          ? `上传失败 ${task.bvid}: ${failure.summary}（本地文件已保留，已隔离补传，其他任务继续）`
+          : `上传失败 ${task.bvid}: ${failure.summary}（本地文件已保留，等待补传）`,
         raw: this.formatUploadFailureLog(task, failure),
         bvid: task.bvid,
         simpleVisible: true,
@@ -221,17 +230,23 @@ export class SyncScheduler {
         videoTitle: task.videoTitle,
         upperName: task.upperName,
         cover: task.cover,
-        notBefore: this.uploadCircuit.getRetryAt() || Date.now() + 60_000,
-        priority: true,
+        notBefore: uploadHealth.retryAt || Date.now() + (
+          isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : 60_000
+        ),
+        priority: !isolatedDeterministicFailure,
       };
       const retryKey = this.recoveryUploadKey(retryItem);
+      this.priorityUploadKeys.delete(retryKey);
       if (!this.recoveryUploadKeys.has(retryKey)) {
         this.recoveryUploadKeys.add(retryKey);
-        this.priorityUploadKeys.add(retryKey);
+        if (retryItem.priority) {
+          this.priorityUploadKeys.add(retryKey);
+        }
         this.recoveryUploadBacklog.push(retryItem);
         this.createSharedUploadDirTracker(task.downloadDir, 1, task.bvid);
       }
       void this.completeSharedUploadTask(task, false);
+      this.downloadQueue.poke();
       this.scheduleRecoveryRefill(Math.max(0, (retryItem.notBefore || Date.now()) - Date.now()));
     });
     this.uploadQueue.on("taskRetry", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {

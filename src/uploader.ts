@@ -111,6 +111,34 @@ export function buildUploadHeaders(filePath: string, stat: fs.Stats) {
   };
 }
 
+export function hasFourByteCharacters(value: string) {
+  return Array.from(value).some((character) => Buffer.byteLength(character, "utf-8") === 4);
+}
+
+function stripFourByteCharacters(value: string) {
+  return Array.from(value)
+    .filter((character) => Buffer.byteLength(character, "utf-8") !== 4)
+    .join("");
+}
+
+export function buildCompatibilityUploadName(fileName: string, reservedNames: ReadonlySet<string> = new Set()) {
+  if (!hasFourByteCharacters(fileName)) return undefined;
+  const extension = path.extname(fileName);
+  const stem = extension ? fileName.slice(0, -extension.length) : fileName;
+  const safeStem = stripFourByteCharacters(stem) || "file";
+  const safeExtension = stripFourByteCharacters(extension);
+  const baseCandidate = `${safeStem}${safeExtension}`;
+  if (!reservedNames.has(baseCandidate)) return baseCandidate;
+
+  let suffix = 2;
+  let candidate = `${safeStem}-compat-${suffix}${safeExtension}`;
+  while (reservedNames.has(candidate)) {
+    suffix += 1;
+    candidate = `${safeStem}-compat-${suffix}${safeExtension}`;
+  }
+  return candidate;
+}
+
 async function toUploadOperationError(error: unknown, remotePath: string) {
   await captureUploadResponseBody(error);
   return error instanceof UploadOperationError
@@ -148,6 +176,34 @@ export async function verifyUploadedFile(
   throw new UploadOperationError(classifyUploadError(verificationError, remoteFile));
 }
 
+async function putAndVerifyLocalFile(
+  client: WebDAVClient,
+  localFile: string,
+  remoteFile: string,
+  stat: fs.Stats,
+  verificationDelaysMs?: number[]
+) {
+  const fileStream = fs.createReadStream(localFile);
+  try {
+    await client.putFileContents(remoteFile, fileStream as any, {
+      contentLength: false,
+      overwrite: true,
+      headers: buildUploadHeaders(localFile, stat),
+    });
+    await verifyUploadedFile(client, remoteFile, stat.size, verificationDelaysMs);
+  } finally {
+    fileStream.destroy();
+  }
+}
+
+function shouldRetryWithCompatibilityName(error: UploadOperationError, fileName: string) {
+  const status = error.uploadFailure.status;
+  return hasFourByteCharacters(fileName)
+    && error.uploadFailure.category === "deterministic"
+    && status !== undefined
+    && [400, 405, 422].includes(status);
+}
+
 export async function uploadWithAList(
   localDir: string,
   remotePath: string,
@@ -171,66 +227,96 @@ export async function uploadWithAList(
   }
 
   const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
+  const reservedRemoteNames = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
   for (const entry of entries) {
     if (entry.isFile()) {
       const localFile = path.join(localDir, entry.name);
       // Join using posix style for webdav
-      const remoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
+      const originalRemoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
       
       const stat = await fs.promises.stat(localFile);
       if (!stat.isFile() || stat.size <= 0) {
         const localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`);
         localError.status = 422;
-        throw new UploadOperationError(classifyUploadError(localError, remoteFile));
+        throw new UploadOperationError(classifyUploadError(localError, originalRemoteFile));
       }
-      const fileStream = fs.createReadStream(localFile);
       const sizeKB = (stat.size / 1024).toFixed(1);
-      console.log(`[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`);
+      console.log(`[AList] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`);
       
       logger.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "info",
         summary: `正在上传: ${entry.name} (${sizeKB} KB) → ${remotePath}`,
-        raw: `[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`,
+        raw: `[AList] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`,
         simpleVisible: true,
       });
-      
+
+      let uploadedName = entry.name;
+      let uploadedRemoteFile = originalRemoteFile;
       try {
-        await client.putFileContents(remoteFile, fileStream as any, {
-          contentLength: false,
-          overwrite: true,
-          headers: buildUploadHeaders(localFile, stat),
-        });
-        await verifyUploadedFile(client, remoteFile, stat.size, options.verificationDelaysMs);
-        logger.push({
-          timestamp: new Date().toISOString(),
-          type: "upload",
-          level: "info",
-          summary: `上传完成: ${entry.name}`,
-          raw: `[AList] Upload completed for ${entry.name}`,
-          simpleVisible: true,
-        });
+        await putAndVerifyLocalFile(client, localFile, originalRemoteFile, stat, options.verificationDelaysMs);
       } catch (error) {
-        const uploadError = await toUploadOperationError(error, remoteFile);
-        const info = uploadError.uploadFailure;
-        console.error(`[AList] Upload failed status=${info.status || "unknown"} category=${info.category} path=${remoteFile}: ${info.summary}`);
+        const uploadError = await toUploadOperationError(error, originalRemoteFile);
+        const compatibilityName = shouldRetryWithCompatibilityName(uploadError, entry.name)
+          ? buildCompatibilityUploadName(entry.name, reservedRemoteNames)
+          : undefined;
+        if (!compatibilityName) {
+          const info = uploadError.uploadFailure;
+          console.error(`[AList] Upload failed status=${info.status || "unknown"} category=${info.category} path=${originalRemoteFile}: ${info.summary}`);
+          logger.push({
+            timestamp: new Date().toISOString(),
+            type: "upload",
+            level: "error",
+            summary: `上传失败: ${entry.name} - ${info.summary}`,
+            raw: `[AList] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${originalRemoteFile}: ${info.summary}`,
+            simpleVisible: true,
+          });
+          throw uploadError;
+        }
+
+        uploadedName = compatibilityName;
+        uploadedRemoteFile = remotePath.replace(/\/$/, "") + "/" + compatibilityName;
+        console.warn(`[AList] Retrying with compatible remote name ${entry.name} -> ${compatibilityName}`);
         logger.push({
           timestamp: new Date().toISOString(),
           type: "upload",
-          level: "error",
-          summary: `上传失败: ${entry.name} - ${info.summary}`,
-          raw: `[AList] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${remoteFile}: ${info.summary}`,
+          level: "warn",
+          summary: `文件名兼容重试: ${entry.name} → ${compatibilityName}`,
+          raw: `[AList] Retrying with compatible remote name ${entry.name} -> ${compatibilityName}`,
           simpleVisible: true,
         });
-        throw uploadError;
-      } finally {
-        fileStream.destroy();
+        try {
+          await putAndVerifyLocalFile(client, localFile, uploadedRemoteFile, stat, options.verificationDelaysMs);
+        } catch (compatibilityError) {
+          const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
+          const info = finalError.uploadFailure;
+          console.error(`[AList] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} path=${uploadedRemoteFile}: ${info.summary}`);
+          logger.push({
+            timestamp: new Date().toISOString(),
+            type: "upload",
+            level: "error",
+            summary: `兼容文件名上传失败: ${compatibilityName} - ${info.summary}`,
+            raw: `[AList] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${uploadedRemoteFile}: ${info.summary}`,
+            simpleVisible: true,
+          });
+          throw finalError;
+        }
       }
 
+      reservedRemoteNames.add(uploadedName);
+      logger.push({
+        timestamp: new Date().toISOString(),
+        type: "upload",
+        level: "info",
+        summary: uploadedName === entry.name ? `上传完成: ${entry.name}` : `上传完成: ${entry.name}（远端 ${uploadedName}）`,
+        raw: `[AList] Upload completed for ${entry.name} as ${uploadedName}`,
+        simpleVisible: true,
+      });
+
       uploadedFiles.push({
-        name: entry.name,
-        path: remoteFile,
+        name: uploadedName,
+        path: uploadedRemoteFile,
         size: stat.size,
         qualityProfile,
       });
