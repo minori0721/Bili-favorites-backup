@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
+import { historySessionGroups, readDownloadSession } from "./download-session.js";
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -27,6 +28,7 @@ export type BackupStatus =
   | "upload_failed"
   | "uploaded"
   | "verified"
+  | "partial_verified"
   | "missing"
   | "lost"
   | "failed";
@@ -56,6 +58,16 @@ export interface VideoMetadataSnapshot {
   capturedAt: string;
 }
 
+export interface DownloadSessionReference {
+  id: string;
+  localDir: string;
+  kind: "backup" | "quality_upgrade";
+  status: "prepared" | "downloading" | "complete" | "partial" | "failed";
+  completedPages: number;
+  totalPages: number;
+  updatedAt: string;
+}
+
 export interface VideoArchiveEntry {
   bvid: string;
   title: string;
@@ -71,6 +83,7 @@ export interface VideoArchiveEntry {
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
   localDir?: string;
+  downloadSession?: DownloadSessionReference;
   uploadedAt?: string;
   verifiedAt?: string;
   lastRemoteCheckAt?: string;
@@ -230,7 +243,7 @@ export interface StateFile {
 
 const defaultStatePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 9,
+  schemaVersion: 10,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -239,7 +252,7 @@ const defaultState: StateFile = {
   userCooldowns: {},
 };
 
-const BACKED_UP_STATUSES = new Set<BackupStatus>(["uploaded", "verified"]);
+const BACKED_UP_STATUSES = new Set<BackupStatus>(["uploaded", "verified", "partial_verified"]);
 const ACTIVE_BACKUP_STATUSES = new Set<BackupStatus>([
   "queued",
   "downloading",
@@ -257,6 +270,7 @@ const RELATION_BACKUP_PRIORITY: BackupStatus[] = [
   "discovered",
   "lost",
   "uploaded",
+  "partial_verified",
   "verified",
 ];
 
@@ -696,12 +710,73 @@ export class StateManager {
     this.save();
   }
 
+  markDownloadPrepared(
+    bvid: string,
+    localDir: string,
+    session: DownloadSessionReference,
+    targets?: Array<{ userId: string; mediaId: number }>
+  ) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return;
+    const at = nowIso();
+    this.setVideoStatus(entry, "downloading", at);
+    entry.localDir = localDir;
+    entry.downloadSession = { ...session, localDir, updatedAt: at };
+    this.updateTargetRelations(bvid, targets, (relation) => {
+      this.setRelationStatus(relation, "downloading", at);
+    });
+    this.save();
+  }
+
+  markDownloadInterrupted(
+    bvid: string,
+    localDir: string,
+    reason: string,
+    targets?: Array<{ userId: string; mediaId: number }>
+  ) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return;
+    const at = nowIso();
+    this.setVideoStatus(entry, "queued", at);
+    entry.localDir = localDir;
+    entry.lastError = reason;
+    const manifest = readDownloadSession(localDir);
+    if (manifest) {
+      entry.downloadSession = {
+        id: manifest.sessionId,
+        localDir,
+        kind: manifest.kind,
+        status: manifest.status,
+        completedPages: manifest.outputs.length,
+        totalPages: manifest.pages.length,
+        updatedAt: manifest.updatedAt,
+      };
+    }
+    this.updateTargetRelations(bvid, targets, (relation) => {
+      this.setRelationStatus(relation, "queued", at);
+      relation.lastError = reason;
+    });
+    this.save();
+  }
+
   markDownloaded(bvid: string, localDir: string, targets?: Array<{ userId: string; mediaId: number }>) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
     const at = nowIso();
     this.setVideoStatus(entry, "downloaded", at);
     entry.localDir = localDir;
+    const manifest = readDownloadSession(localDir);
+    if (manifest) {
+      entry.downloadSession = {
+        id: manifest.sessionId,
+        localDir,
+        kind: manifest.kind,
+        status: manifest.status,
+        completedPages: manifest.outputs.length,
+        totalPages: manifest.pages.length,
+        updatedAt: manifest.updatedAt,
+      };
+    }
     this.updateTargetRelations(bvid, targets, (relation) => {
       this.setRelationStatus(relation, "downloaded", at);
     });
@@ -731,6 +806,7 @@ export class StateManager {
     }
     this.setVideoStatus(entry, "discovered");
     entry.localDir = undefined;
+    entry.downloadSession = undefined;
     this.save();
   }
 
@@ -753,7 +829,8 @@ export class StateManager {
     relation: FavoriteRelation | null,
     remotePath: string,
     remoteFiles: RemoteFileRecord[],
-    at: string
+    at: string,
+    partial = false
   ) {
     entry.remotePath = remotePath;
     entry.remoteFiles = remoteFiles;
@@ -762,7 +839,7 @@ export class StateManager {
     entry.nextRemoteCheckAt = undefined;
     entry.remoteMissingCount = 0;
     if (relation) {
-      this.setRelationStatus(relation, "verified", at);
+      this.setRelationStatus(relation, partial ? "partial_verified" : "verified", at);
       relation.remotePath = remotePath;
       relation.remoteFiles = remoteFiles;
       relation.uploadedAt = at;
@@ -773,7 +850,7 @@ export class StateManager {
       relation.lastError = undefined;
       this.clearFailedEntry(relation.userId, relation.mediaId, relation.bvid);
       this.refreshVideoAggregateStatus(entry.bvid);
-      if (entry.backupStatus === "verified") {
+      if (entry.backupStatus === "verified" || entry.backupStatus === "partial_verified") {
         entry.verifiedAt = at;
         entry.lastError = undefined;
       } else {
@@ -783,7 +860,7 @@ export class StateManager {
           ?.lastError;
       }
     } else {
-      this.setVideoStatus(entry, "verified", at);
+      this.setVideoStatus(entry, partial ? "partial_verified" : "verified", at);
       entry.verifiedAt = at;
       entry.lastError = undefined;
     }
@@ -794,7 +871,8 @@ export class StateManager {
     remotePath: string,
     remoteFiles: RemoteFileRecord[],
     _userId?: string,
-    _mediaId?: number
+    _mediaId?: number,
+    partial = false
   ) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
@@ -808,7 +886,7 @@ export class StateManager {
       );
       return;
     }
-    this.applyVerifiedRemoteFiles(entry, this.getRelation(_userId, _mediaId, bvid), remotePath, remoteFiles, nowIso());
+    this.applyVerifiedRemoteFiles(entry, this.getRelation(_userId, _mediaId, bvid), remotePath, remoteFiles, nowIso(), partial);
     this.save();
   }
 
@@ -846,6 +924,7 @@ export class StateManager {
     if (!entry) return;
     if (entry.localDir === localDir) {
       entry.localDir = undefined;
+      entry.downloadSession = undefined;
     }
     this.refreshVideoAggregateStatus(bvid);
     this.save();
@@ -923,7 +1002,9 @@ export class StateManager {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
     const at = nowIso();
-    this.setVideoStatus(entry, "verified", at);
+    const relation = this.getRelation(userId, mediaId, bvid);
+    const partial = entry.backupStatus === "partial_verified" || relation?.backupStatus === "partial_verified";
+    this.setVideoStatus(entry, partial ? "partial_verified" : "verified", at);
     if (remotePath) {
       entry.remotePath = remotePath;
     }
@@ -935,9 +1016,8 @@ export class StateManager {
     entry.nextRemoteCheckAt = undefined;
     entry.remoteMissingCount = 0;
     entry.lastError = undefined;
-    const relation = this.getRelation(userId, mediaId, bvid);
     if (relation) {
-      this.setRelationStatus(relation, "verified", at);
+      this.setRelationStatus(relation, partial ? "partial_verified" : "verified", at);
       if (remotePath) relation.remotePath = remotePath;
       if (Array.isArray(remoteFiles) && remoteFiles.length > 0) relation.remoteFiles = remoteFiles;
       relation.verifiedAt = at;
@@ -1084,10 +1164,28 @@ export class StateManager {
       for (const entry of Object.values(this.state.videos || {})) {
         const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
         const relations = relationsByBvid.get(entry.bvid) || [];
-        if (hasLocalDir) {
-          const entryTarget: BackupStatus = ["uploading", "upload_failed", "failed"].includes(entry.backupStatus)
-            ? "upload_failed"
-            : "downloaded";
+        if (hasLocalDir && entry.localDir) {
+          const manifest = readDownloadSession(entry.localDir);
+          const sessionComplete = manifest?.status === "complete" || manifest?.status === "partial";
+          const uploadReady = sessionComplete;
+          const entryTarget: BackupStatus = uploadReady
+            ? (["uploading", "upload_failed", "failed"].includes(entry.backupStatus) ? "upload_failed" : "downloaded")
+            : "queued";
+          if (manifest) {
+            const nextReference: DownloadSessionReference = {
+              id: manifest.sessionId,
+              localDir: entry.localDir,
+              kind: manifest.kind,
+              status: manifest.status,
+              completedPages: manifest.outputs.length,
+              totalPages: manifest.pages.length,
+              updatedAt: manifest.updatedAt,
+            };
+            if (JSON.stringify(entry.downloadSession) !== JSON.stringify(nextReference)) {
+              entry.downloadSession = nextReference;
+              changed = true;
+            }
+          }
           if (resumableStatuses.has(entry.backupStatus) && entry.backupStatus !== entryTarget) {
             this.setVideoStatus(entry, entryTarget, at);
             changed = true;
@@ -1095,9 +1193,9 @@ export class StateManager {
           for (const relation of relations) {
             const current = relation.backupStatus || entry.backupStatus;
             if (!resumableStatuses.has(current)) continue;
-            const target: BackupStatus = ["uploading", "upload_failed", "failed"].includes(current)
-              ? "upload_failed"
-              : "downloaded";
+            const target: BackupStatus = uploadReady
+              ? (["uploading", "upload_failed", "failed"].includes(current) ? "upload_failed" : "downloaded")
+              : "queued";
             if (relation.backupStatus !== target) {
               this.setRelationStatus(relation, target, at);
               changed = true;
@@ -1108,6 +1206,7 @@ export class StateManager {
 
         if (entry.localDir) {
           entry.localDir = undefined;
+          entry.downloadSession = undefined;
           changed = true;
         }
         if (resumableStatuses.has(entry.backupStatus)) {
@@ -1135,9 +1234,16 @@ export class StateManager {
 
   listBackupsToResume() {
     const relationWork = Object.values(this.state.relations || {})
-      .filter((relation) => ["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing"].includes(relation.backupStatus || ""))
       .map((relation) => ({ relation: { ...relation }, video: this.state.videos?.[relation.bvid] }))
-      .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => Boolean(item.video));
+      .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => {
+        if (!item.video) return false;
+        if (["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing"].includes(item.relation.backupStatus || "")) return true;
+        if (!["verified", "partial_verified"].includes(item.relation.backupStatus || "") || !item.video.localDir) return false;
+        const targetKey = `${item.relation.userId}:${item.relation.mediaId}`;
+        return historySessionGroups(item.video.localDir).some((group) =>
+          group.files.some((file) => !(file.uploadedTargets || []).includes(targetKey))
+        );
+      });
     if (relationWork.length > 0) {
       return relationWork;
     }
@@ -1855,6 +1961,26 @@ export class StateManager {
         this.refreshVideoAggregateStatus(bvid);
       }
       this.state.schemaVersion = 9;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 10) {
+      for (const entry of Object.values(this.state.videos || {})) {
+        if (!entry.localDir || !fs.existsSync(entry.localDir)) continue;
+        const manifest = readDownloadSession(entry.localDir);
+        if (!manifest) continue;
+        entry.downloadSession = {
+          id: manifest.sessionId,
+          localDir: entry.localDir,
+          kind: manifest.kind,
+          status: manifest.status,
+          completedPages: manifest.outputs.length,
+          totalPages: manifest.pages.length,
+          updatedAt: manifest.updatedAt,
+        };
+        changed = true;
+      }
+      this.state.schemaVersion = 10;
       changed = true;
     }
 

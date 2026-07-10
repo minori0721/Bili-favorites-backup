@@ -10,7 +10,7 @@ const now = "2026-07-10T00:00:00.000Z";
 
 function baseState(): StateFile {
   return {
-    schemaVersion: 9,
+    schemaVersion: 10,
     processedByUser: {},
     failedByUser: {},
     videos: {},
@@ -67,10 +67,68 @@ test("schema 8 failed state with an existing local directory migrates to upload_
       },
     });
     const snapshot = manager.getStateSnapshot();
-    assert.equal(snapshot.schemaVersion, 9);
+    assert.equal(snapshot.schemaVersion, 10);
     assert.equal(snapshot.videos![bvid].backupStatus, "upload_failed");
     assert.equal(snapshot.relations![`u1:1:${bvid}`].backupStatus, "upload_failed");
     assert.equal(writes, 1);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("an incomplete schema 10 download session resumes downloading instead of uploading", async () => {
+  const runtime = await createTestDir("state-incomplete-session");
+  try {
+    const localDir = path.join(runtime, "video");
+    await fs.promises.mkdir(localDir, { recursive: true });
+    writeJsonFile(path.join(localDir, ".bfb-download.json"), {
+      schemaVersion: 1,
+      sessionId: "session-1",
+      kind: "backup",
+      bvid: "BVTEST000077",
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: { quality: "", encoding: "", hiRes: false, dolby: false, filenameTemplate: "<bvid>" },
+      createdAt: now,
+      updatedAt: now,
+      snapshotAt: now,
+      status: "downloading",
+      pages: [{ index: 1, cid: 1, title: "P1", duration: 10 }],
+      outputs: [],
+      history: [],
+    });
+    const state = baseState();
+    addVideo(state, 77, "downloading", localDir);
+    const statePath = path.join(runtime, "state.json");
+    writeJsonFile(statePath, state);
+    const manager = new StateManager({ statePath });
+    manager.normalizePersistedWorkForRecovery();
+    const snapshot = manager.getStateSnapshot();
+    assert.equal(snapshot.videos!.BVTEST000077.backupStatus, "queued");
+    assert.equal(snapshot.videos!.BVTEST000077.localDir, localDir);
+    assert.equal(snapshot.videos!.BVTEST000077.downloadSession?.status, "downloading");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy local cache without a manifest is adopted before any upload is attempted", async () => {
+  const runtime = await createTestDir("state-legacy-adoption");
+  try {
+    const localDir = path.join(runtime, "legacy-video");
+    await fs.promises.mkdir(localDir, { recursive: true });
+    await fs.promises.writeFile(path.join(localDir, "legacy.mp4"), "legacy");
+    const state = baseState();
+    const bvid = addVideo(state, 78, "upload_failed", localDir);
+    const statePath = path.join(runtime, "state.json");
+    writeJsonFile(statePath, state);
+    const manager = new StateManager({ statePath });
+    manager.normalizePersistedWorkForRecovery();
+    const snapshot = manager.getStateSnapshot();
+    assert.equal(snapshot.videos![bvid].backupStatus, "queued");
+    assert.equal(snapshot.relations![`u1:1:${bvid}`].backupStatus, "queued");
+    assert.equal(snapshot.videos![bvid].localDir, localDir);
   } finally {
     await removeTestDir(runtime);
   }
@@ -148,6 +206,34 @@ test("multi-target upload keeps local data until every target is verified", asyn
     snapshot = manager.getStateSnapshot();
     assert.equal(snapshot.videos![bvid].localDir, undefined);
     assert.equal(snapshot.videos![bvid].backupStatus, "verified");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("partial uploads remain distinguishable from complete verified backups", async () => {
+  const runtime = await createTestDir("state-partial-verified");
+  try {
+    const state = baseState();
+    const bvid = addVideo(state, 88, "downloaded");
+    state.relations![`u1:1:${bvid}`] = {
+      userId: "u1",
+      mediaId: 1,
+      bvid,
+      folderTitle: "Favorites",
+      firstSeenAt: now,
+      lastSeenAt: now,
+      activeInFavorite: true,
+      backupStatus: "downloaded",
+    };
+    const statePath = path.join(runtime, "state.json");
+    writeJsonFile(statePath, state);
+    const manager = new StateManager({ statePath });
+    manager.markVerifiedUpload(bvid, "/remote", [{ name: "partial.mp4", path: "/remote/partial.mp4", size: 10 }], "u1", 1, true);
+    const snapshot = manager.getStateSnapshot();
+    assert.equal(snapshot.videos![bvid].backupStatus, "partial_verified");
+    assert.equal(snapshot.relations![`u1:1:${bvid}`].backupStatus, "partial_verified");
+    assert.equal(manager.isProcessed("u1", bvid, 1), true);
   } finally {
     await removeTestDir(runtime);
   }

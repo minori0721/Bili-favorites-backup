@@ -29,7 +29,7 @@ const retryDescriptor = {
   mediaId: 1,
 };
 const recoveryKey = scheduler.recoveryUploadKey(retryDescriptor);
-const task = new UploadTask(bvid, localDir, remotePath, configStore.get(), { cleanupLocal: false });
+const task = new UploadTask(bvid, localDir, remotePath, configStore.get(), { cleanupLocal: false, files: ["isolated.mp4"] });
 task.userId = "u1";
 task.mediaId = 1;
 task.folderTitle = "Favorites";

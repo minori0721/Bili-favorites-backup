@@ -1,0 +1,495 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import test from "node:test";
+import {
+  buildSelectPageArgument,
+  cleanupUploadedSessionFiles,
+  DOWNLOAD_RETAINED_FILE,
+  inspectDownloadRecoverySync,
+  prepareDownloadSession,
+  quarantineBrokenAria2Track,
+  readDownloadSession,
+  refreshDownloadSessionOutputs,
+} from "../src/download-session.js";
+import {
+  detectAria2TrackRecoveryIssue,
+  downloadWithBBDown,
+  sanitizeDownloadDiagnosticText,
+  shutdownActiveDownloads,
+} from "../src/downloader.js";
+import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+
+function localFfmpeg() {
+  const configured = process.env.FFMPEG_PATH;
+  if (configured) return configured;
+  const known = "E:\\ffmpeg-2025-12-04\\bin\\ffmpeg.exe";
+  return fs.existsSync(known) ? known : "ffmpeg";
+}
+
+function configureFfprobe() {
+  const ffmpeg = localFfmpeg();
+  if (path.isAbsolute(ffmpeg)) {
+    const candidate = path.join(path.dirname(ffmpeg), process.platform === "win32" ? "ffprobe.exe" : "ffprobe");
+    if (fs.existsSync(candidate)) process.env.FFPROBE_PATH = candidate;
+  }
+}
+
+async function createVideo(filePath: string, seconds = 2) {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  const args = [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", `color=c=black:s=320x180:d=${seconds}`,
+    "-f", "lavfi", "-i", `sine=frequency=1000:duration=${seconds}`,
+    "-shortest", "-c:v", "mpeg4", "-c:a", "aac", filePath,
+  ];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(localFfmpeg(), args, { windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited ${code}`)));
+  });
+}
+
+test("select-page argument compacts long consecutive ranges", () => {
+  const pages = [1, 2, 3, 5, 7, 8].map((index) => ({ index, cid: index, title: `P${index}`, duration: 1 }));
+  assert.equal(buildSelectPageArgument(pages), "1-3,5,7,8");
+});
+
+test("legacy completed pages are adopted and replaced CIDs move to history", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-media");
+  const downloadDir = path.join(runtime, "BV1SESSIONTEST");
+  try {
+    await createVideo(path.join(downloadDir, "video-BV1SESSIONTEST_P1.mp4"));
+    await createVideo(path.join(downloadDir, "video-BV1SESSIONTEST_P2.mp4"));
+    const pages = [
+      { index: 1, cid: 11, title: "One", duration: 2 },
+      { index: 2, cid: 22, title: "Two", duration: 2 },
+    ];
+    const first = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1SESSIONTEST",
+      accountUid: 1,
+      config: testConfig(),
+      pages,
+    });
+    assert.equal(first.manifest.status, "complete");
+    assert.equal(first.manifest.outputs.length, 2);
+    assert.equal(first.manifest.legacyAdopted, true);
+
+    const changed = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1SESSIONTEST",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [pages[0], { index: 2, cid: 33, title: "New Two", duration: 2 }],
+    });
+    assert.deepEqual(changed.missingPages.map((page) => page.cid), [33]);
+    assert.equal(changed.manifest.outputs.length, 1);
+    assert.equal(changed.manifest.history.length, 1);
+    assert.equal(fs.existsSync(path.join(downloadDir, changed.manifest.history[0].relativePath)), true);
+
+    await createVideo(path.join(downloadDir, "video-BV1SESSIONTEST_P2.mp4"));
+    const refreshed = await refreshDownloadSessionOutputs(downloadDir);
+    assert.equal(refreshed.manifest.status, "complete");
+    assert.deepEqual(refreshed.manifest.outputs.map((output) => output.cid), [11, 33]);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("CID-based page reordering reuses files without allowing a later page replacement to overwrite them", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-reorder");
+  const downloadDir = path.join(runtime, "BV1REORDER");
+  try {
+    await createVideo(path.join(downloadDir, "video-BV1REORDER_P1.mp4"));
+    await createVideo(path.join(downloadDir, "video-BV1REORDER_P2.mp4"));
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1REORDER",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [
+        { index: 1, cid: 11, title: "One", duration: 2 },
+        { index: 2, cid: 22, title: "Two", duration: 2 },
+      ],
+    });
+    const reordered = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1REORDER",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [
+        { index: 1, cid: 22, title: "Two", duration: 2 },
+        { index: 2, cid: 11, title: "One", duration: 2 },
+      ],
+    });
+    assert.deepEqual(
+      reordered.manifest.outputs.map((output) => [output.pageIndex, output.cid, path.basename(output.relativePath)]),
+      [
+        [1, 22, "video-BV1REORDER_P1.mp4"],
+        [2, 11, "video-BV1REORDER_P2.mp4"],
+      ]
+    );
+    const replaced = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1REORDER",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [
+        { index: 1, cid: 22, title: "Two", duration: 2 },
+        { index: 2, cid: 33, title: "New", duration: 2 },
+      ],
+    });
+    assert.deepEqual(replaced.manifest.outputs.map((output) => output.cid), [22]);
+    assert.equal(fs.existsSync(path.join(downloadDir, "video-BV1REORDER_P1.mp4")), true);
+    assert.equal(replaced.manifest.history.some((output) => output.cid === 11), true);
+    await createVideo(path.join(downloadDir, "video-BV1REORDER_P2.mp4"));
+    const refreshed = await refreshDownloadSessionOutputs(downloadDir);
+    assert.deepEqual(refreshed.manifest.outputs.map((output) => output.cid), [22, 33]);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("a corrupt session manifest is preserved before safe legacy adoption", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-corrupt");
+  const downloadDir = path.join(runtime, "BV1CORRUPT");
+  try {
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), "{broken-json", "utf8");
+    await createVideo(path.join(downloadDir, "video-BV1CORRUPT.mp4"));
+    const prepared = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1CORRUPT",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+    });
+    assert.equal(prepared.manifest.outputs.length, 1);
+    const preserved = (await fs.promises.readdir(downloadDir)).filter((name) => name.startsWith(".bfb-download.json.corrupt-"));
+    assert.equal(preserved.length, 1);
+    assert.equal(await fs.promises.readFile(path.join(downloadDir, preserved[0]), "utf8"), "{broken-json");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("successful uploads remove only verified session files and retain unknown artifacts for manual cleanup", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-selective-cleanup");
+  const downloadDir = path.join(runtime, "BV1SELECTIVECLEAN");
+  try {
+    await createVideo(path.join(downloadDir, "video-BV1SELECTIVECLEAN.mp4"));
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1SELECTIVECLEAN",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+    });
+    const unknown = path.join(downloadDir, "_invalid", "unknown.bin");
+    await fs.promises.mkdir(path.dirname(unknown), { recursive: true });
+    await fs.promises.writeFile(unknown, Buffer.alloc(32));
+    const result = await cleanupUploadedSessionFiles(downloadDir);
+    assert.equal(result.removedDirectory, false);
+    assert.equal(fs.existsSync(path.join(downloadDir, "video-BV1SELECTIVECLEAN.mp4")), false);
+    assert.equal(fs.existsSync(unknown), true);
+    assert.equal(fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE)), true);
+    const summary = inspectDownloadRecoverySync(runtime);
+    assert.ok(summary.cleanupEligibleBytes >= 32);
+    assert.equal(summary.resumableSessions, 0);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("cleanup never deletes a non-empty directory when its session manifest is missing", async () => {
+  const runtime = await createTestDir("download-session-missing-cleanup-manifest");
+  const downloadDir = path.join(runtime, "BV1MISSINGMANIFEST");
+  try {
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    await fs.promises.writeFile(path.join(downloadDir, "unknown.bin"), Buffer.alloc(16));
+    const result = await cleanupUploadedSessionFiles(downloadDir);
+    assert.equal(result.removedDirectory, false);
+    assert.equal(fs.existsSync(path.join(downloadDir, "unknown.bin")), true);
+    assert.equal(fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE)), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("nested filename templates are discovered while BBDown raw track directories are ignored", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-nested-output");
+  const downloadDir = path.join(runtime, "BV1NESTED");
+  try {
+    await createVideo(path.join(downloadDir, "UP", "video-BV1NESTED.mp4"));
+    await createVideo(path.join(downloadDir, "123456", "123456.P1.77.mp4"));
+    const prepared = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1NESTED",
+      accountUid: 1,
+      config: testConfig({ filenameTemplate: "UP/<videoTitle>-<bvid>" }),
+      pages: [{ index: 1, cid: 77, title: "One", duration: 2 }],
+    });
+    assert.deepEqual(prepared.manifest.outputs.map((output) => output.relativePath), [path.join("UP", "video-BV1NESTED.mp4")]);
+    assert.equal(fs.existsSync(path.join(downloadDir, "123456", "123456.P1.77.mp4")), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("configuration changes preserve completed data but isolate unsafe fragments", async () => {
+  const runtime = await createTestDir("download-session-config");
+  const downloadDir = path.join(runtime, "BV1CONFIGTEST");
+  const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
+  try {
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1CONFIGTEST",
+      accountUid: 1,
+      config: testConfig({ bbdownEncoding: "HEVC" }),
+      pages,
+    });
+    await fs.promises.writeFile(path.join(downloadDir, "track.mp4.aria2"), "resume-state");
+    const rawTrackDir = path.join(downloadDir, "123456");
+    await fs.promises.mkdir(rawTrackDir, { recursive: true });
+    await fs.promises.writeFile(path.join(rawTrackDir, "123456.P1.101.mp4"), "partial-video");
+    await fs.promises.writeFile(path.join(rawTrackDir, "123456.P1.101.mp4.aria2"), "control");
+    const next = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1CONFIGTEST",
+      accountUid: 1,
+      config: testConfig({ bbdownEncoding: "AV1" }),
+      pages,
+    });
+    assert.equal(next.incompatibleFragmentsMoved, 3);
+    assert.equal(fs.existsSync(path.join(downloadDir, "track.mp4.aria2")), false);
+    assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4")), false);
+    assert.equal(fs.existsSync(readDownloadSession(downloadDir) ? path.join(downloadDir, ".bfb-download.json") : ""), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("recovery summary separates managed sessions from legacy fragments", async () => {
+  const runtime = await createTestDir("download-session-summary");
+  try {
+    const managed = path.join(runtime, "BV1MANAGED");
+    await prepareDownloadSession({
+      downloadDir: managed,
+      bvid: "BV1MANAGED",
+      accountUid: 1,
+      config: testConfig(),
+      pages: [{ index: 1, cid: 1, title: "One", duration: 1 }],
+    });
+    const legacy = path.join(runtime, "BV1LEGACY");
+    await fs.promises.mkdir(legacy, { recursive: true });
+    await fs.promises.writeFile(path.join(legacy, "00000_track.vclip"), Buffer.alloc(64));
+    const quality = path.join(runtime, "quality-upgrade-session-BV1QUALITY");
+    await prepareDownloadSession({
+      downloadDir: quality,
+      bvid: "BV1QUALITY",
+      accountUid: 1,
+      config: testConfig(),
+      kind: "quality_upgrade",
+      pages: [{ index: 1, cid: 2, title: "One", duration: 1 }],
+    });
+    const summary = inspectDownloadRecoverySync(runtime);
+    assert.equal(summary.resumableSessions, 2);
+    assert.equal(summary.legacyDirectories, 1);
+    assert.equal(summary.cleanupEligibleBytes, 64);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("only deterministic aria2 resume incompatibilities reset the current track", async () => {
+  const runtime = await createTestDir("aria2-track-reset");
+  const downloadDir = path.join(runtime, "BV1ARIA2RESET");
+  const rawTrackDir = path.join(downloadDir, "987654");
+  try {
+    await fs.promises.mkdir(rawTrackDir, { recursive: true });
+    for (const name of [
+      "987654.P1.101.mp4",
+      "987654.P1.101.mp4.aria2",
+      "987654.P1.101.m4a",
+      "987654.P2.202.mp4",
+      "987654.P2.202.mp4.aria2",
+    ]) {
+      await fs.promises.writeFile(path.join(rawTrackDir, name), name);
+    }
+    const transient = detectAria2TrackRecoveryIssue("开始下载P1视频... ECONNRESET");
+    assert.equal(transient, null);
+    const issue = detectAria2TrackRecoveryIssue("开始下载P1视频... HTTP 416 Range Not Satisfiable");
+    assert.deepEqual(issue, { pageIndex: 1, track: "video", reason: "range" });
+    assert.ok(issue);
+    const moved = await quarantineBrokenAria2Track(downloadDir, issue);
+    assert.equal(moved, 2);
+    assert.equal(fs.existsSync(path.join(rawTrackDir, "987654.P1.101.mp4")), false);
+    assert.equal(fs.existsSync(path.join(rawTrackDir, "987654.P1.101.m4a")), true);
+    assert.equal(fs.existsSync(path.join(rawTrackDir, "987654.P2.202.mp4")), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("download diagnostics redact signed URLs and credential values", () => {
+  const sanitized = sanitizeDownloadDiagnosticText(
+    "URI=https://example.test/video.m4s?token=secret&sign=abc Cookie: SESSDATA=private token=plain",
+    ["private"]
+  );
+  assert.doesNotMatch(sanitized, /secret|sign=abc|private|token=plain/);
+  assert.match(sanitized, /REDACTED/);
+});
+
+test("downloader invokes BBDown with aria2 once and reuses the verified session", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-fake-bbdown");
+  const downloadDir = path.join(runtime, "BV1FAKEBBDOWN");
+  const fixture = path.join(runtime, "fixture.mp4");
+  const fakeScript = path.join(runtime, "fake-bbdown.mjs");
+  const argsLog = path.join(runtime, "args.jsonl");
+  try {
+    await createVideo(fixture);
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const args = process.argv.slice(2);
+      fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify(args) + '\\n');
+      const bvid = /video\\/(BV[0-9A-Za-z]+)/.exec(args[0])?.[1] || 'BV1FAKEBBDOWN';
+      fs.copyFileSync(process.env.FAKE_MEDIA_SOURCE, path.join(process.cwd(), 'video-' + bvid + '.mp4'));
+      console.log('任务完成');
+    `, "utf8");
+    const previousSource = process.env.FAKE_MEDIA_SOURCE;
+    const previousLog = process.env.FAKE_ARGS_LOG;
+    process.env.FAKE_MEDIA_SOURCE = fixture;
+    process.env.FAKE_ARGS_LOG = argsLog;
+    try {
+      const options = {
+        downloadDir,
+        pageSnapshot: {
+          available: true,
+          pages: [{ index: 1, cid: 501, title: "One", duration: 2 }],
+        },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+      };
+      const cookie = { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" };
+      const first = await downloadWithBBDown("BV1FAKEBBDOWN", cookie, testConfig(), options);
+      assert.equal(first.files.length, 1);
+      const second = await downloadWithBBDown("BV1FAKEBBDOWN", cookie, testConfig(), options);
+      assert.equal(second.files.length, 1);
+      const invocations = (await fs.promises.readFile(argsLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      assert.equal(invocations.length, 1);
+      assert.equal(invocations[0].includes("--use-aria2c"), true);
+      assert.equal(invocations[0].includes("--select-page"), true);
+    } finally {
+      if (previousSource === undefined) delete process.env.FAKE_MEDIA_SOURCE;
+      else process.env.FAKE_MEDIA_SOURCE = previousSource;
+      if (previousLog === undefined) delete process.env.FAKE_ARGS_LOG;
+      else process.env.FAKE_ARGS_LOG = previousLog;
+    }
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("downloader quarantines only the broken aria2 track before the next retry", async () => {
+  const runtime = await createTestDir("download-session-fake-aria2-failure");
+  const downloadDir = path.join(runtime, "BV1FAKEARIA2");
+  const fakeScript = path.join(runtime, "fake-bbdown-failure.mjs");
+  try {
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const raw = path.join(process.cwd(), '123456');
+      fs.mkdirSync(raw, { recursive: true });
+      fs.writeFileSync(path.join(raw, '123456.P1.501.mp4'), 'partial-video');
+      fs.writeFileSync(path.join(raw, '123456.P1.501.mp4.aria2'), 'resume-control');
+      fs.writeFileSync(path.join(raw, '123456.P1.501.m4a'), 'partial-audio');
+      console.log('开始下载P1视频...');
+      console.error('HTTP 416 Range Not Satisfiable');
+      process.exit(1);
+    `, "utf8");
+    await assert.rejects(() => downloadWithBBDown(
+      "BV1FAKEARIA2",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      testConfig(),
+      {
+        downloadDir,
+        pageSnapshot: {
+          available: true,
+          pages: [{ index: 1, cid: 501, title: "One", duration: 2 }],
+        },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+      }
+    ));
+    assert.equal(fs.existsSync(path.join(downloadDir, "123456", "123456.P1.501.mp4")), false);
+    assert.equal(fs.existsSync(path.join(downloadDir, "123456", "123456.P1.501.mp4.aria2")), false);
+    assert.equal(fs.existsSync(path.join(downloadDir, "123456", "123456.P1.501.m4a")), true);
+    const manifest = readDownloadSession(downloadDir);
+    assert.equal(manifest?.status, "failed");
+    assert.match(manifest?.lastError || "", /416/);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("shutdown terminates the BBDown process tree", async () => {
+  const runtime = await createTestDir("download-session-shutdown-tree");
+  const downloadDir = path.join(runtime, "BV1SHUTDOWNTREE");
+  const fakeScript = path.join(runtime, "fake-bbdown-tree.mjs");
+  const childPidFile = path.join(runtime, "child.pid");
+  const previousPidFile = process.env.FAKE_CHILD_PID_FILE;
+  try {
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      import { spawn } from 'node:child_process';
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      fs.writeFileSync(process.env.FAKE_CHILD_PID_FILE, String(child.pid));
+      setInterval(() => {}, 1000);
+    `, "utf8");
+    process.env.FAKE_CHILD_PID_FILE = childPidFile;
+    const downloadPromise = downloadWithBBDown(
+      "BV1SHUTDOWNTREE",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      testConfig(),
+      {
+        downloadDir,
+        pageSnapshot: {
+          available: true,
+          pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+        },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+      }
+    );
+    const guardedDownload = downloadPromise.then(
+      () => null,
+      (error) => error as Error
+    );
+    for (let attempt = 0; attempt < 50 && !fs.existsSync(childPidFile); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(fs.existsSync(childPidFile), true);
+    const childPid = Number(await fs.promises.readFile(childPidFile, "utf8"));
+    await shutdownActiveDownloads(2_000);
+    assert.ok(await guardedDownload);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    let childAlive = true;
+    try { process.kill(childPid, 0); } catch { childAlive = false; }
+    assert.equal(childAlive, false);
+  } finally {
+    if (previousPidFile === undefined) delete process.env.FAKE_CHILD_PID_FILE;
+    else process.env.FAKE_CHILD_PID_FILE = previousPidFile;
+    await removeTestDir(runtime);
+  }
+});

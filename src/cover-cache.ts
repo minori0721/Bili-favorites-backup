@@ -112,6 +112,24 @@ async function cacheCoverInternal(bvid: string, coverUrl: string) {
   }
 }
 
+export async function cacheLocalCover(bvid: string, sourcePath: string) {
+  const normalizedBvid = safeBvid(bvid);
+  if (!normalizedBvid || !sourcePath || !fs.existsSync(sourcePath)) return null;
+  await fs.promises.mkdir(coversDir, { recursive: true });
+  const finalPath = coverPathForBvid(normalizedBvid);
+  if (fs.existsSync(finalPath)) return coverRelativePathForBvid(normalizedBvid);
+  await fs.promises.mkdir(tempDir, { recursive: true });
+  const tempRoot = await fs.promises.mkdtemp(path.join(tempDir, `cover-local-${normalizedBvid}-`));
+  const tempWebp = path.join(tempRoot, "cover.webp");
+  try {
+    await runFfmpeg(sourcePath, tempWebp);
+    await moveAcrossMounts(tempWebp, finalPath);
+    return coverRelativePathForBvid(normalizedBvid);
+  } finally {
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
 export function queueCoverCache(bvid: string, coverUrl: string, onCached?: (relativePath: string) => void) {
   const normalizedBvid = safeBvid(bvid);
   if (!normalizedBvid || !coverUrl) {

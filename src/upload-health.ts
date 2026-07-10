@@ -40,7 +40,7 @@ const NETWORK_CODES = new Set([
   "EHOSTUNREACH",
 ]);
 
-const SENSITIVE_KEY = "authorization|cookie|token|session(?:key)?|password|passwd|secret|access[_-]?key|refresh[_-]?token";
+const SENSITIVE_KEY = "authorization|cookie|token|session(?:key)?|password|passwd|secret|sign(?:ature)?|access[_-]?key|refresh[_-]?token";
 
 function stringifyErrorDetail(value: unknown) {
   if (typeof value === "string") return value;
@@ -61,7 +61,7 @@ export function sanitizeUploadText(value: unknown, maxLength = 500) {
   text = text.replace(/(authorization\s*[:=]\s*)(?:(?:bearer|basic)\s+)?[^,;\s]+/gi, "$1[REDACTED]");
   text = text.replace(new RegExp(`([?&](?:${SENSITIVE_KEY})=)[^&\\s]+`, "gi"), "$1[REDACTED]");
   text = text.replace(new RegExp(`(\"(?:${SENSITIVE_KEY})\"\\s*:\\s*\")[^\"]*`, "gi"), "$1[REDACTED]");
-  text = text.replace(new RegExp(`((?:${SENSITIVE_KEY})\\s*[:=]\\s*)[^,;\\s]+`, "gi"), "$1[REDACTED]");
+  text = text.replace(new RegExp(`((?:${SENSITIVE_KEY})\\s*[:=]\\s*)[^,;\\s\"'&}\\]]+`, "gi"), "$1[REDACTED]");
   return text.slice(0, maxLength) || "Unknown upload error";
 }
 

@@ -11,6 +11,10 @@ test("real app supports login, queue state, config update and migration preview 
   const previousAdminPass = process.env.ADMIN_PASS;
   let server: import("node:http").Server | undefined;
   try {
+    const retainedDir = path.join(runtime, "temp", "BV1RETAINEDTEST");
+    await fs.promises.mkdir(retainedDir, { recursive: true });
+    await fs.promises.writeFile(path.join(retainedDir, ".bfb-retained.json"), JSON.stringify({ schemaVersion: 1 }));
+    await fs.promises.writeFile(path.join(retainedDir, "unknown.bin"), Buffer.alloc(64));
     process.chdir(runtime);
     process.env.NODE_ENV = "test";
     process.env.ADMIN_PASS = "smoke-pass";
@@ -55,6 +59,21 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(queueJson.data.uploadHealth.state, "closed");
     assert.equal(queueJson.data.recovery.batchSize, 30);
     assert.equal(typeof queueJson.data.localCache.reserveBytes, "number");
+    assert.equal(typeof queueJson.data.downloadRecovery.resumableSessions, "number");
+
+    const cleanupPreview = await fetch(`${base}/api/storage/cleanup`, { headers: { Cookie: cookie } });
+    assert.equal(cleanupPreview.status, 200);
+    const cleanupPreviewJson: any = await cleanupPreview.json();
+    const orphanItem = cleanupPreviewJson.data.items.find((item: any) => item.key === "orphan-fragments");
+    assert.ok(orphanItem?.bytes >= 64);
+
+    const cleanup = await fetch(`${base}/api/storage/cleanup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ items: ["orphan-fragments"], confirmation: "DELETE" }),
+    });
+    assert.equal(cleanup.status, 200);
+    assert.equal(fs.existsSync(retainedDir), false);
 
     const exported = await fetch(`${base}/api/migration/export`, {
       method: "POST",

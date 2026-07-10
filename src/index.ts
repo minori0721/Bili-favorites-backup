@@ -18,7 +18,8 @@ import {
   refreshUserAuth,
   resolveSelfVisibleFavoriteItem,
 } from "./bili.js";
-import { normalizeEncodingPriority, normalizeQualityPriority } from "./downloader.js";
+import { normalizeEncodingPriority, normalizeQualityPriority, shutdownActiveDownloads } from "./downloader.js";
+import { BBDOWN_SOURCE_COMMIT, DOWNLOAD_RETAINED_FILE, inspectDownloadRecoverySync, readDownloadSession } from "./download-session.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager, logsPath } from "./logger.js";
@@ -67,11 +68,12 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
 
-type CleanupItem = "memory-cache" | "temp" | "logs" | "debug-logs" | "covers" | "exports" | "backups" | "state" | "users" | "config";
+type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "exports" | "backups" | "state" | "users" | "config";
 
 const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
   "memory-cache": { label: "页面缓存", important: false },
-  temp: { label: "临时下载文件", important: false, path: tempDir },
+  temp: { label: "全部临时下载文件", important: true, path: tempDir },
+  "orphan-fragments": { label: "无法续传的下载残片", important: true },
   logs: { label: "网页日志", important: false, path: logsPath },
   "debug-logs": { label: "Debug 日志", important: false, path: path.join(dataDir, "debug") },
   covers: { label: "封面缓存", important: false, path: coversDir },
@@ -90,8 +92,69 @@ if (process.env.NODE_ENV !== "test") {
 
 async function startAfterRecovery() {
   await recoverInterruptedQualityUpgrades();
+  await recoverInterruptedQualityDownloads();
   scheduler.resumePersistedWorkOnStartup();
   scheduler.start();
+}
+
+async function recoverInterruptedQualityDownloads() {
+  const remoteRecoveryBlocked = new Set(
+    stateManager.listInterruptedQualityUpgrades().map((relation) => relationKey(relation.userId, relation.mediaId, relation.bvid))
+  );
+  let entries: fs.Dirent[] = [];
+  try { entries = await fs.promises.readdir(tempDir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("quality-upgrade-")) continue;
+    const downloadDir = path.join(tempDir, entry.name);
+    const manifest = readDownloadSession(downloadDir);
+    const target = manifest?.qualityUpgrade;
+    if (!manifest || manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;
+    const key = relationKey(target.userId, target.mediaId, manifest.bvid);
+    if (remoteRecoveryBlocked.has(key)) continue;
+    if (qualityUpgradeQueue.has(key)) continue;
+    const user = userStore.getById(target.userId);
+    if (!user || !user.enabled) continue;
+    const meta = stateManager.getVideoMeta(manifest.bvid);
+    const task = new QualityUpgradeTask(manifest.bvid, user.cookie, configStore.get(), {
+      userId: target.userId,
+      mediaId: target.mediaId,
+      folderTitle: target.folderTitle,
+      remotePath: target.remotePath,
+      oldFiles: target.oldFiles,
+    });
+    task.downloadDir = downloadDir;
+    task.runId = `resume-${manifest.sessionId}`;
+    task.videoTitle = meta?.title || manifest.bvid;
+    task.folderTitle = target.folderTitle;
+    task.userId = target.userId;
+    task.mediaId = target.mediaId;
+    task.onStartUpgrade = () => {
+      logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `恢复画质重调下载 ${manifest.bvid}`, raw: `[QualityUpgrade] resume download ${key}`, bvid: manifest.bvid, simpleVisible: true });
+    };
+    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => {
+      stateManager.markQualityUpgradeReplacing(manifest.bvid, target.userId, target.mediaId, {
+        stageRemotePath,
+        backupRemotePath,
+        oldRemotePath: target.remotePath,
+        oldFiles: target.oldFiles,
+      });
+    };
+    task.onBackupFileMoved = (_task, file) => stateManager.recordQualityUpgradeBackupFile(manifest.bvid, target.userId, target.mediaId, file);
+    task.onFinalFileMoved = (_task, file) => stateManager.recordQualityUpgradeFinalFile(manifest.bvid, target.userId, target.mediaId, file);
+    task.onUploaded = (_task, result) => stateManager.finalizeQualityUpgradeRemoteFiles(manifest.bvid, target.userId, target.mediaId, result.remotePath, result.files);
+    task.onCompletedUpgrade = () => {
+      if (!qualityUpgradeQueue.has(key)) return;
+      stateManager.completeQualityUpgrade(manifest.bvid, target.userId, target.mediaId, target.remotePath, task.finalFiles || []);
+      completedQualityUpgrades.unshift({ id: task.id, bvid: manifest.bvid, title: task.videoTitle || manifest.bvid, status: "completed", completedAt: new Date().toISOString() });
+      completedQualityUpgrades.splice(50);
+      qualityUpgradeQueue.delete(key);
+    };
+    task.onFailed = markQualityUpgradeFailed;
+    qualityUpgradeQueue.set(key, task);
+    if (!scheduler.enqueueQualityUpgrade(task)) {
+      qualityUpgradeQueue.delete(key);
+    }
+  }
 }
 
 function formatExpiresText(expires?: number) {
@@ -1016,6 +1079,37 @@ async function removeCleanupTarget(item: CleanupItem) {
     logManager.clear();
     return;
   }
+  if (item === "orphan-fragments") {
+    const roots = await fs.promises.readdir(tempDir, { withFileTypes: true });
+    const removeFragments = async (target: string): Promise<void> => {
+      const entries = await fs.promises.readdir(target, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(target, entry.name);
+        const stat = await fs.promises.lstat(fullPath);
+        if (stat.isSymbolicLink()) continue;
+        if (stat.isDirectory()) {
+          await removeFragments(fullPath);
+          continue;
+        }
+        if (stat.isFile() && /\.(aria2|tmp|vclip|aclip|part|download)$/i.test(entry.name)) {
+          await fs.promises.unlink(fullPath);
+        }
+      }
+    };
+    for (const root of roots) {
+      if (!root.isDirectory()) continue;
+      const downloadDir = path.join(tempDir, root.name);
+      if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE))) {
+        await fs.promises.rm(downloadDir, { recursive: true, force: true });
+        continue;
+      }
+      if (!/^BV[0-9A-Za-z]+$/i.test(root.name)) continue;
+      if (readDownloadSession(downloadDir)) continue;
+      await removeFragments(downloadDir);
+    }
+    scheduler.refreshLocalCacheState();
+    return;
+  }
   const targetPath = cleanupItems[item].path;
   if (!targetPath) return;
   await fs.promises.rm(targetPath, { recursive: true, force: true });
@@ -1039,11 +1133,14 @@ async function removeCleanupTarget(item: CleanupItem) {
 }
 
 app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
+  const downloadRecovery = inspectDownloadRecoverySync(tempDir);
   const items = await Promise.all(allCleanupKeys.map(async (key) => ({
     key,
     label: cleanupItems[key].label,
     important: cleanupItems[key].important,
-    bytes: cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
+    bytes: key === "orphan-fragments"
+      ? downloadRecovery.cleanupEligibleBytes
+      : cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
   })));
   res.json({
     success: true,
@@ -1051,6 +1148,7 @@ app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
       items,
       runningTransfers: scheduler.hasRunningTransferTasks(),
       activeScheduler: scheduler.hasActiveOrQueuedSchedulerWork(),
+      downloadRecovery,
     },
   });
 }));
@@ -1807,7 +1905,22 @@ export { app };
 
 if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.PORT || 3000);
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`Server listening on http://localhost:${port}`);
+    console.log(`[Runtime] BBDown source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; aria2 resume enabled`);
   });
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
+    scheduler.stop();
+    server.close();
+    await shutdownActiveDownloads(20_000).catch((error) => {
+      console.warn("[Shutdown] Failed to stop active downloads cleanly:", error?.message || error);
+    });
+    process.exit(0);
+  };
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 }

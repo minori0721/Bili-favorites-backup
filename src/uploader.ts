@@ -213,6 +213,7 @@ export async function uploadWithAList(
     client?: WebDAVClient;
     verificationDelaysMs?: number[];
     log?: Pick<typeof logManager, "push">;
+    files?: string[];
   } = {}
 ): Promise<UploadResult> {
   const client = options.client || buildDavClient(config);
@@ -226,11 +227,20 @@ export async function uploadWithAList(
     throw await toUploadOperationError(error, remotePath);
   }
 
-  const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
-  const reservedRemoteNames = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
-  for (const entry of entries) {
-    if (entry.isFile()) {
-      const localFile = path.join(localDir, entry.name);
+  const localRoot = path.resolve(localDir);
+  const uploadEntries = options.files
+    ? options.files.map((relativePath) => ({ relativePath, name: path.basename(relativePath) }))
+    : (await fs.promises.readdir(localDir, { withFileTypes: true }))
+        .filter((entry) => entry.isFile())
+        .map((entry) => ({ relativePath: entry.name, name: entry.name }));
+  const reservedRemoteNames = new Set(uploadEntries.map((entry) => entry.name));
+  for (const entry of uploadEntries) {
+      const localFile = path.resolve(localDir, entry.relativePath);
+      if (localFile !== localRoot && !localFile.startsWith(`${localRoot}${path.sep}`)) {
+        const localError: any = new Error(`Local upload path escapes the download directory: ${entry.relativePath}`);
+        localError.status = 422;
+        throw new UploadOperationError(classifyUploadError(localError, remotePath));
+      }
       // Join using posix style for webdav
       const originalRemoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
       
@@ -320,7 +330,6 @@ export async function uploadWithAList(
         size: stat.size,
         qualityProfile,
       });
-    }
   }
 
   if (uploadedFiles.length === 0) {

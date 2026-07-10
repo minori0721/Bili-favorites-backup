@@ -11,6 +11,14 @@ import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.
 import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { queueCoverCache } from "./cover-cache.js";
 import {
+  cleanupUploadedSessionFiles,
+  DOWNLOAD_RETAINED_FILE,
+  historySessionGroups,
+  inspectDownloadRecoverySync,
+  markHistoryGroupUploaded,
+  readDownloadSession,
+} from "./download-session.js";
+import {
   classifyUploadError,
   sanitizeUploadText,
   UploadCircuitBreaker,
@@ -154,10 +162,24 @@ export class SyncScheduler {
         simpleVisible: true,
       });
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
-      for (const target of targets) {
-        this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
-        this.stateManager.markRelationRetryPending(task.bvid, target.userId, target.mediaId, error.message || "Download failure");
-        this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", Boolean(error?.permanent));
+      const session = task.downloadDir ? readDownloadSession(task.downloadDir) : null;
+      if (task.downloadDir && session && !error?.permanent) {
+        this.stateManager.markDownloadInterrupted(task.bvid, task.downloadDir, error.message || "Download failure", targets);
+        for (const target of targets) {
+          this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
+          const user = this.userStore.getById(target.userId);
+          const key = this.backupKey(target.userId, target.mediaId, task.bvid);
+          if (user && !this.recoveryDownloadKeys.has(key)) {
+            this.recoveryDownloadKeys.add(key);
+            this.recoveryDownloadBacklog.push({ user, mediaId: target.mediaId, folderTitle: target.folderTitle, bvid: task.bvid });
+          }
+        }
+      } else {
+        for (const target of targets) {
+          this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
+          this.stateManager.markRelationRetryPending(task.bvid, target.userId, target.mediaId, error.message || "Download failure");
+          this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", Boolean(error?.permanent));
+        }
       }
       this.activeDownloadTargets.delete(task.bvid);
       this.scheduleRecoveryRefill();
@@ -202,6 +224,42 @@ export class SyncScheduler {
       }
       const uploadHealth = this.uploadCircuit.getSnapshot();
       const isolatedDeterministicFailure = failure.category === "deterministic" && uploadHealth.state === "closed";
+      if (task.historyOnly) {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "upload",
+          level: "warn",
+          summary: `历史分P上传失败 ${task.bvid}: ${failure.summary}（最新版状态不受影响）`,
+          raw: this.formatUploadFailureLog(task, failure),
+          bvid: task.bvid,
+          simpleVisible: true,
+        });
+        const retryItem: RecoveryUploadItem = {
+          bvid: task.bvid,
+          localDir: task.downloadDir,
+          remotePath: task.remotePath,
+          userId: task.userId,
+          mediaId: task.mediaId,
+          folderTitle: task.folderTitle,
+          videoTitle: task.videoTitle,
+          upperName: task.upperName,
+          cover: task.cover,
+          files: task.files,
+          historyOnly: true,
+          historySnapshotAt: task.historySnapshotAt,
+          notBefore: uploadHealth.retryAt || Date.now() + 60_000,
+          priority: false,
+        };
+        const retryKey = this.recoveryUploadKey(retryItem);
+        if (!this.recoveryUploadKeys.has(retryKey)) {
+          this.recoveryUploadKeys.add(retryKey);
+          this.recoveryUploadBacklog.push(retryItem);
+          this.createSharedUploadDirTracker(task.downloadDir, 1, task.bvid);
+        }
+        void this.completeSharedUploadTask(task, false);
+        this.scheduleRecoveryRefill(Math.max(0, (retryItem.notBefore || Date.now()) - Date.now()));
+        return;
+      }
       if (task.recoveryKey) {
         this.priorityUploadKeys.delete(task.recoveryKey);
       }
@@ -230,6 +288,8 @@ export class SyncScheduler {
         videoTitle: task.videoTitle,
         upperName: task.upperName,
         cover: task.cover,
+        files: task.files,
+        partialBackup: task.partialBackup,
         notBefore: uploadHealth.retryAt || Date.now() + (
           isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : 60_000
         ),
@@ -283,7 +343,8 @@ export class SyncScheduler {
       if (!task.downloadDir) return;
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
       this.activeDownloadTargets.delete(task.bvid);
-      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length, task.bvid);
+      const historyGroups = historySessionGroups(task.downloadDir);
+      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length * (1 + historyGroups.length), task.bvid);
       targets.forEach((target) => {
         this.queueUploadWork({
           bvid: task.bvid,
@@ -295,7 +356,25 @@ export class SyncScheduler {
           videoTitle: task.videoTitle || "",
           upperName: task.upperName || "",
           cover: task.cover || "",
+          files: task.outputFiles,
+          partialBackup: task.partialBackup,
         });
+        for (const history of historyGroups) {
+          this.queueUploadWork({
+            bvid: task.bvid,
+            localDir: task.downloadDir!,
+            remotePath: joinRemotePath(target.remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+            userId: target.userId,
+            mediaId: target.mediaId,
+            folderTitle: target.folderTitle,
+            videoTitle: task.videoTitle || "",
+            upperName: task.upperName || "",
+            cover: task.cover || "",
+            files: history.files.map((file) => file.relativePath),
+            historyOnly: true,
+            historySnapshotAt: history.snapshotAt,
+          });
+        }
       });
       if (tracker.remaining === 0) {
         void this.cleanupSharedUploadDir(task.downloadDir, new Set([task.bvid]));
@@ -317,6 +396,14 @@ export class SyncScheduler {
       if (task.recoveryKey) {
         this.priorityUploadKeys.delete(task.recoveryKey);
       }
+      if (task.historyOnly) {
+        if (task.result?.files.length && task.historySnapshotAt) {
+          markHistoryGroupUploaded(task.downloadDir, task.historySnapshotAt, `${task.userId || "video"}:${task.mediaId || 0}`);
+        }
+        void this.completeSharedUploadTask(task, Boolean(task.result?.files.length));
+        this.scheduleRecoveryRefill();
+        return;
+      }
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
       }
@@ -326,7 +413,8 @@ export class SyncScheduler {
           task.result.remotePath,
           task.result.files,
           task.userId,
-          task.mediaId
+          task.mediaId,
+          task.partialBackup
         );
       } else {
         this.stateManager.markUploadFailed(
@@ -359,7 +447,7 @@ export class SyncScheduler {
   }
 
   private uploadTaskKey(task: any) {
-    return `${task?.userId || "quality"}:${task?.mediaId || 0}:${task?.bvid || task?.id || "upload"}`;
+    return `${task?.userId || "quality"}:${task?.mediaId || 0}:${task?.bvid || task?.id || "upload"}:${task?.historyOnly ? task?.remotePath || "history" : "main"}`;
   }
 
   private recordUploadFailure(task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) {
@@ -409,12 +497,20 @@ export class SyncScheduler {
   }
 
   private recoveryUploadKey(item: RecoveryUploadItem) {
-    return `${item.userId || "video"}:${item.mediaId || 0}:${item.bvid}:${item.remotePath}`;
+    return `${item.userId || "video"}:${item.mediaId || 0}:${item.bvid}:${item.remotePath}:${item.historySnapshotAt || "main"}`;
+  }
+
+  private historySnapshotSegment(value: string) {
+    return String(value || new Date().toISOString()).replace(/[-:.]/g, "").replace(/Z$/, "Z");
   }
 
   private buildUploadTask(item: RecoveryUploadItem) {
     const uploadTask = new UploadTask(item.bvid, item.localDir, item.remotePath, this.configStore.get(), {
       cleanupLocal: false,
+      files: item.files,
+      partialBackup: item.partialBackup,
+      historyOnly: item.historyOnly,
+      historySnapshotAt: item.historySnapshotAt,
     });
     uploadTask.sharedDownloadDir = item.localDir;
     uploadTask.userId = item.userId;
@@ -423,7 +519,9 @@ export class SyncScheduler {
     uploadTask.videoTitle = item.videoTitle || "";
     uploadTask.upperName = item.upperName || "";
     uploadTask.cover = item.cover || "";
-    uploadTask.onUploading = () => this.stateManager.markUploading(item.bvid, item.userId, item.mediaId);
+    if (!item.historyOnly) {
+      uploadTask.onUploading = () => this.stateManager.markUploading(item.bvid, item.userId, item.mediaId);
+    }
     return uploadTask;
   }
 
@@ -834,6 +932,7 @@ export class SyncScheduler {
       scheduler: this.buildSchedulerSnapshot(),
       localCache: this.getLocalCacheSnapshot(),
       uploadHealth: this.uploadCircuit.getSnapshot(),
+      downloadRecovery: inspectDownloadRecoverySync(tempDir),
       recovery: {
         pendingUploads: this.recoveryUploadBacklog.length,
         pendingDownloads: this.recoveryDownloadBacklog.length,
@@ -1075,9 +1174,20 @@ export class SyncScheduler {
 
   private async cleanupSharedUploadDir(downloadDir: string, bvids: Set<string> = new Set()) {
     try {
-      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+      const result = await cleanupUploadedSessionFiles(downloadDir);
       for (const bvid of bvids) {
         this.stateManager.markLocalUploadGroupComplete(bvid, downloadDir);
+      }
+      if (!result.removedDirectory) {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: "warn",
+          summary: `已保留无法确认的下载残片，等待手动清理`,
+          raw: `[DownloadRecovery] retained ${result.retainedBytes} bytes in ${downloadDir}`,
+          simpleVisible: true,
+          debugVisible: true,
+        });
       }
     } catch (error: any) {
       console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
@@ -1360,6 +1470,20 @@ export class SyncScheduler {
     task.cover = meta?.cover || "";
     task.targets = [target];
     task.onDownloading = () => this.stateManager.markDownloading(bvid, task.targets);
+    task.onPrepared = (_task, downloadDir, manifest) => this.stateManager.markDownloadPrepared(
+      bvid,
+      downloadDir,
+      {
+        id: manifest.sessionId,
+        localDir: downloadDir,
+        kind: manifest.kind,
+        status: manifest.status,
+        completedPages: manifest.outputs.length,
+        totalPages: manifest.pages.length,
+        updatedAt: manifest.updatedAt,
+      },
+      task.targets
+    );
     task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir, task.targets);
 
     if (!options.persisted) {
@@ -1657,6 +1781,21 @@ export class SyncScheduler {
 
         const localDir = item.video.localDir;
         if (localDir && fs.existsSync(localDir)) {
+          const manifest = readDownloadSession(localDir);
+          const uploadReady = Boolean(manifest && (manifest.status === "complete" || manifest.status === "partial"));
+          if (!uploadReady) {
+            this.stateManager.markDownloadInterrupted(relation.bvid, localDir, "Stale download session queued for resume.", [{ userId: relation.userId, mediaId: relation.mediaId }]);
+            if (!this.recoveryDownloadKeys.has(key)) {
+              this.recoveryDownloadKeys.add(key);
+              this.recoveryDownloadBacklog.push({
+                user: resolved.user,
+                mediaId: resolved.mediaId,
+                folderTitle: resolved.folderTitle,
+                bvid: relation.bvid,
+              });
+            }
+            continue;
+          }
           const remotePath = relation.remotePath || item.video.remotePath || resolveRemotePath({
             destination: this.configStore.get().alistDest,
             layout: this.configStore.get().uploadLayout,
@@ -1664,8 +1803,12 @@ export class SyncScheduler {
             folderName: resolved.folderTitle,
           });
           this.stateManager.markUploadFailed(relation.bvid, localDir, relation.userId, relation.mediaId, "Stale upload retained locally and queued for upload retry.");
-          this.createSharedUploadDirTracker(localDir, 1, relation.bvid);
-          this.queueUploadWork({
+          const historyTargetKey = `${relation.userId}:${relation.mediaId}`;
+          const historyGroups = historySessionGroups(localDir)
+            .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
+            .filter((group) => group.files.length > 0);
+          this.createSharedUploadDirTracker(localDir, 1 + historyGroups.length, relation.bvid);
+          const baseUpload: RecoveryUploadItem = {
             bvid: relation.bvid,
             localDir,
             remotePath,
@@ -1675,8 +1818,21 @@ export class SyncScheduler {
             videoTitle: item.video.title,
             upperName: item.video.upperName,
             cover: item.video.cover,
+            files: manifest?.outputs.map((output) => output.relativePath),
+            partialBackup: manifest?.status === "partial",
             priority: true,
-          });
+          };
+          this.queueUploadWork(baseUpload);
+          for (const history of historyGroups) {
+            this.queueUploadWork({
+              ...baseUpload,
+              remotePath: joinRemotePath(remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+              files: history.files.map((file) => file.relativePath),
+              historyOnly: true,
+              historySnapshotAt: history.snapshotAt,
+              priority: false,
+            });
+          }
           continue;
         }
 
@@ -1742,7 +1898,36 @@ export class SyncScheduler {
     return backoff + jitter;
   }
 
+  private queueLegacyDownloadDirsForRecovery() {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(tempDir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
+      const localDir = path.join(tempDir, entry.name);
+      if (fs.existsSync(path.join(localDir, DOWNLOAD_RETAINED_FILE))) continue;
+      if (readDownloadSession(localDir)) continue;
+      const resolved = this.findBestRelationForBvid(entry.name);
+      if (!resolved) continue;
+      const key = this.backupKey(resolved.user.id, resolved.mediaId, entry.name);
+      if (this.recoveryDownloadKeys.has(key)) continue;
+      this.stateManager.markDownloadInterrupted(
+        entry.name,
+        localDir,
+        "Legacy local cache queued for safe recovery.",
+        [{ userId: resolved.user.id, mediaId: resolved.mediaId }]
+      );
+      this.recoveryDownloadKeys.add(key);
+      this.recoveryDownloadBacklog.push({
+        user: resolved.user,
+        mediaId: resolved.mediaId,
+        folderTitle: resolved.folderTitle,
+        bvid: entry.name,
+      });
+    }
+  }
+
   private resumePersistedWork() {
+    this.queueLegacyDownloadDirsForRecovery();
     this.stateManager.normalizePersistedWorkForRecovery();
     const statusPriority: Record<string, number> = {
       upload_failed: 0,
@@ -1772,7 +1957,51 @@ export class SyncScheduler {
         userName: resolved.user.name,
         folderName: resolved.folderTitle,
       });
+      if (["verified", "partial_verified"].includes(status) && hasLocalDir && localDir && relation) {
+        const targetKey = `${relation.userId}:${relation.mediaId}`;
+        const pendingHistory = historySessionGroups(localDir)
+          .map((group) => ({
+            ...group,
+            files: group.files.filter((file) => !(file.uploadedTargets || []).includes(targetKey)),
+          }))
+          .filter((group) => group.files.length > 0);
+        if (pendingHistory.length > 0) {
+          this.createSharedUploadDirTracker(localDir, pendingHistory.length, entry.bvid);
+          for (const history of pendingHistory) {
+            this.queueUploadWork({
+              bvid: entry.bvid,
+              localDir,
+              remotePath: joinRemotePath(remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+              userId: relation.userId,
+              mediaId: relation.mediaId,
+              folderTitle: resolved.folderTitle,
+              videoTitle: entry.title,
+              upperName: entry.upperName,
+              cover: entry.cover,
+              files: history.files.map((file) => file.relativePath),
+              historyOnly: true,
+              historySnapshotAt: history.snapshotAt,
+              priority: false,
+            });
+          }
+        }
+        continue;
+      }
       if (["downloaded", "uploading", "upload_failed"].includes(status) && hasLocalDir && localDir) {
+        const manifest = readDownloadSession(localDir);
+        if (!manifest || !["complete", "partial"].includes(manifest.status)) {
+          const downloadKey = this.backupKey(resolved.user.id, resolved.mediaId, entry.bvid);
+          if (!this.recoveryDownloadKeys.has(downloadKey)) {
+            this.recoveryDownloadKeys.add(downloadKey);
+            this.recoveryDownloadBacklog.push({
+              user: resolved.user,
+              mediaId: resolved.mediaId,
+              folderTitle: resolved.folderTitle,
+              bvid: entry.bvid,
+            });
+          }
+          continue;
+        }
         const uploadItem: RecoveryUploadItem = {
           bvid: entry.bvid,
           localDir,
@@ -1783,6 +2012,8 @@ export class SyncScheduler {
           videoTitle: entry.title,
           upperName: entry.upperName,
           cover: entry.cover,
+          files: manifest.outputs.map((output) => output.relativePath),
+          partialBackup: manifest.status === "partial",
           priority: true,
         };
         const key = this.recoveryUploadKey(uploadItem);
@@ -1790,7 +2021,26 @@ export class SyncScheduler {
           this.recoveryUploadKeys.add(key);
           this.priorityUploadKeys.add(key);
           this.recoveryUploadBacklog.push(uploadItem);
-          this.createSharedUploadDirTracker(localDir, 1, entry.bvid);
+          const historyTargetKey = `${resolved.user.id}:${resolved.mediaId}`;
+          const historyGroups = historySessionGroups(localDir)
+            .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
+            .filter((group) => group.files.length > 0);
+          this.createSharedUploadDirTracker(localDir, 1 + historyGroups.length, entry.bvid);
+          for (const history of historyGroups) {
+            const historyItem: RecoveryUploadItem = {
+              ...uploadItem,
+              remotePath: joinRemotePath(remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+              files: history.files.map((file) => file.relativePath),
+              historyOnly: true,
+              historySnapshotAt: history.snapshotAt,
+              priority: false,
+            };
+            const historyKey = this.recoveryUploadKey(historyItem);
+            if (!this.recoveryUploadKeys.has(historyKey)) {
+              this.recoveryUploadKeys.add(historyKey);
+              this.recoveryUploadBacklog.push(historyItem);
+            }
+          }
         }
         continue;
       }
@@ -1979,6 +2229,10 @@ interface RecoveryUploadItem {
   videoTitle?: string;
   upperName?: string;
   cover?: string;
+  files?: string[];
+  partialBackup?: boolean;
+  historyOnly?: boolean;
+  historySnapshotAt?: string;
   notBefore?: number;
   priority?: boolean;
 }

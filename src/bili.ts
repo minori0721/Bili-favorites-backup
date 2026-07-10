@@ -293,6 +293,18 @@ export async function listFavoriteItems(
   return items;
 }
 
+export interface VideoPageSnapshotResult {
+  available: boolean;
+  title?: string;
+  upperName?: string;
+  pages: Array<{
+    index: number;
+    cid: number;
+    title: string;
+    duration: number;
+  }>;
+}
+
 export async function resolveSelfVisibleFavoriteItem(
   cookie: BiliCookie,
   userUid: number,
@@ -364,6 +376,73 @@ export async function resolveSelfVisibleFavoriteItem(
   }
 
   return item;
+}
+
+export async function getVideoPageSnapshot(
+  cookie: BiliCookie,
+  bvidValue: string
+): Promise<VideoPageSnapshotResult> {
+  const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
+  const bvid = encodeURIComponent(bvidValue);
+  const urls = [
+    `https://api.bilibili.com/x/web-interface/view/detail?bvid=${bvid}`,
+    `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+  ];
+  let lastUnavailable = false;
+  for (const url of urls) {
+    let responseBody: unknown;
+    try {
+      responseBody = await client.video.request.get(url, {
+        headers: { referer: `https://www.bilibili.com/video/${bvidValue}/` },
+        extra: { rawResponse: true },
+      });
+    } catch (error: any) {
+      const statusCode = Number(error?.statusCode || error?.response?.status || 0);
+      const message = error?.message || String(error);
+      if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(0, message)) {
+        throw new BiliRiskOrLoginError(`Bili API error (status ${statusCode || "unknown"}): ${message}`);
+      }
+      continue;
+    }
+
+    const body = (responseBody as Record<string, any>)?.data ?? {};
+    const apiCode = Number(body.code ?? 0);
+    if (apiCode !== 0) {
+      const message = String(body.message || `Bili API returned code ${apiCode}`);
+      if (isRiskOrLoginApiError(apiCode, message)) {
+        throw new BiliRiskOrLoginError(`Bili API code ${apiCode}: ${message}`);
+      }
+      lastUnavailable = true;
+      continue;
+    }
+    const data = body.data as Record<string, any> | undefined;
+    const view = data?.View || data;
+    if (!view) continue;
+    const rawPages = Array.isArray(view.pages) ? view.pages : [];
+    const pages = rawPages
+      .map((page: any, offset: number) => ({
+        index: Number(page?.page || offset + 1),
+        cid: Number(page?.cid || 0),
+        title: String(page?.part || page?.title || `P${offset + 1}`),
+        duration: Number(page?.duration || 0),
+      }))
+      .filter((page: { index: number; cid: number }) => page.index > 0 && page.cid > 0);
+    if (pages.length === 0 && Number(view.cid || 0) > 0) {
+      pages.push({
+        index: 1,
+        cid: Number(view.cid),
+        title: String(view.title || bvidValue),
+        duration: Number(view.duration || 0),
+      });
+    }
+    return {
+      available: pages.length > 0,
+      title: typeof view.title === "string" ? view.title : undefined,
+      upperName: typeof view.owner?.name === "string" ? view.owner.name : undefined,
+      pages,
+    };
+  }
+  return { available: !lastUnavailable, pages: [] };
 }
 
 // ---------- token refresh (biliLive-tools pattern) ----------

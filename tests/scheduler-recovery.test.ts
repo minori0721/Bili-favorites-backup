@@ -13,7 +13,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     await fs.promises.mkdir(dataDir, { recursive: true });
     await fs.promises.mkdir(path.join(runtime, "temp"), { recursive: true });
     const state: any = {
-      schemaVersion: 9,
+      schemaVersion: 10,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -95,9 +95,28 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     await fs.promises.mkdir(failedDir, { recursive: true });
     await fs.promises.writeFile(path.join(downloadedDir, "downloaded.mp4"), "downloaded");
     await fs.promises.writeFile(path.join(failedDir, "failed.mp4"), "failed");
+    const writeCompleteManifest = (localDir: string, bvid: string, fileName: string) => writeJsonFile(path.join(localDir, ".bfb-download.json"), {
+      schemaVersion: 1,
+      sessionId: `${bvid}-session`,
+      kind: "backup",
+      bvid,
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: { quality: "", encoding: "", hiRes: false, dolby: false, filenameTemplate: "<bvid>" },
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:00.000Z",
+      snapshotAt: "2026-07-10T00:00:00.000Z",
+      status: "complete",
+      pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
+      outputs: [{ pageIndex: 1, cid: 1, relativePath: fileName, size: 1, duration: 1, videoCodec: "test", quickHash: "test", verifiedAt: "2026-07-10T00:00:00.000Z" }],
+      history: [],
+    });
+    writeCompleteManifest(downloadedDir, "BVDOWNLOADED", "downloaded.mp4");
+    writeCompleteManifest(failedDir, "BVFAILED", "failed.mp4");
 
     const state: any = {
-      schemaVersion: 9,
+      schemaVersion: 10,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -176,7 +195,7 @@ test("one deterministic upload failure is isolated without blocking unrelated do
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "isolated.mp4"), "local-upload-content");
     writeJsonFile(path.join(dataDir, "state.json"), {
-      schemaVersion: 9,
+      schemaVersion: 10,
       processedByUser: {},
       failedByUser: {},
       videos: {

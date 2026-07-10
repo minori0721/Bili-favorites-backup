@@ -5,20 +5,132 @@ import { tempDir } from "./paths.js";
 import { buildCookieString, BiliCookie } from "./users.js";
 import { AppConfig } from "./config.js";
 import { logManager, parseBBDownOutput } from "./logger.js";
+import { getVideoPageSnapshot, type VideoPageSnapshotResult } from "./bili.js";
+import { cacheLocalCover } from "./cover-cache.js";
+import {
+  buildSelectPageArgument,
+  currentSessionFiles,
+  findLegacyCover,
+  markDownloadSessionStatus,
+  prepareDownloadSession,
+  quarantineBrokenAria2Track,
+  readDownloadSession,
+  refreshDownloadSessionOutputs,
+  type Aria2TrackRecoveryIssue,
+  type DownloadSessionKind,
+  type DownloadSessionManifest,
+} from "./download-session.js";
 
 export interface DownloadResult {
   downloadDir: string;
+  files: string[];
+  recoveredPages: number;
+  totalPages: number;
+  partial: boolean;
+}
+
+const activeDownloadChildren = new Set<ReturnType<typeof spawn>>();
+let shutdownRequested = false;
+
+export async function shutdownActiveDownloads(timeoutMs = 20_000) {
+  shutdownRequested = true;
+  const children = [...activeDownloadChildren];
+  await Promise.all(children.map((child) => terminateDownloadProcessTree(child, false)));
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (activeDownloadChildren.size > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await Promise.all(children.map((child) => terminateDownloadProcessTree(child, true)));
+}
+
+async function terminateDownloadProcessTree(child: ReturnType<typeof spawn>, force: boolean) {
+  if (!child.pid) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
+      return;
+    } catch {
+      try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch { /* already exited */ }
+      return;
+    }
+  }
+  await new Promise<void>((resolve) => {
+    const args = ["/PID", String(child.pid), "/T"];
+    if (force) args.push("/F");
+    const killer = spawn("taskkill", args, { windowsHide: true });
+    killer.once("error", () => resolve());
+    killer.once("close", () => resolve());
+  });
 }
 
 export async function downloadWithBBDown(
   bvid: string,
   cookie: BiliCookie,
   config: AppConfig,
-  options: { downloadDir?: string } = {}
+  options: {
+    downloadDir?: string;
+    kind?: DownloadSessionKind;
+    onPrepared?: (downloadDir: string, manifest: DownloadSessionManifest) => void;
+    pageSnapshot?: VideoPageSnapshotResult;
+    command?: string;
+    commandArgsPrefix?: string[];
+    qualityUpgrade?: DownloadSessionManifest["qualityUpgrade"];
+  } = {}
 ): Promise<DownloadResult> {
+  if (shutdownRequested) throw new Error("Application is shutting down");
   const downloadDir = options.downloadDir || path.join(tempDir, bvid);
-  await fs.promises.rm(downloadDir, { recursive: true, force: true });
   await fs.promises.mkdir(downloadDir, { recursive: true });
+
+  const snapshot = options.pageSnapshot || await getVideoPageSnapshot(cookie, bvid);
+  const previousSession = readDownloadSession(downloadDir);
+  const effectivePages = snapshot.pages.length > 0 ? snapshot.pages : previousSession?.pages || [];
+  if (effectivePages.length === 0 && snapshot.available) {
+    const metadataError: any = new Error("Unable to resolve the current video page list; retrying later");
+    metadataError.deferToNextCycle = true;
+    throw metadataError;
+  }
+  const prepared = await prepareDownloadSession({
+    downloadDir,
+    bvid,
+    accountUid: Number(cookie.DedeUserID || 0),
+    config,
+    kind: options.kind || "backup",
+    pages: effectivePages,
+    unavailable: !snapshot.available,
+    qualityUpgrade: options.qualityUpgrade,
+  });
+  options.onPrepared?.(downloadDir, prepared.manifest);
+  const legacyCover = findLegacyCover(downloadDir);
+  if (legacyCover) {
+    void cacheLocalCover(bvid, legacyCover).catch((error) => {
+      console.warn(`[CoverCache] Failed to import legacy cover ${bvid}:`, error?.message || error);
+    });
+  }
+
+  if (prepared.missingPages.length === 0 && prepared.manifest.outputs.length > 0) {
+    return {
+      downloadDir,
+      files: currentSessionFiles(downloadDir),
+      recoveredPages: prepared.recoveredPages,
+      totalPages: prepared.manifest.pages.length,
+      partial: prepared.manifest.status === "partial",
+    };
+  }
+  if (!snapshot.available) {
+    if (prepared.manifest.outputs.length > 0) {
+      markDownloadSessionStatus(downloadDir, "partial", "Video is unavailable; preserving verified local pages.");
+      return {
+        downloadDir,
+        files: currentSessionFiles(downloadDir),
+        recoveredPages: prepared.recoveredPages,
+        totalPages: prepared.manifest.pages.length,
+        partial: true,
+      };
+    }
+    const unavailableError: any = new Error("Video is unavailable and no verified local pages can be recovered");
+    unavailableError.permanent = true;
+    throw unavailableError;
+  }
 
   const url = `https://www.bilibili.com/video/${bvid}`;
   const cookieString = buildCookieString(cookie);
@@ -41,7 +153,13 @@ export async function downloadWithBBDown(
       filePattern,
       "-M",
       `${filePattern}_P<pageNumberWithZero>`,
+      "--use-aria2c",
+      "--aria2c-args",
+      "--continue=true --always-resume=true --max-resume-failure-tries=0 --auto-save-interval=5 --auto-file-renaming=false --allow-overwrite=true --file-allocation=none --connect-timeout=10 --timeout=30 --max-tries=5 --retry-wait=3",
     ];
+
+    const selectedPages = buildSelectPageArgument(prepared.missingPages);
+    if (selectedPages) args.push("--select-page", selectedPages);
 
     const encodingPriority = buildEncodingPriority(config);
     if (encodingPriority) {
@@ -59,10 +177,18 @@ export async function downloadWithBBDown(
     }
 
     let retriedWithTruncate = false;
+    markDownloadSessionStatus(downloadDir, "downloading");
     try {
-      await runCommand("BBDown", args, downloadDir, bvid, credentialConfig.sensitiveValues);
+      await runCommand(
+        options.command || process.env.BBDOWN_PATH || "BBDown",
+        [...(options.commandArgsPrefix || []), ...args],
+        downloadDir,
+        bvid,
+        credentialConfig.sensitiveValues
+      );
     } catch (error: any) {
       if (!Boolean(error?.filenameTooLong)) {
+        await preserveInterruptedDownload(downloadDir, error);
         throw error;
       }
 
@@ -70,6 +196,9 @@ export async function downloadWithBBDown(
       const safeTitle = await fetchSafeVideoTitle(bvid, cookieString);
       const fallbackBase = buildFallbackFilePattern(safeTitle, bvid);
       const retryArgs = replaceFilePatternArgs(args, fallbackBase);
+      const afterFailure = await refreshDownloadSessionOutputs(downloadDir);
+      const retryPages = buildSelectPageArgument(afterFailure.missingPages);
+      replaceOptionValue(retryArgs, "--select-page", retryPages);
 
       logManager.push({
         timestamp: new Date().toISOString(),
@@ -82,32 +211,69 @@ export async function downloadWithBBDown(
         debugVisible: true,
       });
 
-      await fs.promises.rm(downloadDir, { recursive: true, force: true });
-      await fs.promises.mkdir(downloadDir, { recursive: true });
-      await runCommand("BBDown", retryArgs, downloadDir, bvid, credentialConfig.sensitiveValues);
+      try {
+        await runCommand(
+          options.command || process.env.BBDOWN_PATH || "BBDown",
+          [...(options.commandArgsPrefix || []), ...retryArgs],
+          downloadDir,
+          bvid,
+          credentialConfig.sensitiveValues
+        );
+      } catch (retryError: any) {
+        await preserveInterruptedDownload(downloadDir, retryError);
+        throw retryError;
+      }
     }
 
-    const entries = await fs.promises.readdir(downloadDir, { withFileTypes: true });
-    const mediaFiles = entries.filter((entry) => entry.isFile() && isMediaOutputFile(entry.name));
-    if (mediaFiles.length === 0) {
-      const err = new Error("BBDown did not produce any media files");
+    const refreshed = await refreshDownloadSessionOutputs(downloadDir);
+    if (refreshed.missingPages.length > 0) {
+      const err = new Error(`BBDown did not complete all pages; remaining ${refreshed.missingPages.length}`);
       (err as any).deferToNextCycle = true;
+      markDownloadSessionStatus(downloadDir, "failed", err.message);
       throw err;
     }
+    const mediaFiles = refreshed.manifest.outputs;
     logManager.push({
       timestamp: new Date().toISOString(),
       type: "download",
       level: "info",
       summary: `下载完成 ${bvid}${retriedWithTruncate ? "（已自动截断标题）" : ""}`,
-      raw: `BBDown produced ${mediaFiles.length} media file(s)`,
+      raw: `BBDown produced and verified ${mediaFiles.length} media file(s)`,
       bvid,
       simpleVisible: true,
     });
 
-    return { downloadDir };
+    markDownloadSessionStatus(downloadDir, "complete");
+    return {
+      downloadDir,
+      files: mediaFiles.map((file) => file.relativePath),
+      recoveredPages: prepared.recoveredPages,
+      totalPages: refreshed.manifest.pages.length,
+      partial: false,
+    };
   } finally {
     await credentialConfig.cleanup();
   }
+}
+
+async function preserveInterruptedDownload(downloadDir: string, error: any) {
+  const refreshed = await refreshDownloadSessionOutputs(downloadDir).catch(() => undefined);
+  const issue = error?.aria2RecoveryIssue as Aria2TrackRecoveryIssue | undefined;
+  if (issue && refreshed?.missingPages.some((page) => page.index === issue.pageIndex)) {
+    const moved = await quarantineBrokenAria2Track(downloadDir, issue).catch(() => 0);
+    if (moved > 0) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "download",
+        level: "warn",
+        summary: `续传数据不兼容，已重置 P${issue.pageIndex}${issue.track === "video" ? "视频" : "音频"}轨道`,
+        raw: `Quarantined ${moved} incompatible aria2 artifact(s); reason=${issue.reason}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+  }
+  markDownloadSessionStatus(downloadDir, "failed", sanitizeDownloadDiagnosticText(error?.message || String(error)).slice(0, 1000));
 }
 
 export function normalizeEncodingPriority(value: string) {
@@ -156,8 +322,17 @@ export function buildDfnPriority(config: AppConfig) {
   return deduped.join(",");
 }
 
-function isMediaOutputFile(name: string) {
-  return /\.(mp4|mkv|flv|mov|m4v)$/i.test(name) && !/\.(part|tmp|download)$/i.test(name);
+function replaceOptionValue(args: string[], option: string, value: string) {
+  const index = args.findIndex((item) => item === option);
+  if (!value) {
+    if (index >= 0) args.splice(index, 2);
+    return;
+  }
+  if (index >= 0 && index + 1 < args.length) {
+    args[index + 1] = value;
+  } else {
+    args.push(option, value);
+  }
 }
 
 async function createBBDownCredentialConfig(cookieString: string, appAccessToken: string) {
@@ -183,7 +358,7 @@ function sanitizeCredentialLine(value: string) {
   return value.replace(/[\r\n\0]/g, " ");
 }
 
-function redactSensitiveOutput(value: string, sensitiveValues: string[]) {
+export function sanitizeDownloadDiagnosticText(value: string, sensitiveValues: string[] = []) {
   let output = value;
   for (const sensitiveValue of sensitiveValues) {
     output = output.split(sensitiveValue).join("[REDACTED]");
@@ -192,7 +367,51 @@ function redactSensitiveOutput(value: string, sensitiveValues: string[]) {
       output = output.split(sanitized).join("[REDACTED]");
     }
   }
-  return output;
+  output = output.replace(/\bhttps?:\/\/[^\s"'<>]+/gi, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      parsed.username = "";
+      parsed.password = "";
+      if (parsed.search) parsed.search = "?REDACTED";
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return "[REDACTED_URL]";
+    }
+  });
+  return output
+    .replace(/((?:authorization|cookie|token|sessionkey|sessdata|password|secret|sign|access_key)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/[\0]/g, "");
+}
+
+function redactSensitiveOutput(value: string, sensitiveValues: string[]) {
+  return sanitizeDownloadDiagnosticText(value, sensitiveValues);
+}
+
+export function detectAria2TrackRecoveryIssue(output: string): Aria2TrackRecoveryIssue | null {
+  const text = String(output || "");
+  let reason: Aria2TrackRecoveryIssue["reason"] | null = null;
+  if (/\b416\b|range\s+not\s+satisfiable|cannot\s+resume|resume\s+(?:is\s+)?not\s+supported/i.test(text)) {
+    reason = "range";
+  } else if (/length\s+(?:changed|mismatch|different)|size\s+mismatch|remote\s+file\s+size\s+changed/i.test(text)) {
+    reason = "length";
+  } else if (/(?:control|\.aria2)\s+file.*(?:corrupt|invalid|damaged)|(?:corrupt|invalid|damaged).*(?:control|\.aria2)\s+file/i.test(text)) {
+    reason = "control";
+  }
+  if (!reason) return null;
+  let pageIndex = 0;
+  let track: Aria2TrackRecoveryIssue["track"] | undefined;
+  for (const match of text.matchAll(/(?:开始下载|download(?:ing)?)\s*P(\d+)\s*(视频|音频|video|audio)/gi)) {
+    pageIndex = Number(match[1]);
+    track = /音频|audio/i.test(match[2]) ? "audio" : "video";
+  }
+  return pageIndex > 0 && track ? { pageIndex, track, reason } : null;
+}
+
+function attachAria2RecoveryIssue(error: Error, output: string) {
+  const issue = detectAria2TrackRecoveryIssue(output);
+  if (issue) (error as any).aria2RecoveryIssue = issue;
+  return error;
 }
 
 function isFilenameTooLongError(message: string) {
@@ -331,7 +550,12 @@ async function runDebugProbe(
   await fs.promises.mkdir(path.dirname(debugLogPath), { recursive: true });
   const args = [...baseArgs, "--debug", "--only-show-info"];
   return new Promise<string>((resolve) => {
-    const child = spawn("BBDown", args, { cwd });
+    const child = spawn("BBDown", args, {
+      cwd,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+    activeDownloadChildren.add(child);
     let out = "";
     child.stdout.on("data", (chunk) => {
       out += chunk.toString();
@@ -340,6 +564,7 @@ async function runDebugProbe(
       out += chunk.toString();
     });
     child.on("close", async () => {
+      activeDownloadChildren.delete(child);
       try {
         await fs.promises.writeFile(debugLogPath, redactSensitiveOutput(out, sensitiveValues), "utf8");
       } catch {
@@ -348,6 +573,7 @@ async function runDebugProbe(
       resolve(debugLogPath);
     });
     child.on("error", async (error) => {
+      activeDownloadChildren.delete(child);
       try {
         await fs.promises.writeFile(
           debugLogPath,
@@ -364,7 +590,16 @@ async function runDebugProbe(
 
 function runCommand(command: string, args: string[], cwd: string, bvid: string, sensitiveValues: string[]) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd });
+    if (shutdownRequested) {
+      reject(new Error("Application is shutting down"));
+      return;
+    }
+    const child = spawn(command, args, {
+      cwd,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+    activeDownloadChildren.add(child);
     const commandStartedAt = Date.now();
     const sizeSamples: Array<{ at: number; size: number }> = [];
     let watchdogTimer: NodeJS.Timeout | null = null;
@@ -458,7 +693,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
         simpleVisible: true,
         debugVisible: true,
       });
-      child.kill("SIGTERM");
+      void terminateDownloadProcessTree(child, false);
     };
 
     const startWatchdog = () => {
@@ -527,10 +762,12 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
     startWatchdog();
 
     child.on("error", (error) => {
+      activeDownloadChildren.delete(child);
       rejectOnce(error);
     });
 
     child.on("close", (code) => {
+      activeDownloadChildren.delete(child);
       flushStdoutBuffer(true);
       cleanupWatchdog();
       if (killedByWatchdog) {
@@ -539,7 +776,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       }
       const combinedOutput = `${stdoutAll}\n${stderr}`;
       if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
-        const err = new Error(`BBDown output filename too long: ${combinedOutput || stderr || "unknown error"}`);
+        const err = new Error(`BBDown output filename too long: ${sanitizeDownloadDiagnosticText(combinedOutput || stderr || "unknown error").slice(0, 1000)}`);
         (err as any).filenameTooLong = true;
         rejectOnce(err);
         return;
@@ -548,7 +785,7 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       const failure = classifyBBDownFailure(combinedOutput);
       if (failure) {
         const finalizeFailure = (finalLine: string) => {
-          const err = new Error(`BBDown reported failure: ${finalLine}`);
+          const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${finalLine}`), combinedOutput);
           (err as any).permanent = failure.permanent;
           (err as any).deferToNextCycle = failure.deferToNextCycle;
           logManager.push({
@@ -596,21 +833,21 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
         return;
       }
 
-      const errMsg = stderr || combinedOutput || `Command failed with code ${code}`;
+      const errMsg = sanitizeDownloadDiagnosticText(stderr || combinedOutput || `Command failed with code ${code}`).slice(0, 4000);
       const nonZeroFailure = classifyBBDownFailure(combinedOutput);
       if (nonZeroFailure?.permanent) {
-        const err = new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`);
+        const err = attachAria2RecoveryIssue(new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`), combinedOutput);
         (err as any).permanent = true;
         rejectOnce(err);
         return;
       }
       if (nonZeroFailure?.deferToNextCycle) {
-        const err = new Error(`BBDown reported failure: ${nonZeroFailure.line}`);
+        const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${nonZeroFailure.line}`), combinedOutput);
         (err as any).deferToNextCycle = true;
         rejectOnce(err);
         return;
       }
-      rejectOnce(new Error(errMsg));
+      rejectOnce(attachAria2RecoveryIssue(new Error(errMsg), combinedOutput));
     });
   });
 }

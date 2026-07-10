@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
@@ -8,6 +7,7 @@ import { BiliCookie } from "./users.js";
 import { RemoteFileRecord } from "./state.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath } from "./utils.js";
+import { cleanupUploadedSessionFiles, type DownloadSessionManifest } from "./download-session.js";
 
 export interface UploadTarget {
   userId: string;
@@ -29,7 +29,12 @@ export class DownloadTask extends Task {
   folderTitle?: string;
   remotePath?: string;
   targets?: UploadTarget[];
+  outputFiles: string[] = [];
+  partialBackup = false;
+  recoveredPages = 0;
+  totalPages = 0;
   onDownloading?: (task: DownloadTask) => void;
+  onPrepared?: (task: DownloadTask, downloadDir: string, manifest: DownloadSessionManifest) => void;
   onDownloaded?: (task: DownloadTask, downloadDir: string) => void;
 
   constructor(bvid: string, cookie: BiliCookie, config: AppConfig) {
@@ -42,8 +47,23 @@ export class DownloadTask extends Task {
   async run() {
     console.log(`[Task] Starting download for ${this.bvid}`);
     this.onDownloading?.(this);
-    const result = await downloadWithBBDown(this.bvid, this.cookie, this.config);
+    const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
+      onPrepared: (downloadDir, manifest) => {
+        this.downloadDir = downloadDir;
+        this.recoveredPages = manifest.outputs.length;
+        this.totalPages = manifest.pages.length;
+        this.detail = manifest.outputs.length > 0
+          ? `续传：已完成 ${manifest.outputs.length}/${manifest.pages.length} 分P`
+          : `准备下载 0/${manifest.pages.length} 分P`;
+        this.onPrepared?.(this, downloadDir, manifest);
+      },
+    });
     this.downloadDir = result.downloadDir;
+    this.outputFiles = result.files;
+    this.partialBackup = result.partial;
+    this.recoveredPages = result.recoveredPages;
+    this.totalPages = result.totalPages;
+    this.detail = `已完成 ${result.files.length}/${result.totalPages} 分P`;
     this.onDownloaded?.(this, result.downloadDir);
     console.log(`[Task] Completed download for ${this.bvid}`);
   }
@@ -64,6 +84,7 @@ export class QualityUpgradeTask extends Task {
   target: QualityUpgradeTarget;
   runId?: string;
   downloadDir?: string;
+  outputFiles: string[] = [];
   uploadResult?: UploadResult;
   deleteResult?: Awaited<ReturnType<typeof deleteRemoteFiles>>;
   finalFiles?: RemoteFileRecord[];
@@ -109,9 +130,18 @@ export class QualityUpgradeTask extends Task {
     this.qualityStageLabel = "下载新版";
     this.onStartUpgrade?.(this);
     const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
-      downloadDir: path.join(tempDir, `quality-upgrade-${runId}-${this.bvid}`),
+      downloadDir: this.downloadDir || path.join(tempDir, `quality-upgrade-${runId}-${this.bvid}`),
+      kind: "quality_upgrade",
+      qualityUpgrade: {
+        userId: this.target.userId,
+        mediaId: this.target.mediaId,
+        folderTitle: this.target.folderTitle,
+        remotePath: this.target.remotePath,
+        oldFiles: this.target.oldFiles,
+      },
     });
     this.downloadDir = result.downloadDir;
+    this.outputFiles = result.files;
   }
 
   async runUploadReplacePhase(runId: string) {
@@ -125,6 +155,7 @@ export class QualityUpgradeTask extends Task {
     const stageRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
     this.uploadResult = await uploadWithAList(this.downloadDir, stageRemotePath, this.config, {
       cleanupLocal: false,
+      files: this.outputFiles,
     });
     this.qualityStageLabel = "验证临时新版文件";
     const stagedVerifyResult = await verifyRemoteFiles(this.config, this.uploadResult.files);
@@ -202,7 +233,7 @@ export class QualityUpgradeTask extends Task {
     this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles);
     this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
-    await fs.promises.rm(this.downloadDir, { recursive: true, force: true });
+    await cleanupUploadedSessionFiles(this.downloadDir);
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
   }
 }
@@ -274,13 +305,17 @@ export class UploadTask extends Task {
   result?: UploadResult;
   onUploading?: (task: UploadTask) => void;
   cleanupLocal: boolean;
+  files?: string[];
+  partialBackup = false;
+  historyOnly = false;
+  historySnapshotAt?: string;
 
   constructor(
     bvid: string,
     downloadDir: string,
     remotePath: string,
     config: AppConfig,
-    options: { cleanupLocal?: boolean } = {}
+    options: { cleanupLocal?: boolean; files?: string[]; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
@@ -288,13 +323,21 @@ export class UploadTask extends Task {
     this.remotePath = remotePath;
     this.config = config;
     this.cleanupLocal = options.cleanupLocal !== false;
+    this.files = options.files;
+    this.partialBackup = Boolean(options.partialBackup);
+    this.historyOnly = Boolean(options.historyOnly);
+    this.historySnapshotAt = options.historySnapshotAt;
   }
 
   async run() {
     console.log(`[Task] Starting upload for ${this.bvid} to ${this.remotePath}`);
+    if (!this.files || this.files.length === 0) {
+      throw new Error("Upload file whitelist is missing; local cache must be adopted before upload");
+    }
     this.onUploading?.(this);
     this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
       cleanupLocal: this.cleanupLocal,
+      files: this.files,
     });
     console.log(`[Task] Completed upload for ${this.bvid}`);
   }

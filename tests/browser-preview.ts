@@ -26,6 +26,27 @@ if (mode === "degraded") {
   await fs.promises.writeFile(path.join(localDir, "preview.mp4"), "preview-upload-content");
   const now = new Date().toISOString();
   const bvid = "BVUPLOADFAILED";
+  await fs.promises.writeFile(path.join(localDir, ".bfb-download.json"), JSON.stringify({
+    schemaVersion: 1,
+    sessionId: "preview-upload-session",
+    kind: "backup",
+    bvid,
+    accountUid: 1,
+    bbdownCommit: "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed",
+    configFingerprint: "preview",
+    configSnapshot: { quality: "", encoding: "", hiRes: false, dolby: false, filenameTemplate: "<bvid>" },
+    createdAt: now,
+    updatedAt: now,
+    snapshotAt: now,
+    status: "complete",
+    pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
+    outputs: [{ pageIndex: 1, cid: 1, relativePath: "preview.mp4", size: 22, duration: 1, videoCodec: "preview", quickHash: "preview", verifiedAt: now }],
+    history: [],
+  }, null, 2));
+  const retainedDir = path.join(runtimeDir, "temp", "BVRETAINEDPREVIEW");
+  await fs.promises.mkdir(retainedDir, { recursive: true });
+  await fs.promises.writeFile(path.join(retainedDir, ".bfb-retained.json"), JSON.stringify({ schemaVersion: 1, retainedAt: now }));
+  await fs.promises.writeFile(path.join(retainedDir, "unknown.part"), Buffer.alloc(128 * 1024));
   const config = testConfig({
     alistUrl: `http://127.0.0.1:${address.port}`,
     startupRecoveryBatchSize: 5,
@@ -40,7 +61,7 @@ if (mode === "degraded") {
     lastLoginAt: now,
   }];
   const state = {
-    schemaVersion: 9,
+    schemaVersion: 10,
     processedByUser: {},
     failedByUser: {},
     videos: {

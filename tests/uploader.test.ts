@@ -115,6 +115,28 @@ test("stream upload sends exact length, MIME and ownCloud timestamps without chu
   }
 });
 
+test("explicit upload file list excludes session and debug artifacts", async () => {
+  const runtime = await createTestDir("upload-allowlist");
+  const server = await startWebDavServer();
+  try {
+    await fs.promises.mkdir(path.join(runtime, "_history"), { recursive: true });
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), "verified-video");
+    await fs.promises.writeFile(path.join(runtime, ".bfb-download.json"), "{}");
+    await fs.promises.writeFile(path.join(runtime, "debug_1.json"), "{}");
+    await fs.promises.writeFile(path.join(runtime, "_history", "old.mp4"), "old-video");
+    await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      verificationDelaysMs: [0],
+      log: noopLog,
+      files: ["video.mp4"],
+    });
+    assert.deepEqual(server.puts.map((put) => put.path), ["/dav/target/video.mp4"]);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("a failed request can be retried with a fresh full stream", async () => {
   const runtime = await createTestDir("upload-retry");
   const server = await startWebDavServer({ failFirstPut: true });

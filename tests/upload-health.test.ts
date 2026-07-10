@@ -13,6 +13,8 @@ test("upload error text redacts credentials", () => {
   const text = sanitizeUploadText('Authorization: Bearer abc Cookie=sessionKey=secret password=hunter2 https://u:p@example.com/a?token=xyz');
   assert.doesNotMatch(text, /abc|secret|hunter2|u:p|xyz/);
   assert.match(text, /REDACTED/);
+  const jsonText = sanitizeUploadText('{"code":401,"message":"token=secret"}');
+  assert.equal(jsonText, '{"code":401,"message":"token=[REDACTED]"}');
 });
 
 test("upload response body is captured with a hard size limit before sanitizing", async () => {

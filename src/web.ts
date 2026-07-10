@@ -254,6 +254,7 @@ function getAppStyles() {
     .video-badge.done { background:var(--success); color:white; }
     .video-badge.pending { background:var(--border); color:var(--muted); }
     .video-badge.upload-pending { background:#FFB74D; color:#5D4300; }
+    .video-badge.partial { background:#42A5F5; color:white; }
     .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
     .video-badge.removed-missing { background:#EF9A9A; color:white; }
     .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
@@ -1239,7 +1240,8 @@ function getAppScript() {
 
     const cleanupDescriptions = {
       'memory-cache': '只清掉页面临时记住的收藏夹分页，刷新一下就会重新拿，像擦掉便签纸。',
-      temp: '清掉临时下载目录。未上传完的视频碎片会消失，所以有任务跑着时不让动它。',
+      temp: '清掉全部临时下载目录，包括可续传会话和已验证旧成品，需要输入 DELETE。',
+      'orphan-fragments': '只清掉没有会话清单、无法确认来源的 aria2/tmp/vclip/aclip 等残片，不会删除已接管成品。',
       logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
       'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
       covers: '清掉本地压缩封面缓存。视频下架后可能只能显示占位封面，但备份状态不受影响。',
@@ -2075,7 +2077,11 @@ function getAppScript() {
       let stateClass = '';
       let badgeClass = '';
       let badgeText = '';
-      if (item.unavailable && item.processed) {
+      if (item.backupStatus === 'partial_verified') {
+        stateClass = 'processed';
+        badgeClass = 'partial';
+        badgeText = '部分备份';
+      } else if (item.unavailable && item.processed) {
         stateClass = 'unavailable-uploaded';
         badgeClass = 'removed-uploaded';
         badgeText = '已下架（已上传）';
@@ -2680,10 +2686,15 @@ function getAppScript() {
       box.appendChild(grid);
     }
 
-    function renderLocalCacheStatus(parent, localCache) {
+    function renderLocalCacheStatus(parent, localCache, recovery) {
       const host = parent.parentElement || parent;
       let el = host.querySelector('[data-local-cache-status="1"]');
-      if (!localCache || !Number(localCache.limitBytes || 0)) {
+      const hasRecovery = recovery && (
+        Number(recovery.resumableSessions || 0) > 0 ||
+        Number(recovery.legacyDirectories || 0) > 0 ||
+        Number(recovery.cleanupEligibleBytes || 0) > 0
+      );
+      if ((!localCache || !Number(localCache.limitBytes || 0)) && !hasRecovery) {
         if (el) el.remove();
         return;
       }
@@ -2693,12 +2704,17 @@ function getAppScript() {
         el.dataset.localCacheStatus = '1';
         host.insertBefore(el, parent);
       }
-      const used = formatBytes(Number(localCache.usedBytes || 0));
-      const limit = formatBytes(Number(localCache.limitBytes || 0));
-      el.classList.toggle('paused', !!localCache.paused);
-      el.textContent = localCache.paused
-        ? '下载暂停：本地缓存 ' + used + ' / ' + limit + '，已预留 ' + formatBytes(Number(localCache.reserveBytes || 0)) + ' 安全空间；上传队列不受影响。'
-        : '本地缓存：' + used + ' / ' + limit + '，安全预留 ' + formatBytes(Number(localCache.reserveBytes || 0)) + '。';
+      const used = formatBytes(Number(localCache?.usedBytes || 0));
+      const limitBytes = Number(localCache?.limitBytes || 0);
+      const limit = limitBytes > 0 ? formatBytes(limitBytes) : '未设置上限';
+      const resumeText = recovery
+        ? ' 可续传 ' + Number(recovery.resumableSessions || 0) + ' 项，已保留 ' + formatBytes(Number(recovery.retainedBytes || 0)) +
+          '；旧缓存 ' + Number(recovery.legacyDirectories || 0) + ' 项，待清理残片 ' + formatBytes(Number(recovery.cleanupEligibleBytes || 0)) + '。'
+        : '';
+      el.classList.toggle('paused', !!localCache?.paused);
+      el.textContent = localCache?.paused
+        ? '下载暂停：本地缓存 ' + used + ' / ' + limit + '，已预留 ' + formatBytes(Number(localCache?.reserveBytes || 0)) + ' 安全空间；上传队列不受影响。' + resumeText
+        : '本地缓存：' + used + ' / ' + limit + (limitBytes > 0 ? '，安全预留 ' + formatBytes(Number(localCache?.reserveBytes || 0)) : '') + '。' + resumeText;
     }
 
     function renderUploadHealthStatus(parent, uploadHealth) {
@@ -2787,7 +2803,7 @@ function getAppScript() {
           queueBoardState.columns = {};
         }
         renderSchedulerStatus(grid, { ...(snapshot.scheduler || {}), recovery: snapshot.recovery || {} });
-        renderLocalCacheStatus(grid, snapshot.localCache || null);
+        renderLocalCacheStatus(grid, snapshot.localCache || null, snapshot.downloadRecovery || null);
         renderUploadHealthStatus(grid, snapshot.uploadHealth || null);
         const firstRects = new Map();
         for (const [key, card] of queueBoardState.cards.entries()) {
