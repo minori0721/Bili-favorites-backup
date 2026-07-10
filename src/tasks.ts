@@ -270,6 +270,7 @@ export class UploadTask extends Task {
   userId?: string;
   mediaId?: number;
   folderTitle?: string;
+  recoveryKey?: string;
   result?: UploadResult;
   onUploading?: (task: UploadTask) => void;
   cleanupLocal: boolean;

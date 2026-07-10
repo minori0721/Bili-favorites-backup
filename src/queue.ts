@@ -75,10 +75,12 @@ export class TaskQueue extends EventEmitter {
   private concurrency: number;
   private sequenceCounter = 0;
   private canStartTask?: (task: Task) => boolean;
+  private maxSize: number;
 
-  constructor(concurrency: number = 1) {
+  constructor(concurrency: number = 1, maxSize = Number.POSITIVE_INFINITY) {
     super();
     this.concurrency = concurrency;
+    this.maxSize = maxSize;
   }
 
   setConcurrency(concurrency: number) {
@@ -91,11 +93,39 @@ export class TaskQueue extends EventEmitter {
     this.processQueue();
   }
 
+  setMaxSize(maxSize: number) {
+    this.maxSize = Math.max(this.concurrency, Math.floor(maxSize));
+  }
+
   poke() {
     this.processQueue();
   }
 
+  canAccept(count = 1) {
+    return this.queue.length + count <= this.maxSize;
+  }
+
   addTask(task: Task) {
+    if (!this.canAccept()) return false;
+    this.prepareTask(task);
+    this.queue.push(task);
+    this.emit("taskAdded", task);
+    this.processQueue();
+    return true;
+  }
+
+  addTasks(tasks: Task[]) {
+    const accepted = tasks.slice(0, Math.max(0, this.maxSize - this.queue.length));
+    for (const task of accepted) {
+      this.prepareTask(task);
+      this.queue.push(task);
+      this.emit("taskAdded", task);
+    }
+    this.processQueue();
+    return accepted.length;
+  }
+
+  private prepareTask(task: Task) {
     if (typeof task.queuedAt !== "number") {
       task.queuedAt = Date.now();
     }
@@ -103,9 +133,6 @@ export class TaskQueue extends EventEmitter {
       this.sequenceCounter += 1;
       task.sequence = this.sequenceCounter;
     }
-    this.queue.push(task);
-    this.emit("taskAdded", task);
-    this.processQueue();
   }
 
   getTasks() {
@@ -122,6 +149,10 @@ export class TaskQueue extends EventEmitter {
 
   getRetryWaitCount() {
     return this.queue.filter((task) => task.status === "retry_wait").length;
+  }
+
+  getSize() {
+    return this.queue.length;
   }
 
   isBusy() {
@@ -160,16 +191,18 @@ export class TaskQueue extends EventEmitter {
         task.status = "error";
         this.emit("taskError", task, error);
       } else {
+        const retryIndex = task.retries;
         task.retries++;
         task.status = "retry_wait";
         task.startedAt = undefined;
-        task.retryAt = Date.now() + task.retryDelaySeconds * 1000;
+        const retryAfterMs = computeTaskRetryDelayMs(task.retryDelaySeconds, retryIndex, error?.retryAfterMs);
+        task.retryAt = Date.now() + retryAfterMs;
         this.emit("taskRetry", task, error);
         setTimeout(() => {
           task.status = "pending";
           task.retryAt = undefined;
           this.processQueue();
-        }, task.retryDelaySeconds * 1000);
+        }, retryAfterMs);
       }
     } finally {
       this.activeCount--;
@@ -177,7 +210,18 @@ export class TaskQueue extends EventEmitter {
         this.queue = this.queue.filter(t => t.id !== task.id);
       }
 
+      this.emit("taskSettled", task);
       this.processQueue();
     }
   }
+}
+
+export function computeTaskRetryDelayMs(baseSeconds: number, retryIndex: number, explicitDelayMs?: number, random = Math.random) {
+  if (Number.isFinite(explicitDelayMs) && Number(explicitDelayMs) >= 0) {
+    return Math.min(Number(explicitDelayMs), 15 * 60_000);
+  }
+  const baseMs = Math.max(1000, Number(baseSeconds || 1) * 1000);
+  const exponential = Math.min(baseMs * Math.pow(2, Math.max(0, retryIndex)), 15 * 60_000);
+  const jitter = 0.8 + Math.max(0, Math.min(1, random())) * 0.4;
+  return Math.max(1000, Math.round(exponential * jitter));
 }

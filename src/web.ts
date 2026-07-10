@@ -253,6 +253,7 @@ function getAppStyles() {
     .video-badge { flex:0 0 auto; display:inline-block; white-space:nowrap; font-size:11px; padding:2px 8px; border-radius:6px; font-weight:600; }
     .video-badge.done { background:var(--success); color:white; }
     .video-badge.pending { background:var(--border); color:var(--muted); }
+    .video-badge.upload-pending { background:#FFB74D; color:#5D4300; }
     .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
     .video-badge.removed-missing { background:#EF9A9A; color:white; }
     .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
@@ -290,6 +291,7 @@ function getAppStyles() {
     .scheduler-status-grid strong { color:var(--ink); }
     .local-cache-status { border:1px solid var(--glass-border); border-radius:14px; padding:10px 12px; margin:0 0 10px; background:rgba(248,251,250,0.76); font-size:12px; color:var(--muted); }
     .local-cache-status.paused { border-color:#FFB74D; background:#FFF8E1; color:#8D6E00; }
+    .upload-health-status { border:1px solid #E57373; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF1F1; font-size:12px; color:#9B2C2C; }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
     .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
@@ -408,7 +410,7 @@ function getAppStyles() {
       .log-toggle { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
       .log-toggle button { min-height:36px; padding:6px 10px; }
       .queue-board { display:block; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; scroll-snap-type:x proximity; }
-      .scheduler-status,.local-cache-status { white-space:normal; width:100%; }
+      .scheduler-status,.local-cache-status,.upload-health-status { white-space:normal; width:100%; }
       .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
@@ -506,6 +508,7 @@ function getSettingsSection() {
         <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
         <div class="field-full"><label>本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
+        <div class="field-full"><label>启动恢复每批数量</label><input id="startupRecoveryBatchSize" type="number" min="5" max="100" /></div>
         <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
         <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
         <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
@@ -1026,6 +1029,7 @@ function getAppScript() {
       document.getElementById('concurrentDownloads').value = d.concurrentDownloads ?? 1;
       document.getElementById('concurrentUploads').value = d.concurrentUploads ?? 2;
       document.getElementById('localCacheLimitGB').value = d.localCacheLimitGB ?? 10;
+      document.getElementById('startupRecoveryBatchSize').value = d.startupRecoveryBatchSize ?? 25;
       document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
       document.getElementById('remoteVerifyRateLimitPerSecond').value = d.remoteVerifyRateLimitPerSecond ?? 2;
       document.getElementById('remoteRequeueLimitPerCycle').value = d.remoteRequeueLimitPerCycle ?? 20;
@@ -1055,6 +1059,7 @@ function getAppScript() {
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value),
+        startupRecoveryBatchSize: Number(document.getElementById('startupRecoveryBatchSize').value),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value),
         remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value),
         remoteRequeueLimitPerCycle: Number(document.getElementById('remoteRequeueLimitPerCycle').value),
@@ -1170,6 +1175,7 @@ function getAppScript() {
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value || 1),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value || 2),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value || 0),
+        startupRecoveryBatchSize: Number(document.getElementById('startupRecoveryBatchSize').value || 25),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value || 3),
         remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value || 2),
         remoteRequeueLimitPerCycle: Number(document.getElementById('remoteRequeueLimitPerCycle').value || 20),
@@ -2081,6 +2087,10 @@ function getAppScript() {
         stateClass = 'processed';
         badgeClass = 'done';
         badgeText = '已备份';
+      } else if (item.backupStatus === 'upload_failed') {
+        stateClass = '';
+        badgeClass = 'upload-pending';
+        badgeText = '待补传';
       } else if (item.failed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -2625,6 +2635,8 @@ function getAppScript() {
       const nextRun = status.nextRunAt ? formatDateTime(status.nextRunAt) : '未知';
       const started = status.startedAt ? formatDateTime(status.startedAt) : '未运行';
       const progress = status.total ? String(status.checked || 0) + '/' + String(status.total) : (status.biliTotal ? String(status.indexed || 0) + '/' + String(status.biliTotal) : '无');
+      const recovery = status.recovery || {};
+      const recoveryText = '上传 ' + Number(recovery.pendingUploads || 0) + ' / 下载 ' + Number(recovery.pendingDownloads || 0) + '（每批 ' + Number(recovery.batchSize || 25) + '）';
       box.innerHTML = '';
       const summary = document.createElement('summary');
       summary.className = 'scheduler-status-main';
@@ -2651,6 +2663,7 @@ function getAppScript() {
         ['收藏夹', status.folderTitle || '无'],
         ['页码', status.page ? String(status.page) : '无'],
         ['进度', progress],
+        ['待恢复任务', recoveryText],
         ['已排队操作', queued],
         ['开始时间', started],
         ['下次自动同步', nextRun],
@@ -2684,8 +2697,26 @@ function getAppScript() {
       const limit = formatBytes(Number(localCache.limitBytes || 0));
       el.classList.toggle('paused', !!localCache.paused);
       el.textContent = localCache.paused
-        ? '下载暂停：本地缓存 ' + used + ' / ' + limit + '，等待上传清理后继续；上传队列不受影响。'
-        : '本地缓存：' + used + ' / ' + limit + '。';
+        ? '下载暂停：本地缓存 ' + used + ' / ' + limit + '，已预留 ' + formatBytes(Number(localCache.reserveBytes || 0)) + ' 安全空间；上传队列不受影响。'
+        : '本地缓存：' + used + ' / ' + limit + '，安全预留 ' + formatBytes(Number(localCache.reserveBytes || 0)) + '。';
+    }
+
+    function renderUploadHealthStatus(parent, uploadHealth) {
+      const host = parent.parentElement || parent;
+      let el = host.querySelector('[data-upload-health-status="1"]');
+      if (!uploadHealth || uploadHealth.state === 'closed') {
+        if (el) el.remove();
+        return;
+      }
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'upload-health-status';
+        el.dataset.uploadHealthStatus = '1';
+        host.insertBefore(el, parent);
+      }
+      const retryText = uploadHealth.retryAt ? formatDateTime(uploadHealth.retryAt) : '等待调度';
+      const modeText = uploadHealth.state === 'half_open' ? '正在进行单任务探测' : '将在 ' + retryText + ' 探测恢复';
+      el.textContent = '上传后端异常，下载已暂停：' + (uploadHealth.reason || 'AList 上传暂不可用') + '；' + modeText + '。本地文件已保留为“待补传”。';
     }
 
     function renderQueueColumn(parent, id, title, items, nowMs, seenKeys) {
@@ -2755,8 +2786,9 @@ function getAppScript() {
           board.appendChild(grid);
           queueBoardState.columns = {};
         }
-        renderSchedulerStatus(grid, snapshot.scheduler || {});
+        renderSchedulerStatus(grid, { ...(snapshot.scheduler || {}), recovery: snapshot.recovery || {} });
         renderLocalCacheStatus(grid, snapshot.localCache || null);
+        renderUploadHealthStatus(grid, snapshot.uploadHealth || null);
         const firstRects = new Map();
         for (const [key, card] of queueBoardState.cards.entries()) {
           if (card.isConnected) firstRects.set(key, card.getBoundingClientRect());
@@ -2798,6 +2830,7 @@ function getAppScript() {
       const board = document.getElementById('queueBoard');
       if (board) {
         board.parentElement?.querySelector('[data-local-cache-status="1"]')?.remove();
+        board.parentElement?.querySelector('[data-upload-health-status="1"]')?.remove();
         board.innerHTML = '';
       }
     }

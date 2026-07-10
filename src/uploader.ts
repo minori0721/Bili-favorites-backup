@@ -29,8 +29,9 @@ import path from "node:path";
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
 import { type RemoteFileQualityProfile, type RemoteFileRecord } from "./state.js";
+import { captureUploadResponseBody, classifyUploadError, sanitizeUploadText, UploadOperationError } from "./upload-health.js";
 
-function buildDavClient(config: AppConfig): WebDAVClient {
+export function buildDavClient(config: AppConfig): WebDAVClient {
   const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
   return createClient(davUrl, {
     username: config.alistUsername,
@@ -38,17 +39,24 @@ function buildDavClient(config: AppConfig): WebDAVClient {
   });
 }
 
-async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
+export async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
   const segments = remotePath.split('/').filter(s => s.length > 0);
   let currentPath = '';
   for (const segment of segments) {
     currentPath += '/' + segment;
-    try {
-      if (await client.exists(currentPath) === false) {
+    if (await client.exists(currentPath) === false) {
+      try {
         await client.createDirectory(currentPath);
+      } catch (error) {
+        try {
+          if (await client.exists(currentPath)) {
+            continue;
+          }
+        } catch (checkError) {
+          throw checkError;
+        }
+        throw error;
       }
-    } catch (e) {
-      // Ignore errors that might occur if created concurrently
     }
   }
 }
@@ -67,17 +75,100 @@ function buildRemoteFileQualityProfile(config: AppConfig): RemoteFileQualityProf
   };
 }
 
+const MIME_TYPES: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".mkv": "video/x-matroska",
+  ".flv": "video/x-flv",
+  ".mov": "video/quicktime",
+  ".m4v": "video/x-m4v",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".flac": "audio/flac",
+  ".aac": "audio/aac",
+  ".ass": "text/x-ssa",
+  ".srt": "application/x-subrip",
+  ".vtt": "text/vtt",
+  ".webp": "image/webp",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".json": "application/json",
+  ".xml": "application/xml",
+  ".txt": "text/plain",
+};
+
+export function detectUploadMimeType(filePath: string) {
+  return MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+}
+
+export function buildUploadHeaders(filePath: string, stat: fs.Stats) {
+  const modifiedSeconds = Math.max(0, Math.floor(stat.mtimeMs / 1000));
+  return {
+    "Content-Length": String(stat.size),
+    "Content-Type": detectUploadMimeType(filePath),
+    "X-OC-Mtime": String(modifiedSeconds),
+    "X-OC-Ctime": String(modifiedSeconds),
+  };
+}
+
+async function toUploadOperationError(error: unknown, remotePath: string) {
+  await captureUploadResponseBody(error);
+  return error instanceof UploadOperationError
+    ? error
+    : new UploadOperationError(classifyUploadError(error, remotePath));
+}
+
+export async function verifyUploadedFile(
+  client: WebDAVClient,
+  remoteFile: string,
+  expectedSize: number,
+  delaysMs: number[] = [0, 500, 1500]
+) {
+  let lastSize: number | undefined;
+  let lastError: unknown;
+  for (const delayMs of delaysMs) {
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      const remoteStat = await client.stat(remoteFile) as any;
+      lastSize = Number(remoteStat?.size);
+      if (Number.isFinite(lastSize) && lastSize === expectedSize) {
+        return;
+      }
+      lastError = new Error(`Remote size mismatch: expected ${expectedSize}, received ${Number.isFinite(lastSize) ? lastSize : "unknown"}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const verificationError: any = new Error(
+    `Remote upload verification failed for ${remoteFile}: ${(lastError as Error)?.message || "file not visible"}`
+  );
+  verificationError.status = 409;
+  throw new UploadOperationError(classifyUploadError(verificationError, remoteFile));
+}
+
 export async function uploadWithAList(
   localDir: string,
   remotePath: string,
   config: AppConfig,
-  options: { cleanupLocal?: boolean } = {}
+  options: {
+    cleanupLocal?: boolean;
+    client?: WebDAVClient;
+    verificationDelaysMs?: number[];
+    log?: Pick<typeof logManager, "push">;
+  } = {}
 ): Promise<UploadResult> {
-  const client = buildDavClient(config);
+  const client = options.client || buildDavClient(config);
+  const logger = options.log || logManager;
   const uploadedFiles: RemoteFileRecord[] = [];
   const qualityProfile = buildRemoteFileQualityProfile(config);
 
-  await ensureRemoteDir(client, remotePath);
+  try {
+    await ensureRemoteDir(client, remotePath);
+  } catch (error) {
+    throw await toUploadOperationError(error, remotePath);
+  }
 
   const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
   for (const entry of entries) {
@@ -86,12 +177,17 @@ export async function uploadWithAList(
       // Join using posix style for webdav
       const remoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
       
-      const fileStream = fs.createReadStream(localFile);
       const stat = await fs.promises.stat(localFile);
+      if (!stat.isFile() || stat.size <= 0) {
+        const localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`);
+        localError.status = 422;
+        throw new UploadOperationError(classifyUploadError(localError, remoteFile));
+      }
+      const fileStream = fs.createReadStream(localFile);
       const sizeKB = (stat.size / 1024).toFixed(1);
       console.log(`[AList] Uploading ${entry.name} to ${remoteFile} (${stat.size} bytes)`);
       
-      logManager.push({
+      logger.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "info",
@@ -100,16 +196,14 @@ export async function uploadWithAList(
         simpleVisible: true,
       });
       
-      let uploadSuccessful = false;
       try {
         await client.putFileContents(remoteFile, fileStream as any, {
-          contentLength: false, // Don't send content length for streams to avoid issues
-          onUploadProgress: (progress) => {
-            // Optional: log progress
-          }
+          contentLength: false,
+          overwrite: true,
+          headers: buildUploadHeaders(localFile, stat),
         });
-        uploadSuccessful = true;
-        logManager.push({
+        await verifyUploadedFile(client, remoteFile, stat.size, options.verificationDelaysMs);
+        logger.push({
           timestamp: new Date().toISOString(),
           type: "upload",
           level: "info",
@@ -117,34 +211,36 @@ export async function uploadWithAList(
           raw: `[AList] Upload completed for ${entry.name}`,
           simpleVisible: true,
         });
-      } catch (err) {
-        console.error(`[AList] Failed to upload ${entry.name}`, err);
-        logManager.push({
+      } catch (error) {
+        const uploadError = await toUploadOperationError(error, remoteFile);
+        const info = uploadError.uploadFailure;
+        console.error(`[AList] Upload failed status=${info.status || "unknown"} category=${info.category} path=${remoteFile}: ${info.summary}`);
+        logger.push({
           timestamp: new Date().toISOString(),
           type: "upload",
           level: "error",
-          summary: `上传失败: ${entry.name} - ${(err as Error).message}`,
-          raw: `[AList] Failed to upload ${entry.name}: ${(err as Error).message}`,
+          summary: `上传失败: ${entry.name} - ${info.summary}`,
+          raw: `[AList] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${remoteFile}: ${info.summary}`,
           simpleVisible: true,
         });
-        throw err;
+        throw uploadError;
+      } finally {
+        fileStream.destroy();
       }
-      
-      if (uploadSuccessful) {
-        uploadedFiles.push({
-          name: entry.name,
-          path: remoteFile,
-          size: stat.size,
-          qualityProfile,
-        });
-      }
+
+      uploadedFiles.push({
+        name: entry.name,
+        path: remoteFile,
+        size: stat.size,
+        qualityProfile,
+      });
     }
   }
 
   if (uploadedFiles.length === 0) {
-    const err = new Error(`No files were uploaded from ${localDir}`);
-    (err as any).deferToNextCycle = true;
-    throw err;
+    const emptyError: any = new Error(`Local upload directory contains no files: ${localDir}`);
+    emptyError.status = 422;
+    throw new UploadOperationError(classifyUploadError(emptyError, remotePath));
   }
 
   if (options.cleanupLocal !== false) {
@@ -164,7 +260,9 @@ export async function verifyRemoteFiles(
   const missing: string[] = [];
   for (const file of files) {
     try {
-      if ((await client.exists(file.path)) === false) {
+      const remoteStat = await client.stat(file.path) as any;
+      const remoteSize = Number(remoteStat?.size);
+      if (typeof file.size === "number" && (!Number.isFinite(remoteSize) || remoteSize !== file.size)) {
         missing.push(file.path);
       }
     } catch {
@@ -218,14 +316,15 @@ export async function batchRenameRemote(
       });
     } catch (err) {
       failed++;
-      const msg = `${oldName}: ${(err as Error).message}`;
+      const safeError = sanitizeUploadText((err as Error)?.message || err);
+      const msg = `${oldName}: ${safeError}`;
       errors.push(msg);
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
         level: "error",
         summary: `重命名失败: ${msg}`,
-        raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${(err as Error).message}`,
+        raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${safeError}`,
         simpleVisible: true,
       });
     }

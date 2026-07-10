@@ -17,6 +17,7 @@ export interface AppConfig {
   concurrentDownloads: number;
   concurrentUploads: number;
   localCacheLimitGB: number;
+  startupRecoveryBatchSize: number;
   bbdownEncoding: string;
   bbdownQuality: string;
   bbdownHiRes: boolean;
@@ -42,6 +43,7 @@ const defaultConfig: AppConfig = {
   concurrentDownloads: 1,
   concurrentUploads: 2,
   localCacheLimitGB: 10,
+  startupRecoveryBatchSize: 25,
   bbdownEncoding: "",
   bbdownQuality: "",
   bbdownHiRes: false,
@@ -130,6 +132,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "concurrentDownloads",
   "concurrentUploads",
   "localCacheLimitGB",
+  "startupRecoveryBatchSize",
   "bbdownEncoding",
   "bbdownQuality",
   "bbdownHiRes",
@@ -189,6 +192,12 @@ export function validateConfig(input: Partial<AppConfig>) {
   if (input.localCacheLimitGB !== undefined) {
     if (!Number.isFinite(input.localCacheLimitGB) || input.localCacheLimitGB < 0 || input.localCacheLimitGB > 1024) {
       return "localCacheLimitGB must be between 0 and 1024";
+    }
+  }
+
+  if (input.startupRecoveryBatchSize !== undefined) {
+    if (!Number.isInteger(input.startupRecoveryBatchSize) || input.startupRecoveryBatchSize < 5 || input.startupRecoveryBatchSize > 100) {
+      return "startupRecoveryBatchSize must be an integer between 5 and 100";
     }
   }
 

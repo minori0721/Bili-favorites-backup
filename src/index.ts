@@ -34,6 +34,7 @@ import {
   remotePathExists,
 } from "./uploader.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
+import { sanitizeUploadText } from "./upload-health.js";
 import {
   applyMigrationPackage,
   createMigrationExport,
@@ -83,7 +84,9 @@ const cleanupItems: Record<CleanupItem, { label: string; important: boolean; pat
 
 const allCleanupKeys = Object.keys(cleanupItems) as CleanupItem[];
 
-startAfterRecovery();
+if (process.env.NODE_ENV !== "test") {
+  startAfterRecovery();
+}
 
 async function startAfterRecovery() {
   await recoverInterruptedQualityUpgrades();
@@ -216,7 +219,9 @@ function startTokenRefreshLoop() {
   // Start first check after 1 minute (let server settle)
   setTimeout(checkAndRefresh, 60_000);
 }
-startTokenRefreshLoop();
+if (process.env.NODE_ENV !== "test") {
+  startTokenRefreshLoop();
+}
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -1243,12 +1248,13 @@ async function recoverInterruptedQualityUpgrades() {
     try {
       await restoreInterruptedQualityUpgrade(relation);
     } catch (error: any) {
+      const safeError = sanitizeUploadText(error?.message || error);
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
         level: "error",
-        summary: `恢复中断的画质重调失败 ${relation.bvid}: ${error?.message || error}`,
-        raw: `[QualityUpgrade] interrupted restore failed ${relation.userId}/${relation.mediaId}/${relation.bvid}: ${error?.message || error}`,
+        summary: `恢复中断的画质重调失败 ${relation.bvid}: ${safeError}`,
+        raw: `[QualityUpgrade] interrupted restore failed ${relation.userId}/${relation.mediaId}/${relation.bvid}: ${safeError}`,
         bvid: relation.bvid,
         simpleVisible: true,
         debugVisible: true,
@@ -1472,15 +1478,16 @@ function markQualityUpgradeFailed(task: QualityUpgradeTask, error: any) {
   if (!qualityUpgradeQueue.has(key)) {
     return;
   }
+  const safeError = sanitizeUploadText(error?.message || error);
   qualityUpgradeQueue.delete(key);
-  completedQualityUpgrades.unshift({ id: task.id, bvid: task.bvid, title: String(task.videoTitle || task.bvid), status: "error", error: error?.message || String(error), completedAt: new Date().toISOString() });
+  completedQualityUpgrades.unshift({ id: task.id, bvid: task.bvid, title: String(task.videoTitle || task.bvid), status: "error", error: safeError, completedAt: new Date().toISOString() });
   completedQualityUpgrades.splice(50);
   logManager.push({
     timestamp: new Date().toISOString(),
     type: task.qualityStage === "upload" ? "upload" : "download",
     level: "error",
-    summary: `重调画质失败 ${task.bvid}: ${error?.message || error}`,
-    raw: `[QualityUpgrade] failed ${key}: ${error?.message || error}`,
+    summary: `重调画质失败 ${task.bvid}: ${safeError}`,
+    raw: `[QualityUpgrade] failed ${key}: ${safeError}`,
     bvid: task.bvid,
     simpleVisible: true,
     debugVisible: true,
@@ -1596,7 +1603,11 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
     };
     task.onFailed = markQualityUpgradeFailed;
     qualityUpgradeQueue.set(key, task);
-    scheduler.enqueueQualityUpgrade(task);
+    if (!scheduler.enqueueQualityUpgrade(task)) {
+      qualityUpgradeQueue.delete(key);
+      skipped.push({ key, reason: "下载队列已满，请稍后重试" });
+      continue;
+    }
     queued.push({ key, bvid: candidate.bvid, title: candidate.title });
   }
 

@@ -11,6 +11,12 @@ import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.
 import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { queueCoverCache } from "./cover-cache.js";
 import {
+  classifyUploadError,
+  sanitizeUploadText,
+  UploadCircuitBreaker,
+  type UploadFailureInfo,
+} from "./upload-health.js";
+import {
   DownloadTask,
   QualityUpgradeDownloadTask,
   QualityUpgradeTask,
@@ -72,6 +78,16 @@ export class SyncScheduler {
   private pendingTickOptions: TickOptions | null = null;
   private cleanupLocked = false;
   private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
+  private recoveryUploadBacklog: RecoveryUploadItem[] = [];
+  private recoveryDownloadBacklog: RecoveryDownloadItem[] = [];
+  private recoveryUploadKeys = new Set<string>();
+  private recoveryDownloadKeys = new Set<string>();
+  private priorityUploadKeys = new Set<string>();
+  private qualityUpgradeUploadBacklog: DeferredQualityUpload[] = [];
+  private recoveryRefillTimer: NodeJS.Timeout | null = null;
+  private recoveryRefillAt = 0;
+  private uploadProbeTimer: NodeJS.Timeout | null = null;
+  private readonly uploadCircuit = new UploadCircuitBreaker();
   private selfVisibleProbeCache = new Map<string, { expiresAt: number; item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number] }>();
   private schedulerProgress: SchedulerSnapshot | null = null;
   private nextAutoRunAt?: number;
@@ -88,16 +104,19 @@ export class SyncScheduler {
     this.stateManager = stateManager;
 
     const config = this.configStore.get();
-    this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1);
-    this.uploadQueue = new TaskQueue(config.concurrentUploads || 2);
+    this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1, this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
+    this.uploadQueue = new TaskQueue(config.concurrentUploads || 2, this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
     this.downloadQueue.setStartGate(() => this.canStartDownloadTask());
+    this.uploadQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
     void this.refreshLocalCacheSnapshot(true);
 
     const logTaskError = (task: any, error: any) => {
       const label = error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed";
-      console.error(`[Queue] Task ${task.name} ${label}:`, error);
+      console.error(`[Queue] Task ${task.name} ${label}: ${sanitizeUploadText(error?.message || error)}`);
     };
-    const logTaskRetry = (task: any, error: any) => console.warn(`[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}):`, error.message || error);
+    const logTaskRetry = (task: any, error: any) => console.warn(
+      `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${sanitizeUploadText(error?.message || error)}`
+    );
 
     this.downloadQueue.on("taskStart", (task: DownloadTask | QualityUpgradeDownloadTask) => {
       if (task instanceof QualityUpgradeDownloadTask) {
@@ -108,6 +127,7 @@ export class SyncScheduler {
     });
     this.uploadQueue.on("taskStart", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
       if (task instanceof QualityUpgradeUploadReplaceTask) {
+        task.control.error = undefined;
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "上传新版到临时目录";
         this.syncQualityUpgradeControl(task, "running");
@@ -138,6 +158,7 @@ export class SyncScheduler {
         this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", Boolean(error?.permanent));
       }
       this.activeDownloadTargets.delete(task.bvid);
+      this.scheduleRecoveryRefill();
     });
     this.downloadQueue.on("taskRetry", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskRetry(task, error);
@@ -158,32 +179,64 @@ export class SyncScheduler {
     });
     this.uploadQueue.on("taskError", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
       logTaskError(task, error);
+      const failure = this.recordUploadFailure(task, error);
       if (task instanceof QualityUpgradeUploadReplaceTask) {
-        this.syncQualityUpgradeControl(task, "error");
-        task.control.error = error;
-        task.control.onFailed?.(task.control, error);
+        if (this.uploadCircuit.getSnapshot().state !== "closed") {
+          task.control.qualityStage = "upload";
+          task.control.qualityStageLabel = "等待上传后端恢复";
+          task.control.error = error;
+          this.syncQualityUpgradeControl(task, "retry_wait");
+          this.qualityUpgradeUploadBacklog.push({
+            task: new QualityUpgradeUploadReplaceTask(task.control),
+            notBefore: this.uploadCircuit.getRetryAt(),
+          });
+        } else {
+          this.syncQualityUpgradeControl(task, "error");
+          task.control.error = error;
+          task.control.onFailed?.(task.control, error);
+        }
+        this.scheduleRecoveryRefill();
         return;
       }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "error",
-        summary: `上传失败 ${task.bvid}: ${error?.message || error}`,
-        raw: `[Queue] Task ${task.name} permanently failed: ${error?.message || error}`,
+        summary: `上传失败 ${task.bvid}: ${failure.summary}（本地文件已保留，等待补传）`,
+        raw: this.formatUploadFailureLog(task, failure),
         bvid: task.bvid,
         simpleVisible: true,
       });
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
-        this.stateManager.markRelationRetryPending(task.bvid, task.userId, task.mediaId, error.message || "Upload failure");
       }
-      if (task.userId && task.mediaId) {
-        this.stateManager.markFailed(task.userId, task.bvid, task.mediaId, error.message || "Upload failure", false);
+      this.stateManager.markUploadFailed(task.bvid, task.downloadDir, task.userId, task.mediaId, failure.summary);
+      const retryItem: RecoveryUploadItem = {
+        bvid: task.bvid,
+        localDir: task.downloadDir,
+        remotePath: task.remotePath,
+        userId: task.userId,
+        mediaId: task.mediaId,
+        folderTitle: task.folderTitle,
+        videoTitle: task.videoTitle,
+        upperName: task.upperName,
+        cover: task.cover,
+        notBefore: this.uploadCircuit.getRetryAt() || Date.now() + 60_000,
+        priority: true,
+      };
+      const retryKey = this.recoveryUploadKey(retryItem);
+      if (!this.recoveryUploadKeys.has(retryKey)) {
+        this.recoveryUploadKeys.add(retryKey);
+        this.priorityUploadKeys.add(retryKey);
+        this.recoveryUploadBacklog.push(retryItem);
+        this.createSharedUploadDirTracker(task.downloadDir, 1, task.bvid);
       }
-      void this.completeSharedUploadTask(task);
+      void this.completeSharedUploadTask(task, false);
+      this.scheduleRecoveryRefill(Math.max(0, (retryItem.notBefore || Date.now()) - Date.now()));
     });
     this.uploadQueue.on("taskRetry", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
       logTaskRetry(task, error);
+      const failure = this.recordUploadFailure(task, error);
       if (task instanceof QualityUpgradeUploadReplaceTask) {
         this.syncQualityUpgradeControl(task, "retry_wait");
         task.control.qualityStage = "upload";
@@ -193,8 +246,8 @@ export class SyncScheduler {
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "warn",
-        summary: `${task instanceof QualityUpgradeUploadReplaceTask ? "画质重调上传替换失败" : "上传失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${error?.message || error}`,
-        raw: `[Queue] Task ${task.name} failed (retrying ${task.retries}/${task.maxRetries}): ${error?.message || error}`,
+        summary: `${task instanceof QualityUpgradeUploadReplaceTask ? "画质重调上传替换失败" : "上传失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${failure.summary}`,
+        raw: this.formatUploadFailureLog(task, failure),
         bvid: task.bvid,
         simpleVisible: true,
       });
@@ -206,38 +259,48 @@ export class SyncScheduler {
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "等待上传替换";
         const uploadTask = new QualityUpgradeUploadReplaceTask(task.control);
-        this.uploadQueue.addTask(uploadTask);
+        if (!this.uploadQueue.addTask(uploadTask)) {
+          this.qualityUpgradeUploadBacklog.push({ task: uploadTask });
+        }
         this.syncQualityUpgradeControl(uploadTask, uploadTask.status);
         return;
       }
       if (!task.downloadDir) return;
       const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
       this.activeDownloadTargets.delete(task.bvid);
-      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length);
+      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length, task.bvid);
       targets.forEach((target) => {
-        const uploadTask = new UploadTask(task.bvid, task.downloadDir!, target.remotePath, this.configStore.get(), {
-          cleanupLocal: false,
+        this.queueUploadWork({
+          bvid: task.bvid,
+          localDir: task.downloadDir!,
+          remotePath: target.remotePath,
+          userId: target.userId,
+          mediaId: target.mediaId,
+          folderTitle: target.folderTitle,
+          videoTitle: task.videoTitle || "",
+          upperName: task.upperName || "",
+          cover: task.cover || "",
         });
-        uploadTask.sharedDownloadDir = task.downloadDir;
-        uploadTask.userId = target.userId;
-        uploadTask.mediaId = target.mediaId;
-        uploadTask.folderTitle = target.folderTitle;
-        uploadTask.videoTitle = task.videoTitle || "";
-        uploadTask.upperName = task.upperName || "";
-        uploadTask.cover = task.cover || "";
-        uploadTask.onUploading = () => this.stateManager.markUploading(task.bvid, target.userId, target.mediaId);
-        this.uploadQueue.addTask(uploadTask);
       });
       if (tracker.remaining === 0) {
-        void this.cleanupSharedUploadDir(task.downloadDir);
+        void this.cleanupSharedUploadDir(task.downloadDir, new Set([task.bvid]));
       }
+      this.scheduleRecoveryRefill();
     });
 
     this.uploadQueue.on("taskCompleted", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
+      const taskKey = this.uploadTaskKey(task);
+      if (this.uploadCircuit.recordSuccess(taskKey)) {
+        this.clearUploadProbeTimer();
+      }
       if (task instanceof QualityUpgradeUploadReplaceTask) {
         this.syncQualityUpgradeControl(task, "completed");
         this.refreshLocalCacheState();
+        this.scheduleRecoveryRefill();
         return;
+      }
+      if (task.recoveryKey) {
+        this.priorityUploadKeys.delete(task.recoveryKey);
       }
       if (task.userId && task.mediaId) {
         this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
@@ -251,25 +314,198 @@ export class SyncScheduler {
           task.mediaId
         );
       } else {
-        if (task.userId && task.mediaId) {
-          this.stateManager.markRelationRetryPending(
-            task.bvid,
-            task.userId,
-            task.mediaId,
-            "Upload finished without remote metadata; task moved back to discovered for retry."
-          );
-          this.stateManager.markFailed(
-            task.userId,
-            task.bvid,
-            task.mediaId,
-            "Upload finished without remote metadata; task moved back to discovered for retry.",
-            false
-          );
-        }
+        this.stateManager.markUploadFailed(
+          task.bvid,
+          task.downloadDir,
+          task.userId,
+          task.mediaId,
+          "Upload finished without verified remote metadata."
+        );
       }
-      void this.completeSharedUploadTask(task);
+      void this.completeSharedUploadTask(task, Boolean(task.result?.files.length));
+      this.downloadQueue.poke();
+      this.scheduleRecoveryRefill();
     });
 
+    this.uploadQueue.on("taskSettled", () => {
+      this.drainQualityUpgradeUploadBacklog();
+      this.drainRecoveryBacklog();
+      this.downloadQueue.poke();
+    });
+
+  }
+
+  private queueHighWater(concurrency = 1, batchSize = 25) {
+    return Math.max(Math.max(1, concurrency) * 2, Math.max(5, batchSize));
+  }
+
+  private queueLowWater(concurrency = 1, batchSize = 25) {
+    return Math.max(concurrency, Math.floor(this.queueHighWater(concurrency, batchSize) / 2));
+  }
+
+  private uploadTaskKey(task: any) {
+    return `${task?.userId || "quality"}:${task?.mediaId || 0}:${task?.bvid || task?.id || "upload"}`;
+  }
+
+  private recordUploadFailure(task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) {
+    const failure: UploadFailureInfo = error?.uploadFailure || classifyUploadError(error, task.remotePath || "<remote>");
+    this.uploadCircuit.recordFailure(this.uploadTaskKey(task), failure);
+    this.scheduleUploadProbe();
+    this.downloadQueue.poke();
+    return failure;
+  }
+
+  private formatUploadFailureLog(task: UploadTask | QualityUpgradeUploadReplaceTask, failure: UploadFailureInfo) {
+    const nextRetryAt = task.retryAt ? new Date(task.retryAt).toISOString() : "next-cycle";
+    return `[Upload] status=${failure.status || "unknown"} category=${failure.category} retryable=${failure.retryable} attempt=${task.retries}/${task.maxRetries} next=${nextRetryAt} path=${failure.remotePath}: ${failure.summary}`;
+  }
+
+  private clearUploadProbeTimer() {
+    if (this.uploadProbeTimer) {
+      clearTimeout(this.uploadProbeTimer);
+      this.uploadProbeTimer = null;
+    }
+  }
+
+  private scheduleUploadProbe() {
+    this.clearUploadProbeTimer();
+    const retryAt = this.uploadCircuit.getRetryAt();
+    if (!retryAt) return;
+    this.uploadProbeTimer = setTimeout(() => {
+      this.uploadProbeTimer = null;
+      this.drainQualityUpgradeUploadBacklog(true);
+      this.drainRecoveryBacklog(true);
+      this.uploadQueue.poke();
+    }, Math.max(0, retryAt - Date.now()));
+    this.uploadProbeTimer.unref?.();
+  }
+
+  private scheduleRecoveryRefill(delayMs = 0) {
+    const targetAt = Date.now() + Math.max(0, delayMs);
+    if (this.recoveryRefillTimer && this.recoveryRefillAt <= targetAt) return;
+    if (this.recoveryRefillTimer) clearTimeout(this.recoveryRefillTimer);
+    this.recoveryRefillAt = targetAt;
+    this.recoveryRefillTimer = setTimeout(() => {
+      this.recoveryRefillTimer = null;
+      this.recoveryRefillAt = 0;
+      this.drainRecoveryBacklog();
+    }, Math.max(0, targetAt - Date.now()));
+    this.recoveryRefillTimer.unref?.();
+  }
+
+  private recoveryUploadKey(item: RecoveryUploadItem) {
+    return `${item.userId || "video"}:${item.mediaId || 0}:${item.bvid}:${item.remotePath}`;
+  }
+
+  private buildUploadTask(item: RecoveryUploadItem) {
+    const uploadTask = new UploadTask(item.bvid, item.localDir, item.remotePath, this.configStore.get(), {
+      cleanupLocal: false,
+    });
+    uploadTask.sharedDownloadDir = item.localDir;
+    uploadTask.userId = item.userId;
+    uploadTask.mediaId = item.mediaId;
+    uploadTask.folderTitle = item.folderTitle;
+    uploadTask.videoTitle = item.videoTitle || "";
+    uploadTask.upperName = item.upperName || "";
+    uploadTask.cover = item.cover || "";
+    uploadTask.onUploading = () => this.stateManager.markUploading(item.bvid, item.userId, item.mediaId);
+    return uploadTask;
+  }
+
+  private tryQueueUploadWork(item: RecoveryUploadItem) {
+    if (!this.uploadQueue.canAccept()) return false;
+    const uploadTask = this.buildUploadTask(item);
+    const key = this.recoveryUploadKey(item);
+    if (item.priority) {
+      uploadTask.recoveryKey = key;
+      this.priorityUploadKeys.add(key);
+    }
+    if (!this.uploadQueue.addTask(uploadTask)) return false;
+    if (item.userId && item.mediaId) {
+      this.queuedBackupKeys.add(this.backupKey(item.userId, item.mediaId, item.bvid));
+    }
+    return true;
+  }
+
+  private queueUploadWork(item: RecoveryUploadItem) {
+    const key = this.recoveryUploadKey(item);
+    if (item.priority) {
+      this.priorityUploadKeys.add(key);
+    }
+    if (this.tryQueueUploadWork(item)) return true;
+    if (!this.recoveryUploadKeys.has(key)) {
+      this.recoveryUploadKeys.add(key);
+      this.recoveryUploadBacklog.push(item);
+    }
+    return false;
+  }
+
+  private drainQualityUpgradeUploadBacklog(allowProbe = false) {
+    const health = this.uploadCircuit.getSnapshot();
+    if (health.state !== "closed" && !allowProbe) return;
+    let budget = health.state === "closed" ? Number.POSITIVE_INFINITY : 1;
+    while (budget > 0 && this.qualityUpgradeUploadBacklog.length > 0 && this.uploadQueue.canAccept()) {
+      const itemIndex = this.qualityUpgradeUploadBacklog.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
+      if (itemIndex < 0) break;
+      const [item] = this.qualityUpgradeUploadBacklog.splice(itemIndex, 1);
+      const task = item.task;
+      if (!this.uploadQueue.addTask(task)) {
+        this.qualityUpgradeUploadBacklog.unshift(item);
+        break;
+      }
+      this.syncQualityUpgradeControl(task, task.status);
+      budget -= 1;
+    }
+  }
+
+  private drainRecoveryBacklog(force = false) {
+    const config = this.configStore.get();
+    const batchSize = Math.max(5, config.startupRecoveryBatchSize || 25);
+    const uploadLowWater = this.queueLowWater(config.concurrentUploads, batchSize);
+    const health = this.uploadCircuit.getSnapshot();
+    if ((force || this.uploadQueue.getSize() <= uploadLowWater) && (health.state === "closed" || force)) {
+      let budget = health.state === "closed" ? batchSize : 1;
+      while (budget > 0 && this.recoveryUploadBacklog.length > 0 && this.uploadQueue.canAccept()) {
+        const itemIndex = this.recoveryUploadBacklog.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
+        if (itemIndex < 0) break;
+        const [item] = this.recoveryUploadBacklog.splice(itemIndex, 1);
+        const key = this.recoveryUploadKey(item);
+        this.recoveryUploadKeys.delete(key);
+        if (!this.tryQueueUploadWork(item)) {
+          this.recoveryUploadKeys.add(key);
+          this.recoveryUploadBacklog.unshift(item);
+          break;
+        }
+        budget -= 1;
+      }
+    }
+
+    const downloadLowWater = this.queueLowWater(config.concurrentDownloads, batchSize);
+    if (force || this.downloadQueue.getSize() <= downloadLowWater) {
+      let budget = batchSize;
+      while (budget > 0 && this.recoveryDownloadBacklog.length > 0 && this.canCreateDownloadTask()) {
+        const item = this.recoveryDownloadBacklog.shift()!;
+        const key = this.backupKey(item.user.id, item.mediaId, item.bvid);
+        this.recoveryDownloadKeys.delete(key);
+        const queued = this.enqueueIfNeeded(item.user, item.mediaId, item.folderTitle, item.bvid, { persisted: true });
+        if (!queued) {
+          if (!this.canCreateDownloadTask()) {
+            this.recoveryDownloadKeys.add(key);
+            this.recoveryDownloadBacklog.unshift(item);
+            break;
+          }
+        }
+        budget -= 1;
+      }
+    }
+
+    const nextDeferredUploadAt = this.recoveryUploadBacklog.reduce((next, item) => {
+      if (!item.notBefore || item.notBefore <= Date.now()) return next;
+      return Math.min(next, item.notBefore);
+    }, Number.POSITIVE_INFINITY);
+    if (Number.isFinite(nextDeferredUploadAt)) {
+      this.scheduleRecoveryRefill(nextDeferredUploadAt - Date.now());
+    }
   }
 
   resumePersistedWorkOnStartup() {
@@ -296,8 +532,14 @@ export class SyncScheduler {
     const config = this.configStore.get();
     this.downloadQueue.setConcurrency(config.concurrentDownloads || 1);
     this.uploadQueue.setConcurrency(config.concurrentUploads || 2);
+    this.downloadQueue.setMaxSize(this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
+    this.uploadQueue.setMaxSize(this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
+    this.drainQualityUpgradeUploadBacklog();
     void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
-    this.start();
+    this.scheduleRecoveryRefill();
+    if (process.env.NODE_ENV !== "test") {
+      this.start();
+    }
   }
 
   stop() {
@@ -336,7 +578,7 @@ export class SyncScheduler {
   }
 
   hasRunningTransferTasks() {
-    return this.downloadQueue.isBusy() || this.uploadQueue.isBusy();
+    return this.downloadQueue.isBusy() || this.uploadQueue.isBusy() || this.qualityUpgradeUploadBacklog.length > 0;
   }
 
   hasActiveOrQueuedSchedulerWork() {
@@ -345,11 +587,13 @@ export class SyncScheduler {
 
   refreshLocalCacheState() {
     const limitBytes = this.getLocalCacheLimitBytes();
+    const reserveBytes = this.getLocalCacheReserveBytes(limitBytes);
     const previousUsedBytes = this.localCacheSnapshot?.usedBytes ?? 0;
     if (limitBytes > 0) {
       this.localCacheSnapshot = {
         limitBytes,
         usedBytes: previousUsedBytes,
+        reserveBytes,
         paused: true,
         checkedAt: this.localCacheSnapshot?.checkedAt ?? 0,
       };
@@ -373,8 +617,11 @@ export class SyncScheduler {
     task.qualityStage = "download";
     task.qualityStageLabel = "等待下载新版";
     const downloadTask = new QualityUpgradeDownloadTask(task);
-    this.downloadQueue.addTask(downloadTask);
+    if (!this.downloadQueue.addTask(downloadTask)) {
+      return false;
+    }
     this.syncQualityUpgradeControl(downloadTask, downloadTask.status);
+    return true;
   }
 
   private syncQualityUpgradeControl(
@@ -420,10 +667,12 @@ export class SyncScheduler {
     }
     this.localCacheRefresh = (async () => {
       const usedBytes = await pathSize(tempDir);
+      const reserveBytes = this.getLocalCacheReserveBytes(limitBytes);
       const snapshot: LocalCacheSnapshot = {
         limitBytes,
         usedBytes,
-        paused: limitBytes > 0 && usedBytes >= limitBytes,
+        reserveBytes,
+        paused: limitBytes > 0 && usedBytes >= Math.max(0, limitBytes - reserveBytes),
         checkedAt: Date.now(),
       };
       this.localCacheSnapshot = snapshot;
@@ -441,10 +690,12 @@ export class SyncScheduler {
     if (!this.localCacheSnapshot || this.localCacheSnapshot.limitBytes !== limitBytes) {
       void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
       const usedBytes = this.localCacheSnapshot?.usedBytes ?? 0;
+      const reserveBytes = this.getLocalCacheReserveBytes(limitBytes);
       return {
         limitBytes,
         usedBytes,
-        paused: limitBytes > 0 && (!this.localCacheSnapshot || usedBytes >= limitBytes),
+        reserveBytes,
+        paused: limitBytes > 0 && (!this.localCacheSnapshot || usedBytes >= Math.max(0, limitBytes - reserveBytes)),
         checkedAt: this.localCacheSnapshot?.checkedAt ?? 0,
       };
     }
@@ -456,7 +707,14 @@ export class SyncScheduler {
 
   private canStartDownloadTask() {
     const snapshot = this.getLocalCacheSnapshot();
-    return !snapshot.paused;
+    return !snapshot.paused
+      && !this.uploadCircuit.isDownloadPaused()
+      && this.priorityUploadKeys.size === 0
+      && this.uploadQueue.canAccept();
+  }
+
+  private canCreateDownloadTask() {
+    return this.canStartDownloadTask() && this.downloadQueue.canAccept();
   }
 
   private buildSchedulerSnapshot() {
@@ -560,6 +818,12 @@ export class SyncScheduler {
       uploadRunning,
       scheduler: this.buildSchedulerSnapshot(),
       localCache: this.getLocalCacheSnapshot(),
+      uploadHealth: this.uploadCircuit.getSnapshot(),
+      recovery: {
+        pendingUploads: this.recoveryUploadBacklog.length,
+        pendingDownloads: this.recoveryDownloadBacklog.length,
+        batchSize: this.configStore.get().startupRecoveryBatchSize || 25,
+      },
     };
   }
 
@@ -701,6 +965,11 @@ export class SyncScheduler {
     return `${userId}:${mediaId}:${bvid}`;
   }
 
+  private getLocalCacheReserveBytes(limitBytes = this.getLocalCacheLimitBytes()) {
+    if (limitBytes <= 0) return 0;
+    return Math.min(limitBytes, Math.max(512 * 1024 * 1024, Math.floor(limitBytes * 0.1)));
+  }
+
   private selfVisibleProbeKey(userId: string, bvid: string) {
     return `${userId}:${bvid}`;
   }
@@ -749,36 +1018,52 @@ export class SyncScheduler {
     }];
   }
 
-  private createSharedUploadDirTracker(downloadDir: string, uploadCount: number) {
+  private createSharedUploadDirTracker(downloadDir: string, uploadCount: number, bvid?: string) {
     const normalizedCount = Math.max(0, uploadCount);
     const existing = this.sharedUploadDirs.get(downloadDir);
     if (existing) {
       existing.remaining += normalizedCount;
+      if (bvid) existing.bvids.add(bvid);
       return existing;
     }
     const tracker: SharedUploadDirTracker = {
       remaining: normalizedCount,
       cleanupStarted: false,
+      failedTargets: new Set(),
+      bvids: new Set(bvid ? [bvid] : []),
     };
     this.sharedUploadDirs.set(downloadDir, tracker);
     return tracker;
   }
 
-  private async completeSharedUploadTask(task: UploadTask) {
+  private async completeSharedUploadTask(task: UploadTask, succeeded: boolean) {
     const downloadDir = task.sharedDownloadDir || "";
     if (!downloadDir) return;
     const tracker = this.sharedUploadDirs.get(downloadDir);
     if (!tracker) return;
+    const targetKey = this.uploadTaskKey(task);
+    if (succeeded) {
+      tracker.failedTargets.delete(targetKey);
+    } else {
+      tracker.failedTargets.add(targetKey);
+    }
     tracker.remaining = Math.max(0, tracker.remaining - 1);
     if (tracker.remaining > 0 || tracker.cleanupStarted) return;
     tracker.cleanupStarted = true;
     this.sharedUploadDirs.delete(downloadDir);
-    await this.cleanupSharedUploadDir(downloadDir);
+    if (tracker.failedTargets.size > 0) {
+      void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
+      return;
+    }
+    await this.cleanupSharedUploadDir(downloadDir, tracker.bvids);
   }
 
-  private async cleanupSharedUploadDir(downloadDir: string) {
+  private async cleanupSharedUploadDir(downloadDir: string, bvids: Set<string> = new Set()) {
     try {
       await fs.promises.rm(downloadDir, { recursive: true, force: true });
+      for (const bvid of bvids) {
+        this.stateManager.markLocalUploadGroupComplete(bvid, downloadDir);
+      }
     } catch (error: any) {
       console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
     } finally {
@@ -1007,12 +1292,18 @@ export class SyncScheduler {
     return { newItems };
   }
 
-  private enqueueIfNeeded(user: BiliUser, mediaId: number, folderTitle: string, bvid: string) {
+  private enqueueIfNeeded(
+    user: BiliUser,
+    mediaId: number,
+    folderTitle: string,
+    bvid: string,
+    options: { persisted?: boolean } = {}
+  ) {
     if (!user.enabled) {
       return false;
     }
     const key = this.backupKey(user.id, mediaId, bvid);
-    if (this.queuedBackupKeys.has(key) || !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId, this.cycleContext?.startedAt)) {
+    if (this.queuedBackupKeys.has(key) || (!options.persisted && !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId, this.cycleContext?.startedAt))) {
       return false;
     }
     const config = this.configStore.get();
@@ -1032,9 +1323,15 @@ export class SyncScheduler {
     const activeTargets = this.activeDownloadTargets.get(bvid);
     if (activeTargets) {
       activeTargets.push(target);
-      this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+      if (!options.persisted) {
+        this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+      }
       this.queuedBackupKeys.add(key);
       return true;
+    }
+
+    if (!this.canCreateDownloadTask()) {
+      return false;
     }
 
     const task = new DownloadTask(bvid, user.cookie, config);
@@ -1050,26 +1347,38 @@ export class SyncScheduler {
     task.onDownloading = () => this.stateManager.markDownloading(bvid, task.targets);
     task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir, task.targets);
 
-    this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+    if (!options.persisted) {
+      this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+    }
     this.queuedBackupKeys.add(key);
     this.activeDownloadTargets.set(bvid, task.targets);
-    this.downloadQueue.addTask(task);
+    if (!this.downloadQueue.addTask(task)) {
+      this.activeDownloadTargets.delete(bvid);
+      this.queuedBackupKeys.delete(key);
+      return false;
+    }
     return true;
   }
 
   private requeueRetryPendingBeforeScan() {
     const users = this.userStore.list().filter((user) => user.enabled);
-    for (const user of users) {
-      for (const folder of user.favorites) {
-        const bvids = this.stateManager.listRetryCandidatesForFolder(user.id, folder.mediaId, 1000);
-        for (const bvid of bvids) {
-          const queued = this.enqueueIfNeeded(user, folder.mediaId, folder.title, bvid);
-          if (queued) {
-            this.cycleContext!.queuedItems += 1;
+    let remaining = Math.max(1, this.configStore.get().remoteRequeueLimitPerCycle || 20);
+    this.stateManager.runBatch(() => {
+      for (const user of users) {
+        for (const folder of user.favorites) {
+          if (remaining <= 0 || !this.canCreateDownloadTask()) return;
+          const bvids = this.stateManager.listRetryCandidatesForFolder(user.id, folder.mediaId, remaining);
+          for (const bvid of bvids) {
+            if (remaining <= 0 || !this.canCreateDownloadTask()) return;
+            const queued = this.enqueueIfNeeded(user, folder.mediaId, folder.title, bvid);
+            if (queued) {
+              this.cycleContext!.queuedItems += 1;
+              remaining -= 1;
+            }
           }
         }
       }
-    }
+    });
   }
 
   private triggerOrQueueTick(options: TickOptions) {
@@ -1323,32 +1632,44 @@ export class SyncScheduler {
 
   private recoverStaleActiveBackups() {
     const items = this.stateManager.listStaleActiveBackups(this.staleActiveBackupMs);
-    for (const item of items) {
-      const relation = item.relation;
-      const key = this.backupKey(relation.userId, relation.mediaId, relation.bvid);
-      if (this.queuedBackupKeys.has(key)) {
-        continue;
+    this.stateManager.runBatch(() => {
+      for (const item of items) {
+        const relation = item.relation;
+        const key = this.backupKey(relation.userId, relation.mediaId, relation.bvid);
+        if (this.queuedBackupKeys.has(key)) continue;
+        const resolved = this.resolveRelation(relation);
+        if (!resolved) continue;
+
+        const localDir = item.video.localDir;
+        if (localDir && fs.existsSync(localDir)) {
+          const remotePath = relation.remotePath || item.video.remotePath || resolveRemotePath({
+            destination: this.configStore.get().alistDest,
+            layout: this.configStore.get().uploadLayout,
+            userName: resolved.user.name,
+            folderName: resolved.folderTitle,
+          });
+          this.stateManager.markUploadFailed(relation.bvid, localDir, relation.userId, relation.mediaId, "Stale upload retained locally and queued for upload retry.");
+          this.createSharedUploadDirTracker(localDir, 1, relation.bvid);
+          this.queueUploadWork({
+            bvid: relation.bvid,
+            localDir,
+            remotePath,
+            userId: relation.userId,
+            mediaId: relation.mediaId,
+            folderTitle: resolved.folderTitle,
+            videoTitle: item.video.title,
+            upperName: item.video.upperName,
+            cover: item.video.cover,
+            priority: true,
+          });
+          continue;
+        }
+
+        this.stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Active backup state became stale and was re-queued.");
+        const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid);
+        if (queued && this.cycleContext) this.cycleContext.queuedItems += 1;
       }
-      const resolved = this.resolveRelation(relation);
-      if (!resolved) {
-        continue;
-      }
-      this.stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Active backup state became stale and was re-queued.");
-      const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid);
-      if (queued && this.cycleContext) {
-        this.cycleContext.queuedItems += 1;
-      }
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "system",
-        level: queued ? "warn" : "error",
-        summary: queued ? `已恢复卡住的备份任务 ${relation.bvid}` : `备份任务恢复失败 ${relation.bvid}`,
-        raw: `[Recovery] stale active backup ${relation.userId}/${relation.mediaId}/${relation.bvid} queued=${queued}`,
-        bvid: relation.bvid,
-        simpleVisible: true,
-        debugVisible: true,
-      });
-    }
+    });
   }
 
   private async confirmRemoteStillMissing(
@@ -1407,77 +1728,78 @@ export class SyncScheduler {
   }
 
   private resumePersistedWork() {
-    const uploadItems = this.stateManager.listBackupsToResume();
-    const uploadCountsByDir = new Map<string, number>();
-    for (const item of uploadItems) {
+    this.stateManager.normalizePersistedWorkForRecovery();
+    const statusPriority: Record<string, number> = {
+      upload_failed: 0,
+      uploading: 1,
+      downloaded: 2,
+      queued: 3,
+      downloading: 4,
+      missing: 5,
+    };
+    const items = this.stateManager.listBackupsToResume().sort((left, right) => {
+      const leftStatus = left.relation?.backupStatus || left.video.backupStatus;
+      const rightStatus = right.relation?.backupStatus || right.video.backupStatus;
+      return (statusPriority[leftStatus] ?? 99) - (statusPriority[rightStatus] ?? 99);
+    });
+    for (const item of items) {
       const entry = item.video;
       const relation = item.relation;
       const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
-      const remotePath = relation?.remotePath || entry.remotePath;
-      const status = relation?.backupStatus || entry.backupStatus;
-      const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
-      const shouldUpload = (status === "downloaded" || status === "uploading") && hasLocalDir && remotePath;
-      if (shouldUpload && (!relation || resolved)) {
-        uploadCountsByDir.set(entry.localDir!, (uploadCountsByDir.get(entry.localDir!) || 0) + 1);
-      }
-    }
-    for (const [downloadDir, count] of uploadCountsByDir) {
-      this.createSharedUploadDirTracker(downloadDir, count);
-    }
-
-    for (const item of uploadItems) {
-      const entry = item.video;
-      const relation = item.relation;
-      const resolved = relation ? this.resolveRelation(relation) : this.findBestRelationForBvid(entry.bvid);
-      const remotePath = relation?.remotePath || entry.remotePath;
       const status = relation?.backupStatus || entry.backupStatus;
       const localDir = entry.localDir;
       const hasLocalDir = Boolean(localDir && fs.existsSync(localDir));
-      if ((status === "downloaded" || status === "uploading") && hasLocalDir && localDir && remotePath) {
-        if (relation && !resolved) {
-          continue;
-        }
-        const uploadTask = new UploadTask(entry.bvid, localDir, remotePath, this.configStore.get(), {
-          cleanupLocal: false,
-        });
-        uploadTask.sharedDownloadDir = localDir;
-        uploadTask.userId = resolved?.user.id || relation?.userId;
-        uploadTask.mediaId = resolved?.mediaId || relation?.mediaId;
-        uploadTask.folderTitle = resolved?.folderTitle || relation?.folderTitle;
-        uploadTask.onUploading = () => this.stateManager.markUploading(entry.bvid, uploadTask.userId, uploadTask.mediaId);
-        if (uploadTask.userId && uploadTask.mediaId) {
-          this.queuedBackupKeys.add(this.backupKey(uploadTask.userId, uploadTask.mediaId, entry.bvid));
-        }
-        this.uploadQueue.addTask(uploadTask);
-        logManager.push({
-          timestamp: new Date().toISOString(),
-          type: "system",
-          level: "info",
-          summary: `恢复上传任务 ${entry.bvid}`,
-          raw: `[Recovery] resume upload ${entry.bvid} from ${entry.localDir} to ${remotePath}`,
+      if (!resolved) continue;
+      const config = this.configStore.get();
+      const remotePath = relation?.remotePath || entry.remotePath || resolveRemotePath({
+        destination: config.alistDest,
+        layout: config.uploadLayout,
+        userName: resolved.user.name,
+        folderName: resolved.folderTitle,
+      });
+      if (["downloaded", "uploading", "upload_failed"].includes(status) && hasLocalDir && localDir) {
+        const uploadItem: RecoveryUploadItem = {
           bvid: entry.bvid,
-          debugVisible: true,
-        });
-      } else {
-        if (!resolved) continue;
-        if (relation) {
-          this.stateManager.resetRelationForRetry(entry.bvid, relation.userId, relation.mediaId, "Persisted active backup state was restored after restart.");
-        } else {
-          this.stateManager.markRetryPending(entry.bvid);
+          localDir,
+          remotePath,
+          userId: resolved.user.id,
+          mediaId: resolved.mediaId,
+          folderTitle: resolved.folderTitle,
+          videoTitle: entry.title,
+          upperName: entry.upperName,
+          cover: entry.cover,
+          priority: true,
+        };
+        const key = this.recoveryUploadKey(uploadItem);
+        if (!this.recoveryUploadKeys.has(key)) {
+          this.recoveryUploadKeys.add(key);
+          this.priorityUploadKeys.add(key);
+          this.recoveryUploadBacklog.push(uploadItem);
+          this.createSharedUploadDirTracker(localDir, 1, entry.bvid);
         }
-        const queued = this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid);
-        logManager.push({
-          timestamp: new Date().toISOString(),
-          type: "system",
-          level: queued ? "warn" : "error",
-          summary: queued ? `恢复下载任务 ${entry.bvid}` : `下载任务恢复失败 ${entry.bvid}`,
-          raw: `[Recovery] resume download ${entry.bvid} status=${status} queued=${queued}`,
+        continue;
+      }
+      const downloadKey = this.backupKey(resolved.user.id, resolved.mediaId, entry.bvid);
+      if (!this.recoveryDownloadKeys.has(downloadKey)) {
+        this.recoveryDownloadKeys.add(downloadKey);
+        this.recoveryDownloadBacklog.push({
+          user: resolved.user,
+          mediaId: resolved.mediaId,
+          folderTitle: resolved.folderTitle,
           bvid: entry.bvid,
-          simpleVisible: true,
-          debugVisible: true,
         });
       }
     }
+    this.drainRecoveryBacklog(true);
+    logManager.push({
+      timestamp: new Date().toISOString(),
+      type: "system",
+      level: "info",
+      summary: `启动恢复已分批装载：待补传 ${this.recoveryUploadBacklog.length + this.uploadQueue.getSize()}，待下载 ${this.recoveryDownloadBacklog.length + this.downloadQueue.getSize()}`,
+      raw: `[Recovery] bounded startup recovery uploads=${this.recoveryUploadBacklog.length} downloads=${this.recoveryDownloadBacklog.length}`,
+      simpleVisible: true,
+      debugVisible: true,
+    });
   }
 
   private resolveRelation(relation: FavoriteRelation) {
@@ -1628,11 +1950,40 @@ type RemoteVerifyCandidate = VideoArchiveEntry & { relation: FavoriteRelation };
 interface SharedUploadDirTracker {
   remaining: number;
   cleanupStarted: boolean;
+  failedTargets: Set<string>;
+  bvids: Set<string>;
+}
+
+interface RecoveryUploadItem {
+  bvid: string;
+  localDir: string;
+  remotePath: string;
+  userId?: string;
+  mediaId?: number;
+  folderTitle?: string;
+  videoTitle?: string;
+  upperName?: string;
+  cover?: string;
+  notBefore?: number;
+  priority?: boolean;
+}
+
+interface RecoveryDownloadItem {
+  user: BiliUser;
+  mediaId: number;
+  folderTitle: string;
+  bvid: string;
+}
+
+interface DeferredQualityUpload {
+  task: QualityUpgradeUploadReplaceTask;
+  notBefore?: number;
 }
 
 interface LocalCacheSnapshot {
   limitBytes: number;
   usedBytes: number;
+  reserveBytes: number;
   paused: boolean;
   checkedAt: number;
 }
