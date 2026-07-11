@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { ConfigStore } from "../src/config.js";
 import { classifyUploadError, UploadOperationError } from "../src/upload-health.js";
 import { SyncScheduler } from "../src/scheduler.js";
@@ -6,7 +7,7 @@ import { StateManager } from "../src/state.js";
 import { UserStore } from "../src/users.js";
 
 const bvid = "BVISOLATED";
-const localDir = `${process.cwd()}\\temp\\${bvid}`;
+const localDir = path.join(process.cwd(), "temp", bvid);
 const remotePath = "/backup/isolated";
 const stateManager = new StateManager();
 const configStore = new ConfigStore();
@@ -37,7 +38,7 @@ console.log("ISOLATED_UPLOAD_FAILURE_RESULT=" + JSON.stringify({
   retryStatus: retry?.status,
   retryDelayMs: Number(retry?.notBefore || 0) - Date.now(),
   canStartDownload: scheduler.canStartDownloadTask(),
-  localFileExists: fs.existsSync(`${localDir}\\isolated.mp4`),
+  localFileExists: fs.existsSync(path.join(localDir, "isolated.mp4")),
   videoStatus: state.videos?.[bvid]?.backupStatus,
   relationStatus: state.relations?.[`u1:1:${bvid}`]?.backupStatus,
 }));
