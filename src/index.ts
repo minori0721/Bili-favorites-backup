@@ -1787,7 +1787,7 @@ if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.PORT || 3000);
   const server = app.listen(port, () => {
     console.log(`Server listening on http://localhost:${port}`);
-  console.log(`[Runtime] BBDown release ${process.env.BBDOWN_RELEASE || "local"}; source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; aria2 resume enabled`);
+    console.log(`[Runtime] BBDown release ${process.env.BBDOWN_RELEASE || "local"}; source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; FFmpeg ${process.env.FFMPEG_VERSION || "system"}; aria2 resume enabled`);
   });
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

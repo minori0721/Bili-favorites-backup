@@ -7,6 +7,7 @@
 - 优化队列看板和详情列表布局，本地缓存状态改为横条展示，长标题不再挤出状态徽章。
 - AList 上传会发送准确文件大小并校验远端结果；不兼容 Emoji 文件名的驱动会自动改用兼容名，单个异常文件不会阻塞其他任务，本地文件仍保留为“待补传”。
 - BBDown 固定使用 fork Release `bfb-2.0.0`，由 aria2 保存字节级进度；从上一版 fork 升级时会保留兼容的未完成轨道，容器重启后继续复用完整分P，旧版分P单独归档。
+- 容器固定使用 FFmpeg `n8.1.2-22-g94138f6973-20260711` Linux x64 LGPL 构建；Docker 仅安装 aria2，不再安装 Debian 的完整 FFmpeg 依赖树。
 - 下载接口可选择“网页接口 / APP接口”；网页接口触发播放风控后会暂停 3 分钟并单任务探测，APP 对极少数视频返回空播放信息时只为当前任务回退 Web 一次。
 - 备份状态与任务队列改用 `data/bfb.sqlite`；旧 `state.json` 首次启动自动校验迁移并永久归档，崩溃后按任务租约继续执行。
 - AList 接受上传后先显示“已上传·确认中”，后台最长确认 10 分钟；确认完成前保留本地文件，不重复 PUT，也不允许画质重调。
@@ -251,5 +252,7 @@ B 站的封面图可能存在防盗链，系统已添加 `referrerpolicy="no-ref
 
 - biliAPI: https://github.com/renmu123/biliAPI
 - BBDown: https://github.com/nilaoda/BBDown
+- FFmpeg: https://ffmpeg.org/
+- Linux FFmpeg build: https://github.com/BtbN/FFmpeg-Builds
 - AList: https://alist.nn.ci/
 - Bilibili API Collect: https://socialsisteryi.github.io/bilibili-API-collect/

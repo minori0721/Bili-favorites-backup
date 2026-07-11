@@ -33,6 +33,7 @@
 - 数据迁移包升级为 schema 2：包含 SQLite 一致性备份、可读 `state.json` 快照和失效视频索引；schema 1 JSON 包自动导入数据库。`npm run state:export-json` 可生成旧镜像回滚快照。
 - “清理备份状态”改为事务清空状态及任务表，数据库保持打开；空间统计包含 SQLite、WAL 和 SHM。
 - BBDown 使用 fork Release `bfb-2.0.0`，源码提交 `fcb895f357df49c45010cefab773025d5d50cf7c`，Linux x64 zip SHA256 为 `9133c82ae482171ca777d69b850c4d5ed1ce93072e3b8d285c5f4e95749b629d`；Docker 不再安装 .NET SDK 或现场编译。
+- FFmpeg 固定为 BtbN `n8.1.2-22-g94138f6973-20260711` Linux x64 LGPL 构建，归档到项目 Release `ffmpeg-bfb-8.1.2-20260711.1`，SHA256 为 `0102dad4a83b266f740a50db7cd5131a8e5266cde8f0937ec3f3cb4a8c3641fa`。运行镜像只通过 apt 安装 aria2 和证书，不再安装 Debian FFmpeg 的完整动态依赖树。
 - fork 会把 Web 播放响应中的 `v_voucher` 转成 `BFB_SIGNAL:RISK_V_VOUCHER`，APP protobuf 缺少 `VideoInfo` 时输出 `BFB_SIGNAL:APP_NO_VIDEO_INFO`，成功取得播放流后输出 `BFB_SIGNAL:PLAYURL_READY:WEB|APP`；两类异常信号都不会进入 BBDown 内部重复解析。
 - 全局设置新增“网页接口 / APP接口”：APP 模式新任务优先使用 `-app`，保存时要求所有启用账号具有 `accessToken`；Hi-Res / Dolby 自动切换 APP，后端拒绝 Web 与高级音频的矛盾配置。仅当 APP 返回空播放信息时，当前任务移除 `-app` 用 Web 重试一次，不修改全局模式、不重建下载会话，也不循环切换。
 - Web 模式触发 voucher 后全局冷却固定 180 秒，原失败任务带 `notBefore` 高优先恢复；冷却后只允许一个任务探测，有 token 时临时用 APP，无 token 时继续 Web。收到 `PLAYURL_READY` 立即恢复，不等待整个视频下载完成。
@@ -61,7 +62,8 @@
 - Linux Actions 首轮失败定位为隔离上传测试 harness 写死 Windows 反斜杠路径；已统一改用 `path.join`，生产上传与调度逻辑没有发生变化。
 - 内置浏览器：使用隔离数据检查桌面和 390×844。桌面四列宽约 241px；移动端页面宽 375px、视口 390px，无页面级横向溢出，四列只在队列容器内滚动。确认中条目与徽章完整落在容器内；BBDown 接口模式提示在桌面和移动端均正常换行，移动端提示容器宽约 313px；控制台无 warning/error。
 - 隔离异常场景：本地模拟 AList 401 后显示“上传后端异常，下载已暂停”和下次探测时间，错误凭据已脱敏，正常/异常页面控制台均无错误。
-- 服务器临时验证：未替换或重启 `bili-favorites-dev`；`bfb-2.0.0` Release ZIP SHA256 校验通过，二进制显示 `BBDown version 2.0.0`。对 `BV1gzF7zSEpo` 实测 APP 只输出 1 次 `APP_NO_VIDEO_INFO`、0 次空引用、0 次内部重试，Web 同账号返回 `PLAYURL_READY:WEB`；测试二进制和临时凭据已清理，正式容器仍保持旧二进制等待新镜像。
+- 服务器运行验证：`bili-favorites-dev` 已运行提交 `951effd` 和 BBDown `bfb-2.0.0`，启动后抽查下载 26/26、上传 28/28 完成，容器无重启、OOM、风控或 APP 空响应；SQLite `quick_check` 为 `ok`。
+- FFmpeg 镜像优化验证（2026-07-12）：服务器隔离构建候选镜像，不替换或重启正式容器。Node.js 24、BBDown、aria2、`better-sqlite3`、FFmpeg/ffprobe、MP4+AAC、WebP 封面、应用启动及 SIGTERM 关闭均通过。镜像落盘由 `764MB` 降至 `577.4MB`，减少约 24.4%；`docker save | gzip -6` 估算由 `266.8MiB` 降至 `213.0MiB`，减少约 20.2%。
 - GitHub Actions 固定 `ubuntu-24.04`，Actions、本地测试目标和 Docker 应用运行时统一为 Node.js 24；删除 QEMU 和重复 aria2 安装，增加 GHA Buildx 缓存，测试和 TypeScript 构建通过后才发布镜像。
 
 ## 建议测试命令
@@ -78,8 +80,7 @@ npm --prefix . audit --omit=dev
 ## 已知问题 / 暂缓项
 
 - 本轮不连接真实 AList，因此尚未验证 189CloudPC、115、S3 等真实驱动的 PUT、列出、下载和删除；协议行为由本地模拟 WebDAV 覆盖。
-- 本轮不在本地构建 Docker、不部署服务器；版本保持 `2.3.3`，Node.js 运行时为 24。BBDown Release 升级到 `bfb-2.0.0`，新增 APP 空响应的单任务 Web 回退，既有 `v_voucher` 冷却规则不变。
-- 本机不构建 Docker、不部署服务器；BBDown Native AOT 由 fork Release 工作流构建，BFB Docker 固定下载并校验该产物。GitHub Docker 工作流会完成全量测试和应用构建后再发布镜像。
+- 版本保持 `2.3.3`，Node.js 运行时为 24；本轮只在服务器临时目录构建候选镜像验证体积与功能，没有替换正式容器。BBDown Native AOT 与 FFmpeg 均由固定 Release 提供并校验 SHA256，正式镜像仍由 GitHub Docker 工作流发布。
 - `npm audit --omit=dev` 当前报告 2 个生产依赖中危告警，均来自 `@renmu/bili-api -> fast-xml-parser`；建议修复会把 `@renmu/bili-api` 破坏性降级到 1.0.0，本轮不自动升级依赖。
 - 收藏夹扫描异常仍有一处会把完整 Axios 错误对象交给 `console.error`，服务端日志可能因此包含 Cookie 等请求上下文；本次 checkpoint 不修改该旧逻辑，下一轮必须改为脱敏摘要并补测试。
 
