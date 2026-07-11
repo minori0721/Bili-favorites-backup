@@ -19,6 +19,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     startupRecoveryBatchSize: 25,
     bbdownEncoding: "",
     bbdownQuality: "",
+    bbdownApiMode: "web",
     bbdownHiRes: false,
     bbdownDolby: false,
     filenameTemplate: "<videoTitle>-<bvid>",

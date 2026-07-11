@@ -43,6 +43,15 @@ test("real app supports login, queue state, config update and migration preview 
     const html = await root.text();
     assert.match(html, /启动恢复每批数量/);
     assert.match(html, /upload-health-status/);
+    assert.match(html, /网页接口/);
+    assert.match(html, /download-api-health-status/);
+
+    const invalidPremiumAudio = await fetch(`${base}/api/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ bbdownApiMode: "web", bbdownHiRes: true }),
+    });
+    assert.equal(invalidPremiumAudio.status, 400);
 
     const configUpdate = await fetch(`${base}/api/config`, {
       method: "PUT",
@@ -57,6 +66,8 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(queueResponse.status, 200);
     const queueJson: any = await queueResponse.json();
     assert.equal(queueJson.data.uploadHealth.state, "closed");
+    assert.equal(queueJson.data.downloadApiHealth.state, "healthy");
+    assert.equal(queueJson.data.downloadApiHealth.configuredMode, "web");
     assert.equal(queueJson.data.recovery.batchSize, 30);
     assert.equal(typeof queueJson.data.localCache.reserveBytes, "number");
     assert.equal(typeof queueJson.data.downloadRecovery.resumableSessions, "number");

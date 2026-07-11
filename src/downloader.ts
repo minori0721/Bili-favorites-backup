@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { tempDir } from "./paths.js";
 import { buildCookieString, BiliCookie } from "./users.js";
-import { AppConfig } from "./config.js";
+import { AppConfig, type BBDownApiMode } from "./config.js";
 import { logManager, parseBBDownOutput } from "./logger.js";
 import { getVideoPageSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
@@ -75,6 +75,8 @@ export async function downloadWithBBDown(
     command?: string;
     commandArgsPrefix?: string[];
     qualityUpgrade?: DownloadSessionManifest["qualityUpgrade"];
+    apiModeOverride?: BBDownApiMode;
+    onApiReady?: (mode: BBDownApiMode) => void;
   } = {}
 ): Promise<DownloadResult> {
   if (shutdownRequested) throw new Error("Application is shutting down");
@@ -89,11 +91,13 @@ export async function downloadWithBBDown(
     metadataError.deferToNextCycle = true;
     throw metadataError;
   }
+  const effectiveApiMode: BBDownApiMode = options.apiModeOverride || config.bbdownApiMode || "web";
+  const sessionConfig: AppConfig = { ...config, bbdownApiMode: effectiveApiMode };
   const prepared = await prepareDownloadSession({
     downloadDir,
     bvid,
     accountUid: Number(cookie.DedeUserID || 0),
-    config,
+    config: sessionConfig,
     kind: options.kind || "backup",
     pages: effectivePages,
     unavailable: !snapshot.available,
@@ -135,10 +139,12 @@ export async function downloadWithBBDown(
   const url = `https://www.bilibili.com/video/${bvid}`;
   const cookieString = buildCookieString(cookie);
   const filePattern = config.filenameTemplate || "<videoTitle>-<bvid>";
-  const needsAppToken = config.bbdownHiRes || config.bbdownDolby;
+  const needsAppToken = effectiveApiMode === "app";
   const appAccessToken = needsAppToken ? String(cookie.accessToken || "") : "";
   if (needsAppToken && !appAccessToken) {
-    throw new Error("下载 Hi-Res/杜比音效需要 APP access token。请重新扫码登录后再启用该选项。");
+    const error: any = new Error("APP 接口需要 access token。请重新扫码登录后再启用该模式。");
+    error.permanent = true;
+    throw error;
   }
 
   const credentialConfig = await createBBDownCredentialConfig(cookieString, appAccessToken);
@@ -184,7 +190,8 @@ export async function downloadWithBBDown(
         [...(options.commandArgsPrefix || []), ...args],
         downloadDir,
         bvid,
-        credentialConfig.sensitiveValues
+        credentialConfig.sensitiveValues,
+        { effectiveApiMode, onApiReady: options.onApiReady }
       );
     } catch (error: any) {
       if (!Boolean(error?.filenameTooLong)) {
@@ -217,7 +224,8 @@ export async function downloadWithBBDown(
           [...(options.commandArgsPrefix || []), ...retryArgs],
           downloadDir,
           bvid,
-          credentialConfig.sensitiveValues
+          credentialConfig.sensitiveValues,
+          { effectiveApiMode, onApiReady: options.onApiReady }
         );
       } catch (retryError: any) {
         await preserveInterruptedDownload(downloadDir, retryError);
@@ -588,7 +596,14 @@ async function runDebugProbe(
   });
 }
 
-function runCommand(command: string, args: string[], cwd: string, bvid: string, sensitiveValues: string[]) {
+function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  bvid: string,
+  sensitiveValues: string[],
+  options: { effectiveApiMode: BBDownApiMode; onApiReady?: (mode: BBDownApiMode) => void }
+) {
   return new Promise<void>((resolve, reject) => {
     if (shutdownRequested) {
       reject(new Error("Application is shutting down"));
@@ -608,6 +623,9 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
     let stderr = "";
     let stdoutAll = "";
     let stdoutPending = "";
+    let stderrPending = "";
+    let riskSignalSeen = false;
+    let readySignalSeen = false;
 
     const rawSimpleHiddenPatterns = [
       /^BBDown version/i,
@@ -703,6 +721,23 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       }, lowSpeedWatchdog.sampleIntervalMs);
     };
 
+    const consumeSignal = (line: string) => {
+      const trimmed = line.trim();
+      if (trimmed.includes("BFB_SIGNAL:RISK_V_VOUCHER")) {
+        riskSignalSeen = true;
+        return true;
+      }
+      const ready = /BFB_SIGNAL:PLAYURL_READY:(WEB|APP)/.exec(trimmed);
+      if (ready) {
+        if (!readySignalSeen) {
+          readySignalSeen = true;
+          options.onApiReady?.(ready[1].toLowerCase() as BBDownApiMode);
+        }
+        return true;
+      }
+      return false;
+    };
+
     const flushStdoutBuffer = (force = false) => {
       const combined = stdoutPending;
       const normalized = combined.replace(/\r/g, "\n");
@@ -717,7 +752,12 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
         return;
       }
 
-      const parsed = parseBBDownOutput(lines.join("\n"), bvid);
+      const visibleLines = lines.filter((line) => !consumeSignal(line));
+      if (visibleLines.length === 0) return;
+      const visibleText = visibleLines.join("\n");
+      stdoutAll += `${visibleText}\n`;
+      process.stdout.write(`${visibleText}\n`);
+      const parsed = parseBBDownOutput(visibleText, bvid);
       for (const entry of parsed.entries) {
         logManager.push(entry);
       }
@@ -737,26 +777,41 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
       }
     };
 
+    const flushStderrBuffer = (force = false) => {
+      const normalized = stderrPending.replace(/\r/g, "\n");
+      const lines = normalized.split("\n");
+      if (!force) {
+        stderrPending = lines.pop() || "";
+      } else {
+        stderrPending = "";
+      }
+      for (const rawLine of lines) {
+        if (consumeSignal(rawLine)) continue;
+        const line = rawLine.trim();
+        if (!line) continue;
+        stderr += `${line}\n`;
+        process.stderr.write(`${line}\n`);
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "download",
+          level: "error",
+          summary: `[错误] ${line}`,
+          raw: line,
+          bvid,
+        });
+      }
+    };
+
     child.stdout.on("data", (chunk) => {
       const text = redactSensitiveOutput(chunk.toString(), sensitiveValues);
-      process.stdout.write(text);
-      stdoutAll += text;
       stdoutPending += text;
       flushStdoutBuffer(false);
     });
 
     child.stderr.on("data", (chunk) => {
       const text = redactSensitiveOutput(chunk.toString(), sensitiveValues);
-      stderr += text;
-      process.stderr.write(text);
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "download",
-        level: "error",
-        summary: `[错误] ${text.trim()}`,
-        raw: text,
-        bvid,
-      });
+      stderrPending += text;
+      flushStderrBuffer(false);
     });
 
     startWatchdog();
@@ -769,12 +824,21 @@ function runCommand(command: string, args: string[], cwd: string, bvid: string, 
     child.on("close", (code) => {
       activeDownloadChildren.delete(child);
       flushStdoutBuffer(true);
+      flushStderrBuffer(true);
       cleanupWatchdog();
       if (killedByWatchdog) {
         rejectOnce(new Error("下载运行超过30分钟且最近10分钟平均速度低于10KB/s，自动重试"));
         return;
       }
       const combinedOutput = `${stdoutAll}\n${stderr}`;
+      if (riskSignalSeen) {
+        const err: any = new Error("B站播放接口触发风控，下载将在冷却后自动恢复");
+        err.biliRiskControl = true;
+        err.deferToNextCycle = true;
+        err.apiMode = options.effectiveApiMode;
+        rejectOnce(err);
+        return;
+      }
       if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
         const err = new Error(`BBDown output filename too long: ${sanitizeDownloadDiagnosticText(combinedOutput || stderr || "unknown error").slice(0, 1000)}`);
         (err as any).filenameTooLong = true;

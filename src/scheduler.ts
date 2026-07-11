@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ConfigStore } from "./config.js";
+import { ConfigStore, type AppConfig, type BBDownApiMode } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import { BiliRiskOrLoginError, listFavoriteItemsPage, refreshUserAuth, resolveSelfVisibleFavoriteItem } from "./bili.js";
@@ -24,6 +24,7 @@ import {
   UploadCircuitBreaker,
   type UploadFailureInfo,
 } from "./upload-health.js";
+import { DownloadApiHealth } from "./download-api-health.js";
 import {
   DownloadTask,
   QualityUpgradeDownloadTask,
@@ -39,6 +40,10 @@ function delay(ms: number) {
 
 function cooldownMs() {
   return (30 + Math.floor(Math.random() * 60)) * 60 * 1000;
+}
+
+export function computeDownloadStartDelayMs(random: () => number = Math.random) {
+  return 3_000 + Math.min(3_000, Math.floor(Math.max(0, random()) * 3_001));
 }
 
 const ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS = 6 * 60 * 60_000;
@@ -98,6 +103,9 @@ export class SyncScheduler {
   private recoveryRefillAt = 0;
   private uploadProbeTimer: NodeJS.Timeout | null = null;
   private readonly uploadCircuit = new UploadCircuitBreaker();
+  private readonly downloadApiHealth = new DownloadApiHealth();
+  private nextDownloadStartAt = 0;
+  private downloadStartTimer: NodeJS.Timeout | null = null;
   private selfVisibleProbeCache = new Map<string, { expiresAt: number; item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number] }>();
   private schedulerProgress: SchedulerSnapshot | null = null;
   private nextAutoRunAt?: number;
@@ -114,9 +122,20 @@ export class SyncScheduler {
     this.stateManager = stateManager;
 
     const config = this.configStore.get();
+    this.downloadApiHealth.configure(config.bbdownApiMode || "web");
+    const persistedApiCooldown = typeof (this.stateManager as any).getDownloadApiCooldown === "function"
+      ? this.stateManager.getDownloadApiCooldown()
+      : null;
+    this.downloadApiHealth.restore(persistedApiCooldown);
+    if (config.bbdownApiMode === "app" && typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
+      this.stateManager.clearDownloadApiCooldown();
+    }
     this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1, this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
     this.uploadQueue = new TaskQueue(config.concurrentUploads || 2, this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
-    this.downloadQueue.setStartGate(() => this.canStartDownloadTask());
+    this.downloadQueue.setStartGate((task) => {
+      if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
+      return this.canStartDownloadTask(task);
+    });
     this.uploadQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
     void this.refreshLocalCacheSnapshot(true);
 
@@ -129,6 +148,7 @@ export class SyncScheduler {
     );
 
     this.downloadQueue.on("taskStart", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      this.markDownloadTaskStarted();
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = "download";
         task.control.qualityStageLabel = "下载新版";
@@ -146,7 +166,16 @@ export class SyncScheduler {
 
     this.downloadQueue.on("taskError", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskError(task, error);
+      const apiRetryAt = this.handleDownloadApiFailure(task, error);
       if (task instanceof QualityUpgradeDownloadTask) {
+        if (apiRetryAt && !error?.permanent) {
+          task.control.status = "retry_wait";
+          task.control.error = error;
+          task.control.qualityStage = "download";
+          task.control.qualityStageLabel = "B站风控冷却后重试下载新版";
+          this.scheduleQualityDownloadRecovery(task.control, apiRetryAt);
+          return;
+        }
         this.syncQualityUpgradeControl(task, "error");
         task.control.error = error;
         task.control.onFailed?.(task.control, error);
@@ -171,7 +200,13 @@ export class SyncScheduler {
           const key = this.backupKey(target.userId, target.mediaId, task.bvid);
           if (user && !this.recoveryDownloadKeys.has(key)) {
             this.recoveryDownloadKeys.add(key);
-            this.recoveryDownloadBacklog.push({ user, mediaId: target.mediaId, folderTitle: target.folderTitle, bvid: task.bvid });
+            this.recoveryDownloadBacklog.push({
+              user,
+              mediaId: target.mediaId,
+              folderTitle: target.folderTitle,
+              bvid: task.bvid,
+              notBefore: apiRetryAt,
+            });
           }
         }
       } else {
@@ -186,6 +221,7 @@ export class SyncScheduler {
     });
     this.downloadQueue.on("taskRetry", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskRetry(task, error);
+      this.handleDownloadApiFailure(task, error);
       if (task instanceof QualityUpgradeDownloadTask) {
         this.syncQualityUpgradeControl(task, "retry_wait");
         task.control.qualityStage = "download";
@@ -496,6 +532,77 @@ export class SyncScheduler {
     this.recoveryRefillTimer.unref?.();
   }
 
+  private downloadTaskIdentity(task: DownloadTask | QualityUpgradeDownloadTask) {
+    const cookie = task instanceof QualityUpgradeDownloadTask ? task.control.cookie : task.cookie;
+    return {
+      bvid: task.bvid,
+      userId: String(task.userId || ""),
+      hasAppToken: Boolean(cookie?.accessToken),
+    };
+  }
+
+  private persistDownloadApiHealth(value: ReturnType<DownloadApiHealth["open"]>) {
+    if (value && typeof (this.stateManager as any).setDownloadApiCooldown === "function") {
+      this.stateManager.setDownloadApiCooldown(value);
+    } else if (!value && typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
+      this.stateManager.clearDownloadApiCooldown();
+    }
+  }
+
+  private handleDownloadApiFailure(task: DownloadTask | QualityUpgradeDownloadTask, error: any) {
+    const identity = this.downloadTaskIdentity(task);
+    let persisted = null;
+    if (error?.biliRiskControl && error?.apiMode === "web") {
+      persisted = this.downloadApiHealth.open(identity);
+    } else if (task.apiProbe || (task instanceof QualityUpgradeDownloadTask && task.control.apiProbe)) {
+      persisted = this.downloadApiHealth.probeFailed(identity, error?.message || "风控探测失败", Boolean(error?.permanent));
+    } else {
+      return undefined;
+    }
+    this.persistDownloadApiHealth(persisted);
+    const retryAt = this.downloadApiHealth.getRetryAt();
+    if (retryAt) this.scheduleRecoveryRefill(Math.max(0, retryAt - Date.now()));
+    this.downloadQueue.poke();
+    return retryAt;
+  }
+
+  private handleDownloadApiReady(task: DownloadTask | QualityUpgradeTask, _mode: BBDownApiMode) {
+    const identity = {
+      bvid: task.bvid,
+      userId: String(task.userId || task.target?.userId || ""),
+    };
+    if (!this.downloadApiHealth.ready(identity)) return;
+    if (typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
+      this.stateManager.clearDownloadApiCooldown();
+    }
+    for (const item of this.recoveryDownloadBacklog) item.notBefore = undefined;
+    this.scheduleRecoveryRefill();
+    this.downloadQueue.poke();
+  }
+
+  private scheduleQualityDownloadRecovery(control: QualityUpgradeTask, retryAt: number) {
+    const timer = setTimeout(() => {
+      control.apiProbe = false;
+      control.apiModeOverride = undefined;
+      this.enqueueQualityUpgrade(control);
+    }, Math.max(0, retryAt - Date.now()));
+    timer.unref?.();
+  }
+
+  private markDownloadTaskStarted() {
+    this.nextDownloadStartAt = Date.now() + computeDownloadStartDelayMs();
+  }
+
+  private scheduleDownloadStartPoke() {
+    if (this.downloadStartTimer) return;
+    const delayMs = Math.max(0, this.nextDownloadStartAt - Date.now());
+    this.downloadStartTimer = setTimeout(() => {
+      this.downloadStartTimer = null;
+      this.downloadQueue.poke();
+    }, delayMs);
+    this.downloadStartTimer.unref?.();
+  }
+
   private recoveryUploadKey(item: RecoveryUploadItem) {
     return `${item.userId || "video"}:${item.mediaId || 0}:${item.bvid}:${item.remotePath}:${item.historySnapshotAt || "main"}`;
   }
@@ -593,11 +700,18 @@ export class SyncScheduler {
       }
     }
 
+    this.clearOrphanedDownloadProbe();
     const downloadLowWater = this.queueLowWater(config.concurrentDownloads, batchSize);
     if (force || this.downloadQueue.getSize() <= downloadLowWater) {
       let budget = batchSize;
       while (budget > 0 && this.recoveryDownloadBacklog.length > 0 && this.canCreateDownloadTask()) {
-        const item = this.recoveryDownloadBacklog.shift()!;
+        const now = Date.now();
+        const itemIndex = this.recoveryDownloadBacklog.findIndex((item) =>
+          (!item.notBefore || item.notBefore <= now)
+          && this.downloadApiHealth.canQueueRecovery({ bvid: item.bvid, userId: item.user.id })
+        );
+        if (itemIndex < 0) break;
+        const [item] = this.recoveryDownloadBacklog.splice(itemIndex, 1);
         const key = this.backupKey(item.user.id, item.mediaId, item.bvid);
         this.recoveryDownloadKeys.delete(key);
         const queued = this.enqueueIfNeeded(item.user, item.mediaId, item.folderTitle, item.bvid, { persisted: true });
@@ -619,6 +733,31 @@ export class SyncScheduler {
     if (Number.isFinite(nextDeferredUploadAt)) {
       this.scheduleRecoveryRefill(nextDeferredUploadAt - Date.now());
     }
+    const nextDeferredDownloadAt = this.recoveryDownloadBacklog.reduce((next, item) => {
+      const candidate = item.notBefore || this.downloadApiHealth.getRetryAt();
+      if (!candidate || candidate <= Date.now()) return next;
+      return Math.min(next, candidate);
+    }, Number.POSITIVE_INFINITY);
+    if (Number.isFinite(nextDeferredDownloadAt)) {
+      this.scheduleRecoveryRefill(nextDeferredDownloadAt - Date.now());
+    }
+  }
+
+  private clearOrphanedDownloadProbe() {
+    const probe = this.downloadApiHealth.getProbeIdentity();
+    if (!probe) return;
+    const queued = this.downloadQueue.getTasks().some((task) => {
+      if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
+      const identity = this.downloadTaskIdentity(task);
+      return identity.bvid === probe.bvid && identity.userId === probe.userId;
+    });
+    const backlogged = this.recoveryDownloadBacklog.some((item) => item.bvid === probe.bvid && item.user.id === probe.userId);
+    if (queued || backlogged) return;
+    if (this.downloadApiHealth.abandonProbe()) {
+      this.stateManager.clearDownloadApiCooldown();
+      for (const item of this.recoveryDownloadBacklog) item.notBefore = undefined;
+      this.downloadQueue.poke();
+    }
   }
 
   resumePersistedWorkOnStartup() {
@@ -639,6 +778,28 @@ export class SyncScheduler {
       this.nextAutoRunAt = Date.now() + intervalMs;
       void this.tick();
     }, startupJitter);
+  }
+
+  applyConfigUpdate(previous: AppConfig, next: AppConfig) {
+    this.downloadApiHealth.configure(next.bbdownApiMode || "web");
+    if (next.bbdownApiMode === "app") {
+      if (typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
+        this.stateManager.clearDownloadApiCooldown();
+      }
+      for (const item of this.recoveryDownloadBacklog) item.notBefore = undefined;
+    }
+    for (const task of this.downloadQueue.getTasks()) {
+      if (task.status === "running") continue;
+      if (task instanceof DownloadTask) {
+        task.config = { ...next };
+      } else if (task instanceof QualityUpgradeDownloadTask) {
+        task.control.config = { ...next };
+      }
+      task.apiModeOverride = undefined;
+      task.apiProbe = false;
+    }
+    if (previous.bbdownApiMode !== next.bbdownApiMode) this.downloadQueue.poke();
+    this.updateInterval();
   }
 
   updateInterval() {
@@ -663,6 +824,10 @@ export class SyncScheduler {
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
+    }
+    if (this.downloadStartTimer) {
+      clearTimeout(this.downloadStartTimer);
+      this.downloadStartTimer = null;
     }
   }
 
@@ -729,6 +894,7 @@ export class SyncScheduler {
     task.error = undefined;
     task.qualityStage = "download";
     task.qualityStageLabel = "等待下载新版";
+    task.onApiReady = (control, mode) => this.handleDownloadApiReady(control, mode);
     const downloadTask = new QualityUpgradeDownloadTask(task);
     if (!this.downloadQueue.addTask(downloadTask)) {
       return false;
@@ -818,16 +984,40 @@ export class SyncScheduler {
     return this.localCacheSnapshot;
   }
 
-  private canStartDownloadTask() {
+  private canStartDownloadTask(task?: DownloadTask | QualityUpgradeDownloadTask) {
+    const snapshot = this.getLocalCacheSnapshot();
+    const baseAllowed = !snapshot.paused
+      && !this.uploadCircuit.isDownloadPaused()
+      && this.priorityUploadKeys.size === 0
+      && this.uploadQueue.canAccept();
+    if (!baseAllowed) return false;
+    if (!task) return this.downloadApiHealth.getSnapshot().state === "healthy";
+    if (Date.now() < this.nextDownloadStartAt) {
+      this.scheduleDownloadStartPoke();
+      return false;
+    }
+    const decision = this.downloadApiHealth.claimStart(this.downloadTaskIdentity(task));
+    if (!decision.allowed) {
+      const retryAt = this.downloadApiHealth.getRetryAt();
+      if (retryAt) this.scheduleRecoveryRefill(Math.max(0, retryAt - Date.now()));
+      return false;
+    }
+    task.apiModeOverride = decision.apiModeOverride;
+    task.apiProbe = decision.probe;
+    if (task instanceof QualityUpgradeDownloadTask) {
+      task.control.apiModeOverride = decision.apiModeOverride;
+      task.control.apiProbe = decision.probe;
+    }
+    return true;
+  }
+
+  private canCreateDownloadTask() {
     const snapshot = this.getLocalCacheSnapshot();
     return !snapshot.paused
       && !this.uploadCircuit.isDownloadPaused()
       && this.priorityUploadKeys.size === 0
-      && this.uploadQueue.canAccept();
-  }
-
-  private canCreateDownloadTask() {
-    return this.canStartDownloadTask() && this.downloadQueue.canAccept();
+      && this.uploadQueue.canAccept()
+      && this.downloadQueue.canAccept();
   }
 
   private buildSchedulerSnapshot() {
@@ -932,6 +1122,7 @@ export class SyncScheduler {
       scheduler: this.buildSchedulerSnapshot(),
       localCache: this.getLocalCacheSnapshot(),
       uploadHealth: this.uploadCircuit.getSnapshot(),
+      downloadApiHealth: this.downloadApiHealth.getSnapshot(),
       downloadRecovery: inspectDownloadRecoverySync(tempDir),
       recovery: {
         pendingUploads: this.recoveryUploadBacklog.length,
@@ -1459,7 +1650,7 @@ export class SyncScheduler {
       return false;
     }
 
-    const task = new DownloadTask(bvid, user.cookie, config);
+    const task = new DownloadTask(bvid, { ...user.cookie, accessToken: user.accessToken || "" }, config);
     task.userId = user.id;
     task.mediaId = mediaId;
     task.folderTitle = folderTitle;
@@ -1469,6 +1660,7 @@ export class SyncScheduler {
     task.upperName = meta?.upperName || "";
     task.cover = meta?.cover || "";
     task.targets = [target];
+    task.onApiReady = (readyTask, mode) => this.handleDownloadApiReady(readyTask, mode);
     task.onDownloading = () => this.stateManager.markDownloading(bvid, task.targets);
     task.onPrepared = (_task, downloadDir, manifest) => this.stateManager.markDownloadPrepared(
       bvid,
@@ -2242,6 +2434,7 @@ interface RecoveryDownloadItem {
   mediaId: number;
   folderTitle: string;
   bvid: string;
+  notBefore?: number;
 }
 
 interface DeferredQualityUpload {

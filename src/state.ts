@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
 import { historySessionGroups, readDownloadSession } from "./download-session.js";
+import type { PersistedDownloadApiCooldown } from "./download-api-health.js";
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -239,11 +240,12 @@ export interface StateFile {
   relations?: Record<string, FavoriteRelation>;
   folderScans?: Record<string, FolderScanState>;
   userCooldowns?: Record<string, UserCooldown>;
+  downloadApiCooldown?: PersistedDownloadApiCooldown;
 }
 
 const defaultStatePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 10,
+  schemaVersion: 11,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -1149,6 +1151,21 @@ export class StateManager {
     return active;
   }
 
+  setDownloadApiCooldown(value: PersistedDownloadApiCooldown) {
+    this.state.downloadApiCooldown = { ...value };
+    this.save();
+  }
+
+  getDownloadApiCooldown() {
+    return this.state.downloadApiCooldown ? { ...this.state.downloadApiCooldown } : null;
+  }
+
+  clearDownloadApiCooldown() {
+    if (!this.state.downloadApiCooldown) return;
+    this.state.downloadApiCooldown = undefined;
+    this.save();
+  }
+
   normalizePersistedWorkForRecovery() {
     let changed = false;
     const resumableStatuses = new Set<BackupStatus>(["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing", "failed"]);
@@ -1984,6 +2001,11 @@ export class StateManager {
       changed = true;
     }
 
+    if ((this.state.schemaVersion || 1) < 11) {
+      this.state.schemaVersion = 11;
+      changed = true;
+    }
+
     if (Object.keys(this.state.processedByUser || {}).length > 0) {
       this.state.processedByUser = {};
       changed = true;
@@ -2003,6 +2025,7 @@ export class StateManager {
       relations: {},
       folderScans: {},
       userCooldowns: {},
+      downloadApiCooldown: undefined,
     };
   }
 

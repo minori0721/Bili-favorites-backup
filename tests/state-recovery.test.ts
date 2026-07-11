@@ -10,7 +10,7 @@ const now = "2026-07-10T00:00:00.000Z";
 
 function baseState(): StateFile {
   return {
-    schemaVersion: 10,
+    schemaVersion: 11,
     processedByUser: {},
     failedByUser: {},
     videos: {},
@@ -67,7 +67,7 @@ test("schema 8 failed state with an existing local directory migrates to upload_
       },
     });
     const snapshot = manager.getStateSnapshot();
-    assert.equal(snapshot.schemaVersion, 10);
+    assert.equal(snapshot.schemaVersion, 11);
     assert.equal(snapshot.videos![bvid].backupStatus, "upload_failed");
     assert.equal(snapshot.relations![`u1:1:${bvid}`].backupStatus, "upload_failed");
     assert.equal(writes, 1);

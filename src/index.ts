@@ -6,7 +6,7 @@ import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { backupsDir, coversDir, dataDir, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
-import { type AppConfig, ConfigStore, validateConfig } from "./config.js";
+import { type AppConfig, ConfigStore, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import {
@@ -115,7 +115,7 @@ async function recoverInterruptedQualityDownloads() {
     const user = userStore.getById(target.userId);
     if (!user || !user.enabled) continue;
     const meta = stateManager.getVideoMeta(manifest.bvid);
-    const task = new QualityUpgradeTask(manifest.bvid, user.cookie, configStore.get(), {
+    const task = new QualityUpgradeTask(manifest.bvid, { ...user.cookie, accessToken: user.accessToken || "" }, configStore.get(), {
       userId: target.userId,
       mediaId: target.mediaId,
       folderTitle: target.folderTitle,
@@ -584,8 +584,15 @@ app.put("/api/config", (req, res) => {
     res.status(400).json({ success: false, message: error });
     return;
   }
+  const previous = configStore.get();
+  const candidate = { ...previous, ...req.body };
+  const runtimeError = validateBBDownRuntimeConfig(candidate, userStore.list());
+  if (runtimeError) {
+    res.status(400).json({ success: false, message: runtimeError });
+    return;
+  }
   const updated = configStore.update(req.body);
-  scheduler.updateInterval();
+  scheduler.applyConfigUpdate(previous, updated);
   res.json({ success: true, data: updated });
 });
 
@@ -1622,7 +1629,7 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
       skipped.push({ key, reason: "账号不存在或未启用" });
       continue;
     }
-    const task = new QualityUpgradeTask(candidate.bvid, user.cookie, config, {
+    const task = new QualityUpgradeTask(candidate.bvid, { ...user.cookie, accessToken: user.accessToken || "" }, config, {
       userId: candidate.userId,
       mediaId: candidate.mediaId,
       folderTitle: candidate.folderTitle,
@@ -1907,7 +1914,7 @@ if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.PORT || 3000);
   const server = app.listen(port, () => {
     console.log(`Server listening on http://localhost:${port}`);
-    console.log(`[Runtime] BBDown source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; aria2 resume enabled`);
+  console.log(`[Runtime] BBDown release ${process.env.BBDOWN_RELEASE || "local"}; source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; aria2 resume enabled`);
   });
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

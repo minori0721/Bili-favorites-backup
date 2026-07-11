@@ -13,7 +13,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     await fs.promises.mkdir(dataDir, { recursive: true });
     await fs.promises.mkdir(path.join(runtime, "temp"), { recursive: true });
     const state: any = {
-      schemaVersion: 10,
+      schemaVersion: 11,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -116,7 +116,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     writeCompleteManifest(failedDir, "BVFAILED", "failed.mp4");
 
     const state: any = {
-      schemaVersion: 10,
+      schemaVersion: 11,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -195,7 +195,7 @@ test("one deterministic upload failure is isolated without blocking unrelated do
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "isolated.mp4"), "local-upload-content");
     writeJsonFile(path.join(dataDir, "state.json"), {
-      schemaVersion: 10,
+      schemaVersion: 11,
       processedByUser: {},
       failedByUser: {},
       videos: {

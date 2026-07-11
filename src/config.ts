@@ -3,6 +3,7 @@ import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
 
 export type UploadLayout = "user-folder-video" | "folder-video" | "video-only";
+export type BBDownApiMode = "web" | "app";
 
 export interface AppConfig {
   pollIntervalMinutes: number;
@@ -20,6 +21,7 @@ export interface AppConfig {
   startupRecoveryBatchSize: number;
   bbdownEncoding: string;
   bbdownQuality: string;
+  bbdownApiMode: BBDownApiMode;
   bbdownHiRes: boolean;
   bbdownDolby: boolean;
   filenameTemplate: string;
@@ -46,6 +48,7 @@ const defaultConfig: AppConfig = {
   startupRecoveryBatchSize: 25,
   bbdownEncoding: "",
   bbdownQuality: "",
+  bbdownApiMode: "web",
   bbdownHiRes: false,
   bbdownDolby: false,
   filenameTemplate: "<videoTitle>-<bvid>",
@@ -71,6 +74,9 @@ function normalizeLoadedConfig(input: Partial<AppConfig>) {
     if (value !== undefined) {
       (merged as any)[key] = value;
     }
+  }
+  if (input.bbdownApiMode === undefined && (merged.bbdownHiRes || merged.bbdownDolby)) {
+    merged.bbdownApiMode = "app";
   }
   merged.filenameTemplate = normalizeFilenameTemplate(merged.filenameTemplate);
   return merged;
@@ -135,6 +141,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "startupRecoveryBatchSize",
   "bbdownEncoding",
   "bbdownQuality",
+  "bbdownApiMode",
   "bbdownHiRes",
   "bbdownDolby",
   "filenameTemplate",
@@ -258,6 +265,10 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
   }
 
+  if (input.bbdownApiMode !== undefined && input.bbdownApiMode !== "web" && input.bbdownApiMode !== "app") {
+    return "bbdownApiMode must be web or app";
+  }
+
   if (input.bbdownHiRes !== undefined && typeof input.bbdownHiRes !== "boolean") {
     return "bbdownHiRes must be a boolean";
   }
@@ -293,5 +304,21 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
   }
 
+  return null;
+}
+
+export function validateBBDownRuntimeConfig(
+  config: Pick<AppConfig, "bbdownApiMode" | "bbdownHiRes" | "bbdownDolby">,
+  users: Array<{ id: string; name?: string; enabled: boolean; accessToken?: string }>
+) {
+  if (config.bbdownApiMode === "web" && (config.bbdownHiRes || config.bbdownDolby)) {
+    return "Hi-Res 和杜比音效必须使用 APP 接口";
+  }
+  if (config.bbdownApiMode === "app") {
+    const missingUsers = users.filter((user) => user.enabled && !String(user.accessToken || "").trim());
+    if (missingUsers.length > 0) {
+      return `APP 接口需要所有启用账号具有 access token，请重新扫码登录：${missingUsers.map((user) => user.name || user.id).join("、")}`;
+    }
+  }
   return null;
 }

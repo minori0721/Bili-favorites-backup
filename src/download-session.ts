@@ -7,7 +7,8 @@ import { writeJsonFile } from "./storage.js";
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
+export const BBDOWN_SOURCE_COMMIT = "42815977dff36d2bab783ce125e209191dcca037";
+const PREVIOUS_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
 
 export type DownloadSessionKind = "backup" | "quality_upgrade";
 export type DownloadSessionStatus = "prepared" | "downloading" | "complete" | "partial" | "failed";
@@ -50,6 +51,7 @@ export interface DownloadSessionManifest {
   configSnapshot: {
     quality: string;
     encoding: string;
+    apiMode?: "web" | "app";
     hiRes: boolean;
     dolby: boolean;
     filenameTemplate: string;
@@ -108,10 +110,11 @@ export function downloadSessionPath(downloadDir: string) {
   return path.join(downloadDir, DOWNLOAD_SESSION_FILE);
 }
 
-function configSnapshot(config: AppConfig) {
+function configSnapshot(config: AppConfig): DownloadSessionManifest["configSnapshot"] {
   return {
     quality: String(config.bbdownQuality || ""),
     encoding: String(config.bbdownEncoding || ""),
+    apiMode: config.bbdownApiMode === "app" ? "app" : "web",
     hiRes: Boolean(config.bbdownHiRes),
     dolby: Boolean(config.bbdownDolby),
     filenameTemplate: String(config.filenameTemplate || "<videoTitle>-<bvid>"),
@@ -553,9 +556,22 @@ export async function prepareDownloadSession(options: {
   } else {
     if (options.qualityUpgrade) manifest.qualityUpgrade = options.qualityUpgrade;
     if (manifest.configFingerprint !== fingerprint || manifest.accountUid !== accountUid || manifest.bbdownCommit !== BBDOWN_SOURCE_COMMIT) {
-      incompatibleFragmentsMoved = await quarantineIncompatibleFragments(downloadDir);
+      const nextSnapshot = configSnapshot(config);
+      const previousSnapshot = manifest.configSnapshot;
+      const legacyWebUpgrade = !previousSnapshot.apiMode
+        && nextSnapshot.apiMode === "web"
+        && manifest.accountUid === accountUid
+        && (manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT)
+        && previousSnapshot.quality === nextSnapshot.quality
+        && previousSnapshot.encoding === nextSnapshot.encoding
+        && previousSnapshot.hiRes === nextSnapshot.hiRes
+        && previousSnapshot.dolby === nextSnapshot.dolby
+        && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
+      if (!legacyWebUpgrade) {
+        incompatibleFragmentsMoved = await quarantineIncompatibleFragments(downloadDir);
+      }
       manifest.configFingerprint = fingerprint;
-      manifest.configSnapshot = configSnapshot(config);
+      manifest.configSnapshot = nextSnapshot;
       manifest.accountUid = accountUid;
       manifest.bbdownCommit = BBDOWN_SOURCE_COMMIT;
     }

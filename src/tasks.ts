@@ -2,7 +2,7 @@ import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, moveRemoteFile, verifyRemoteFiles } from "./uploader.js";
-import { AppConfig } from "./config.js";
+import { AppConfig, type BBDownApiMode } from "./config.js";
 import { BiliCookie } from "./users.js";
 import { RemoteFileRecord } from "./state.js";
 import { tempDir } from "./paths.js";
@@ -33,6 +33,9 @@ export class DownloadTask extends Task {
   partialBackup = false;
   recoveredPages = 0;
   totalPages = 0;
+  apiModeOverride?: BBDownApiMode;
+  apiProbe = false;
+  onApiReady?: (task: DownloadTask, mode: BBDownApiMode) => void;
   onDownloading?: (task: DownloadTask) => void;
   onPrepared?: (task: DownloadTask, downloadDir: string, manifest: DownloadSessionManifest) => void;
   onDownloaded?: (task: DownloadTask, downloadDir: string) => void;
@@ -57,6 +60,8 @@ export class DownloadTask extends Task {
           : `准备下载 0/${manifest.pages.length} 分P`;
         this.onPrepared?.(this, downloadDir, manifest);
       },
+      apiModeOverride: this.apiModeOverride,
+      onApiReady: (mode) => this.onApiReady?.(this, mode),
     });
     this.downloadDir = result.downloadDir;
     this.outputFiles = result.files;
@@ -109,6 +114,9 @@ export class QualityUpgradeTask extends Task {
   onUploaded?: (task: QualityUpgradeTask, result: UploadResult) => void;
   onCompletedUpgrade?: (task: QualityUpgradeTask) => void;
   onFailed?: (task: QualityUpgradeTask, error: any) => void;
+  apiModeOverride?: BBDownApiMode;
+  apiProbe = false;
+  onApiReady?: (task: QualityUpgradeTask, mode: BBDownApiMode) => void;
 
   constructor(bvid: string, cookie: BiliCookie, config: AppConfig, target: QualityUpgradeTarget) {
     super(`Quality upgrade ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
@@ -139,6 +147,8 @@ export class QualityUpgradeTask extends Task {
         remotePath: this.target.remotePath,
         oldFiles: this.target.oldFiles,
       },
+      apiModeOverride: this.apiModeOverride,
+      onApiReady: (mode) => this.onApiReady?.(this, mode),
     });
     this.downloadDir = result.downloadDir;
     this.outputFiles = result.files;

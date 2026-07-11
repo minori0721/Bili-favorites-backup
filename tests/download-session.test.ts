@@ -20,6 +20,7 @@ import {
   shutdownActiveDownloads,
 } from "../src/downloader.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import { writeJsonFile } from "../src/storage.js";
 
 function localFfmpeg() {
   const configured = process.env.FFMPEG_PATH;
@@ -278,6 +279,52 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
+test("legacy Web sessions migrate in place while switching to APP isolates raw fragments", async () => {
+  const runtime = await createTestDir("download-session-api-mode");
+  const downloadDir = path.join(runtime, "BV1APIMODE");
+  const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
+  try {
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1APIMODE",
+      accountUid: 1,
+      config: testConfig(),
+      pages,
+    });
+    const legacy = readDownloadSession(downloadDir)!;
+    delete legacy.configSnapshot.apiMode;
+    legacy.bbdownCommit = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
+    legacy.configFingerprint = "legacy";
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), legacy);
+    await fs.promises.writeFile(path.join(downloadDir, "web-track.mp4.aria2"), "resume");
+
+    const web = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1APIMODE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "web" }),
+      pages,
+    });
+    assert.equal(web.incompatibleFragmentsMoved, 0);
+    assert.equal(fs.existsSync(path.join(downloadDir, "web-track.mp4.aria2")), true);
+    assert.equal(web.manifest.configSnapshot.apiMode, "web");
+
+    await fs.promises.writeFile(path.join(downloadDir, "app-track.m4a.aria2"), "resume");
+    const app = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1APIMODE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    assert.equal(app.incompatibleFragmentsMoved, 2);
+    assert.equal(fs.existsSync(path.join(downloadDir, "web-track.mp4.aria2")), false);
+    assert.equal(fs.existsSync(path.join(downloadDir, "app-track.m4a.aria2")), false);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("recovery summary separates managed sessions from legacy fragments", async () => {
   const runtime = await createTestDir("download-session-summary");
   try {
@@ -365,6 +412,7 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
       fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify(args) + '\\n');
       const bvid = /video\\/(BV[0-9A-Za-z]+)/.exec(args[0])?.[1] || 'BV1FAKEBBDOWN';
       fs.copyFileSync(process.env.FAKE_MEDIA_SOURCE, path.join(process.cwd(), 'video-' + bvid + '.mp4'));
+      console.log('[2026-07-11 00:00:00.000] - BFB_SIGNAL:PLAYURL_READY:' + (args.includes('-app') ? 'APP' : 'WEB'));
       console.log('任务完成');
     `, "utf8");
     const previousSource = process.env.FAKE_MEDIA_SOURCE;
@@ -382,14 +430,32 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
         commandArgsPrefix: [fakeScript],
       };
       const cookie = { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" };
-      const first = await downloadWithBBDown("BV1FAKEBBDOWN", cookie, testConfig(), options);
+      const readyModes: string[] = [];
+      const first = await downloadWithBBDown("BV1FAKEBBDOWN", cookie, testConfig(), {
+        ...options,
+        onApiReady: (mode) => readyModes.push(mode),
+      });
       assert.equal(first.files.length, 1);
       const second = await downloadWithBBDown("BV1FAKEBBDOWN", cookie, testConfig(), options);
       assert.equal(second.files.length, 1);
+      const appResult = await downloadWithBBDown(
+        "BV1FAKEAPP",
+        { ...cookie, accessToken: "app-token" },
+        testConfig({ bbdownApiMode: "app" }),
+        {
+          ...options,
+          downloadDir: path.join(runtime, "BV1FAKEAPP"),
+          onApiReady: (mode) => readyModes.push(mode),
+        }
+      );
+      assert.equal(appResult.files.length, 1);
       const invocations = (await fs.promises.readFile(argsLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
-      assert.equal(invocations.length, 1);
+      assert.equal(invocations.length, 2);
       assert.equal(invocations[0].includes("--use-aria2c"), true);
       assert.equal(invocations[0].includes("--select-page"), true);
+      assert.equal(invocations[0].includes("-app"), false);
+      assert.equal(invocations[1].includes("-app"), true);
+      assert.deepEqual(readyModes, ["web", "app"]);
     } finally {
       if (previousSource === undefined) delete process.env.FAKE_MEDIA_SOURCE;
       else process.env.FAKE_MEDIA_SOURCE = previousSource;
@@ -397,6 +463,43 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
       else process.env.FAKE_ARGS_LOG = previousLog;
     }
   } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("voucher signal defers without exposing the marker or running a debug probe", async () => {
+  const runtime = await createTestDir("download-session-voucher");
+  const downloadDir = path.join(runtime, "BV1VOUCHER");
+  const fakeScript = path.join(runtime, "fake-bbdown-voucher.mjs");
+  const argsLog = path.join(runtime, "args.jsonl");
+  const previousLog = process.env.FAKE_ARGS_LOG;
+  try {
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
+      console.error('[2026-07-11 00:00:00.000] - BFB_SIGNAL:RISK_V_VOUCHER');
+    `, "utf8");
+    process.env.FAKE_ARGS_LOG = argsLog;
+    const error: any = await downloadWithBBDown(
+      "BV1VOUCHER",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      testConfig(),
+      {
+        downloadDir,
+        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+      }
+    ).then(() => null, (caught) => caught);
+    assert.equal(error?.biliRiskControl, true);
+    assert.equal(error?.deferToNextCycle, true);
+    assert.doesNotMatch(String(error?.message || ""), /v_voucher/i);
+    const invocations = (await fs.promises.readFile(argsLog, "utf8")).trim().split(/\r?\n/);
+    assert.equal(invocations.length, 1);
+    assert.equal(fs.existsSync(path.join(runtime, "data", "debug")), false);
+  } finally {
+    if (previousLog === undefined) delete process.env.FAKE_ARGS_LOG;
+    else process.env.FAKE_ARGS_LOG = previousLog;
     await removeTestDir(runtime);
   }
 });

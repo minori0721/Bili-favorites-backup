@@ -4,7 +4,8 @@ import path from "node:path";
 import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
-const mode = process.env.BFB_PREVIEW_MODE === "degraded" ? "degraded" : "healthy";
+const requestedMode = process.env.BFB_PREVIEW_MODE;
+const mode = requestedMode === "degraded" || requestedMode === "risk" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -61,7 +62,7 @@ if (mode === "degraded") {
     lastLoginAt: now,
   }];
   const state = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     processedByUser: {},
     failedByUser: {},
     videos: {
@@ -95,6 +96,31 @@ if (mode === "degraded") {
   };
   await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(config, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
+}
+
+if (mode === "risk") {
+  const now = new Date();
+  const config = testConfig({ startupRecoveryBatchSize: 5, bbdownApiMode: "web" });
+  const state = {
+    schemaVersion: 11,
+    processedByUser: {},
+    failedByUser: {},
+    videos: {},
+    relations: {},
+    folderScans: {},
+    userCooldowns: {},
+    downloadApiCooldown: {
+      until: now.getTime() + 180_000,
+      reason: "B站返回播放接口风控响应",
+      probeBvid: "BV1RISKPREVIEW",
+      probeUserId: "preview-user",
+      probeMode: "app",
+      setAt: now.toISOString(),
+    },
+  };
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(config, null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), "[]\n");
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
 

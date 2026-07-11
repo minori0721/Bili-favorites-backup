@@ -274,6 +274,11 @@ function getAppStyles() {
     .template-tag .remove-x { margin-left:4px; font-size:14px; opacity:0.7; }
     .template-tag .remove-x:hover { opacity:1; }
     .template-preview { padding:11px 12px; background:rgba(255,255,255,0.64); border:1px solid rgba(214,240,237,0.72); border-radius:12px; font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
+    .segmented-control { display:inline-grid; grid-template-columns:repeat(2,minmax(110px,1fr)); gap:3px; padding:3px; border:1px solid var(--glass-border); border-radius:10px; background:rgba(255,255,255,0.56); }
+    .segmented-control label { margin:0; cursor:pointer; }
+    .segmented-control input { position:absolute; opacity:0; pointer-events:none; }
+    .segmented-control span { display:block; min-height:34px; padding:8px 14px; border-radius:7px; text-align:center; color:var(--muted); font-size:13px; font-weight:700; }
+    .segmented-control input:checked + span { background:var(--accent); color:white; box-shadow:0 1px 4px rgba(57,197,187,0.22); }
     /* Log console */
     .log-console { background:#1a1a2e; color:#eee; border-radius:12px; padding:16px; font-family:'Courier New',monospace; font-size:12px; max-height:400px; overflow-y:auto; line-height:1.8; }
     .log-console .log-info { color:#39C5BB; }
@@ -293,6 +298,7 @@ function getAppStyles() {
     .local-cache-status { border:1px solid var(--glass-border); border-radius:14px; padding:10px 12px; margin:0 0 10px; background:rgba(248,251,250,0.76); font-size:12px; color:var(--muted); }
     .local-cache-status.paused { border-color:#FFB74D; background:#FFF8E1; color:#8D6E00; }
     .upload-health-status { border:1px solid #E57373; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF1F1; font-size:12px; color:#9B2C2C; }
+    .download-api-health-status { border:1px solid #FFB74D; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF8E1; font-size:12px; color:#8D6E00; }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
     .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
@@ -411,7 +417,7 @@ function getAppStyles() {
       .log-toggle { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
       .log-toggle button { min-height:36px; padding:6px 10px; }
       .queue-board { display:block; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; scroll-snap-type:x proximity; }
-      .scheduler-status,.local-cache-status,.upload-health-status { white-space:normal; width:100%; }
+      .scheduler-status,.local-cache-status,.upload-health-status,.download-api-health-status { white-space:normal; width:100%; }
       .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
@@ -466,6 +472,13 @@ function getSettingsSection() {
         </div>
 
         <div class="settings-group"><div class="settings-group-title">下载控制 (BBDown)</div></div>
+        <div class="field-full"><label>播放接口</label>
+          <div class="segmented-control" id="bbdownApiModeControl">
+            <label><input type="radio" name="bbdownApiMode" value="web" checked /><span>网页接口</span></label>
+            <label><input type="radio" name="bbdownApiMode" value="app" /><span>APP接口</span></label>
+          </div>
+          <p class="muted field-hint">网页接口遇到播放风控会暂停 3 分钟并自动单任务探测；APP 接口需要所有启用账号具有扫码登录 token。</p>
+        </div>
         <div><label>视频编码</label>
           <select id="bbdownEncoding">
             <option value="">自动 (默认)</option>
@@ -1023,6 +1036,7 @@ function getAppScript() {
       document.getElementById('alistDest').value = d.alistDest || '';
       document.getElementById('bbdownEncoding').value = d.bbdownEncoding || '';
       document.getElementById('bbdownQuality').value = d.bbdownQuality || '';
+      setBBDownApiMode(d.bbdownApiMode || 'web');
       document.getElementById('bbdownHiRes').checked = !!d.bbdownHiRes;
       document.getElementById('bbdownDolby').checked = !!d.bbdownDolby;
       document.getElementById('maxRetries').value = d.maxRetries ?? 3;
@@ -1052,6 +1066,7 @@ function getAppScript() {
         alistDest: document.getElementById('alistDest').value.trim(),
         bbdownEncoding: document.getElementById('bbdownEncoding').value,
         bbdownQuality: document.getElementById('bbdownQuality').value,
+        bbdownApiMode: getBBDownApiMode(),
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
         bbdownDolby: document.getElementById('bbdownDolby').checked,
         filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
@@ -1073,6 +1088,22 @@ function getAppScript() {
       } finally {
         btn.textContent = '保存设置并生效';
         setTimeout(()=>{ if(!st.classList.contains('status-error')) setStatus(st, ''); },3000);
+      }
+    }
+
+    function getBBDownApiMode() {
+      return document.querySelector('input[name="bbdownApiMode"]:checked')?.value || 'web';
+    }
+
+    function setBBDownApiMode(mode) {
+      const value = mode === 'app' ? 'app' : 'web';
+      const input = document.querySelector('input[name="bbdownApiMode"][value="' + value + '"]');
+      if (input) input.checked = true;
+    }
+
+    function requireAppModeForPremiumAudio() {
+      if (document.getElementById('bbdownHiRes').checked || document.getElementById('bbdownDolby').checked) {
+        setBBDownApiMode('app');
       }
     }
 
@@ -1168,6 +1199,7 @@ function getAppScript() {
         alistDest: document.getElementById('alistDest').value.trim() || '/bili-backup/videos',
         bbdownEncoding: document.getElementById('bbdownEncoding').value || '\u81ea\u52a8',
         bbdownQuality: document.getElementById('bbdownQuality').value || '\u81ea\u52a8\u6700\u9ad8',
+        bbdownApiMode: getBBDownApiMode(),
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
         bbdownDolby: document.getElementById('bbdownDolby').checked,
         filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
@@ -2735,6 +2767,26 @@ function getAppScript() {
       el.textContent = '上传后端异常，下载已暂停：' + (uploadHealth.reason || 'AList 上传暂不可用') + '；' + modeText + '。本地文件已保留为“待补传”。';
     }
 
+    function renderDownloadApiHealthStatus(parent, downloadApiHealth) {
+      const host = parent.parentElement || parent;
+      let el = host.querySelector('[data-download-api-health-status="1"]');
+      if (!downloadApiHealth || downloadApiHealth.state === 'healthy') {
+        if (el) el.remove();
+        return;
+      }
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'download-api-health-status';
+        el.dataset.downloadApiHealthStatus = '1';
+        host.insertBefore(el, parent);
+      }
+      const retryText = downloadApiHealth.retryAt ? formatDateTime(downloadApiHealth.retryAt) : '等待调度';
+      const probeText = downloadApiHealth.state === 'half_open'
+        ? '正在用' + (downloadApiHealth.activeMode === 'app' ? 'APP' : '网页') + '接口进行单任务探测'
+        : '将在 ' + retryText + ' 进行单任务探测';
+      el.textContent = 'B站触发风控，下载已暂停；' + probeText + (downloadApiHealth.probeBvid ? '（' + downloadApiHealth.probeBvid + '）' : '') + '。已取得地址的下载不受影响。';
+    }
+
     function renderQueueColumn(parent, id, title, items, nowMs, seenKeys) {
       const column = ensureQueueColumn(parent, id, title);
       const allItems = Array.isArray(items) ? items : [];
@@ -2804,6 +2856,7 @@ function getAppScript() {
         }
         renderSchedulerStatus(grid, { ...(snapshot.scheduler || {}), recovery: snapshot.recovery || {} });
         renderLocalCacheStatus(grid, snapshot.localCache || null, snapshot.downloadRecovery || null);
+        renderDownloadApiHealthStatus(grid, snapshot.downloadApiHealth || null);
         renderUploadHealthStatus(grid, snapshot.uploadHealth || null);
         const firstRects = new Map();
         for (const [key, card] of queueBoardState.cards.entries()) {
@@ -2846,6 +2899,7 @@ function getAppScript() {
       const board = document.getElementById('queueBoard');
       if (board) {
         board.parentElement?.querySelector('[data-local-cache-status="1"]')?.remove();
+        board.parentElement?.querySelector('[data-download-api-health-status="1"]')?.remove();
         board.parentElement?.querySelector('[data-upload-health-status="1"]')?.remove();
         board.innerHTML = '';
       }
@@ -3093,6 +3147,14 @@ function getAppScript() {
       window.location.href = '/login';
     });
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+    document.getElementById('bbdownHiRes').addEventListener('change', requireAppModeForPremiumAudio);
+    document.getElementById('bbdownDolby').addEventListener('change', requireAppModeForPremiumAudio);
+    document.getElementById('bbdownApiModeControl').addEventListener('change', (event) => {
+      if (event.target?.value === 'web' && (document.getElementById('bbdownHiRes').checked || document.getElementById('bbdownDolby').checked)) {
+        setBBDownApiMode('app');
+        setStatus(document.getElementById('configStatus'), 'Hi-Res / Dolby 需要 APP 接口。', 'error');
+      }
+    });
     ensureQueueBoardHost();
 
     // Log mode toggle

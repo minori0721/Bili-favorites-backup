@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateConfig } from "../src/config.js";
+import { validateBBDownRuntimeConfig, validateConfig } from "../src/config.js";
 import { Task, TaskQueue } from "../src/queue.js";
 import { SyncScheduler } from "../src/scheduler.js";
 import { QualityUpgradeUploadReplaceTask } from "../src/tasks.js";
@@ -24,6 +24,27 @@ test("startup recovery batch setting validates the supported range", () => {
   assert.equal(validateConfig({ startupRecoveryBatchSize: 25 }), null);
   assert.match(String(validateConfig({ startupRecoveryBatchSize: 4 })), /between 5 and 100/);
   assert.match(String(validateConfig({ startupRecoveryBatchSize: 101 })), /between 5 and 100/);
+});
+
+test("BBDown API mode validates explicit values", () => {
+  assert.equal(validateConfig({ bbdownApiMode: "web" }), null);
+  assert.equal(validateConfig({ bbdownApiMode: "app" }), null);
+  assert.match(String(validateConfig({ bbdownApiMode: "mobile" as any })), /web or app/);
+});
+
+test("APP mode requires tokens and premium audio rejects Web mode", () => {
+  assert.match(String(validateBBDownRuntimeConfig(
+    { bbdownApiMode: "web", bbdownHiRes: true, bbdownDolby: false },
+    []
+  )), /必须使用 APP/);
+  assert.match(String(validateBBDownRuntimeConfig(
+    { bbdownApiMode: "app", bbdownHiRes: false, bbdownDolby: false },
+    [{ id: "u1", name: "Tester", enabled: true }]
+  )), /Tester/);
+  assert.equal(validateBBDownRuntimeConfig(
+    { bbdownApiMode: "app", bbdownHiRes: true, bbdownDolby: false },
+    [{ id: "u1", name: "Tester", enabled: true, accessToken: "token" }]
+  ), null);
 });
 
 test("retry-pending recovery applies one global budget across folders", () => {
