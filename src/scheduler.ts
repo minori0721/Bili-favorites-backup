@@ -123,6 +123,7 @@ export class SyncScheduler {
   private localCacheSnapshot: LocalCacheSnapshot | null = null;
   private localCacheRefresh: Promise<LocalCacheSnapshot> | null = null;
   private readonly localCacheSnapshotTtlMs = 10_000;
+  private readonly persistentJobWakeMinMs = 1_000;
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -154,7 +155,7 @@ export class SyncScheduler {
     });
     this.uploadQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
     this.verificationQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
-    void this.refreshLocalCacheSnapshot(true);
+    this.refreshLocalCacheAndWake(true);
 
     const logTaskError = (task: any, error: any) => {
       const label = error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed";
@@ -781,16 +782,12 @@ export class SyncScheduler {
       clearTimeout(this.jobDispatchTimer);
       this.jobDispatchTimer = null;
     }
-    if (this.leaseHeartbeatTimer) {
-      clearInterval(this.leaseHeartbeatTimer);
-      this.leaseHeartbeatTimer = null;
-    }
     const nextAt = this.jobStore.nextDueAt();
     if (nextAt === undefined) return;
     this.jobDispatchTimer = setTimeout(() => {
       this.jobDispatchTimer = null;
       this.dispatchPersistentJobs();
-    }, Math.max(0, nextAt - Date.now()));
+    }, Math.max(this.persistentJobWakeMinMs, nextAt - Date.now()));
     this.jobDispatchTimer.unref?.();
   }
 
@@ -1051,9 +1048,9 @@ export class SyncScheduler {
   }
 
   start() {
+    this.stopPollingTimers();
     this.acceptingJobs = true;
     const { pollIntervalMinutes } = this.configStore.get();
-    this.stop();
     const intervalMs = pollIntervalMinutes * 60 * 1000;
     const startupJitter = 30_000 + Math.floor(Math.random() * 90_000);
     this.nextAutoRunAt = Date.now() + startupJitter;
@@ -1065,6 +1062,7 @@ export class SyncScheduler {
       this.nextAutoRunAt = Date.now() + intervalMs;
       void this.tick();
     }, startupJitter);
+    this.dispatchPersistentJobs();
   }
 
   applyConfigUpdate(previous: AppConfig, next: AppConfig) {
@@ -1096,7 +1094,7 @@ export class SyncScheduler {
     this.downloadQueue.setMaxSize(this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
     this.uploadQueue.setMaxSize(this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
     this.verificationQueue.setMaxSize(this.queueHighWater(config.remoteVerifyConcurrency, config.startupRecoveryBatchSize));
-    void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
+    this.refreshLocalCacheAndWake(true);
     this.dispatchPersistentJobs();
     if (process.env.NODE_ENV !== "test") {
       this.start();
@@ -1104,14 +1102,8 @@ export class SyncScheduler {
   }
 
   stop() {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (this.startupTimer) {
-      clearTimeout(this.startupTimer);
-      this.startupTimer = null;
-    }
+    this.acceptingJobs = false;
+    this.stopPollingTimers();
     if (this.jobDispatchTimer) {
       clearTimeout(this.jobDispatchTimer);
       this.jobDispatchTimer = null;
@@ -1119,6 +1111,17 @@ export class SyncScheduler {
     if (this.downloadStartTimer) {
       clearTimeout(this.downloadStartTimer);
       this.downloadStartTimer = null;
+    }
+  }
+
+  private stopPollingTimers() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
     }
   }
 
@@ -1184,7 +1187,7 @@ export class SyncScheduler {
         checkedAt: this.localCacheSnapshot?.checkedAt ?? 0,
       };
     }
-    void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
+    this.refreshLocalCacheAndWake(true);
   }
 
   withCleanupLock<T>(fn: () => Promise<T>) {
@@ -1315,10 +1318,20 @@ export class SyncScheduler {
     return this.localCacheRefresh;
   }
 
+  private refreshLocalCacheAndWake(force = false) {
+    void this.refreshLocalCacheSnapshot(force).then(() => {
+      if (!this.acceptingJobs) return;
+      this.downloadQueue.poke();
+      this.dispatchPersistentJobs();
+    }).catch((error: any) => {
+      console.warn(`[Scheduler] Failed to refresh local cache state: ${error?.message || error}`);
+    });
+  }
+
   private getLocalCacheSnapshot() {
     const limitBytes = this.getLocalCacheLimitBytes();
     if (!this.localCacheSnapshot || this.localCacheSnapshot.limitBytes !== limitBytes) {
-      void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
+      this.refreshLocalCacheAndWake(true);
       const usedBytes = this.localCacheSnapshot?.usedBytes ?? 0;
       const reserveBytes = this.getLocalCacheReserveBytes(limitBytes);
       return {
@@ -1330,7 +1343,7 @@ export class SyncScheduler {
       };
     }
     if (Date.now() - this.localCacheSnapshot.checkedAt >= this.localCacheSnapshotTtlMs) {
-      void this.refreshLocalCacheSnapshot().then(() => this.downloadQueue.poke());
+      this.refreshLocalCacheAndWake();
     }
     return this.localCacheSnapshot;
   }
@@ -1723,7 +1736,7 @@ export class SyncScheduler {
     } catch (error: any) {
       console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
     } finally {
-      void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
+      this.refreshLocalCacheAndWake(true);
     }
   }
 
