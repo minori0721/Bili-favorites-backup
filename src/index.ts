@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { backupsDir, coversDir, dataDir, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
+import { backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
 import { type AppConfig, ConfigStore, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
@@ -36,6 +36,7 @@ import {
 } from "./uploader.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
+import { sqlitePaths } from "./database.js";
 import {
   applyMigrationPackage,
   createMigrationExport,
@@ -48,15 +49,6 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
-const qualityUpgradeQueue = new Map<string, QualityUpgradeTask>();
-const completedQualityUpgrades: Array<{
-  id: string;
-  bvid: string;
-  title: string;
-  status: "completed" | "error";
-  error?: string;
-  completedAt: string;
-}> = [];
 
 const favoriteItemsCache = new Map<
   string,
@@ -79,7 +71,7 @@ const cleanupItems: Record<CleanupItem, { label: string; important: boolean; pat
   covers: { label: "封面缓存", important: false, path: coversDir },
   exports: { label: "导出压缩包", important: false, path: exportsDir },
   backups: { label: "导入前备份", important: false, path: backupsDir },
-  state: { label: "备份状态", important: true, path: path.join(dataDir, "state.json") },
+  state: { label: "备份状态与持久化任务", important: true, path: databasePath },
   users: { label: "账号登录信息", important: true, path: path.join(dataDir, "users.json") },
   config: { label: "全局配置", important: true, path: path.join(dataDir, "config.json") },
 };
@@ -111,7 +103,6 @@ async function recoverInterruptedQualityDownloads() {
     if (!manifest || manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;
     const key = relationKey(target.userId, target.mediaId, manifest.bvid);
     if (remoteRecoveryBlocked.has(key)) continue;
-    if (qualityUpgradeQueue.has(key)) continue;
     const user = userStore.getById(target.userId);
     if (!user || !user.enabled) continue;
     const meta = stateManager.getVideoMeta(manifest.bvid);
@@ -128,32 +119,7 @@ async function recoverInterruptedQualityDownloads() {
     task.folderTitle = target.folderTitle;
     task.userId = target.userId;
     task.mediaId = target.mediaId;
-    task.onStartUpgrade = () => {
-      logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `恢复画质重调下载 ${manifest.bvid}`, raw: `[QualityUpgrade] resume download ${key}`, bvid: manifest.bvid, simpleVisible: true });
-    };
-    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => {
-      stateManager.markQualityUpgradeReplacing(manifest.bvid, target.userId, target.mediaId, {
-        stageRemotePath,
-        backupRemotePath,
-        oldRemotePath: target.remotePath,
-        oldFiles: target.oldFiles,
-      });
-    };
-    task.onBackupFileMoved = (_task, file) => stateManager.recordQualityUpgradeBackupFile(manifest.bvid, target.userId, target.mediaId, file);
-    task.onFinalFileMoved = (_task, file) => stateManager.recordQualityUpgradeFinalFile(manifest.bvid, target.userId, target.mediaId, file);
-    task.onUploaded = (_task, result) => stateManager.finalizeQualityUpgradeRemoteFiles(manifest.bvid, target.userId, target.mediaId, result.remotePath, result.files);
-    task.onCompletedUpgrade = () => {
-      if (!qualityUpgradeQueue.has(key)) return;
-      stateManager.completeQualityUpgrade(manifest.bvid, target.userId, target.mediaId, target.remotePath, task.finalFiles || []);
-      completedQualityUpgrades.unshift({ id: task.id, bvid: manifest.bvid, title: task.videoTitle || manifest.bvid, status: "completed", completedAt: new Date().toISOString() });
-      completedQualityUpgrades.splice(50);
-      qualityUpgradeQueue.delete(key);
-    };
-    task.onFailed = markQualityUpgradeFailed;
-    qualityUpgradeQueue.set(key, task);
-    if (!scheduler.enqueueQualityUpgrade(task)) {
-      qualityUpgradeQueue.delete(key);
-    }
+    scheduler.enqueueQualityUpgrade(task);
   }
 }
 
@@ -1117,6 +1083,10 @@ async function removeCleanupTarget(item: CleanupItem) {
     scheduler.refreshLocalCacheState();
     return;
   }
+  if (item === "state") {
+    stateManager.clear();
+    return;
+  }
   const targetPath = cleanupItems[item].path;
   if (!targetPath) return;
   await fs.promises.rm(targetPath, { recursive: true, force: true });
@@ -1129,8 +1099,6 @@ async function removeCleanupTarget(item: CleanupItem) {
     await fs.promises.mkdir(exportsDir, { recursive: true });
   } else if (item === "backups") {
     await fs.promises.mkdir(backupsDir, { recursive: true });
-  } else if (item === "state") {
-    stateManager.clear();
   } else if (item === "users") {
     userStore.clear();
   } else if (item === "config") {
@@ -1147,6 +1115,8 @@ app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
     important: cleanupItems[key].important,
     bytes: key === "orphan-fragments"
       ? downloadRecovery.cleanupEligibleBytes
+      : key === "state"
+        ? (await Promise.all(sqlitePaths(databasePath).map((file) => pathSize(file)))).reduce((sum, value) => sum + value, 0)
       : cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
   })));
   res.json({
@@ -1221,12 +1191,13 @@ function reloadStoresAfterImport() {
   configStore.reload();
   userStore.reload();
   stateManager.reload();
+  scheduler.reloadStateDatabase();
   logManager.reload();
   scheduler.updateInterval();
 }
 
 app.post("/api/migration/export", asyncHandler(async (req, res) => {
-  const result = await createMigrationExport(parseMigrationOptions(req.body));
+  const result = await createMigrationExport(parseMigrationOptions(req.body), stateManager);
   const fileName = path.basename(result.outputPath);
   res.download(result.outputPath, fileName, (error) => {
     if (error && !res.headersSent) {
@@ -1269,7 +1240,7 @@ app.post("/api/migration/import", migrationZipBody, asyncHandler(async (req, res
       restoreCovers: parseBooleanOption(req.query.restoreCovers, true),
       restoreLogs: parseBooleanOption(req.query.restoreLogs, false),
       restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
-    }));
+    }, stateManager));
   } catch (error: any) {
     throw badRequest(error?.message || "导入包无法解析");
   }
@@ -1534,8 +1505,8 @@ function buildQualityUpgradePreview() {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
         continue;
       }
-      if (relation.backupStatus !== "uploaded" && relation.backupStatus !== "verified") {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "只有已上传/已验证的视频才能重调画质" });
+      if (relation.backupStatus !== "verified" && relation.backupStatus !== "partial_verified") {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: relation.backupStatus === "uploaded" ? "远端文件仍在确认中" : "只有最终确认的视频才能重调画质" });
         continue;
       }
       if (!oldFiles.length || !remotePath) {
@@ -1543,7 +1514,7 @@ function buildQualityUpgradePreview() {
         continue;
       }
       const key = relationKey(relation.userId, relation.mediaId, record.bvid);
-      if (qualityUpgradeQueue.has(key)) {
+      if (scheduler.hasQualityUpgrade(relation.userId, relation.mediaId, record.bvid)) {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
         continue;
       }
@@ -1577,27 +1548,6 @@ function buildQualityUpgradePreview() {
 app.post("/api/quality-upgrade/preview", asyncHandler(async (_req, res) => {
   res.json({ success: true, data: buildQualityUpgradePreview() });
 }));
-
-function markQualityUpgradeFailed(task: QualityUpgradeTask, error: any) {
-  const key = relationKey(task.target.userId, task.target.mediaId, task.bvid);
-  if (!qualityUpgradeQueue.has(key)) {
-    return;
-  }
-  const safeError = sanitizeUploadText(error?.message || error);
-  qualityUpgradeQueue.delete(key);
-  completedQualityUpgrades.unshift({ id: task.id, bvid: task.bvid, title: String(task.videoTitle || task.bvid), status: "error", error: safeError, completedAt: new Date().toISOString() });
-  completedQualityUpgrades.splice(50);
-  logManager.push({
-    timestamp: new Date().toISOString(),
-    type: task.qualityStage === "upload" ? "upload" : "download",
-    level: "error",
-    summary: `重调画质失败 ${task.bvid}: ${safeError}`,
-    raw: `[QualityUpgrade] failed ${key}: ${safeError}`,
-    bvid: task.bvid,
-    simpleVisible: true,
-    debugVisible: true,
-  });
-}
 
 app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
   const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string }> };
@@ -1640,77 +1590,8 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
     task.folderTitle = candidate.folderTitle;
     task.userId = candidate.userId;
     task.mediaId = candidate.mediaId;
-    task.onStartUpgrade = () => {
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "download",
-        level: "info",
-        summary: `开始重调画质 ${candidate.bvid}: ${candidate.title}`,
-        raw: `[QualityUpgrade] start ${key}`,
-        bvid: candidate.bvid,
-        simpleVisible: true,
-      });
-    };
-    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => {
-      stateManager.markQualityUpgradeReplacing(candidate.bvid, candidate.userId, candidate.mediaId, {
-        stageRemotePath,
-        backupRemotePath,
-        oldRemotePath: candidate.remotePath,
-        oldFiles: candidate.oldFiles,
-      });
-    };
-    task.onBackupFileMoved = (_task, file) => {
-      stateManager.recordQualityUpgradeBackupFile(candidate.bvid, candidate.userId, candidate.mediaId, file);
-    };
-    task.onFinalFileMoved = (_task, file) => {
-      stateManager.recordQualityUpgradeFinalFile(candidate.bvid, candidate.userId, candidate.mediaId, file);
-    };
-    task.onUploaded = (_task, result) => {
-      stateManager.finalizeQualityUpgradeRemoteFiles(candidate.bvid, candidate.userId, candidate.mediaId, result.remotePath, result.files);
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "upload",
-        level: "info",
-        summary: `新版文件已上传并验证 ${candidate.bvid}`,
-        raw: `[QualityUpgrade] uploaded ${key}`,
-        bvid: candidate.bvid,
-        simpleVisible: true,
-      });
-    };
-    task.onCompletedUpgrade = () => {
-      if (!qualityUpgradeQueue.has(key)) {
-        return;
-      }
-      const backupDeleteFailed = Number(task.deleteResult?.failed || 0);
-      stateManager.completeQualityUpgrade(candidate.bvid, candidate.userId, candidate.mediaId, candidate.remotePath, task.finalFiles || []);
-      completedQualityUpgrades.unshift({
-        id: task.id,
-        bvid: candidate.bvid,
-        title: candidate.title,
-        status: "completed",
-        error: backupDeleteFailed > 0 ? `新版已完成，旧文件备份清理失败 ${backupDeleteFailed} 个，请手动检查临时备份目录。` : undefined,
-        completedAt: new Date().toISOString(),
-      });
-      completedQualityUpgrades.splice(50);
-      qualityUpgradeQueue.delete(key);
-      if (backupDeleteFailed > 0) {
-        logManager.push({
-          timestamp: new Date().toISOString(),
-          type: "system",
-          level: "warn",
-          summary: `重调画质已完成，但旧文件备份清理失败 ${backupDeleteFailed} 个`,
-          raw: `[QualityUpgrade] backup cleanup failed ${key}: ${backupDeleteFailed}`,
-          bvid: candidate.bvid,
-          simpleVisible: true,
-          debugVisible: true,
-        });
-      }
-    };
-    task.onFailed = markQualityUpgradeFailed;
-    qualityUpgradeQueue.set(key, task);
     if (!scheduler.enqueueQualityUpgrade(task)) {
-      qualityUpgradeQueue.delete(key);
-      skipped.push({ key, reason: "下载队列已满，请稍后重试" });
+      skipped.push({ key, reason: "该任务已在持久化队列中" });
       continue;
     }
     queued.push({ key, bvid: candidate.bvid, title: candidate.title });
@@ -1720,20 +1601,7 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/quality-upgrade/state", (_req, res) => {
-  const running = Array.from(qualityUpgradeQueue.entries()).map(([key, task]) => ({
-    key,
-    id: task.id,
-    bvid: task.bvid,
-    title: String(task.videoTitle || ""),
-    folderTitle: String(task.folderTitle || ""),
-    userId: String(task.userId || ""),
-    mediaId: Number(task.mediaId || 0),
-    status: task.status,
-    error: task.error?.message,
-    startedAt: task.startedAt,
-    queuedAt: task.queuedAt,
-  }));
-  res.json({ success: true, data: { running, completed: completedQualityUpgrades.slice(0, 20) } });
+  res.json({ success: true, data: scheduler.getQualityUpgradeState() });
 });
 
 app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
@@ -1908,6 +1776,11 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 
 
+export async function closeAppResources() {
+  scheduler.beginShutdown();
+  await scheduler.shutdown(5_000);
+}
+
 export { app };
 
 if (process.env.NODE_ENV !== "test") {
@@ -1921,10 +1794,13 @@ if (process.env.NODE_ENV !== "test") {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
-    scheduler.stop();
+    scheduler.beginShutdown();
     server.close();
     await shutdownActiveDownloads(20_000).catch((error) => {
       console.warn("[Shutdown] Failed to stop active downloads cleanly:", error?.message || error);
+    });
+    await scheduler.shutdown(20_000).catch((error) => {
+      console.warn("[Shutdown] Failed to checkpoint state database cleanly:", error?.message || error);
     });
     process.exit(0);
   };

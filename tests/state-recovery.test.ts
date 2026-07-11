@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { StateManager, type StateFile } from "../src/state.js";
+import { StateDatabase } from "../src/database.js";
 import { writeJsonFile } from "../src/storage.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
@@ -58,19 +59,17 @@ test("schema 8 failed state with an existing local directory migrates to upload_
     const statePath = path.join(runtime, "state.json");
     writeJsonFile(statePath, state);
 
-    let writes = 0;
     const manager = new StateManager({
       statePath,
-      writeState(filePath, value) {
-        writes += 1;
-        writeJsonFile(filePath, value);
-      },
+      dbPath: path.join(runtime, "bfb.sqlite"),
     });
     const snapshot = manager.getStateSnapshot();
     assert.equal(snapshot.schemaVersion, 11);
     assert.equal(snapshot.videos![bvid].backupStatus, "upload_failed");
     assert.equal(snapshot.relations![`u1:1:${bvid}`].backupStatus, "upload_failed");
-    assert.equal(writes, 1);
+    assert.equal(fs.existsSync(statePath), false);
+    assert.equal(fs.existsSync(path.join(runtime, "bfb.sqlite")), true);
+    manager.close();
   } finally {
     await removeTestDir(runtime);
   }
@@ -252,23 +251,19 @@ test("1000 persisted active records normalize with one full state write", async 
     const originalBytes = (await fs.promises.stat(statePath)).size;
     assert.ok(originalBytes >= 5 * 1024 * 1024);
 
-    let writes = 0;
-    let writtenBytes = 0;
+    let flushes = 0;
     const manager = new StateManager({
       statePath,
-      writeState(filePath, value) {
-        writes += 1;
-        const serialized = JSON.stringify(value, null, 2);
-        writtenBytes += Buffer.byteLength(serialized);
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, serialized, "utf-8");
-      },
+      dbPath: path.join(runtime, "bfb.sqlite"),
+      onFlush() { flushes += 1; },
     });
     manager.normalizePersistedWorkForRecovery();
     const snapshot = manager.getStateSnapshot();
-    assert.equal(writes, 1);
-    assert.ok(writtenBytes <= originalBytes * 3);
+    assert.ok(flushes <= 1);
     assert.equal(Object.values(snapshot.videos || {}).filter((item) => item.backupStatus === "queued").length, 1000);
+    manager.close();
+    const sqliteBytes = (await fs.promises.stat(path.join(runtime, "bfb.sqlite"))).size;
+    assert.ok(sqliteBytes <= originalBytes * 3);
   } finally {
     await removeTestDir(runtime);
   }
@@ -282,19 +277,105 @@ test("runBatch coalesces multiple state transitions into one write", async () =>
     const second = addVideo(state, 2, "discovered");
     const statePath = path.join(runtime, "state.json");
     writeJsonFile(statePath, state);
-    let writes = 0;
+    let flushes = 0;
     const manager = new StateManager({
       statePath,
-      writeState(filePath, value) {
-        writes += 1;
-        writeJsonFile(filePath, value);
-      },
+      dbPath: path.join(runtime, "bfb.sqlite"),
+      onFlush() { flushes += 1; },
     });
     manager.runBatch(() => {
       manager.markQueued(first, "/one", "u1", 1);
       manager.markQueued(second, "/two", "u1", 1);
     });
-    assert.equal(writes, 1);
+    assert.equal(flushes, 1);
+    manager.close();
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("corrupt legacy JSON aborts migration without deleting the source", async () => {
+  const runtime = await createTestDir("state-corrupt-json");
+  try {
+    const statePath = path.join(runtime, "state.json");
+    const dbPath = path.join(runtime, "bfb.sqlite");
+    await fs.promises.writeFile(statePath, "{not-json", "utf8");
+    assert.throws(() => new StateManager({ statePath, dbPath }), /JSON/);
+    assert.equal(fs.existsSync(statePath), true);
+    assert.equal(fs.existsSync(dbPath), false);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("an existing corrupt SQLite database never falls back to legacy JSON", async () => {
+  const runtime = await createTestDir("state-corrupt-sqlite");
+  try {
+    const statePath = path.join(runtime, "state.json");
+    const dbPath = path.join(runtime, "bfb.sqlite");
+    writeJsonFile(statePath, baseState());
+    await fs.promises.writeFile(dbPath, "not-sqlite", "utf8");
+    assert.throws(() => new StateManager({ statePath, dbPath }));
+    assert.equal(fs.existsSync(statePath), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("foreign-key corruption is rejected before scheduling starts", async () => {
+  const runtime = await createTestDir("state-foreign-key");
+  try {
+    const dbPath = path.join(runtime, "bfb.sqlite");
+    const database = new StateDatabase(dbPath);
+    database.db.pragma("foreign_keys = OFF");
+    database.db.prepare(`
+      INSERT INTO favorite_relations(user_id,media_id,bvid,backup_status,active_in_favorite,payload_json,updated_at)
+      VALUES('u1',1,'BVMISSING','queued',1,'{}',0)
+    `).run();
+    database.close();
+    assert.throws(() => new StateManager({ statePath: path.join(runtime, "state.json"), dbPath }), /foreign key/i);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy migration is idempotent and permanently archives the original", async () => {
+  const runtime = await createTestDir("state-idempotent");
+  try {
+    const state = baseState();
+    addVideo(state, 1, "queued");
+    const statePath = path.join(runtime, "state.json");
+    const dbPath = path.join(runtime, "bfb.sqlite");
+    const archiveDir = path.join(runtime, "backups");
+    writeJsonFile(statePath, state);
+    const first = new StateManager({ statePath, dbPath, archiveDir });
+    first.close();
+    const archivesAfterFirst = (await fs.promises.readdir(archiveDir)).filter((name) => name.endsWith(".json"));
+    const second = new StateManager({ statePath, dbPath, archiveDir });
+    assert.equal(Object.keys(second.getStateSnapshot().videos || {}).length, 1);
+    second.close();
+    const archivesAfterSecond = (await fs.promises.readdir(archiveDir)).filter((name) => name.endsWith(".json"));
+    assert.deepEqual(archivesAfterSecond, archivesAfterFirst);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("clearing backup state empties SQLite tables without deleting the open database", async () => {
+  const runtime = await createTestDir("state-clear-sqlite");
+  try {
+    const state = baseState();
+    addVideo(state, 1, "queued");
+    const statePath = path.join(runtime, "state.json");
+    const dbPath = path.join(runtime, "bfb.sqlite");
+    writeJsonFile(statePath, state);
+    const manager = new StateManager({ statePath, dbPath });
+    manager.getDatabase().db.prepare("INSERT INTO jobs(id,kind,dedupe_key,status,priority,payload_json,attempts,max_attempts,not_before,created_at,updated_at) VALUES('j1','download','download:test','pending',1,'{}',0,1,0,0,0)").run();
+    manager.clear();
+    const counts = manager.getDatabase().db.prepare("SELECT (SELECT COUNT(*) FROM videos) videos, (SELECT COUNT(*) FROM favorite_relations) relations, (SELECT COUNT(*) FROM jobs) jobs").get() as any;
+    assert.deepEqual(counts, { videos: 0, relations: 0, jobs: 0 });
+    assert.equal(fs.existsSync(dbPath), true);
+    manager.close();
   } finally {
     await removeTestDir(runtime);
   }

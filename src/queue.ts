@@ -214,6 +214,25 @@ export class TaskQueue extends EventEmitter {
       this.processQueue();
     }
   }
+
+  async waitForIdle(timeoutMs = 20_000) {
+    if (!this.isBusy()) return true;
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.removeListener("taskSettled", onSettled);
+        resolve(value);
+      };
+      const onSettled = () => {
+        if (!this.isBusy()) finish(true);
+      };
+      const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+      this.on("taskSettled", onSettled);
+    });
+  }
 }
 
 export function computeTaskRetryDelayMs(baseSeconds: number, retryIndex: number, explicitDelayMs?: number, random = Math.random) {

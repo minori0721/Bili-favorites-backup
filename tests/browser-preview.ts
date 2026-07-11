@@ -5,7 +5,7 @@ import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
 const requestedMode = process.env.BFB_PREVIEW_MODE;
-const mode = requestedMode === "degraded" || requestedMode === "risk" ? requestedMode : "healthy";
+const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -121,6 +121,60 @@ if (mode === "risk") {
   };
   await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(config, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), "[]\n");
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
+}
+
+if (mode === "confirm") {
+  const now = new Date().toISOString();
+  const users = [{
+    id: "preview-user",
+    uid: 1,
+    name: "预览账号",
+    cookie: { SESSDATA: "preview", bili_jct: "preview", DedeUserID: "1" },
+    favorites: [{ mediaId: 1, title: "确认中状态预览" }],
+    enabled: true,
+    lastLoginAt: now,
+  }];
+  const makeVideo = (bvid: string, title: string, unavailable: boolean) => ({
+    bvid,
+    title,
+    upperName: "预览 UP",
+    firstSeenAt: now,
+    lastSeenAt: now,
+    biliStatus: unavailable ? "unavailable" : "available",
+    favoriteUnavailable: unavailable || undefined,
+    backupStatus: "uploaded",
+  });
+  const makeRelation = (bvid: string, unavailable: boolean) => ({
+    userId: "preview-user",
+    mediaId: 1,
+    bvid,
+    folderTitle: "确认中状态预览",
+    firstSeenAt: now,
+    lastSeenAt: now,
+    activeInFavorite: true,
+    favoriteUnavailable: unavailable || undefined,
+    backupStatus: "uploaded",
+    remotePath: "/backup/preview",
+    remoteFiles: [{ name: `${bvid}.mp4`, path: `/backup/preview/${bvid}.mp4`, size: 1024, verificationStatus: "awaiting_verification", putCompletedAt: now, nextVerifyAt: new Date(Date.now() + 10 * 60_000).toISOString() }],
+  });
+  const state = {
+    schemaVersion: 11,
+    processedByUser: {},
+    failedByUser: {},
+    videos: {
+      BVCONFIRMVISIBLE: makeVideo("BVCONFIRMVISIBLE", "已上传但远端仍在确认的视频", false),
+      BVCONFIRMREMOVED: makeVideo("BVCONFIRMREMOVED", "已下架但远端仍在确认的视频", true),
+    },
+    relations: {
+      "preview-user:1:BVCONFIRMVISIBLE": makeRelation("BVCONFIRMVISIBLE", false),
+      "preview-user:1:BVCONFIRMREMOVED": makeRelation("BVCONFIRMREMOVED", true),
+    },
+    folderScans: { "preview-user:1": { userId: "preview-user", mediaId: 1, folderTitle: "确认中状态预览", initStatus: "complete", nextHistoryPage: 1, catchupPage: 1, total: 2 } },
+    userCooldowns: {},
+  };
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ startupRecoveryBatchSize: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
 

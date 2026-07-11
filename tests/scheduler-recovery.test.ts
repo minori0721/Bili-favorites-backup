@@ -60,6 +60,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     const originalBytes = (await fs.promises.stat(path.join(dataDir, "state.json"))).size;
     const repoRoot = process.cwd();
     const result = spawnSync(process.execPath, [
+      "--expose-gc",
       path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs"),
       path.join(repoRoot, "tests", "recovery-harness.ts"),
     ], {
@@ -72,13 +73,15 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("RECOVERY_RESULT="));
     assert.ok(line, result.stdout);
     const data = JSON.parse(line.slice("RECOVERY_RESULT=".length));
-    assert.ok(data.writes <= 2);
-    assert.ok(data.writtenBytes <= originalBytes * 3);
+    assert.equal(data.stateJsonExists, false);
+    assert.ok(data.databaseBytes <= originalBytes * 3);
     assert.equal(data.firstPending, 25);
-    assert.equal(data.firstBacklog, 975);
+    assert.equal(data.firstJobs, 1000);
     assert.equal(data.secondPending, 25);
-    assert.equal(data.secondBacklog, 955);
-    assert.ok(data.rss < 300 * 1024 * 1024, `RSS too high: ${data.rss}`);
+    assert.equal(data.secondJobs, 980);
+    assert.equal(data.thirdJobs, 980);
+    assert.ok(data.heapUsed < 192 * 1024 * 1024, `recovery process heap too high: ${data.heapUsed} (delta ${data.heapUsedDelta})`);
+    assert.ok(data.rss < 512 * 1024 * 1024, `recovery process RSS too high: ${data.rss}`);
   } finally {
     await removeTestDir(runtime);
   }
@@ -180,7 +183,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     assert.deepEqual(data.uploadOrder, ["BVFAILED", "BVDOWNLOADED"]);
     assert.equal(data.blocked, false);
     assert.equal(data.initialDownloadTasks, 0);
-    assert.equal(data.initialDownloadBacklog, 1);
+    assert.equal(data.initialDownloadJobs, 1);
     assert.equal(data.releasedDownloadTasks, 1);
   } finally {
     await removeTestDir(runtime);
@@ -251,8 +254,7 @@ test("one deterministic upload failure is isolated without blocking unrelated do
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("ISOLATED_UPLOAD_FAILURE_RESULT="));
     assert.ok(line, result.stdout);
     const data = JSON.parse(line.slice("ISOLATED_UPLOAD_FAILURE_RESULT=".length));
-    assert.equal(data.priorityCount, 0);
-    assert.equal(data.retryPriority, false);
+    assert.equal(data.retryStatus, "retry_wait");
     assert.ok(data.retryDelayMs > 5.9 * 60 * 60_000, `Retry delay too short: ${data.retryDelayMs}`);
     assert.ok(data.retryDelayMs <= 6 * 60 * 60_000, `Retry delay too long: ${data.retryDelayMs}`);
     assert.equal(data.canStartDownload, true);

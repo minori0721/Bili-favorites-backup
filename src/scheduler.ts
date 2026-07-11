@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { ConfigStore, type AppConfig, type BBDownApiMode } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
@@ -8,7 +9,7 @@ import { logManager } from "./logger.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
-import { mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
+import { computeTaskRetryDelayMs, mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { queueCoverCache } from "./cover-cache.js";
 import {
   cleanupUploadedSessionFiles,
@@ -25,13 +26,17 @@ import {
   type UploadFailureInfo,
 } from "./upload-health.js";
 import { DownloadApiHealth } from "./download-api-health.js";
+import { PersistentJobStore, type PersistentJobKind } from "./job-store.js";
 import {
   DownloadTask,
+  QualityUpgradeCleanupTask,
   QualityUpgradeDownloadTask,
+  QualityUpgradeReplaceTask,
   QualityUpgradeTask,
   QualityUpgradeUploadReplaceTask,
   UploadTarget,
   UploadTask,
+  UploadVerificationTask,
 } from "./tasks.js";
 
 function delay(ms: number) {
@@ -47,6 +52,16 @@ export function computeDownloadStartDelayMs(random: () => number = Math.random) 
 }
 
 const ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS = 6 * 60 * 60_000;
+const UPLOAD_VERIFY_SCHEDULE_MS = [2_000, 10_000, 30_000, 2 * 60_000, 5 * 60_000, 10 * 60_000];
+const UPLOAD_VERIFY_REUPLOAD_DELAY_MS = 30 * 60_000;
+
+type QualityUploadPhaseTask = QualityUpgradeUploadReplaceTask | QualityUpgradeReplaceTask | QualityUpgradeCleanupTask;
+
+function isQualityUploadPhaseTask(task: unknown): task is QualityUploadPhaseTask {
+  return task instanceof QualityUpgradeUploadReplaceTask
+    || task instanceof QualityUpgradeReplaceTask
+    || task instanceof QualityUpgradeCleanupTask;
+}
 
 async function pathSize(targetPath: string): Promise<number> {
   try {
@@ -68,14 +83,18 @@ export class SyncScheduler {
   private timer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
   private running = false;
+  private acceptingJobs = true;
   private configStore: ConfigStore;
   private userStore: UserStore;
   private stateManager: StateManager;
 
   private downloadQueue: TaskQueue;
   private uploadQueue: TaskQueue;
-  private queuedBackupKeys = new Set<string>();
-  private activeDownloadTargets = new Map<string, UploadTarget[]>();
+  private verificationQueue: TaskQueue;
+  private readonly jobStore: PersistentJobStore;
+  private readonly leaseOwner = crypto.randomUUID();
+  private jobDispatchTimer: NodeJS.Timeout | null = null;
+  private leaseHeartbeatTimer: NodeJS.Timeout | null = null;
   private readonly hotScanMinPages = 3;
   private readonly hotScanMaxPages = 12;
   private readonly hotScanBurstBudget = 3;
@@ -92,15 +111,6 @@ export class SyncScheduler {
   private remoteVerifyPathQueue = new Map<string, number>();
   private pendingTickOptions: TickOptions | null = null;
   private cleanupLocked = false;
-  private sharedUploadDirs = new Map<string, SharedUploadDirTracker>();
-  private recoveryUploadBacklog: RecoveryUploadItem[] = [];
-  private recoveryDownloadBacklog: RecoveryDownloadItem[] = [];
-  private recoveryUploadKeys = new Set<string>();
-  private recoveryDownloadKeys = new Set<string>();
-  private priorityUploadKeys = new Set<string>();
-  private qualityUpgradeUploadBacklog: DeferredQualityUpload[] = [];
-  private recoveryRefillTimer: NodeJS.Timeout | null = null;
-  private recoveryRefillAt = 0;
   private uploadProbeTimer: NodeJS.Timeout | null = null;
   private readonly uploadCircuit = new UploadCircuitBreaker();
   private readonly downloadApiHealth = new DownloadApiHealth();
@@ -120,8 +130,10 @@ export class SyncScheduler {
     this.configStore = configStore;
     this.userStore = userStore;
     this.stateManager = stateManager;
+    this.jobStore = new PersistentJobStore(this.stateManager.getDatabase());
 
     const config = this.configStore.get();
+    this.uploadCircuit.restore(this.stateManager.getUploadCooldown() as any);
     this.downloadApiHealth.configure(config.bbdownApiMode || "web");
     const persistedApiCooldown = typeof (this.stateManager as any).getDownloadApiCooldown === "function"
       ? this.stateManager.getDownloadApiCooldown()
@@ -132,11 +144,16 @@ export class SyncScheduler {
     }
     this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1, this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
     this.uploadQueue = new TaskQueue(config.concurrentUploads || 2, this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
+    this.verificationQueue = new TaskQueue(
+      Math.max(1, Math.min(10, config.remoteVerifyConcurrency || 3)),
+      this.queueHighWater(config.remoteVerifyConcurrency || 3, config.startupRecoveryBatchSize)
+    );
     this.downloadQueue.setStartGate((task) => {
       if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
       return this.canStartDownloadTask(task);
     });
     this.uploadQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
+    this.verificationQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
     void this.refreshLocalCacheSnapshot(true);
 
     const logTaskError = (task: any, error: any) => {
@@ -149,17 +166,21 @@ export class SyncScheduler {
 
     this.downloadQueue.on("taskStart", (task: DownloadTask | QualityUpgradeDownloadTask) => {
       this.markDownloadTaskStarted();
+      if (task.persistentJobId) this.jobStore.markRunning(task.persistentJobId, this.leaseOwner, 30 * 60_000);
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = "download";
         task.control.qualityStageLabel = "下载新版";
         this.syncQualityUpgradeControl(task, "running");
       }
     });
-    this.uploadQueue.on("taskStart", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
-      if (task instanceof QualityUpgradeUploadReplaceTask) {
+    this.uploadQueue.on("taskStart", (task: UploadTask | QualityUploadPhaseTask) => {
+      if (task.persistentJobId) this.jobStore.markRunning(task.persistentJobId, this.leaseOwner, 30 * 60_000);
+      if (isQualityUploadPhaseTask(task)) {
         task.control.error = undefined;
         task.control.qualityStage = "upload";
-        task.control.qualityStageLabel = "上传新版到临时目录";
+        task.control.qualityStageLabel = task instanceof QualityUpgradeCleanupTask
+          ? "清理旧文件备份"
+          : (task instanceof QualityUpgradeReplaceTask ? "替换远端文件" : "上传新版到临时目录");
         this.syncQualityUpgradeControl(task, "running");
       }
     });
@@ -168,12 +189,25 @@ export class SyncScheduler {
       logTaskError(task, error);
       const apiRetryAt = this.handleDownloadApiFailure(task, error);
       if (task instanceof QualityUpgradeDownloadTask) {
-        if (apiRetryAt && !error?.permanent) {
-          task.control.status = "retry_wait";
-          task.control.error = error;
-          task.control.qualityStage = "download";
-          task.control.qualityStageLabel = "B站风控冷却后重试下载新版";
-          this.scheduleQualityDownloadRecovery(task.control, apiRetryAt);
+        task.control.error = error;
+        if (task.persistentJobId) {
+          this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task.control));
+          if (error?.permanent) {
+            this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+            this.syncQualityUpgradeControl(task, "error");
+            task.control.onFailed?.(task.control, error);
+          } else if (apiRetryAt) {
+            task.control.qualityStageLabel = "B站风控冷却后重试下载新版";
+            this.syncQualityUpgradeControl(task, "retry_wait");
+            this.jobStore.defer(task.persistentJobId, this.leaseOwner, sanitizeUploadText(error?.message || error), apiRetryAt);
+          } else {
+            const job = task.persistentJob as any;
+            const retryAt = Date.now() + computeTaskRetryDelayMs(this.configStore.get().retryDelaySeconds, Number(job?.attempts || 0), error?.retryAfterMs);
+            const result = this.jobStore.retry(task.persistentJobId, this.leaseOwner, sanitizeUploadText(error?.message || error), retryAt);
+            this.syncQualityUpgradeControl(task, result.exhausted ? "error" : "retry_wait");
+            if (result.exhausted) task.control.onFailed?.(task.control, error);
+          }
+          this.dispatchPersistentJobs();
           return;
         }
         this.syncQualityUpgradeControl(task, "error");
@@ -190,34 +224,38 @@ export class SyncScheduler {
         bvid: task.bvid,
         simpleVisible: true,
       });
-      const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
+      const targets = this.collectUploadTargets(task.bvid, task.targets || this.makeSingleTarget(task));
       const session = task.downloadDir ? readDownloadSession(task.downloadDir) : null;
       if (task.downloadDir && session && !error?.permanent) {
         this.stateManager.markDownloadInterrupted(task.bvid, task.downloadDir, error.message || "Download failure", targets);
-        for (const target of targets) {
-          this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
-          const user = this.userStore.getById(target.userId);
-          const key = this.backupKey(target.userId, target.mediaId, task.bvid);
-          if (user && !this.recoveryDownloadKeys.has(key)) {
-            this.recoveryDownloadKeys.add(key);
-            this.recoveryDownloadBacklog.push({
-              user,
-              mediaId: target.mediaId,
-              folderTitle: target.folderTitle,
-              bvid: task.bvid,
-              notBefore: apiRetryAt,
-            });
-          }
-        }
       } else {
         for (const target of targets) {
-          this.queuedBackupKeys.delete(this.backupKey(target.userId, target.mediaId, task.bvid));
           this.stateManager.markRelationRetryPending(task.bvid, target.userId, target.mediaId, error.message || "Download failure");
           this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", Boolean(error?.permanent));
         }
       }
-      this.activeDownloadTargets.delete(task.bvid);
-      this.scheduleRecoveryRefill();
+      if (task.persistentJobId) {
+        if (error?.permanent) {
+          this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+        } else if (apiRetryAt) {
+          this.jobStore.defer(task.persistentJobId, this.leaseOwner, sanitizeUploadText(error?.message || error), apiRetryAt);
+        } else {
+          const job = task.persistentJob as any;
+          const retryIndex = Number(job?.attempts || 0);
+          const retryAt = Date.now() + computeTaskRetryDelayMs(
+            this.configStore.get().retryDelaySeconds,
+            retryIndex,
+            error?.retryAfterMs
+          );
+          const result = this.jobStore.retry(task.persistentJobId, this.leaseOwner, sanitizeUploadText(error?.message || error), retryAt);
+          if (result.exhausted) {
+            for (const target of targets) {
+              this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", true);
+            }
+          }
+        }
+      }
+      this.dispatchPersistentJobs();
     });
     this.downloadQueue.on("taskRetry", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
       logTaskRetry(task, error);
@@ -237,118 +275,64 @@ export class SyncScheduler {
         simpleVisible: true,
       });
     });
-    this.uploadQueue.on("taskError", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
+    this.uploadQueue.on("taskError", (task: UploadTask | QualityUploadPhaseTask, error: any) => {
       logTaskError(task, error);
       const failure = this.recordUploadFailure(task, error);
-      if (task instanceof QualityUpgradeUploadReplaceTask) {
-        if (this.uploadCircuit.getSnapshot().state !== "closed") {
-          task.control.qualityStage = "upload";
-          task.control.qualityStageLabel = "等待上传后端恢复";
-          task.control.error = error;
-          this.syncQualityUpgradeControl(task, "retry_wait");
-          this.qualityUpgradeUploadBacklog.push({
-            task: new QualityUpgradeUploadReplaceTask(task.control),
-            notBefore: this.uploadCircuit.getRetryAt(),
-          });
-        } else {
-          this.syncQualityUpgradeControl(task, "error");
-          task.control.error = error;
-          task.control.onFailed?.(task.control, error);
+      if (isQualityUploadPhaseTask(task)) {
+        task.control.error = error;
+        if (task.persistentJobId) {
+          this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task.control));
+          const retryAt = this.uploadCircuit.getRetryAt() || Date.now() + Math.max(60_000, failure.retryAfterMs || 0);
+          const result = this.jobStore.retry(task.persistentJobId, this.leaseOwner, failure.summary, retryAt);
+          this.syncQualityUpgradeControl(task, result.exhausted ? "error" : "retry_wait");
+          task.control.qualityStageLabel = result.exhausted ? "画质重调失败" : "等待上传后端恢复";
+          if (result.exhausted) task.control.onFailed?.(task.control, error);
+          this.dispatchPersistentJobs();
+          return;
         }
-        this.scheduleRecoveryRefill();
+        this.syncQualityUpgradeControl(task, "error");
+        task.control.onFailed?.(task.control, error);
         return;
       }
       const uploadHealth = this.uploadCircuit.getSnapshot();
       const isolatedDeterministicFailure = failure.category === "deterministic" && uploadHealth.state === "closed";
-      if (task.historyOnly) {
+      if (task.persistentJobId) {
+        const retryAt = uploadHealth.retryAt || Date.now() + (
+          isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : Math.max(60_000, failure.retryAfterMs || 0)
+        );
+        if (!task.historyOnly) {
+          this.stateManager.markUploadFailed(task.bvid, task.downloadDir, task.userId, task.mediaId, failure.summary);
+        }
+        const retry = this.jobStore.retry(task.persistentJobId, this.leaseOwner, failure.summary, retryAt);
         logManager.push({
           timestamp: new Date().toISOString(),
           type: "upload",
-          level: "warn",
-          summary: `历史分P上传失败 ${task.bvid}: ${failure.summary}（最新版状态不受影响）`,
+          level: "error",
+          summary: `${task.historyOnly ? "历史分P" : "上传"}失败 ${task.bvid}: ${failure.summary}${retry.exhausted ? "（已达到重试上限）" : "（本地文件已保留）"}`,
           raw: this.formatUploadFailureLog(task, failure),
           bvid: task.bvid,
           simpleVisible: true,
         });
-        const retryItem: RecoveryUploadItem = {
-          bvid: task.bvid,
-          localDir: task.downloadDir,
-          remotePath: task.remotePath,
-          userId: task.userId,
-          mediaId: task.mediaId,
-          folderTitle: task.folderTitle,
-          videoTitle: task.videoTitle,
-          upperName: task.upperName,
-          cover: task.cover,
-          files: task.files,
-          historyOnly: true,
-          historySnapshotAt: task.historySnapshotAt,
-          notBefore: uploadHealth.retryAt || Date.now() + 60_000,
-          priority: false,
-        };
-        const retryKey = this.recoveryUploadKey(retryItem);
-        if (!this.recoveryUploadKeys.has(retryKey)) {
-          this.recoveryUploadKeys.add(retryKey);
-          this.recoveryUploadBacklog.push(retryItem);
-          this.createSharedUploadDirTracker(task.downloadDir, 1, task.bvid);
-        }
-        void this.completeSharedUploadTask(task, false);
-        this.scheduleRecoveryRefill(Math.max(0, (retryItem.notBefore || Date.now()) - Date.now()));
+        this.dispatchPersistentJobs();
         return;
-      }
-      if (task.recoveryKey) {
-        this.priorityUploadKeys.delete(task.recoveryKey);
       }
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "error",
-        summary: isolatedDeterministicFailure
-          ? `上传失败 ${task.bvid}: ${failure.summary}（本地文件已保留，已隔离补传，其他任务继续）`
-          : `上传失败 ${task.bvid}: ${failure.summary}（本地文件已保留，等待补传）`,
+        summary: `${task.historyOnly ? "历史分P" : "上传"}失败 ${task.bvid}: ${failure.summary}（本地文件已保留）`,
         raw: this.formatUploadFailureLog(task, failure),
         bvid: task.bvid,
         simpleVisible: true,
       });
-      if (task.userId && task.mediaId) {
-        this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
-      }
-      this.stateManager.markUploadFailed(task.bvid, task.downloadDir, task.userId, task.mediaId, failure.summary);
-      const retryItem: RecoveryUploadItem = {
-        bvid: task.bvid,
-        localDir: task.downloadDir,
-        remotePath: task.remotePath,
-        userId: task.userId,
-        mediaId: task.mediaId,
-        folderTitle: task.folderTitle,
-        videoTitle: task.videoTitle,
-        upperName: task.upperName,
-        cover: task.cover,
-        files: task.files,
-        partialBackup: task.partialBackup,
-        notBefore: uploadHealth.retryAt || Date.now() + (
-          isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : 60_000
-        ),
-        priority: !isolatedDeterministicFailure,
-      };
-      const retryKey = this.recoveryUploadKey(retryItem);
-      this.priorityUploadKeys.delete(retryKey);
-      if (!this.recoveryUploadKeys.has(retryKey)) {
-        this.recoveryUploadKeys.add(retryKey);
-        if (retryItem.priority) {
-          this.priorityUploadKeys.add(retryKey);
-        }
-        this.recoveryUploadBacklog.push(retryItem);
-        this.createSharedUploadDirTracker(task.downloadDir, 1, task.bvid);
-      }
-      void this.completeSharedUploadTask(task, false);
+      if (!task.historyOnly) this.stateManager.markUploadFailed(task.bvid, task.downloadDir, task.userId, task.mediaId, failure.summary);
       this.downloadQueue.poke();
-      this.scheduleRecoveryRefill(Math.max(0, (retryItem.notBefore || Date.now()) - Date.now()));
+      this.dispatchPersistentJobs();
     });
-    this.uploadQueue.on("taskRetry", (task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) => {
+    this.uploadQueue.on("taskRetry", (task: UploadTask | QualityUploadPhaseTask, error: any) => {
       logTaskRetry(task, error);
       const failure = this.recordUploadFailure(task, error);
-      if (task instanceof QualityUpgradeUploadReplaceTask) {
+      if (isQualityUploadPhaseTask(task)) {
         this.syncQualityUpgradeControl(task, "retry_wait");
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "等待重试上传替换";
@@ -357,7 +341,7 @@ export class SyncScheduler {
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "warn",
-        summary: `${task instanceof QualityUpgradeUploadReplaceTask ? "画质重调上传替换失败" : "上传失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${failure.summary}`,
+        summary: `${isQualityUploadPhaseTask(task) ? "画质重调阶段失败" : "上传失败"}，等待重试 ${task.bvid} (${task.retries}/${task.maxRetries}): ${failure.summary}`,
         raw: this.formatUploadFailureLog(task, failure),
         bvid: task.bvid,
         simpleVisible: true,
@@ -369,18 +353,26 @@ export class SyncScheduler {
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "等待上传替换";
-        const uploadTask = new QualityUpgradeUploadReplaceTask(task.control);
-        if (!this.uploadQueue.addTask(uploadTask)) {
-          this.qualityUpgradeUploadBacklog.push({ task: uploadTask });
-        }
-        this.syncQualityUpgradeControl(uploadTask, uploadTask.status);
+        if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+        this.jobStore.enqueue({
+          kind: "quality_upload",
+          dedupeKey: `quality-upload:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`,
+          bvid: task.bvid,
+          userId: task.control.target.userId,
+          mediaId: task.control.target.mediaId,
+          priority: 30,
+          maxAttempts: this.configStore.get().maxRetries + 1,
+          payload: this.serializeQualityUpgrade(task.control),
+        });
+        this.dispatchPersistentJobs();
         return;
       }
-      if (!task.downloadDir) return;
-      const targets = task.targets || this.activeDownloadTargets.get(task.bvid) || this.makeSingleTarget(task);
-      this.activeDownloadTargets.delete(task.bvid);
+      if (!task.downloadDir) {
+        if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+        return;
+      }
+      const targets = this.collectUploadTargets(task.bvid, task.targets || this.makeSingleTarget(task));
       const historyGroups = historySessionGroups(task.downloadDir);
-      const tracker = this.createSharedUploadDirTracker(task.downloadDir, targets.length * (1 + historyGroups.length), task.bvid);
       targets.forEach((target) => {
         this.queueUploadWork({
           bvid: task.bvid,
@@ -412,38 +404,44 @@ export class SyncScheduler {
           });
         }
       });
-      if (tracker.remaining === 0) {
-        void this.cleanupSharedUploadDir(task.downloadDir, new Set([task.bvid]));
-      }
-      this.scheduleRecoveryRefill();
+      if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+      if (targets.length === 0) void this.maybeCleanupVerifiedLocalDir(task.bvid, task.downloadDir);
+      this.dispatchPersistentJobs();
     });
 
-    this.uploadQueue.on("taskCompleted", (task: UploadTask | QualityUpgradeUploadReplaceTask) => {
+    this.uploadQueue.on("taskCompleted", (task: UploadTask | QualityUploadPhaseTask) => {
       const taskKey = this.uploadTaskKey(task);
       if (this.uploadCircuit.recordSuccess(taskKey)) {
+        this.stateManager.clearUploadCooldown();
         this.clearUploadProbeTimer();
       }
-      if (task instanceof QualityUpgradeUploadReplaceTask) {
-        this.syncQualityUpgradeControl(task, "completed");
-        this.refreshLocalCacheState();
-        this.scheduleRecoveryRefill();
+      if (isQualityUploadPhaseTask(task)) {
+        if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+        if (task instanceof QualityUpgradeUploadReplaceTask) {
+          this.jobStore.enqueue({ kind: "quality_replace", dedupeKey: `quality-replace:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 30, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control) });
+          this.syncQualityUpgradeControl(task, "pending");
+        } else if (task instanceof QualityUpgradeReplaceTask) {
+          this.jobStore.enqueue({ kind: "quality_cleanup", dedupeKey: `quality-cleanup:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 60, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control) });
+          this.syncQualityUpgradeControl(task, "pending");
+        } else {
+          this.syncQualityUpgradeControl(task, "completed");
+          this.refreshLocalCacheState();
+        }
+        this.dispatchPersistentJobs();
         return;
-      }
-      if (task.recoveryKey) {
-        this.priorityUploadKeys.delete(task.recoveryKey);
       }
       if (task.historyOnly) {
-        if (task.result?.files.length && task.historySnapshotAt) {
+        if (task.result?.files.length && task.historySnapshotAt && task.result.allVerified) {
           markHistoryGroupUploaded(task.downloadDir, task.historySnapshotAt, `${task.userId || "video"}:${task.mediaId || 0}`);
+        } else if (task.result?.files.length) {
+          this.enqueueUploadVerificationJobs(task, task.result.files);
         }
-        void this.completeSharedUploadTask(task, Boolean(task.result?.files.length));
-        this.scheduleRecoveryRefill();
+        if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+        if (task.result?.allVerified) void this.maybeCleanupVerifiedLocalDir(task.bvid, task.downloadDir);
+        this.dispatchPersistentJobs();
         return;
       }
-      if (task.userId && task.mediaId) {
-        this.queuedBackupKeys.delete(this.backupKey(task.userId, task.mediaId, task.bvid));
-      }
-      if (task.result?.files.length) {
+      if (task.result?.files.length && task.result.allVerified) {
         this.stateManager.markVerifiedUpload(
           task.bvid,
           task.result.remotePath,
@@ -452,6 +450,16 @@ export class SyncScheduler {
           task.mediaId,
           task.partialBackup
         );
+      } else if (task.result?.files.length) {
+        this.stateManager.markUploadedPendingVerification(
+          task.bvid,
+          task.result.remotePath,
+          task.result.files,
+          task.userId,
+          task.mediaId,
+          task.partialBackup
+        );
+        this.enqueueUploadVerificationJobs(task, task.result.files);
       } else {
         this.stateManager.markUploadFailed(
           task.bvid,
@@ -461,40 +469,452 @@ export class SyncScheduler {
           "Upload finished without verified remote metadata."
         );
       }
-      void this.completeSharedUploadTask(task, Boolean(task.result?.files.length));
+      if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+      if (task.result?.files.length && task.result.allVerified) {
+        void this.maybeCleanupVerifiedLocalDir(task.bvid, task.downloadDir);
+      }
       this.downloadQueue.poke();
-      this.scheduleRecoveryRefill();
+      this.dispatchPersistentJobs();
     });
 
     this.uploadQueue.on("taskSettled", () => {
-      this.drainQualityUpgradeUploadBacklog();
-      this.drainRecoveryBacklog();
+      this.dispatchPersistentJobs();
       this.downloadQueue.poke();
     });
 
+    this.downloadQueue.on("taskSettled", () => {
+      this.dispatchPersistentJobs();
+    });
+
+    this.verificationQueue.on("taskStart", (task: UploadVerificationTask) => {
+      if (task.persistentJobId) this.jobStore.markRunning(task.persistentJobId, this.leaseOwner, 5 * 60_000);
+    });
+    this.verificationQueue.on("taskCompleted", (task: UploadVerificationTask) => {
+      this.handleUploadVerificationCompleted(task);
+    });
+    this.verificationQueue.on("taskError", (task: UploadVerificationTask, error: any) => {
+      this.handleUploadVerificationError(task, error);
+    });
+    this.verificationQueue.on("taskSettled", () => {
+      this.dispatchPersistentJobs();
+    });
+
+    if (this.uploadCircuit.getSnapshot().state !== "closed") this.scheduleUploadProbe();
+    this.ensureLeaseHeartbeat();
+
+  }
+
+  private renewActiveLeases() {
+    for (const queue of [this.downloadQueue, this.uploadQueue, this.verificationQueue]) {
+      for (const task of queue.getTasks()) {
+        if (task.status === "running" && task.persistentJobId) {
+          this.jobStore.extendLease(task.persistentJobId, this.leaseOwner, 30 * 60_000);
+        }
+      }
+    }
+  }
+
+  private ensureLeaseHeartbeat() {
+    if (this.leaseHeartbeatTimer) return;
+    this.leaseHeartbeatTimer = setInterval(() => this.renewActiveLeases(), 60_000);
+    this.leaseHeartbeatTimer.unref?.();
   }
 
   private queueHighWater(concurrency = 1, batchSize = 25) {
     return Math.max(Math.max(1, concurrency) * 2, Math.max(5, batchSize));
   }
 
-  private queueLowWater(concurrency = 1, batchSize = 25) {
-    return Math.max(concurrency, Math.floor(this.queueHighWater(concurrency, batchSize) / 2));
+  private enqueueUploadVerificationJobs(task: UploadTask, files: Array<{
+    path: string;
+    size?: number;
+    verificationStatus?: string;
+    putCompletedAt?: string;
+    localRelativePath?: string;
+    nextVerifyAt?: string;
+  }>) {
+    for (const file of files) {
+      if (file.verificationStatus !== "awaiting_verification" || typeof file.size !== "number") continue;
+      const historySegment = task.historyOnly ? `history:${task.historySnapshotAt || "unknown"}` : "main";
+      this.jobStore.enqueue({
+        kind: "verify_upload",
+        dedupeKey: `verify:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${historySegment}:${file.path}`,
+        bvid: task.bvid,
+        userId: task.userId,
+        mediaId: task.mediaId,
+        priority: task.historyOnly ? 80 : 10,
+        maxAttempts: UPLOAD_VERIFY_SCHEDULE_MS.length + 2,
+        notBefore: file.nextVerifyAt ? Date.parse(file.nextVerifyAt) : Date.now() + UPLOAD_VERIFY_SCHEDULE_MS[0],
+        payload: {
+          remoteFile: file.path,
+          expectedSize: file.size,
+          localDir: task.downloadDir,
+          remotePath: task.remotePath,
+          files: task.files || [],
+          localRelativePath: file.localRelativePath,
+          putCompletedAt: file.putCompletedAt || new Date().toISOString(),
+          partialBackup: task.partialBackup,
+          historyOnly: task.historyOnly,
+          historySnapshotAt: task.historySnapshotAt,
+          folderTitle: task.folderTitle,
+          videoTitle: task.videoTitle,
+          upperName: task.upperName,
+          cover: task.cover,
+        },
+      });
+    }
+    this.dispatchPersistentJobs();
+  }
+
+  private buildDownloadTask(job: any) {
+    const bvid = String(job.bvid || "");
+    const payload = job.payload || {};
+    const config = this.configStore.get();
+    const relations = this.stateManager.listRelationsForBvid(bvid)
+      .filter((relation) => !["uploaded", "verified", "partial_verified", "downloaded", "uploading", "upload_failed"].includes(relation.backupStatus || ""))
+      .map((relation) => ({ relation, resolved: this.resolveRelation(relation) }))
+      .filter((item): item is { relation: FavoriteRelation; resolved: NonNullable<ReturnType<SyncScheduler["resolveRelation"]>> } => Boolean(item.resolved));
+    if (relations.length === 0) return null;
+
+    const primary = relations.find((item) => item.relation.userId === payload.primaryUserId) || relations[0];
+    const targets: UploadTarget[] = relations.map(({ relation, resolved }) => ({
+      userId: relation.userId,
+      mediaId: relation.mediaId,
+      folderTitle: resolved.folderTitle,
+      remotePath: relation.remotePath || resolveRemotePath({
+        destination: config.alistDest,
+        layout: config.uploadLayout,
+        userName: resolved.user.name,
+        folderName: resolved.folderTitle,
+      }),
+    }));
+    const task = new DownloadTask(bvid, {
+      ...primary.resolved.user.cookie,
+      accessToken: primary.resolved.user.accessToken || "",
+    }, config);
+    task.maxRetries = 0;
+    task.persistentJobId = job.id;
+    task.persistentJob = job;
+    task.userId = primary.relation.userId;
+    task.mediaId = primary.relation.mediaId;
+    task.folderTitle = primary.resolved.folderTitle;
+    task.remotePath = targets[0]?.remotePath;
+    task.targets = targets;
+    const meta = this.stateManager.getVideoMeta(bvid);
+    task.videoTitle = meta?.title || bvid;
+    task.upperName = meta?.upperName || "";
+    task.cover = meta?.cover || "";
+    task.onApiReady = (readyTask, mode) => this.handleDownloadApiReady(readyTask, mode);
+    task.onDownloading = () => this.stateManager.markDownloading(bvid, targets);
+    task.onPrepared = (_task, downloadDir, manifest) => this.stateManager.markDownloadPrepared(
+      bvid,
+      downloadDir,
+      {
+        id: manifest.sessionId,
+        localDir: downloadDir,
+        kind: manifest.kind,
+        status: manifest.status,
+        completedPages: manifest.outputs.length,
+        totalPages: manifest.pages.length,
+        updatedAt: manifest.updatedAt,
+      },
+      targets
+    );
+    task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir, targets);
+    return task;
+  }
+
+  private serializeQualityUpgrade(task: QualityUpgradeTask) {
+    return {
+      bvid: task.bvid,
+      userId: task.target.userId,
+      mediaId: task.target.mediaId,
+      videoTitle: task.videoTitle || task.bvid,
+      folderTitle: task.folderTitle || task.target.folderTitle,
+      target: task.target,
+      runId: task.runId,
+      downloadDir: task.downloadDir,
+      outputFiles: task.outputFiles || [],
+      uploadResult: task.uploadResult,
+      backupFiles: task.backupFiles || [],
+      finalFiles: task.finalFiles || [],
+      stageRemotePath: task.stageRemotePath,
+      backupRemotePath: task.backupRemotePath,
+    };
+  }
+
+  private buildQualityUpgradeTask(job: any) {
+    const payload = job.payload || {};
+    const target = payload.target;
+    const user = this.userStore.getById(String(payload.userId || job.userId || target?.userId || ""));
+    if (!user || !user.enabled || !target) return null;
+    const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), {
+      ...user.cookie,
+      accessToken: user.accessToken || "",
+    }, this.configStore.get(), target);
+    task.runId = payload.runId;
+    task.downloadDir = payload.downloadDir;
+    task.outputFiles = Array.isArray(payload.outputFiles) ? payload.outputFiles : [];
+    task.uploadResult = payload.uploadResult;
+    task.backupFiles = Array.isArray(payload.backupFiles) ? payload.backupFiles : [];
+    task.finalFiles = Array.isArray(payload.finalFiles) ? payload.finalFiles : [];
+    task.stageRemotePath = payload.stageRemotePath;
+    task.backupRemotePath = payload.backupRemotePath;
+    task.videoTitle = String(payload.videoTitle || task.bvid);
+    task.folderTitle = String(payload.folderTitle || target.folderTitle || "");
+    task.userId = target.userId;
+    task.mediaId = target.mediaId;
+    task.onStartUpgrade = () => {
+      logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `开始重调画质 ${task.bvid}: ${task.videoTitle}`, raw: `[QualityUpgrade] start ${target.userId}:${target.mediaId}:${task.bvid}`, bvid: task.bvid, simpleVisible: true });
+    };
+    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => this.stateManager.markQualityUpgradeReplacing(task.bvid, target.userId, target.mediaId, {
+      stageRemotePath,
+      backupRemotePath,
+      oldRemotePath: target.remotePath,
+      oldFiles: target.oldFiles,
+    });
+    task.onBackupFileMoved = (_task, file) => this.stateManager.recordQualityUpgradeBackupFile(task.bvid, target.userId, target.mediaId, file);
+    task.onFinalFileMoved = (_task, file) => this.stateManager.recordQualityUpgradeFinalFile(task.bvid, target.userId, target.mediaId, file);
+    task.onUploaded = (_task, result) => this.stateManager.finalizeQualityUpgradeRemoteFiles(task.bvid, target.userId, target.mediaId, result.remotePath, result.files);
+    task.onCompletedUpgrade = () => {
+      this.stateManager.completeQualityUpgrade(task.bvid, target.userId, target.mediaId, target.remotePath, task.finalFiles || []);
+      logManager.push({ timestamp: new Date().toISOString(), type: "upload", level: "info", summary: `重调画质完成 ${task.bvid}`, raw: `[QualityUpgrade] completed ${target.userId}:${target.mediaId}:${task.bvid}`, bvid: task.bvid, simpleVisible: true });
+    };
+    task.onFailed = (_task, error) => {
+      const safeError = sanitizeUploadText(error?.message || error);
+      logManager.push({ timestamp: new Date().toISOString(), type: task.qualityStage === "upload" ? "upload" : "download", level: "error", summary: `重调画质失败 ${task.bvid}: ${safeError}`, raw: `[QualityUpgrade] failed ${target.userId}:${target.mediaId}:${task.bvid}: ${safeError}`, bvid: task.bvid, simpleVisible: true, debugVisible: true });
+    };
+    return task;
+  }
+
+  private dispatchPersistentJobs() {
+    if (!this.acceptingJobs) return;
+    const config = this.configStore.get();
+    const downloadCapacity = Math.max(0, this.queueHighWater(
+      config.concurrentDownloads,
+      config.startupRecoveryBatchSize
+    ) - this.downloadQueue.getSize());
+    if (downloadCapacity > 0 && this.canCreateDownloadTask()) {
+      const jobs = this.jobStore.claimDue(["quality_download", "download"], downloadCapacity, this.leaseOwner, 30 * 60_000);
+      for (const job of jobs) {
+        const control = job.kind === "quality_download" ? this.buildQualityUpgradeTask(job) : null;
+        const task = control ? new QualityUpgradeDownloadTask(control) : this.buildDownloadTask(job);
+        if (!task) {
+          this.jobStore.complete(job.id, this.leaseOwner);
+          continue;
+        }
+        task.maxRetries = 0;
+        task.persistentJobId = job.id;
+        task.persistentJob = job;
+        if (!this.downloadQueue.addTask(task)) {
+          this.jobStore.defer(job.id, this.leaseOwner, "Download queue is full", Date.now() + 1_000);
+          break;
+        }
+      }
+    }
+
+    const uploadCapacity = Math.max(0, this.queueHighWater(
+      config.concurrentUploads,
+      config.startupRecoveryBatchSize
+    ) - this.uploadQueue.getSize());
+    if (uploadCapacity > 0) {
+      const jobs = this.jobStore.claimDue(["upload", "quality_upload", "quality_replace", "quality_cleanup", "history_upload"], uploadCapacity, this.leaseOwner, 30 * 60_000);
+      for (const job of jobs) {
+        if (["quality_upload", "quality_replace", "quality_cleanup"].includes(job.kind)) {
+          const control = this.buildQualityUpgradeTask(job);
+          if (!control) {
+            this.jobStore.complete(job.id, this.leaseOwner);
+            continue;
+          }
+          const task = job.kind === "quality_replace"
+            ? new QualityUpgradeReplaceTask(control)
+            : (job.kind === "quality_cleanup" ? new QualityUpgradeCleanupTask(control) : new QualityUpgradeUploadReplaceTask(control));
+          task.maxRetries = 0;
+          task.persistentJobId = job.id;
+          task.persistentJob = job;
+          if (!this.uploadQueue.addTask(task)) {
+            this.jobStore.defer(job.id, this.leaseOwner, "Upload queue is full", Date.now() + 1_000);
+            break;
+          }
+          continue;
+        }
+        const item = job.payload as unknown as RecoveryUploadItem;
+        const task = this.buildUploadTask(item);
+        task.maxRetries = 0;
+        task.persistentJobId = job.id;
+        task.persistentJob = job;
+        if (!this.uploadQueue.addTask(task)) {
+          this.jobStore.defer(job.id, this.leaseOwner, "Upload queue is full", Date.now() + 1_000);
+          break;
+        }
+      }
+    }
+
+    const capacity = Math.max(0, this.queueHighWater(
+      config.remoteVerifyConcurrency,
+      config.startupRecoveryBatchSize
+    ) - this.verificationQueue.getSize());
+    if (capacity > 0) {
+      const jobs = this.jobStore.claimDue(["verify_upload"], capacity, this.leaseOwner, 5 * 60_000);
+      for (const job of jobs) {
+        const payload = job.payload as any;
+        const task = new UploadVerificationTask(
+          String(job.bvid || ""),
+          String(job.userId || ""),
+          Number(job.mediaId || 0),
+          String(payload.remoteFile || ""),
+          Number(payload.expectedSize || 0),
+          config
+        );
+        task.persistentJobId = job.id;
+        task.persistentJob = job;
+        if (!this.verificationQueue.addTask(task)) {
+          this.jobStore.defer(job.id, this.leaseOwner, "Verification queue is full", Date.now() + 1_000);
+          break;
+        }
+      }
+    }
+    this.schedulePersistentJobWake();
+  }
+
+  private schedulePersistentJobWake() {
+    if (this.jobDispatchTimer) {
+      clearTimeout(this.jobDispatchTimer);
+      this.jobDispatchTimer = null;
+    }
+    if (this.leaseHeartbeatTimer) {
+      clearInterval(this.leaseHeartbeatTimer);
+      this.leaseHeartbeatTimer = null;
+    }
+    const nextAt = this.jobStore.nextDueAt();
+    if (nextAt === undefined) return;
+    this.jobDispatchTimer = setTimeout(() => {
+      this.jobDispatchTimer = null;
+      this.dispatchPersistentJobs();
+    }, Math.max(0, nextAt - Date.now()));
+    this.jobDispatchTimer.unref?.();
+  }
+
+  private handleUploadVerificationCompleted(task: UploadVerificationTask) {
+    const job = task.persistentJob as any;
+    if (!job || !task.persistentJobId || !task.result) return;
+    const payload = job.payload as any;
+    if (task.result.status === "verified") {
+      this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+      if (this.uploadCircuit.recordSuccess(`verify:${task.bvid}`)) this.stateManager.clearUploadCooldown();
+      if (payload.historyOnly) {
+        const prefix = `verify:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:history:${payload.historySnapshotAt || "unknown"}:`;
+        if (!this.jobStore.hasDedupePrefix(prefix) && payload.historySnapshotAt) {
+          markHistoryGroupUploaded(String(payload.localDir || ""), payload.historySnapshotAt, `${task.userId || "video"}:${task.mediaId || 0}`);
+          void this.maybeCleanupVerifiedLocalDir(task.bvid, String(payload.localDir || ""));
+        }
+      } else {
+        const relationVerified = this.stateManager.markUploadFileVerified(
+          task.bvid,
+          task.userId,
+          task.mediaId,
+          task.remoteFile
+        );
+        if (relationVerified) void this.maybeCleanupVerifiedLocalDir(task.bvid, String(payload.localDir || ""));
+      }
+      return;
+    }
+
+    if (task.result.status === "mismatch") {
+      const reason = `远端文件大小冲突：预期 ${task.expectedSize}，实际 ${task.result.remoteSize ?? "未知"}`;
+      this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+      if (!payload.historyOnly) {
+        this.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
+      }
+      logManager.push({ timestamp: new Date().toISOString(), type: "upload", level: "error", summary: reason, raw: `[UploadVerify] mismatch ${task.remoteFile}`, bvid: task.bvid, simpleVisible: true });
+      return;
+    }
+
+    this.deferMissingUploadVerification(task, job, payload);
+  }
+
+  private deferMissingUploadVerification(task: UploadVerificationTask, job: any, payload: any) {
+    const putAt = Date.parse(String(payload.putCompletedAt || "")) || Date.now();
+    const elapsed = Math.max(0, Date.now() - putAt);
+    const nextDelay = UPLOAD_VERIFY_SCHEDULE_MS.find((delayMs) => delayMs > elapsed + 250);
+    if (nextDelay !== undefined) {
+      const nextAt = Math.max(Date.now() + 1_000, putAt + nextDelay);
+      const reason = "远端暂不可见，等待下一次确认";
+      this.jobStore.retry(task.persistentJobId, this.leaseOwner, reason, nextAt);
+      if (!payload.historyOnly) {
+        this.stateManager.deferUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, nextAt, reason);
+      }
+      this.schedulePersistentJobWake();
+      return;
+    }
+
+    const reason = "PUT 已成功，但远端在 10 分钟内仍不可见";
+    this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+    if (!payload.historyOnly) {
+      this.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
+    }
+    this.queueUploadWork({
+      bvid: task.bvid,
+      localDir: String(payload.localDir || ""),
+      remotePath: String(payload.remotePath || ""),
+      userId: task.userId,
+      mediaId: task.mediaId,
+      folderTitle: String(payload.folderTitle || ""),
+      videoTitle: String(payload.videoTitle || ""),
+      upperName: String(payload.upperName || ""),
+      cover: String(payload.cover || ""),
+      files: Array.isArray(payload.files) ? payload.files : [],
+      partialBackup: Boolean(payload.partialBackup),
+      historyOnly: Boolean(payload.historyOnly),
+      historySnapshotAt: payload.historySnapshotAt,
+      notBefore: Date.now() + UPLOAD_VERIFY_REUPLOAD_DELAY_MS,
+      priority: false,
+    });
+  }
+
+  private handleUploadVerificationError(task: UploadVerificationTask, error: any) {
+    const job = task.persistentJob as any;
+    if (!job || !task.persistentJobId) return;
+    const failure = classifyUploadError(error, task.remoteFile);
+    this.uploadCircuit.recordFailure(`verify:${task.bvid}`, failure);
+    if (this.uploadCircuit.getSnapshot().state !== "closed") {
+      this.stateManager.setUploadCooldown(this.uploadCircuit.getSnapshot() as any);
+    }
+    const delayMs = failure.retryAfterMs || 60_000;
+    const result = this.jobStore.retry(task.persistentJobId, this.leaseOwner, failure.summary, Date.now() + delayMs);
+    if (result.exhausted) {
+      this.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, failure.summary);
+    }
+    this.scheduleUploadProbe();
+    this.schedulePersistentJobWake();
+  }
+
+  private async maybeCleanupVerifiedLocalDir(bvid: string, localDir: string) {
+    if (!localDir || this.jobStore.hasJobsForBvid(bvid, ["upload", "verify_upload", "history_upload"])) return;
+    const relations = this.stateManager.listRelationsForBvid(bvid);
+    if (relations.some((relation) => !["verified", "partial_verified"].includes(relation.backupStatus || ""))) return;
+    const pendingHistory = historySessionGroups(localDir).some((group) =>
+      group.files.some((file) => relations.some((relation) => !(file.uploadedTargets || []).includes(`${relation.userId}:${relation.mediaId}`)))
+    );
+    if (pendingHistory) return;
+    await this.cleanupSharedUploadDir(localDir, new Set([bvid]));
   }
 
   private uploadTaskKey(task: any) {
     return `${task?.userId || "quality"}:${task?.mediaId || 0}:${task?.bvid || task?.id || "upload"}:${task?.historyOnly ? task?.remotePath || "history" : "main"}`;
   }
 
-  private recordUploadFailure(task: UploadTask | QualityUpgradeUploadReplaceTask, error: any) {
+  private recordUploadFailure(task: UploadTask | QualityUploadPhaseTask, error: any) {
     const failure: UploadFailureInfo = error?.uploadFailure || classifyUploadError(error, task.remotePath || "<remote>");
     this.uploadCircuit.recordFailure(this.uploadTaskKey(task), failure);
+    if (this.uploadCircuit.getSnapshot().state !== "closed") {
+      this.stateManager.setUploadCooldown(this.uploadCircuit.getSnapshot() as any);
+    }
     this.scheduleUploadProbe();
     this.downloadQueue.poke();
     return failure;
   }
 
-  private formatUploadFailureLog(task: UploadTask | QualityUpgradeUploadReplaceTask, failure: UploadFailureInfo) {
+  private formatUploadFailureLog(task: UploadTask | QualityUploadPhaseTask, failure: UploadFailureInfo) {
     const nextRetryAt = task.retryAt ? new Date(task.retryAt).toISOString() : "next-cycle";
     return `[Upload] status=${failure.status || "unknown"} category=${failure.category} retryable=${failure.retryable} attempt=${task.retries}/${task.maxRetries} next=${nextRetryAt} path=${failure.remotePath}: ${failure.summary}`;
   }
@@ -512,24 +932,10 @@ export class SyncScheduler {
     if (!retryAt) return;
     this.uploadProbeTimer = setTimeout(() => {
       this.uploadProbeTimer = null;
-      this.drainQualityUpgradeUploadBacklog(true);
-      this.drainRecoveryBacklog(true);
+      this.dispatchPersistentJobs();
       this.uploadQueue.poke();
     }, Math.max(0, retryAt - Date.now()));
     this.uploadProbeTimer.unref?.();
-  }
-
-  private scheduleRecoveryRefill(delayMs = 0) {
-    const targetAt = Date.now() + Math.max(0, delayMs);
-    if (this.recoveryRefillTimer && this.recoveryRefillAt <= targetAt) return;
-    if (this.recoveryRefillTimer) clearTimeout(this.recoveryRefillTimer);
-    this.recoveryRefillAt = targetAt;
-    this.recoveryRefillTimer = setTimeout(() => {
-      this.recoveryRefillTimer = null;
-      this.recoveryRefillAt = 0;
-      this.drainRecoveryBacklog();
-    }, Math.max(0, targetAt - Date.now()));
-    this.recoveryRefillTimer.unref?.();
   }
 
   private downloadTaskIdentity(task: DownloadTask | QualityUpgradeDownloadTask) {
@@ -561,7 +967,6 @@ export class SyncScheduler {
     }
     this.persistDownloadApiHealth(persisted);
     const retryAt = this.downloadApiHealth.getRetryAt();
-    if (retryAt) this.scheduleRecoveryRefill(Math.max(0, retryAt - Date.now()));
     this.downloadQueue.poke();
     return retryAt;
   }
@@ -575,18 +980,8 @@ export class SyncScheduler {
     if (typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
       this.stateManager.clearDownloadApiCooldown();
     }
-    for (const item of this.recoveryDownloadBacklog) item.notBefore = undefined;
-    this.scheduleRecoveryRefill();
+    this.dispatchPersistentJobs();
     this.downloadQueue.poke();
-  }
-
-  private scheduleQualityDownloadRecovery(control: QualityUpgradeTask, retryAt: number) {
-    const timer = setTimeout(() => {
-      control.apiProbe = false;
-      control.apiModeOverride = undefined;
-      this.enqueueQualityUpgrade(control);
-    }, Math.max(0, retryAt - Date.now()));
-    timer.unref?.();
   }
 
   private markDownloadTaskStarted() {
@@ -632,139 +1027,31 @@ export class SyncScheduler {
     return uploadTask;
   }
 
-  private tryQueueUploadWork(item: RecoveryUploadItem) {
-    if (!this.uploadQueue.canAccept()) return false;
-    const uploadTask = this.buildUploadTask(item);
+  private queueUploadWork(item: RecoveryUploadItem) {
     const key = this.recoveryUploadKey(item);
-    if (item.priority) {
-      uploadTask.recoveryKey = key;
-      this.priorityUploadKeys.add(key);
-    }
-    if (!this.uploadQueue.addTask(uploadTask)) return false;
-    if (item.userId && item.mediaId) {
-      this.queuedBackupKeys.add(this.backupKey(item.userId, item.mediaId, item.bvid));
-    }
+    this.jobStore.enqueue({
+      kind: item.historyOnly ? "history_upload" : "upload",
+      dedupeKey: `upload:${key}`,
+      bvid: item.bvid,
+      userId: item.userId,
+      mediaId: item.mediaId,
+      priority: item.priority === false ? 80 : 20,
+      maxAttempts: this.configStore.get().maxRetries + 1,
+      notBefore: item.notBefore || 0,
+      payload: { ...item },
+    });
+    this.dispatchPersistentJobs();
     return true;
   }
 
-  private queueUploadWork(item: RecoveryUploadItem) {
-    const key = this.recoveryUploadKey(item);
-    if (item.priority) {
-      this.priorityUploadKeys.add(key);
-    }
-    if (this.tryQueueUploadWork(item)) return true;
-    if (!this.recoveryUploadKeys.has(key)) {
-      this.recoveryUploadKeys.add(key);
-      this.recoveryUploadBacklog.push(item);
-    }
-    return false;
-  }
-
-  private drainQualityUpgradeUploadBacklog(allowProbe = false) {
-    const health = this.uploadCircuit.getSnapshot();
-    if (health.state !== "closed" && !allowProbe) return;
-    let budget = health.state === "closed" ? Number.POSITIVE_INFINITY : 1;
-    while (budget > 0 && this.qualityUpgradeUploadBacklog.length > 0 && this.uploadQueue.canAccept()) {
-      const itemIndex = this.qualityUpgradeUploadBacklog.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
-      if (itemIndex < 0) break;
-      const [item] = this.qualityUpgradeUploadBacklog.splice(itemIndex, 1);
-      const task = item.task;
-      if (!this.uploadQueue.addTask(task)) {
-        this.qualityUpgradeUploadBacklog.unshift(item);
-        break;
-      }
-      this.syncQualityUpgradeControl(task, task.status);
-      budget -= 1;
-    }
-  }
-
-  private drainRecoveryBacklog(force = false) {
-    const config = this.configStore.get();
-    const batchSize = Math.max(5, config.startupRecoveryBatchSize || 25);
-    const uploadLowWater = this.queueLowWater(config.concurrentUploads, batchSize);
-    const health = this.uploadCircuit.getSnapshot();
-    if ((force || this.uploadQueue.getSize() <= uploadLowWater) && (health.state === "closed" || force)) {
-      let budget = health.state === "closed" ? batchSize : 1;
-      while (budget > 0 && this.recoveryUploadBacklog.length > 0 && this.uploadQueue.canAccept()) {
-        const itemIndex = this.recoveryUploadBacklog.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
-        if (itemIndex < 0) break;
-        const [item] = this.recoveryUploadBacklog.splice(itemIndex, 1);
-        const key = this.recoveryUploadKey(item);
-        this.recoveryUploadKeys.delete(key);
-        if (!this.tryQueueUploadWork(item)) {
-          this.recoveryUploadKeys.add(key);
-          this.recoveryUploadBacklog.unshift(item);
-          break;
-        }
-        budget -= 1;
-      }
-    }
-
-    this.clearOrphanedDownloadProbe();
-    const downloadLowWater = this.queueLowWater(config.concurrentDownloads, batchSize);
-    if (force || this.downloadQueue.getSize() <= downloadLowWater) {
-      let budget = batchSize;
-      while (budget > 0 && this.recoveryDownloadBacklog.length > 0 && this.canCreateDownloadTask()) {
-        const now = Date.now();
-        const itemIndex = this.recoveryDownloadBacklog.findIndex((item) =>
-          (!item.notBefore || item.notBefore <= now)
-          && this.downloadApiHealth.canQueueRecovery({ bvid: item.bvid, userId: item.user.id })
-        );
-        if (itemIndex < 0) break;
-        const [item] = this.recoveryDownloadBacklog.splice(itemIndex, 1);
-        const key = this.backupKey(item.user.id, item.mediaId, item.bvid);
-        this.recoveryDownloadKeys.delete(key);
-        const queued = this.enqueueIfNeeded(item.user, item.mediaId, item.folderTitle, item.bvid, { persisted: true });
-        if (!queued) {
-          if (!this.canCreateDownloadTask()) {
-            this.recoveryDownloadKeys.add(key);
-            this.recoveryDownloadBacklog.unshift(item);
-            break;
-          }
-        }
-        budget -= 1;
-      }
-    }
-
-    const nextDeferredUploadAt = this.recoveryUploadBacklog.reduce((next, item) => {
-      if (!item.notBefore || item.notBefore <= Date.now()) return next;
-      return Math.min(next, item.notBefore);
-    }, Number.POSITIVE_INFINITY);
-    if (Number.isFinite(nextDeferredUploadAt)) {
-      this.scheduleRecoveryRefill(nextDeferredUploadAt - Date.now());
-    }
-    const nextDeferredDownloadAt = this.recoveryDownloadBacklog.reduce((next, item) => {
-      const candidate = item.notBefore || this.downloadApiHealth.getRetryAt();
-      if (!candidate || candidate <= Date.now()) return next;
-      return Math.min(next, candidate);
-    }, Number.POSITIVE_INFINITY);
-    if (Number.isFinite(nextDeferredDownloadAt)) {
-      this.scheduleRecoveryRefill(nextDeferredDownloadAt - Date.now());
-    }
-  }
-
-  private clearOrphanedDownloadProbe() {
-    const probe = this.downloadApiHealth.getProbeIdentity();
-    if (!probe) return;
-    const queued = this.downloadQueue.getTasks().some((task) => {
-      if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
-      const identity = this.downloadTaskIdentity(task);
-      return identity.bvid === probe.bvid && identity.userId === probe.userId;
-    });
-    const backlogged = this.recoveryDownloadBacklog.some((item) => item.bvid === probe.bvid && item.user.id === probe.userId);
-    if (queued || backlogged) return;
-    if (this.downloadApiHealth.abandonProbe()) {
-      this.stateManager.clearDownloadApiCooldown();
-      for (const item of this.recoveryDownloadBacklog) item.notBefore = undefined;
-      this.downloadQueue.poke();
-    }
-  }
-
   resumePersistedWorkOnStartup() {
+    this.jobStore.recoverExpiredLeases();
     this.resumePersistedWork();
+    this.dispatchPersistentJobs();
   }
 
   start() {
+    this.acceptingJobs = true;
     const { pollIntervalMinutes } = this.configStore.get();
     this.stop();
     const intervalMs = pollIntervalMinutes * 60 * 1000;
@@ -786,7 +1073,6 @@ export class SyncScheduler {
       if (typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
         this.stateManager.clearDownloadApiCooldown();
       }
-      for (const item of this.recoveryDownloadBacklog) item.notBefore = undefined;
     }
     for (const task of this.downloadQueue.getTasks()) {
       if (task.status === "running") continue;
@@ -806,11 +1092,12 @@ export class SyncScheduler {
     const config = this.configStore.get();
     this.downloadQueue.setConcurrency(config.concurrentDownloads || 1);
     this.uploadQueue.setConcurrency(config.concurrentUploads || 2);
+    this.verificationQueue.setConcurrency(Math.max(1, Math.min(10, config.remoteVerifyConcurrency || 3)));
     this.downloadQueue.setMaxSize(this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
     this.uploadQueue.setMaxSize(this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
-    this.drainQualityUpgradeUploadBacklog();
+    this.verificationQueue.setMaxSize(this.queueHighWater(config.remoteVerifyConcurrency, config.startupRecoveryBatchSize));
     void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
-    this.scheduleRecoveryRefill();
+    this.dispatchPersistentJobs();
     if (process.env.NODE_ENV !== "test") {
       this.start();
     }
@@ -825,10 +1112,31 @@ export class SyncScheduler {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
     }
+    if (this.jobDispatchTimer) {
+      clearTimeout(this.jobDispatchTimer);
+      this.jobDispatchTimer = null;
+    }
     if (this.downloadStartTimer) {
       clearTimeout(this.downloadStartTimer);
       this.downloadStartTimer = null;
     }
+  }
+
+  beginShutdown() {
+    this.acceptingJobs = false;
+    this.stop();
+    this.ensureLeaseHeartbeat();
+  }
+
+  async shutdown(timeoutMs = 20_000) {
+    this.beginShutdown();
+    const startedAt = Date.now();
+    const remaining = () => Math.max(0, timeoutMs - (Date.now() - startedAt));
+    await this.downloadQueue.waitForIdle(remaining());
+    await this.uploadQueue.waitForIdle(remaining());
+    await this.verificationQueue.waitForIdle(remaining());
+    this.jobStore.releaseOwner(this.leaseOwner);
+    this.stateManager.close();
   }
 
   runNow() {
@@ -856,7 +1164,7 @@ export class SyncScheduler {
   }
 
   hasRunningTransferTasks() {
-    return this.downloadQueue.isBusy() || this.uploadQueue.isBusy() || this.qualityUpgradeUploadBacklog.length > 0;
+    return this.downloadQueue.isBusy() || this.uploadQueue.isBusy() || this.verificationQueue.isBusy();
   }
 
   hasActiveOrQueuedSchedulerWork() {
@@ -895,16 +1203,59 @@ export class SyncScheduler {
     task.qualityStage = "download";
     task.qualityStageLabel = "等待下载新版";
     task.onApiReady = (control, mode) => this.handleDownloadApiReady(control, mode);
-    const downloadTask = new QualityUpgradeDownloadTask(task);
-    if (!this.downloadQueue.addTask(downloadTask)) {
-      return false;
-    }
-    this.syncQualityUpgradeControl(downloadTask, downloadTask.status);
+    const dedupeKey = `quality-download:${task.target.userId}:${task.target.mediaId}:${task.bvid}`;
+    if (this.jobStore.findByDedupeKey(dedupeKey)
+      || this.jobStore.findByDedupeKey(`quality-upload:${task.target.userId}:${task.target.mediaId}:${task.bvid}`)) return false;
+    this.jobStore.enqueue({
+      kind: "quality_download",
+      dedupeKey,
+      bvid: task.bvid,
+      userId: task.target.userId,
+      mediaId: task.target.mediaId,
+      priority: 35,
+      maxAttempts: this.configStore.get().maxRetries + 1,
+      payload: this.serializeQualityUpgrade(task),
+    });
+    this.dispatchPersistentJobs();
     return true;
   }
 
+  reloadStateDatabase() {
+    this.jobStore.rebind(this.stateManager.getDatabase());
+    this.resumePersistedWorkOnStartup();
+  }
+
+  hasQualityUpgrade(userId: string, mediaId: number, bvid: string) {
+    return Boolean(
+      this.jobStore.findByDedupeKey(`quality-download:${userId}:${mediaId}:${bvid}`)
+      || this.jobStore.findByDedupeKey(`quality-upload:${userId}:${mediaId}:${bvid}`)
+      || this.jobStore.findByDedupeKey(`quality-replace:${userId}:${mediaId}:${bvid}`)
+      || this.jobStore.findByDedupeKey(`quality-cleanup:${userId}:${mediaId}:${bvid}`)
+    );
+  }
+
+  getQualityUpgradeState() {
+    const running = this.jobStore.list(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"], 100).map((job) => {
+      const payload = job.payload as any;
+      return {
+        key: `${job.userId || payload.userId}:${job.mediaId || payload.mediaId}:${job.bvid || payload.bvid}`,
+        id: job.id,
+        bvid: job.bvid || payload.bvid,
+        title: payload.videoTitle || job.bvid,
+        folderTitle: payload.folderTitle || payload.target?.folderTitle || "",
+        userId: job.userId || payload.userId || "",
+        mediaId: job.mediaId || payload.mediaId || 0,
+        status: job.status === "retry_wait" ? "retry_wait" : (["leased", "running"].includes(job.status) ? "running" : "pending"),
+        error: job.lastError,
+        queuedAt: job.createdAt,
+        startedAt: ["leased", "running"].includes(job.status) ? job.updatedAt : undefined,
+      };
+    });
+    return { running, completed: [] as any[] };
+  }
+
   private syncQualityUpgradeControl(
-    phaseTask: QualityUpgradeDownloadTask | QualityUpgradeUploadReplaceTask,
+    phaseTask: QualityUpgradeDownloadTask | QualityUploadPhaseTask,
     status: QualityUpgradeTask["status"]
   ) {
     const control = phaseTask.control;
@@ -988,7 +1339,8 @@ export class SyncScheduler {
     const snapshot = this.getLocalCacheSnapshot();
     const baseAllowed = !snapshot.paused
       && !this.uploadCircuit.isDownloadPaused()
-      && this.priorityUploadKeys.size === 0
+      && this.uploadQueue.getSize() === 0
+      && this.jobStore.countDue(["upload", "history_upload"], 20) === 0
       && this.uploadQueue.canAccept();
     if (!baseAllowed) return false;
     if (!task) return this.downloadApiHealth.getSnapshot().state === "healthy";
@@ -999,7 +1351,6 @@ export class SyncScheduler {
     const decision = this.downloadApiHealth.claimStart(this.downloadTaskIdentity(task));
     if (!decision.allowed) {
       const retryAt = this.downloadApiHealth.getRetryAt();
-      if (retryAt) this.scheduleRecoveryRefill(Math.max(0, retryAt - Date.now()));
       return false;
     }
     task.apiModeOverride = decision.apiModeOverride;
@@ -1015,7 +1366,8 @@ export class SyncScheduler {
     const snapshot = this.getLocalCacheSnapshot();
     return !snapshot.paused
       && !this.uploadCircuit.isDownloadPaused()
-      && this.priorityUploadKeys.size === 0
+      && this.uploadQueue.getSize() === 0
+      && this.jobStore.countDue(["upload", "history_upload"], 20) === 0
       && this.uploadQueue.canAccept()
       && this.downloadQueue.canAccept();
   }
@@ -1105,6 +1457,24 @@ export class SyncScheduler {
         uploadPending.push(mapQueueBoardTask(task, "upload_pending"));
       }
     }
+    for (const job of this.jobStore.listForBoard(["verify_upload"], 100)) {
+      if (["leased", "running"].includes(job.status)) continue;
+      const payload = job.payload as any;
+      uploadPending.push(mapQueueBoardTask({
+        id: job.id,
+        bvid: job.bvid,
+        userId: job.userId,
+        mediaId: job.mediaId,
+        videoTitle: payload.videoTitle || job.bvid,
+        folderTitle: payload.folderTitle || "",
+        remotePath: payload.remotePath || payload.remoteFile || "",
+        detail: "已上传，等待远端确认",
+        retries: job.attempts,
+        maxRetries: job.maxAttempts,
+        retryAt: job.notBefore,
+        queuedAt: job.createdAt,
+      }, "upload_pending"));
+    }
 
     const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.sequence || 0) - Number(b.sequence || 0);
     const byStartedAt = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
@@ -1112,6 +1482,13 @@ export class SyncScheduler {
     uploadPending.sort(bySequence);
     downloadRunning.sort(byStartedAt);
     uploadRunning.sort(byStartedAt);
+
+    const persistentCounts = this.jobStore.counts();
+    const sumKinds = (kinds: PersistentJobKind[]) => kinds.reduce((total, kind) =>
+      total + Object.values(persistentCounts[kind] || {}).reduce((sum, count) => sum + Number(count || 0), 0), 0);
+    const leasedJobs = Object.values(persistentCounts).reduce((total, statuses) =>
+      total + Number(statuses.leased || 0) + Number(statuses.running || 0), 0);
+    const retryJobs = Object.values(persistentCounts).reduce((total, statuses) => total + Number(statuses.retry_wait || 0), 0);
 
     return {
       generatedAt: Date.now(),
@@ -1125,8 +1502,11 @@ export class SyncScheduler {
       downloadApiHealth: this.downloadApiHealth.getSnapshot(),
       downloadRecovery: inspectDownloadRecoverySync(tempDir),
       recovery: {
-        pendingUploads: this.recoveryUploadBacklog.length,
-        pendingDownloads: this.recoveryDownloadBacklog.length,
+        pendingUploads: sumKinds(["upload", "history_upload"]),
+        pendingDownloads: sumKinds(["download"]),
+        pendingVerifications: sumKinds(["verify_upload"]),
+        leasedJobs,
+        retryJobs,
         batchSize: this.configStore.get().startupRecoveryBatchSize || 25,
       },
     };
@@ -1321,46 +1701,6 @@ export class SyncScheduler {
       folderTitle: task.folderTitle || "favorites",
       remotePath: task.remotePath,
     }];
-  }
-
-  private createSharedUploadDirTracker(downloadDir: string, uploadCount: number, bvid?: string) {
-    const normalizedCount = Math.max(0, uploadCount);
-    const existing = this.sharedUploadDirs.get(downloadDir);
-    if (existing) {
-      existing.remaining += normalizedCount;
-      if (bvid) existing.bvids.add(bvid);
-      return existing;
-    }
-    const tracker: SharedUploadDirTracker = {
-      remaining: normalizedCount,
-      cleanupStarted: false,
-      failedTargets: new Set(),
-      bvids: new Set(bvid ? [bvid] : []),
-    };
-    this.sharedUploadDirs.set(downloadDir, tracker);
-    return tracker;
-  }
-
-  private async completeSharedUploadTask(task: UploadTask, succeeded: boolean) {
-    const downloadDir = task.sharedDownloadDir || "";
-    if (!downloadDir) return;
-    const tracker = this.sharedUploadDirs.get(downloadDir);
-    if (!tracker) return;
-    const targetKey = this.uploadTaskKey(task);
-    if (succeeded) {
-      tracker.failedTargets.delete(targetKey);
-    } else {
-      tracker.failedTargets.add(targetKey);
-    }
-    tracker.remaining = Math.max(0, tracker.remaining - 1);
-    if (tracker.remaining > 0 || tracker.cleanupStarted) return;
-    tracker.cleanupStarted = true;
-    this.sharedUploadDirs.delete(downloadDir);
-    if (tracker.failedTargets.size > 0) {
-      void this.refreshLocalCacheSnapshot(true).then(() => this.downloadQueue.poke());
-      return;
-    }
-    await this.cleanupSharedUploadDir(downloadDir, tracker.bvids);
   }
 
   private async cleanupSharedUploadDir(downloadDir: string, bvids: Set<string> = new Set()) {
@@ -1608,18 +1948,40 @@ export class SyncScheduler {
     return { newItems };
   }
 
+  private collectUploadTargets(bvid: string, fallback: UploadTarget[] = []) {
+    const config = this.configStore.get();
+    const targets = new Map<string, UploadTarget>();
+    for (const target of fallback) targets.set(`${target.userId}:${target.mediaId}`, target);
+    for (const relation of this.stateManager.listRelationsForBvid(bvid)) {
+      if (["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || "")) continue;
+      const resolved = this.resolveRelation(relation);
+      if (!resolved) continue;
+      targets.set(`${relation.userId}:${relation.mediaId}`, {
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: resolved.folderTitle,
+        remotePath: relation.remotePath || resolveRemotePath({
+          destination: config.alistDest,
+          layout: config.uploadLayout,
+          userName: resolved.user.name,
+          folderName: resolved.folderTitle,
+        }),
+      });
+    }
+    return [...targets.values()];
+  }
+
   private enqueueIfNeeded(
     user: BiliUser,
     mediaId: number,
     folderTitle: string,
     bvid: string,
-    options: { persisted?: boolean } = {}
+    options: { persisted?: boolean; notBefore?: number } = {}
   ) {
     if (!user.enabled) {
       return false;
     }
-    const key = this.backupKey(user.id, mediaId, bvid);
-    if (this.queuedBackupKeys.has(key) || (!options.persisted && !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId, this.cycleContext?.startedAt))) {
+    if (!options.persisted && !this.stateManager.shouldEnqueueBackup(bvid, user.id, mediaId, this.cycleContext?.startedAt)) {
       return false;
     }
     const config = this.configStore.get();
@@ -1629,65 +1991,53 @@ export class SyncScheduler {
       userName: user.name,
       folderName: folderTitle,
     });
-    const target: UploadTarget = {
-      userId: user.id,
-      mediaId,
-      folderTitle,
-      remotePath,
-    };
-
-    const activeTargets = this.activeDownloadTargets.get(bvid);
-    if (activeTargets) {
-      activeTargets.push(target);
-      if (!options.persisted) {
-        this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+    this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
+    const local = this.stateManager.getCompletedLocalDownload(bvid);
+    if (local) {
+      const meta = this.stateManager.getVideoMeta(bvid);
+      this.queueUploadWork({
+        bvid,
+        localDir: local.localDir,
+        remotePath,
+        userId: user.id,
+        mediaId,
+        folderTitle,
+        videoTitle: meta?.title || bvid,
+        upperName: meta?.upperName || "",
+        cover: meta?.cover || "",
+        files: local.files,
+        partialBackup: local.partialBackup,
+        priority: true,
+      });
+      for (const history of historySessionGroups(local.localDir)) {
+        this.queueUploadWork({
+          bvid,
+          localDir: local.localDir,
+          remotePath: joinRemotePath(remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+          userId: user.id,
+          mediaId,
+          folderTitle,
+          videoTitle: meta?.title || bvid,
+          upperName: meta?.upperName || "",
+          cover: meta?.cover || "",
+          files: history.files.map((file) => file.relativePath),
+          historyOnly: true,
+          historySnapshotAt: history.snapshotAt,
+          priority: false,
+        });
       }
-      this.queuedBackupKeys.add(key);
       return true;
     }
-
-    if (!this.canCreateDownloadTask()) {
-      return false;
-    }
-
-    const task = new DownloadTask(bvid, { ...user.cookie, accessToken: user.accessToken || "" }, config);
-    task.userId = user.id;
-    task.mediaId = mediaId;
-    task.folderTitle = folderTitle;
-    task.remotePath = remotePath;
-    const meta = this.stateManager.getVideoMeta(bvid);
-    task.videoTitle = meta?.title || "";
-    task.upperName = meta?.upperName || "";
-    task.cover = meta?.cover || "";
-    task.targets = [target];
-    task.onApiReady = (readyTask, mode) => this.handleDownloadApiReady(readyTask, mode);
-    task.onDownloading = () => this.stateManager.markDownloading(bvid, task.targets);
-    task.onPrepared = (_task, downloadDir, manifest) => this.stateManager.markDownloadPrepared(
+    this.jobStore.enqueue({
+      kind: "download",
+      dedupeKey: `download:${bvid}`,
       bvid,
-      downloadDir,
-      {
-        id: manifest.sessionId,
-        localDir: downloadDir,
-        kind: manifest.kind,
-        status: manifest.status,
-        completedPages: manifest.outputs.length,
-        totalPages: manifest.pages.length,
-        updatedAt: manifest.updatedAt,
-      },
-      task.targets
-    );
-    task.onDownloaded = (_task, downloadDir) => this.stateManager.markDownloaded(bvid, downloadDir, task.targets);
-
-    if (!options.persisted) {
-      this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
-    }
-    this.queuedBackupKeys.add(key);
-    this.activeDownloadTargets.set(bvid, task.targets);
-    if (!this.downloadQueue.addTask(task)) {
-      this.activeDownloadTargets.delete(bvid);
-      this.queuedBackupKeys.delete(key);
-      return false;
-    }
+      priority: 40,
+      maxAttempts: config.maxRetries + 1,
+      notBefore: options.notBefore || 0,
+      payload: { primaryUserId: user.id, primaryMediaId: mediaId, primaryFolderTitle: folderTitle },
+    });
+    this.dispatchPersistentJobs();
     return true;
   }
 
@@ -1697,10 +2047,10 @@ export class SyncScheduler {
     this.stateManager.runBatch(() => {
       for (const user of users) {
         for (const folder of user.favorites) {
-          if (remaining <= 0 || !this.canCreateDownloadTask()) return;
+          if (remaining <= 0) return;
           const bvids = this.stateManager.listRetryCandidatesForFolder(user.id, folder.mediaId, remaining);
           for (const bvid of bvids) {
-            if (remaining <= 0 || !this.canCreateDownloadTask()) return;
+            if (remaining <= 0) return;
             const queued = this.enqueueIfNeeded(user, folder.mediaId, folder.title, bvid);
             if (queued) {
               this.cycleContext!.queuedItems += 1;
@@ -1966,8 +2316,7 @@ export class SyncScheduler {
     this.stateManager.runBatch(() => {
       for (const item of items) {
         const relation = item.relation;
-        const key = this.backupKey(relation.userId, relation.mediaId, relation.bvid);
-        if (this.queuedBackupKeys.has(key)) continue;
+        if (this.jobStore.hasJobsForBvid(relation.bvid)) continue;
         const resolved = this.resolveRelation(relation);
         if (!resolved) continue;
 
@@ -1977,15 +2326,7 @@ export class SyncScheduler {
           const uploadReady = Boolean(manifest && (manifest.status === "complete" || manifest.status === "partial"));
           if (!uploadReady) {
             this.stateManager.markDownloadInterrupted(relation.bvid, localDir, "Stale download session queued for resume.", [{ userId: relation.userId, mediaId: relation.mediaId }]);
-            if (!this.recoveryDownloadKeys.has(key)) {
-              this.recoveryDownloadKeys.add(key);
-              this.recoveryDownloadBacklog.push({
-                user: resolved.user,
-                mediaId: resolved.mediaId,
-                folderTitle: resolved.folderTitle,
-                bvid: relation.bvid,
-              });
-            }
+            this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid, { persisted: true });
             continue;
           }
           const remotePath = relation.remotePath || item.video.remotePath || resolveRemotePath({
@@ -1999,7 +2340,6 @@ export class SyncScheduler {
           const historyGroups = historySessionGroups(localDir)
             .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
             .filter((group) => group.files.length > 0);
-          this.createSharedUploadDirTracker(localDir, 1 + historyGroups.length, relation.bvid);
           const baseUpload: RecoveryUploadItem = {
             bvid: relation.bvid,
             localDir,
@@ -2100,26 +2440,19 @@ export class SyncScheduler {
       if (readDownloadSession(localDir)) continue;
       const resolved = this.findBestRelationForBvid(entry.name);
       if (!resolved) continue;
-      const key = this.backupKey(resolved.user.id, resolved.mediaId, entry.name);
-      if (this.recoveryDownloadKeys.has(key)) continue;
       this.stateManager.markDownloadInterrupted(
         entry.name,
         localDir,
         "Legacy local cache queued for safe recovery.",
         [{ userId: resolved.user.id, mediaId: resolved.mediaId }]
       );
-      this.recoveryDownloadKeys.add(key);
-      this.recoveryDownloadBacklog.push({
-        user: resolved.user,
-        mediaId: resolved.mediaId,
-        folderTitle: resolved.folderTitle,
-        bvid: entry.name,
-      });
+      this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.name, { persisted: true });
     }
   }
 
   private resumePersistedWork() {
     this.queueLegacyDownloadDirsForRecovery();
+    if (this.stateManager.hasPersistentJobBootstrap()) return;
     this.stateManager.normalizePersistedWorkForRecovery();
     const statusPriority: Record<string, number> = {
       upload_failed: 0,
@@ -2158,7 +2491,6 @@ export class SyncScheduler {
           }))
           .filter((group) => group.files.length > 0);
         if (pendingHistory.length > 0) {
-          this.createSharedUploadDirTracker(localDir, pendingHistory.length, entry.bvid);
           for (const history of pendingHistory) {
             this.queueUploadWork({
               bvid: entry.bvid,
@@ -2182,16 +2514,7 @@ export class SyncScheduler {
       if (["downloaded", "uploading", "upload_failed"].includes(status) && hasLocalDir && localDir) {
         const manifest = readDownloadSession(localDir);
         if (!manifest || !["complete", "partial"].includes(manifest.status)) {
-          const downloadKey = this.backupKey(resolved.user.id, resolved.mediaId, entry.bvid);
-          if (!this.recoveryDownloadKeys.has(downloadKey)) {
-            this.recoveryDownloadKeys.add(downloadKey);
-            this.recoveryDownloadBacklog.push({
-              user: resolved.user,
-              mediaId: resolved.mediaId,
-              folderTitle: resolved.folderTitle,
-              bvid: entry.bvid,
-            });
-          }
+          this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid, { persisted: true });
           continue;
         }
         const uploadItem: RecoveryUploadItem = {
@@ -2208,52 +2531,65 @@ export class SyncScheduler {
           partialBackup: manifest.status === "partial",
           priority: true,
         };
-        const key = this.recoveryUploadKey(uploadItem);
-        if (!this.recoveryUploadKeys.has(key)) {
-          this.recoveryUploadKeys.add(key);
-          this.priorityUploadKeys.add(key);
-          this.recoveryUploadBacklog.push(uploadItem);
-          const historyTargetKey = `${resolved.user.id}:${resolved.mediaId}`;
-          const historyGroups = historySessionGroups(localDir)
-            .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
-            .filter((group) => group.files.length > 0);
-          this.createSharedUploadDirTracker(localDir, 1 + historyGroups.length, entry.bvid);
-          for (const history of historyGroups) {
-            const historyItem: RecoveryUploadItem = {
-              ...uploadItem,
-              remotePath: joinRemotePath(remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
-              files: history.files.map((file) => file.relativePath),
-              historyOnly: true,
-              historySnapshotAt: history.snapshotAt,
-              priority: false,
-            };
-            const historyKey = this.recoveryUploadKey(historyItem);
-            if (!this.recoveryUploadKeys.has(historyKey)) {
-              this.recoveryUploadKeys.add(historyKey);
-              this.recoveryUploadBacklog.push(historyItem);
-            }
-          }
+        this.queueUploadWork(uploadItem);
+        const historyTargetKey = `${resolved.user.id}:${resolved.mediaId}`;
+        const historyGroups = historySessionGroups(localDir)
+          .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
+          .filter((group) => group.files.length > 0);
+        for (const history of historyGroups) {
+          this.queueUploadWork({
+            ...uploadItem,
+            remotePath: joinRemotePath(remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+            files: history.files.map((file) => file.relativePath),
+            historyOnly: true,
+            historySnapshotAt: history.snapshotAt,
+            priority: false,
+          });
         }
         continue;
       }
-      const downloadKey = this.backupKey(resolved.user.id, resolved.mediaId, entry.bvid);
-      if (!this.recoveryDownloadKeys.has(downloadKey)) {
-        this.recoveryDownloadKeys.add(downloadKey);
-        this.recoveryDownloadBacklog.push({
-          user: resolved.user,
-          mediaId: resolved.mediaId,
-          folderTitle: resolved.folderTitle,
-          bvid: entry.bvid,
+      this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid, { persisted: true });
+    }
+
+    for (const pending of this.stateManager.listPendingUploadVerifications(10_000)) {
+      const relation = this.stateManager.getRelationStatus(pending.userId, pending.mediaId, pending.bvid);
+      const resolved = relation ? this.resolveRelation(relation) : null;
+      const manifest = pending.localDir ? readDownloadSession(pending.localDir) : null;
+      for (const file of pending.files) {
+        if (typeof file.size !== "number") continue;
+        this.jobStore.enqueue({
+          kind: "verify_upload",
+          dedupeKey: `verify:${pending.userId}:${pending.mediaId}:${pending.bvid}:main:${file.path}`,
+          bvid: pending.bvid,
+          userId: pending.userId,
+          mediaId: pending.mediaId,
+          priority: 10,
+          maxAttempts: UPLOAD_VERIFY_SCHEDULE_MS.length + 2,
+          notBefore: file.nextVerifyAt ? Date.parse(file.nextVerifyAt) : Date.now(),
+          payload: {
+            remoteFile: file.path,
+            expectedSize: file.size,
+            localDir: pending.localDir || "",
+            remotePath: pending.remotePath,
+            files: manifest?.outputs.map((output) => output.relativePath) || [],
+            partialBackup: Boolean(pending.partialBackup),
+            localRelativePath: file.localRelativePath,
+            putCompletedAt: file.putCompletedAt || new Date().toISOString(),
+            folderTitle: resolved?.folderTitle || "",
+            videoTitle: this.stateManager.getVideoMeta(pending.bvid)?.title || pending.bvid,
+          },
         });
       }
     }
-    this.drainRecoveryBacklog(true);
+    this.stateManager.markPersistentJobBootstrapComplete();
+    const counts = this.jobStore.counts();
+    const totalKind = (kind: PersistentJobKind) => Object.values(counts[kind] || {}).reduce((sum, value) => sum + Number(value || 0), 0);
     logManager.push({
       timestamp: new Date().toISOString(),
       type: "system",
       level: "info",
-      summary: `启动恢复已分批装载：待补传 ${this.recoveryUploadBacklog.length + this.uploadQueue.getSize()}，待下载 ${this.recoveryDownloadBacklog.length + this.downloadQueue.getSize()}`,
-      raw: `[Recovery] bounded startup recovery uploads=${this.recoveryUploadBacklog.length} downloads=${this.recoveryDownloadBacklog.length}`,
+      summary: `启动恢复已写入持久化队列：待补传 ${totalKind("upload") + totalKind("history_upload")}，待下载 ${totalKind("download")}，待确认 ${totalKind("verify_upload")}`,
+      raw: `[Recovery] sqlite jobs uploads=${totalKind("upload") + totalKind("history_upload")} downloads=${totalKind("download")} verify=${totalKind("verify_upload")}`,
       simpleVisible: true,
       debugVisible: true,
     });
@@ -2404,13 +2740,6 @@ interface SyncCycleStats {
 
 type RemoteVerifyCandidate = VideoArchiveEntry & { relation: FavoriteRelation };
 
-interface SharedUploadDirTracker {
-  remaining: number;
-  cleanupStarted: boolean;
-  failedTargets: Set<string>;
-  bvids: Set<string>;
-}
-
 interface RecoveryUploadItem {
   bvid: string;
   localDir: string;
@@ -2427,19 +2756,6 @@ interface RecoveryUploadItem {
   historySnapshotAt?: string;
   notBefore?: number;
   priority?: boolean;
-}
-
-interface RecoveryDownloadItem {
-  user: BiliUser;
-  mediaId: number;
-  folderTitle: string;
-  bvid: string;
-  notBefore?: number;
-}
-
-interface DeferredQualityUpload {
-  task: QualityUpgradeUploadReplaceTask;
-  notBefore?: number;
 }
 
 interface LocalCacheSnapshot {

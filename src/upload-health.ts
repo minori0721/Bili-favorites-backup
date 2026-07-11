@@ -193,6 +193,19 @@ export class UploadCircuitBreaker {
   private probeTaskKey?: string;
   private cooldownMs = 60_000;
 
+  restore(snapshot: Partial<UploadHealthSnapshot> | null | undefined) {
+    if (!snapshot || !["open", "half_open"].includes(String(snapshot.state)) || !snapshot.retryAt) return;
+    this.state = "open";
+    this.openedAt = snapshot.openedAt;
+    this.retryAt = snapshot.retryAt;
+    this.reason = snapshot.reason;
+    this.category = snapshot.category;
+    this.consecutiveTransient = Number(snapshot.consecutiveFailures || 0);
+    this.probeInFlight = false;
+    this.probeTaskKey = undefined;
+    this.cooldownMs = Math.max(60_000, Math.min(15 * 60_000, this.retryAt - (this.openedAt || Date.now())));
+  }
+
   allowUploadStart(taskKey: string, now = Date.now()) {
     if (this.state === "closed") return true;
     if (this.state === "open") {

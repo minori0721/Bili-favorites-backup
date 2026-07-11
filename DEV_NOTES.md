@@ -6,22 +6,32 @@
 
 - 分支：`dev`
 - 基准版本：`2.3.3`
-- 当前 dev 变更：上传可靠性、失败隔离补传、BBDown fork Release、aria2字节续传、分P会话恢复、网页/APP接口模式和播放风控自动恢复，尚未合并到 `main`。
+- 当前 dev 变更：SQLite 状态库、持久化任务队列、两阶段上传确认、Node.js 24、上传可靠性、BBDown/aria2续传、分P会话恢复、网页/APP接口模式和播放风控自动恢复，尚未合并到 `main`。
 - 镜像预期：推送 `dev` 分支后发布 `minori0721/bili-favorites-backup:dev`；`latest` 仍只由 `main` 分支发布。
 
 ## 当前 dev 变更
 
-- AList WebDAV 流上传显式发送准确 `Content-Length`、MIME、`X-OC-Mtime` 和 `X-OC-Ctime`，拒绝空文件/空目录；PUT 后最多 3 次核验远端文件大小。
+- AList WebDAV 流上传显式发送准确 `Content-Length`、MIME、`X-OC-Mtime` 和 `X-OC-Ctime`，拒绝空文件/空目录；PUT 前同名同大小直接确认，PUT 后只立即检查一次，延迟可见交给持久化确认任务。
 - 含 Emoji 等四字节字符的文件名仍优先按原名上传；仅原名出现确定性 400/405/422 时，才使用去除四字节字符的兼容名重试一次，并记录、校验实际远端文件名。正常支持 Emoji 的 AList 驱动不会被改名，兼容名与现有文件冲突时会自动追加稳定序号。
 - 远端目录创建只忽略“并发创建后复查确实存在”，认证、权限、405、限流和驱动错误会继续向上传任务传播。
-- 状态 schema 升级到 11；保留 schema 9 的 `upload_failed` 和 schema 10 下载会话，新增下载接口冷却截止时间、探测 BV、账号和实际探测模式，重启不会绕过冷却。
-- `StateManager` 增加显式批处理和测试注入写入器；启动状态规范化只进行一次合并保存，普通任务仍立即落盘。
-- 新增 `startupRecoveryBatchSize`（默认 25，范围 5–100）；启动恢复使用高低水位和轻量 backlog，本地待补传/已下载优先于无本地文件的恢复下载。
-- “每轮最多补传数量”改为跨账号、跨收藏夹共享的全局预算；下载队列和上传队列均使用硬容量上限，画质重调上传溢出时进入有界 backlog。
+- 运行状态迁移到固定依赖 `better-sqlite3@12.11.1` 的 `data/bfb.sqlite`；启用 WAL、外键、5 秒 busy timeout 和 `synchronous=NORMAL`，迁移使用事务与 `PRAGMA user_version`。
+- SQLite 表覆盖视频、收藏夹关系、下载会话、远端文件、任务、扫描、失败、冷却和画质重调；视频/关系大表按键懒加载，`StateManager` 保留兼容门面但不再长期持有完整状态对象。
+- 视频汇总状态从 SQL 视图按关系状态优先级读取；仅在没有收藏夹关系时使用视频表中的兜底状态，避免全局状态覆盖关系级结果。
+- 首次发现旧 schema 11 `state.json` 时先导入临时数据库，校验计数、外键和 `integrity_check` 后原子切换；原 JSON、SHA256 和迁移摘要永久保存到 `data/backups`。SQLite 已存在时禁止回退到旧 JSON。
+- `jobs` 是下载、上传、上传确认、历史上传和画质重调的唯一持久来源；唯一键去重，事务领取，失败写回 `not_before`，租约过期后自动恢复。内存队列只保留高水位以内的已领取任务。
+- 旧状态只在数据库首次缺少队列引导标记时幂等播种一次；完成后重启只恢复租约并领取现有 jobs，不再遍历状态重建已完成任务。旧 schema 1 JSON 覆盖导入会同时清空旧 jobs 与引导标记。
+- 画质重调拆为持久化下载、暂存上传、远端替换和清理四个阶段；运行中断后从对应 job 与关系级操作记录恢复，不再依赖 `index.ts` 内存 Map。
+- `startupRecoveryBatchSize`（默认 25，范围 5–100）现在控制内存领取高水位；本地待补传/已下载任务以更高优先级进入 SQLite，剩余任务不创建内存 backlog。
+- “每轮最多补传数量”继续作为跨账号、跨收藏夹共享预算；数据库唯一索引代替恢复 Set，画质重调和普通任务共用硬容量队列。
 - 上传错误统一分类、脱敏和限长；401/403 立即熔断，重复确定性错误和连续瞬时错误按阈值熔断，指数退避并支持 `Retry-After`，半开只放行一个本地上传探测。
 - 单个文件的确定性错误不会继续占用优先补传锁：本地文件保持 `upload_failed`，转入约 6 小时后的低优先级隔离补传，其他下载和上传立即继续；多个任务出现相同错误时仍会触发全局熔断。
 - 下载启动同时检查上传健康、优先补传、上传队列容量和缓存安全空间；缓存预留 `max(512 MiB, 上限的 10%)`，上传恢复后自动继续。
 - `/api/queue/state` 增加 `uploadHealth`、`downloadApiHealth`、`recovery` 和 `localCache.reserveBytes`；页面仅在对应异常时显示上传或 B 站风控横条，保留原四列队列布局。
+- PUT 返回 201/204 后文件进入 `awaiting_verification`，关系显示“已上传·确认中”并计入已上传筛选；按 2 秒、10 秒、30 秒、2 分钟、5 分钟、10 分钟确认，404 只视为可见性延迟。
+- 10 分钟仍不可见时改回 `upload_failed` 并在 30 分钟后补传；补传前再次精确预检，同名同大小直接转为 `verified`。确认完成前保留本地文件、禁止画质重调和远端替换。
+- 上传熔断、B站接口冷却和账号冷却统一保存在 `cooldowns`；上传熔断重启后继续生效，半开成功后自动清除并恢复下载。
+- 数据迁移包升级为 schema 2：包含 SQLite 一致性备份、可读 `state.json` 快照和失效视频索引；schema 1 JSON 包自动导入数据库。`npm run state:export-json` 可生成旧镜像回滚快照。
+- “清理备份状态”改为事务清空状态及任务表，数据库保持打开；空间统计包含 SQLite、WAL 和 SHM。
 - BBDown 使用 fork Release `bfb-1.6.3-259a5558.1`，源码提交 `42815977dff36d2bab783ce125e209191dcca037`，Linux x64 zip SHA256 为 `b647d7e76721cab9162cb8945cde8f481e3d2996727c599ece2720855fd004a7`；Docker 不再安装 .NET SDK 或现场编译。
 - fork 会把 Web 播放响应中的 `v_voucher` 转成 `BFB_SIGNAL:RISK_V_VOUCHER`，成功取得播放流后输出 `BFB_SIGNAL:PLAYURL_READY:WEB|APP`；风控响应不写 Debug JSON，也不进入 BBDown 内部重复解析。
 - 全局设置新增“网页接口 / APP接口”：APP 模式所有新任务使用 `-app`，保存时要求所有启用账号具有 `accessToken`；Hi-Res / Dolby 自动切换 APP，后端拒绝 Web 与高级音频的矛盾配置。
@@ -42,13 +52,15 @@
 - 状态与恢复：schema 8→11、未完成会话继续下载、完整会话直接上传、部分备份、关系级部分失败、多目标完成后清理和下载接口冷却重启恢复。
 - 下载会话：旧成品自动接管、CID替换与重排、配置变化隔离不兼容残片、损坏清单保留、嵌套命名模板、分P范围压缩、ffprobe时长/流/快速哈希验证。
 - 上传白名单：只上传清单成品，历史分P单独远端目录，Debug和控制文件不进入WebDAV。
-- 压力场景：约 6 MiB、1000 条持久化任务；首批内存任务 25 条，低水位补齐后仍为 25 条，状态完整写入不超过 2 次，RSS 小于 300 MiB。
-- 应用回归：隔离目录登录、配置更新、`/api/queue/state`、迁移导出和导入预览。
-- 当前自动化结果（2026-07-11 复测）：`npm test` 共 59 项全部通过、0 跳过；使用工作区临时 aria2 1.37.0 实测断线后 Range 续传，覆盖 Web/APP 参数、带时间戳机器信号、180 秒冷却、单探测、失败重新冷却、重启恢复和 3–6 秒启动间隔。`npm run build` 与 `git diff --check` 通过。
-- 内置浏览器：桌面端接口分段控件、Hi-Res 自动切 APP、风控异常横条和四列队列通过；390×844 下页面无横向溢出，接口控件宽 230px、异常条宽 313px，均保持在 390px 视口内，控制台无错误。移动端截图接口超时，但 DOM 尺寸与交互检查通过。
+- 压力场景：约 6 MiB、1000 条旧状态迁移后只领取 25 个内存任务；另构造 10000 个持久任务，原子领取仍限制为 25，剩余 9975 个只保存在 SQLite。
+- SQLite：覆盖 JSON 自动迁移、重复启动、损坏 JSON/SQLite、外键损坏、永久归档、事务批处理、任务去重、优先级、`not_before`、租约恢复和状态清理。
+- 两阶段确认：覆盖 PUT 后延迟可见、同名同大小跳过、大小冲突、确认跨重启、10 分钟超时、30 分钟补传、本地文件保留和熔断状态持久化。
+- 应用回归：隔离目录登录、配置更新、`/api/queue/state`、清理状态、schema 2 导出导入、schema 1 导入和再次导出计数。
+- 当前自动化结果（2026-07-11 复测）：Node.js `24.12.0` 下执行 `npm ci` 后，`npm test` 共 77 项，76 通过、0 失败；默认环境仅因未安装 aria2 跳过 1 项。随后临时使用官方 aria2 1.37.0 单独实跑该 Range 断线续传测试并通过，因此全部测试路径均已执行。`better-sqlite3` 原生模块加载、SQLite 内存库查询和 `npm run build` 均通过。
+- 内置浏览器：使用隔离“确认中”数据检查桌面和 390×844。桌面四列宽约 241px；移动端页面宽 375px、视口 390px，无页面级横向溢出，四列只在队列容器内滚动。确认中条目宽 313px，`已下架（确认中）` 徽章宽 104px 且完整落在条目内；控制台无 warning/error。
 - 隔离异常场景：本地模拟 AList 401 后显示“上传后端异常，下载已暂停”和下次探测时间，错误凭据已脱敏，正常/异常页面控制台均无错误。
 - 服务器临时验证：未替换或重启 `bili-favorites-dev`；在一次性 Bookworm 容器挂载 `.1` 二进制，SHA256、`--help`、`PLAYURL_READY:WEB` 和 `PLAYURL_READY:APP` 均通过。现场未再次触发 voucher，真实风控标记由 fork 源码和本地模拟覆盖。
-- GitHub Actions 固定 `ubuntu-24.04`，升级到 Node 24 运行时 Actions，删除 QEMU 和重复 aria2 安装，增加 GHA Buildx 缓存；测试和 TypeScript 构建通过后才发布镜像。
+- GitHub Actions 固定 `ubuntu-24.04`，Actions、本地测试目标和 Docker 应用运行时统一为 Node.js 24；删除 QEMU 和重复 aria2 安装，增加 GHA Buildx 缓存，测试和 TypeScript 构建通过后才发布镜像。
 
 ## 建议测试命令
 
@@ -64,6 +76,7 @@ npm --prefix . audit --omit=dev
 ## 已知问题 / 暂缓项
 
 - 本轮不连接真实 AList，因此尚未验证 189CloudPC、115、S3 等真实驱动的 PUT、列出、下载和删除；协议行为由本地模拟 WebDAV 覆盖。
+- 本轮不在本地构建 Docker、不部署服务器；版本保持 `2.3.3`，Node.js 运行时升级为 24，BBDown Release 和 APP/Web 风控规则未改变。
 - 本机不构建 Docker、不部署服务器；BBDown Native AOT 由 fork Release 工作流构建，BFB Docker 固定下载并校验该产物。GitHub Docker 工作流会完成全量测试和应用构建后再发布镜像。
 - `npm audit --omit=dev` 当前报告 2 个生产依赖中危告警，均来自 `@renmu/bili-api -> fast-xml-parser`；建议修复会把 `@renmu/bili-api` 破坏性降级到 1.0.0，本轮不自动升级依赖。
 - 收藏夹扫描异常仍有一处会把完整 Axios 错误对象交给 `console.error`，服务端日志可能因此包含 Cookie 等请求上下文；本次 checkpoint 不修改该旧逻辑，下一轮必须改为脱敏摘要并补测试。

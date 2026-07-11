@@ -64,6 +64,7 @@ export async function ensureRemoteDir(client: WebDAVClient, remotePath: string) 
 export interface UploadResult {
   remotePath: string;
   files: RemoteFileRecord[];
+  allVerified: boolean;
 }
 
 function buildRemoteFileQualityProfile(config: AppConfig): RemoteFileQualityProfile {
@@ -176,6 +177,24 @@ export async function verifyUploadedFile(
   throw new UploadOperationError(classifyUploadError(verificationError, remoteFile));
 }
 
+async function inspectExpectedRemoteFile(
+  client: WebDAVClient,
+  remoteFile: string,
+  expectedSize: number
+) {
+  try {
+    const remoteStat = await client.stat(remoteFile) as any;
+    const remoteSize = Number(remoteStat?.size);
+    if (Number.isFinite(remoteSize) && remoteSize === expectedSize) return "verified" as const;
+    const mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(remoteSize) ? remoteSize : "unknown"}`);
+    mismatch.status = 409;
+    throw mismatch;
+  } catch (error) {
+    if (isRemoteNotFoundError(error)) return "missing" as const;
+    throw error;
+  }
+}
+
 async function putAndVerifyLocalFile(
   client: WebDAVClient,
   localFile: string,
@@ -183,6 +202,10 @@ async function putAndVerifyLocalFile(
   stat: fs.Stats,
   verificationDelaysMs?: number[]
 ) {
+  const preflight = await inspectExpectedRemoteFile(client, remoteFile, stat.size);
+  if (preflight === "verified") {
+    return { verificationStatus: "verified" as const, skippedUpload: true };
+  }
   const fileStream = fs.createReadStream(localFile);
   try {
     await client.putFileContents(remoteFile, fileStream as any, {
@@ -190,7 +213,20 @@ async function putAndVerifyLocalFile(
       overwrite: true,
       headers: buildUploadHeaders(localFile, stat),
     });
-    await verifyUploadedFile(client, remoteFile, stat.size, verificationDelaysMs);
+    try {
+      await verifyUploadedFile(client, remoteFile, stat.size, verificationDelaysMs || [0]);
+      return { verificationStatus: "verified" as const, skippedUpload: false };
+    } catch (error) {
+      if (isRemoteNotFoundError((error as any)?.cause || error)
+        || isRemoteNotFoundError((error as any)?.uploadFailure?.summary || error)) {
+        return { verificationStatus: "awaiting_verification" as const, skippedUpload: false };
+      }
+      const summary = String((error as any)?.message || error || "");
+      if (/404|not found|object not found/i.test(summary)) {
+        return { verificationStatus: "awaiting_verification" as const, skippedUpload: false };
+      }
+      throw error;
+    }
   } finally {
     fileStream.destroy();
   }
@@ -264,8 +300,9 @@ export async function uploadWithAList(
 
       let uploadedName = entry.name;
       let uploadedRemoteFile = originalRemoteFile;
+      let transferResult: Awaited<ReturnType<typeof putAndVerifyLocalFile>>;
       try {
-        await putAndVerifyLocalFile(client, localFile, originalRemoteFile, stat, options.verificationDelaysMs);
+        transferResult = await putAndVerifyLocalFile(client, localFile, originalRemoteFile, stat, options.verificationDelaysMs);
       } catch (error) {
         const uploadError = await toUploadOperationError(error, originalRemoteFile);
         const compatibilityName = shouldRetryWithCompatibilityName(uploadError, entry.name)
@@ -297,7 +334,7 @@ export async function uploadWithAList(
           simpleVisible: true,
         });
         try {
-          await putAndVerifyLocalFile(client, localFile, uploadedRemoteFile, stat, options.verificationDelaysMs);
+          transferResult = await putAndVerifyLocalFile(client, localFile, uploadedRemoteFile, stat, options.verificationDelaysMs);
         } catch (compatibilityError) {
           const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
           const info = finalError.uploadFailure;
@@ -315,12 +352,19 @@ export async function uploadWithAList(
       }
 
       reservedRemoteNames.add(uploadedName);
+      const awaitingVerification = transferResult.verificationStatus === "awaiting_verification";
       logger.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "info",
-        summary: uploadedName === entry.name ? `上传完成: ${entry.name}` : `上传完成: ${entry.name}（远端 ${uploadedName}）`,
-        raw: `[AList] Upload completed for ${entry.name} as ${uploadedName}`,
+        summary: awaitingVerification
+          ? `上传已接受，等待远端确认: ${entry.name}`
+          : (transferResult.skippedUpload
+            ? `远端文件已存在，跳过重复上传: ${entry.name}`
+            : (uploadedName === entry.name ? `上传完成: ${entry.name}` : `上传完成: ${entry.name}（远端 ${uploadedName}）`)),
+        raw: awaitingVerification
+          ? `[AList] PUT accepted; awaiting remote visibility for ${uploadedName}`
+          : `[AList] Upload verified for ${entry.name} as ${uploadedName}${transferResult.skippedUpload ? " (preflight)" : ""}`,
         simpleVisible: true,
       });
 
@@ -329,6 +373,13 @@ export async function uploadWithAList(
         path: uploadedRemoteFile,
         size: stat.size,
         qualityProfile,
+        localRelativePath: entry.relativePath,
+        verificationStatus: transferResult.verificationStatus,
+        putCompletedAt: transferResult.skippedUpload ? undefined : new Date().toISOString(),
+        verifyAttempts: transferResult.verificationStatus === "verified" ? 1 : 0,
+        nextVerifyAt: transferResult.verificationStatus === "awaiting_verification"
+          ? new Date(Date.now() + 2_000).toISOString()
+          : undefined,
       });
   }
 
@@ -338,10 +389,11 @@ export async function uploadWithAList(
     throw new UploadOperationError(classifyUploadError(emptyError, remotePath));
   }
 
-  if (options.cleanupLocal !== false) {
+  const allVerified = uploadedFiles.every((file) => file.verificationStatus === "verified");
+  if (options.cleanupLocal !== false && allVerified) {
     await fs.promises.rm(localDir, { recursive: true, force: true });
   }
-  return { remotePath, files: uploadedFiles };
+  return { remotePath, files: uploadedFiles, allVerified };
 }
 
 export async function verifyRemoteFiles(
@@ -365,6 +417,25 @@ export async function verifyRemoteFiles(
     }
   }
   return { ok: missing.length === 0, missing };
+}
+
+export async function inspectRemoteFileSize(
+  config: AppConfig,
+  remotePath: string,
+  expectedSize: number
+): Promise<{ status: "verified" | "missing" | "mismatch"; remoteSize?: number }> {
+  const client = buildDavClient(config);
+  try {
+    const remoteStat = await client.stat(remotePath) as any;
+    const remoteSize = Number(remoteStat?.size);
+    if (Number.isFinite(remoteSize) && remoteSize === expectedSize) {
+      return { status: "verified", remoteSize };
+    }
+    return { status: "mismatch", remoteSize: Number.isFinite(remoteSize) ? remoteSize : undefined };
+  } catch (error) {
+    if (isRemoteNotFoundError(error)) return { status: "missing" };
+    throw error;
+  }
 }
 
 /** Batch rename files on remote storage via WebDAV MOVE */

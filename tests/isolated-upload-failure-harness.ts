@@ -1,58 +1,45 @@
 import fs from "node:fs";
-import path from "node:path";
 import { ConfigStore } from "../src/config.js";
 import { classifyUploadError, UploadOperationError } from "../src/upload-health.js";
 import { SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
-import { UploadTask } from "../src/tasks.js";
 import { UserStore } from "../src/users.js";
 
 const bvid = "BVISOLATED";
-const localDir = path.join(process.cwd(), "temp", bvid);
+const localDir = `${process.cwd()}\\temp\\${bvid}`;
 const remotePath = "/backup/isolated";
-const stateManager = new StateManager({ statePath: path.join(process.cwd(), "data", "state.json") });
+const stateManager = new StateManager();
 const configStore = new ConfigStore();
 const scheduler = new SyncScheduler(configStore, new UserStore(), stateManager) as any;
-scheduler.localCacheSnapshot = {
-  usedBytes: 0,
-  limitBytes: 0,
-  reserveBytes: 0,
-  paused: false,
-  checkedAt: Date.now(),
-};
-
-const retryDescriptor = {
+scheduler.localCacheSnapshot = { usedBytes: 0, limitBytes: 0, reserveBytes: 0, paused: false, checkedAt: Date.now() };
+scheduler.uploadQueue.setStartGate(() => false);
+scheduler.queueUploadWork({
   bvid,
   localDir,
   remotePath,
   userId: "u1",
   mediaId: 1,
-};
-const recoveryKey = scheduler.recoveryUploadKey(retryDescriptor);
-const task = new UploadTask(bvid, localDir, remotePath, configStore.get(), { cleanupLocal: false, files: ["isolated.mp4"] });
-task.userId = "u1";
-task.mediaId = 1;
-task.folderTitle = "Favorites";
-task.videoTitle = "Isolated upload";
-task.upperName = "Tester";
-task.sharedDownloadDir = localDir;
-task.recoveryKey = recoveryKey;
-
-scheduler.priorityUploadKeys.add(recoveryKey);
-scheduler.createSharedUploadDirTracker(localDir, 1, bvid);
+  folderTitle: "Favorites",
+  videoTitle: "Isolated upload",
+  upperName: "Tester",
+  files: ["isolated.mp4"],
+  priority: true,
+});
+const task = scheduler.uploadQueue.getTasks()[0];
 const failure = classifyUploadError({ status: 405, message: "Method Not Allowed" }, `${remotePath}/isolated.mp4`);
 scheduler.uploadQueue.emit("taskError", task, new UploadOperationError(failure));
+scheduler.uploadQueue.queue.splice(0);
 
 await new Promise((resolve) => setTimeout(resolve, 25));
-const queuedRetry = scheduler.recoveryUploadBacklog[0];
+const retry = scheduler.jobStore.findById(task.persistentJobId);
 const state = stateManager.getStateSnapshot();
 console.log("ISOLATED_UPLOAD_FAILURE_RESULT=" + JSON.stringify({
-  priorityCount: scheduler.priorityUploadKeys.size,
-  retryPriority: queuedRetry?.priority,
-  retryDelayMs: Number(queuedRetry?.notBefore || 0) - Date.now(),
+  retryStatus: retry?.status,
+  retryDelayMs: Number(retry?.notBefore || 0) - Date.now(),
   canStartDownload: scheduler.canStartDownloadTask(),
-  localFileExists: fs.existsSync(path.join(localDir, "isolated.mp4")),
+  localFileExists: fs.existsSync(`${localDir}\\isolated.mp4`),
   videoStatus: state.videos?.[bvid]?.backupStatus,
   relationStatus: state.relations?.[`u1:1:${bvid}`]?.backupStatus,
 }));
-process.exit(0);
+scheduler.stop();
+stateManager.close();

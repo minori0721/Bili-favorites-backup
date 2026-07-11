@@ -3,15 +3,20 @@
   "version": "2.3.3",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "state:export-json": "tsx src/scripts/sqlite-to-json.ts",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
     "start": "node dist/index.js",
     "login": "tsx src/scripts/login.ts"
   },
   "dependencies": {
     "@renmu/bili-api": "^2.13.2",
+    "better-sqlite3": "12.11.1",
     "express": "^4.22.2",
     "express-session": "^1.18.0",
     "qrcode": "^1.5.3",
@@ -19,9 +24,10 @@
     "webdav": "^5.10.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/express": "^4.17.21",
     "@types/express-session": "^1.17.10",
-    "@types/node": "^20.11.30",
+    "@types/node": "^24.13.3",
     "@types/qrcode": "^1.5.5",
     "@types/qrcode-terminal": "^0.12.0",
     "tsx": "^4.19.2",

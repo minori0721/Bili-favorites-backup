@@ -1233,7 +1233,7 @@ function getAppScript() {
       }
       content.innerHTML = '<div class="help-card-grid">' +
         '<div class="help-card"><strong>\u7acb\u5373\u540c\u6b65</strong><ul><li>\u6309\u5f53\u524d\u8c03\u5ea6\u7b56\u7565\u626b\u63cf\u70ed\u95e8\u9875\u548c\u90e8\u5206\u5386\u53f2\u9875\u3002</li><li>\u53d1\u73b0\u672a\u5907\u4efd\u89c6\u9891\u540e\u8fdb\u5165\u4e0b\u8f7d\u961f\u5217\u3002</li><li>\u9002\u5408\u65e5\u5e38\u589e\u91cf\u540c\u6b65\uff0c\u6210\u672c\u6700\u4f4e\u3002</li></ul></div>' +
-        '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5 AList\uff09</strong><ul><li>\u8df3\u8fc7 B \u7ad9\u6536\u85cf\u5939\u5168\u91cf\u626b\u63cf\u3002</li><li>\u6839\u636e\u672c\u5730 state.json \u4e2d\u7684 remoteFiles \u68c0\u67e5\u8fdc\u7aef\u6587\u4ef6\u662f\u5426\u5b58\u5728\u3002</li><li>\u53d1\u73b0\u7f3a\u5931\u540e\u6309\u8865\u4f20\u4e0a\u9650\u91cd\u65b0\u6392\u961f\u3002</li></ul></div>' +
+        '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5 AList\uff09</strong><ul><li>\u8df3\u8fc7 B \u7ad9\u6536\u85cf\u5939\u5168\u91cf\u626b\u63cf\u3002</li><li>\u6839\u636e\u672c\u5730 SQLite \u4e2d\u7684\u8fdc\u7aef\u6587\u4ef6\u8bb0\u5f55\u68c0\u67e5\u5b9e\u9645\u6587\u4ef6\u3002</li><li>\u53d1\u73b0\u7f3a\u5931\u540e\u6309\u8865\u4f20\u4e0a\u9650\u91cd\u65b0\u6392\u961f\u3002</li></ul></div>' +
         '<div class="help-card"><strong>\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26</strong><ul><li>\u5c3d\u53ef\u80fd\u91cd\u65b0\u626b\u63cf\u6536\u85cf\u5939\u6240\u6709\u9875\u9762\u3002</li><li>\u540c\u65f6\u6267\u884c\u8fdc\u7aef\u6587\u4ef6\u6821\u9a8c\uff0c\u9002\u5408\u9996\u6b21\u8865\u9f50\u6216\u8fc1\u79fb\u76ee\u5f55\u540e\u4f7f\u7528\u3002</li><li>\u8bf7\u6c42\u91cf\u66f4\u5927\uff0c\u53ef\u80fd\u89e6\u53d1 412\u3001\u767b\u5f55\u6821\u9a8c\u6216\u98ce\u63a7\u3002</li></ul></div>' +
         '</div>';
     }
@@ -2109,7 +2109,11 @@ function getAppScript() {
       let stateClass = '';
       let badgeClass = '';
       let badgeText = '';
-      if (item.backupStatus === 'partial_verified') {
+      if (item.backupStatus === 'uploaded') {
+        stateClass = item.unavailable ? 'unavailable-uploaded' : 'processed';
+        badgeClass = 'upload-pending';
+        badgeText = item.unavailable ? '已下架（确认中）' : '已上传·确认中';
+      } else if (item.backupStatus === 'partial_verified') {
         stateClass = 'processed';
         badgeClass = 'partial';
         badgeText = '部分备份';
@@ -2674,7 +2678,11 @@ function getAppScript() {
       const started = status.startedAt ? formatDateTime(status.startedAt) : '未运行';
       const progress = status.total ? String(status.checked || 0) + '/' + String(status.total) : (status.biliTotal ? String(status.indexed || 0) + '/' + String(status.biliTotal) : '无');
       const recovery = status.recovery || {};
-      const recoveryText = '上传 ' + Number(recovery.pendingUploads || 0) + ' / 下载 ' + Number(recovery.pendingDownloads || 0) + '（每批 ' + Number(recovery.batchSize || 25) + '）';
+      const recoveryText = '下载 ' + Number(recovery.pendingDownloads || 0) +
+        ' / 上传 ' + Number(recovery.pendingUploads || 0) +
+        ' / 确认 ' + Number(recovery.pendingVerifications || 0) +
+        '；租约中 ' + Number(recovery.leasedJobs || 0) +
+        '，到期重试 ' + Number(recovery.retryJobs || 0);
       box.innerHTML = '';
       const summary = document.createElement('summary');
       summary.className = 'scheduler-status-main';

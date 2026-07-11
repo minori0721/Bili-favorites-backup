@@ -3,13 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { createTestDir, removeTestDir } from "./helpers.js";
+import { createZipFromDirectory } from "../src/zip.js";
 
-test("real app supports login, queue state, config update and migration preview in isolation", { timeout: 10_000 }, async () => {
+test("real app supports login, queue state, config update and migration preview in isolation", { timeout: 20_000 }, async () => {
   const runtime = await createTestDir("app-smoke");
   const originalCwd = process.cwd();
   const previousNodeEnv = process.env.NODE_ENV;
   const previousAdminPass = process.env.ADMIN_PASS;
   let server: import("node:http").Server | undefined;
+  let closeAppResources: (() => Promise<void>) | undefined;
   try {
     const retainedDir = path.join(runtime, "temp", "BV1RETAINEDTEST");
     await fs.promises.mkdir(retainedDir, { recursive: true });
@@ -18,7 +20,9 @@ test("real app supports login, queue state, config update and migration preview 
     process.chdir(runtime);
     process.env.NODE_ENV = "test";
     process.env.ADMIN_PASS = "smoke-pass";
-    const { app } = await import("../src/index.js");
+    const appModule = await import("../src/index.js");
+    const { app } = appModule;
+    closeAppResources = appModule.closeAppResources;
     server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => server!.once("listening", resolve));
     const address = server.address();
@@ -103,14 +107,70 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(preview.status, 200);
     const previewJson: any = await preview.json();
     assert.equal(previewJson.success, true);
-    assert.equal(typeof previewJson.data, "object");
+    assert.equal(previewJson.data.manifest.schema, 2);
+    assert.ok(previewJson.data.files.includes("data/bfb.sqlite"));
+    assert.ok(previewJson.data.files.includes("data/state.json"));
+    assert.ok(previewJson.data.files.includes("indexes/unavailable-videos.json"));
 
-    assert.equal(fs.existsSync(path.join(runtime, "data", "state.json")), true);
+    const importSchema2 = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreCovers=false`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
+      body: archive,
+    });
+    assert.equal(importSchema2.status, 200);
+
+    const legacyStaging = path.join(runtime, "legacy-package");
+    await fs.promises.mkdir(path.join(legacyStaging, "data"), { recursive: true });
+    const legacyState: any = {
+      schemaVersion: 11,
+      processedByUser: {},
+      failedByUser: {},
+      videos: { BVLEGACYIMPORT: { bvid: "BVLEGACYIMPORT", title: "Legacy import", upperName: "Tester", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), biliStatus: "available", backupStatus: "discovered" } },
+      relations: { "u1:1:BVLEGACYIMPORT": { userId: "u1", mediaId: 1, bvid: "BVLEGACYIMPORT", folderTitle: "Legacy", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), activeInFavorite: true, backupStatus: "discovered" } },
+      folderScans: {},
+      userCooldowns: {},
+    };
+    await fs.promises.writeFile(path.join(legacyStaging, "data", "state.json"), JSON.stringify(legacyState), "utf8");
+    await fs.promises.writeFile(path.join(legacyStaging, "manifest.json"), JSON.stringify({
+      schema: 1,
+      app: "Bili-favorites-backup",
+      version: "2.3.3",
+      exportedAt: new Date().toISOString(),
+      includes: { includeConfig: false, includeUsers: false, includeState: true, includeLogs: false, includeDebug: false, includeCovers: false },
+      counts: { users: 0, videos: 1, relations: 1, unavailableVideos: 0 },
+      warning: "test",
+    }), "utf8");
+    const legacyZip = path.join(runtime, "legacy.zip");
+    await createZipFromDirectory(legacyStaging, legacyZip);
+    const importSchema1 = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreCovers=false`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
+      body: await fs.promises.readFile(legacyZip),
+    });
+    assert.equal(importSchema1.status, 200);
+
+    const reexported = await fetch(`${base}/api/migration/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ includeConfig: false, includeUsers: false, includeState: true }),
+    });
+    assert.equal(reexported.status, 200);
+    const reexportPreview = await fetch(`${base}/api/migration/import-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
+      body: Buffer.from(await reexported.arrayBuffer()),
+    });
+    const reexportJson: any = await reexportPreview.json();
+    assert.equal(reexportJson.data.manifest.counts.videos, 1);
+
+    assert.equal(fs.existsSync(path.join(runtime, "data", "bfb.sqlite")), true);
+    assert.equal(fs.existsSync(path.join(runtime, "data", "state.json")), false);
   } finally {
     if (server) {
       server.closeAllConnections?.();
       await new Promise<void>((resolve) => server!.close(() => resolve()));
     }
+    if (closeAppResources) await closeAppResources();
     process.chdir(originalCwd);
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;

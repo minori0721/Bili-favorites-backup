@@ -1,13 +1,14 @@
 import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
-import { uploadWithAList, UploadResult, deleteRemoteFiles, moveRemoteFile, verifyRemoteFiles } from "./uploader.js";
+import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles } from "./uploader.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
 import { BiliCookie } from "./users.js";
 import { RemoteFileRecord } from "./state.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath } from "./utils.js";
 import { cleanupUploadedSessionFiles, type DownloadSessionManifest } from "./download-session.js";
+import { sanitizeUploadText } from "./upload-health.js";
 
 export interface UploadTarget {
   userId: string;
@@ -94,6 +95,8 @@ export class QualityUpgradeTask extends Task {
   deleteResult?: Awaited<ReturnType<typeof deleteRemoteFiles>>;
   finalFiles?: RemoteFileRecord[];
   backupFiles?: RemoteFileRecord[];
+  stageRemotePath?: string;
+  backupRemotePath?: string;
   qualityStage?: "download" | "upload";
   qualityStageLabel?: string;
   videoTitle?: string;
@@ -155,14 +158,21 @@ export class QualityUpgradeTask extends Task {
   }
 
   async runUploadReplacePhase(runId: string) {
+    await this.runUploadStagePhase(runId);
+    await this.runReplacePhase(runId);
+    await this.runCleanupPhase();
+  }
+
+  async runUploadStagePhase(runId: string) {
     if (!this.downloadDir) {
       throw new Error("Quality upgrade download directory is missing");
     }
-    console.log(`[Task] Starting quality-upgrade upload/replace for ${this.bvid}`);
+    console.log(`[Task] Starting quality-upgrade staged upload for ${this.bvid}`);
     this.qualityStage = "upload";
     this.qualityStageLabel = "上传新版到临时目录";
     const targetRemotePath = this.target.remotePath;
     const stageRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
+    this.stageRemotePath = stageRemotePath;
     this.uploadResult = await uploadWithAList(this.downloadDir, stageRemotePath, this.config, {
       cleanupLocal: false,
       files: this.outputFiles,
@@ -172,6 +182,14 @@ export class QualityUpgradeTask extends Task {
     if (!stagedVerifyResult.ok) {
       throw new Error(`New upgraded files missing after staged upload: ${stagedVerifyResult.missing.join(", ")}`);
     }
+  }
+
+  async runReplacePhase(runId: string) {
+    if (!this.uploadResult?.files.length) {
+      throw new Error("Quality upgrade staged upload result is missing");
+    }
+    console.log(`[Task] Starting quality-upgrade remote replacement for ${this.bvid}`);
+    const targetRemotePath = this.target.remotePath;
     const plannedFinalFiles = this.uploadResult.files.map((file) => ({
       ...file,
       path: joinRemotePath(targetRemotePath, file.name),
@@ -184,9 +202,10 @@ export class QualityUpgradeTask extends Task {
       plannedFinalPaths.add(file.path);
     }
     const backupRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-backup-${runId}`);
+    this.backupRemotePath = backupRemotePath;
     this.backupFiles = [];
     this.finalFiles = [];
-    this.onReplacing?.(this, stageRemotePath, backupRemotePath);
+    this.onReplacing?.(this, this.stageRemotePath || joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`), backupRemotePath);
     try {
       this.qualityStageLabel = "备份旧远端文件";
       for (const oldFile of this.target.oldFiles) {
@@ -218,7 +237,7 @@ export class QualityUpgradeTask extends Task {
           try {
             await moveRemoteFile(this.config, finalFile.path, stagedFile.path);
           } catch (rollbackError) {
-            console.warn(`[Task] Failed to roll back upgraded file ${finalFile.path}`, rollbackError);
+            console.warn(`[Task] Failed to roll back upgraded file ${finalFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
         }
       }
@@ -229,21 +248,24 @@ export class QualityUpgradeTask extends Task {
           try {
             await moveRemoteFile(this.config, backupFile.path, oldFile.path);
           } catch (rollbackError) {
-            console.warn(`[Task] Failed to restore backup file ${backupFile.path}`, rollbackError);
+            console.warn(`[Task] Failed to restore backup file ${backupFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
         }
       }
       throw error;
     }
-    const finalResult = { remotePath: targetRemotePath, files: this.finalFiles };
+    const finalResult: UploadResult = { remotePath: targetRemotePath, files: this.finalFiles, allVerified: true };
     this.uploadResult = finalResult;
     this.qualityStageLabel = "写入新版远端状态";
     this.onUploaded?.(this, finalResult);
+  }
+
+  async runCleanupPhase() {
     this.qualityStageLabel = "清理旧文件备份";
-    this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles);
+    this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles || []);
     this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
-    await cleanupUploadedSessionFiles(this.downloadDir);
+    if (this.downloadDir) await cleanupUploadedSessionFiles(this.downloadDir);
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
   }
 }
@@ -296,7 +318,29 @@ export class QualityUpgradeUploadReplaceTask extends QualityUpgradePhaseTask {
     if (!runId) {
       throw new Error("Quality upgrade run id is missing");
     }
-    await this.control.runUploadReplacePhase(runId);
+    await this.control.runUploadStagePhase(runId);
+  }
+}
+
+export class QualityUpgradeReplaceTask extends QualityUpgradePhaseTask {
+  constructor(control: QualityUpgradeTask) {
+    super(`Quality upgrade replace ${control.bvid}`, control);
+  }
+
+  async run() {
+    const runId = this.control.runId;
+    if (!runId) throw new Error("Quality upgrade run id is missing");
+    await this.control.runReplacePhase(runId);
+  }
+}
+
+export class QualityUpgradeCleanupTask extends QualityUpgradePhaseTask {
+  constructor(control: QualityUpgradeTask) {
+    super(`Quality upgrade cleanup ${control.bvid}`, control);
+  }
+
+  async run() {
+    await this.control.runCleanupPhase();
   }
 }
 
@@ -350,5 +394,24 @@ export class UploadTask extends Task {
       files: this.files,
     });
     console.log(`[Task] Completed upload for ${this.bvid}`);
+  }
+}
+
+export class UploadVerificationTask extends Task {
+  result?: Awaited<ReturnType<typeof inspectRemoteFileSize>>;
+
+  constructor(
+    public readonly bvid: string,
+    public readonly userId: string,
+    public readonly mediaId: number,
+    public readonly remoteFile: string,
+    public readonly expectedSize: number,
+    public readonly config: AppConfig
+  ) {
+    super(`Verify upload ${bvid}`, { maxRetries: 0, retryDelaySeconds: 1 });
+  }
+
+  async run() {
+    this.result = await inspectRemoteFileSize(this.config, this.remoteFile, this.expectedSize);
   }
 }

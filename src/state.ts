@@ -1,9 +1,10 @@
-import path from "node:path";
 import fs from "node:fs";
+import path from "node:path";
 import { dataDir } from "./paths.js";
-import { readJsonFile, writeJsonFile } from "./storage.js";
 import { historySessionGroups, readDownloadSession } from "./download-session.js";
 import type { PersistedDownloadApiCooldown } from "./download-api-health.js";
+import { databasePath } from "./paths.js";
+import { archiveLegacyStateFile, StateDatabase, type StateDirtySet } from "./database.js";
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -48,6 +49,12 @@ export interface RemoteFileRecord {
   path: string;
   size?: number;
   qualityProfile?: RemoteFileQualityProfile;
+  localRelativePath?: string;
+  verificationStatus?: "awaiting_verification" | "verified" | "failed";
+  putCompletedAt?: string;
+  verifyAttempts?: number;
+  nextVerifyAt?: string;
+  lastError?: string;
 }
 
 export interface VideoMetadataSnapshot {
@@ -83,6 +90,7 @@ export interface VideoArchiveEntry {
   statusUpdatedAt?: string;
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
+  pendingPartialBackup?: boolean;
   localDir?: string;
   downloadSession?: DownloadSessionReference;
   uploadedAt?: string;
@@ -125,6 +133,7 @@ export interface FavoriteRelation {
   statusUpdatedAt?: string;
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
+  pendingPartialBackup?: boolean;
   qualityUpgrade?: QualityUpgradeOperation;
   uploadedAt?: string;
   verifiedAt?: string;
@@ -336,31 +345,379 @@ function folderKey(userId: string, mediaId: number) {
 export class StateManager {
   private state: StateFile;
   private readonly statePath: string;
-  private readonly writeState: (filePath: string, value: StateFile) => void;
+  private readonly dbPath: string;
+  private readonly archiveDir: string;
+  private database: StateDatabase;
+  private dirtySet: StateDirtySet = this.newDirtySet();
   private batchDepth = 0;
   private dirty = false;
+  private suppressFlush = false;
+  private lazyState = false;
+  private videoCache = new Map<string, VideoArchiveEntry>();
+  private relationCache = new Map<string, FavoriteRelation>();
+  private videoDeletes = new Set<string>();
+  private relationDeletes = new Set<string>();
+  private readonly onFlush?: (dirty: StateDirtySet) => void;
 
-  constructor(options: { statePath?: string; writeState?: (filePath: string, value: StateFile) => void } = {}) {
+  constructor(options: { statePath?: string; dbPath?: string; archiveDir?: string; onFlush?: (dirty: StateDirtySet) => void } = {}) {
     this.statePath = options.statePath || defaultStatePath;
-    this.writeState = options.writeState || writeJsonFile;
-    this.state = this.loadState();
-    this.migrateLegacyState();
+    this.dbPath = options.dbPath || (options.statePath ? ":memory:" : databasePath);
+    this.archiveDir = options.archiveDir || (this.dbPath === ":memory:" ? path.join(path.dirname(this.statePath), "backups") : path.join(path.dirname(this.dbPath), "backups"));
+    this.onFlush = options.onFlush;
+    this.database = this.initializeDatabase();
+    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
+    this.lazyState = true;
+    this.resetDirtySet();
   }
 
-  private loadState() {
-    this.state = readJsonFile<StateFile>(this.statePath, defaultState);
-    this.state.processedByUser ||= {};
-    this.state.failedByUser ||= {};
-    this.state.videos ||= {};
-    this.state.relations ||= {};
-    this.state.folderScans ||= {};
-    this.state.userCooldowns ||= {};
-    return this.state;
+  private newDirtySet(): StateDirtySet {
+    return {
+      videos: new Set(),
+      relations: new Set(),
+      folderScans: new Set(),
+      failures: false,
+      cooldowns: false,
+      metadata: false,
+    };
+  }
+
+  private resetDirtySet() {
+    this.dirtySet = this.newDirtySet();
+    this.dirty = false;
+  }
+
+  private normalizeLoadedState(input: StateFile): StateFile {
+    input.schemaVersion ||= 11;
+    input.processedByUser ||= {};
+    input.failedByUser ||= {};
+    input.videos ||= {};
+    input.relations ||= {};
+    input.folderScans ||= {};
+    input.userCooldowns ||= {};
+    return input;
+  }
+
+  private trackValue<T extends object>(value: T, mark: () => void, cache = new WeakMap<object, any>()): T {
+    if (!value || typeof value !== "object") return value;
+    const cached = cache.get(value);
+    if (cached) return cached;
+    const proxy = new Proxy(value as any, {
+      get: (target, property, receiver) => {
+        const child = Reflect.get(target, property, receiver);
+        return child && typeof child === "object" ? this.trackValue(child, mark, cache) : child;
+      },
+      set: (target, property, next, receiver) => {
+        const changed = Reflect.get(target, property, receiver) !== next;
+        const result = Reflect.set(target, property, next, receiver);
+        if (changed) mark();
+        return result;
+      },
+      deleteProperty: (target, property) => {
+        const existed = Reflect.has(target, property);
+        const result = Reflect.deleteProperty(target, property);
+        if (existed) mark();
+        return result;
+      },
+    });
+    cache.set(value, proxy);
+    return proxy;
+  }
+
+  private trackRecordMap<T extends object>(
+    input: Record<string, T>,
+    markKey: (key: string) => void
+  ): Record<string, T> {
+    const values = new Map<string, T>();
+    for (const [key, value] of Object.entries(input || {})) {
+      values.set(key, this.trackValue(value, () => markKey(key)));
+    }
+    return new Proxy(input || {}, {
+      get: (target, property, receiver) => {
+        if (typeof property === "string" && values.has(property)) return values.get(property);
+        return Reflect.get(target, property, receiver);
+      },
+      set: (target, property, next, receiver) => {
+        if (typeof property === "string" && next && typeof next === "object") {
+          const tracked = this.trackValue(next, () => markKey(property));
+          values.set(property, tracked);
+          Reflect.set(target, property, tracked, receiver);
+          markKey(property);
+          return true;
+        }
+        const result = Reflect.set(target, property, next, receiver);
+        if (typeof property === "string") markKey(property);
+        return result;
+      },
+      deleteProperty: (target, property) => {
+        if (typeof property === "string") {
+          values.delete(property);
+          markKey(property);
+        }
+        return Reflect.deleteProperty(target, property);
+      },
+      ownKeys: (target) => Reflect.ownKeys(target),
+      getOwnPropertyDescriptor: (target, property) => Reflect.getOwnPropertyDescriptor(target, property),
+    });
+  }
+
+  private trackLazyRecordMap<T extends object>(
+    cache: Map<string, T>,
+    deletes: Set<string>,
+    listKeys: () => string[],
+    load: (key: string) => T | undefined,
+    markKey: (key: string) => void,
+    isDirty: (key: string) => boolean
+  ): Record<string, T> {
+    const trim = () => {
+      while (cache.size > 256) {
+        const oldest = cache.keys().next().value as string | undefined;
+        if (!oldest) return;
+        if (isDirty(oldest)) {
+          const value = cache.get(oldest)!;
+          cache.delete(oldest);
+          cache.set(oldest, value);
+          if ([...cache.keys()].every(isDirty)) return;
+          continue;
+        }
+        cache.delete(oldest);
+      }
+    };
+    const tracked = (key: string, value: T) => {
+      let proxy: T;
+      proxy = this.trackValue(value, () => {
+        deletes.delete(key);
+        cache.set(key, proxy);
+        markKey(key);
+      });
+      return proxy;
+    };
+    return new Proxy({} as Record<string, T>, {
+      get: (_target, property) => {
+        if (typeof property !== "string" || property === "__proto__") return undefined;
+        if (deletes.has(property)) return undefined;
+        const cached = cache.get(property);
+        if (cached) {
+          cache.delete(property);
+          cache.set(property, cached);
+          return cached;
+        }
+        const value = load(property);
+        if (!value) return undefined;
+        const valueProxy = tracked(property, value);
+        cache.set(property, valueProxy);
+        trim();
+        return valueProxy;
+      },
+      set: (_target, property, value) => {
+        if (typeof property !== "string" || !value || typeof value !== "object") return false;
+        deletes.delete(property);
+        cache.set(property, tracked(property, value));
+        markKey(property);
+        trim();
+        return true;
+      },
+      deleteProperty: (_target, property) => {
+        if (typeof property !== "string") return false;
+        cache.delete(property);
+        deletes.add(property);
+        markKey(property);
+        return true;
+      },
+      ownKeys: () => [...new Set([...listKeys().filter((key) => !deletes.has(key)), ...cache.keys()])],
+      getOwnPropertyDescriptor: (_target, property) => {
+        if (typeof property !== "string" || deletes.has(property)) return undefined;
+        return { enumerable: true, configurable: true };
+      },
+    });
+  }
+
+  private trackDatabaseState(input: StateFile): StateFile {
+    const state = this.normalizeLoadedState(input);
+    state.videos = this.trackLazyRecordMap(
+      this.videoCache,
+      this.videoDeletes,
+      () => this.database.listVideoKeys(),
+      (key) => this.database.getVideo(key),
+      (key) => { this.dirtySet.videos.add(key); this.dirty = true; },
+      (key) => this.dirtySet.videos.has(key)
+    );
+    state.relations = this.trackLazyRecordMap(
+      this.relationCache,
+      this.relationDeletes,
+      () => this.database.listRelationKeys(),
+      (key) => this.database.getRelation(key),
+      (key) => { this.dirtySet.relations.add(key); this.dirty = true; },
+      (key) => this.dirtySet.relations.has(key)
+    );
+    state.folderScans = this.trackRecordMap(state.folderScans || {}, (key) => { this.dirtySet.folderScans.add(key); this.dirty = true; });
+    state.failedByUser = this.trackValue(state.failedByUser || {}, () => { this.dirtySet.failures = true; this.dirty = true; });
+    state.userCooldowns = this.trackValue(state.userCooldowns || {}, () => { this.dirtySet.cooldowns = true; this.dirty = true; });
+    state.processedByUser = {};
+    return new Proxy(state, {
+      set: (target, property, next, receiver) => {
+        const result = Reflect.set(target, property, next, receiver);
+        if (property === "downloadApiCooldown") this.dirtySet.cooldowns = true;
+        else this.dirtySet.metadata = true;
+        this.dirty = true;
+        return result;
+      },
+      deleteProperty: (target, property) => {
+        const result = Reflect.deleteProperty(target, property);
+        if (property === "downloadApiCooldown") this.dirtySet.cooldowns = true;
+        else this.dirtySet.metadata = true;
+        this.dirty = true;
+        return result;
+      },
+    });
+  }
+
+  private trackState(input: StateFile): StateFile {
+    const state = this.normalizeLoadedState(input);
+    state.videos = this.trackRecordMap(state.videos || {}, (key) => {
+      this.dirtySet.videos.add(key);
+      this.dirty = true;
+    });
+    state.relations = this.trackRecordMap(state.relations || {}, (key) => {
+      this.dirtySet.relations.add(key);
+      this.dirty = true;
+    });
+    state.folderScans = this.trackRecordMap(state.folderScans || {}, (key) => {
+      this.dirtySet.folderScans.add(key);
+      this.dirty = true;
+    });
+    state.failedByUser = this.trackValue(state.failedByUser || {}, () => {
+      this.dirtySet.failures = true;
+      this.dirty = true;
+    });
+    state.userCooldowns = this.trackValue(state.userCooldowns || {}, () => {
+      this.dirtySet.cooldowns = true;
+      this.dirty = true;
+    });
+    state.processedByUser = this.trackValue(state.processedByUser || {}, () => {
+      this.dirtySet.metadata = true;
+      this.dirty = true;
+    });
+    return new Proxy(state, {
+      set: (target, property, next, receiver) => {
+        const result = Reflect.set(target, property, next, receiver);
+        if (property === "downloadApiCooldown") this.dirtySet.cooldowns = true;
+        else this.dirtySet.metadata = true;
+        this.dirty = true;
+        return result;
+      },
+      deleteProperty: (target, property) => {
+        const result = Reflect.deleteProperty(target, property);
+        if (property === "downloadApiCooldown") this.dirtySet.cooldowns = true;
+        else this.dirtySet.metadata = true;
+        this.dirty = true;
+        return result;
+      },
+    });
+  }
+
+  private snapshotState(): StateFile {
+    if (this.lazyState) {
+      this.flush();
+      const snapshot = this.database.loadState();
+      this.videoCache.clear();
+      this.relationCache.clear();
+      return snapshot;
+    }
+    return JSON.parse(JSON.stringify(this.state)) as StateFile;
+  }
+
+  private initializeDatabase() {
+    const readLegacyStateStrict = () => {
+      const raw = fs.readFileSync(this.statePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Legacy state.json must contain a JSON object");
+      }
+      return parsed as StateFile;
+    };
+    if (this.dbPath === ":memory:") {
+      const database = new StateDatabase(":memory:");
+      if (fs.existsSync(this.statePath)) {
+        this.database = database;
+        this.state = this.trackState(this.normalizeLoadedState(readLegacyStateStrict()));
+        this.suppressFlush = true;
+        this.migrateLegacyState();
+        this.suppressFlush = false;
+        database.replaceState(this.snapshotState());
+        this.resetDirtySet();
+      }
+      return database;
+    }
+
+    if (fs.existsSync(this.dbPath)) {
+      const database = new StateDatabase(this.dbPath);
+      try {
+        database.integrityCheck();
+        return database;
+      } catch (error) {
+        database.close();
+        throw error;
+      }
+    }
+
+    const tempPath = `${this.dbPath}.migrating`;
+    for (const suffix of ["", "-wal", "-shm"]) {
+      fs.rmSync(`${tempPath}${suffix}`, { force: true });
+    }
+    const database = new StateDatabase(tempPath);
+    try {
+      const legacyExists = fs.existsSync(this.statePath);
+      const rawState = legacyExists
+        ? readLegacyStateStrict()
+        : this.normalizeLoadedState({ ...defaultState });
+      this.database = database;
+      this.state = this.trackState(this.normalizeLoadedState(rawState));
+      this.suppressFlush = true;
+      this.migrateLegacyState();
+      this.suppressFlush = false;
+      const migrated = this.snapshotState();
+      database.replaceState(migrated);
+      const dbCounts = database.db.prepare(`
+        SELECT (SELECT COUNT(*) FROM videos) AS videos, (SELECT COUNT(*) FROM favorite_relations) AS relations
+      `).get() as any;
+      if (Number(dbCounts.videos) !== Object.keys(migrated.videos || {}).length
+        || Number(dbCounts.relations) !== Object.keys(migrated.relations || {}).length) {
+        throw new Error("SQLite migration count verification failed");
+      }
+      database.close();
+      fs.renameSync(tempPath, this.dbPath);
+      if (legacyExists) {
+        archiveLegacyStateFile(this.statePath, this.archiveDir, {
+          videos: Object.keys(migrated.videos || {}).length,
+          relations: Object.keys(migrated.relations || {}).length,
+          integrityCheck: "ok",
+          foreignKeyErrors: 0,
+        });
+        fs.rmSync(this.statePath, { force: true });
+      }
+    } catch (error) {
+      database.close();
+      for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${tempPath}${suffix}`, { force: true });
+      throw error;
+    }
+    const reopened = new StateDatabase(this.dbPath);
+    try {
+      reopened.integrityCheck();
+      return reopened;
+    } catch (error) {
+      reopened.close();
+      throw error;
+    }
   }
 
   reload() {
-    this.state = this.loadState();
-    this.migrateLegacyState();
+    this.videoCache.clear();
+    this.relationCache.clear();
+    this.videoDeletes.clear();
+    this.relationDeletes.clear();
+    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
+    this.lazyState = true;
+    this.resetDirtySet();
   }
 
   runBatch<T>(fn: () => T): T {
@@ -376,7 +733,7 @@ export class StateManager {
   }
 
   getStateSnapshot() {
-    return structuredClone(this.state);
+    return this.snapshotState();
   }
 
   private getRelation(userId: string | undefined, mediaId: number | undefined, bvid: string) {
@@ -442,7 +799,16 @@ export class StateManager {
   private refreshVideoAggregateStatus(bvid: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    const relations = Object.values(this.state.relations || {}).filter((relation) => relation.bvid === bvid);
+    const relations = this.lazyState
+      ? (() => {
+          const rows = new Map(this.database.listRelationsForBvid(bvid).map((relation) => [relationKey(relation.userId, relation.mediaId, relation.bvid), relation]));
+          for (const [key, relation] of this.relationCache) {
+            if (relation.bvid === bvid) rows.set(key, relation);
+          }
+          for (const key of this.relationDeletes) rows.delete(key);
+          return [...rows.values()];
+        })()
+      : Object.values(this.state.relations || {}).filter((relation) => relation.bvid === bvid);
     if (relations.length === 0) return;
     const statuses = relations.map((relation) => relation.backupStatus || this.initialRelationStatus(bvid, relation));
     const active = statuses.find((status) => ACTIVE_BACKUP_STATUSES.has(status));
@@ -849,6 +1215,7 @@ export class StateManager {
       relation.lastRemoteCheckAt = at;
       relation.nextRemoteCheckAt = undefined;
       relation.remoteMissingCount = 0;
+      relation.pendingPartialBackup = undefined;
       relation.lastError = undefined;
       this.clearFailedEntry(relation.userId, relation.mediaId, relation.bvid);
       this.refreshVideoAggregateStatus(entry.bvid);
@@ -890,6 +1257,133 @@ export class StateManager {
     }
     this.applyVerifiedRemoteFiles(entry, this.getRelation(_userId, _mediaId, bvid), remotePath, remoteFiles, nowIso(), partial);
     this.save();
+  }
+
+  markUploadedPendingVerification(
+    bvid: string,
+    remotePath: string,
+    remoteFiles: RemoteFileRecord[],
+    userId?: string,
+    mediaId?: number,
+    partial = false
+  ) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry || remoteFiles.length === 0) return;
+    const at = nowIso();
+    entry.remotePath = remotePath;
+    entry.remoteFiles = remoteFiles;
+    entry.uploadedAt = at;
+    entry.verifiedAt = undefined;
+    entry.lastError = undefined;
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (relation) {
+      this.setRelationStatus(relation, "uploaded", at);
+      relation.remotePath = remotePath;
+      relation.remoteFiles = remoteFiles;
+      relation.pendingPartialBackup = partial || undefined;
+      relation.uploadedAt = at;
+      relation.verifiedAt = undefined;
+      relation.lastError = undefined;
+      relation.nextRemoteCheckAt = remoteFiles
+        .map((file) => file.nextVerifyAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()[0];
+      this.clearFailedEntry(relation.userId, relation.mediaId, relation.bvid);
+      this.refreshVideoAggregateStatus(bvid);
+    } else {
+      this.setVideoStatus(entry, "uploaded", at);
+    }
+    this.save();
+  }
+
+  listPendingUploadVerifications(limit = 100) {
+    const rows: Array<{
+      bvid: string;
+      userId: string;
+      mediaId: number;
+      remotePath: string;
+      localDir?: string;
+      partialBackup?: boolean;
+      files: RemoteFileRecord[];
+    }> = [];
+    for (const relation of Object.values(this.state.relations || {})) {
+      if (relation.backupStatus !== "uploaded") continue;
+      const files = (relation.remoteFiles || []).filter((file) => file.verificationStatus === "awaiting_verification");
+      if (files.length === 0) continue;
+      rows.push({
+        bvid: relation.bvid,
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        remotePath: relation.remotePath || path.posix.dirname(files[0].path),
+        localDir: this.state.videos?.[relation.bvid]?.localDir,
+        partialBackup: Boolean(relation.pendingPartialBackup),
+        files: files.map((file) => ({ ...file })),
+      });
+      if (rows.length >= limit) break;
+    }
+    return rows;
+  }
+
+  markUploadFileVerified(bvid: string, userId: string, mediaId: number, remoteFile: string) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!entry || !relation?.remoteFiles?.length) return false;
+    const file = relation.remoteFiles.find((candidate) => candidate.path === remoteFile);
+    if (!file) return false;
+    file.verificationStatus = "verified";
+    file.nextVerifyAt = undefined;
+    file.lastError = undefined;
+    file.verifyAttempts = Number(file.verifyAttempts || 0) + 1;
+    const allVerified = relation.remoteFiles.every((candidate) => candidate.verificationStatus !== "awaiting_verification" && candidate.verificationStatus !== "failed");
+    if (allVerified) {
+      const verifiedFiles = relation.remoteFiles.map((candidate) => ({
+        ...candidate,
+        verificationStatus: "verified" as const,
+        nextVerifyAt: undefined,
+        lastError: undefined,
+      }));
+      const partial = Boolean(relation.pendingPartialBackup);
+      this.applyVerifiedRemoteFiles(entry, relation, relation.remotePath || path.posix.dirname(remoteFile), verifiedFiles, nowIso(), partial);
+    }
+    this.save();
+    return allVerified;
+  }
+
+  deferUploadFileVerification(
+    bvid: string,
+    userId: string,
+    mediaId: number,
+    remoteFile: string,
+    nextVerifyAt: number,
+    reason: string
+  ) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    const file = relation?.remoteFiles?.find((candidate) => candidate.path === remoteFile);
+    if (!relation || !file) return;
+    file.verificationStatus = "awaiting_verification";
+    file.verifyAttempts = Number(file.verifyAttempts || 0) + 1;
+    file.nextVerifyAt = new Date(nextVerifyAt).toISOString();
+    file.lastError = reason;
+    relation.nextRemoteCheckAt = file.nextVerifyAt;
+    relation.lastError = reason;
+    this.save();
+  }
+
+  failUploadFileVerification(
+    bvid: string,
+    userId: string,
+    mediaId: number,
+    remoteFile: string,
+    reason: string
+  ) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    const file = relation?.remoteFiles?.find((candidate) => candidate.path === remoteFile);
+    if (file) {
+      file.verificationStatus = "failed";
+      file.nextVerifyAt = undefined;
+      file.lastError = reason;
+    }
+    this.markUploadFailed(bvid, this.state.videos?.[bvid]?.localDir || "", userId, mediaId, reason);
   }
 
   markUploadFailed(bvid: string, localDir: string, userId?: string, mediaId?: number, reason = "Upload failure") {
@@ -1166,19 +1660,48 @@ export class StateManager {
     this.save();
   }
 
+  getUploadCooldown() {
+    return this.database.getCooldown("upload", "global");
+  }
+
+  setUploadCooldown(value: Record<string, unknown>) {
+    this.database.setCooldown(
+      "upload",
+      "global",
+      Number(value.retryAt || 0),
+      String(value.reason || ""),
+      value
+    );
+  }
+
+  clearUploadCooldown() {
+    this.database.clearCooldown("upload", "global");
+  }
+
+  hasPersistentJobBootstrap() {
+    return this.database.getMeta("persistent_jobs_bootstrap_v1") === "complete";
+  }
+
+  markPersistentJobBootstrapComplete() {
+    this.database.setMeta("persistent_jobs_bootstrap_v1", "complete");
+  }
+
   normalizePersistedWorkForRecovery() {
     let changed = false;
     const resumableStatuses = new Set<BackupStatus>(["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing", "failed"]);
     const at = nowIso();
+    const videos = this.lazyState ? this.database.listVideos() : Object.values(this.state.videos || {}).map((entry) => ({ ...entry }));
+    const relationRows = this.lazyState ? this.database.listRelations() : Object.values(this.state.relations || {}).map((relation) => ({ ...relation }));
     const relationsByBvid = new Map<string, FavoriteRelation[]>();
-    for (const relation of Object.values(this.state.relations || {})) {
+    for (const relation of relationRows) {
       const list = relationsByBvid.get(relation.bvid) || [];
       list.push(relation);
       relationsByBvid.set(relation.bvid, list);
     }
 
     this.runBatch(() => {
-      for (const entry of Object.values(this.state.videos || {})) {
+      for (const entry of videos) {
+        let videoChanged = false;
         const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
         const relations = relationsByBvid.get(entry.bvid) || [];
         if (hasLocalDir && entry.localDir) {
@@ -1200,11 +1723,13 @@ export class StateManager {
             };
             if (JSON.stringify(entry.downloadSession) !== JSON.stringify(nextReference)) {
               entry.downloadSession = nextReference;
+              videoChanged = true;
               changed = true;
             }
           }
           if (resumableStatuses.has(entry.backupStatus) && entry.backupStatus !== entryTarget) {
             this.setVideoStatus(entry, entryTarget, at);
+            videoChanged = true;
             changed = true;
           }
           for (const relation of relations) {
@@ -1215,21 +1740,25 @@ export class StateManager {
               : "queued";
             if (relation.backupStatus !== target) {
               this.setRelationStatus(relation, target, at);
+              this.state.relations![relationKey(relation.userId, relation.mediaId, relation.bvid)] = relation;
               changed = true;
             }
           }
+          if (videoChanged) this.state.videos![entry.bvid] = entry;
           continue;
         }
 
         if (entry.localDir) {
           entry.localDir = undefined;
           entry.downloadSession = undefined;
+          videoChanged = true;
           changed = true;
         }
         if (resumableStatuses.has(entry.backupStatus)) {
           const target = entry.favoriteUnavailable && !entry.selfVisible ? "lost" : "queued";
           if (entry.backupStatus !== target) {
             this.setVideoStatus(entry, target, at);
+            videoChanged = true;
             changed = true;
           }
         }
@@ -1239,9 +1768,11 @@ export class StateManager {
           const target = relationTreatsUnavailable(relation, entry) ? "lost" : "queued";
           if (relation.backupStatus !== target) {
             this.setRelationStatus(relation, target, at);
+            this.state.relations![relationKey(relation.userId, relation.mediaId, relation.bvid)] = relation;
             changed = true;
           }
         }
+        if (videoChanged) this.state.videos![entry.bvid] = entry;
       }
       if (changed) this.save();
     });
@@ -1250,8 +1781,11 @@ export class StateManager {
   }
 
   listBackupsToResume() {
-    const relationWork = Object.values(this.state.relations || {})
-      .map((relation) => ({ relation: { ...relation }, video: this.state.videos?.[relation.bvid] }))
+    const videos = this.lazyState ? this.database.listVideos() : Object.values(this.state.videos || {});
+    const videoByBvid = new Map(videos.map((video) => [video.bvid, video]));
+    const relations = this.lazyState ? this.database.listRelations() : Object.values(this.state.relations || {});
+    const relationWork = relations
+      .map((relation) => ({ relation: { ...relation }, video: videoByBvid.get(relation.bvid) }))
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => {
         if (!item.video) return false;
         if (["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing"].includes(item.relation.backupStatus || "")) return true;
@@ -1264,7 +1798,7 @@ export class StateManager {
     if (relationWork.length > 0) {
       return relationWork;
     }
-    return Object.values(this.state.videos || {})
+    return videos
       .filter((entry) => ["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing"].includes(entry.backupStatus))
       .map((video) => ({ video: { ...video }, relation: this.findRelationForBvid(video.bvid) }));
   }
@@ -1317,7 +1851,7 @@ export class StateManager {
       .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } =>
         Boolean(item.video) &&
-        (item.relation.backupStatus === "uploaded" || item.relation.backupStatus === "verified") &&
+        ["verified", "partial_verified"].includes(item.relation.backupStatus || "") &&
         (includeDeferred || !item.relation.nextRemoteCheckAt || Date.parse(item.relation.nextRemoteCheckAt) <= now)
       )
       .sort((a, b) => {
@@ -1343,7 +1877,7 @@ export class StateManager {
   countVideosForRemoteVerify(includeDeferred = false) {
     const now = Date.now();
     return Object.values(this.state.relations || {}).filter((relation) =>
-      (relation.backupStatus === "uploaded" || relation.backupStatus === "verified") &&
+      ["verified", "partial_verified"].includes(relation.backupStatus || "") &&
       (includeDeferred || !relation.nextRemoteCheckAt || Date.parse(relation.nextRemoteCheckAt) <= now)
     ).length;
   }
@@ -1524,7 +2058,8 @@ export class StateManager {
   }
 
   listRelationsForBvid(bvid: string) {
-    return Object.values(this.state.relations || {})
+    const relations = this.lazyState ? this.database.listRelationsForBvid(bvid) : Object.values(this.state.relations || {});
+    return relations
       .filter((item) => item.bvid === bvid)
       .map((item) => ({ ...item }));
   }
@@ -1680,6 +2215,7 @@ export class StateManager {
       unavailable: true,
       processed: this.isProcessed(userId, video.bvid, relation.mediaId),
       failed: this.isFailed(userId, video.bvid, relation.mediaId),
+      backupStatus: relation.backupStatus || video.backupStatus,
       mediaId: relation.mediaId,
       folderTitle: relation.folderTitle,
     }));
@@ -1755,6 +2291,18 @@ export class StateManager {
       description: entry.description,
       favoriteUnavailable: entry.favoriteUnavailable,
       selfVisible: entry.selfVisible,
+    };
+  }
+
+  getCompletedLocalDownload(bvid: string) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry?.localDir || !fs.existsSync(entry.localDir)) return null;
+    const manifest = readDownloadSession(entry.localDir);
+    if (!manifest || !["complete", "partial"].includes(manifest.status)) return null;
+    return {
+      localDir: entry.localDir,
+      files: manifest.outputs.map((output) => output.relativePath),
+      partialBackup: manifest.status === "partial",
     };
   }
 
@@ -2017,7 +2565,12 @@ export class StateManager {
   }
 
   clear() {
-    this.state = {
+    this.database.clearStateAndJobs();
+    this.videoCache.clear();
+    this.relationCache.clear();
+    this.videoDeletes.clear();
+    this.relationDeletes.clear();
+    this.state = this.trackDatabaseState({
       schemaVersion: defaultState.schemaVersion,
       processedByUser: {},
       failedByUser: {},
@@ -2026,7 +2579,86 @@ export class StateManager {
       folderScans: {},
       userCooldowns: {},
       downloadApiCooldown: undefined,
-    };
+    });
+    this.lazyState = true;
+    this.resetDirtySet();
+  }
+
+  close() {
+    this.flush();
+    this.database.close();
+  }
+
+  getDatabase() {
+    return this.database;
+  }
+
+  async backupDatabase(destination: string) {
+    this.flush();
+    await this.database.backupTo(destination);
+  }
+
+  async replaceDatabaseFile(source: string) {
+    if (this.dbPath === ":memory:") {
+      const imported = new StateDatabase(source);
+      try {
+        imported.integrityCheck();
+        this.replaceStateSnapshot(imported.loadState());
+      } finally {
+        imported.close();
+      }
+      return;
+    }
+    const validation = new StateDatabase(source);
+    try {
+      validation.integrityCheck();
+    } finally {
+      validation.close();
+    }
+    this.flush();
+    const replacement = `${this.dbPath}.importing`;
+    const previous = `${this.dbPath}.before-import`;
+    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${replacement}${suffix}`, { force: true });
+    fs.copyFileSync(source, replacement);
+    this.database.close();
+    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${previous}${suffix}`, { force: true });
+    try {
+      if (fs.existsSync(this.dbPath)) fs.renameSync(this.dbPath, previous);
+      fs.renameSync(replacement, this.dbPath);
+      this.database = new StateDatabase(this.dbPath);
+      this.database.integrityCheck();
+      fs.rmSync(previous, { force: true });
+    } catch (error) {
+      try { if (this.database?.db?.open) this.database.close(); } catch {}
+      fs.rmSync(this.dbPath, { force: true });
+      if (fs.existsSync(previous)) fs.renameSync(previous, this.dbPath);
+      this.database = new StateDatabase(this.dbPath);
+      throw error;
+    }
+    this.videoCache.clear();
+    this.relationCache.clear();
+    this.videoDeletes.clear();
+    this.relationDeletes.clear();
+    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
+    this.lazyState = true;
+    this.resetDirtySet();
+  }
+
+  replaceStateSnapshot(state: StateFile) {
+    const normalized = this.normalizeLoadedState(state);
+    this.lazyState = false;
+    this.state = this.trackState(normalized);
+    this.suppressFlush = true;
+    this.migrateLegacyState();
+    this.suppressFlush = false;
+    this.database.replaceState(this.snapshotState());
+    this.videoCache.clear();
+    this.relationCache.clear();
+    this.videoDeletes.clear();
+    this.relationDeletes.clear();
+    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
+    this.lazyState = true;
+    this.resetDirtySet();
   }
 
   private save() {
@@ -2037,8 +2669,15 @@ export class StateManager {
   }
 
   private flush() {
-    if (!this.dirty) return;
-    this.writeState(this.statePath, this.state);
-    this.dirty = false;
+    if (!this.dirty || this.suppressFlush) return;
+    this.onFlush?.(this.dirtySet);
+    this.database.flushState(this.state, this.dirtySet);
+    this.resetDirtySet();
+    if (this.lazyState) {
+      this.videoCache.clear();
+      this.relationCache.clear();
+      this.videoDeletes.clear();
+      this.relationDeletes.clear();
+    }
   }
 }

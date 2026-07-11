@@ -8,11 +8,22 @@ import {
   ensureRemoteDir,
   uploadWithAList,
   verifyUploadedFile,
+  inspectRemoteFileSize,
+  detectUploadMimeType,
 } from "../src/uploader.js";
 import { UploadOperationError } from "../src/upload-health.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 const noopLog = { push() {} };
+
+test("upload MIME detection covers media subtitles images and JSON", () => {
+  assert.equal(detectUploadMimeType("video.mp4"), "video/mp4");
+  assert.equal(detectUploadMimeType("audio.m4a"), "audio/mp4");
+  assert.equal(detectUploadMimeType("subtitle.ass"), "text/x-ssa");
+  assert.equal(detectUploadMimeType("cover.webp"), "image/webp");
+  assert.equal(detectUploadMimeType("metadata.json"), "application/json");
+  assert.equal(detectUploadMimeType("unknown.bin"), "application/octet-stream");
+});
 
 function xmlEscape(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&apos;", '"': "&quot;" }[char]!));
@@ -23,9 +34,12 @@ async function startWebDavServer(options: {
   rejectFourByteNames?: boolean;
   remoteSizeOffset?: number;
   putStatus?: 201 | 204;
+  visibilityDelayPropfinds?: number;
+  existingFiles?: Record<string, Buffer>;
 } = {}) {
   const directories = new Set(["/dav"]);
-  const files = new Map<string, Buffer>();
+  const files = new Map<string, Buffer>(Object.entries(options.existingFiles || {}));
+  const hiddenChecks = new Map<string, number>();
   const puts: Array<{ path: string; headers: http.IncomingHttpHeaders; body: Buffer }> = [];
   let putCount = 0;
 
@@ -40,6 +54,13 @@ async function startWebDavServer(options: {
     if (req.method === "PROPFIND") {
       const isDirectory = directories.has(requestPath);
       const body = files.get(requestPath);
+      const hidden = hiddenChecks.get(requestPath) || 0;
+      if (body && hidden > 0) {
+        hiddenChecks.set(requestPath, hidden - 1);
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
       if (!isDirectory && !body) {
         res.statusCode = 404;
         res.end();
@@ -72,6 +93,7 @@ async function startWebDavServer(options: {
         return;
       }
       files.set(requestPath, body);
+      if (options.visibilityDelayPropfinds) hiddenChecks.set(requestPath, options.visibilityDelayPropfinds);
       res.statusCode = options.putStatus || 201;
       res.end();
       return;
@@ -86,6 +108,7 @@ async function startWebDavServer(options: {
   return {
     url: `http://127.0.0.1:${address.port}`,
     puts,
+    files,
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }
@@ -109,6 +132,49 @@ test("stream upload sends exact length, MIME and ownCloud timestamps without chu
     assert.match(String(put.headers["x-oc-mtime"]), /^\d+$/);
     assert.equal(put.headers["x-oc-ctime"], put.headers["x-oc-mtime"]);
     assert.equal(put.body.toString(), "hello-webdav");
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("same-name same-size preflight verifies without sending PUT", async () => {
+  const runtime = await createTestDir("upload-preflight");
+  const body = Buffer.from("already-remote");
+  const server = await startWebDavServer({ existingFiles: { "/dav/target/existing.mp4": body } });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "existing.mp4"), body);
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: ["existing.mp4"],
+      log: noopLog,
+    });
+    assert.equal(server.puts.length, 0);
+    assert.equal(result.allVerified, true);
+    assert.equal(result.files[0].verificationStatus, "verified");
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("accepted PUT can remain awaiting verification until the remote file becomes visible", async () => {
+  const runtime = await createTestDir("upload-delayed-visible");
+  const server = await startWebDavServer({ visibilityDelayPropfinds: 1 });
+  try {
+    const body = Buffer.from("delayed-visible");
+    await fs.promises.writeFile(path.join(runtime, "delayed.mp4"), body);
+    const config = testConfig({ alistUrl: server.url });
+    const result = await uploadWithAList(runtime, "/target", config, {
+      cleanupLocal: true,
+      files: ["delayed.mp4"],
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, false);
+    assert.equal(result.files[0].verificationStatus, "awaiting_verification");
+    assert.equal(fs.existsSync(path.join(runtime, "delayed.mp4")), true);
+    const verified = await inspectRemoteFileSize(config, result.files[0].path, body.length);
+    assert.equal(verified.status, "verified");
   } finally {
     await server.close();
     await removeTestDir(runtime);
