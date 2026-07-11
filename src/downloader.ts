@@ -182,17 +182,51 @@ export async function downloadWithBBDown(
       args.push("-app");
     }
 
+    const command = options.command || process.env.BBDOWN_PATH || "BBDown";
+    const commandArgsPrefix = options.commandArgsPrefix || [];
+    let appFallbackActive = false;
+    const runBBDown = async (commandArgs: string[]) => {
+      const runMode: BBDownApiMode = appFallbackActive ? "web" : effectiveApiMode;
+      const runArgs = runMode === "web" && effectiveApiMode === "app"
+        ? commandArgs.filter((arg) => arg !== "-app")
+        : commandArgs;
+      try {
+        await runCommand(
+          command,
+          [...commandArgsPrefix, ...runArgs],
+          downloadDir,
+          bvid,
+          credentialConfig.sensitiveValues,
+          { effectiveApiMode: runMode, onApiReady: options.onApiReady }
+        );
+      } catch (error: any) {
+        if (runMode !== "app" || !error?.appNoVideoInfo) throw error;
+        appFallbackActive = true;
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "download",
+          level: "warn",
+          summary: `APP 接口未返回播放信息，当前视频改用网页接口 ${bvid}`,
+          raw: `APP play response had no video info; retrying ${bvid} once with Web API`,
+          bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+        await runCommand(
+          command,
+          [...commandArgsPrefix, ...commandArgs.filter((arg) => arg !== "-app")],
+          downloadDir,
+          bvid,
+          credentialConfig.sensitiveValues,
+          { effectiveApiMode: "web", onApiReady: options.onApiReady }
+        );
+      }
+    };
+
     let retriedWithTruncate = false;
     markDownloadSessionStatus(downloadDir, "downloading");
     try {
-      await runCommand(
-        options.command || process.env.BBDOWN_PATH || "BBDown",
-        [...(options.commandArgsPrefix || []), ...args],
-        downloadDir,
-        bvid,
-        credentialConfig.sensitiveValues,
-        { effectiveApiMode, onApiReady: options.onApiReady }
-      );
+      await runBBDown(args);
     } catch (error: any) {
       if (!Boolean(error?.filenameTooLong)) {
         await preserveInterruptedDownload(downloadDir, error);
@@ -219,14 +253,7 @@ export async function downloadWithBBDown(
       });
 
       try {
-        await runCommand(
-          options.command || process.env.BBDOWN_PATH || "BBDown",
-          [...(options.commandArgsPrefix || []), ...retryArgs],
-          downloadDir,
-          bvid,
-          credentialConfig.sensitiveValues,
-          { effectiveApiMode, onApiReady: options.onApiReady }
-        );
+        await runBBDown(retryArgs);
       } catch (retryError: any) {
         await preserveInterruptedDownload(downloadDir, retryError);
         throw retryError;
@@ -625,6 +652,7 @@ function runCommand(
     let stdoutPending = "";
     let stderrPending = "";
     let riskSignalSeen = false;
+    let appNoVideoInfoSeen = false;
     let readySignalSeen = false;
 
     const rawSimpleHiddenPatterns = [
@@ -725,6 +753,10 @@ function runCommand(
       const trimmed = line.trim();
       if (trimmed.includes("BFB_SIGNAL:RISK_V_VOUCHER")) {
         riskSignalSeen = true;
+        return true;
+      }
+      if (trimmed.includes("BFB_SIGNAL:APP_NO_VIDEO_INFO")) {
+        appNoVideoInfoSeen = true;
         return true;
       }
       const ready = /BFB_SIGNAL:PLAYURL_READY:(WEB|APP)/.exec(trimmed);
@@ -835,6 +867,13 @@ function runCommand(
         const err: any = new Error("B站播放接口触发风控，下载将在冷却后自动恢复");
         err.biliRiskControl = true;
         err.deferToNextCycle = true;
+        err.apiMode = options.effectiveApiMode;
+        rejectOnce(err);
+        return;
+      }
+      if (appNoVideoInfoSeen) {
+        const err: any = new Error("APP 播放接口未返回视频信息");
+        err.appNoVideoInfo = true;
         err.apiMode = options.effectiveApiMode;
         rejectOnce(err);
         return;

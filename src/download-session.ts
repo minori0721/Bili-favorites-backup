@@ -7,8 +7,9 @@ import { writeJsonFile } from "./storage.js";
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "42815977dff36d2bab783ce125e209191dcca037";
-const PREVIOUS_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
+export const BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
+const PREVIOUS_BBDOWN_SOURCE_COMMIT = "42815977dff36d2bab783ce125e209191dcca037";
+const LEGACY_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
 
 export type DownloadSessionKind = "backup" | "quality_upgrade";
 export type DownloadSessionStatus = "prepared" | "downloading" | "complete" | "partial" | "failed";
@@ -558,16 +559,24 @@ export async function prepareDownloadSession(options: {
     if (manifest.configFingerprint !== fingerprint || manifest.accountUid !== accountUid || manifest.bbdownCommit !== BBDOWN_SOURCE_COMMIT) {
       const nextSnapshot = configSnapshot(config);
       const previousSnapshot = manifest.configSnapshot;
-      const legacyWebUpgrade = !previousSnapshot.apiMode
-        && nextSnapshot.apiMode === "web"
-        && manifest.accountUid === accountUid
-        && (manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT)
+      const sameRuntimeConfig = manifest.accountUid === accountUid
         && previousSnapshot.quality === nextSnapshot.quality
         && previousSnapshot.encoding === nextSnapshot.encoding
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
-      if (!legacyWebUpgrade) {
+      const compatibleBbdownUpgrade = manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
+        && previousSnapshot.apiMode === nextSnapshot.apiMode
+        && sameRuntimeConfig;
+      const legacyWebUpgrade = !previousSnapshot.apiMode
+        && nextSnapshot.apiMode === "web"
+        && sameRuntimeConfig
+        && (
+          manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === LEGACY_BBDOWN_SOURCE_COMMIT
+        );
+      if (!legacyWebUpgrade && !compatibleBbdownUpgrade) {
         incompatibleFragmentsMoved = await quarantineIncompatibleFragments(downloadDir);
       }
       manifest.configFingerprint = fingerprint;

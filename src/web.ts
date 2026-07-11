@@ -477,7 +477,7 @@ function getSettingsSection() {
             <label><input type="radio" name="bbdownApiMode" value="web" checked /><span>网页接口</span></label>
             <label><input type="radio" name="bbdownApiMode" value="app" /><span>APP接口</span></label>
           </div>
-          <p class="muted field-hint">网页接口遇到播放风控会暂停 3 分钟并自动单任务探测；APP 接口需要所有启用账号具有扫码登录 token。</p>
+          <p class="muted field-hint">网页接口遇到播放风控会暂停 3 分钟并自动单任务探测；APP 接口需要扫码登录 token，极少数 APP 空响应会仅对当前视频回退网页接口。</p>
         </div>
         <div><label>视频编码</label>
           <select id="bbdownEncoding">

@@ -279,6 +279,39 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
+test("BBDown 2.0.0 adopts 1.6.3 fork resume tracks when runtime settings are unchanged", async () => {
+  const runtime = await createTestDir("download-session-compatible-bbdown-upgrade");
+  const downloadDir = path.join(runtime, "BV1BBDOWNUPGRADE");
+  const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
+  try {
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1BBDOWNUPGRADE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    const previous = readDownloadSession(downloadDir)!;
+    previous.bbdownCommit = "42815977dff36d2bab783ce125e209191dcca037";
+    previous.configFingerprint = "previous-bbdown";
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
+    await fs.promises.writeFile(path.join(downloadDir, "video-track.mp4.aria2"), "resume");
+
+    const upgraded = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1BBDOWNUPGRADE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    assert.equal(upgraded.incompatibleFragmentsMoved, 0);
+    assert.equal(fs.existsSync(path.join(downloadDir, "video-track.mp4.aria2")), true);
+    assert.equal(upgraded.manifest.bbdownCommit, "fcb895f357df49c45010cefab773025d5d50cf7c");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("legacy Web sessions migrate in place while switching to APP isolates raw fragments", async () => {
   const runtime = await createTestDir("download-session-api-mode");
   const downloadDir = path.join(runtime, "BV1APIMODE");
@@ -463,6 +496,64 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
       else process.env.FAKE_ARGS_LOG = previousLog;
     }
   } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("APP empty play response falls back to Web exactly once", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("download-session-app-web-fallback");
+  const downloadDir = path.join(runtime, "BV1APPFALLBACK");
+  const fixture = path.join(runtime, "fixture.mp4");
+  const fakeScript = path.join(runtime, "fake-bbdown-app-fallback.mjs");
+  const argsLog = path.join(runtime, "args.jsonl");
+  const previousSource = process.env.FAKE_MEDIA_SOURCE;
+  const previousLog = process.env.FAKE_ARGS_LOG;
+  try {
+    await createVideo(fixture);
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const args = process.argv.slice(2);
+      fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify(args) + '\\n');
+      if (args.includes('-app')) {
+        console.log('BFB_SIGNAL:APP_NO_VIDEO_INFO: APP play response had no video info');
+        process.exitCode = 1;
+      } else {
+        fs.copyFileSync(process.env.FAKE_MEDIA_SOURCE, path.join(process.cwd(), 'video-BV1APPFALLBACK.mp4'));
+        console.log('BFB_SIGNAL:PLAYURL_READY:WEB');
+        console.log('任务完成');
+      }
+    `, "utf8");
+    process.env.FAKE_MEDIA_SOURCE = fixture;
+    process.env.FAKE_ARGS_LOG = argsLog;
+    const readyModes: string[] = [];
+    const result = await downloadWithBBDown(
+      "BV1APPFALLBACK",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1", accessToken: "app-token" },
+      testConfig({ bbdownApiMode: "app" }),
+      {
+        downloadDir,
+        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+        onApiReady: (mode) => readyModes.push(mode),
+      }
+    );
+    assert.equal(result.files.length, 1);
+    const invocations = (await fs.promises.readFile(argsLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(invocations.length, 2);
+    assert.equal(invocations[0].includes("-app"), true);
+    assert.equal(invocations[1].includes("-app"), false);
+    assert.equal(invocations[1].includes("--use-aria2c"), true);
+    assert.equal(invocations[1].includes("--select-page"), true);
+    assert.deepEqual(readyModes, ["web"]);
+    assert.equal(fs.existsSync(path.join(runtime, "data", "debug")), false);
+  } finally {
+    if (previousSource === undefined) delete process.env.FAKE_MEDIA_SOURCE;
+    else process.env.FAKE_MEDIA_SOURCE = previousSource;
+    if (previousLog === undefined) delete process.env.FAKE_ARGS_LOG;
+    else process.env.FAKE_ARGS_LOG = previousLog;
     await removeTestDir(runtime);
   }
 });
