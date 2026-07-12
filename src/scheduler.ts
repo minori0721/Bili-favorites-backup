@@ -52,8 +52,14 @@ export function computeDownloadStartDelayMs(random: () => number = Math.random) 
 }
 
 const ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS = 6 * 60 * 60_000;
+const UPLOAD_SESSION_RETRY_DELAYS_MS = [5 * 60_000, 10 * 60_000, 30 * 60_000];
 const UPLOAD_VERIFY_SCHEDULE_MS = [2_000, 10_000, 30_000, 2 * 60_000, 5 * 60_000, 10 * 60_000];
 const UPLOAD_VERIFY_REUPLOAD_DELAY_MS = 30 * 60_000;
+
+export function computeUploadSessionRetryDelayMs(attempts: number) {
+  const index = Math.max(0, Math.min(UPLOAD_SESSION_RETRY_DELAYS_MS.length - 1, Math.floor(attempts || 0)));
+  return UPLOAD_SESSION_RETRY_DELAYS_MS[index];
+}
 
 type QualityUploadPhaseTask = QualityUpgradeUploadReplaceTask | QualityUpgradeReplaceTask | QualityUpgradeCleanupTask;
 
@@ -298,9 +304,10 @@ export class SyncScheduler {
       const uploadHealth = this.uploadCircuit.getSnapshot();
       const isolatedDeterministicFailure = failure.category === "deterministic" && uploadHealth.state === "closed";
       if (task.persistentJobId) {
-        const retryAt = uploadHealth.retryAt || Date.now() + (
-          isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : Math.max(60_000, failure.retryAfterMs || 0)
-        );
+        const retryDelayMs = error?.uploadSessionTransient
+          ? computeUploadSessionRetryDelayMs(Number(task.persistentJob?.attempts || 0))
+          : (isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : Math.max(60_000, failure.retryAfterMs || 0));
+        const retryAt = uploadHealth.retryAt || Date.now() + retryDelayMs;
         if (!task.historyOnly) {
           this.stateManager.markUploadFailed(task.bvid, task.downloadDir, task.userId, task.mediaId, failure.summary);
         }

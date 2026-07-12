@@ -389,3 +389,80 @@ test("one deterministic upload failure is isolated without blocking unrelated do
     await removeTestDir(runtime);
   }
 });
+
+test("a progressive 405 persists a five-minute upload retry without opening the circuit", async () => {
+  const runtime = await createTestDir("scheduler-progressive-upload-405");
+  try {
+    const dataDir = path.join(runtime, "data");
+    const localDir = path.join(runtime, "temp", "BVISOLATED");
+    await fs.promises.mkdir(localDir, { recursive: true });
+    await fs.promises.writeFile(path.join(localDir, "isolated.mp4"), "local-upload-content");
+    writeJsonFile(path.join(dataDir, "state.json"), {
+      schemaVersion: 11,
+      processedByUser: {},
+      failedByUser: {},
+      videos: {
+        BVISOLATED: {
+          bvid: "BVISOLATED",
+          title: "Isolated upload",
+          upperName: "Tester",
+          firstSeenAt: "2026-07-10T00:00:00.000Z",
+          lastSeenAt: "2026-07-10T00:00:00.000Z",
+          biliStatus: "available",
+          backupStatus: "uploading",
+          localDir,
+        },
+      },
+      relations: {
+        "u1:1:BVISOLATED": {
+          userId: "u1",
+          mediaId: 1,
+          bvid: "BVISOLATED",
+          folderTitle: "Favorites",
+          firstSeenAt: "2026-07-10T00:00:00.000Z",
+          lastSeenAt: "2026-07-10T00:00:00.000Z",
+          activeInFavorite: true,
+          backupStatus: "uploading",
+          remotePath: "/backup/isolated",
+        },
+      },
+      folderScans: {},
+      userCooldowns: {},
+    });
+    writeJsonFile(path.join(dataDir, "config.json"), testConfig({ localCacheLimitGB: 0 }));
+    writeJsonFile(path.join(dataDir, "users.json"), [{
+      id: "u1",
+      uid: 1,
+      name: "Tester",
+      cookie: { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      favorites: [{ mediaId: 1, title: "Favorites" }],
+      enabled: true,
+      lastLoginAt: "2026-07-10T00:00:00.000Z",
+    }]);
+
+    const repoRoot = process.cwd();
+    const result = spawnSync(process.execPath, [
+      path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs"),
+      path.join(repoRoot, "tests", "isolated-upload-failure-harness.ts"),
+    ], {
+      cwd: runtime,
+      encoding: "utf-8",
+      timeout: 15_000,
+      env: { ...process.env, NODE_ENV: "test", BFB_TEST_UPLOAD_SESSION_TRANSIENT: "1" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("ISOLATED_UPLOAD_FAILURE_RESULT="));
+    assert.ok(line, result.stdout);
+    const data = JSON.parse(line.slice("ISOLATED_UPLOAD_FAILURE_RESULT=".length));
+    assert.equal(data.retryStatus, "retry_wait");
+    assert.ok(data.retryDelayMs > 4.9 * 60_000, `Retry delay too short: ${data.retryDelayMs}`);
+    assert.ok(data.retryDelayMs <= 5 * 60_000, `Retry delay too long: ${data.retryDelayMs}`);
+    assert.equal(data.uploadHealthState, "closed");
+    assert.equal(data.canStartDownload, true);
+    assert.equal(data.localFileExists, true);
+    assert.equal(data.videoStatus, "upload_failed");
+    assert.equal(data.relationStatus, "upload_failed");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});

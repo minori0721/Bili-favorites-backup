@@ -164,6 +164,8 @@ export class UploadOperationError extends Error {
   permanent: boolean;
   deferToNextCycle: boolean;
   retryAfterMs?: number;
+  uploadSessionTransient?: boolean;
+  completedFilesBeforeFailure?: number;
 
   constructor(info: UploadFailureInfo) {
     super(info.summary);

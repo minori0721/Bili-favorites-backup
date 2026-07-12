@@ -3,7 +3,7 @@ import test from "node:test";
 import path from "node:path";
 import { validateBBDownRuntimeConfig, validateConfig } from "../src/config.js";
 import { Task, TaskQueue } from "../src/queue.js";
-import { SyncScheduler } from "../src/scheduler.js";
+import { computeUploadSessionRetryDelayMs, SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
 import { DownloadTask, QualityUpgradeTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
@@ -89,6 +89,17 @@ test("startup recovery batch setting validates the supported range", () => {
   assert.equal(validateConfig({ startupRecoveryBatchSize: 25 }), null);
   assert.match(String(validateConfig({ startupRecoveryBatchSize: 4 })), /between 5 and 100/);
   assert.match(String(validateConfig({ startupRecoveryBatchSize: 101 })), /between 5 and 100/);
+});
+
+test("upload file interval validates its range and session retries use bounded backoff", () => {
+  assert.equal(validateConfig({ uploadFileIntervalSeconds: 0 }), null);
+  assert.equal(validateConfig({ uploadFileIntervalSeconds: 10 }), null);
+  assert.match(String(validateConfig({ uploadFileIntervalSeconds: -1 })), /between 0 and 120/);
+  assert.match(String(validateConfig({ uploadFileIntervalSeconds: 121 })), /between 0 and 120/);
+  assert.equal(computeUploadSessionRetryDelayMs(0), 5 * 60_000);
+  assert.equal(computeUploadSessionRetryDelayMs(1), 10 * 60_000);
+  assert.equal(computeUploadSessionRetryDelayMs(2), 30 * 60_000);
+  assert.equal(computeUploadSessionRetryDelayMs(99), 30 * 60_000);
 });
 
 test("cache refresh completion dispatches persisted downloads without an external wake", async () => {

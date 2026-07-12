@@ -17,6 +17,7 @@ export interface AppConfig {
   retryDelaySeconds: number;
   concurrentDownloads: number;
   concurrentUploads: number;
+  uploadFileIntervalSeconds: number;
   localCacheLimitGB: number;
   startupRecoveryBatchSize: number;
   bbdownEncoding: string;
@@ -44,6 +45,7 @@ const defaultConfig: AppConfig = {
   retryDelaySeconds: 5,
   concurrentDownloads: 1,
   concurrentUploads: 2,
+  uploadFileIntervalSeconds: 10,
   localCacheLimitGB: 10,
   startupRecoveryBatchSize: 25,
   bbdownEncoding: "",
@@ -137,6 +139,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "retryDelaySeconds",
   "concurrentDownloads",
   "concurrentUploads",
+  "uploadFileIntervalSeconds",
   "localCacheLimitGB",
   "startupRecoveryBatchSize",
   "bbdownEncoding",
@@ -199,6 +202,12 @@ export function validateConfig(input: Partial<AppConfig>) {
   if (input.localCacheLimitGB !== undefined) {
     if (!Number.isFinite(input.localCacheLimitGB) || input.localCacheLimitGB < 0 || input.localCacheLimitGB > 1024) {
       return "localCacheLimitGB must be between 0 and 1024";
+    }
+  }
+
+  if (input.uploadFileIntervalSeconds !== undefined) {
+    if (!Number.isFinite(input.uploadFileIntervalSeconds) || input.uploadFileIntervalSeconds < 0 || input.uploadFileIntervalSeconds > 120) {
+      return "uploadFileIntervalSeconds must be between 0 and 120";
     }
   }
 

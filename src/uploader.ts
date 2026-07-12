@@ -67,6 +67,35 @@ export interface UploadResult {
   allVerified: boolean;
 }
 
+export class UploadStartLimiter {
+  private tail: Promise<void> = Promise.resolve();
+  private nextStartAt = 0;
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly sleep: (delayMs: number) => Promise<void> = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs))
+  ) {}
+
+  async wait(intervalMs: number) {
+    const normalizedInterval = Math.max(0, Math.floor(intervalMs));
+    if (normalizedInterval === 0) return;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => { release = resolve; });
+    const previous = this.tail;
+    this.tail = turn;
+    await previous;
+    try {
+      const delayMs = Math.max(0, this.nextStartAt - this.now());
+      if (delayMs > 0) await this.sleep(delayMs);
+      this.nextStartAt = this.now() + normalizedInterval;
+    } finally {
+      release();
+    }
+  }
+}
+
+const sharedUploadStartLimiter = new UploadStartLimiter();
+
 export interface RemoteConflictArchiveFile {
   name: string;
   oldPath: string;
@@ -277,12 +306,14 @@ async function putAndVerifyLocalFile(
   localFile: string,
   remoteFile: string,
   stat: fs.Stats,
-  verificationDelaysMs?: number[]
+  verificationDelaysMs?: number[],
+  beforePut?: () => Promise<void>
 ) {
   const preflight = await inspectExpectedRemoteFile(client, remoteFile, stat.size);
   if (preflight === "verified") {
     return { verificationStatus: "verified" as const, skippedUpload: true };
   }
+  await beforePut?.();
   const fileStream = fs.createReadStream(localFile);
   try {
     await client.putFileContents(remoteFile, fileStream as any, {
@@ -309,6 +340,22 @@ async function putAndVerifyLocalFile(
   }
 }
 
+function promoteProgressive405ToSessionFailure(error: UploadOperationError, completedFiles: number, totalFiles: number) {
+  if (error.uploadFailure.status !== 405 || completedFiles <= 0) return error;
+  const info = error.uploadFailure;
+  info.category = "transient";
+  info.retryable = true;
+  info.code = "ALIST_UPLOAD_SESSION_AFTER_PROGRESS";
+  info.summary = `AList upload session failed after ${completedFiles}/${totalFiles} completed files: ${info.summary}`;
+  info.fingerprint = "transient|405|alist-upload-session-after-progress";
+  error.message = info.summary;
+  error.permanent = false;
+  error.deferToNextCycle = false;
+  error.uploadSessionTransient = true;
+  error.completedFilesBeforeFailure = completedFiles;
+  return error;
+}
+
 function shouldRetryWithCompatibilityName(error: UploadOperationError, fileName: string) {
   const status = error.uploadFailure.status;
   return hasFourByteCharacters(fileName)
@@ -329,12 +376,15 @@ export async function uploadWithAList(
     files?: string[];
     conflictArchiveSegment?: string;
     onConflictArchived?: (result: RemoteConflictArchiveResult) => void | Promise<void>;
+    uploadStartLimiter?: UploadStartLimiter;
   } = {}
 ): Promise<UploadResult> {
   const client = options.client || buildDavClient(config);
   const logger = options.log || logManager;
   const uploadedFiles: RemoteFileRecord[] = [];
   const qualityProfile = buildRemoteFileQualityProfile(config);
+  const uploadStartLimiter = options.uploadStartLimiter || sharedUploadStartLimiter;
+  const beforePut = () => uploadStartLimiter.wait(Number(config.uploadFileIntervalSeconds || 0) * 1000);
 
   try {
     await ensureRemoteDir(client, remotePath);
@@ -410,13 +460,14 @@ export async function uploadWithAList(
       let uploadedRemoteFile = originalRemoteFile;
       let transferResult: Awaited<ReturnType<typeof putAndVerifyLocalFile>>;
       try {
-        transferResult = await putAndVerifyLocalFile(client, localFile, originalRemoteFile, stat, options.verificationDelaysMs);
+        transferResult = await putAndVerifyLocalFile(client, localFile, originalRemoteFile, stat, options.verificationDelaysMs, beforePut);
       } catch (error) {
         const uploadError = await toUploadOperationError(error, originalRemoteFile);
         const compatibilityName = shouldRetryWithCompatibilityName(uploadError, entry.name)
           ? buildCompatibilityUploadName(entry.name, reservedRemoteNames)
           : undefined;
         if (!compatibilityName) {
+          promoteProgressive405ToSessionFailure(uploadError, uploadedFiles.length, preparedEntries.length);
           const info = uploadError.uploadFailure;
           console.error(`[AList] Upload failed status=${info.status || "unknown"} category=${info.category} path=${originalRemoteFile}: ${info.summary}`);
           logger.push({
@@ -442,9 +493,10 @@ export async function uploadWithAList(
           simpleVisible: true,
         });
         try {
-          transferResult = await putAndVerifyLocalFile(client, localFile, uploadedRemoteFile, stat, options.verificationDelaysMs);
+          transferResult = await putAndVerifyLocalFile(client, localFile, uploadedRemoteFile, stat, options.verificationDelaysMs, beforePut);
         } catch (compatibilityError) {
           const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
+          promoteProgressive405ToSessionFailure(finalError, uploadedFiles.length, preparedEntries.length);
           const info = finalError.uploadFailure;
           console.error(`[AList] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} path=${uploadedRemoteFile}: ${info.summary}`);
           logger.push({

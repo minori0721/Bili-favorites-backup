@@ -10,6 +10,7 @@ import {
   verifyUploadedFile,
   inspectRemoteFileSize,
   detectUploadMimeType,
+  UploadStartLimiter,
 } from "../src/uploader.js";
 import { UploadOperationError } from "../src/upload-health.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
@@ -31,6 +32,8 @@ function xmlEscape(value: string) {
 
 async function startWebDavServer(options: {
   failFirstPut?: boolean;
+  failPutName?: string;
+  failPutStatus?: number;
   failMoveName?: string;
   rejectFourByteNames?: boolean;
   remoteSizeOffset?: number;
@@ -88,6 +91,11 @@ async function startWebDavServer(options: {
       if (options.failFirstPut && putCount === 1) {
         res.statusCode = 500;
         res.end("temporary failure");
+        return;
+      }
+      if (options.failPutName && requestPath.endsWith(`/${options.failPutName}`)) {
+        res.statusCode = options.failPutStatus || 405;
+        res.end("Method Not Allowed");
         return;
       }
       if (options.rejectFourByteNames && Array.from(requestPath).some((character) => Buffer.byteLength(character, "utf-8") === 4)) {
@@ -163,6 +171,137 @@ test("stream upload sends exact length, MIME and ownCloud timestamps without chu
     assert.match(String(put.headers["x-oc-mtime"]), /^\d+$/);
     assert.equal(put.headers["x-oc-ctime"], put.headers["x-oc-mtime"]);
     assert.equal(put.body.toString(), "hello-webdav");
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("the global upload limiter spaces concurrent PUT starts", async () => {
+  let now = 0;
+  const sleeps: number[] = [];
+  const limiter = new UploadStartLimiter(
+    () => now,
+    async (delayMs) => {
+      sleeps.push(delayMs);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      now += delayMs;
+    }
+  );
+  const starts: number[] = [];
+  await Promise.all([1, 2, 3].map(async () => {
+    await limiter.wait(10_000);
+    starts.push(now);
+  }));
+  assert.deepEqual(starts, [0, 10_000, 20_000]);
+  assert.deepEqual(sleeps, [10_000, 10_000]);
+});
+
+test("remote preflight skips do not consume an upload start slot", async () => {
+  const runtime = await createTestDir("upload-limit-preflight");
+  const existing = Buffer.from("already-there");
+  const server = await startWebDavServer({ existingFiles: { "/dav/target/p01.mp4": existing } });
+  const waits: number[] = [];
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), existing);
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "new-file");
+    await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url, uploadFileIntervalSeconds: 10 }), {
+      cleanupLocal: false,
+      files: ["p01.mp4", "p02.mp4"],
+      verificationDelaysMs: [0],
+      log: noopLog,
+      uploadStartLimiter: { wait: async (intervalMs: number) => { waits.push(intervalMs); } } as UploadStartLimiter,
+    });
+    assert.equal(server.puts.length, 1);
+    assert.deepEqual(waits, [10_000]);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 after completed files is treated as a temporary upload session failure", async () => {
+  const runtime = await createTestDir("upload-progressive-405");
+  const server = await startWebDavServer({ failPutName: "p02.mp4", failPutStatus: 405 });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "first-file");
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "second-file");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4", "p02.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure.status, 405);
+        assert.equal(error.uploadFailure.category, "transient");
+        assert.equal(error.uploadFailure.retryable, true);
+        assert.equal(error.uploadSessionTransient, true);
+        assert.equal(error.completedFilesBeforeFailure, 1);
+        return true;
+      }
+    );
+    assert.equal(server.puts.length, 2);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("preflight-verified files count as progress before a later 405", async () => {
+  const runtime = await createTestDir("upload-resumed-progressive-405");
+  const first = Buffer.from("already-uploaded");
+  const server = await startWebDavServer({
+    existingFiles: { "/dav/target/p01.mp4": first },
+    failPutName: "p02.mp4",
+    failPutStatus: 405,
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), first);
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "second-file");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4", "p02.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadSessionTransient, true);
+        assert.equal(error.completedFilesBeforeFailure, 1);
+        return true;
+      }
+    );
+    assert.equal(server.puts.length, 1);
+    assert.equal(server.puts[0].path, "/dav/target/p02.mp4");
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 on the first upload file remains deterministic", async () => {
+  const runtime = await createTestDir("upload-first-405");
+  const server = await startWebDavServer({ failPutName: "p01.mp4", failPutStatus: 405 });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "first-file");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure.category, "deterministic");
+        assert.equal(error.uploadSessionTransient, undefined);
+        return true;
+      }
+    );
   } finally {
     await server.close();
     await removeTestDir(runtime);

@@ -28,7 +28,16 @@ scheduler.queueUploadWork({
 });
 const task = scheduler.uploadQueue.getTasks()[0];
 const failure = classifyUploadError({ status: 405, message: "Method Not Allowed" }, `${remotePath}/isolated.mp4`);
-scheduler.uploadQueue.emit("taskError", task, new UploadOperationError(failure));
+const uploadError = new UploadOperationError(failure);
+if (process.env.BFB_TEST_UPLOAD_SESSION_TRANSIENT === "1") {
+  uploadError.uploadFailure.category = "transient";
+  uploadError.uploadFailure.retryable = true;
+  uploadError.uploadFailure.code = "ALIST_UPLOAD_SESSION_AFTER_PROGRESS";
+  uploadError.uploadFailure.fingerprint = "transient|405|alist-upload-session-after-progress";
+  uploadError.uploadSessionTransient = true;
+  uploadError.completedFilesBeforeFailure = 1;
+}
+scheduler.uploadQueue.emit("taskError", task, uploadError);
 scheduler.uploadQueue.queue.splice(0);
 
 await new Promise((resolve) => setTimeout(resolve, 25));
@@ -37,6 +46,7 @@ const state = stateManager.getStateSnapshot();
 console.log("ISOLATED_UPLOAD_FAILURE_RESULT=" + JSON.stringify({
   retryStatus: retry?.status,
   retryDelayMs: Number(retry?.notBefore || 0) - Date.now(),
+  uploadHealthState: scheduler.uploadCircuit.getSnapshot().state,
   canStartDownload: scheduler.canStartDownloadTask(),
   localFileExists: fs.existsSync(path.join(localDir, "isolated.mp4")),
   videoStatus: state.videos?.[bvid]?.backupStatus,

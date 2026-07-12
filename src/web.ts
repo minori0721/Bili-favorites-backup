@@ -521,6 +521,7 @@ function getSettingsSection() {
         <div><label>重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
+        <div class="field-full"><label>AList 文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" /><p class="muted field-hint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
         <div class="field-full"><label>本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
         <div class="field-full"><label>启动恢复每批数量</label><input id="startupRecoveryBatchSize" type="number" min="5" max="100" /></div>
         <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
@@ -1043,6 +1044,7 @@ function getAppScript() {
       document.getElementById('retryDelaySeconds').value = d.retryDelaySeconds ?? 5;
       document.getElementById('concurrentDownloads').value = d.concurrentDownloads ?? 1;
       document.getElementById('concurrentUploads').value = d.concurrentUploads ?? 2;
+      document.getElementById('uploadFileIntervalSeconds').value = d.uploadFileIntervalSeconds ?? 10;
       document.getElementById('localCacheLimitGB').value = d.localCacheLimitGB ?? 10;
       document.getElementById('startupRecoveryBatchSize').value = d.startupRecoveryBatchSize ?? 25;
       document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
@@ -1074,6 +1076,7 @@ function getAppScript() {
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value),
+        uploadFileIntervalSeconds: Number(document.getElementById('uploadFileIntervalSeconds').value),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value),
         startupRecoveryBatchSize: Number(document.getElementById('startupRecoveryBatchSize').value),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value),
@@ -1207,6 +1210,7 @@ function getAppScript() {
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value || 5),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value || 1),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value || 2),
+        uploadFileIntervalSeconds: Number(document.getElementById('uploadFileIntervalSeconds').value || 0),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value || 0),
         startupRecoveryBatchSize: Number(document.getElementById('startupRecoveryBatchSize').value || 25),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value || 3),
@@ -1254,11 +1258,11 @@ function getAppScript() {
           '<div class="flow-step"><div class="badge">\u626b\u63cf\u6536\u85cf\u5939</div><div class="desc">\u53d1\u73b0\u65b0\u89c6\u9891\u540e\u6309\u5f53\u524d\u547d\u540d\u6a21\u677f\u51c6\u5907\u4efb\u52a1\uff1a<code>' + escapeHtml(c.filenameTemplate) + '</code></div></div>' +
           '<div class="flow-step"><div class="badge">\u4e0b\u8f7d\u961f\u5217</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0b\u8f7d <strong>' + escapeHtml(c.concurrentDownloads) + '</strong> \u4e2a\uff1b\u672c\u5730 temp \u8fbe\u5230 <strong>' + escapeHtml(c.localCacheLimitGB || 0) + 'GB</strong> \u8f6f\u4e0a\u9650\u65f6\u4e0d\u518d\u542f\u52a8\u65b0\u4e0b\u8f7d\uff1b\u753b\u8d28\u4e3a <strong>' + escapeHtml(c.bbdownQuality) + '</strong>\uff0c\u7f16\u7801\u4e3a <strong>' + escapeHtml(c.bbdownEncoding) + '</strong>\uff0c\u97f3\u9891\u9009\u9879\u4e3a <strong>' + escapeHtml(audioText) + '</strong>\uff1b\u5206P\u4e4b\u95f4\u5ef6\u8fdf <strong>' + escapeHtml(c.perVideoDelaySeconds) + ' \u79d2</strong>\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u5931\u8d25\u91cd\u8bd5</div><div class="desc">\u4e0b\u8f7d\u6216\u4e0a\u4f20\u5931\u8d25\u540e\u6700\u591a\u91cd\u8bd5 <strong>' + escapeHtml(c.maxRetries) + '</strong> \u6b21\uff0c\u6bcf\u6b21\u95f4\u9694 <strong>' + escapeHtml(c.retryDelaySeconds) + ' \u79d2</strong>\uff1b\u4e0b\u8f7d\u5361\u4f4f\u8d85\u8fc7 30 \u5206\u949f\u4e14\u6700\u8fd1 10 \u5206\u949f\u4f4e\u4e8e 10KB/s \u4f1a\u81ea\u52a8\u8fdb\u5165\u91cd\u8bd5\u3002</div></div>' +
-          '<div class="flow-step"><div class="badge">\u4e0a\u4f20 AList</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0a\u4f20 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> \u4e2a\uff1b\u76ee\u6807\u8def\u5f84\u662f <code>' + escapeHtml(c.alistDest) + '</code>\uff0c\u76ee\u5f55\u7ed3\u6784\u662f <strong>' + escapeHtml(layoutText) + '</strong>\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u4e0a\u4f20 AList</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0a\u4f20 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> \u4e2a\uff1b\u5b9e\u9645 PUT \u5168\u5c40\u95f4\u9694 <strong>' + escapeHtml(c.uploadFileIntervalSeconds || 0) + ' \u79d2</strong>\uff1b\u76ee\u6807\u8def\u5f84\u662f <code>' + escapeHtml(c.alistDest) + '</code>\uff0c\u76ee\u5f55\u7ed3\u6784\u662f <strong>' + escapeHtml(layoutText) + '</strong>\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u72b6\u6001\u5bf9\u8d26</div><div class="desc">AList \u5bf9\u8d26\u5e76\u53d1 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>\uff0c\u9650\u901f <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' \u6b21/\u79d2</strong>\uff0c\u6bcf\u8f6e\u6700\u591a\u8865\u4f20 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> \u4e2a\u7f3a\u5931\u89c6\u9891\u3002</div></div>' +
         '</div>' +
         '<div class="effect-groups">' +
-          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\u3001\u672c\u5730\u7f13\u5b58\u8f6f\u4e0a\u9650\uff1b\u753b\u8d28\u91cd\u8c03\u7684\u4e0b\u8f7d\u9636\u6bb5\u5171\u4eab\u4e0b\u8f7d\u961f\u5217\uff0c\u4e0a\u4f20\u66ff\u6362\u9636\u6bb5\u5171\u4eab\u4e0a\u4f20\u961f\u5217\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\u3001AList \u6587\u4ef6\u4e0a\u4f20\u95f4\u9694\u3001\u672c\u5730\u7f13\u5b58\u8f6f\u4e0a\u9650\uff1b\u753b\u8d28\u91cd\u8c03\u7684\u4e0b\u8f7d\u9636\u6bb5\u5171\u4eab\u4e0b\u8f7d\u961f\u5217\uff0c\u4e0a\u4f20\u66ff\u6362\u9636\u6bb5\u5171\u4eab\u4e0a\u4f20\u961f\u5217\u3002</div></div>' +
           '<div class="effect-group"><strong>\u65b0\u4efb\u52a1\u751f\u6548</strong><div>\u753b\u8d28\u3001\u7f16\u7801\u3001Hi-Res / Dolby\u3001\u547d\u540d\u6a21\u677f\u3001AList \u8def\u5f84\u3001\u4e0a\u4f20\u76ee\u5f55\u7ed3\u6784\u3001\u5931\u8d25\u91cd\u8bd5\u6b21\u6570\u3001\u91cd\u8bd5\u95f4\u9694\u3002</div></div>' +
           '<div class="effect-group"><strong>\u5bf9\u8d26\u65f6\u751f\u6548</strong><div>AList \u5bf9\u8d26\u5e76\u53d1\u6570\u3001AList \u5bf9\u8d26\u9650\u901f\u3001\u6bcf\u8f6e\u6700\u591a\u8865\u4f20\u6570\u91cf\u3002</div></div>' +
         '</div>' +
