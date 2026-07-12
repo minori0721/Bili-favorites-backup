@@ -57,6 +57,12 @@ export interface RemoteFileRecord {
   lastError?: string;
 }
 
+export interface RemoteConflictArchiveRecord {
+  archivePath: string;
+  archivedAt: string;
+  files: Array<{ name: string; oldPath: string; archivedPath: string; size?: number }>;
+}
+
 export interface VideoMetadataSnapshot {
   title: string;
   upperName: string;
@@ -133,6 +139,7 @@ export interface FavoriteRelation {
   statusUpdatedAt?: string;
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
+  remoteConflictArchives?: RemoteConflictArchiveRecord[];
   pendingPartialBackup?: boolean;
   qualityUpgrade?: QualityUpgradeOperation;
   uploadedAt?: string;
@@ -1413,6 +1420,40 @@ export class StateManager {
       this.setVideoStatus(entry, "upload_failed", at);
     }
     this.save();
+  }
+
+  markRemoteConflictArchived(
+    bvid: string,
+    userId: string | undefined,
+    mediaId: number | undefined,
+    archive: { archivePath: string; files: Array<{ name: string; oldPath: string; archivedPath: string; size?: number }> }
+  ) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!entry || !relation || archive.files.length === 0) return false;
+    const at = nowIso();
+    const previousPaths = new Set((relation.remoteFiles || []).map((file) => file.path));
+    relation.remoteConflictArchives = [
+      ...(relation.remoteConflictArchives || []),
+      { archivePath: archive.archivePath, archivedAt: at, files: archive.files.map((file) => ({ ...file })) },
+    ].slice(-20);
+    relation.remoteFiles = undefined;
+    relation.uploadedAt = undefined;
+    relation.verifiedAt = undefined;
+    relation.lastRemoteCheckAt = undefined;
+    relation.nextRemoteCheckAt = undefined;
+    relation.remoteMissingCount = 0;
+    relation.lastError = `远端旧版已归档到 ${archive.archivePath}，正在上传当前版本。`;
+    if (entry.remoteFiles?.some((file) => previousPaths.has(file.path))) {
+      entry.remoteFiles = undefined;
+      entry.uploadedAt = undefined;
+      entry.verifiedAt = undefined;
+      entry.lastRemoteCheckAt = undefined;
+      entry.nextRemoteCheckAt = undefined;
+    }
+    entry.lastError = relation.lastError;
+    this.save();
+    return true;
   }
 
   markLocalUploadGroupComplete(bvid: string, localDir: string) {

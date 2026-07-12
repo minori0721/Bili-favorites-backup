@@ -4,6 +4,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { writeJsonFile } from "../src/storage.js";
+import { SyncScheduler } from "../src/scheduler.js";
+import { StateManager } from "../src/state.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 test("1000 persisted tasks stay bounded and refill at the low-water mark", async () => {
@@ -186,6 +188,128 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     assert.equal(data.initialDownloadJobs, 1);
     assert.equal(data.releasedDownloadTasks, 1);
   } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("startup restores each orphaned upload relation after persistent bootstrap was completed", async () => {
+  const runtime = await createTestDir("scheduler-orphaned-upload");
+  const localDir = path.join(runtime, "temp", "BVORPHAN");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "orphan.mp4"), "orphan-content");
+  writeJsonFile(path.join(localDir, ".bfb-download.json"), {
+    schemaVersion: 1,
+    sessionId: "orphan-session",
+    kind: "backup",
+    bvid: "BVORPHAN",
+    accountUid: 1,
+    bbdownCommit: "test",
+    configFingerprint: "test",
+    configSnapshot: { quality: "", encoding: "", hiRes: false, dolby: false, filenameTemplate: "<bvid>" },
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:00:00.000Z",
+    snapshotAt: "2026-07-12T00:00:00.000Z",
+    status: "complete",
+    pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
+    outputs: [{ pageIndex: 1, cid: 1, relativePath: "orphan.mp4", size: 14, duration: 1, videoCodec: "test", quickHash: "test", verifiedAt: "2026-07-12T00:00:00.000Z" }],
+    history: [],
+  });
+  const manager = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
+  manager.replaceStateSnapshot({
+    schemaVersion: 11,
+    processedByUser: {},
+    failedByUser: {},
+    videos: {
+      BVORPHAN: {
+        bvid: "BVORPHAN",
+        title: "Orphaned upload",
+        upperName: "Tester",
+        firstSeenAt: "2026-07-12T00:00:00.000Z",
+        lastSeenAt: "2026-07-12T00:00:00.000Z",
+        biliStatus: "available",
+        backupStatus: "upload_failed",
+        localDir,
+      },
+    },
+    relations: {
+      "u1:1:BVORPHAN": {
+        userId: "u1",
+        mediaId: 1,
+        bvid: "BVORPHAN",
+        folderTitle: "Favorites",
+        firstSeenAt: "2026-07-12T00:00:00.000Z",
+        lastSeenAt: "2026-07-12T00:00:00.000Z",
+        activeInFavorite: true,
+        backupStatus: "upload_failed",
+        remotePath: "/backup/orphan-a",
+      },
+      "u2:2:BVORPHAN": {
+        userId: "u2",
+        mediaId: 2,
+        bvid: "BVORPHAN",
+        folderTitle: "Second Favorites",
+        firstSeenAt: "2026-07-12T00:00:00.000Z",
+        lastSeenAt: "2026-07-12T00:00:00.000Z",
+        activeInFavorite: true,
+        backupStatus: "upload_failed",
+        remotePath: "/backup/orphan-b",
+      },
+    },
+    folderScans: {},
+    userCooldowns: {},
+  } as any);
+  manager.markPersistentJobBootstrapComplete();
+  const config = testConfig({ startupRecoveryBatchSize: 25 });
+  const user = {
+    id: "u1",
+    uid: 1,
+    name: "Tester",
+    enabled: true,
+    cookie: { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+    favorites: [{ mediaId: 1, title: "Favorites" }],
+  };
+  const secondUser = {
+    ...user,
+    id: "u2",
+    uid: 2,
+    name: "Second Tester",
+    favorites: [{ mediaId: 2, title: "Second Favorites" }],
+  };
+  const users = [user, secondUser];
+  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => users, getById: (id: string) => users.find((item) => item.id === id) } as any, manager) as any;
+  try {
+    scheduler.uploadQueue.setStartGate(() => false);
+    scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVORPHAN:/backup/orphan-a:main",
+      bvid: "BVORPHAN",
+      userId: "u1",
+      mediaId: 1,
+      payload: {
+        bvid: "BVORPHAN",
+        userId: "u1",
+        mediaId: 1,
+        localDir,
+        remotePath: "/backup/orphan-a",
+        folderTitle: "Favorites",
+        videoTitle: "Orphaned upload",
+        upperName: "Tester",
+        files: ["orphan.mp4"],
+        priority: true,
+      },
+    });
+    scheduler.resumePersistedWorkOnStartup();
+    const job = scheduler.jobStore.findByDedupeKey("upload:u2:2:BVORPHAN:/backup/orphan-b:main");
+    assert.ok(job);
+    assert.notEqual(job.status, "failed");
+    assert.match(String(job.payload.conflictArchiveSegment), /^\d{8}T\d{9}Z$/);
+    const existingJob = scheduler.jobStore.findByDedupeKey("upload:u1:1:BVORPHAN:/backup/orphan-a:main");
+    assert.equal(existingJob?.id !== job.id, true);
+    assert.match(String(existingJob?.payload.conflictArchiveSegment), /^\d{8}T\d{9}Z$/);
+    assert.equal(scheduler.getQueueSnapshot().uploadPending.filter((item: any) => item.bvid === "BVORPHAN").length, 2);
+  } finally {
+    scheduler.stop();
+    manager.close();
     await removeTestDir(runtime);
   }
 });

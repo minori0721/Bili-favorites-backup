@@ -149,3 +149,35 @@ test("persistent retry keeps not_before and does not consume attempts for a defe
     database.close();
   }
 });
+
+test("an exhausted persistent job is retained and a later enqueue revives it", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const jobs = new PersistentJobStore(database);
+    const queued = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:revive",
+      bvid: "BVREVIVE",
+      maxAttempts: 1,
+      payload: { phase: "first" },
+    });
+    const claimed = jobs.claimDue(["upload"], 1, "worker", 60_000)[0];
+    const result = jobs.retry(claimed.id, "worker", "remote conflict", Date.now() + 60_000);
+    assert.equal(result.exhausted, true);
+    assert.equal(jobs.findById(queued.id)?.status, "failed");
+
+    const revived = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:revive",
+      bvid: "BVREVIVE",
+      maxAttempts: 3,
+      payload: { phase: "retry" },
+    });
+    assert.equal(revived.id, queued.id);
+    assert.equal(revived.status, "pending");
+    assert.equal(revived.attempts, 0);
+    assert.deepEqual(revived.payload, { phase: "retry" });
+  } finally {
+    database.close();
+  }
+});

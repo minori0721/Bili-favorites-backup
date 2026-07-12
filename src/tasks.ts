@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
-import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles } from "./uploader.js";
+import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles, type RemoteConflictArchiveResult } from "./uploader.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
 import { BiliCookie } from "./users.js";
 import { RemoteFileRecord } from "./state.js";
@@ -363,13 +363,15 @@ export class UploadTask extends Task {
   partialBackup = false;
   historyOnly = false;
   historySnapshotAt?: string;
+  conflictArchiveSegment?: string;
+  onRemoteConflictArchived?: (task: UploadTask, result: RemoteConflictArchiveResult) => void | Promise<void>;
 
   constructor(
     bvid: string,
     downloadDir: string,
     remotePath: string,
     config: AppConfig,
-    options: { cleanupLocal?: boolean; files?: string[]; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string } = {}
+    options: { cleanupLocal?: boolean; files?: string[]; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string; conflictArchiveSegment?: string } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
@@ -381,6 +383,7 @@ export class UploadTask extends Task {
     this.partialBackup = Boolean(options.partialBackup);
     this.historyOnly = Boolean(options.historyOnly);
     this.historySnapshotAt = options.historySnapshotAt;
+    this.conflictArchiveSegment = options.conflictArchiveSegment;
   }
 
   async run() {
@@ -392,6 +395,8 @@ export class UploadTask extends Task {
     this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
       cleanupLocal: this.cleanupLocal,
       files: this.files,
+      conflictArchiveSegment: this.conflictArchiveSegment,
+      onConflictArchived: (result) => this.onRemoteConflictArchived?.(this, result),
     });
     console.log(`[Task] Completed upload for ${this.bvid}`);
   }

@@ -738,7 +738,12 @@ export class SyncScheduler {
           }
           continue;
         }
-        const item = job.payload as unknown as RecoveryUploadItem;
+        const item = { ...(job.payload as unknown as RecoveryUploadItem) };
+        if (job.kind === "upload" && !item.conflictArchiveSegment) {
+          item.conflictArchiveSegment = this.historySnapshotSegment(new Date().toISOString());
+          this.jobStore.updatePayload(job.id, item as unknown as Record<string, unknown>);
+          job.payload = item as unknown as Record<string, unknown>;
+        }
         const task = this.buildUploadTask(item);
         task.maxRetries = 0;
         task.persistentJobId = job.id;
@@ -1010,6 +1015,7 @@ export class SyncScheduler {
       partialBackup: item.partialBackup,
       historyOnly: item.historyOnly,
       historySnapshotAt: item.historySnapshotAt,
+      conflictArchiveSegment: item.conflictArchiveSegment,
     });
     uploadTask.sharedDownloadDir = item.localDir;
     uploadTask.userId = item.userId;
@@ -1020,22 +1026,28 @@ export class SyncScheduler {
     uploadTask.cover = item.cover || "";
     if (!item.historyOnly) {
       uploadTask.onUploading = () => this.stateManager.markUploading(item.bvid, item.userId, item.mediaId);
+      uploadTask.onRemoteConflictArchived = (_task, archive) => {
+        this.stateManager.markRemoteConflictArchived(item.bvid, item.userId, item.mediaId, archive);
+      };
     }
     return uploadTask;
   }
 
   private queueUploadWork(item: RecoveryUploadItem) {
-    const key = this.recoveryUploadKey(item);
+    const persistedItem: RecoveryUploadItem = item.historyOnly || item.conflictArchiveSegment
+      ? { ...item }
+      : { ...item, conflictArchiveSegment: this.historySnapshotSegment(new Date().toISOString()) };
+    const key = this.recoveryUploadKey(persistedItem);
     this.jobStore.enqueue({
-      kind: item.historyOnly ? "history_upload" : "upload",
+      kind: persistedItem.historyOnly ? "history_upload" : "upload",
       dedupeKey: `upload:${key}`,
-      bvid: item.bvid,
-      userId: item.userId,
-      mediaId: item.mediaId,
-      priority: item.priority === false ? 80 : 20,
+      bvid: persistedItem.bvid,
+      userId: persistedItem.userId,
+      mediaId: persistedItem.mediaId,
+      priority: persistedItem.priority === false ? 80 : 20,
       maxAttempts: this.configStore.get().maxRetries + 1,
-      notBefore: item.notBefore || 0,
-      payload: { ...item },
+      notBefore: persistedItem.notBefore || 0,
+      payload: { ...persistedItem },
     });
     this.dispatchPersistentJobs();
     return true;
@@ -2465,7 +2477,10 @@ export class SyncScheduler {
 
   private resumePersistedWork() {
     this.queueLegacyDownloadDirsForRecovery();
-    if (this.stateManager.hasPersistentJobBootstrap()) return;
+    if (this.stateManager.hasPersistentJobBootstrap()) {
+      this.recoverOrphanedUploadFailures();
+      return;
+    }
     this.stateManager.normalizePersistedWorkForRecovery();
     const statusPriority: Record<string, number> = {
       upload_failed: 0,
@@ -2606,6 +2621,57 @@ export class SyncScheduler {
       simpleVisible: true,
       debugVisible: true,
     });
+  }
+
+  private recoverOrphanedUploadFailures() {
+    const limit = Math.max(5, Math.min(100, Math.floor(this.configStore.get().startupRecoveryBatchSize || 25)));
+    let recovered = 0;
+    for (const item of this.stateManager.listBackupsToResume()) {
+      if (recovered >= limit) break;
+      const status = item.relation?.backupStatus || item.video.backupStatus;
+      if (status !== "upload_failed" || !item.relation) continue;
+      const localDir = item.video.localDir;
+      if (!localDir || !fs.existsSync(localDir)) continue;
+      const manifest = readDownloadSession(localDir);
+      if (!manifest || !["complete", "partial"].includes(manifest.status)) continue;
+      const resolved = this.resolveRelation(item.relation);
+      if (!resolved) continue;
+      const remotePath = item.relation.remotePath || item.video.remotePath || resolveRemotePath({
+        destination: this.configStore.get().alistDest,
+        layout: this.configStore.get().uploadLayout,
+        userName: resolved.user.name,
+        folderName: resolved.folderTitle,
+      });
+      const uploadItem: RecoveryUploadItem = {
+        bvid: item.video.bvid,
+        localDir,
+        remotePath,
+        userId: item.relation.userId,
+        mediaId: item.relation.mediaId,
+        folderTitle: resolved.folderTitle,
+        videoTitle: item.video.title,
+        upperName: item.video.upperName,
+        cover: item.video.cover,
+        files: manifest.outputs.map((output) => output.relativePath),
+        partialBackup: manifest.status === "partial",
+        priority: true,
+      };
+      const existing = this.jobStore.findByDedupeKey(`upload:${this.recoveryUploadKey(uploadItem)}`);
+      if (existing && ["pending", "retry_wait", "leased", "running"].includes(existing.status)) continue;
+      this.queueUploadWork(uploadItem);
+      recovered += 1;
+    }
+    if (recovered > 0) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `启动时找回 ${recovered} 个缺少可运行任务的待补传记录`,
+        raw: `[Recovery] restored orphaned upload jobs=${recovered}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
   }
 
   private resolveRelation(relation: FavoriteRelation) {
@@ -2767,6 +2833,7 @@ interface RecoveryUploadItem {
   partialBackup?: boolean;
   historyOnly?: boolean;
   historySnapshotAt?: string;
+  conflictArchiveSegment?: string;
   notBefore?: number;
   priority?: boolean;
 }

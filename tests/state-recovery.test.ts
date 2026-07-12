@@ -238,6 +238,52 @@ test("partial uploads remain distinguishable from complete verified backups", as
   }
 });
 
+test("remote conflict archival clears stale current proofs and keeps an audit record", async () => {
+  const runtime = await createTestDir("state-remote-conflict-archive");
+  const statePath = path.join(runtime, "state.json");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  const state = baseState();
+  const bvid = addVideo(state, 88, "uploading", path.join(runtime, "temp", "BVTEST000088"));
+  state.relations![`u1:1:${bvid}`] = {
+    userId: "u1",
+    mediaId: 1,
+    bvid,
+    folderTitle: "Favorites",
+    firstSeenAt: now,
+    lastSeenAt: now,
+    activeInFavorite: true,
+    backupStatus: "uploading",
+    remotePath: "/backup",
+    remoteFiles: [{ name: "p01.mp4", path: "/backup/p01.mp4", size: 8, verificationStatus: "verified" }],
+  };
+  state.videos![bvid].remoteFiles = [{ name: "p01.mp4", path: "/backup/p01.mp4", size: 8, verificationStatus: "verified" }];
+  const manager = new StateManager({ statePath, dbPath });
+  try {
+    manager.replaceStateSnapshot(state);
+    assert.equal(manager.markRemoteConflictArchived(bvid, "u1", 1, {
+      archivePath: "/backup/_history/20260712T120000000Z",
+      files: [{
+        name: "p01.mp4",
+        oldPath: "/backup/p01.mp4",
+        archivedPath: "/backup/_history/20260712T120000000Z/p01.mp4",
+        size: 8,
+      }],
+    }), true);
+    const relation = manager.getRelationStatus("u1", 1, bvid)!;
+    assert.equal(relation.remoteFiles?.length ?? 0, 0);
+    assert.equal(relation.remoteConflictArchives?.length, 1);
+    assert.equal(relation.remoteConflictArchives?.[0].files[0].archivedPath, "/backup/_history/20260712T120000000Z/p01.mp4");
+    assert.equal(manager.getStateSnapshot().videos![bvid].remoteFiles?.length ?? 0, 0);
+    const relationRemoteRows = manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM remote_files WHERE bvid=? AND user_id=? AND media_id=?").get(bvid, "u1", 1) as any;
+    assert.equal(Number(relationRemoteRows.count), 0);
+    const allRemoteRows = manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM remote_files WHERE bvid=?").get(bvid) as any;
+    assert.equal(Number(allRemoteRows.count), 0);
+  } finally {
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("1000 persisted active records normalize with one full state write", async () => {
   const runtime = await createTestDir("state-stress");
   try {

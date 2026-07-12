@@ -61,9 +61,14 @@ export class PersistentJobStore {
         attempts, max_attempts, not_before, created_at, updated_at
       ) VALUES(@id,@kind,@dedupeKey,@bvid,@userId,@mediaId,'pending',@priority,@payload,0,@maxAttempts,@notBefore,@now,@now)
       ON CONFLICT(dedupe_key) DO UPDATE SET
+        status=CASE WHEN jobs.status='failed' THEN 'pending' ELSE jobs.status END,
         priority=MIN(jobs.priority, excluded.priority),
-        not_before=MIN(jobs.not_before, excluded.not_before),
-        payload_json=CASE WHEN jobs.status IN ('pending','retry_wait') THEN excluded.payload_json ELSE jobs.payload_json END,
+        not_before=CASE WHEN jobs.status='failed' THEN excluded.not_before ELSE MIN(jobs.not_before, excluded.not_before) END,
+        payload_json=CASE WHEN jobs.status IN ('pending','retry_wait','failed') THEN excluded.payload_json ELSE jobs.payload_json END,
+        attempts=CASE WHEN jobs.status='failed' THEN 0 ELSE jobs.attempts END,
+        lease_owner=CASE WHEN jobs.status='failed' THEN NULL ELSE jobs.lease_owner END,
+        lease_expires_at=CASE WHEN jobs.status='failed' THEN NULL ELSE jobs.lease_expires_at END,
+        last_error=CASE WHEN jobs.status='failed' THEN NULL ELSE jobs.last_error END,
         max_attempts=MAX(jobs.max_attempts, excluded.max_attempts),
         updated_at=excluded.updated_at
     `).run({
@@ -144,12 +149,19 @@ export class PersistentJobStore {
 
   retry(id: string, leaseOwner: string, error: string, notBefore: number) {
     const now = Date.now();
-    const row = this.stateDatabase.db.prepare("SELECT attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
+    const row = this.stateDatabase.db.prepare("SELECT kind, attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
     if (!row) return { updated: false, exhausted: false };
     const attempts = Number(row.attempts || 0) + 1;
     const exhausted = attempts >= Number(row.max_attempts || 1);
     if (exhausted) {
-      this.stateDatabase.db.prepare("DELETE FROM jobs WHERE id=? AND lease_owner=?").run(id, leaseOwner);
+      if (String(row.kind) === "upload") {
+        this.stateDatabase.db.prepare(`
+          UPDATE jobs SET status='failed', attempts=?, not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+            last_error=?, updated_at=? WHERE id=? AND lease_owner=?
+        `).run(attempts, Math.max(now, Math.floor(notBefore)), error.slice(0, 1000), now, id, leaseOwner);
+      } else {
+        this.stateDatabase.db.prepare("DELETE FROM jobs WHERE id=? AND lease_owner=?").run(id, leaseOwner);
+      }
       return { updated: true, exhausted: true, attempts };
     }
     this.stateDatabase.db.prepare(`

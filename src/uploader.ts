@@ -67,6 +67,19 @@ export interface UploadResult {
   allVerified: boolean;
 }
 
+export interface RemoteConflictArchiveFile {
+  name: string;
+  oldPath: string;
+  archivedPath: string;
+  size?: number;
+}
+
+export interface RemoteConflictArchiveResult {
+  remotePath: string;
+  archivePath: string;
+  files: RemoteConflictArchiveFile[];
+}
+
 function buildRemoteFileQualityProfile(config: AppConfig): RemoteFileQualityProfile {
   return {
     quality: String(config.bbdownQuality || ""),
@@ -195,6 +208,70 @@ async function inspectExpectedRemoteFile(
   }
 }
 
+async function inspectRemoteFile(client: WebDAVClient, remoteFile: string) {
+  try {
+    const remoteStat = await client.stat(remoteFile) as any;
+    const size = Number(remoteStat?.size);
+    return {
+      status: "exists" as const,
+      size: Number.isFinite(size) ? size : undefined,
+    };
+  } catch (error) {
+    if (isRemoteNotFoundError(error)) return { status: "missing" as const };
+    throw error;
+  }
+}
+
+interface PreparedUploadEntry {
+  relativePath: string;
+  name: string;
+  localFile: string;
+  remoteFile: string;
+  stat: fs.Stats;
+}
+
+async function archiveConflictingRemoteSet(
+  client: WebDAVClient,
+  remotePath: string,
+  archiveSegment: string,
+  entries: PreparedUploadEntry[]
+): Promise<RemoteConflictArchiveResult> {
+  const safeSegment = sanitizeSegment(archiveSegment) || "conflict";
+  const archivePath = joinRemotePath(remotePath, "_history", safeSegment);
+  await ensureRemoteDir(client, archivePath);
+  const files: RemoteConflictArchiveFile[] = [];
+
+  for (const entry of entries) {
+    const archivedPath = joinRemotePath(archivePath, entry.name);
+    const [source, archived] = await Promise.all([
+      inspectRemoteFile(client, entry.remoteFile),
+      inspectRemoteFile(client, archivedPath),
+    ]);
+
+    if (archived.status === "exists") {
+      if (source.status === "missing" || source.size === entry.stat.size) {
+        files.push({ name: entry.name, oldPath: entry.remoteFile, archivedPath, size: archived.size });
+        continue;
+      }
+      const collision: any = new Error(`Remote conflict archive target already exists: ${archivedPath}`);
+      collision.status = 409;
+      throw collision;
+    }
+    if (source.status === "missing") continue;
+
+    await client.moveFile(entry.remoteFile, archivedPath, { overwrite: false });
+    const sourceAfterMove = await inspectRemoteFile(client, entry.remoteFile);
+    if (sourceAfterMove.status !== "missing") {
+      const incompleteMove: any = new Error(`Remote conflict archive did not clear source path: ${entry.remoteFile}`);
+      incompleteMove.status = 409;
+      throw incompleteMove;
+    }
+    files.push({ name: entry.name, oldPath: entry.remoteFile, archivedPath, size: source.size });
+  }
+
+  return { remotePath, archivePath, files };
+}
+
 async function putAndVerifyLocalFile(
   client: WebDAVClient,
   localFile: string,
@@ -250,6 +327,8 @@ export async function uploadWithAList(
     verificationDelaysMs?: number[];
     log?: Pick<typeof logManager, "push">;
     files?: string[];
+    conflictArchiveSegment?: string;
+    onConflictArchived?: (result: RemoteConflictArchiveResult) => void | Promise<void>;
   } = {}
 ): Promise<UploadResult> {
   const client = options.client || buildDavClient(config);
@@ -269,23 +348,52 @@ export async function uploadWithAList(
     : (await fs.promises.readdir(localDir, { withFileTypes: true }))
         .filter((entry) => entry.isFile())
         .map((entry) => ({ relativePath: entry.name, name: entry.name }));
-  const reservedRemoteNames = new Set(uploadEntries.map((entry) => entry.name));
+  const preparedEntries: PreparedUploadEntry[] = [];
   for (const entry of uploadEntries) {
-      const localFile = path.resolve(localDir, entry.relativePath);
-      if (localFile !== localRoot && !localFile.startsWith(`${localRoot}${path.sep}`)) {
-        const localError: any = new Error(`Local upload path escapes the download directory: ${entry.relativePath}`);
-        localError.status = 422;
-        throw new UploadOperationError(classifyUploadError(localError, remotePath));
+    const localFile = path.resolve(localDir, entry.relativePath);
+    if (localFile !== localRoot && !localFile.startsWith(`${localRoot}${path.sep}`)) {
+      const localError: any = new Error(`Local upload path escapes the download directory: ${entry.relativePath}`);
+      localError.status = 422;
+      throw new UploadOperationError(classifyUploadError(localError, remotePath));
+    }
+    const remoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
+    const stat = await fs.promises.stat(localFile);
+    if (!stat.isFile() || stat.size <= 0) {
+      const localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`);
+      localError.status = 422;
+      throw new UploadOperationError(classifyUploadError(localError, remoteFile));
+    }
+    preparedEntries.push({ ...entry, localFile, remoteFile, stat });
+  }
+
+  if (options.conflictArchiveSegment) {
+    try {
+      const preflight = [] as Array<Awaited<ReturnType<typeof inspectRemoteFile>>>;
+      for (const entry of preparedEntries) preflight.push(await inspectRemoteFile(client, entry.remoteFile));
+      const hasConflict = preflight.some((remote, index) => remote.status === "exists" && remote.size !== preparedEntries[index].stat.size);
+      if (hasConflict) {
+        const archived = await archiveConflictingRemoteSet(client, remotePath, options.conflictArchiveSegment, preparedEntries);
+        logger.push({
+          timestamp: new Date().toISOString(),
+          type: "upload",
+          level: "warn",
+          summary: `远端旧版已归档，共 ${archived.files.length} 个文件`,
+          raw: `[AList] Archived remote conflict set ${remotePath} -> ${archived.archivePath} files=${archived.files.length}`,
+          simpleVisible: true,
+        });
+        await options.onConflictArchived?.(archived);
       }
+    } catch (error) {
+      throw await toUploadOperationError(error, remotePath);
+    }
+  }
+
+  const reservedRemoteNames = new Set(uploadEntries.map((entry) => entry.name));
+  for (const entry of preparedEntries) {
+      const localFile = entry.localFile;
       // Join using posix style for webdav
-      const originalRemoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
-      
-      const stat = await fs.promises.stat(localFile);
-      if (!stat.isFile() || stat.size <= 0) {
-        const localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`);
-        localError.status = 422;
-        throw new UploadOperationError(classifyUploadError(localError, originalRemoteFile));
-      }
+      const originalRemoteFile = entry.remoteFile;
+      const stat = entry.stat;
       const sizeKB = (stat.size / 1024).toFixed(1);
       console.log(`[AList] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`);
       

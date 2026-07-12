@@ -31,6 +31,7 @@ function xmlEscape(value: string) {
 
 async function startWebDavServer(options: {
   failFirstPut?: boolean;
+  failMoveName?: string;
   rejectFourByteNames?: boolean;
   remoteSizeOffset?: number;
   putStatus?: 201 | 204;
@@ -41,7 +42,9 @@ async function startWebDavServer(options: {
   const files = new Map<string, Buffer>(Object.entries(options.existingFiles || {}));
   const hiddenChecks = new Map<string, number>();
   const puts: Array<{ path: string; headers: http.IncomingHttpHeaders; body: Buffer }> = [];
+  const moves: Array<{ oldPath: string; newPath: string }> = [];
   let putCount = 0;
+  let failMoveName = options.failMoveName;
 
   const server = http.createServer(async (req, res) => {
     const requestPath = decodeURIComponent(new URL(req.url || "/", "http://127.0.0.1").pathname).replace(/\/$/, "") || "/";
@@ -98,6 +101,32 @@ async function startWebDavServer(options: {
       res.end();
       return;
     }
+    if (req.method === "MOVE") {
+      const destinationHeader = String(req.headers.destination || "");
+      const destinationPath = decodeURIComponent(new URL(destinationHeader, "http://127.0.0.1").pathname).replace(/\/$/, "") || "/";
+      if (failMoveName && requestPath.endsWith(`/${failMoveName}`)) {
+        res.statusCode = 500;
+        res.end("move failed");
+        return;
+      }
+      const body = files.get(requestPath);
+      if (!body) {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+      if (files.has(destinationPath)) {
+        res.statusCode = 412;
+        res.end("destination exists");
+        return;
+      }
+      files.set(destinationPath, body);
+      files.delete(requestPath);
+      moves.push({ oldPath: requestPath, newPath: destinationPath });
+      res.statusCode = 201;
+      res.end();
+      return;
+    }
     res.statusCode = 405;
     res.end();
   });
@@ -108,7 +137,9 @@ async function startWebDavServer(options: {
   return {
     url: `http://127.0.0.1:${address.port}`,
     puts,
+    moves,
     files,
+    setFailMoveName: (value?: string) => { failMoveName = value; },
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }
@@ -132,6 +163,117 @@ test("stream upload sends exact length, MIME and ownCloud timestamps without chu
     assert.match(String(put.headers["x-oc-mtime"]), /^\d+$/);
     assert.equal(put.headers["x-oc-ctime"], put.headers["x-oc-mtime"]);
     assert.equal(put.body.toString(), "hello-webdav");
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("one size conflict archives the complete remote set before uploading the current set", async () => {
+  const runtime = await createTestDir("upload-conflict-archive");
+  const oldSameSize = Buffer.from("OLD-SAME");
+  const newSameSize = Buffer.from("NEW-SAME");
+  const oldDifferentSize = Buffer.alloc(32, 1);
+  const newDifferentSize = Buffer.alloc(40, 2);
+  const server = await startWebDavServer({
+    existingFiles: {
+      "/dav/target/p01.mp4": oldSameSize,
+      "/dav/target/p02.mp4": oldDifferentSize,
+    },
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), newSameSize);
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), newDifferentSize);
+    let archive: any;
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: ["p01.mp4", "p02.mp4"],
+      conflictArchiveSegment: "20260712T120000000Z",
+      verificationDelaysMs: [0],
+      log: noopLog,
+      onConflictArchived: (value) => { archive = value; },
+    });
+
+    assert.equal(result.allVerified, true);
+    assert.equal(archive.archivePath, "/target/_history/20260712T120000000Z");
+    assert.equal(archive.files.length, 2);
+    assert.equal(server.moves.length, 2);
+    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120000000Z/p01.mp4"), oldSameSize);
+    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120000000Z/p02.mp4"), oldDifferentSize);
+    assert.deepEqual(server.files.get("/dav/target/p01.mp4"), newSameSize);
+    assert.deepEqual(server.files.get("/dav/target/p02.mp4"), newDifferentSize);
+    assert.equal(fs.existsSync(path.join(runtime, "p01.mp4")), true);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a retry after conflict archival does not archive the same remote set twice", async () => {
+  const runtime = await createTestDir("upload-conflict-retry");
+  const server = await startWebDavServer({
+    failFirstPut: true,
+    existingFiles: {
+      "/dav/target/p01.mp4": Buffer.from("old-one"),
+      "/dav/target/p02.mp4": Buffer.from("old-two"),
+    },
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "new-one-longer");
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "new-two-longer");
+    const options = {
+      cleanupLocal: false,
+      files: ["p01.mp4", "p02.mp4"],
+      conflictArchiveSegment: "20260712T120100000Z",
+      verificationDelaysMs: [0],
+      log: noopLog,
+    };
+    await assert.rejects(uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), options), UploadOperationError);
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), options);
+    assert.equal(result.allVerified, true);
+    assert.equal(server.moves.length, 2);
+    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120100000Z/p01.mp4"), Buffer.from("old-one"));
+    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120100000Z/p02.mp4"), Buffer.from("old-two"));
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a conflict archive MOVE failure aborts before PUT and preserves local files", async () => {
+  const runtime = await createTestDir("upload-conflict-move-failure");
+  const server = await startWebDavServer({
+    failMoveName: "p02.mp4",
+    existingFiles: {
+      "/dav/target/p01.mp4": Buffer.from("old-one"),
+      "/dav/target/p02.mp4": Buffer.from("old-two"),
+    },
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "new-one-longer");
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "new-two-longer");
+    await assert.rejects(uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: ["p01.mp4", "p02.mp4"],
+      conflictArchiveSegment: "20260712T120200000Z",
+      verificationDelaysMs: [0],
+      log: noopLog,
+    }), UploadOperationError);
+    assert.equal(server.puts.length, 0);
+    assert.equal(fs.existsSync(path.join(runtime, "p01.mp4")), true);
+    assert.equal(fs.existsSync(path.join(runtime, "p02.mp4")), true);
+    server.setFailMoveName();
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: ["p01.mp4", "p02.mp4"],
+      conflictArchiveSegment: "20260712T120200000Z",
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, true);
+    assert.equal(server.moves.length, 2);
+    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120200000Z/p01.mp4"), Buffer.from("old-one"));
+    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120200000Z/p02.mp4"), Buffer.from("old-two"));
   } finally {
     await server.close();
     await removeTestDir(runtime);
