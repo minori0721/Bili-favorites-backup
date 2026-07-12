@@ -297,12 +297,79 @@ export interface VideoPageSnapshotResult {
   available: boolean;
   title?: string;
   upperName?: string;
+  access: VideoAccessSnapshot;
   pages: Array<{
     index: number;
     cid: number;
     title: string;
     duration: number;
   }>;
+}
+
+export type VideoAccessClassification =
+  | "normal"
+  | "charging_allowed"
+  | "charging_restricted"
+  | "unknown";
+
+export interface VideoAccessSnapshot {
+  classification: VideoAccessClassification;
+  isUPowerExclusive?: boolean;
+  isUPowerPlay?: boolean;
+  isUgcPayPreview?: boolean;
+  previewAvailable?: boolean;
+  exclusiveWithQa?: boolean;
+  source: "view_detail" | "view" | "player" | "unknown";
+}
+
+function optionalBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+export function classifyVideoAccess(
+  value: Record<string, unknown> | undefined,
+  source: VideoAccessSnapshot["source"] = "unknown"
+): VideoAccessSnapshot {
+  const isUPowerExclusive = optionalBoolean(value?.is_upower_exclusive);
+  const isUPowerPlay = optionalBoolean(value?.is_upower_play);
+  const previewAvailable = optionalBoolean(value?.is_upower_preview);
+  const isUgcPayPreview = optionalBoolean(value?.is_ugc_pay_preview);
+  const exclusiveWithQa = optionalBoolean(value?.is_upower_exclusive_with_qa);
+  let classification: VideoAccessClassification = "unknown";
+  if (isUPowerExclusive === false) classification = "normal";
+  else if (isUPowerExclusive === true && isUPowerPlay === true) classification = "charging_allowed";
+  else if (isUPowerExclusive === true && isUPowerPlay === false) classification = "charging_restricted";
+  return {
+    classification,
+    isUPowerExclusive,
+    isUPowerPlay,
+    isUgcPayPreview,
+    previewAvailable,
+    exclusiveWithQa,
+    source,
+  };
+}
+
+async function resolveVideoAccessFallback(
+  client: ReturnType<typeof createBiliClient>,
+  bvid: string,
+  cid: number,
+  current: VideoAccessSnapshot
+) {
+  if (current.classification !== "unknown" || cid <= 0) return current;
+  try {
+    const player = await client.video.playerInfo({ bvid, cid }) as unknown as Record<string, unknown>;
+    const fallback = classifyVideoAccess(player, "player");
+    return fallback.classification === "unknown" ? current : fallback;
+  } catch (error: any) {
+    const statusCode = Number(error?.statusCode || error?.response?.status || 0);
+    const apiCode = Number(error?.code || error?.response?.data?.code || 0);
+    const message = String(error?.message || error);
+    if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(apiCode, message)) {
+      throw new BiliRiskOrLoginError(`Bili player API error (status ${statusCode || "unknown"}): ${message}`);
+    }
+    return current;
+  }
 }
 
 export async function resolveSelfVisibleFavoriteItem(
@@ -389,7 +456,7 @@ export async function getVideoPageSnapshot(
     `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
   ];
   let lastUnavailable = false;
-  for (const url of urls) {
+  for (const [urlIndex, url] of urls.entries()) {
     let responseBody: unknown;
     try {
       responseBody = await client.video.request.get(url, {
@@ -418,6 +485,12 @@ export async function getVideoPageSnapshot(
     const data = body.data as Record<string, any> | undefined;
     const view = data?.View || data;
     if (!view) continue;
+    const access = await resolveVideoAccessFallback(
+      client,
+      bvidValue,
+      Number(view.cid || 0),
+      classifyVideoAccess(view, urlIndex === 0 ? "view_detail" : "view")
+    );
     const rawPages = Array.isArray(view.pages) ? view.pages : [];
     const pages = rawPages
       .map((page: any, offset: number) => ({
@@ -439,10 +512,11 @@ export async function getVideoPageSnapshot(
       available: pages.length > 0,
       title: typeof view.title === "string" ? view.title : undefined,
       upperName: typeof view.owner?.name === "string" ? view.owner.name : undefined,
+      access,
       pages,
     };
   }
-  return { available: !lastUnavailable, pages: [] };
+  return { available: !lastUnavailable, access: classifyVideoAccess(undefined), pages: [] };
 }
 
 // ---------- token refresh (biliLive-tools pattern) ----------

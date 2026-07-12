@@ -2137,6 +2137,10 @@ function getAppScript() {
         stateClass = '';
         badgeClass = 'upload-pending';
         badgeText = '待补传';
+      } else if (item.backupStatus === 'charging_restricted') {
+        stateClass = '';
+        badgeClass = 'pending';
+        badgeText = '充电视频';
       } else if (item.failed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -2172,7 +2176,10 @@ function getAppScript() {
       titleEl.textContent = safeText(item.title || item.bvid, '未知视频');
       const meta = document.createElement('div');
       meta.className = 'video-meta';
-      meta.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-');
+      const chargingCheck = item.accessRestriction && item.accessRestriction.nextCheckAt
+        ? ' | 下次检查：' + formatDateTime(item.accessRestriction.nextCheckAt)
+        : '';
+      meta.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-') + chargingCheck;
       info.appendChild(titleEl);
       info.appendChild(meta);
       div.appendChild(info);
@@ -2685,6 +2692,7 @@ function getAppScript() {
       const recoveryText = '下载 ' + Number(recovery.pendingDownloads || 0) +
         ' / 上传 ' + Number(recovery.pendingUploads || 0) +
         ' / 确认 ' + Number(recovery.pendingVerifications || 0) +
+        ' / 充电待检查 ' + Number(recovery.chargingRestricted || 0) +
         '；租约中 ' + Number(recovery.leasedJobs || 0) +
         '，到期重试 ' + Number(recovery.retryJobs || 0);
       box.innerHTML = '';
@@ -2730,14 +2738,14 @@ function getAppScript() {
       box.appendChild(grid);
     }
 
-    function renderLocalCacheStatus(parent, localCache, recovery) {
+    function renderLocalCacheStatus(parent, localCache, recovery, chargingAccess) {
       const host = parent.parentElement || parent;
       let el = host.querySelector('[data-local-cache-status="1"]');
       const hasRecovery = recovery && (
         Number(recovery.resumableSessions || 0) > 0 ||
         Number(recovery.legacyDirectories || 0) > 0 ||
         Number(recovery.cleanupEligibleBytes || 0) > 0
-      );
+      ) || Number(chargingAccess?.pending || 0) > 0;
       if ((!localCache || !Number(localCache.limitBytes || 0)) && !hasRecovery) {
         if (el) el.remove();
         return;
@@ -2755,10 +2763,14 @@ function getAppScript() {
         ? ' 可续传 ' + Number(recovery.resumableSessions || 0) + ' 项，已保留 ' + formatBytes(Number(recovery.retainedBytes || 0)) +
           '；旧缓存 ' + Number(recovery.legacyDirectories || 0) + ' 项，待清理残片 ' + formatBytes(Number(recovery.cleanupEligibleBytes || 0)) + '。'
         : '';
+      const chargingText = Number(chargingAccess?.pending || 0) > 0
+        ? ' 充电待检查 ' + Number(chargingAccess.pending || 0) + ' 项' +
+          (chargingAccess.nextCheckAt ? '，下次检查 ' + formatDateTime(chargingAccess.nextCheckAt) : '') + '。'
+        : '';
       el.classList.toggle('paused', !!localCache?.paused);
       el.textContent = localCache?.paused
-        ? '下载暂停：本地缓存 ' + used + ' / ' + limit + '，已预留 ' + formatBytes(Number(localCache?.reserveBytes || 0)) + ' 安全空间；上传队列不受影响。' + resumeText
-        : '本地缓存：' + used + ' / ' + limit + (limitBytes > 0 ? '，安全预留 ' + formatBytes(Number(localCache?.reserveBytes || 0)) : '') + '。' + resumeText;
+        ? '下载暂停：本地缓存 ' + used + ' / ' + limit + '，已预留 ' + formatBytes(Number(localCache?.reserveBytes || 0)) + ' 安全空间；上传队列不受影响。' + resumeText + chargingText
+        : '本地缓存：' + used + ' / ' + limit + (limitBytes > 0 ? '，安全预留 ' + formatBytes(Number(localCache?.reserveBytes || 0)) : '') + '。' + resumeText + chargingText;
     }
 
     function renderUploadHealthStatus(parent, uploadHealth) {
@@ -2867,7 +2879,7 @@ function getAppScript() {
           queueBoardState.columns = {};
         }
         renderSchedulerStatus(grid, { ...(snapshot.scheduler || {}), recovery: snapshot.recovery || {} });
-        renderLocalCacheStatus(grid, snapshot.localCache || null, snapshot.downloadRecovery || null);
+        renderLocalCacheStatus(grid, snapshot.localCache || null, snapshot.downloadRecovery || null, snapshot.chargingAccess || null);
         renderDownloadApiHealthStatus(grid, snapshot.downloadApiHealth || null);
         renderUploadHealthStatus(grid, snapshot.uploadHealth || null);
         const firstRects = new Map();

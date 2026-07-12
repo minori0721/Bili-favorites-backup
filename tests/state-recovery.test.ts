@@ -64,7 +64,7 @@ test("schema 8 failed state with an existing local directory migrates to upload_
       dbPath: path.join(runtime, "bfb.sqlite"),
     });
     const snapshot = manager.getStateSnapshot();
-    assert.equal(snapshot.schemaVersion, 11);
+    assert.equal(snapshot.schemaVersion, 12);
     assert.equal(snapshot.videos![bvid].backupStatus, "upload_failed");
     assert.equal(snapshot.relations![`u1:1:${bvid}`].backupStatus, "upload_failed");
     assert.equal(fs.existsSync(statePath), false);

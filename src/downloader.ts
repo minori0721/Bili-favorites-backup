@@ -5,7 +5,7 @@ import { tempDir } from "./paths.js";
 import { buildCookieString, BiliCookie } from "./users.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
 import { logManager, parseBBDownOutput } from "./logger.js";
-import { getVideoPageSnapshot, type VideoPageSnapshotResult } from "./bili.js";
+import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
 import {
   buildSelectPageArgument,
@@ -27,6 +27,50 @@ export interface DownloadResult {
   recoveredPages: number;
   totalPages: number;
   partial: boolean;
+}
+
+export class ChargingRestrictedError extends Error {
+  readonly chargingRestricted = true;
+  readonly access: VideoAccessSnapshot;
+  readonly accountUid: number;
+
+  constructor(bvid: string, accountUid: number, access: VideoAccessSnapshot) {
+    super(`Charging-exclusive video requires access: ${bvid}`);
+    this.name = "ChargingRestrictedError";
+    this.access = access;
+    this.accountUid = accountUid;
+  }
+}
+
+async function listInvalidArtifacts(downloadDir: string) {
+  const files = new Set<string>();
+  const invalidDir = path.join(downloadDir, "_invalid");
+  const walk = async (current: string): Promise<void> => {
+    let entries: fs.Dirent[] = [];
+    try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(fullPath);
+      else if (entry.isFile()) files.add(path.relative(downloadDir, fullPath));
+    }
+  };
+  await walk(invalidDir);
+  return files;
+}
+
+async function cleanupNewInvalidArtifacts(downloadDir: string, baseline: Set<string>) {
+  const current = await listInvalidArtifacts(downloadDir);
+  let removed = 0;
+  for (const relativePath of current) {
+    if (baseline.has(relativePath)) continue;
+    try {
+      await fs.promises.unlink(path.join(downloadDir, relativePath));
+      removed += 1;
+    } catch {
+      // A concurrent cleanup or download may already have moved the file.
+    }
+  }
+  return removed;
 }
 
 const activeDownloadChildren = new Set<ReturnType<typeof spawn>>();
@@ -77,13 +121,16 @@ export async function downloadWithBBDown(
     qualityUpgrade?: DownloadSessionManifest["qualityUpgrade"];
     apiModeOverride?: BBDownApiMode;
     onApiReady?: (mode: BBDownApiMode) => void;
+    accessRecheck?: (cookie: BiliCookie, bvid: string) => Promise<VideoPageSnapshotResult>;
   } = {}
 ): Promise<DownloadResult> {
   if (shutdownRequested) throw new Error("Application is shutting down");
   const downloadDir = options.downloadDir || path.join(tempDir, bvid);
-  await fs.promises.mkdir(downloadDir, { recursive: true });
-
   const snapshot = options.pageSnapshot || await getVideoPageSnapshot(cookie, bvid);
+  if (snapshot.access?.classification === "charging_restricted") {
+    throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), snapshot.access);
+  }
+  await fs.promises.mkdir(downloadDir, { recursive: true });
   const previousSession = readDownloadSession(downloadDir);
   const effectivePages = snapshot.pages.length > 0 ? snapshot.pages : previousSession?.pages || [];
   if (effectivePages.length === 0 && snapshot.available) {
@@ -224,6 +271,7 @@ export async function downloadWithBBDown(
     };
 
     let retriedWithTruncate = false;
+    const invalidArtifactsBeforeRun = await listInvalidArtifacts(downloadDir);
     markDownloadSessionStatus(downloadDir, "downloading");
     try {
       await runBBDown(args);
@@ -262,6 +310,13 @@ export async function downloadWithBBDown(
 
     const refreshed = await refreshDownloadSessionOutputs(downloadDir);
     if (refreshed.missingPages.length > 0) {
+      const latestSnapshot = snapshot.access?.classification === "unknown"
+        ? await (options.accessRecheck || getVideoPageSnapshot)(cookie, bvid).catch(() => undefined)
+        : undefined;
+      if (latestSnapshot?.access?.classification === "charging_restricted") {
+        await cleanupNewInvalidArtifacts(downloadDir, invalidArtifactsBeforeRun);
+        throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), latestSnapshot.access);
+      }
       const err = new Error(`BBDown did not complete all pages; remaining ${refreshed.missingPages.length}`);
       (err as any).deferToNextCycle = true;
       markDownloadSessionStatus(downloadDir, "failed", err.message);

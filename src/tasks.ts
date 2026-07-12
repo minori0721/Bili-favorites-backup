@@ -35,6 +35,7 @@ export class DownloadTask extends Task {
   recoveredPages = 0;
   totalPages = 0;
   apiModeOverride?: BBDownApiMode;
+  downloadUserId?: string;
   apiProbe = false;
   onApiReady?: (task: DownloadTask, mode: BBDownApiMode) => void;
   onDownloading?: (task: DownloadTask) => void;

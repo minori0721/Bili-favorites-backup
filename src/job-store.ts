@@ -3,6 +3,7 @@ import type { StateDatabase, PersistentJobRecord } from "./database.js";
 
 export type PersistentJobKind =
   | "download"
+  | "access_probe"
   | "upload"
   | "verify_upload"
   | "history_upload"
@@ -266,5 +267,23 @@ export class PersistentJobStore {
 
   hasDedupePrefix(prefix: string) {
     return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ?").get(`${prefix}%`) as any).count || 0) > 0;
+  }
+
+  wakeByBvid(bvid: string, kinds: PersistentJobKind[], now = Date.now()) {
+    if (kinds.length === 0) return 0;
+    const placeholders = kinds.map(() => "?").join(",");
+    return this.stateDatabase.db.prepare(`
+      UPDATE jobs SET status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+      WHERE bvid=? AND kind IN (${placeholders}) AND status IN ('pending','retry_wait')
+    `).run(now, now, bvid, ...kinds).changes;
+  }
+
+  wakeAll(kinds: PersistentJobKind[], now = Date.now()) {
+    if (kinds.length === 0) return 0;
+    const placeholders = kinds.map(() => "?").join(",");
+    return this.stateDatabase.db.prepare(`
+      UPDATE jobs SET status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+      WHERE kind IN (${placeholders}) AND status IN ('pending','retry_wait')
+    `).run(now, now, ...kinds).changes;
   }
 }

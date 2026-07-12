@@ -745,6 +745,56 @@ function directorySizeSync(target: string): number {
   }
 }
 
+function listFilesSync(rootDir: string) {
+  const files: string[] = [];
+  const walk = (current: string) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(fullPath);
+      else if (entry.isFile()) files.push(path.relative(rootDir, fullPath));
+    }
+  };
+  try { walk(rootDir); } catch { /* files may change while the queue is running */ }
+  return files;
+}
+
+function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
+  const files = listFilesSync(downloadDir);
+  const retained = new Set<string>();
+  const cleanup = new Set<string>();
+  const existing = new Set(files.map((file) => file.replace(/\\/g, "/")));
+  for (const output of [...manifest.outputs, ...(manifest.history || [])]) {
+    const relativePath = String(output.relativePath || "").replace(/\\/g, "/");
+    if (relativePath && existing.has(relativePath)) retained.add(relativePath);
+  }
+  let aria2Controls = 0;
+  for (const relativeFile of existing) {
+    const segments = relativeFile.split("/");
+    if (segments.some((segment) => segment === "_invalid" || segment === "_incompatible")) {
+      cleanup.add(relativeFile);
+      continue;
+    }
+    if (/\.aria2$/i.test(relativeFile)) {
+      aria2Controls += 1;
+      retained.add(relativeFile);
+      const dataFile = relativeFile.replace(/\.aria2$/i, "");
+      if (existing.has(dataFile)) retained.add(dataFile);
+      continue;
+    }
+    if (isUnsafeResumeArtifact(relativeFile) && !retained.has(relativeFile)) {
+      cleanup.add(relativeFile);
+    }
+  }
+  const sizeOf = (items: Set<string>) => [...items].reduce((total, relativeFile) =>
+    total + directorySizeSync(path.join(downloadDir, relativeFile)), 0);
+  const incomplete = ["prepared", "downloading", "failed"].includes(manifest.status);
+  return {
+    resumable: incomplete && (manifest.outputs.length > 0 || aria2Controls > 0),
+    retainedBytes: sizeOf(retained),
+    cleanupEligibleBytes: sizeOf(cleanup),
+  };
+}
+
 export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySummary {
   const summary: DownloadRecoverySummary = {
     resumableSessions: 0,
@@ -771,10 +821,12 @@ export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySu
     }
     const manifest = readDownloadSession(dir);
     if (manifest) {
-      if (["prepared", "downloading", "failed"].includes(manifest.status)) summary.resumableSessions += 1;
+      const recovery = summarizeManifestRecovery(dir, manifest);
+      if (recovery.resumable) summary.resumableSessions += 1;
       summary.completedPages += manifest.outputs.length;
       summary.totalPages += manifest.pages.length;
-      summary.retainedBytes += bytes;
+      summary.retainedBytes += recovery.retainedBytes;
+      summary.cleanupEligibleBytes += recovery.cleanupEligibleBytes;
       continue;
     }
     if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;

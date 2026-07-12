@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { StateDatabase } from "../src/database.js";
 import { PersistentJobStore } from "../src/job-store.js";
+import { createTestDir, removeTestDir } from "./helpers.js";
 
 test("video status reads use relation priority with the video row as fallback", () => {
   const database = new StateDatabase(":memory:");
@@ -179,5 +181,25 @@ test("an exhausted persistent job is retained and a later enqueue revives it", (
     assert.deepEqual(revived.payload, { phase: "retry" });
   } finally {
     database.close();
+  }
+});
+
+test("database schema 2 refreshes the aggregate view without changing tables", async () => {
+  const runtime = await createTestDir("sqlite-view-migration");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  try {
+    const legacy = new StateDatabase(dbPath);
+    legacy.db.exec("DROP VIEW IF EXISTS video_backup_summary");
+    legacy.db.exec("CREATE VIEW video_backup_summary AS SELECT v.bvid, v.backup_status AS backup_status FROM videos v");
+    legacy.db.pragma("user_version = 1");
+    legacy.close();
+
+    const migrated = new StateDatabase(dbPath);
+    const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
+    assert.match(String(row?.sql || ""), /charging_restricted/);
+    assert.equal(migrated.db.pragma("user_version", { simple: true }), 2);
+    migrated.close();
+  } finally {
+    await removeTestDir(runtime);
   }
 });

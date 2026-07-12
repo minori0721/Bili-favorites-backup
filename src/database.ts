@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import type { StateFile, VideoArchiveEntry, FavoriteRelation, FolderScanState, FailedEntry, UserCooldown } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 1;
+export const DATABASE_SCHEMA_VERSION = 2;
 
 export interface StateDirtySet {
   videos: Set<string>;
@@ -72,8 +72,8 @@ SELECT v.bvid,
     ORDER BY CASE r.backup_status
       WHEN 'uploading' THEN 1 WHEN 'upload_failed' THEN 2 WHEN 'downloading' THEN 3
       WHEN 'downloaded' THEN 4 WHEN 'queued' THEN 5 WHEN 'missing' THEN 6
-      WHEN 'failed' THEN 7 WHEN 'discovered' THEN 8 WHEN 'lost' THEN 9
-      WHEN 'uploaded' THEN 10 WHEN 'partial_verified' THEN 11 WHEN 'verified' THEN 12
+      WHEN 'failed' THEN 7 WHEN 'charging_restricted' THEN 8 WHEN 'discovered' THEN 9 WHEN 'lost' THEN 10
+      WHEN 'uploaded' THEN 11 WHEN 'partial_verified' THEN 12 WHEN 'verified' THEN 13
       ELSE 99 END
     LIMIT 1
   ), v.backup_status) AS backup_status
@@ -220,6 +220,9 @@ export class StateDatabase {
         throw new Error(`SQLite schema ${currentVersion} is newer than supported schema ${DATABASE_SCHEMA_VERSION}`);
       }
       this.db.transaction(() => {
+        if (currentVersion < 2) {
+          this.db.exec("DROP VIEW IF EXISTS video_backup_summary");
+        }
         this.db.exec(SCHEMA_SQL);
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
@@ -263,7 +266,7 @@ export class StateDatabase {
 
   loadState(): StateFile {
     const state: StateFile = {
-      schemaVersion: 11,
+      schemaVersion: 12,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -297,7 +300,7 @@ export class StateDatabase {
 
   loadStateMetadata(): StateFile {
     const state: StateFile = {
-      schemaVersion: 11,
+      schemaVersion: 12,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -470,7 +473,7 @@ export class StateDatabase {
       if (dirty.cooldowns) this.replaceCooldowns(state);
       if (dirty.metadata) {
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('legacy_state_schema', ?)")
-          .run(String(state.schemaVersion || 11));
+          .run(String(state.schemaVersion || 12));
       }
     });
     transaction();

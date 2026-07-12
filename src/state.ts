@@ -31,6 +31,7 @@ export type BackupStatus =
   | "uploaded"
   | "verified"
   | "partial_verified"
+  | "charging_restricted"
   | "missing"
   | "lost"
   | "failed";
@@ -72,6 +73,16 @@ export interface VideoMetadataSnapshot {
   capturedAt: string;
 }
 
+export interface ChargingAccessRestriction {
+  type: "charging";
+  detectedAt: string;
+  lastCheckedAt: string;
+  nextCheckAt: string;
+  previewAvailable?: boolean;
+  checkedAccountUids: string[];
+  lastError?: string;
+}
+
 export interface DownloadSessionReference {
   id: string;
   localDir: string;
@@ -99,6 +110,7 @@ export interface VideoArchiveEntry {
   pendingPartialBackup?: boolean;
   localDir?: string;
   downloadSession?: DownloadSessionReference;
+  accessRestriction?: ChargingAccessRestriction;
   uploadedAt?: string;
   verifiedAt?: string;
   lastRemoteCheckAt?: string;
@@ -211,6 +223,7 @@ export interface FolderDetailItem {
   folderTitle: string;
   lastSeenAt: string;
   activeInFavorite: boolean;
+  accessRestriction?: ChargingAccessRestriction;
 }
 
 export interface FolderDetailSummary {
@@ -261,7 +274,7 @@ export interface StateFile {
 
 const defaultStatePath = path.join(dataDir, "state.json");
 const defaultState: StateFile = {
-  schemaVersion: 11,
+  schemaVersion: 12,
   processedByUser: {},
   failedByUser: {},
   videos: {},
@@ -285,6 +298,7 @@ const RELATION_BACKUP_PRIORITY: BackupStatus[] = [
   "queued",
   "missing",
   "failed",
+  "charging_restricted",
   "discovered",
   "lost",
   "uploaded",
@@ -394,7 +408,7 @@ export class StateManager {
   }
 
   private normalizeLoadedState(input: StateFile): StateFile {
-    input.schemaVersion ||= 11;
+    input.schemaVersion ||= 12;
     input.processedByUser ||= {};
     input.failedByUser ||= {};
     input.videos ||= {};
@@ -799,7 +813,7 @@ export class StateManager {
     if (!entry) return "discovered";
     if (relationTreatsUnavailable(relation, entry)) return "lost";
     if (ACTIVE_BACKUP_STATUSES.has(entry.backupStatus)) return entry.backupStatus;
-    if (["missing", "failed", "upload_failed"].includes(entry.backupStatus)) return entry.backupStatus;
+    if (["missing", "failed", "upload_failed", "charging_restricted"].includes(entry.backupStatus)) return entry.backupStatus;
     return "discovered";
   }
 
@@ -1240,6 +1254,88 @@ export class StateManager {
       entry.verifiedAt = at;
       entry.lastError = undefined;
     }
+  }
+
+  markChargingRestricted(
+    bvid: string,
+    value: {
+      checkedAt: string;
+      nextCheckAt: string;
+      previewAvailable?: boolean;
+      checkedAccountUids: string[];
+      lastError?: string;
+    }
+  ) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return;
+    const current = entry.accessRestriction;
+    entry.accessRestriction = {
+      type: "charging",
+      detectedAt: current?.detectedAt || value.checkedAt,
+      lastCheckedAt: value.checkedAt,
+      nextCheckAt: value.nextCheckAt,
+      previewAvailable: value.previewAvailable ?? current?.previewAvailable,
+      checkedAccountUids: [...new Set(value.checkedAccountUids.map(String))],
+      lastError: value.lastError,
+    };
+    entry.lastError = undefined;
+    for (const relation of this.listRelationsForBvid(bvid)) {
+      if (!relation.activeInFavorite || BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")) continue;
+      this.setRelationStatus(relation, "charging_restricted", value.checkedAt);
+      relation.lastError = undefined;
+      this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
+      this.clearFailedEntry(relation.userId, relation.mediaId, bvid);
+    }
+    this.refreshVideoAggregateStatus(bvid);
+    if (entry.backupStatus !== "verified" && entry.backupStatus !== "partial_verified" && entry.backupStatus !== "uploaded") {
+      this.setVideoStatus(entry, "charging_restricted", value.checkedAt);
+    }
+    this.save();
+  }
+
+  clearChargingRestriction(bvid: string, checkedAt = nowIso()) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return;
+    delete entry.accessRestriction;
+    for (const relation of this.listRelationsForBvid(bvid)) {
+      if (relation.backupStatus !== "charging_restricted") continue;
+      this.setRelationStatus(relation, relationTreatsUnavailable(relation, entry) ? "lost" : "discovered", checkedAt);
+      relation.lastError = undefined;
+      this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
+      this.clearFailedEntry(relation.userId, relation.mediaId, bvid);
+    }
+    if (entry.backupStatus === "charging_restricted") this.setVideoStatus(entry, "discovered", checkedAt);
+    entry.lastError = undefined;
+    this.refreshVideoAggregateStatus(bvid);
+    this.save();
+  }
+
+  markUnavailableFromAccessProbe(bvid: string, checkedAt = nowIso()) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return;
+    delete entry.accessRestriction;
+    entry.biliStatus = "unavailable";
+    entry.favoriteUnavailable = true;
+    entry.lastError = "Video became unavailable before a verified backup was found.";
+    for (const relation of this.listRelationsForBvid(bvid)) {
+      if (BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")) continue;
+      relation.favoriteUnavailable = true;
+      this.setRelationStatus(relation, "lost", checkedAt);
+      relation.lastError = entry.lastError;
+      this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
+    }
+    this.refreshVideoAggregateStatus(bvid);
+    this.save();
+  }
+
+  getChargingRestriction(bvid: string) {
+    return this.state.videos?.[bvid]?.accessRestriction;
+  }
+
+  listChargingRestrictedVideos() {
+    const videos = this.lazyState ? this.database.listVideos() : Object.values(this.state.videos || {});
+    return videos.filter((video) => video.accessRestriction?.type === "charging" && this.listRelationsForBvid(video.bvid)
+      .some((relation) => relation.activeInFavorite && !BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")));
   }
 
   markVerifiedUpload(
@@ -2183,6 +2279,7 @@ export class StateManager {
         folderTitle: relation.folderTitle,
         lastSeenAt: relation.lastSeenAt,
         activeInFavorite: relation.activeInFavorite,
+        accessRestriction: video.accessRestriction,
       };
       return item;
     });
@@ -2332,6 +2429,7 @@ export class StateManager {
       description: entry.description,
       favoriteUnavailable: entry.favoriteUnavailable,
       selfVisible: entry.selfVisible,
+      accessRestriction: entry.accessRestriction,
     };
   }
 
@@ -2592,6 +2690,11 @@ export class StateManager {
 
     if ((this.state.schemaVersion || 1) < 11) {
       this.state.schemaVersion = 11;
+      changed = true;
+    }
+
+    if ((this.state.schemaVersion || 1) < 12) {
+      this.state.schemaVersion = 12;
       changed = true;
     }
 

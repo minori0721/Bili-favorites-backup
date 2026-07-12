@@ -202,6 +202,7 @@ async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto"
     lastAuthRefreshError: "",
     lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
   });
+  scheduler.wakeChargingAccessProbes();
 }
 
 // ---------- auto token refresh (biliLive-tools pattern) ----------
@@ -613,6 +614,7 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
           lastAuthRefreshAt: new Date().toISOString(),
           lastAuthRefreshError: "",
         });
+        scheduler.wakeChargingAccessProbes();
         setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
         setLoginSession(loginId, { status: "error", qrDataUrl, message: error?.message || "Failed to save user" });
@@ -907,6 +909,7 @@ app.patch("/api/users/:id", (req, res) => {
   }
   if (req.body.toggle) {
     const updated = userStore.updatePartial(user.id, { enabled: !user.enabled });
+    if (updated?.enabled) scheduler.wakeChargingAccessProbes();
     res.json({ success: true, data: updated });
     return;
   }

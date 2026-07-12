@@ -5,7 +5,7 @@ import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
 const requestedMode = process.env.BFB_PREVIEW_MODE;
-const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" ? requestedMode : "healthy";
+const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -173,6 +173,84 @@ if (mode === "confirm") {
     folderScans: { "preview-user:1": { userId: "preview-user", mediaId: 1, folderTitle: "确认中状态预览", initStatus: "complete", nextHistoryPage: 1, catchupPage: 1, total: 2 } },
     userCooldowns: {},
   };
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ startupRecoveryBatchSize: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
+}
+
+if (mode === "charging") {
+  const now = new Date();
+  const nextCheckAt = new Date(now.getTime() + 7 * 24 * 60 * 60_000).toISOString();
+  const bvid = "BV1gzF7zSEpo";
+  const localDir = path.join(runtimeDir, "temp", bvid);
+  await fs.promises.mkdir(path.join(localDir, "_invalid", "preview"), { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "_invalid", "preview", "charging-preview.mp4"), Buffer.alloc(48 * 1024));
+  await fs.promises.writeFile(path.join(localDir, ".bfb-download.json"), JSON.stringify({
+    schemaVersion: 1,
+    sessionId: "charging-preview-session",
+    kind: "backup",
+    bvid,
+    accountUid: 1,
+    bbdownCommit: "test",
+    configFingerprint: "test",
+    configSnapshot: { quality: "", encoding: "", hiRes: false, dolby: false, filenameTemplate: "<bvid>" },
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    snapshotAt: now.toISOString(),
+    status: "failed",
+    pages: [{ index: 1, cid: 1, title: "P1", duration: 60 }],
+    outputs: [],
+    history: [],
+  }, null, 2));
+  const restriction = {
+    type: "charging",
+    detectedAt: now.toISOString(),
+    lastCheckedAt: now.toISOString(),
+    nextCheckAt,
+    previewAvailable: true,
+    checkedAccountUids: ["1"],
+  };
+  const state = {
+    schemaVersion: 12,
+    processedByUser: {},
+    failedByUser: {},
+    videos: {
+      [bvid]: {
+        bvid,
+        title: "紫色美拍～",
+        upperName: "雾奈哟",
+        firstSeenAt: now.toISOString(),
+        lastSeenAt: now.toISOString(),
+        biliStatus: "available",
+        backupStatus: "charging_restricted",
+        localDir,
+        accessRestriction: restriction,
+      },
+    },
+    relations: {
+      [`preview-user:1:${bvid}`]: {
+        userId: "preview-user",
+        mediaId: 1,
+        bvid,
+        folderTitle: "充电视频预览",
+        firstSeenAt: now.toISOString(),
+        lastSeenAt: now.toISOString(),
+        activeInFavorite: true,
+        backupStatus: "charging_restricted",
+      },
+    },
+    folderScans: { "preview-user:1": { userId: "preview-user", mediaId: 1, folderTitle: "充电视频预览", initStatus: "complete", nextHistoryPage: 1, catchupPage: 1, total: 1 } },
+    userCooldowns: {},
+  };
+  const users = [{
+    id: "preview-user",
+    uid: 1,
+    name: "预览账号",
+    cookie: { SESSDATA: "preview", bili_jct: "preview", DedeUserID: "1" },
+    favorites: [{ mediaId: 1, title: "充电视频预览" }],
+    enabled: true,
+    lastLoginAt: now.toISOString(),
+  }];
   await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ startupRecoveryBatchSize: 5 }), null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));

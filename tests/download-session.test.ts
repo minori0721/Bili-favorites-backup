@@ -59,6 +59,78 @@ test("select-page argument compacts long consecutive ranges", () => {
   assert.equal(buildSelectPageArgument(pages), "1-3,5,7,8");
 });
 
+test("invalid quarantined files are cleanup bytes instead of resumable retained bytes", async () => {
+  const runtime = await createTestDir("download-recovery-invalid");
+  const downloadDir = path.join(runtime, "BVINVALID");
+  try {
+    await fs.promises.mkdir(path.join(downloadDir, "_invalid", "old"), { recursive: true });
+    await fs.promises.writeFile(path.join(downloadDir, "_invalid", "old", "preview.mp4"), Buffer.alloc(1024));
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), {
+      schemaVersion: 1,
+      sessionId: "invalid-session",
+      kind: "backup",
+      bvid: "BVINVALID",
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: { quality: "", encoding: "", hiRes: false, dolby: false, filenameTemplate: "<bvid>" },
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+      snapshotAt: "2026-07-12T00:00:00.000Z",
+      status: "failed",
+      pages: [{ index: 1, cid: 1, title: "P1", duration: 60 }],
+      outputs: [],
+      history: [],
+    });
+    const summary = inspectDownloadRecoverySync(runtime);
+    assert.equal(summary.resumableSessions, 0);
+    assert.equal(summary.retainedBytes, 0);
+    assert.equal(summary.cleanupEligibleBytes, 1024);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("a late charging restriction removes only invalid files created by the current run", async () => {
+  const runtime = await createTestDir("download-late-charging");
+  const downloadDir = path.join(runtime, "BVLATECHARGE");
+  const fakeScript = path.join(runtime, "fake-late-charge.mjs");
+  const oldInvalid = path.join(downloadDir, "_invalid", "old", "old-preview.mp4");
+  try {
+    await fs.promises.mkdir(path.dirname(oldInvalid), { recursive: true });
+    await fs.promises.writeFile(oldInvalid, "old");
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      fs.writeFileSync('new-preview-BVLATECHARGE.mp4', 'not-a-complete-video');
+    `, "utf8");
+    await assert.rejects(downloadWithBBDown(
+      "BVLATECHARGE",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      testConfig(),
+      {
+        downloadDir,
+        pageSnapshot: {
+          available: true,
+          access: { classification: "unknown", source: "unknown" },
+          pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+        },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+        accessRecheck: async () => ({
+          available: true,
+          access: { classification: "charging_restricted", isUPowerExclusive: true, isUPowerPlay: false, previewAvailable: true, source: "view_detail" },
+          pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+        }),
+      }
+    ), (error: any) => error?.chargingRestricted === true);
+    assert.equal(fs.existsSync(oldInvalid), true);
+    const invalidFiles = fs.readdirSync(path.join(downloadDir, "_invalid"), { recursive: true }).map(String);
+    assert.equal(invalidFiles.some((name) => name.includes("new-preview")), false);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("legacy completed pages are adopted and replaced CIDs move to history", async () => {
   configureFfprobe();
   const runtime = await createTestDir("download-session-media");
@@ -369,6 +441,7 @@ test("recovery summary separates managed sessions from legacy fragments", async 
       config: testConfig(),
       pages: [{ index: 1, cid: 1, title: "One", duration: 1 }],
     });
+    await fs.promises.writeFile(path.join(managed, "track.mp4.aria2"), "resume");
     const legacy = path.join(runtime, "BV1LEGACY");
     await fs.promises.mkdir(legacy, { recursive: true });
     await fs.promises.writeFile(path.join(legacy, "00000_track.vclip"), Buffer.alloc(64));
@@ -381,6 +454,7 @@ test("recovery summary separates managed sessions from legacy fragments", async 
       kind: "quality_upgrade",
       pages: [{ index: 1, cid: 2, title: "One", duration: 1 }],
     });
+    await fs.promises.writeFile(path.join(quality, "track.m4a.aria2"), "resume");
     const summary = inspectDownloadRecoverySync(runtime);
     assert.equal(summary.resumableSessions, 2);
     assert.equal(summary.legacyDirectories, 1);
