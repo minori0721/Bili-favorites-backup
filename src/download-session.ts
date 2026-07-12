@@ -93,6 +93,12 @@ export interface DownloadRecoverySummary {
   cleanupEligibleBytes: number;
 }
 
+export interface DownloadCleanupResult {
+  removedFiles: number;
+  removedDirectories: number;
+  removedBytes: number;
+}
+
 export interface Aria2TrackRecoveryIssue {
   pageIndex: number;
   track: "video" | "audio";
@@ -758,7 +764,7 @@ function listFilesSync(rootDir: string) {
   return files;
 }
 
-function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
+function classifyManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
   const files = listFilesSync(downloadDir);
   const retained = new Set<string>();
   const cleanup = new Set<string>();
@@ -770,21 +776,29 @@ function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessio
   let aria2Controls = 0;
   for (const relativeFile of existing) {
     const segments = relativeFile.split("/");
+    if (segments.some((segment) => segment === "_invalid" || segment === "_incompatible")) continue;
+    if (!/\.aria2$/i.test(relativeFile)) continue;
+    aria2Controls += 1;
+    retained.add(relativeFile);
+    const dataFile = relativeFile.replace(/\.aria2$/i, "");
+    if (existing.has(dataFile)) retained.add(dataFile);
+  }
+  for (const relativeFile of existing) {
+    const segments = relativeFile.split("/");
     if (segments.some((segment) => segment === "_invalid" || segment === "_incompatible")) {
       cleanup.add(relativeFile);
       continue;
     }
-    if (/\.aria2$/i.test(relativeFile)) {
-      aria2Controls += 1;
-      retained.add(relativeFile);
-      const dataFile = relativeFile.replace(/\.aria2$/i, "");
-      if (existing.has(dataFile)) retained.add(dataFile);
-      continue;
-    }
+    if (/\.aria2$/i.test(relativeFile)) continue;
     if (isUnsafeResumeArtifact(relativeFile) && !retained.has(relativeFile)) {
       cleanup.add(relativeFile);
     }
   }
+  return { retained, cleanup, aria2Controls };
+}
+
+function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
+  const { retained, cleanup, aria2Controls } = classifyManifestRecovery(downloadDir, manifest);
   const sizeOf = (items: Set<string>) => [...items].reduce((total, relativeFile) =>
     total + directorySizeSync(path.join(downloadDir, relativeFile)), 0);
   const incomplete = ["prepared", "downloading", "failed"].includes(manifest.status);
@@ -793,6 +807,52 @@ function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessio
     retainedBytes: sizeOf(retained),
     cleanupEligibleBytes: sizeOf(cleanup),
   };
+}
+
+export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise<DownloadCleanupResult> {
+  const result: DownloadCleanupResult = { removedFiles: 0, removedDirectories: 0, removedBytes: 0 };
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return result;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const downloadDir = path.join(rootDir, entry.name);
+    if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE))) {
+      result.removedBytes += directorySizeSync(downloadDir);
+      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+      result.removedDirectories += 1;
+      continue;
+    }
+    if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
+
+    const manifest = readDownloadSession(downloadDir);
+    const candidates = manifest
+      ? [...classifyManifestRecovery(downloadDir, manifest).cleanup]
+      : listFilesSync(downloadDir).filter((relativeFile) => /\.(aria2|tmp|vclip|aclip|part|download)$/i.test(relativeFile));
+    const root = path.resolve(downloadDir);
+    for (const relativeFile of candidates) {
+      const target = path.resolve(downloadDir, relativeFile);
+      if (target === root || !target.startsWith(`${root}${path.sep}`)) continue;
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.lstat(target);
+      } catch (error: any) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      await fs.promises.unlink(target);
+      result.removedFiles += 1;
+      result.removedBytes += stat.size;
+    }
+    await removeEmptyDirectories(downloadDir, downloadDir);
+  }
+  return result;
 }
 
 export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySummary {

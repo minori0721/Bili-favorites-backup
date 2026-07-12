@@ -28,3 +28,11 @@ export function writeJsonFile<T>(filePath: string, value: T): void {
   fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf-8");
   fs.renameSync(tempPath, filePath);
 }
+
+export async function clearDirectoryContents(directoryPath: string): Promise<void> {
+  await fs.promises.mkdir(directoryPath, { recursive: true });
+  const entries = await fs.promises.readdir(directoryPath);
+  for (const entry of entries) {
+    await fs.promises.rm(path.join(directoryPath, entry), { recursive: true, force: true });
+  }
+}

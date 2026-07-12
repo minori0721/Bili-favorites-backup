@@ -19,7 +19,8 @@ import {
   resolveSelfVisibleFavoriteItem,
 } from "./bili.js";
 import { normalizeEncodingPriority, normalizeQualityPriority, shutdownActiveDownloads } from "./downloader.js";
-import { BBDOWN_SOURCE_COMMIT, DOWNLOAD_RETAINED_FILE, inspectDownloadRecoverySync, readDownloadSession } from "./download-session.js";
+import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadRecoverySync, readDownloadSession } from "./download-session.js";
+import { clearDirectoryContents } from "./storage.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager, logsPath } from "./logger.js";
@@ -1056,33 +1057,7 @@ async function removeCleanupTarget(item: CleanupItem) {
     return;
   }
   if (item === "orphan-fragments") {
-    const roots = await fs.promises.readdir(tempDir, { withFileTypes: true });
-    const removeFragments = async (target: string): Promise<void> => {
-      const entries = await fs.promises.readdir(target, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(target, entry.name);
-        const stat = await fs.promises.lstat(fullPath);
-        if (stat.isSymbolicLink()) continue;
-        if (stat.isDirectory()) {
-          await removeFragments(fullPath);
-          continue;
-        }
-        if (stat.isFile() && /\.(aria2|tmp|vclip|aclip|part|download)$/i.test(entry.name)) {
-          await fs.promises.unlink(fullPath);
-        }
-      }
-    };
-    for (const root of roots) {
-      if (!root.isDirectory()) continue;
-      const downloadDir = path.join(tempDir, root.name);
-      if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE))) {
-        await fs.promises.rm(downloadDir, { recursive: true, force: true });
-        continue;
-      }
-      if (!/^BV[0-9A-Za-z]+$/i.test(root.name)) continue;
-      if (readDownloadSession(downloadDir)) continue;
-      await removeFragments(downloadDir);
-    }
+    await cleanupDownloadRecoveryArtifacts(tempDir);
     scheduler.refreshLocalCacheState();
     return;
   }
@@ -1092,11 +1067,13 @@ async function removeCleanupTarget(item: CleanupItem) {
   }
   const targetPath = cleanupItems[item].path;
   if (!targetPath) return;
-  await fs.promises.rm(targetPath, { recursive: true, force: true });
   if (item === "temp") {
-    await fs.promises.mkdir(tempDir, { recursive: true });
+    await clearDirectoryContents(tempDir);
     scheduler.refreshLocalCacheState();
-  } else if (item === "covers") {
+    return;
+  }
+  await fs.promises.rm(targetPath, { recursive: true, force: true });
+  if (item === "covers") {
     await fs.promises.mkdir(coversDir, { recursive: true });
   } else if (item === "exports") {
     await fs.promises.mkdir(exportsDir, { recursive: true });
@@ -1150,8 +1127,21 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     return;
   }
   const runCleanup = async () => {
-    const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string }> = [];
+    const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string; skipped?: boolean; note?: string }> = [];
     for (const item of items) {
+      if (item === "orphan-fragments" && items.includes("temp")) {
+        const tempResult = results.find((result) => result.key === "temp");
+        if (tempResult?.ok) {
+          results.push({
+            key: item,
+            label: cleanupItems[item].label,
+            ok: true,
+            skipped: true,
+            note: "已包含在全部临时下载文件中",
+          });
+          continue;
+        }
+      }
       try {
         await removeCleanupTarget(item);
         results.push({ key: item, label: cleanupItems[item].label, ok: true });

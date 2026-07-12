@@ -90,6 +90,21 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(cleanup.status, 200);
     assert.equal(fs.existsSync(retainedDir), false);
 
+    const tempRoot = path.join(runtime, "temp");
+    await fs.promises.mkdir(path.join(tempRoot, "BV1TEMPCLEAR", "nested"), { recursive: true });
+    await fs.promises.writeFile(path.join(tempRoot, "BV1TEMPCLEAR", "nested", "fragment.tmp"), "fragment");
+    const cleanupAllTemp = await fetch(`${base}/api/storage/cleanup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ items: ["temp", "orphan-fragments"], confirmation: "DELETE" }),
+    });
+    assert.equal(cleanupAllTemp.status, 200);
+    const cleanupAllTempJson: any = await cleanupAllTemp.json();
+    assert.equal(cleanupAllTempJson.data.results.find((item: any) => item.key === "temp")?.ok, true);
+    assert.equal(cleanupAllTempJson.data.results.find((item: any) => item.key === "orphan-fragments")?.skipped, true);
+    assert.equal(fs.existsSync(tempRoot), true);
+    assert.deepEqual(await fs.promises.readdir(tempRoot), []);
+
     const exported = await fetch(`${base}/api/migration/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },

@@ -990,7 +990,11 @@ function getAppScript() {
       try {
         const res = await fetch(url, options);
         const data = await res.json();
-        if (!data.success) throw new Error(data.message || '请求失败');
+        if (!data.success) {
+          const error = new Error(data.message || '请求失败');
+          error.details = data.data;
+          throw error;
+        }
         return data.data;
       } catch (e) {
         showToast(e.message || String(e), 'error');
@@ -1277,7 +1281,7 @@ function getAppScript() {
     const cleanupDescriptions = {
       'memory-cache': '只清掉页面临时记住的收藏夹分页，刷新一下就会重新拿，像擦掉便签纸。',
       temp: '清掉全部临时下载目录，包括可续传会话和已验证旧成品，需要输入 DELETE。',
-      'orphan-fragments': '只清掉没有会话清单、无法确认来源的 aria2/tmp/vclip/aclip 等残片，不会删除已接管成品。',
+      'orphan-fragments': '清掉会话中已确认无效的 _invalid/_incompatible 内容，以及没有会话清单、无法确认来源的 aria2/tmp/vclip/aclip 等残片；不会删除已验证成品或可续传轨道。此项已包含在“全部临时下载文件”中。',
       logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
       'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
       covers: '清掉本地压缩封面缓存。视频下架后可能只能显示占位封面，但备份状态不受影响。',
@@ -1471,6 +1475,9 @@ function getAppScript() {
       hint.textContent = required === 'DELETE ALL PROJECT DATA'
         ? '你选择了完全清除。请输入 DELETE ALL PROJECT DATA，小扫帚才会认真开工。'
         : '你选择了重要数据。请输入 DELETE 确认，避免手滑把小仓库钥匙丢掉。';
+      if (selected.includes('temp') && selected.includes('orphan-fragments')) {
+        hint.textContent += ' 无法续传的残片已包含在全部临时下载文件中，不会重复清理。';
+      }
     }
 
     function renderCleanupList() {
@@ -1572,12 +1579,19 @@ function getAppScript() {
           body:JSON.stringify({ items: selected, confirmation })
         });
         const lines = ['清理完成：'];
-        (data.results || []).forEach((item) => lines.push('已清理：' + item.label));
+        (data.results || []).forEach((item) => lines.push(item.skipped
+          ? '已包含：' + item.label + (item.note ? '（' + item.note + '）' : '')
+          : '已清理：' + item.label));
         resultBlock.textContent = lines.join('\\n');
         showToast('清理完成，小扫帚收工啦', 'success');
         await loadCleanupState();
       } catch(e) {
-        resultBlock.textContent = '清理失败：' + e.message;
+        const lines = ['清理失败：' + e.message];
+        const results = e.details && Array.isArray(e.details.results) ? e.details.results : [];
+        results.forEach((item) => lines.push(item.ok
+          ? (item.skipped ? '已包含：' : '已清理：') + item.label
+          : '失败：' + item.label + (item.error ? ' - ' + item.error : '')));
+        resultBlock.textContent = lines.join('\\n');
       } finally {
         btn.disabled = false;
         btn.textContent = '确认清理';

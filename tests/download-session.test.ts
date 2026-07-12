@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 import {
   buildSelectPageArgument,
+  cleanupDownloadRecoveryArtifacts,
   cleanupUploadedSessionFiles,
   DOWNLOAD_RETAINED_FILE,
   inspectDownloadRecoverySync,
@@ -86,6 +87,60 @@ test("invalid quarantined files are cleanup bytes instead of resumable retained 
     assert.equal(summary.resumableSessions, 0);
     assert.equal(summary.retainedBytes, 0);
     assert.equal(summary.cleanupEligibleBytes, 1024);
+    const cleanup = await cleanupDownloadRecoveryArtifacts(runtime);
+    assert.equal(cleanup.removedFiles, 1);
+    assert.equal(cleanup.removedBytes, 1024);
+    assert.equal(fs.existsSync(path.join(downloadDir, "_invalid", "old", "preview.mp4")), false);
+    assert.equal(fs.existsSync(path.join(downloadDir, ".bfb-download.json")), true);
+    assert.equal(inspectDownloadRecoverySync(runtime).cleanupEligibleBytes, 0);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("manual fragment cleanup preserves verified outputs and resumable aria2 tracks", async () => {
+  const runtime = await createTestDir("download-recovery-selective-cleanup");
+  const downloadDir = path.join(runtime, "BVSELECTIVECLEANUP");
+  const output = path.join(downloadDir, "verified.mp4");
+  const track = path.join(downloadDir, "1", "video.P1.80.mp4");
+  const control = `${track}.aria2`;
+  const incompatible = path.join(downloadDir, "_incompatible", "old", "audio.tmp");
+  try {
+    await fs.promises.mkdir(path.dirname(track), { recursive: true });
+    await fs.promises.mkdir(path.dirname(incompatible), { recursive: true });
+    await fs.promises.writeFile(output, Buffer.alloc(2048));
+    await fs.promises.writeFile(track, Buffer.alloc(4096));
+    await fs.promises.writeFile(control, Buffer.alloc(64));
+    await fs.promises.writeFile(incompatible, Buffer.alloc(512));
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), {
+      schemaVersion: 1,
+      sessionId: "selective-cleanup-session",
+      kind: "backup",
+      bvid: "BVSELECTIVECLEANUP",
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: { quality: "80", encoding: "AVC", hiRes: false, dolby: false, filenameTemplate: "test" },
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+      snapshotAt: "2026-07-12T00:00:00.000Z",
+      status: "failed",
+      pages: [{ index: 1, cid: 1, title: "P1", duration: 60 }],
+      outputs: [{ pageIndex: 1, cid: 1, relativePath: "verified.mp4", size: 2048, duration: 60, videoCodec: "h264", quickHash: "hash", verifiedAt: "2026-07-12T00:00:00.000Z" }],
+      history: [],
+    });
+
+    const cleanup = await cleanupDownloadRecoveryArtifacts(runtime);
+    assert.equal(cleanup.removedFiles, 1);
+    assert.equal(cleanup.removedBytes, 512);
+    assert.equal(fs.existsSync(incompatible), false);
+    assert.equal(fs.existsSync(output), true);
+    assert.equal(fs.existsSync(track), true);
+    assert.equal(fs.existsSync(control), true);
+    const summary = inspectDownloadRecoverySync(runtime);
+    assert.equal(summary.cleanupEligibleBytes, 0);
+    assert.equal(summary.resumableSessions, 1);
+    assert.ok(summary.retainedBytes >= 2048 + 4096 + 64);
   } finally {
     await removeTestDir(runtime);
   }
