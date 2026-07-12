@@ -1,6 +1,7 @@
 import { Client, Auth, TvQrcodeLogin } from "@renmu/bili-api";
 import { BiliCookie } from "./users.js";
 import { delay } from "./utils.js";
+import { safeErrorSummary } from "./diagnostics.js";
 
 export interface BiliUserInfo {
   uid: number;
@@ -227,82 +228,18 @@ export async function listFavoriteItemsPage(
   };
 }
 
-export async function listFavoriteItems(
-  cookie: BiliCookie,
-  mediaId: number,
-  maxPages = Number.POSITIVE_INFINITY,
-  maxPageRetries = 3
-) {
-  const items: FavoriteItem[] = [];
-  for (let page = 1; page <= maxPages; page += 1) {
-    let lastError: Error | null = null;
-
-    for (let attempt = 0; attempt <= maxPageRetries; attempt += 1) {
-      try {
-        const result = await listFavoriteItemsPage(cookie, mediaId, page, 20);
-        items.push(...result.items);
-        console.log(`[Bili] Favorite ${mediaId} page ${page}: got ${result.items.length} items, hasMore=${result.hasMore}, total=${result.total}`);
-        if (!result.hasMore || result.items.length === 0) {
-          return items;
-        }
-        lastError = null;
-        break;
-      } catch (error: any) {
-        lastError = error;
-        // 412/risk-control: exponential backoff retry
-        if (error instanceof BiliRiskOrLoginError) {
-          if (attempt < maxPageRetries) {
-            const cooldownMs = Math.min(10000 * Math.pow(2, attempt), 120000);
-            console.warn(
-              `[Bili] Page ${page} of favorite ${mediaId} hit risk control, cooling down ${cooldownMs / 1000}s before retry ${attempt + 1}/${maxPageRetries + 1}`
-            );
-            await delay(cooldownMs);
-            continue;
-          }
-          console.warn(
-            `[Bili] Page ${page} of favorite ${mediaId} risk control retries exhausted, returning ${items.length} items`
-          );
-          return items;
-        }
-        if (attempt < maxPageRetries) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
-          console.warn(
-            `[Bili] Page ${page} of favorite ${mediaId} failed (attempt ${attempt + 1}/${maxPageRetries + 1}), retrying in ${backoffMs}ms:`,
-            error.message || error
-          );
-          await delay(backoffMs);
-        }
-      }
-    }
-
-    if (lastError) {
-      console.error(
-        `[Bili] Page ${page} of favorite ${mediaId} exhausted all retries, skipping remaining pages:`,
-        lastError.message || lastError
-      );
-      return items;
-    }
-
-    // Random 1-3s delay between pages (like v1.0.9)
-    if (page < maxPages) {
-      const jitter = 1000 + Math.floor(Math.random() * 2000);
-      await delay(jitter);
-    }
-  }
-
-  return items;
-}
-
 export interface VideoPageSnapshotResult {
   available: boolean;
   title?: string;
   upperName?: string;
+  publishedAt?: number;
   access: VideoAccessSnapshot;
   pages: Array<{
     index: number;
     cid: number;
     title: string;
     duration: number;
+    publishedAt?: number;
   }>;
 }
 
@@ -498,6 +435,9 @@ export async function getVideoPageSnapshot(
         cid: Number(page?.cid || 0),
         title: String(page?.part || page?.title || `P${offset + 1}`),
         duration: Number(page?.duration || 0),
+        publishedAt: Number(page?.ctime || page?.pubdate || view?.pubdate || 0) > 0
+          ? Number(page?.ctime || page?.pubdate || view?.pubdate) * 1000
+          : undefined,
       }))
       .filter((page: { index: number; cid: number }) => page.index > 0 && page.cid > 0);
     if (pages.length === 0 && Number(view.cid || 0) > 0) {
@@ -506,12 +446,14 @@ export async function getVideoPageSnapshot(
         cid: Number(view.cid),
         title: String(view.title || bvidValue),
         duration: Number(view.duration || 0),
+        publishedAt: Number(view.pubdate || 0) > 0 ? Number(view.pubdate) * 1000 : undefined,
       });
     }
     return {
       available: pages.length > 0,
       title: typeof view.title === "string" ? view.title : undefined,
       upperName: typeof view.owner?.name === "string" ? view.owner.name : undefined,
+      publishedAt: Number(view.pubdate || 0) > 0 ? Number(view.pubdate) * 1000 : undefined,
       access,
       pages,
     };
@@ -536,7 +478,7 @@ export async function refreshUserAuth(
     console.log("[Bili] Token refreshed successfully");
     return auth;
   } catch (error: any) {
-    console.error("[Bili] Token refresh failed:", error.message || error);
+    console.error(`[Bili] Token refresh failed: ${safeErrorSummary(error)}`);
     return null;
   }
 }

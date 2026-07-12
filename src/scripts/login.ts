@@ -5,6 +5,7 @@ import path from "node:path";
 import { ensureAppDirs, dataDir } from "../paths.js";
 import { getUserInfo, normalizeTvAuthResult } from "../bili.js";
 import { UserStore } from "../users.js";
+import { safeErrorSummary } from "../diagnostics.js";
 
 async function run() {
   ensureAppDirs();
@@ -43,12 +44,12 @@ async function run() {
   });
 
   login.emitter.on("error", (error: any) => {
-    console.error("Login failed", error);
+    console.error(`Login failed: ${safeErrorSummary(error)}`);
     process.exit(1);
   });
 }
 
 run().catch((error) => {
-  console.error(error);
+  console.error(safeErrorSummary(error));
   process.exit(1);
 });

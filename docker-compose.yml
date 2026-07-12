@@ -17,7 +17,7 @@ services:
       - alist
 
   alist:
-    image: xhofe/alist:v3.41.0
+    image: xhofe/alist:v3.61.0
     container_name: bili-favorites-backup-alist
     restart: unless-stopped
     volumes:

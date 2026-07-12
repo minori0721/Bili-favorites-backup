@@ -3,6 +3,7 @@ import session from "express-session";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
@@ -26,10 +27,8 @@ import { SyncScheduler } from "./scheduler.js";
 import { logManager, logsPath } from "./logger.js";
 import { QualityUpgradeTask } from "./tasks.js";
 import {
-  batchRenameRemote,
   batchRenameRemotePaths,
   deleteRemoteFiles,
-  listRemoteDir,
   listRemoteFilesRecursive,
   isRemoteNotFoundError,
   moveRemoteFile,
@@ -38,10 +37,13 @@ import {
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
 import { sqlitePaths } from "./database.js";
+import { safeErrorSummary } from "./diagnostics.js";
+import { renderArchivedFilename } from "./filename.js";
 import {
-  applyMigrationPackage,
+  applyMigrationPackageFile,
   createMigrationExport,
-  previewMigrationPackage,
+  estimateMigrationExport,
+  previewMigrationPackageFile,
 } from "./migration.js";
 
 ensureAppDirs();
@@ -234,13 +236,13 @@ function startTokenRefreshLoop() {
               userStore.updatePartial(user.id, {
                 lastAuthRefreshError: error?.message || String(error),
               });
-              console.warn(`[Auth] Token refresh failed for user ${user.name}:`, error?.message || error);
+              console.warn(`[Auth] Token refresh failed for user ${user.name}: ${safeErrorSummary(error)}`);
             }
           }
         }
       }
     } catch (error: any) {
-      console.error("[Auth] Token refresh check failed:", error.message || error);
+      console.error(`[Auth] Token refresh check failed: ${safeErrorSummary(error)}`);
       nextInterval = RETRY_INTERVAL_ON_BUSY;
     } finally {
       setTimeout(checkAndRefresh, nextInterval);
@@ -874,17 +876,6 @@ app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
   }
 }));
 
-app.get("/api/state", (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      processed: stateManager.getAllProcessed(),
-      failed: stateManager.getAllFailed(),
-      cooldowns: stateManager.getAllCooldowns(),
-    },
-  });
-});
-
 app.put("/api/users/:id/favorites", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
@@ -917,10 +908,16 @@ app.patch("/api/users/:id", (req, res) => {
   res.json({ success: true, data: user });
 });
 
-app.delete("/api/users/:id", (req, res) => {
-  userStore.remove(req.params.id);
-  res.json({ success: true });
-});
+app.delete("/api/users/:id", asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const retired = await scheduler.retireUser(user);
+  userStore.remove(user.id);
+  res.json({ success: true, data: retired });
+}));
 
 app.post("/api/sync/now", asyncHandler(async (req, res) => {
   try {
@@ -1001,11 +998,6 @@ app.get("/api/logs", (req, res) => {
 
 app.get("/api/queue/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQueueSnapshot() });
-});
-
-app.post("/api/cache/clear", (req, res) => {
-  favoriteItemsCache.clear();
-  res.json({ success: true, message: "Favorite items cache cleared" });
 });
 
 async function pathSize(targetPath: string): Promise<number> {
@@ -1162,6 +1154,7 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
 
 function parseMigrationOptions(value: any) {
   return {
+    mode: value?.mode === "complete" ? "complete" as const : "lightweight" as const,
     includeConfig: value?.includeConfig !== false,
     includeUsers: value?.includeUsers !== false,
     includeState: value?.includeState !== false,
@@ -1171,7 +1164,29 @@ function parseMigrationOptions(value: any) {
   };
 }
 
-const migrationZipBody = express.raw({ type: "application/zip", limit: "512mb" });
+async function receiveMigrationArchive(req: express.Request) {
+  const maxBytes = Number(process.env.MIGRATION_MAX_ARCHIVE_GB || 100) * 1024 ** 3;
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "bfb-migration-upload-"));
+  const archivePath = path.join(root, "migration.zip");
+  const handle = await fs.promises.open(archivePath, "wx");
+  let bytes = 0;
+  try {
+    for await (const chunk of req) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > maxBytes) throw new BadRequestError("迁移压缩包超过允许大小");
+      await handle.write(buffer);
+    }
+    if (bytes === 0) throw new BadRequestError("迁移压缩包为空");
+    return { root, archivePath, bytes };
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await fs.promises.rm(root, { recursive: true, force: true });
+    throw error;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
 
 function parseBooleanOption(value: unknown, fallback: boolean) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -1190,7 +1205,14 @@ function reloadStoresAfterImport() {
 }
 
 app.post("/api/migration/export", asyncHandler(async (req, res) => {
-  const result = await createMigrationExport(parseMigrationOptions(req.body), stateManager);
+  const options = parseMigrationOptions(req.body);
+  if (options.mode === "complete" && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
+    res.status(409).json({ success: false, message: "完整迁移要求调度和传输任务全部空闲。" });
+    return;
+  }
+  const result = options.mode === "complete"
+    ? await scheduler.withCleanupLock(() => createMigrationExport(options, stateManager))
+    : await createMigrationExport(options, stateManager);
   const fileName = path.basename(result.outputPath);
   res.download(result.outputPath, fileName, (error) => {
     if (error && !res.headersSent) {
@@ -1199,34 +1221,33 @@ app.post("/api/migration/export", asyncHandler(async (req, res) => {
   });
 }));
 
-app.post("/api/migration/import-preview", migrationZipBody, asyncHandler(async (req, res) => {
-  const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-  if (body.length === 0) {
-    res.status(400).json({ success: false, message: "请选择导入压缩包" });
-    return;
-  }
-  let preview: Awaited<ReturnType<typeof previewMigrationPackage>>;
+app.post("/api/migration/estimate", asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await estimateMigrationExport(parseMigrationOptions(req.body), stateManager) });
+}));
+
+app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
+  const upload = await receiveMigrationArchive(req);
+  let preview: Awaited<ReturnType<typeof previewMigrationPackageFile>>;
   try {
-    preview = await previewMigrationPackage(body);
+    preview = await previewMigrationPackageFile(upload.archivePath);
   } catch (error: any) {
+    if (error?.statusCode === 409) throw error;
     throw badRequest(error?.message || "导入包无法解析");
+  } finally {
+    await fs.promises.rm(upload.root, { recursive: true, force: true });
   }
   res.json({ success: true, data: preview });
 }));
 
-app.post("/api/migration/import", migrationZipBody, asyncHandler(async (req, res) => {
-  const archive = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-  if (archive.length === 0) {
-    res.status(400).json({ success: false, message: "导入压缩包为空" });
-    return;
-  }
+app.post("/api/migration/import", asyncHandler(async (req, res) => {
   if (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork()) {
     res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再导入。" });
     return;
   }
-  let result: Awaited<ReturnType<typeof applyMigrationPackage>>;
+  const upload = await receiveMigrationArchive(req);
+  let result: Awaited<ReturnType<typeof applyMigrationPackageFile>>;
   try {
-    result = await scheduler.withCleanupLock(async () => applyMigrationPackage(archive, {
+    result = await scheduler.withCleanupLock(async () => applyMigrationPackageFile(upload.archivePath, {
       restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
       restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
       restoreState: parseBooleanOption(req.query.restoreState, true),
@@ -1235,7 +1256,10 @@ app.post("/api/migration/import", migrationZipBody, asyncHandler(async (req, res
       restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
     }, stateManager));
   } catch (error: any) {
+    if (error?.statusCode === 409) throw error;
     throw badRequest(error?.message || "导入包无法解析");
+  } finally {
+    await fs.promises.rm(upload.root, { recursive: true, force: true });
   }
   reloadStoresAfterImport();
   res.json({ success: true, data: result });
@@ -1330,19 +1354,6 @@ async function recoverInterruptedQualityUpgrades() {
       });
     }
   }
-}
-
-function fillFilenameTemplate(template: string, record: { bvid: string; title: string; upperName: string }) {
-  const today = new Date().toISOString().slice(0, 10);
-  const name = String(template || "<videoTitle>-<bvid>")
-    .replace(/<videoTitle>/g, record.title || record.bvid)
-    .replace(/<ownerName>/g, record.upperName || "Unknown")
-    .replace(/<bvid>/g, record.bvid)
-    .replace(/<publishDate>/g, today)
-    .replace(/<videoDate>/g, today)
-    .replace(/<dfn>/g, "")
-    .replace(/<videoCodecs>/g, "");
-  return sanitizeSegment(name).replace(/\.+$/g, "").trim();
 }
 
 function describeUpgradeReason(config: ReturnType<ConfigStore["get"]>) {
@@ -1487,6 +1498,11 @@ function buildQualityUpgradePreview() {
     remotePath: string;
     oldFiles: RemoteFileRecord[];
     reason: string;
+    matchStatus: "different";
+  }> = [];
+  const uncertain: Array<{
+    key: string; bvid: string; title: string; ownerName: string; userId: string; mediaId: number;
+    folderTitle: string; remotePath: string; oldFiles: RemoteFileRecord[]; reason: string; matchStatus: "unknown";
   }> = [];
   const skipped: Array<{ bvid?: string; title?: string; folderTitle?: string; reason: string }> = [];
 
@@ -1511,11 +1527,12 @@ function buildQualityUpgradePreview() {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
         continue;
       }
-      if (getQualityUpgradeMatchStatus(oldFiles, record.bvid, config) === "same") {
+      const matchStatus = getQualityUpgradeMatchStatus(oldFiles, record.bvid, config);
+      if (matchStatus === "same") {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "远端文件已符合当前画质设置" });
         continue;
       }
-      candidates.push({
+      const previewItem = {
         key,
         bvid: record.bvid,
         title: record.title,
@@ -1525,12 +1542,14 @@ function buildQualityUpgradePreview() {
         folderTitle: relation.folderTitle,
         remotePath,
         oldFiles,
-        reason,
-      });
+        reason: matchStatus === "unknown" ? "旧文件缺少可确认的画质档案，需要人工确认" : reason,
+      };
+      if (matchStatus === "unknown") uncertain.push({ ...previewItem, matchStatus: "unknown" });
+      else candidates.push({ ...previewItem, matchStatus: "different" });
     }
   }
 
-  return { candidates, skipped, target: {
+  return { candidates, uncertain, skipped, target: {
     quality: config.bbdownQuality,
     encoding: config.bbdownEncoding,
     hiRes: config.bbdownHiRes,
@@ -1543,13 +1562,14 @@ app.post("/api/quality-upgrade/preview", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
-  const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string }> };
+  const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string; forceUnknown?: boolean }> };
   if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
     res.status(400).json({ success: false, message: "items must contain 1-50 entries" });
     return;
   }
   const preview = buildQualityUpgradePreview();
   const candidates = new Map(preview.candidates.map((item) => [item.key, item]));
+  const uncertain = new Map(preview.uncertain.map((item) => [item.key, item]));
   const config = configStore.get();
   const queued: Array<{ key: string; bvid: string; title: string }> = [];
   const skipped: Array<{ key: string; reason: string }> = [];
@@ -1562,9 +1582,9 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
       continue;
     }
     requestedKeys.add(key);
-    const candidate = candidates.get(key);
+    const candidate = candidates.get(key) || (item.forceUnknown ? uncertain.get(key) : undefined);
     if (!candidate) {
-      skipped.push({ key, reason: "预览候选不存在或已在队列中" });
+      skipped.push({ key, reason: uncertain.has(key) ? "无法判断旧文件画质，必须明确确认后提交" : "预览候选不存在或已在队列中" });
       continue;
     }
     const user = userStore.getById(candidate.userId);
@@ -1601,8 +1621,9 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
   const config = configStore.get();
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
   const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
-  const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 4, maxFiles: 2000 });
-  const candidates: Array<{
+  const scanLimit = Math.max(100, Math.min(100_000, Number(config.renameScanMaxFiles || 10_000)));
+  const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 8, maxFiles: scanLimit });
+  const proposed: Array<{
     bvid: string;
     title: string;
     ownerName: string;
@@ -1614,13 +1635,7 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
     reason: string;
   }> = [];
   const skipped = [...scanned.skipped];
-  const namesByDir = new Map<string, Set<string>>();
-
-  for (const file of scanned.files) {
-    const set = namesByDir.get(file.dir) || new Set<string>();
-    set.add(file.name);
-    namesByDir.set(file.dir, set);
-  }
+  const existingPaths = new Set(scanned.files.map((file) => normalizeRemotePath(file.path)));
 
   for (const file of scanned.files) {
     if (!isRemotePathUnder(root, file.path)) {
@@ -1637,9 +1652,17 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
       skipped.push({ path: file.path, reason: "BV 号在本地状态中找不到" });
       continue;
     }
-    const baseName = fillFilenameTemplate(config.filenameTemplate, record);
+    const knownFiles = [...record.remoteFiles, ...record.relations.flatMap((relation) => relation.remoteFiles || [])];
+    const recordedByPath = knownFiles.find((item) => normalizeRemotePath(item.path) === normalizeRemotePath(file.path));
+    const recordedByName = knownFiles.filter((item) => item.name === file.name);
+    const recorded = recordedByPath || (recordedByName.length === 1 ? recordedByName[0] : undefined);
+    const mediaCount = new Set(knownFiles.filter((item) => isMediaRemoteFile(item)).map((item) => item.path)).size;
+    const suffixPage = Number(file.name.replace(/\.[^.]+$/, "").match(/_P(\d+)$/i)?.[1] || 0) || undefined;
+    const pageIndex = recorded?.filenameMetadata?.pageIndex || suffixPage;
+    const rendered = renderArchivedFilename(config.filenameTemplate, record, recorded?.filenameMetadata, pageIndex, mediaCount > 1);
+    const baseName = rendered.name;
     if (!baseName) {
-      skipped.push({ path: file.path, reason: "无法根据当前模板生成目标文件名" });
+      skipped.push({ path: file.path, reason: rendered.reason || "无法根据当前模板生成目标文件名" });
       continue;
     }
     const ext = file.name.match(/\.[^.]+$/)?.[0] || ".mp4";
@@ -1648,14 +1671,7 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
       skipped.push({ path: file.path, reason: "当前文件名已经符合模板" });
       continue;
     }
-    const dirNames = namesByDir.get(file.dir) || new Set<string>();
-    if (dirNames.has(newName)) {
-      skipped.push({ path: file.path, reason: `目标文件已存在：${newName}` });
-      continue;
-    }
-    dirNames.add(newName);
-    namesByDir.set(file.dir, dirNames);
-    candidates.push({
+    proposed.push({
       bvid,
       title: record.title,
       ownerName: record.upperName,
@@ -1668,24 +1684,40 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
     });
   }
 
-  res.json({ success: true, data: { candidates, skipped } });
+  const targetCounts = new Map<string, number>();
+  for (const item of proposed) targetCounts.set(item.newPath, (targetCounts.get(item.newPath) || 0) + 1);
+  const sourcePaths = new Set(proposed.map((item) => normalizeRemotePath(item.oldPath)));
+  const candidates = proposed.filter((item) => {
+    if ((targetCounts.get(item.newPath) || 0) > 1) {
+      skipped.push({ path: item.oldPath, reason: `多个文件会重命名为同一目标：${item.newName}` });
+      return false;
+    }
+    const normalizedTarget = normalizeRemotePath(item.newPath);
+    if (existingPaths.has(normalizedTarget) && !sourcePaths.has(normalizedTarget)) {
+      skipped.push({ path: item.oldPath, reason: `目标文件已存在：${item.newName}` });
+      return false;
+    }
+    return true;
+  });
+  const complete = scanned.complete;
+  if (!complete) skipped.unshift({ path: root, reason: `远端文件达到扫描上限 ${scanLimit}，预览不完整，已禁止执行` });
+  res.json({ success: true, data: { candidates: complete ? candidates : [], skipped, complete, scannedFiles: scanned.files.length, scanLimit } });
 }));
 
 app.post("/api/rename", asyncHandler(async (req, res) => {
-  const { remotePath, renameMap, items } = req.body as {
-    remotePath?: string;
-    renameMap?: Array<{ oldName: string; newName: string }>;
+  const { items } = req.body as {
     items?: Array<{ bvid?: string; oldPath: string; newPath: string }>;
   };
   const config = configStore.get();
   if (Array.isArray(items)) {
-    if (items.length === 0 || items.length > 200) {
-      res.status(400).json({ success: false, message: "items must contain 1-200 entries" });
+    if (items.length === 0 || items.length > 10_000) {
+      res.status(400).json({ success: false, message: "items must contain 1-10000 entries" });
       return;
     }
     const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
     const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
     const requestedTargets = new Set<string>();
+    const requestedSources = new Set(items.map((item) => normalizeRemotePath(item.oldPath)));
     const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string }> = [];
     for (const item of items) {
       const oldPath = normalizeRemotePath(item.oldPath);
@@ -1716,7 +1748,7 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
         return;
       }
       requestedTargets.add(newPath);
-      if (await remotePathExists(config, newPath)) {
+      if (!requestedSources.has(newPath) && await remotePathExists(config, newPath)) {
         res.status(400).json({ success: false, message: `target exists: ${newPath}` });
         return;
       }
@@ -1734,37 +1766,17 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
     res.json({ success: true, data: result });
     return;
   }
-  if (!remotePath || !renameMap || !Array.isArray(renameMap)) {
-    res.status(400).json({ success: false, message: "items or remotePath and renameMap required" });
-    return;
-  }
-  try {
-    const result = await batchRenameRemote(config, remotePath, renameMap);
-    res.json({ success: true, data: result });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Rename failed" });
-  }
-}));
-
-app.get("/api/remote/list", asyncHandler(async (req, res) => {
-  const remotePath = String(req.query.path || "/");
-  try {
-    const config = configStore.get();
-    const files = await listRemoteDir(config, remotePath);
-    res.json({ success: true, data: files });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Failed to list" });
-  }
+  res.status(400).json({ success: false, message: "items required" });
 }));
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("[HTTP] Unhandled route error:", err?.message || err);
+  console.error(`[HTTP] Unhandled route error: ${safeErrorSummary(err)}`);
   if (res.headersSent) {
     return;
   }
   const statusCode = Number(err?.statusCode || err?.status);
   const safeStatus = statusCode >= 400 && statusCode < 600 ? statusCode : 500;
-  res.status(safeStatus).json({ success: false, message: err?.message || "Internal server error" });
+  res.status(safeStatus).json({ success: false, message: safeErrorSummary(err, "Internal server error") });
 });
 
 
@@ -1772,6 +1784,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 export async function closeAppResources() {
   scheduler.beginShutdown();
   await scheduler.shutdown(5_000);
+  logManager.close();
 }
 
 export { app };
@@ -1790,11 +1803,12 @@ if (process.env.NODE_ENV !== "test") {
     scheduler.beginShutdown();
     server.close();
     await shutdownActiveDownloads(20_000).catch((error) => {
-      console.warn("[Shutdown] Failed to stop active downloads cleanly:", error?.message || error);
+      console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
     });
     await scheduler.shutdown(20_000).catch((error) => {
-      console.warn("[Shutdown] Failed to checkpoint state database cleanly:", error?.message || error);
+      console.warn(`[Shutdown] Failed to checkpoint state database cleanly: ${safeErrorSummary(error)}`);
     });
+    logManager.close();
     process.exit(0);
   };
   process.once("SIGINT", () => { void shutdown("SIGINT"); });

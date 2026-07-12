@@ -515,6 +515,7 @@ function getSettingsSection() {
           <label class="template-label">自定义模板（高级）</label>
           <input id="filenameTemplate" type="text" placeholder="例如: <videoTitle>-<ownerName>-<bvid>" />
         </div>
+        <div class="field-full"><label>远端重命名扫描上限</label><input id="renameScanMaxFiles" type="number" min="100" max="100000" /></div>
 
         <div class="settings-group"><div class="settings-group-title">任务队列与重试</div></div>
         <div><label>失败重试次数</label><input id="maxRetries" type="number" min="0" /></div>
@@ -523,7 +524,7 @@ function getSettingsSection() {
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
         <div class="field-full"><label>AList 文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" /><p class="muted field-hint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
         <div class="field-full"><label>本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
-        <div class="field-full"><label>启动恢复每批数量</label><input id="startupRecoveryBatchSize" type="number" min="5" max="100" /></div>
+        <div class="field-full"><label>任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
         <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
         <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
         <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
@@ -714,6 +715,11 @@ function getModals() {
     <div class="panel panel-large">
       <h2>数据迁移</h2>
       <p class="muted">导出会打包本地持久化数据；包含账号登录信息时，请把压缩包当作敏感文件保管。</p>
+      <div class="segmented-control" id="migrationModeControl">
+        <label><input type="radio" name="migrationMode" value="lightweight" checked /><span>轻量迁移</span></label>
+        <label><input type="radio" name="migrationMode" value="complete" /><span>完整迁移</span></label>
+      </div>
+      <p class="muted" id="migrationEstimate">正在估算迁移包内容...</p>
       <div class="cleanup-list">
         <label class="cleanup-item"><input id="migConfig" type="checkbox" checked /><div><div class="cleanup-item-title">全局配置</div><div class="cleanup-item-desc">AList 地址、画质、并发、命名模板等设置。</div></div></label>
         <label class="cleanup-item important"><input id="migUsers" type="checkbox" checked /><div><div class="cleanup-item-title">账号登录信息</div><div class="cleanup-item-desc">包含 B 站 Cookie / token，请勿分享导出包。</div></div></label>
@@ -814,9 +820,10 @@ function getAppScript() {
     };
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
-    let qualityUpgradePreviewState = { candidates: [], skipped: [], target: {} };
+    let qualityUpgradePreviewState = { candidates: [], uncertain: [], skipped: [], target: {} };
     let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
     let migrationSelectedFile = null;
+    let migrationImportBlocked = false;
     let lastModalTrigger = null;
     let pendingConfirmAction = null;
 
@@ -1050,11 +1057,12 @@ function getAppScript() {
       document.getElementById('concurrentUploads').value = d.concurrentUploads ?? 2;
       document.getElementById('uploadFileIntervalSeconds').value = d.uploadFileIntervalSeconds ?? 10;
       document.getElementById('localCacheLimitGB').value = d.localCacheLimitGB ?? 10;
-      document.getElementById('startupRecoveryBatchSize').value = d.startupRecoveryBatchSize ?? 25;
+      document.getElementById('queuePrefetchLimit').value = d.queuePrefetchLimit ?? 25;
       document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
       document.getElementById('remoteVerifyRateLimitPerSecond').value = d.remoteVerifyRateLimitPerSecond ?? 2;
       document.getElementById('remoteRequeueLimitPerCycle').value = d.remoteRequeueLimitPerCycle ?? 20;
       document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>-<bvid>';
+      document.getElementById('renameScanMaxFiles').value = d.renameScanMaxFiles ?? 10000;
       updateTemplatePreview();
     }
 
@@ -1076,13 +1084,14 @@ function getAppScript() {
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
         bbdownDolby: document.getElementById('bbdownDolby').checked,
         filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
+        renameScanMaxFiles: Number(document.getElementById('renameScanMaxFiles').value || 10000),
         maxRetries: Number(document.getElementById('maxRetries').value),
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value),
         uploadFileIntervalSeconds: Number(document.getElementById('uploadFileIntervalSeconds').value),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value),
-        startupRecoveryBatchSize: Number(document.getElementById('startupRecoveryBatchSize').value),
+        queuePrefetchLimit: Number(document.getElementById('queuePrefetchLimit').value),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value),
         remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value),
         remoteRequeueLimitPerCycle: Number(document.getElementById('remoteRequeueLimitPerCycle').value),
@@ -1210,13 +1219,14 @@ function getAppScript() {
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
         bbdownDolby: document.getElementById('bbdownDolby').checked,
         filenameTemplate: document.getElementById('filenameTemplate').value.trim() || '<videoTitle>-<bvid>',
+        renameScanMaxFiles: Number(document.getElementById('renameScanMaxFiles').value || 10000),
         maxRetries: Number(document.getElementById('maxRetries').value || 3),
         retryDelaySeconds: Number(document.getElementById('retryDelaySeconds').value || 5),
         concurrentDownloads: Number(document.getElementById('concurrentDownloads').value || 1),
         concurrentUploads: Number(document.getElementById('concurrentUploads').value || 2),
         uploadFileIntervalSeconds: Number(document.getElementById('uploadFileIntervalSeconds').value || 0),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value || 0),
-        startupRecoveryBatchSize: Number(document.getElementById('startupRecoveryBatchSize').value || 25),
+        queuePrefetchLimit: Number(document.getElementById('queuePrefetchLimit').value || 25),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value || 3),
         remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value || 2),
         remoteRequeueLimitPerCycle: Number(document.getElementById('remoteRequeueLimitPerCycle').value || 20),
@@ -1313,6 +1323,7 @@ function getAppScript() {
 
     function migrationOptionsFromForm(prefix) {
       return {
+        mode: document.querySelector('input[name="migrationMode"]:checked')?.value || 'lightweight',
         includeConfig: document.getElementById(prefix + 'Config').checked,
         includeUsers: document.getElementById(prefix + 'Users').checked,
         includeState: document.getElementById(prefix + 'State').checked,
@@ -1344,10 +1355,27 @@ function getAppScript() {
 
     async function openMigration() {
       migrationSelectedFile = null;
+      migrationImportBlocked = false;
       document.getElementById('migrationFileInput').value = '';
       setHidden('migrationPreviewBlock', true);
       setMigrationStatus('', '');
       openModal('migrationModal', document.getElementById('migrationBtn'));
+      await refreshMigrationEstimate();
+    }
+
+    async function refreshMigrationEstimate() {
+      const el = document.getElementById('migrationEstimate');
+      try {
+        const data = await fetchJson('/api/migration/estimate', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(migrationOptionsFromForm('mig'))
+        });
+        const details = data.mode === 'complete'
+          ? '，可续传 ' + Number(data.resumableItems || 0) + ' 项（' + formatBytes(Number(data.retainedBytes || 0)) + '），待补传 ' + Number(data.pendingUploadItems || 0) + ' 项'
+          : '';
+        el.textContent = (data.mode === 'complete' ? '完整迁移' : '轻量迁移') + '预计包含 ' + Number(data.files || 0) + ' 个文件，原始大小 ' + formatBytes(Number(data.expandedBytes || 0)) + details + '。';
+      } catch (error) {
+        el.textContent = '暂时无法估算：' + (error.message || String(error));
+      }
     }
 
     async function exportMigrationData() {
@@ -1393,18 +1421,19 @@ function getAppScript() {
 
     async function previewMigrationFile(file) {
       if (!file) return;
-      const buffer = await file.arrayBuffer();
       migrationSelectedFile = file;
       setMigrationStatus('正在读取导入包...', '');
       const res = await fetch('/api/migration/import-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/zip' },
-        body: buffer,
+        body: file,
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '导入预览失败');
       const manifest = data.data.manifest || {};
       const counts = manifest.counts || {};
+      const conflicts = data.data.conflicts || {};
+      migrationImportBlocked = Number(conflicts.tempItemCount || 0) > 0;
       document.getElementById('migrationPreviewText').textContent =
         '版本 ' + safeText(manifest.version, '-') +
         '，导出时间 ' + safeText(formatDateTime(manifest.exportedAt), '-') +
@@ -1412,14 +1441,20 @@ function getAppScript() {
         '，视频 ' + (counts.videos || 0) +
         '，关系 ' + (counts.relations || 0) +
         '，已失效视频 ' + (counts.unavailableVideos || 0) +
+        '；模式 ' + (manifest.mode === 'complete' ? '完整迁移（包含temp与断点）' : '轻量迁移') +
+        (migrationImportBlocked ? '；目标temp当前有 ' + Number(conflicts.tempItemCount || 0) + ' 项占用，需先处理后才能导入' : '') +
         '。导入前会自动备份当前 data。';
       setHidden('migrationPreviewBlock', false);
-      setMigrationStatus('预览完成，确认后才会写入本地数据。', 'success');
+      setMigrationStatus(migrationImportBlocked ? '预览发现temp冲突，当前不会执行导入。' : '预览完成，确认后才会写入本地数据。', migrationImportBlocked ? 'error' : 'success');
     }
 
     async function executeMigrationImport() {
       if (!migrationSelectedFile) {
         showToast('先选择导入包并完成预览', 'error');
+        return;
+      }
+      if (migrationImportBlocked) {
+        showToast('完整迁移目标temp非空，请先处理冲突后重新预览', 'error');
         return;
       }
       const confirmed = await confirmAction({
@@ -1720,26 +1755,14 @@ function getAppScript() {
       resultBlock.textContent = '正在执行远端重命名...';
       try {
         const payload = selected.map((item) => ({ bvid:item.bvid, oldPath:item.oldPath, newPath:item.newPath }));
-        const chunkSize = 100;
-        const allResults = [];
-        let success = 0;
-        let failed = 0;
-        for (let start = 0; start < payload.length; start += chunkSize) {
-          const chunk = payload.slice(start, start + chunkSize);
-          const batchIndex = Math.floor(start / chunkSize) + 1;
-          const batchTotal = Math.ceil(payload.length / chunkSize);
-          resultBlock.textContent = '正在执行远端重命名：第 ' + batchIndex + '/' + batchTotal + ' 批（已处理 ' + start + '/' + payload.length + '）...';
-          const result = await fetchJson('/api/rename', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ items:chunk })
-          });
-          success += Number(result.success || 0);
-          failed += Number(result.failed || 0);
-          if (Array.isArray(result.results)) {
-            allResults.push(...result.results);
-          }
-        }
+        const result = await fetchJson('/api/rename', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ items:payload })
+        });
+        const success = Number(result.success || 0);
+        const failed = Number(result.failed || 0);
+        const allResults = Array.isArray(result.results) ? result.results : [];
         const lines = ['完成：成功 ' + success + ' 个，失败 ' + failed + ' 个。'];
         allResults.forEach((item) => {
           lines.push((item.ok ? '成功：' : '失败：') + item.oldPath + ' → ' + item.newPath + (item.error ? '，原因：' + item.error : ''));
@@ -1773,7 +1796,7 @@ function getAppScript() {
       try {
         qualityUpgradePreviewState = await fetchJson('/api/quality-upgrade/preview', { method:'POST' });
         renderQualityUpgradePreview();
-        setStatus(st, '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。', 'muted');
+        setStatus(st, '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + (qualityUpgradePreviewState.uncertain || []).length + ' 个需人工确认，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。', 'muted');
       } catch(e) {
         summary.textContent = '预览失败：' + e.message;
         setStatus(st, '预览失败: ' + e.message, 'error');
@@ -1784,6 +1807,8 @@ function getAppScript() {
 
     function renderQualityUpgradePreview() {
       const candidates = Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : [];
+      const uncertain = Array.isArray(qualityUpgradePreviewState.uncertain) ? qualityUpgradePreviewState.uncertain : [];
+      const displayItems = [...candidates, ...uncertain.map((item) => ({ ...item, forceUnknown: true }))];
       const skipped = Array.isArray(qualityUpgradePreviewState.skipped) ? qualityUpgradePreviewState.skipped : [];
       const target = qualityUpgradePreviewState.target || {};
       const summary = document.getElementById('qualityUpgradeSummary');
@@ -1791,21 +1816,22 @@ function getAppScript() {
       const skippedBlock = document.getElementById('qualityUpgradeSkippedBlock');
       const skippedList = document.getElementById('qualityUpgradeSkippedList');
       const targetText = [target.quality ? '清晰度 ' + target.quality : '', target.encoding ? '编码 ' + target.encoding : '', target.hiRes ? 'Hi-Res' : '', target.dolby ? '杜比' : ''].filter(Boolean).join(' / ') || '当前默认画质设置';
-      summary.textContent = '目标：' + targetText + '。发现 ' + candidates.length + ' 个可重新下载并替换的远端记录，' + skipped.length + ' 个项目已跳过。';
+      summary.textContent = '目标：' + targetText + '。明确需升级 ' + candidates.length + ' 个，无法判断 ' + uncertain.length + ' 个，跳过 ' + skipped.length + ' 个。';
       list.innerHTML = '';
-      if (!candidates.length) {
+      if (!displayItems.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
         empty.textContent = '没有找到可重调画质的已上传视频记录。';
         list.appendChild(empty);
       }
-      candidates.forEach((item, index) => {
+      displayItems.forEach((item, index) => {
         const row = document.createElement('label');
         row.className = 'rename-item';
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.checked = false;
         checkbox.dataset.qualityUpgradeIndex = String(index);
+        if (item.forceUnknown) checkbox.dataset.qualityUnknown = '1';
         const body = document.createElement('div');
         const title = document.createElement('div');
         title.className = 'rename-title';
@@ -1818,7 +1844,7 @@ function getAppScript() {
         files.textContent = '将替换旧文件：' + (item.oldFiles || []).map((file) => file.name || file.path).join('，');
         const reason = document.createElement('div');
         reason.className = 'rename-path';
-        reason.textContent = item.reason || '按当前画质设置重新下载，上传验证成功后删除旧文件。';
+        reason.textContent = item.forceUnknown ? '无法判断旧文件画质；勾选即表示仍要强制重新下载。' : (item.reason || '按当前画质设置重新下载，上传验证成功后删除旧文件。');
         body.appendChild(title);
         body.appendChild(folder);
         body.appendChild(files);
@@ -1843,12 +1869,15 @@ function getAppScript() {
 
     function setQualityUpgradeSelection(checked) {
       document.querySelectorAll('#qualityUpgradeList input[type="checkbox"]').forEach((input) => {
-        input.checked = checked;
+        input.checked = checked && input.dataset.qualityUnknown !== '1';
       });
     }
 
     async function executeSelectedQualityUpgrade() {
-      const candidates = Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : [];
+      const candidates = [
+        ...(Array.isArray(qualityUpgradePreviewState.candidates) ? qualityUpgradePreviewState.candidates : []),
+        ...(Array.isArray(qualityUpgradePreviewState.uncertain) ? qualityUpgradePreviewState.uncertain.map((item) => ({ ...item, forceUnknown: true })) : [])
+      ];
       const selected = [];
       document.querySelectorAll('#qualityUpgradeList input[type="checkbox"]').forEach((input) => {
         const index = Number(input.dataset.qualityUpgradeIndex);
@@ -1877,7 +1906,7 @@ function getAppScript() {
       setHidden(resultBlock, false);
       resultBlock.textContent = '正在提交画质重调任务...';
       try {
-        const payload = selected.map((item) => ({ key:item.key }));
+        const payload = selected.map((item) => ({ key:item.key, forceUnknown:Boolean(item.forceUnknown) }));
         const chunkSize = 50;
         const queued = [];
         const skipped = [];
@@ -2996,6 +3025,7 @@ function getAppScript() {
     document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
     document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => closeModal('qualityUpgradeModal'));
     document.getElementById('migrationBtn').addEventListener('click', openMigration);
+    document.getElementById('migrationModeControl').addEventListener('change', refreshMigrationEstimate);
     document.getElementById('closeMigrationBtn').addEventListener('click', () => closeModal('migrationModal'));
     document.getElementById('exportDataBtn').addEventListener('click', exportMigrationData);
     document.getElementById('chooseImportBtn').addEventListener('click', () => document.getElementById('migrationFileInput').click());

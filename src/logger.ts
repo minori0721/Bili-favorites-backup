@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
+import { sanitizeDiagnosticText } from "./diagnostics.js";
 
 export interface LogEntry {
   timestamp: string;
@@ -27,7 +28,11 @@ class LogManager extends EventEmitter {
   private persistTimer: NodeJS.Timeout | null = null;
 
   push(entry: LogEntry) {
-    this.entries.push(entry);
+    this.entries.push({
+      ...entry,
+      summary: sanitizeDiagnosticText(entry.summary, 1_000),
+      raw: sanitizeDiagnosticText(entry.raw, 2_000),
+    });
     if (this.entries.length > MAX_LOG_ENTRIES) {
       this.entries.splice(0, this.entries.length - MAX_LOG_ENTRIES);
     }
@@ -55,6 +60,19 @@ class LogManager extends EventEmitter {
     } catch {
       // ignore log cleanup failure
     }
+  }
+
+  flush() {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    writeJsonFile(logsPath, this.entries);
+  }
+
+  close() {
+    this.flush();
+    this.removeAllListeners();
   }
 
   private schedulePersist() {

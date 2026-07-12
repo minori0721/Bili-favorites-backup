@@ -257,12 +257,30 @@ export class PersistentJobStore {
     return typeof row?.next_at === "number" ? row.next_at : undefined;
   }
 
+  scheduleSummary(kind: PersistentJobKind) {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT COUNT(*) AS count, MIN(not_before) AS next_at
+      FROM jobs WHERE kind=? AND status IN ('pending','retry_wait','leased','running')
+    `).get(kind) as any;
+    return {
+      count: Number(row?.count || 0),
+      nextAt: typeof row?.next_at === "number" ? row.next_at : undefined,
+    };
+  }
+
   hasJobsForBvid(bvid: string, kinds?: PersistentJobKind[]) {
     if (!kinds?.length) {
       return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE bvid=?").get(bvid) as any).count || 0) > 0;
     }
     const placeholders = kinds.map(() => "?").join(",");
     return Number((this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as any).count || 0) > 0;
+  }
+
+  countJobsForBvid(bvid: string, kinds: PersistentJobKind[]) {
+    if (kinds.length === 0) return 0;
+    const placeholders = kinds.map(() => "?").join(",");
+    const row = this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as any;
+    return Number(row?.count || 0);
   }
 
   hasDedupePrefix(prefix: string) {
@@ -285,5 +303,15 @@ export class PersistentJobStore {
       UPDATE jobs SET status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
       WHERE kind IN (${placeholders}) AND status IN ('pending','retry_wait')
     `).run(now, now, ...kinds).changes;
+  }
+
+  cancelUserDependentJobs(userId: string) {
+    const id = String(userId || "");
+    return this.stateDatabase.db.prepare(`
+      DELETE FROM jobs
+      WHERE kind IN ('download','quality_download')
+        AND (user_id=? OR json_extract(payload_json, '$.primaryUserId')=?
+          OR json_extract(payload_json, '$.downloadUserId')=? OR json_extract(payload_json, '$.userId')=?)
+    `).run(id, id, id, id).changes;
   }
 }

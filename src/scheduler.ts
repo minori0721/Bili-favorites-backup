@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ConfigStore, type AppConfig, type BBDownApiMode } from "./config.js";
-import { FavoriteRelation, StateManager, VideoArchiveEntry } from "./state.js";
+import { FavoriteRelation, StateManager, VideoArchiveEntry, type RemoteFileRecord } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import {
   BiliRiskOrLoginError,
@@ -33,6 +33,8 @@ import {
   type UploadFailureInfo,
 } from "./upload-health.js";
 import { DownloadApiHealth } from "./download-api-health.js";
+import { cancelActiveDownloadsForAccount } from "./downloader.js";
+import { safeErrorSummary } from "./diagnostics.js";
 import { PersistentJobStore, type PersistentJobKind } from "./job-store.js";
 import {
   DownloadTask,
@@ -188,11 +190,11 @@ export class SyncScheduler {
     if (config.bbdownApiMode === "app" && typeof (this.stateManager as any).clearDownloadApiCooldown === "function") {
       this.stateManager.clearDownloadApiCooldown();
     }
-    this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1, this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
-    this.uploadQueue = new TaskQueue(config.concurrentUploads || 2, this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
+    this.downloadQueue = new TaskQueue(config.concurrentDownloads || 1, this.queueHighWater(config.concurrentDownloads, config.queuePrefetchLimit));
+    this.uploadQueue = new TaskQueue(config.concurrentUploads || 2, this.queueHighWater(config.concurrentUploads, config.queuePrefetchLimit));
     this.verificationQueue = new TaskQueue(
       Math.max(1, Math.min(10, config.remoteVerifyConcurrency || 3)),
-      this.queueHighWater(config.remoteVerifyConcurrency || 3, config.startupRecoveryBatchSize)
+      this.queueHighWater(config.remoteVerifyConcurrency || 3, config.queuePrefetchLimit)
     );
     this.downloadQueue.setStartGate((task) => {
       if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
@@ -436,6 +438,7 @@ export class SyncScheduler {
           upperName: task.upperName || "",
           cover: task.cover || "",
           files: task.outputFiles,
+          filenameMetadataByPath: this.buildFilenameMetadata(task.downloadDir!, task.outputFiles),
           partialBackup: task.partialBackup,
         });
         for (const history of historyGroups) {
@@ -604,6 +607,7 @@ export class SyncScheduler {
           localDir: task.downloadDir,
           remotePath: task.remotePath,
           files: task.files || [],
+          filenameMetadataByPath: task.filenameMetadataByPath,
           localRelativePath: file.localRelativePath,
           putCompletedAt: file.putCompletedAt || new Date().toISOString(),
           partialBackup: task.partialBackup,
@@ -743,6 +747,7 @@ export class SyncScheduler {
       const safeError = sanitizeUploadText(error?.message || error);
       logManager.push({ timestamp: new Date().toISOString(), type: task.qualityStage === "upload" ? "upload" : "download", level: "error", summary: `重调画质失败 ${task.bvid}: ${safeError}`, raw: `[QualityUpgrade] failed ${target.userId}:${target.mediaId}:${task.bvid}: ${safeError}`, bvid: task.bvid, simpleVisible: true, debugVisible: true });
     };
+    task.shouldCleanupLocal = () => this.jobStore.countJobsForBvid(task.bvid, ["quality_download", "quality_upload", "quality_replace", "quality_cleanup"]) <= 1;
     return task;
   }
 
@@ -754,6 +759,7 @@ export class SyncScheduler {
       checkedAccountUids?: string[];
       previewAvailable?: boolean;
       notBefore?: number;
+      purpose?: "charging_recheck" | "legacy_failure_classification";
     } = {}
   ) {
     const existing = this.stateManager.getChargingRestriction(bvid);
@@ -769,6 +775,7 @@ export class SyncScheduler {
         skipUserIds: input.skipUserIds || [],
         checkedAccountUids: input.checkedAccountUids || existing?.checkedAccountUids || [],
         previewAvailable: input.previewAvailable ?? existing?.previewAvailable,
+        purpose: input.purpose || "charging_recheck",
       },
     });
   }
@@ -926,6 +933,9 @@ export class SyncScheduler {
 
     if (allowedUser) {
       const checkedAt = new Date(this.now()).toISOString();
+      if (payload.purpose === "legacy_failure_classification") {
+        this.stateManager.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
+      }
       this.stateManager.clearChargingRestriction(bvid, checkedAt);
       this.jobStore.complete(job.id, this.leaseOwner);
       for (const qualityJob of this.jobStore.list(["quality_download"], 10_000)) {
@@ -959,6 +969,12 @@ export class SyncScheduler {
     }
 
     if (restrictedCount === 0 && unavailableCount > 0 && unknownCount === 0) {
+      if (payload.purpose === "legacy_failure_classification") {
+        this.stateManager.markLegacyAccessClassification(bvid, {
+          result: "unavailable",
+          classifiedAt: new Date(this.now()).toISOString(),
+        });
+      }
       this.stateManager.markUnavailableFromAccessProbe(bvid, new Date(this.now()).toISOString());
       this.jobStore.complete(job.id, this.leaseOwner);
       logManager.push({
@@ -977,6 +993,11 @@ export class SyncScheduler {
     const nextAt = this.now() + (transient
       ? computeChargingTransientDelayMs(this.random)
       : computeChargingRecheckDelayMs(this.random));
+    if (payload.purpose === "legacy_failure_classification" && transient) {
+      this.stateManager.markLegacyAccessClassification(bvid, {
+        nextCheckAt: new Date(nextAt).toISOString(),
+      });
+    }
     this.deferChargingAccessProbe(job, {
       nextAt,
       checkedAccountUids: [...checkedUids],
@@ -1023,11 +1044,18 @@ export class SyncScheduler {
     const config = this.configStore.get();
     const downloadCapacity = Math.max(0, this.queueHighWater(
       config.concurrentDownloads,
-      config.startupRecoveryBatchSize
+      config.queuePrefetchLimit
     ) - this.downloadQueue.getSize());
     if (downloadCapacity > 0 && this.canCreateDownloadTask()) {
       const jobs = this.jobStore.claimDue(["quality_download", "download"], downloadCapacity, this.leaseOwner, 30 * 60_000);
+      const activeQualityBvids = new Set(this.downloadQueue.getTasks()
+        .filter((task) => task instanceof QualityUpgradeDownloadTask)
+        .map((task: any) => String(task.bvid || "")));
       for (const job of jobs) {
+        if (job.kind === "quality_download" && activeQualityBvids.has(String(job.bvid || ""))) {
+          this.jobStore.defer(job.id, this.leaseOwner, "Shared quality download is active", Date.now() + 1_000);
+          continue;
+        }
         const control = job.kind === "quality_download" ? this.buildQualityUpgradeTask(job) : null;
         const task = control ? new QualityUpgradeDownloadTask(control) : this.buildDownloadTask(job);
         if (!task) {
@@ -1041,12 +1069,13 @@ export class SyncScheduler {
           this.jobStore.defer(job.id, this.leaseOwner, "Download queue is full", Date.now() + 1_000);
           break;
         }
+        if (job.kind === "quality_download") activeQualityBvids.add(String(job.bvid || ""));
       }
     }
 
     const uploadCapacity = Math.max(0, this.queueHighWater(
       config.concurrentUploads,
-      config.startupRecoveryBatchSize
+      config.queuePrefetchLimit
     ) - this.uploadQueue.getSize());
     if (uploadCapacity > 0) {
       const jobs = this.jobStore.claimDue(["upload", "quality_upload", "quality_replace", "quality_cleanup", "history_upload"], uploadCapacity, this.leaseOwner, 30 * 60_000);
@@ -1088,7 +1117,7 @@ export class SyncScheduler {
 
     const capacity = Math.max(0, this.queueHighWater(
       config.remoteVerifyConcurrency,
-      config.startupRecoveryBatchSize
+      config.queuePrefetchLimit
     ) - this.verificationQueue.getSize());
     if (capacity > 0) {
       const jobs = this.jobStore.claimDue(["verify_upload"], capacity, this.leaseOwner, 5 * 60_000);
@@ -1196,6 +1225,7 @@ export class SyncScheduler {
       upperName: String(payload.upperName || ""),
       cover: String(payload.cover || ""),
       files: Array.isArray(payload.files) ? payload.files : [],
+      filenameMetadataByPath: payload.filenameMetadataByPath,
       partialBackup: Boolean(payload.partialBackup),
       historyOnly: Boolean(payload.historyOnly),
       historySnapshotAt: payload.historySnapshotAt,
@@ -1343,6 +1373,7 @@ export class SyncScheduler {
     const uploadTask = new UploadTask(item.bvid, item.localDir, item.remotePath, this.configStore.get(), {
       cleanupLocal: false,
       files: item.files,
+      filenameMetadataByPath: item.filenameMetadataByPath,
       partialBackup: item.partialBackup,
       historyOnly: item.historyOnly,
       historySnapshotAt: item.historySnapshotAt,
@@ -1386,8 +1417,47 @@ export class SyncScheduler {
 
   resumePersistedWorkOnStartup() {
     this.jobStore.recoverExpiredLeases();
+    this.bootstrapLegacyFailureClassification();
     this.resumePersistedWork();
     this.dispatchPersistentJobs();
+  }
+
+  private bootstrapLegacyFailureClassification() {
+    const database = this.stateManager.getDatabase();
+    if (database.getMeta("legacy_failure_classification_v1") === "complete") return;
+    const candidates = this.stateManager.listLegacyFailureClassificationCandidates(100_000);
+    for (const item of candidates) {
+      this.enqueueChargingAccessProbe(item.relation.bvid, {
+        preferredUserId: item.relation.userId,
+        purpose: "legacy_failure_classification",
+      });
+    }
+    database.setMeta("legacy_failure_classification_v1", "complete");
+    if (candidates.length > 0) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `已安排 ${candidates.length} 个旧永久失败视频重新分类`,
+        raw: `[Recovery] legacy permanent failures queued for access classification count=${candidates.length}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+  }
+
+  async retireUser(user: BiliUser) {
+    const canceledJobs = this.jobStore.cancelUserDependentJobs(user.id);
+    const canceledProcesses = await cancelActiveDownloadsForAccount(String(user.uid || user.cookie.DedeUserID || ""));
+    const detachedRelations = this.stateManager.detachUserRelations(user.id);
+    for (const job of this.jobStore.list(["access_probe"], 100_000)) {
+      const preferredUserId = String((job.payload as any)?.preferredUserId || "");
+      if (preferredUserId !== user.id) continue;
+      this.jobStore.updatePayload(job.id, { ...job.payload, preferredUserId: "" });
+      this.jobStore.wakeByBvid(String(job.bvid || ""), ["access_probe"], this.now());
+    }
+    this.dispatchPersistentJobs();
+    return { canceledJobs, canceledProcesses, detachedRelations };
   }
 
   start() {
@@ -1434,9 +1504,9 @@ export class SyncScheduler {
     this.downloadQueue.setConcurrency(config.concurrentDownloads || 1);
     this.uploadQueue.setConcurrency(config.concurrentUploads || 2);
     this.verificationQueue.setConcurrency(Math.max(1, Math.min(10, config.remoteVerifyConcurrency || 3)));
-    this.downloadQueue.setMaxSize(this.queueHighWater(config.concurrentDownloads, config.startupRecoveryBatchSize));
-    this.uploadQueue.setMaxSize(this.queueHighWater(config.concurrentUploads, config.startupRecoveryBatchSize));
-    this.verificationQueue.setMaxSize(this.queueHighWater(config.remoteVerifyConcurrency, config.startupRecoveryBatchSize));
+    this.downloadQueue.setMaxSize(this.queueHighWater(config.concurrentDownloads, config.queuePrefetchLimit));
+    this.uploadQueue.setMaxSize(this.queueHighWater(config.concurrentUploads, config.queuePrefetchLimit));
+    this.verificationQueue.setMaxSize(this.queueHighWater(config.remoteVerifyConcurrency, config.queuePrefetchLimit));
     this.refreshLocalCacheAndWake(true);
     this.dispatchPersistentJobs();
     if (process.env.NODE_ENV !== "test") {
@@ -1679,7 +1749,7 @@ export class SyncScheduler {
       this.downloadQueue.poke();
       this.dispatchPersistentJobs();
     }).catch((error: any) => {
-      console.warn(`[Scheduler] Failed to refresh local cache state: ${error?.message || error}`);
+      console.warn(`[Scheduler] Failed to refresh local cache state: ${safeErrorSummary(error)}`);
     });
   }
 
@@ -1857,15 +1927,9 @@ export class SyncScheduler {
     const leasedJobs = Object.values(persistentCounts).reduce((total, statuses) =>
       total + Number(statuses.leased || 0) + Number(statuses.running || 0), 0);
     const retryJobs = Object.values(persistentCounts).reduce((total, statuses) => total + Number(statuses.retry_wait || 0), 0);
-    const chargingJobs = this.jobStore.list(["access_probe"], 10_000);
-    const chargingRestrictions = this.stateManager.listChargingRestrictedVideos();
-    const nextChargingCheckAt = chargingJobs.reduce<number | undefined>((earliest, job) =>
-      earliest === undefined ? job.notBefore : Math.min(earliest, job.notBefore), undefined);
-    const lastChargingCheckAt = chargingRestrictions.reduce<number | undefined>((latest, video) => {
-      const checkedAt = Date.parse(video.accessRestriction?.lastCheckedAt || "");
-      if (!Number.isFinite(checkedAt)) return latest;
-      return latest === undefined ? checkedAt : Math.max(latest, checkedAt);
-    }, undefined);
+    const chargingSchedule = this.jobStore.scheduleSummary("access_probe");
+    const chargingRestrictions = this.stateManager.getChargingRestrictionSummary();
+    const lastChargingCheckAt = Date.parse(chargingRestrictions.lastCheckedAt || "");
 
     return {
       generatedAt: Date.now(),
@@ -1879,9 +1943,9 @@ export class SyncScheduler {
       downloadApiHealth: this.downloadApiHealth.getSnapshot(),
       downloadRecovery: inspectDownloadRecoverySync(tempDir),
       chargingAccess: {
-        pending: chargingJobs.length,
-        nextCheckAt: nextChargingCheckAt,
-        lastCheckedAt: lastChargingCheckAt,
+        pending: chargingSchedule.count,
+        nextCheckAt: chargingSchedule.nextAt,
+        lastCheckedAt: Number.isFinite(lastChargingCheckAt) ? lastChargingCheckAt : undefined,
       },
       recovery: {
         pendingUploads: sumKinds(["upload", "history_upload"]),
@@ -1890,7 +1954,7 @@ export class SyncScheduler {
         chargingRestricted: sumKinds(["access_probe"]),
         leasedJobs,
         retryJobs,
-        batchSize: this.configStore.get().startupRecoveryBatchSize || 25,
+        prefetchLimit: this.configStore.get().queuePrefetchLimit || 25,
       },
     };
   }
@@ -1973,7 +2037,7 @@ export class SyncScheduler {
             console.warn(`[Scheduler] Risk control for user ${user.name}; cooling down.`);
             break;
           }
-          console.error("Failed to scan favorite", error);
+          console.error(`[Scheduler] Failed to scan favorite: ${safeErrorSummary(error)}`);
         }
 
         const jitter = 2000 + Math.floor(Math.random() * 3000);
@@ -2050,6 +2114,12 @@ export class SyncScheduler {
       return item;
     }
     const key = this.selfVisibleProbeKey(user.id, item.bvid);
+    if (this.selfVisibleProbeCache.size > 500) {
+      const now = Date.now();
+      for (const [cacheKey, value] of this.selfVisibleProbeCache) {
+        if (value.expiresAt <= now) this.selfVisibleProbeCache.delete(cacheKey);
+      }
+    }
     const cached = this.selfVisibleProbeCache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.item;
@@ -2104,7 +2174,7 @@ export class SyncScheduler {
         });
       }
     } catch (error: any) {
-      console.warn(`[Scheduler] Failed to cleanup ${downloadDir}:`, error?.message || error);
+      console.warn(`[Scheduler] Failed to cleanup ${downloadDir}: ${safeErrorSummary(error)}`);
     } finally {
       this.refreshLocalCacheAndWake(true);
     }
@@ -2331,6 +2401,27 @@ export class SyncScheduler {
     return { newItems };
   }
 
+  private buildFilenameMetadata(downloadDir: string, files: string[]) {
+    const manifest = readDownloadSession(downloadDir);
+    if (!manifest) return undefined;
+    const selected = new Set(files.map((file) => file.replace(/\\/g, "/")));
+    const result: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>> = {};
+    for (const output of manifest.outputs) {
+      const relativePath = output.relativePath.replace(/\\/g, "/");
+      if (!selected.has(relativePath)) continue;
+      const page = manifest.pages.find((candidate) => candidate.cid === output.cid);
+      result[relativePath] = {
+        publishDate: manifest.publishedAt,
+        videoDate: page?.publishedAt || manifest.publishedAt,
+        cid: output.cid,
+        pageIndex: output.pageIndex,
+        dfn: manifest.configSnapshot.quality || undefined,
+        videoCodecs: output.videoCodec || manifest.configSnapshot.encoding || undefined,
+      };
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
   private collectUploadTargets(bvid: string, fallback: UploadTarget[] = []) {
     const config = this.configStore.get();
     const targets = new Map<string, UploadTarget>();
@@ -2409,6 +2500,7 @@ export class SyncScheduler {
         upperName: meta?.upperName || "",
         cover: meta?.cover || "",
         files: local.files,
+        filenameMetadataByPath: this.buildFilenameMetadata(local.localDir, local.files),
         partialBackup: local.partialBackup,
         priority: true,
       });
@@ -2622,7 +2714,7 @@ export class SyncScheduler {
         const relation = entry.relation;
         this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, error?.message || "Remote verify failed", relation.userId, relation.mediaId);
         this.cycleContext!.remoteErrors += 1;
-        console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}:`, error?.message || error);
+        console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}: ${safeErrorSummary(error)}`);
       }
     };
 
@@ -2759,6 +2851,7 @@ export class SyncScheduler {
             upperName: item.video.upperName,
             cover: item.video.cover,
             files: manifest?.outputs.map((output) => output.relativePath),
+            filenameMetadataByPath: manifest ? this.buildFilenameMetadata(localDir, manifest.outputs.map((output) => output.relativePath)) : undefined,
             partialBackup: manifest?.status === "partial",
             priority: true,
           };
@@ -2940,6 +3033,7 @@ export class SyncScheduler {
           upperName: entry.upperName,
           cover: entry.cover,
           files: manifest.outputs.map((output) => output.relativePath),
+          filenameMetadataByPath: this.buildFilenameMetadata(localDir, manifest.outputs.map((output) => output.relativePath)),
           partialBackup: manifest.status === "partial",
           priority: true,
         };
@@ -2984,6 +3078,9 @@ export class SyncScheduler {
             localDir: pending.localDir || "",
             remotePath: pending.remotePath,
             files: manifest?.outputs.map((output) => output.relativePath) || [],
+            filenameMetadataByPath: manifest
+              ? this.buildFilenameMetadata(pending.localDir || "", manifest.outputs.map((output) => output.relativePath))
+              : undefined,
             partialBackup: Boolean(pending.partialBackup),
             localRelativePath: file.localRelativePath,
             putCompletedAt: file.putCompletedAt || new Date().toISOString(),
@@ -3019,7 +3116,7 @@ export class SyncScheduler {
   }
 
   private recoverOrphanedUploadFailures() {
-    const limit = Math.max(5, Math.min(100, Math.floor(this.configStore.get().startupRecoveryBatchSize || 25)));
+    const limit = Math.max(5, Math.min(100, Math.floor(this.configStore.get().queuePrefetchLimit || 25)));
     let recovered = 0;
     for (const item of this.stateManager.listBackupsToResume()) {
       if (recovered >= limit) break;
@@ -3048,6 +3145,7 @@ export class SyncScheduler {
         upperName: item.video.upperName,
         cover: item.video.cover,
         files: manifest.outputs.map((output) => output.relativePath),
+        filenameMetadataByPath: this.buildFilenameMetadata(localDir, manifest.outputs.map((output) => output.relativePath)),
         partialBackup: manifest.status === "partial",
         priority: true,
       };
@@ -3225,6 +3323,7 @@ interface RecoveryUploadItem {
   upperName?: string;
   cover?: string;
   files?: string[];
+  filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
   partialBackup?: boolean;
   historyOnly?: boolean;
   historySnapshotAt?: string;

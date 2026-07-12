@@ -19,13 +19,14 @@ export interface AppConfig {
   concurrentUploads: number;
   uploadFileIntervalSeconds: number;
   localCacheLimitGB: number;
-  startupRecoveryBatchSize: number;
+  queuePrefetchLimit: number;
   bbdownEncoding: string;
   bbdownQuality: string;
   bbdownApiMode: BBDownApiMode;
   bbdownHiRes: boolean;
   bbdownDolby: boolean;
   filenameTemplate: string;
+  renameScanMaxFiles: number;
   remoteVerifyConcurrency: number;
   remoteVerifyRateLimitPerSecond: number;
   remoteRequeueLimitPerCycle: number;
@@ -47,13 +48,14 @@ const defaultConfig: AppConfig = {
   concurrentUploads: 2,
   uploadFileIntervalSeconds: 10,
   localCacheLimitGB: 10,
-  startupRecoveryBatchSize: 25,
+  queuePrefetchLimit: 25,
   bbdownEncoding: "",
   bbdownQuality: "",
   bbdownApiMode: "web",
   bbdownHiRes: false,
   bbdownDolby: false,
   filenameTemplate: "<videoTitle>-<bvid>",
+  renameScanMaxFiles: 10_000,
   remoteVerifyConcurrency: 3,
   remoteVerifyRateLimitPerSecond: 2,
   remoteRequeueLimitPerCycle: 20,
@@ -69,13 +71,17 @@ function normalizeFilenameTemplate(value: unknown) {
   return normalized.length <= 240 ? normalized : defaultConfig.filenameTemplate;
 }
 
-function normalizeLoadedConfig(input: Partial<AppConfig>) {
+export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecoveryBatchSize?: number }) {
   const merged: AppConfig = { ...defaultConfig };
   for (const key of configKeys) {
     const value = input[key];
     if (value !== undefined) {
       (merged as any)[key] = value;
     }
+  }
+  const legacyPrefetch = Number(input.startupRecoveryBatchSize);
+  if (input.queuePrefetchLimit === undefined && Number.isInteger(legacyPrefetch)) {
+    merged.queuePrefetchLimit = legacyPrefetch;
   }
   if (input.bbdownApiMode === undefined && (merged.bbdownHiRes || merged.bbdownDolby)) {
     merged.bbdownApiMode = "app";
@@ -141,13 +147,14 @@ const allowedKeys = new Set<keyof AppConfig>([
   "concurrentUploads",
   "uploadFileIntervalSeconds",
   "localCacheLimitGB",
-  "startupRecoveryBatchSize",
+  "queuePrefetchLimit",
   "bbdownEncoding",
   "bbdownQuality",
   "bbdownApiMode",
   "bbdownHiRes",
   "bbdownDolby",
   "filenameTemplate",
+  "renameScanMaxFiles",
   "remoteVerifyConcurrency",
   "remoteVerifyRateLimitPerSecond",
   "remoteRequeueLimitPerCycle",
@@ -211,9 +218,9 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
   }
 
-  if (input.startupRecoveryBatchSize !== undefined) {
-    if (!Number.isInteger(input.startupRecoveryBatchSize) || input.startupRecoveryBatchSize < 5 || input.startupRecoveryBatchSize > 100) {
-      return "startupRecoveryBatchSize must be an integer between 5 and 100";
+  if (input.queuePrefetchLimit !== undefined) {
+    if (!Number.isInteger(input.queuePrefetchLimit) || input.queuePrefetchLimit < 5 || input.queuePrefetchLimit > 100) {
+      return "queuePrefetchLimit must be an integer between 5 and 100";
     }
   }
 
@@ -295,6 +302,12 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
   }
 
+  if (input.renameScanMaxFiles !== undefined) {
+    if (!Number.isInteger(input.renameScanMaxFiles) || input.renameScanMaxFiles < 100 || input.renameScanMaxFiles > 100_000) {
+      return "renameScanMaxFiles must be an integer between 100 and 100000";
+    }
+  }
+
   if (input.remoteVerifyConcurrency !== undefined) {
     if (!Number.isInteger(input.remoteVerifyConcurrency) || input.remoteVerifyConcurrency < 1 || input.remoteVerifyConcurrency > 100) {
       return "remoteVerifyConcurrency must be an integer between 1 and 100";
@@ -323,6 +336,7 @@ export function validateBBDownRuntimeConfig(
   if (config.bbdownApiMode === "web" && (config.bbdownHiRes || config.bbdownDolby)) {
     return "Hi-Res 和杜比音效必须使用 APP 接口";
   }
+
   if (config.bbdownApiMode === "app") {
     const missingUsers = users.filter((user) => user.enabled && !String(user.accessToken || "").trim());
     if (missingUsers.length > 0) {

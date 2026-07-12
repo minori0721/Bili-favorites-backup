@@ -7,6 +7,7 @@ import { AppConfig, type BBDownApiMode } from "./config.js";
 import { logManager, parseBBDownOutput } from "./logger.js";
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
+import { safeErrorSummary } from "./diagnostics.js";
 import {
   buildSelectPageArgument,
   currentSessionFiles,
@@ -73,18 +74,31 @@ async function cleanupNewInvalidArtifacts(downloadDir: string, baseline: Set<str
   return removed;
 }
 
-const activeDownloadChildren = new Set<ReturnType<typeof spawn>>();
+const activeDownloadChildren = new Map<ReturnType<typeof spawn>, string>();
 let shutdownRequested = false;
 
 export async function shutdownActiveDownloads(timeoutMs = 20_000) {
   shutdownRequested = true;
-  const children = [...activeDownloadChildren];
+  const children = [...activeDownloadChildren.keys()];
   await Promise.all(children.map((child) => terminateDownloadProcessTree(child, false)));
   const deadline = Date.now() + Math.max(0, timeoutMs);
   while (activeDownloadChildren.size > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await Promise.all(children.map((child) => terminateDownloadProcessTree(child, true)));
+}
+
+export async function cancelActiveDownloadsForAccount(accountUid: string, timeoutMs = 20_000) {
+  const children = [...activeDownloadChildren.entries()]
+    .filter(([, uid]) => uid === String(accountUid || ""))
+    .map(([child]) => child);
+  await Promise.all(children.map((child) => terminateDownloadProcessTree(child, false)));
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (children.some((child) => activeDownloadChildren.has(child)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await Promise.all(children.filter((child) => activeDownloadChildren.has(child)).map((child) => terminateDownloadProcessTree(child, true)));
+  return children.length;
 }
 
 async function terminateDownloadProcessTree(child: ReturnType<typeof spawn>, force: boolean) {
@@ -147,6 +161,7 @@ export async function downloadWithBBDown(
     config: sessionConfig,
     kind: options.kind || "backup",
     pages: effectivePages,
+    publishedAt: snapshot.publishedAt,
     unavailable: !snapshot.available,
     qualityUpgrade: options.qualityUpgrade,
   });
@@ -154,7 +169,7 @@ export async function downloadWithBBDown(
   const legacyCover = findLegacyCover(downloadDir);
   if (legacyCover) {
     void cacheLocalCover(bvid, legacyCover).catch((error) => {
-      console.warn(`[CoverCache] Failed to import legacy cover ${bvid}:`, error?.message || error);
+      console.warn(`[CoverCache] Failed to import legacy cover ${bvid}: ${safeErrorSummary(error)}`);
     });
   }
 
@@ -244,7 +259,7 @@ export async function downloadWithBBDown(
           downloadDir,
           bvid,
           credentialConfig.sensitiveValues,
-          { effectiveApiMode: runMode, onApiReady: options.onApiReady }
+          { effectiveApiMode: runMode, onApiReady: options.onApiReady, accountUid: String(cookie.DedeUserID || "") }
         );
       } catch (error: any) {
         if (runMode !== "app" || !error?.appNoVideoInfo) throw error;
@@ -265,7 +280,7 @@ export async function downloadWithBBDown(
           downloadDir,
           bvid,
           credentialConfig.sensitiveValues,
-          { effectiveApiMode: "web", onApiReady: options.onApiReady }
+          { effectiveApiMode: "web", onApiReady: options.onApiReady, accountUid: String(cookie.DedeUserID || "") }
         );
       }
     };
@@ -645,7 +660,7 @@ async function runDebugProbe(
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    activeDownloadChildren.add(child);
+    activeDownloadChildren.set(child, "");
     let out = "";
     child.stdout.on("data", (chunk) => {
       out += chunk.toString();
@@ -684,7 +699,7 @@ function runCommand(
   cwd: string,
   bvid: string,
   sensitiveValues: string[],
-  options: { effectiveApiMode: BBDownApiMode; onApiReady?: (mode: BBDownApiMode) => void }
+  options: { effectiveApiMode: BBDownApiMode; onApiReady?: (mode: BBDownApiMode) => void; accountUid?: string }
 ) {
   return new Promise<void>((resolve, reject) => {
     if (shutdownRequested) {
@@ -696,7 +711,7 @@ function runCommand(
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    activeDownloadChildren.add(child);
+    activeDownloadChildren.set(child, String(options.accountUid || ""));
     const commandStartedAt = Date.now();
     const sizeSamples: Array<{ at: number; size: number }> = [];
     let watchdogTimer: NodeJS.Timeout | null = null;

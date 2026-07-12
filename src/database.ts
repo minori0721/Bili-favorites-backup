@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import type { StateFile, VideoArchiveEntry, FavoriteRelation, FolderScanState, FailedEntry, UserCooldown } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 2;
+export const DATABASE_SCHEMA_VERSION = 3;
 
 export interface StateDirtySet {
   videos: Set<string>;
@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS favorite_relations (
   bvid TEXT NOT NULL REFERENCES videos(bvid) ON DELETE CASCADE,
   backup_status TEXT NOT NULL,
   active_in_favorite INTEGER NOT NULL,
+  folder_title TEXT NOT NULL DEFAULT '',
+  fav_order INTEGER,
+  last_seen_at INTEGER NOT NULL DEFAULT 0,
+  favorite_unavailable INTEGER NOT NULL DEFAULT 0,
+  self_visible INTEGER NOT NULL DEFAULT 0,
+  next_remote_check_at INTEGER,
+  account_detached_at INTEGER,
   payload_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(user_id, media_id, bvid)
@@ -224,6 +231,45 @@ export class StateDatabase {
           this.db.exec("DROP VIEW IF EXISTS video_backup_summary");
         }
         this.db.exec(SCHEMA_SQL);
+        if (currentVersion > 0 && currentVersion < 3) {
+          const columns = new Set((this.db.pragma("table_info(favorite_relations)") as any[]).map((row) => String(row.name)));
+          const additions = [
+            ["folder_title", "TEXT NOT NULL DEFAULT ''"],
+            ["fav_order", "INTEGER"],
+            ["last_seen_at", "INTEGER NOT NULL DEFAULT 0"],
+            ["favorite_unavailable", "INTEGER NOT NULL DEFAULT 0"],
+            ["self_visible", "INTEGER NOT NULL DEFAULT 0"],
+            ["next_remote_check_at", "INTEGER"],
+            ["account_detached_at", "INTEGER"],
+          ] as const;
+          for (const [name, definition] of additions) {
+            if (!columns.has(name)) this.db.exec(`ALTER TABLE favorite_relations ADD COLUMN ${name} ${definition}`);
+          }
+          const rows = this.db.prepare("SELECT user_id, media_id, bvid, payload_json FROM favorite_relations").all() as any[];
+          const update = this.db.prepare(`
+            UPDATE favorite_relations SET folder_title=?, fav_order=?, last_seen_at=?, favorite_unavailable=?,
+              self_visible=?, next_remote_check_at=?, account_detached_at=?
+            WHERE user_id=? AND media_id=? AND bvid=?
+          `);
+          for (const row of rows) {
+            const relation = parseJson<FavoriteRelation>(row.payload_json, {} as FavoriteRelation);
+            update.run(
+              relation.folderTitle || "",
+              Number.isInteger(relation.favOrder) ? relation.favOrder : null,
+              isoToMs(relation.lastSeenAt, 0),
+              relation.favoriteUnavailable ? 1 : 0,
+              relation.selfVisible ? 1 : 0,
+              relation.nextRemoteCheckAt ? isoToMs(relation.nextRemoteCheckAt, 0) : null,
+              relation.accountDetachedAt ? isoToMs(relation.accountDetachedAt, 0) : null,
+              row.user_id, row.media_id, row.bvid
+            );
+          }
+        }
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_relations_folder_page ON favorite_relations(user_id, media_id, active_in_favorite, fav_order, last_seen_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_relations_remote_due ON favorite_relations(backup_status, next_remote_check_at);
+          CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable ON favorite_relations(user_id, favorite_unavailable, last_seen_at DESC);
+        `);
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
       })();
@@ -266,7 +312,7 @@ export class StateDatabase {
 
   loadState(): StateFile {
     const state: StateFile = {
-      schemaVersion: 12,
+      schemaVersion: 13,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -300,7 +346,7 @@ export class StateDatabase {
 
   loadStateMetadata(): StateFile {
     const state: StateFile = {
-      schemaVersion: 12,
+      schemaVersion: 13,
       processedByUser: {},
       failedByUser: {},
       videos: {},
@@ -360,6 +406,30 @@ export class StateDatabase {
       .filter(Boolean);
   }
 
+  listChargingRestrictedVideos() {
+    return (this.db.prepare("SELECT payload_json FROM videos WHERE json_extract(payload_json, '$.accessRestriction.type')='charging'").all() as any[])
+      .map((row) => parseJson<VideoArchiveEntry>(row.payload_json, undefined as any))
+      .filter(Boolean);
+  }
+
+  getChargingRestrictionSummary() {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count,
+        MAX(json_extract(v.payload_json, '$.accessRestriction.lastCheckedAt')) AS last_checked_at
+      FROM videos v
+      WHERE json_extract(v.payload_json, '$.accessRestriction.type')='charging'
+        AND EXISTS (
+          SELECT 1 FROM favorite_relations r
+          WHERE r.bvid=v.bvid AND r.active_in_favorite=1
+            AND r.backup_status NOT IN ('uploaded','verified','partial_verified')
+        )
+    `).get() as any;
+    return {
+      count: Number(row?.count || 0),
+      lastCheckedAt: row?.last_checked_at ? String(row.last_checked_at) : undefined,
+    };
+  }
+
   listRelations() {
     return (this.db.prepare("SELECT payload_json FROM favorite_relations").all() as any[])
       .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
@@ -370,6 +440,203 @@ export class StateDatabase {
     return (this.db.prepare("SELECT payload_json FROM favorite_relations WHERE bvid=?").all(bvid) as any[])
       .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
       .filter(Boolean);
+  }
+
+  listVideosByStatuses(statuses: string[]) {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(",");
+    return (this.db.prepare(`SELECT payload_json FROM videos WHERE backup_status IN (${placeholders})`).all(...statuses) as any[])
+      .map((row) => parseJson<VideoArchiveEntry>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listVideosForResume(statuses: string[]) {
+    const placeholders = statuses.map(() => "?").join(",");
+    return (this.db.prepare(`
+      SELECT DISTINCT v.payload_json FROM videos v
+      LEFT JOIN favorite_relations r ON r.bvid=v.bvid
+      WHERE v.backup_status IN (${placeholders})
+        OR (v.local_dir IS NOT NULL AND r.backup_status IN ('verified','partial_verified'))
+    `).all(...statuses) as any[]).map((row) => parseJson<VideoArchiveEntry>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listRelationsByStatuses(statuses: string[]) {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(",");
+    return (this.db.prepare(`SELECT payload_json FROM favorite_relations WHERE backup_status IN (${placeholders})`).all(...statuses) as any[])
+      .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listStaleRelations(statuses: string[], before: number) {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(",");
+    return (this.db.prepare(`SELECT payload_json FROM favorite_relations WHERE backup_status IN (${placeholders}) AND updated_at <= ?`).all(...statuses, before) as any[])
+      .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listStaleVideos(statuses: string[], before: number) {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(",");
+    return (this.db.prepare(`SELECT payload_json FROM videos WHERE backup_status IN (${placeholders}) AND updated_at <= ?`).all(...statuses, before) as any[])
+      .map((row) => parseJson<VideoArchiveEntry>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listInterruptedQualityRelations() {
+    return (this.db.prepare(`
+      SELECT r.payload_json FROM favorite_relations r JOIN quality_upgrades q
+      ON q.user_id=r.user_id AND q.media_id=r.media_id AND q.bvid=r.bvid
+    `).all() as any[]).map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listRelationsForFolder(userId: string, mediaId: number) {
+    return (this.db.prepare(`
+      SELECT payload_json FROM favorite_relations
+      WHERE user_id=? AND media_id=?
+      ORDER BY CASE WHEN fav_order IS NULL THEN 1 ELSE 0 END, fav_order ASC, last_seen_at DESC
+    `).all(userId, mediaId) as any[])
+      .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
+      .filter(Boolean);
+  }
+
+  queryFolderPage(userId: string, mediaId: number, filter: string, offset: number, limit: number) {
+    const processed = "r.backup_status IN ('uploaded','verified','partial_verified')";
+    const unavailable = "v.bili_status='unavailable' AND r.self_visible=0";
+    const filterSql = filter === "uploaded" ? processed
+      : filter === "pending" ? `NOT (${processed}) AND NOT (${unavailable})`
+      : filter === "pending_unavailable" ? `NOT (${processed}) AND (${unavailable})`
+      : filter === "uploaded_unavailable" ? `(${processed}) AND (${unavailable})`
+      : "1=1";
+    const base = "FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid WHERE r.user_id=? AND r.media_id=?";
+    const rows = this.db.prepare(`
+      SELECT r.payload_json AS relation_json, v.payload_json AS video_json
+      ${base} AND (${filterSql})
+      ORDER BY CASE WHEN r.fav_order IS NULL THEN 1 ELSE 0 END, r.fav_order ASC, r.last_seen_at DESC
+      LIMIT ? OFFSET ?
+    `).all(userId, mediaId, Math.max(1, limit), Math.max(0, offset)) as any[];
+    const summary = this.db.prepare(`
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN ${processed} THEN 1 ELSE 0 END) AS uploaded,
+        SUM(CASE WHEN NOT (${processed}) AND NOT (${unavailable}) THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN NOT (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS pending_unavailable,
+        SUM(CASE WHEN (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS uploaded_unavailable
+      ${base}
+    `).get(userId, mediaId) as any;
+    const totalFiltered = Number((this.db.prepare(`SELECT COUNT(*) AS count ${base} AND (${filterSql})`).get(userId, mediaId) as any)?.count || 0);
+    return {
+      rows: rows.map((row) => ({
+        relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation),
+        video: parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry),
+      })),
+      summary: {
+        total: Number(summary?.total || 0), uploaded: Number(summary?.uploaded || 0), pending: Number(summary?.pending || 0),
+        pendingUnavailable: Number(summary?.pending_unavailable || 0), uploadedUnavailable: Number(summary?.uploaded_unavailable || 0),
+      },
+      totalFiltered,
+    };
+  }
+
+  queryUnavailablePage(userId: string, offset: number, limit: number) {
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT r.payload_json AS relation_json, v.payload_json AS video_json, r.bvid, r.last_seen_at,
+          ROW_NUMBER() OVER (PARTITION BY r.bvid ORDER BY r.last_seen_at DESC) AS rank
+        FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
+        WHERE r.user_id=? AND v.bili_status='unavailable' AND r.self_visible=0
+      )
+      SELECT relation_json, video_json FROM ranked WHERE rank=1 ORDER BY last_seen_at DESC LIMIT ? OFFSET ?
+    `).all(userId, Math.max(1, limit), Math.max(0, offset)) as any[];
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(DISTINCT r.bvid) AS count FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
+      WHERE r.user_id=? AND v.bili_status='unavailable' AND r.self_visible=0
+    `).get(userId) as any)?.count || 0);
+    return {
+      rows: rows.map((row) => ({ relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation), video: parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry) })),
+      total,
+    };
+  }
+
+  listRelationsForUser(userId: string, unavailableOnly = false) {
+    const sql = unavailableOnly
+      ? "SELECT payload_json FROM favorite_relations WHERE user_id=? AND favorite_unavailable=1 ORDER BY last_seen_at DESC"
+      : "SELECT payload_json FROM favorite_relations WHERE user_id=? ORDER BY last_seen_at DESC";
+    return (this.db.prepare(sql).all(userId) as any[])
+      .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
+      .filter(Boolean);
+  }
+
+  listRelationsForRemoteVerify(limit?: number, includeDeferred = false, now = Date.now()) {
+    const conditions = ["backup_status IN ('verified','partial_verified')"];
+    const params: any[] = [];
+    if (!includeDeferred) {
+      conditions.push("(next_remote_check_at IS NULL OR next_remote_check_at <= ?)");
+      params.push(now);
+    }
+    const limitSql = typeof limit === "number" ? " LIMIT ?" : "";
+    if (typeof limit === "number") params.push(Math.max(1, Math.floor(limit)));
+    return (this.db.prepare(`
+      SELECT payload_json FROM favorite_relations WHERE ${conditions.join(" AND ")}
+      ORDER BY COALESCE(json_extract(payload_json, '$.lastRemoteCheckAt'), '') ASC${limitSql}
+    `).all(...params) as any[])
+      .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
+      .filter(Boolean);
+  }
+
+  countRelationsForRemoteVerify(includeDeferred = false, now = Date.now()) {
+    const row = includeDeferred
+      ? this.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE backup_status IN ('verified','partial_verified')").get()
+      : this.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE backup_status IN ('verified','partial_verified') AND (next_remote_check_at IS NULL OR next_remote_check_at <= ?)").get(now);
+    return Number((row as any)?.count || 0);
+  }
+
+  listPendingUploadVerifications(limit = 100) {
+    return (this.db.prepare(`
+      SELECT r.payload_json AS relation_json, v.local_dir
+      FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
+      WHERE r.backup_status='uploaded'
+        AND EXISTS (
+          SELECT 1 FROM json_each(r.payload_json, '$.remoteFiles') file
+          WHERE json_extract(file.value, '$.verificationStatus')='awaiting_verification'
+        )
+      ORDER BY r.next_remote_check_at ASC, r.updated_at ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.floor(limit))) as any[]).map((row) => ({
+      relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation),
+      localDir: row.local_dir ? String(row.local_dir) : undefined,
+    }));
+  }
+
+  listRetryCandidateBvids(userId: string, mediaId: number, limit = 500) {
+    return (this.db.prepare(`
+      SELECT r.bvid
+      FROM favorite_relations r
+      JOIN videos v ON v.bvid=r.bvid
+      LEFT JOIN failures f ON f.user_id=r.user_id AND f.media_id=r.media_id AND f.bvid=r.bvid
+      WHERE r.user_id=? AND r.media_id=?
+        AND NOT ((r.favorite_unavailable=1 OR v.bili_status='unavailable') AND r.self_visible=0)
+        AND r.backup_status NOT IN ('uploaded','verified','partial_verified','queued','downloading','downloaded','uploading')
+        AND (
+          r.backup_status IN ('failed','missing')
+          OR (r.backup_status='discovered' AND (f.bvid IS NOT NULL OR json_extract(r.payload_json, '$.lastError') IS NOT NULL))
+        )
+      ORDER BY COALESCE(f.failed_at, r.last_seen_at, r.updated_at) DESC
+      LIMIT ?
+    `).all(userId, mediaId, Math.max(1, Math.floor(limit))) as any[]).map((row) => String(row.bvid));
+  }
+
+  listPermanentFailureRelations(limit = 10_000) {
+    return (this.db.prepare(`
+      SELECT r.payload_json AS relation_json, v.payload_json AS video_json, f.payload_json AS failure_json
+      FROM favorite_relations r
+      JOIN videos v ON v.bvid=r.bvid
+      JOIN failures f ON f.user_id=r.user_id AND f.media_id=r.media_id AND f.bvid=r.bvid
+      WHERE r.active_in_favorite=1 AND f.permanent=1
+        AND r.backup_status NOT IN ('uploaded','verified','partial_verified')
+        AND json_extract(v.payload_json, '$.accessClassification') IS NULL
+      ORDER BY f.failed_at ASC LIMIT ?
+    `).all(Math.max(1, Math.floor(limit))) as any[]).map((row) => ({
+      relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation),
+      video: parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry),
+      failure: parseJson<FailedEntry>(row.failure_json, {} as FailedEntry),
+    }));
   }
 
   replaceState(state: StateFile) {
@@ -386,6 +653,7 @@ export class StateDatabase {
         DELETE FROM videos;
       `);
       this.deleteMeta("persistent_jobs_bootstrap_v1");
+      this.deleteMeta("legacy_failure_classification_v1");
       const dirty: StateDirtySet = {
         videos: new Set(Object.keys(state.videos || {})),
         relations: new Set(Object.keys(state.relations || {})),
@@ -410,10 +678,17 @@ export class StateDatabase {
     `);
     const deleteVideo = this.db.prepare("DELETE FROM videos WHERE bvid=?");
     const upsertRelation = this.db.prepare(`
-      INSERT INTO favorite_relations(user_id, media_id, bvid, backup_status, active_in_favorite, payload_json, updated_at)
-      VALUES(@userId, @mediaId, @bvid, @backupStatus, @active, @payload, @updatedAt)
+      INSERT INTO favorite_relations(user_id, media_id, bvid, backup_status, active_in_favorite, folder_title,
+        fav_order, last_seen_at, favorite_unavailable, self_visible, next_remote_check_at, account_detached_at,
+        payload_json, updated_at)
+      VALUES(@userId, @mediaId, @bvid, @backupStatus, @active, @folderTitle, @favOrder, @lastSeenAt,
+        @favoriteUnavailable, @selfVisible, @nextRemoteCheckAt, @accountDetachedAt, @payload, @updatedAt)
       ON CONFLICT(user_id, media_id, bvid) DO UPDATE SET backup_status=excluded.backup_status,
-        active_in_favorite=excluded.active_in_favorite, payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        active_in_favorite=excluded.active_in_favorite, folder_title=excluded.folder_title,
+        fav_order=excluded.fav_order, last_seen_at=excluded.last_seen_at,
+        favorite_unavailable=excluded.favorite_unavailable, self_visible=excluded.self_visible,
+        next_remote_check_at=excluded.next_remote_check_at, account_detached_at=excluded.account_detached_at,
+        payload_json=excluded.payload_json, updated_at=excluded.updated_at
     `);
     const deleteRelation = this.db.prepare("DELETE FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?");
     const upsertFolder = this.db.prepare(`
@@ -455,6 +730,13 @@ export class StateDatabase {
           ...parts,
           backupStatus: relation.backupStatus || "discovered",
           active: relation.activeInFavorite ? 1 : 0,
+          folderTitle: relation.folderTitle || "",
+          favOrder: Number.isInteger(relation.favOrder) ? relation.favOrder : null,
+          lastSeenAt: isoToMs(relation.lastSeenAt, now),
+          favoriteUnavailable: relation.favoriteUnavailable ? 1 : 0,
+          selfVisible: relation.selfVisible ? 1 : 0,
+          nextRemoteCheckAt: relation.nextRemoteCheckAt ? isoToMs(relation.nextRemoteCheckAt, now) : null,
+          accountDetachedAt: relation.accountDetachedAt ? isoToMs(relation.accountDetachedAt, now) : null,
           payload: JSON.stringify(relation),
           updatedAt: isoToMs(relation.statusUpdatedAt || relation.lastSeenAt, now),
         });
@@ -473,7 +755,7 @@ export class StateDatabase {
       if (dirty.cooldowns) this.replaceCooldowns(state);
       if (dirty.metadata) {
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('legacy_state_schema', ?)")
-          .run(String(state.schemaVersion || 12));
+          .run(String(state.schemaVersion || 13));
       }
     });
     transaction();
@@ -627,6 +909,8 @@ export class StateDatabase {
         DELETE FROM favorite_relations;
         DELETE FROM videos;
       `);
+      this.deleteMeta("persistent_jobs_bootstrap_v1");
+      this.deleteMeta("legacy_failure_classification_v1");
     });
     transaction();
   }

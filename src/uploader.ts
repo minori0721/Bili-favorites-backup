@@ -26,6 +26,7 @@ export function resolveRemotePath(context: UploadContext) {
 import { createClient, WebDAVClient } from "webdav";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
 import { type RemoteFileQualityProfile, type RemoteFileRecord } from "./state.js";
@@ -374,6 +375,7 @@ export async function uploadWithAList(
     verificationDelaysMs?: number[];
     log?: Pick<typeof logManager, "push">;
     files?: string[];
+    filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
     conflictArchiveSegment?: string;
     onConflictArchived?: (result: RemoteConflictArchiveResult) => void | Promise<void>;
     uploadStartLimiter?: UploadStartLimiter;
@@ -534,6 +536,7 @@ export async function uploadWithAList(
         size: stat.size,
         qualityProfile,
         localRelativePath: entry.relativePath,
+        filenameMetadata: options.filenameMetadataByPath?.[entry.relativePath.replace(/\\/g, "/")],
         verificationStatus: transferResult.verificationStatus,
         putCompletedAt: transferResult.skippedUpload ? undefined : new Date().toISOString(),
         verifyAttempts: transferResult.verificationStatus === "verified" ? 1 : 0,
@@ -612,53 +615,6 @@ export interface RenameRemoteItem {
   newPath: string;
 }
 
-export async function batchRenameRemote(
-  config: AppConfig,
-  remotePath: string,
-  renameMap: Array<{ oldName: string; newName: string }>
-): Promise<{ success: number; failed: number; errors: string[] }> {
-  const client = buildDavClient(config);
-  let success = 0;
-  let failed = 0;
-  const errors: string[] = [];
-
-  for (const { oldName, newName } of renameMap) {
-    if (oldName === newName) {
-      success++;
-      continue;
-    }
-    const oldPath = remotePath.replace(/\/$/, "") + "/" + oldName;
-    const newPath = remotePath.replace(/\/$/, "") + "/" + newName;
-    try {
-      await client.moveFile(oldPath, newPath);
-      success++;
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "system",
-        level: "info",
-        summary: `重命名: ${oldName} → ${newName}`,
-        raw: `[Rename] ${oldPath} -> ${newPath}`,
-        simpleVisible: true,
-      });
-    } catch (err) {
-      failed++;
-      const safeError = sanitizeUploadText((err as Error)?.message || err);
-      const msg = `${oldName}: ${safeError}`;
-      errors.push(msg);
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "system",
-        level: "error",
-        summary: `重命名失败: ${msg}`,
-        raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${safeError}`,
-        simpleVisible: true,
-      });
-    }
-  }
-
-  return { success, failed, errors };
-}
-
 /** List remote directory contents */
 export async function listRemoteDir(config: AppConfig, remotePath: string): Promise<string[]> {
   const client = buildDavClient(config);
@@ -690,18 +646,22 @@ export async function listRemoteFilesRecursive(
   config: AppConfig,
   rootPath: string,
   options: { maxDepth?: number; maxFiles?: number } = {}
-): Promise<{ files: RemoteListedFile[]; skipped: Array<{ path: string; reason: string }> }> {
+): Promise<{ files: RemoteListedFile[]; skipped: Array<{ path: string; reason: string }>; complete: boolean }> {
   const client = buildDavClient(config);
   const root = normalizeRemotePath(rootPath);
   const maxDepth = Math.max(0, Math.floor(options.maxDepth ?? 4));
   const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 2000));
   const files: RemoteListedFile[] = [];
   const skipped: Array<{ path: string; reason: string }> = [];
+  let complete = true;
   const videoExt = /\.(mp4|mkv|flv|mov|m4v)$/i;
   const tempExt = /\.(part|tmp|download)$/i;
 
   async function walk(dir: string, depth: number) {
-    if (files.length >= maxFiles) return;
+    if (files.length >= maxFiles) {
+      complete = false;
+      return;
+    }
     let items: any[];
     try {
       items = await client.getDirectoryContents(dir) as any[];
@@ -709,8 +669,10 @@ export async function listRemoteFilesRecursive(
       skipped.push({ path: dir, reason: `远端目录读取失败：${error?.message || error}` });
       return;
     }
-    for (const item of items) {
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+      const item = items[itemIndex];
       if (files.length >= maxFiles) {
+        complete = false;
         skipped.push({ path: dir, reason: `扫描数量超过上限 ${maxFiles}` });
         return;
       }
@@ -719,6 +681,7 @@ export async function listRemoteFilesRecursive(
       if (!name) continue;
       if (item?.type === "directory") {
         if (depth >= maxDepth) {
+          complete = false;
           skipped.push({ path: itemPath, reason: `超过最大扫描深度 ${maxDepth}` });
           continue;
         }
@@ -743,49 +706,66 @@ export async function listRemoteFilesRecursive(
   }
 
   await walk(root, 0);
-  return { files, skipped };
+  return { files, skipped, complete };
 }
 
 export async function batchRenameRemotePaths(
   config: AppConfig,
-  items: RenameRemoteItem[]
+  items: RenameRemoteItem[],
+  clientOverride?: WebDAVClient
 ): Promise<{ success: number; failed: number; results: Array<{ oldPath: string; newPath: string; ok: boolean; error?: string }> }> {
-  const client = buildDavClient(config);
-  let success = 0;
-  let failed = 0;
-  const results: Array<{ oldPath: string; newPath: string; ok: boolean; error?: string }> = [];
-
-  for (const item of items) {
+  const client = clientOverride || buildDavClient(config);
+  const operationId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  const prepared = items.map((item, index) => {
     const oldPath = normalizeRemotePath(item.oldPath);
     const newPath = normalizeRemotePath(item.newPath);
-    try {
-      await client.moveFile(oldPath, newPath);
-      success++;
-      results.push({ oldPath, newPath, ok: true });
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "system",
-        level: "info",
-        summary: `重命名: ${remoteBasename(oldPath)} → ${remoteBasename(newPath)}`,
-        raw: `[Rename] ${oldPath} -> ${newPath}`,
-        simpleVisible: true,
-      });
-    } catch (error: any) {
-      failed++;
-      const message = error?.message || String(error);
-      results.push({ oldPath, newPath, ok: false, error: message });
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "system",
-        level: "error",
-        summary: `重命名失败: ${remoteBasename(oldPath)} - ${message}`,
-        raw: `[Rename] Failed: ${oldPath} -> ${newPath}: ${message}`,
-        simpleVisible: true,
-      });
+    return {
+      oldPath,
+      newPath,
+      tempPath: `${remoteDirname(oldPath)}/__bfb_rename_${operationId}_${index}_${remoteBasename(oldPath)}`,
+    };
+  });
+  const staged: typeof prepared = [];
+  const completed: typeof prepared = [];
+  try {
+    for (const item of prepared) {
+      await client.moveFile(item.oldPath, item.tempPath);
+      staged.push(item);
     }
+    for (const item of prepared) {
+      await client.moveFile(item.tempPath, item.newPath);
+      completed.push(item);
+    }
+  } catch (error: any) {
+    const message = sanitizeUploadText(error?.message || error);
+    for (const item of [...completed].reverse()) {
+      await client.moveFile(item.newPath, item.oldPath).catch(() => undefined);
+    }
+    for (const item of [...staged].reverse()) {
+      if (completed.includes(item)) continue;
+      await client.moveFile(item.tempPath, item.oldPath).catch(() => undefined);
+    }
+    return {
+      success: 0,
+      failed: prepared.length,
+      results: prepared.map((item) => ({ oldPath: item.oldPath, newPath: item.newPath, ok: false, error: message })),
+    };
   }
-
-  return { success, failed, results };
+  for (const item of prepared) {
+    logManager.push({
+      timestamp: new Date().toISOString(),
+      type: "system",
+      level: "info",
+      summary: `重命名: ${remoteBasename(item.oldPath)} → ${remoteBasename(item.newPath)}`,
+      raw: `[Rename] ${item.oldPath} -> ${item.newPath}`,
+      simpleVisible: true,
+    });
+  }
+  return {
+    success: prepared.length,
+    failed: 0,
+    results: prepared.map((item) => ({ oldPath: item.oldPath, newPath: item.newPath, ok: true })),
+  };
 }
 
 export async function remotePathExists(config: AppConfig, remotePath: string) {

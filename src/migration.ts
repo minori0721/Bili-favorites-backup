@@ -1,14 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { appRoot, backupsDir, coversDir, dataDir, databasePath, exportsDir } from "./paths.js";
+import crypto from "node:crypto";
+import { appRoot, backupsDir, coversDir, dataDir, databasePath, exportsDir, tempDir } from "./paths.js";
 import { logsPath } from "./logger.js";
 import { readJsonFile } from "./storage.js";
-import { createZipFromDirectory, extractZipBuffer } from "./zip.js";
+import { createZipFromDirectory, createZipFromSources, extractZipFile } from "./zip.js";
 import { StateDatabase } from "./database.js";
+import { safeErrorSummary } from "./diagnostics.js";
 
-const exportSchema = 2;
+const exportSchema = 3;
 const appName = "Bili-favorites-backup";
+export class MigrationConflictError extends Error { statusCode = 409; }
 const allowedImportFiles = new Set([
   "data/config.json",
   "data/users.json",
@@ -22,9 +25,11 @@ export interface MigrationStateAccess {
   backupDatabase(destination: string): Promise<void>;
   replaceDatabaseFile(source: string): Promise<void>;
   replaceStateSnapshot(state: any): void;
+  getMigrationPendingUploadCount?(): number;
 }
 
 export interface MigrationExportOptions {
+  mode?: "lightweight" | "complete";
   includeConfig?: boolean;
   includeUsers?: boolean;
   includeState?: boolean;
@@ -38,6 +43,7 @@ export interface MigrationManifest {
   app: string;
   version: string;
   exportedAt: string;
+  mode: "lightweight" | "complete";
   includes: Required<MigrationExportOptions>;
   counts: {
     users: number;
@@ -46,6 +52,7 @@ export interface MigrationManifest {
     unavailableVideos: number;
   };
   warning: string;
+  archive?: { files: number; expandedBytes: number };
 }
 
 export interface UnavailableVideoIndex {
@@ -73,6 +80,7 @@ function safeStamp() {
 
 function normalizeExportOptions(options: MigrationExportOptions = {}): Required<MigrationExportOptions> {
   return {
+    mode: options.mode === "complete" ? "complete" : "lightweight",
     includeConfig: options.includeConfig !== false,
     includeUsers: options.includeUsers !== false,
     includeState: options.includeState !== false,
@@ -112,6 +120,13 @@ async function copyDirIfExists(source: string, target: string) {
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   await fs.promises.cp(source, target, { recursive: true });
   return true;
+}
+
+async function sha256File(filePath: string) {
+  const hash = crypto.createHash("sha256");
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }
 
 function videoDisplayTitle(video: any) {
@@ -180,7 +195,7 @@ async function rmWithRetry(targetPath: string) {
       return;
     } catch (error) {
       if (attempt === 4) {
-        console.warn(`[Migration] Failed to cleanup temp path ${targetPath}:`, (error as Error)?.message || error);
+        console.warn(`[Migration] Failed to cleanup temp path ${targetPath}: ${safeErrorSummary(error)}`);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
@@ -229,17 +244,42 @@ export async function createMigrationExport(options: MigrationExportOptions = {}
       "utf8"
     );
 
+    const stagingFiles = await listFilesRecursive(staging);
+    let expandedBytes = 0;
+    const checksums: Record<string, { size: number; sha256: string }> = {};
+    for (const relative of stagingFiles) {
+      const fullPath = path.join(staging, relative);
+      const size = (await fs.promises.stat(fullPath)).size;
+      expandedBytes += size;
+      checksums[relative] = { size, sha256: await sha256File(fullPath) };
+    }
+    let tempFiles: string[] = [];
+    if (includes.mode === "complete" && await pathExists(tempDir)) {
+      tempFiles = await listFilesRecursive(tempDir);
+      for (const relative of tempFiles) {
+        const fullPath = path.join(tempDir, relative);
+        const size = (await fs.promises.stat(fullPath)).size;
+        expandedBytes += size;
+        checksums[`temp/${relative}`] = { size, sha256: await sha256File(fullPath) };
+      }
+    }
+    await fs.promises.writeFile(path.join(staging, "checksums.json"), JSON.stringify(checksums), "utf8");
     const manifest: MigrationManifest = {
       schema: exportSchema,
       app: appName,
       version: packageVersion(),
       exportedAt: new Date().toISOString(),
+      mode: includes.mode,
       includes,
       counts: buildCounts(state, users),
       warning: "users.json contains Bilibili login cookies if included. Do not share this package.",
+      archive: { files: stagingFiles.length + tempFiles.length + 2, expandedBytes },
     };
     await fs.promises.writeFile(path.join(staging, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
-    await createZipFromDirectory(staging, outputPath);
+    await createZipFromSources([
+      { root: staging, prefix: false },
+      ...(includes.mode === "complete" ? [{ root: tempDir, prefix: "temp" }] : []),
+    ], outputPath);
     return { outputPath, manifest };
   } finally {
     await rmWithRetry(staging);
@@ -264,48 +304,112 @@ async function listFilesRecursive(root: string) {
   return files;
 }
 
+export async function estimateMigrationExport(options: MigrationExportOptions = {}, stateAccess?: MigrationStateAccess) {
+  const includes = normalizeExportOptions(options);
+  const roots: string[] = [];
+  if (includes.includeConfig) roots.push(path.join(dataDir, "config.json"));
+  if (includes.includeUsers) roots.push(path.join(dataDir, "users.json"));
+  if (includes.includeState) roots.push(databasePath);
+  if (includes.includeLogs) roots.push(logsPath);
+  if (includes.includeDebug) roots.push(path.join(dataDir, "debug"));
+  if (includes.includeCovers) roots.push(coversDir);
+  if (includes.mode === "complete") roots.push(tempDir);
+  let files = 0;
+  let expandedBytes = 0;
+  for (const root of roots) {
+    if (!(await pathExists(root))) continue;
+    const stat = await fs.promises.stat(root);
+    if (stat.isFile()) {
+      files += 1;
+      expandedBytes += stat.size;
+      continue;
+    }
+    for (const relative of await listFilesRecursive(root)) {
+      files += 1;
+      expandedBytes += (await fs.promises.stat(path.join(root, relative))).size;
+    }
+  }
+  const recovery = includes.mode === "complete"
+    ? (await import("./download-session.js")).inspectDownloadRecoverySync(tempDir)
+    : undefined;
+  return {
+    mode: includes.mode,
+    files,
+    expandedBytes,
+    resumableItems: recovery?.resumableSessions || 0,
+    retainedBytes: recovery?.retainedBytes || 0,
+    pendingUploadItems: stateAccess?.getMigrationPendingUploadCount?.() || 0,
+  };
+}
+
 function safeImportFile(relativePath: string) {
   if (allowedImportFiles.has(relativePath)) return true;
   if (relativePath.startsWith("data/covers/") && !relativePath.includes("..")) return true;
   if (relativePath.startsWith("data/debug/") && !relativePath.includes("..")) return true;
+  if (relativePath.startsWith("temp/") && !relativePath.includes("..")) return true;
   return false;
 }
 
-export async function extractMigrationPackage(buffer: Buffer) {
+async function validateExtractedMigration(root: string, extractedFiles?: string[], extractedHashes?: Record<string, string>) {
+  const files = extractedFiles || await listFilesRecursive(root);
+  if (files.some((file) => file.includes("..") || path.isAbsolute(file))) throw new Error("导入包包含不安全路径");
+  const manifestPath = path.join(root, "manifest.json");
+  if (!(await pathExists(manifestPath))) throw new Error("导入包缺少 manifest.json");
+  const manifest = readJsonFile<MigrationManifest>(manifestPath, {} as MigrationManifest);
+  if (manifest.app !== appName || ![1, 2, exportSchema].includes(Number(manifest.schema))) {
+    throw new Error("导入包不是当前项目支持的数据包");
+  }
+  if (!manifest.mode) manifest.mode = "lightweight";
+  const unsafe = files.filter((file) => file !== "manifest.json" && file !== "checksums.json" && !file.startsWith("indexes/") && !safeImportFile(file));
+  if (unsafe.length > 0) throw new Error(`导入包包含不支持的文件：${unsafe.slice(0, 3).join(", ")}`);
+  if (Number(manifest.schema) >= 3) {
+    const checksums = readJsonFile<Record<string, { size: number; sha256: string }>>(path.join(root, "checksums.json"), {});
+    if (Object.keys(checksums).length === 0) throw new Error("schema 3迁移包缺少文件校验清单");
+    const businessFiles = files.filter((name) => name !== "manifest.json" && name !== "checksums.json").sort();
+    const listedFiles = Object.keys(checksums).sort();
+    if (businessFiles.length !== listedFiles.length || businessFiles.some((name, index) => name !== listedFiles[index])) {
+      throw new Error("schema 3迁移包文件与校验清单不一致");
+    }
+    for (const [name, expected] of Object.entries(checksums)) {
+      if (!files.includes(name)) throw new Error(`迁移包缺少文件：${name}`);
+      const actualHash = extractedHashes?.[name] || await sha256File(path.join(root, name));
+      const actualSize = (await fs.promises.stat(path.join(root, name))).size;
+      if (actualSize !== Number(expected.size) || actualHash !== expected.sha256) throw new Error(`迁移文件校验失败：${name}`);
+    }
+  }
+  return { files, manifest };
+}
+
+export async function extractMigrationPackageFile(archivePath: string) {
   const root = await makeMigrationTempDir("bfb-migration-import-");
   const extractDir = path.join(root, "extract");
   await fs.promises.mkdir(extractDir, { recursive: true });
-  await extractZipBuffer(buffer, extractDir);
-  const files = await listFilesRecursive(extractDir);
-  if (files.some((file) => file.includes("..") || path.isAbsolute(file))) {
-    throw new Error("导入包包含不安全路径");
+  try {
+    const extracted = await extractZipFile(archivePath, extractDir);
+    const validated = await validateExtractedMigration(extractDir, extracted.files, extracted.sha256);
+    return { root, extractDir, ...validated, expandedBytes: extracted.expandedBytes };
+  } catch (error) {
+    await rmWithRetry(root);
+    throw error;
   }
-  const manifestPath = path.join(extractDir, "manifest.json");
-  if (!(await pathExists(manifestPath))) {
-    throw new Error("导入包缺少 manifest.json");
-  }
-  const manifest = readJsonFile<MigrationManifest>(manifestPath, {} as MigrationManifest);
-  if (manifest.app !== appName || ![1, exportSchema].includes(Number(manifest.schema))) {
-    throw new Error("导入包不是当前项目支持的数据包");
-  }
-  const unsafe = files.filter((file) => file !== "manifest.json" && !file.startsWith("indexes/") && !safeImportFile(file));
-  if (unsafe.length > 0) {
-    throw new Error(`导入包包含不支持的文件：${unsafe.slice(0, 3).join(", ")}`);
-  }
-  return { root, extractDir, files, manifest };
 }
 
-export async function previewMigrationPackage(buffer: Buffer) {
-  const extracted = await extractMigrationPackage(buffer);
+export async function previewMigrationPackageFile(archivePath: string) {
+  const extracted = await extractMigrationPackageFile(archivePath);
   try {
     const sqlitePath = path.join(extracted.extractDir, "data", "bfb.sqlite");
     if (await pathExists(sqlitePath)) {
       const database = new StateDatabase(sqlitePath);
       try { database.integrityCheck(); } finally { database.close(); }
     }
+    const tempConflicts = extracted.manifest.mode === "complete"
+      ? await fs.promises.readdir(tempDir).catch(() => [])
+      : [];
     return {
       manifest: extracted.manifest,
       files: extracted.files,
+      expandedBytes: extracted.expandedBytes,
+      conflicts: { tempItems: tempConflicts.slice(0, 20), tempItemCount: tempConflicts.length },
     };
   } finally {
     await rmWithRetry(extracted.root);
@@ -334,7 +438,9 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
       app: appName,
       version: packageVersion(),
       exportedAt: new Date().toISOString(),
+      mode: "lightweight",
       includes: {
+        mode: "lightweight",
         includeConfig: true,
         includeUsers: true,
         includeState: true,
@@ -356,7 +462,7 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
   }
 }
 
-export async function applyMigrationPackage(buffer: Buffer, options: {
+export async function applyMigrationPackageFile(archivePath: string, options: {
   restoreConfig?: boolean;
   restoreUsers?: boolean;
   restoreState?: boolean;
@@ -364,47 +470,86 @@ export async function applyMigrationPackage(buffer: Buffer, options: {
   restoreLogs?: boolean;
   restoreDebug?: boolean;
 } = {}, stateAccess?: MigrationStateAccess) {
-  const extracted = await extractMigrationPackage(buffer);
-  const backupPath = await backupCurrentData(stateAccess);
+  const extracted = await extractMigrationPackageFile(archivePath);
   try {
-    const copyFile = async (relative: string) => {
-      const source = path.join(extracted.extractDir, relative);
+    const complete = extracted.manifest.mode === "complete" && await pathExists(path.join(extracted.extractDir, "temp"));
+    if (complete) {
+      const currentTemp = await fs.promises.readdir(tempDir).catch(() => []);
+      if (currentTemp.length > 0) {
+        throw new MigrationConflictError(`完整迁移要求目标temp为空；当前占用：${currentTemp.slice(0, 10).join("、")}${currentTemp.length > 10 ? ` 等${currentTemp.length}项` : ""}`);
+      }
+    }
+    const backupPath = await backupCurrentData(stateAccess);
+    const operationId = crypto.randomUUID().replace(/-/g, "");
+    const prepared: Array<{ name: string; target: string; staged: string; backup: string }> = [];
+    const switched: typeof prepared = [];
+    const prepare = async (name: string, source: string, target: string) => {
       if (!(await pathExists(source))) return false;
-      const target = path.join(dataDir, relative.replace(/^data\//, ""));
+      const staged = `${target}.migration-${operationId}`;
+      const backup = `${target}.before-migration-${operationId}`;
       await fs.promises.mkdir(path.dirname(target), { recursive: true });
-      await fs.promises.copyFile(source, target);
+      await fs.promises.rm(staged, { recursive: true, force: true });
+      await fs.promises.rm(backup, { recursive: true, force: true });
+      const stat = await fs.promises.stat(source);
+      if (stat.isDirectory()) await fs.promises.cp(source, staged, { recursive: true, force: false, errorOnExist: true });
+      else await fs.promises.copyFile(source, staged, fs.constants.COPYFILE_EXCL);
+      prepared.push({ name, target, staged, backup });
       return true;
     };
     const restored: string[] = [];
-    if (options.restoreConfig !== false && await copyFile("data/config.json")) restored.push("config");
-    if (options.restoreUsers !== false && await copyFile("data/users.json")) restored.push("users");
-    if (options.restoreState !== false) {
-      const sqliteSource = path.join(extracted.extractDir, "data", "bfb.sqlite");
-      const jsonSource = path.join(extracted.extractDir, "data", "state.json");
-      if (stateAccess && await pathExists(sqliteSource)) {
-        await stateAccess.replaceDatabaseFile(sqliteSource);
-        restored.push("state");
-      } else if (stateAccess && await pathExists(jsonSource)) {
-        stateAccess.replaceStateSnapshot(readJsonFile<any>(jsonSource, { videos: {}, relations: {} }));
-        restored.push("state");
-      } else if (await copyFile("data/bfb.sqlite")) {
-        restored.push("state");
-      } else if (await copyFile("data/state.json")) {
-        restored.push("state");
+    try {
+      if (options.restoreConfig !== false) await prepare("config", path.join(extracted.extractDir, "data", "config.json"), path.join(dataDir, "config.json"));
+      if (options.restoreUsers !== false) await prepare("users", path.join(extracted.extractDir, "data", "users.json"), path.join(dataDir, "users.json"));
+      if (options.restoreLogs) await prepare("logs", path.join(extracted.extractDir, "data", "logs.json"), logsPath);
+      if (options.restoreCovers !== false) await prepare("covers", path.join(extracted.extractDir, "data", "covers"), coversDir);
+      if (options.restoreDebug) await prepare("debug", path.join(extracted.extractDir, "data", "debug"), path.join(dataDir, "debug"));
+      if (complete) await prepare("temp", path.join(extracted.extractDir, "temp"), tempDir);
+
+      for (const item of prepared) {
+        if (await pathExists(item.target)) await fs.promises.rename(item.target, item.backup);
+        try {
+          await fs.promises.rename(item.staged, item.target);
+        } catch (error) {
+          if (await pathExists(item.backup)) await fs.promises.rename(item.backup, item.target);
+          throw error;
+        }
+        switched.push(item);
+        restored.push(item.name);
+      }
+
+      if (options.restoreState !== false) {
+        const sqliteSource = path.join(extracted.extractDir, "data", "bfb.sqlite");
+        const jsonSource = path.join(extracted.extractDir, "data", "state.json");
+        if (stateAccess && await pathExists(sqliteSource)) {
+          await stateAccess.replaceDatabaseFile(sqliteSource);
+          restored.push("state");
+        } else if (stateAccess && await pathExists(jsonSource)) {
+          stateAccess.replaceStateSnapshot(readJsonFile<any>(jsonSource, { videos: {}, relations: {} }));
+          restored.push("state");
+        } else if (!stateAccess && await pathExists(sqliteSource)) {
+          await prepare("state", sqliteSource, databasePath);
+          const item = prepared[prepared.length - 1];
+          if (await pathExists(item.target)) await fs.promises.rename(item.target, item.backup);
+          await fs.promises.rename(item.staged, item.target);
+          switched.push(item);
+          restored.push("state");
+        }
+      }
+
+      for (const item of switched) await rmWithRetry(item.backup);
+      return { manifest: extracted.manifest, backupPath, restored };
+    } catch (error) {
+      for (const item of [...switched].reverse()) {
+        await fs.promises.rm(item.target, { recursive: true, force: true }).catch(() => undefined);
+        if (await pathExists(item.backup)) await fs.promises.rename(item.backup, item.target).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      for (const item of prepared) {
+        await rmWithRetry(item.staged);
+        await rmWithRetry(item.backup);
       }
     }
-    if (options.restoreLogs && await copyFile("data/logs.json")) restored.push("logs");
-    if (options.restoreCovers !== false && await pathExists(path.join(extracted.extractDir, "data", "covers"))) {
-      await fs.promises.rm(coversDir, { recursive: true, force: true });
-      await fs.promises.cp(path.join(extracted.extractDir, "data", "covers"), coversDir, { recursive: true });
-      restored.push("covers");
-    }
-    if (options.restoreDebug && await pathExists(path.join(extracted.extractDir, "data", "debug"))) {
-      await fs.promises.rm(path.join(dataDir, "debug"), { recursive: true, force: true });
-      await fs.promises.cp(path.join(extracted.extractDir, "data", "debug"), path.join(dataDir, "debug"), { recursive: true });
-      restored.push("debug");
-    }
-    return { manifest: extracted.manifest, backupPath, restored };
   } finally {
     await rmWithRetry(extracted.root);
   }

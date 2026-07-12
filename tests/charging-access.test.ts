@@ -119,7 +119,7 @@ test("charging status clears old failures but preserves verified relations", asy
     assert.equal(restricted.backupStatus, "charging_restricted");
     assert.equal(restricted.failed, false);
     assert.equal(restricted.accessRestriction?.previewAvailable, true);
-    assert.equal(manager.getStateSnapshot().schemaVersion, 12);
+    assert.equal(manager.getStateSnapshot().schemaVersion, 13);
 
     manager.clearChargingRestriction("BVCHARGE", "2026-07-20T00:00:00.000Z");
     assert.equal(manager.listFolderItemsForUser("u1", 1, 0, 20, "pending").items[0].backupStatus, "discovered");

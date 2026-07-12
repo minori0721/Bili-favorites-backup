@@ -19,6 +19,7 @@ export interface DownloadPageSnapshot {
   cid: number;
   title: string;
   duration: number;
+  publishedAt?: number;
 }
 
 export interface DownloadOutputRecord {
@@ -60,6 +61,7 @@ export interface DownloadSessionManifest {
   createdAt: string;
   updatedAt: string;
   snapshotAt: string;
+  publishedAt?: number;
   status: DownloadSessionStatus;
   pages: DownloadPageSnapshot[];
   outputs: DownloadOutputRecord[];
@@ -526,6 +528,7 @@ export async function prepareDownloadSession(options: {
   config: AppConfig;
   kind?: DownloadSessionKind;
   pages: DownloadPageSnapshot[];
+  publishedAt?: number;
   unavailable?: boolean;
   qualityUpgrade?: DownloadSessionManifest["qualityUpgrade"];
 }) : Promise<PreparedDownloadSession> {
@@ -553,6 +556,7 @@ export async function prepareDownloadSession(options: {
       createdAt: at,
       updatedAt: at,
       snapshotAt: at,
+      publishedAt: options.publishedAt,
       status: "prepared",
       pages: options.pages,
       outputs: [],
@@ -595,6 +599,7 @@ export async function prepareDownloadSession(options: {
       manifest.pages = options.pages;
       manifest.snapshotAt = nowIso();
     }
+    if (options.publishedAt) manifest.publishedAt = options.publishedAt;
   }
   await scanAndValidateOutputs(downloadDir, manifest);
   if (options.unavailable && manifest.outputs.length === 0 && manifest.history.length > 0) {

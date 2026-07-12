@@ -1,4 +1,5 @@
 import path from "node:path";
+import crypto from "node:crypto";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles, type RemoteConflictArchiveResult } from "./uploader.js";
@@ -118,6 +119,7 @@ export class QualityUpgradeTask extends Task {
   onUploaded?: (task: QualityUpgradeTask, result: UploadResult) => void;
   onCompletedUpgrade?: (task: QualityUpgradeTask) => void;
   onFailed?: (task: QualityUpgradeTask, error: any) => void;
+  shouldCleanupLocal?: () => boolean;
   apiModeOverride?: BBDownApiMode;
   apiProbe = false;
   onApiReady?: (task: QualityUpgradeTask, mode: BBDownApiMode) => void;
@@ -141,8 +143,15 @@ export class QualityUpgradeTask extends Task {
     this.qualityStage = "download";
     this.qualityStageLabel = "下载新版";
     this.onStartUpgrade?.(this);
+    const profileKey = crypto.createHash("sha256").update(JSON.stringify({
+      quality: this.config.bbdownQuality,
+      encoding: this.config.bbdownEncoding,
+      hiRes: this.config.bbdownHiRes,
+      dolby: this.config.bbdownDolby,
+      apiMode: this.config.bbdownApiMode,
+    })).digest("hex").slice(0, 12);
     const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
-      downloadDir: this.downloadDir || path.join(tempDir, `quality-upgrade-${runId}-${this.bvid}`),
+      downloadDir: this.downloadDir || path.join(tempDir, `quality-upgrade-${this.bvid}-${profileKey}`),
       kind: "quality_upgrade",
       qualityUpgrade: {
         userId: this.target.userId,
@@ -266,7 +275,7 @@ export class QualityUpgradeTask extends Task {
     this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles || []);
     this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
-    if (this.downloadDir) await cleanupUploadedSessionFiles(this.downloadDir);
+    if (this.downloadDir && (this.shouldCleanupLocal?.() ?? true)) await cleanupUploadedSessionFiles(this.downloadDir);
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
   }
 }
@@ -361,6 +370,7 @@ export class UploadTask extends Task {
   onUploading?: (task: UploadTask) => void;
   cleanupLocal: boolean;
   files?: string[];
+  filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
   partialBackup = false;
   historyOnly = false;
   historySnapshotAt?: string;
@@ -372,7 +382,7 @@ export class UploadTask extends Task {
     downloadDir: string,
     remotePath: string,
     config: AppConfig,
-    options: { cleanupLocal?: boolean; files?: string[]; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string; conflictArchiveSegment?: string } = {}
+    options: { cleanupLocal?: boolean; files?: string[]; filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string; conflictArchiveSegment?: string } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
@@ -381,6 +391,7 @@ export class UploadTask extends Task {
     this.config = config;
     this.cleanupLocal = options.cleanupLocal !== false;
     this.files = options.files;
+    this.filenameMetadataByPath = options.filenameMetadataByPath;
     this.partialBackup = Boolean(options.partialBackup);
     this.historyOnly = Boolean(options.historyOnly);
     this.historySnapshotAt = options.historySnapshotAt;
@@ -396,6 +407,7 @@ export class UploadTask extends Task {
     this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
       cleanupLocal: this.cleanupLocal,
       files: this.files,
+      filenameMetadataByPath: this.filenameMetadataByPath,
       conflictArchiveSegment: this.conflictArchiveSegment,
       onConflictArchived: (result) => this.onRemoteConflictArchived?.(this, result),
     });

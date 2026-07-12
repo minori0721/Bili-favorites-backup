@@ -50,7 +50,7 @@ if (mode === "degraded") {
   await fs.promises.writeFile(path.join(retainedDir, "unknown.part"), Buffer.alloc(128 * 1024));
   const config = testConfig({
     alistUrl: `http://127.0.0.1:${address.port}`,
-    startupRecoveryBatchSize: 5,
+    queuePrefetchLimit: 5,
   });
   const users = [{
     id: "preview-user",
@@ -101,7 +101,7 @@ if (mode === "degraded") {
 
 if (mode === "risk") {
   const now = new Date();
-  const config = testConfig({ startupRecoveryBatchSize: 5, bbdownApiMode: "web" });
+  const config = testConfig({ queuePrefetchLimit: 5, bbdownApiMode: "web" });
   const state = {
     schemaVersion: 11,
     processedByUser: {},
@@ -173,7 +173,7 @@ if (mode === "confirm") {
     folderScans: { "preview-user:1": { userId: "preview-user", mediaId: 1, folderTitle: "确认中状态预览", initStatus: "complete", nextHistoryPage: 1, catchupPage: 1, total: 2 } },
     userCooldowns: {},
   };
-  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ startupRecoveryBatchSize: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ queuePrefetchLimit: 5 }), null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
@@ -251,7 +251,7 @@ if (mode === "charging") {
     enabled: true,
     lastLoginAt: now.toISOString(),
   }];
-  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ startupRecoveryBatchSize: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ queuePrefetchLimit: 5 }), null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }

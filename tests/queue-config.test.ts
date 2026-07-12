@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { validateBBDownRuntimeConfig, validateConfig } from "../src/config.js";
+import { normalizeLoadedConfig, validateBBDownRuntimeConfig, validateConfig } from "../src/config.js";
 import { Task, TaskQueue } from "../src/queue.js";
 import { computeUploadSessionRetryDelayMs, SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
@@ -85,10 +85,11 @@ test("task queue enforces its high-water size and batch admission", () => {
   assert.equal(queue.addTask(new IdleTask("five")), false);
 });
 
-test("startup recovery batch setting validates the supported range", () => {
-  assert.equal(validateConfig({ startupRecoveryBatchSize: 25 }), null);
-  assert.match(String(validateConfig({ startupRecoveryBatchSize: 4 })), /between 5 and 100/);
-  assert.match(String(validateConfig({ startupRecoveryBatchSize: 101 })), /between 5 and 100/);
+test("queue prefetch setting validates its range and migrates the legacy name", () => {
+  assert.equal(validateConfig({ queuePrefetchLimit: 25 }), null);
+  assert.match(String(validateConfig({ queuePrefetchLimit: 4 })), /between 5 and 100/);
+  assert.match(String(validateConfig({ queuePrefetchLimit: 101 })), /between 5 and 100/);
+  assert.equal(normalizeLoadedConfig({ startupRecoveryBatchSize: 37 }).queuePrefetchLimit, 37);
 });
 
 test("upload file interval validates its range and session retries use bounded backoff", () => {
@@ -147,7 +148,7 @@ test("cache refresh completion dispatches persisted downloads without an externa
       },
     });
     const scheduler = new SyncScheduler(
-      { get: () => testConfig({ localCacheLimitGB: 1, startupRecoveryBatchSize: 5 }) } as any,
+      { get: () => testConfig({ localCacheLimitGB: 1, queuePrefetchLimit: 5 }) } as any,
       { list: () => [user], getById: () => user } as any,
       state
     ) as any;
@@ -511,7 +512,7 @@ test("retry-pending recovery applies one global budget across folders", () => {
 });
 
 test("persistent quality uploads respect the upload queue hard limit", () => {
-  const config = testConfig({ startupRecoveryBatchSize: 5 });
+  const config = testConfig({ queuePrefetchLimit: 5 });
   const user = { id: "u1", uid: 1, name: "Tester", enabled: true, cookie: {}, accessToken: "token", favorites: [] };
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `quality-capacity-${Date.now()}.json`) });
   const scheduler = new SyncScheduler(

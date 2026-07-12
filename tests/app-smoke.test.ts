@@ -45,7 +45,7 @@ test("real app supports login, queue state, config update and migration preview 
     const root = await fetch(`${base}/`, { headers: { Cookie: cookie } });
     assert.equal(root.status, 200);
     const html = await root.text();
-    assert.match(html, /启动恢复每批数量/);
+    assert.match(html, /任务预取上限/);
     assert.match(html, /upload-health-status/);
     assert.match(html, /网页接口/);
     assert.match(html, /download-api-health-status/);
@@ -60,11 +60,11 @@ test("real app supports login, queue state, config update and migration preview 
     const configUpdate = await fetch(`${base}/api/config`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
-      body: JSON.stringify({ startupRecoveryBatchSize: 30 }),
+      body: JSON.stringify({ queuePrefetchLimit: 30 }),
     });
     assert.equal(configUpdate.status, 200);
     const configJson: any = await configUpdate.json();
-    assert.equal(configJson.data.startupRecoveryBatchSize, 30);
+    assert.equal(configJson.data.queuePrefetchLimit, 30);
 
     const queueResponse = await fetch(`${base}/api/queue/state`, { headers: { Cookie: cookie } });
     assert.equal(queueResponse.status, 200);
@@ -72,7 +72,7 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(queueJson.data.uploadHealth.state, "closed");
     assert.equal(queueJson.data.downloadApiHealth.state, "healthy");
     assert.equal(queueJson.data.downloadApiHealth.configuredMode, "web");
-    assert.equal(queueJson.data.recovery.batchSize, 30);
+    assert.equal(queueJson.data.recovery.prefetchLimit, 30);
     assert.equal(typeof queueJson.data.localCache.reserveBytes, "number");
     assert.equal(typeof queueJson.data.downloadRecovery.resumableSessions, "number");
 
@@ -122,7 +122,7 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(preview.status, 200);
     const previewJson: any = await preview.json();
     assert.equal(previewJson.success, true);
-    assert.equal(previewJson.data.manifest.schema, 2);
+    assert.equal(previewJson.data.manifest.schema, 3);
     assert.ok(previewJson.data.files.includes("data/bfb.sqlite"));
     assert.ok(previewJson.data.files.includes("data/state.json"));
     assert.ok(previewJson.data.files.includes("indexes/unavailable-videos.json"));
@@ -133,6 +133,32 @@ test("real app supports login, queue state, config update and migration preview 
       body: archive,
     });
     assert.equal(importSchema2.status, 200);
+
+    const resumableDir = path.join(tempRoot, "BVCOMPLETE");
+    await fs.promises.mkdir(resumableDir, { recursive: true });
+    await fs.promises.writeFile(path.join(resumableDir, "track.aria2"), Buffer.alloc(128, 1));
+    const completeExport = await fetch(`${base}/api/migration/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ mode: "complete", includeConfig: false, includeUsers: false, includeState: true, includeCovers: false }),
+    });
+    assert.equal(completeExport.status, 200);
+    const completeArchive = Buffer.from(await completeExport.arrayBuffer());
+    await fs.promises.rm(resumableDir, { recursive: true, force: true });
+    const completeImport = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreState=false&restoreCovers=false`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
+      body: completeArchive,
+    });
+    assert.equal(completeImport.status, 200);
+    assert.equal(fs.existsSync(path.join(tempRoot, "BVCOMPLETE", "track.aria2")), true);
+    const refusedCompleteImport = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreState=false&restoreCovers=false`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
+      body: completeArchive,
+    });
+    assert.equal(refusedCompleteImport.status, 409);
+    await fs.promises.rm(path.join(tempRoot, "BVCOMPLETE"), { recursive: true, force: true });
 
     const legacyStaging = path.join(runtime, "legacy-package");
     await fs.promises.mkdir(path.join(legacyStaging, "data"), { recursive: true });

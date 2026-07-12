@@ -49,7 +49,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
       };
     }
     writeJsonFile(path.join(dataDir, "state.json"), state);
-    writeJsonFile(path.join(dataDir, "config.json"), testConfig({ startupRecoveryBatchSize: 25 }));
+    writeJsonFile(path.join(dataDir, "config.json"), testConfig({ queuePrefetchLimit: 25 }));
     writeJsonFile(path.join(dataDir, "users.json"), [{
       id: "u1",
       uid: 1,
@@ -157,7 +157,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     add("BVFAILED", "upload_failed", failedDir);
 
     writeJsonFile(path.join(dataDir, "state.json"), state);
-    writeJsonFile(path.join(dataDir, "config.json"), testConfig({ startupRecoveryBatchSize: 5 }));
+    writeJsonFile(path.join(dataDir, "config.json"), testConfig({ queuePrefetchLimit: 5 }));
     writeJsonFile(path.join(dataDir, "users.json"), [{
       id: "u1",
       uid: 1,
@@ -259,7 +259,7 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
     userCooldowns: {},
   } as any);
   manager.markPersistentJobBootstrapComplete();
-  const config = testConfig({ startupRecoveryBatchSize: 25 });
+  const config = testConfig({ queuePrefetchLimit: 25 });
   const user = {
     id: "u1",
     uid: 1,

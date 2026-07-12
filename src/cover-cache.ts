@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { coversDir, tempDir } from "./paths.js";
+import { safeErrorSummary } from "./diagnostics.js";
 
 const activeCoverJobs = new Map<string, Promise<string | null>>();
 const pendingCoverJobs: Array<{
@@ -164,7 +165,7 @@ function runNextCoverJob() {
       return relativePath;
     })
     .catch((error) => {
-      console.warn(`[CoverCache] Failed to cache ${next.bvid}:`, error?.message || error);
+      console.warn(`[CoverCache] Failed to cache ${next.bvid}: ${safeErrorSummary(error)}`);
       return null;
     })
     .finally(() => {
