@@ -2,6 +2,11 @@
   "name": "bili-favorites-backup",
   "version": "2.4.0",
   "private": true,
+  "homepage": "https://github.com/minori0721/Bili-favorites-backup",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minori0721/Bili-favorites-backup.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=24 <25"

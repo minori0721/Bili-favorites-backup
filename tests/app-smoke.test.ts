@@ -31,7 +31,10 @@ test("real app supports login, queue state, config update and migration preview 
 
     const loginPage = await fetch(`${base}/login`);
     assert.equal(loginPage.status, 200);
-    assert.match(await loginPage.text(), /B站收藏夹同步/);
+    const loginHtml = await loginPage.text();
+    assert.match(loginHtml, /B站收藏夹同步/);
+    assert.match(loginHtml, /class="login-meta"/);
+    assert.match(loginHtml, /class="github-link login-link"/);
 
     const login = await fetch(`${base}/api/login`, {
       method: "POST",
@@ -49,6 +52,9 @@ test("real app supports login, queue state, config update and migration preview 
     assert.match(html, /upload-health-status/);
     assert.match(html, /网页接口/);
     assert.match(html, /download-api-health-status/);
+    assert.match(html, /class="app-brand"/);
+    assert.match(html, /class="version-link header-meta"/);
+    assert.match(html, /class="github-link header-meta"/);
 
     const invalidPremiumAudio = await fetch(`${base}/api/config`, {
       method: "PUT",

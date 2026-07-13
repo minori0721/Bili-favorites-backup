@@ -43,6 +43,18 @@ export interface PersistentJobRecord {
   updatedAt: number;
 }
 
+export interface UploadFailureRecoveryCursor {
+  updatedAt: number;
+  userId: string;
+  mediaId: number;
+  bvid: string;
+}
+
+export interface UploadFailureRecoveryPage {
+  items: Array<{ video: VideoArchiveEntry; relation: FavoriteRelation }>;
+  nextCursor: UploadFailureRecoveryCursor | null;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
@@ -368,15 +380,6 @@ export class StateDatabase {
     for (const row of this.db.prepare("SELECT user_id, media_id, payload_json FROM folder_scans").all() as any[]) {
       state.folderScans![`${row.user_id}:${row.media_id}`] = parseJson<FolderScanState>(row.payload_json, {} as FolderScanState);
     }
-    for (const row of this.db.prepare("SELECT user_id, media_id, bvid, payload_json FROM failures").all() as any[]) {
-      state.failedByUser![row.user_id] ||= {};
-      state.failedByUser![row.user_id][`${row.media_id}:${row.bvid}`] = parseJson<FailedEntry>(row.payload_json, {} as FailedEntry);
-    }
-    for (const row of this.db.prepare("SELECT scope_id, payload_json FROM cooldowns WHERE kind='user'").all() as any[]) {
-      state.userCooldowns![row.scope_id] = parseJson<UserCooldown>(row.payload_json, {} as UserCooldown);
-    }
-    const apiCooldown = this.db.prepare("SELECT payload_json FROM cooldowns WHERE kind='download_api' AND scope_id='global'").get() as any;
-    if (apiCooldown) state.downloadApiCooldown = parseJson(apiCooldown.payload_json, undefined);
     return state;
   }
 
@@ -541,6 +544,48 @@ export class StateDatabase {
     const placeholders = statuses.map(() => "?").join(",");
     return (this.db.prepare(`SELECT payload_json FROM favorite_relations WHERE backup_status IN (${placeholders})`).all(...statuses) as any[])
       .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listUploadFailuresForRecoveryPage(cursor: UploadFailureRecoveryCursor | null, limit: number): UploadFailureRecoveryPage {
+    const after = cursor || { updatedAt: -1, userId: "", mediaId: -1, bvid: "" };
+    const normalizedLimit = Math.max(1, Math.floor(limit));
+    const rows = this.db.prepare(`
+      SELECT v.payload_json AS video_payload, v.local_dir, r.payload_json AS relation_payload,
+        r.updated_at, r.user_id, r.media_id, r.bvid
+      FROM favorite_relations r
+      JOIN videos v ON v.bvid=r.bvid
+      WHERE r.backup_status='upload_failed'
+        AND v.local_dir IS NOT NULL AND v.local_dir<>''
+        AND (
+          r.updated_at>@updatedAt
+          OR (r.updated_at=@updatedAt AND r.user_id>@userId)
+          OR (r.updated_at=@updatedAt AND r.user_id=@userId AND r.media_id>@mediaId)
+          OR (r.updated_at=@updatedAt AND r.user_id=@userId AND r.media_id=@mediaId AND r.bvid>@bvid)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.kind='upload' AND j.bvid=r.bvid AND j.user_id=r.user_id AND j.media_id=r.media_id
+            AND j.status IN ('pending','retry_wait','leased','running')
+        )
+      ORDER BY r.updated_at ASC, r.user_id ASC, r.media_id ASC, r.bvid ASC
+      LIMIT @limit
+    `).all({ ...after, limit: normalizedLimit }) as any[];
+    const last = rows[rows.length - 1];
+    const items = rows.flatMap((row) => {
+      const video = parseJson<VideoArchiveEntry>(row.video_payload, undefined as any);
+      const relation = parseJson<FavoriteRelation>(row.relation_payload, undefined as any);
+      if (video && row.local_dir) video.localDir = String(row.local_dir);
+      return video && relation ? [{ video, relation }] : [];
+    });
+    return {
+      items,
+      nextCursor: rows.length === normalizedLimit && last ? {
+        updatedAt: Number(last.updated_at || 0),
+        userId: String(last.user_id || ""),
+        mediaId: Number(last.media_id || 0),
+        bvid: String(last.bvid || ""),
+      } : null,
+    };
   }
 
   listStaleRelations(statuses: string[], before: number) {
@@ -932,6 +977,41 @@ export class StateDatabase {
     }
   }
 
+  getFailure(userId: string, bvid: string, mediaId?: number) {
+    const row = typeof mediaId === "number"
+      ? this.db.prepare(`
+          SELECT payload_json FROM failures
+          WHERE user_id=? AND bvid=? AND media_id IN (?,0)
+          ORDER BY CASE WHEN media_id=? THEN 0 ELSE 1 END, failed_at DESC LIMIT 1
+        `).get(userId, bvid, mediaId, mediaId) as any
+      : this.db.prepare(`
+          SELECT payload_json FROM failures WHERE user_id=? AND bvid=? ORDER BY failed_at DESC LIMIT 1
+        `).get(userId, bvid) as any;
+    return row ? parseJson<FailedEntry>(row.payload_json, undefined as any) : undefined;
+  }
+
+  upsertFailure(userId: string, entry: FailedEntry) {
+    this.db.prepare(`
+      INSERT INTO failures(user_id,media_id,bvid,failed_at,reason,permanent,payload_json)
+      VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(user_id,media_id,bvid) DO UPDATE SET failed_at=excluded.failed_at,
+        reason=excluded.reason, permanent=excluded.permanent, payload_json=excluded.payload_json
+    `).run(
+      userId,
+      Number(entry.mediaId || 0),
+      entry.bvid,
+      isoToMs(entry.failedAt),
+      entry.reason || "",
+      entry.permanent ? 1 : 0,
+      JSON.stringify(entry)
+    );
+  }
+
+  deleteFailure(userId: string, mediaId: number, bvid: string) {
+    return this.db.prepare("DELETE FROM failures WHERE user_id=? AND bvid=? AND media_id IN (?,0)")
+      .run(userId, bvid, mediaId).changes > 0;
+  }
+
   private replaceCooldowns(state: StateFile) {
     this.db.prepare("DELETE FROM cooldowns WHERE kind IN ('user','download_api')").run();
     const insert = this.db.prepare(`
@@ -955,6 +1035,16 @@ export class StateDatabase {
   getCooldown(kind: string, scopeId = "global") {
     const row = this.db.prepare("SELECT payload_json FROM cooldowns WHERE kind=? AND scope_id=?").get(kind, scopeId) as any;
     return row ? parseJson<Record<string, unknown>>(row.payload_json, {}) : null;
+  }
+
+  listCooldowns(kind: string, activeAfter?: number) {
+    const rows = typeof activeAfter === "number"
+      ? this.db.prepare("SELECT scope_id,payload_json FROM cooldowns WHERE kind=? AND until_at>?").all(kind, activeAfter) as any[]
+      : this.db.prepare("SELECT scope_id,payload_json FROM cooldowns WHERE kind=?").all(kind) as any[];
+    return rows.map((row) => ({
+      scopeId: String(row.scope_id || ""),
+      payload: parseJson<Record<string, unknown>>(row.payload_json, {}),
+    }));
   }
 
   setCooldown(kind: string, scopeId: string, untilAt: number, reason: string, payload: Record<string, unknown>) {

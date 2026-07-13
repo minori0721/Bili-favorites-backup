@@ -105,6 +105,11 @@ export class PersistentJobStore {
     return this.findByDedupeKey(input.dedupeKey)!;
   }
 
+  enqueueBatch(inputs: EnqueuePersistentJob[]) {
+    if (inputs.length === 0) return [];
+    return this.stateDatabase.db.transaction(() => inputs.map((input) => this.enqueue(input)))();
+  }
+
   mergeQualityDownload(input: EnqueuePersistentJob) {
     if (input.kind !== "quality_download") throw new Error("mergeQualityDownload requires a quality_download job");
     const transaction = this.stateDatabase.db.transaction(() => {

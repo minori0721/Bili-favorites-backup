@@ -1,3 +1,31 @@
+import { appInfo } from "./app-info.js";
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character] || character);
+}
+
+function getLinkClass(baseClass: string, className: string) {
+  return className ? `${baseClass} ${className}` : baseClass;
+}
+
+function getVersionLink(className = "") {
+  return `<a class="${getLinkClass("version-link", className)}" href="${escapeHtml(appInfo.versionUrl)}" target="_blank" rel="noopener noreferrer" title="查看当前构建">${escapeHtml(appInfo.versionLabel)}</a>`;
+}
+
+function getGithubLink(className = "") {
+  return `<a class="${getLinkClass("github-link", className)}" href="${escapeHtml(appInfo.repositoryUrl)}" target="_blank" rel="noopener noreferrer" aria-label="打开 GitHub 项目" title="打开 GitHub 项目">GitHub <span aria-hidden="true">↗</span></a>`;
+}
+
+function getVersionLinks(className = "") {
+  return `${getVersionLink(className)}\n    ${getGithubLink(className)}`;
+}
+
 export function renderLoginPage() {
   return `<!doctype html>
 <html lang="zh-CN">
@@ -84,6 +112,9 @@ export function renderLoginPage() {
       box-shadow: 0 5px 14px rgba(57, 197, 187, 0.22);
     }
     .error { color: #E57373; margin-top: 16px; min-height: 20px; text-align: center; font-weight: 500; }
+    .login-meta { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px 12px; margin-top:20px; font-size:12px; }
+    .login-meta a { color:var(--muted); text-decoration:none; border-radius:6px; }
+    .login-meta a:hover,.login-meta a:focus-visible { color:var(--accent); outline:none; text-decoration:underline; text-underline-offset:3px; }
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(20px); }
       to { opacity: 1; transform: translateY(0); }
@@ -100,6 +131,7 @@ export function renderLoginPage() {
     <input id="password" type="password" autocomplete="current-password" placeholder="输入密码" />
     <button id="loginBtn">进入系统</button>
     <div class="error" id="error"></div>
+    <div class="login-meta">${getVersionLinks("login-link")}</div>
   </div>
   <script>
     const loginBtn = document.getElementById('loginBtn');
@@ -169,8 +201,15 @@ function getAppStyles() {
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at 10% -10%,rgba(57,197,187,0.18) 0%,transparent 30%),radial-gradient(circle at 86% 4%,rgba(224,247,250,0.68) 0%,transparent 28%),linear-gradient(180deg,#ffffff 0%,var(--bg) 52%); color:var(--ink); }
-    header { display:flex; justify-content:space-between; align-items:center; padding:20px 32px; background:rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); border-bottom:1px solid rgba(214,240,237,0.76); position:sticky; top:0; z-index:10; box-shadow:0 8px 30px rgba(57,197,187,0.05); }
+    header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px 20px; padding:20px 32px; background:rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); border-bottom:1px solid rgba(214,240,237,0.76); position:sticky; top:0; z-index:10; box-shadow:0 8px 30px rgba(57,197,187,0.05); }
     header h1 { margin:0; font-size:24px; color:var(--accent); font-weight:700; }
+    .app-brand,.header-actions { display:flex; align-items:center; min-width:0; }
+    .app-brand { gap:10px; flex:1 1 260px; }
+    .header-actions { gap:10px; flex:0 0 auto; }
+    .version-link,.github-link { color:var(--muted); text-decoration:none; white-space:nowrap; transition:color .2s,border-color .2s,background .2s; }
+    .version-link { max-width:220px; overflow:hidden; text-overflow:ellipsis; padding:4px 7px; border:1px solid rgba(214,240,237,0.95); border-radius:7px; background:rgba(255,255,255,0.66); font-size:12px; font-weight:600; }
+    .github-link { padding:7px 4px; font-size:14px; font-weight:600; }
+    .version-link:hover,.version-link:focus-visible,.github-link:hover,.github-link:focus-visible { color:var(--accent); border-color:var(--accent); outline:none; }
     header button { background:rgba(255,255,255,0.82); border:1px solid rgba(214,240,237,0.95); border-radius:999px; padding:8px 20px; cursor:pointer; font-weight:600; color:var(--ink); transition:all 0.2s; box-shadow:0 4px 16px rgba(57,197,187,0.08); }
     header button:hover { border-color:var(--accent); color:var(--accent); box-shadow:0 6px 20px rgba(57,197,187,0.12); }
     main { padding:28px 32px 40px; display:grid; gap:22px; grid-template-columns:1fr; max-width:1200px; min-width:0; margin:0 auto; }
@@ -401,6 +440,9 @@ function getAppStyles() {
       header { padding:16px 18px; gap:12px; }
       header h1 { font-size:20px; }
       header button { padding:7px 14px; }
+      .app-brand { flex-basis:100%; }
+      .header-actions { width:100%; justify-content:flex-end; }
+      .version-link { max-width:min(210px,calc(100vw - 190px)); }
       main { padding:18px 12px 28px; gap:16px; }
       .card { padding:18px; border-radius:18px; }
       .settings-grid { grid-template-columns:1fr; gap:13px; }
@@ -427,8 +469,14 @@ function getAppStyles() {
 
 function getAppHeader() {
   return `<header>
-    <h1>B站收藏夹同步</h1>
-    <button id="logoutBtn">退出系统</button>
+    <div class="app-brand">
+      <h1>B站收藏夹同步</h1>
+      ${getVersionLink("header-meta")}
+    </div>
+    <div class="header-actions">
+      ${getGithubLink("header-meta")}
+      <button id="logoutBtn">退出系统</button>
+    </div>
   </header>`;
 }
 

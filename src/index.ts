@@ -24,6 +24,7 @@ import { cleanupStaleBBDownCredentialDirectories } from "./credential-temp.js";
 import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadRecoverySync, readDownloadSession } from "./download-session.js";
 import { clearDirectoryContents } from "./storage.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
+import { appInfo } from "./app-info.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager, logsPath } from "./logger.js";
 import { QualityUpgradeTask } from "./tasks.js";
@@ -1842,7 +1843,7 @@ if (process.env.NODE_ENV !== "test") {
     })) {
       console.warn(`[Security] ${warning}`);
     }
-    console.log(`[Runtime] BBDown release ${process.env.BBDOWN_RELEASE || "local"}; source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; FFmpeg ${process.env.FFMPEG_VERSION || "system"}; aria2 resume enabled`);
+    console.log(`[Runtime] BFB ${appInfo.versionLabel}; BBDown release ${process.env.BBDOWN_RELEASE || "local"}; source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; FFmpeg ${process.env.FFMPEG_VERSION || "system"}; aria2 resume enabled`);
   });
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

@@ -36,7 +36,7 @@ import {
 import { DownloadApiHealth } from "./download-api-health.js";
 import { cancelActiveDownloadsForAccount } from "./downloader.js";
 import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
-import { PersistentJobStore, type PersistentJobKind } from "./job-store.js";
+import { PersistentJobStore, type EnqueuePersistentJob, type PersistentJobKind } from "./job-store.js";
 import {
   DownloadTask,
   QualityUpgradeCleanupTask,
@@ -1545,11 +1545,17 @@ export class SyncScheduler {
   }
 
   private queueUploadWork(item: RecoveryUploadItem) {
+    this.jobStore.enqueue(this.buildPersistentUploadJob(item));
+    this.dispatchPersistentJobs();
+    return true;
+  }
+
+  private buildPersistentUploadJob(item: RecoveryUploadItem): EnqueuePersistentJob {
     const persistedItem: RecoveryUploadItem = item.historyOnly || item.conflictArchiveSegment
       ? { ...item }
       : { ...item, conflictArchiveSegment: this.historySnapshotSegment(new Date().toISOString()) };
     const key = this.recoveryUploadKey(persistedItem);
-    this.jobStore.enqueue({
+    return {
       kind: persistedItem.historyOnly ? "history_upload" : "upload",
       dedupeKey: `upload:${key}`,
       bvid: persistedItem.bvid,
@@ -1559,9 +1565,7 @@ export class SyncScheduler {
       maxAttempts: this.configStore.get().maxRetries + 1,
       notBefore: persistedItem.notBefore || 0,
       payload: { ...persistedItem },
-    });
-    this.dispatchPersistentJobs();
-    return true;
+    };
   }
 
   resumePersistedWorkOnStartup() {
@@ -3570,44 +3574,58 @@ export class SyncScheduler {
   }
 
   private recoverOrphanedUploadFailures() {
-    const limit = Math.max(5, Math.min(100, Math.floor(this.configStore.get().queuePrefetchLimit || 25)));
+    const prefetchLimit = Math.max(5, Math.min(100, Math.floor(this.configStore.get().queuePrefetchLimit || 25)));
+    const pageSize = Math.min(500, Math.max(100, prefetchLimit * 4));
+    let cursor: { updatedAt: number; userId: string; mediaId: number; bvid: string } | null = null;
     let recovered = 0;
-    for (const item of this.stateManager.listBackupsToResume()) {
-      if (recovered >= limit) break;
-      const status = item.relation?.backupStatus || item.video.backupStatus;
-      if (status !== "upload_failed" || !item.relation) continue;
-      const localDir = item.video.localDir;
-      if (!localDir || !fs.existsSync(localDir)) continue;
-      const manifest = readDownloadSession(localDir);
-      if (!manifest || !["complete", "partial"].includes(manifest.status)) continue;
-      const resolved = this.resolveRelation(item.relation);
-      if (!resolved) continue;
-      const remotePath = item.relation.remotePath || item.video.remotePath || resolveRemotePath({
-        destination: this.configStore.get().alistDest,
-        layout: this.configStore.get().uploadLayout,
-        userName: resolved.user.name,
-        folderName: resolved.folderTitle,
-      });
-      const uploadItem: RecoveryUploadItem = {
-        bvid: item.video.bvid,
-        localDir,
-        remotePath,
-        userId: item.relation.userId,
-        mediaId: item.relation.mediaId,
-        folderTitle: resolved.folderTitle,
-        videoTitle: item.video.title,
-        upperName: item.video.upperName,
-        cover: item.video.cover,
-        files: manifest.outputs.map((output) => output.relativePath),
-        filenameMetadataByPath: this.buildFilenameMetadata(localDir, manifest.outputs.map((output) => output.relativePath)),
-        partialBackup: manifest.status === "partial",
-        priority: true,
-      };
-      const existing = this.jobStore.findByDedupeKey(`upload:${this.recoveryUploadKey(uploadItem)}`);
-      if (existing && ["pending", "retry_wait", "leased", "running"].includes(existing.status)) continue;
-      this.queueUploadWork(uploadItem);
-      recovered += 1;
-    }
+    const skipped = { local: 0, manifest: 0, account: 0 };
+    do {
+      const page = this.stateManager.listUploadFailuresForRecoveryPage(cursor, pageSize);
+      const jobs: EnqueuePersistentJob[] = [];
+      for (const item of page.items) {
+        const localDir = item.video.localDir;
+        if (!localDir || !fs.existsSync(localDir)) {
+          skipped.local += 1;
+          continue;
+        }
+        const manifest = readDownloadSession(localDir);
+        if (!manifest || !["complete", "partial"].includes(manifest.status) || manifest.outputs.length === 0) {
+          skipped.manifest += 1;
+          continue;
+        }
+        const resolved = this.resolveRelation(item.relation);
+        if (!resolved) {
+          skipped.account += 1;
+          continue;
+        }
+        const remotePath = item.relation.remotePath || item.video.remotePath || resolveRemotePath({
+          destination: this.configStore.get().alistDest,
+          layout: this.configStore.get().uploadLayout,
+          userName: resolved.user.name,
+          folderName: resolved.folderTitle,
+        });
+        const files = manifest.outputs.map((output) => output.relativePath);
+        jobs.push(this.buildPersistentUploadJob({
+          bvid: item.video.bvid,
+          localDir,
+          remotePath,
+          userId: item.relation.userId,
+          mediaId: item.relation.mediaId,
+          folderTitle: resolved.folderTitle,
+          videoTitle: item.video.title,
+          upperName: item.video.upperName,
+          cover: item.video.cover,
+          files,
+          filenameMetadataByPath: this.buildFilenameMetadata(localDir, files),
+          partialBackup: manifest.status === "partial",
+          priority: true,
+        }));
+      }
+      this.jobStore.enqueueBatch(jobs);
+      recovered += jobs.length;
+      cursor = page.nextCursor;
+    } while (cursor);
+    if (recovered > 0) this.dispatchPersistentJobs();
     if (recovered > 0) {
       logManager.push({
         timestamp: new Date().toISOString(),
@@ -3615,6 +3633,18 @@ export class SyncScheduler {
         level: "info",
         summary: `启动时找回 ${recovered} 个缺少可运行任务的待补传记录`,
         raw: `[Recovery] restored orphaned upload jobs=${recovered}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+    const skippedTotal = skipped.local + skipped.manifest + skipped.account;
+    if (skippedTotal > 0) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "warn",
+        summary: `有 ${skippedTotal} 个待补传记录暂不能恢复，已保留原状态`,
+        raw: `[Recovery] orphaned upload jobs skipped local=${skipped.local} manifest=${skipped.manifest} account=${skipped.account}`,
         simpleVisible: true,
         debugVisible: true,
       });

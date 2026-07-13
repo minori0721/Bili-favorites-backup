@@ -5,7 +5,12 @@ import { dataDir } from "./paths.js";
 import { historySessionGroups, readDownloadSession } from "./download-session.js";
 import type { PersistedDownloadApiCooldown } from "./download-api-health.js";
 import { databasePath } from "./paths.js";
-import { archiveLegacyStateFile, StateDatabase, type StateDirtySet } from "./database.js";
+import {
+  archiveLegacyStateFile,
+  StateDatabase,
+  type StateDirtySet,
+  type UploadFailureRecoveryCursor,
+} from "./database.js";
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -803,6 +808,7 @@ export class StateManager {
   }
 
   private getFailedEntry(userId: string, bvid: string, mediaId?: number) {
+    if (this.lazyState) return this.database.getFailure(userId, bvid, mediaId);
     const userEntries = this.state.failedByUser?.[userId];
     if (!userEntries) return undefined;
     if (typeof mediaId === "number") {
@@ -1626,24 +1632,29 @@ export class StateManager {
     }
     entry.lastError = reason;
     const relation = this.getRelation(userId, mediaId, bvid);
+    let failure: FailedEntry | undefined;
     if (relation) {
       this.setRelationStatus(relation, "upload_failed", at);
       relation.lastError = reason;
       relation.nextRemoteCheckAt = undefined;
-      this.state.failedByUser ||= {};
-      this.state.failedByUser[relation.userId] ||= {};
-      this.state.failedByUser[relation.userId][failedKey(relation.mediaId, bvid)] = {
+      failure = {
         bvid,
         mediaId: relation.mediaId,
         failedAt: at,
         reason,
         permanent: false,
       };
+      if (!this.lazyState) {
+        this.state.failedByUser ||= {};
+        this.state.failedByUser[relation.userId] ||= {};
+        this.state.failedByUser[relation.userId][failedKey(relation.mediaId, bvid)] = failure;
+      }
       this.refreshVideoAggregateStatus(bvid);
     } else {
       this.setVideoStatus(entry, "upload_failed", at);
     }
     this.save();
+    if (this.lazyState && relation && failure) this.database.upsertFailure(relation.userId, failure);
   }
 
   markRemoteConflictArchived(
@@ -1709,17 +1720,20 @@ export class StateManager {
 
   markFailed(userId: string, bvid: string, mediaId: number, reason: string, permanent = true) {
     const at = nowIso();
-    this.state.failedByUser ||= {};
-    if (!this.state.failedByUser[userId]) {
-      this.state.failedByUser[userId] = {};
-    }
-    this.state.failedByUser[userId][failedKey(mediaId, bvid)] = {
+    const failure: FailedEntry = {
       bvid,
       mediaId,
       reason,
       permanent,
       failedAt: at,
     };
+    if (!this.lazyState) {
+      this.state.failedByUser ||= {};
+      if (!this.state.failedByUser[userId]) {
+        this.state.failedByUser[userId] = {};
+      }
+      this.state.failedByUser[userId][failedKey(mediaId, bvid)] = failure;
+    }
     const entry = this.state.videos?.[bvid];
     const relation = this.getRelation(userId, mediaId, bvid);
     if (entry) {
@@ -1731,9 +1745,11 @@ export class StateManager {
       relation.lastError = reason;
     }
     this.save();
+    if (this.lazyState) this.database.upsertFailure(userId, failure);
   }
 
   private clearFailedEntry(userId: string, mediaId: number, bvid: string) {
+    if (this.lazyState) return this.database.deleteFailure(userId, mediaId, bvid);
     const entries = this.state.failedByUser?.[userId];
     if (!entries) return false;
     let changed = false;
@@ -1754,7 +1770,8 @@ export class StateManager {
   }
 
   clearFailed(userId: string, mediaId: number, bvid: string) {
-    if (this.clearFailedEntry(userId, mediaId, bvid)) {
+    const changed = this.clearFailedEntry(userId, mediaId, bvid);
+    if (changed && !this.lazyState) {
       this.save();
     }
   }
@@ -1880,27 +1897,44 @@ export class StateManager {
   }
 
   setUserCooldown(userId: string, reason: string, cooldownMs: number) {
-    this.state.userCooldowns![userId] = {
+    const cooldown: UserCooldown = {
       userId,
       until: Date.now() + cooldownMs,
       reason,
       setAt: nowIso(),
     };
+    if (this.lazyState) {
+      this.database.setCooldown("user", userId, cooldown.until, reason, cooldown as unknown as Record<string, unknown>);
+      return;
+    }
+    this.state.userCooldowns![userId] = cooldown;
     this.save();
   }
 
   getUserCooldown(userId: string) {
-    const cooldown = this.state.userCooldowns?.[userId];
+    const cooldown = this.lazyState
+      ? this.database.getCooldown("user", userId) as unknown as UserCooldown | null
+      : this.state.userCooldowns?.[userId];
     if (!cooldown) return null;
     if (cooldown.until <= Date.now()) {
-      delete this.state.userCooldowns?.[userId];
-      this.save();
+      if (this.lazyState) this.database.clearCooldown("user", userId);
+      else {
+        delete this.state.userCooldowns?.[userId];
+        this.save();
+      }
       return null;
     }
     return { ...cooldown };
   }
 
   getAllCooldowns() {
+    if (this.lazyState) {
+      const active: Record<string, UserCooldown> = {};
+      for (const row of this.database.listCooldowns("user", Date.now())) {
+        active[row.scopeId] = { ...(row.payload as unknown as UserCooldown), userId: row.scopeId };
+      }
+      return active;
+    }
     const active: Record<string, UserCooldown> = {};
     for (const [userId, cooldown] of Object.entries(this.state.userCooldowns || {})) {
       if (cooldown.until > Date.now()) {
@@ -1911,15 +1945,32 @@ export class StateManager {
   }
 
   setDownloadApiCooldown(value: PersistedDownloadApiCooldown) {
+    if (this.lazyState) {
+      this.database.setCooldown(
+        "download_api",
+        "global",
+        Number(value.until || 0),
+        value.reason || "",
+        value as unknown as Record<string, unknown>
+      );
+      return;
+    }
     this.state.downloadApiCooldown = { ...value };
     this.save();
   }
 
   getDownloadApiCooldown() {
+    if (this.lazyState) {
+      return this.database.getCooldown("download_api", "global") as unknown as PersistedDownloadApiCooldown | null;
+    }
     return this.state.downloadApiCooldown ? { ...this.state.downloadApiCooldown } : null;
   }
 
   clearDownloadApiCooldown() {
+    if (this.lazyState) {
+      this.database.clearCooldown("download_api", "global");
+      return;
+    }
     if (!this.state.downloadApiCooldown) return;
     this.state.downloadApiCooldown = undefined;
     this.save();
@@ -2159,6 +2210,10 @@ export class StateManager {
         relation: { ...relation, remoteFiles: [...relationFiles] },
       }];
     });
+  }
+
+  listUploadFailuresForRecoveryPage(cursor: UploadFailureRecoveryCursor | null, limit: number) {
+    return this.database.listUploadFailuresForRecoveryPage(cursor, limit);
   }
 
   countVideosForRemoteVerify(includeDeferred = false) {
