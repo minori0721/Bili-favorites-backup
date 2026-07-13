@@ -709,13 +709,30 @@ export async function listRemoteFilesRecursive(
   return { files, skipped, complete };
 }
 
+function isRemotePathWithin(root: string, target: string) {
+  return root === "/" || target === root || target.startsWith(`${root}/`);
+}
+
 export async function batchRenameRemotePaths(
   config: AppConfig,
   items: RenameRemoteItem[],
   clientOverride?: WebDAVClient
-): Promise<{ success: number; failed: number; results: Array<{ oldPath: string; newPath: string; ok: boolean; error?: string }> }> {
+): Promise<{
+  success: number;
+  failed: number;
+  results: Array<{
+    oldPath: string;
+    newPath: string;
+    ok: boolean;
+    status: "renamed" | "rolled_back" | "stranded" | "conflict" | "missing";
+    actualPath?: string;
+    observedPaths: string[];
+    error?: string;
+  }>;
+}> {
   const client = clientOverride || buildDavClient(config);
   const operationId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
   const prepared = items.map((item, index) => {
     const oldPath = normalizeRemotePath(item.oldPath);
     const newPath = normalizeRemotePath(item.newPath);
@@ -725,8 +742,88 @@ export async function batchRenameRemotePaths(
       tempPath: `${remoteDirname(oldPath)}/__bfb_rename_${operationId}_${index}_${remoteBasename(oldPath)}`,
     };
   });
+
+  const pathExists = async (target: string) => {
+    if (typeof (client as any).exists === "function") return Boolean(await (client as any).exists(target));
+    if (typeof (client as any).stat === "function") {
+      try {
+        await (client as any).stat(target);
+        return true;
+      } catch (error) {
+        if (isRemoteNotFoundError(error)) return false;
+        throw error;
+      }
+    }
+    throw new Error("WebDAV client does not support remote existence checks");
+  };
+  const observe = async (item: typeof prepared[number]) => {
+    let observedPaths: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      observedPaths = [];
+      for (const target of [item.oldPath, item.tempPath, item.newPath]) {
+        if (await pathExists(target)) observedPaths.push(target);
+      }
+      if (observedPaths.length > 0 || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+    const actualPath = observedPaths.length === 1 ? observedPaths[0] : undefined;
+    const status = observedPaths.length > 1
+      ? "conflict"
+      : (actualPath === item.newPath
+        ? "renamed"
+        : (actualPath === item.oldPath ? "rolled_back" : (actualPath === item.tempPath ? "stranded" : "missing")));
+    return { status, actualPath, observedPaths } as const;
+  };
+
+  const sourcePaths = new Set(prepared.map((item) => item.oldPath));
+  const preflight = new Map<typeof prepared[number], { status: "rolled_back" | "conflict" | "missing"; error: string }>();
+  const duplicateTargets = new Set(prepared.filter((item, index) =>
+    prepared.findIndex((other) => other.newPath === item.newPath) !== index
+  ).map((item) => item.newPath));
+  for (const item of prepared) {
+    if (!isRemotePathWithin(root, item.oldPath)
+      || !isRemotePathWithin(root, item.newPath)
+      || remoteDirname(item.oldPath) !== remoteDirname(item.newPath)) {
+      preflight.set(item, { status: "conflict", error: "重命名路径超出当前AList目标或跨目录" });
+      continue;
+    }
+    if (duplicateTargets.has(item.newPath)) {
+      preflight.set(item, { status: "conflict", error: "批次包含重复目标路径" });
+      continue;
+    }
+    if (!await pathExists(item.oldPath)) {
+      preflight.set(item, { status: "missing", error: "源文件不存在" });
+      continue;
+    }
+    if (!sourcePaths.has(item.newPath) && await pathExists(item.newPath)) {
+      preflight.set(item, { status: "conflict", error: "目标文件已存在" });
+      continue;
+    }
+    if (await pathExists(item.tempPath)) {
+      preflight.set(item, { status: "conflict", error: "临时重命名路径已存在" });
+    }
+  }
+  if (preflight.size > 0) {
+    const results = [];
+    for (const item of prepared) {
+      const issue = preflight.get(item);
+      const observed = await observe(item);
+      results.push({
+        oldPath: item.oldPath,
+        newPath: item.newPath,
+        ok: false,
+        status: issue?.status || "rolled_back",
+        actualPath: observed.actualPath,
+        observedPaths: observed.observedPaths,
+        error: issue?.error || "批次预检查失败，未执行重命名",
+      });
+    }
+    return { success: 0, failed: results.length, results };
+  }
+
   const staged: typeof prepared = [];
   const completed: typeof prepared = [];
+  let operationError = "";
   try {
     for (const item of prepared) {
       await client.moveFile(item.oldPath, item.tempPath);
@@ -737,7 +834,7 @@ export async function batchRenameRemotePaths(
       completed.push(item);
     }
   } catch (error: any) {
-    const message = sanitizeUploadText(error?.message || error);
+    operationError = sanitizeUploadText(error?.message || error);
     for (const item of [...completed].reverse()) {
       await client.moveFile(item.newPath, item.oldPath).catch(() => undefined);
     }
@@ -745,13 +842,30 @@ export async function batchRenameRemotePaths(
       if (completed.includes(item)) continue;
       await client.moveFile(item.tempPath, item.oldPath).catch(() => undefined);
     }
-    return {
-      success: 0,
-      failed: prepared.length,
-      results: prepared.map((item) => ({ oldPath: item.oldPath, newPath: item.newPath, ok: false, error: message })),
-    };
   }
+
+  const results = [];
   for (const item of prepared) {
+    const observed = await observe(item);
+    const completedNormally = !operationError && observed.observedPaths.includes(item.newPath);
+    const resolvedObservation = completedNormally
+      ? { status: "renamed" as const, actualPath: item.newPath, observedPaths: observed.observedPaths }
+      : observed;
+    const ok = resolvedObservation.status === "renamed";
+    const error = ok ? undefined : (operationError || (
+      resolvedObservation.status === "rolled_back" ? "重命名失败，已恢复原路径"
+        : resolvedObservation.status === "stranded" ? "重命名失败，文件停留在临时路径"
+          : resolvedObservation.status === "conflict" ? "远端同时存在多个候选路径"
+            : "远端未找到旧路径、临时路径或新路径"
+    ));
+    results.push({
+      oldPath: item.oldPath,
+      newPath: item.newPath,
+      ok,
+      ...resolvedObservation,
+      error,
+    });
+    if (!ok) continue;
     logManager.push({
       timestamp: new Date().toISOString(),
       type: "system",
@@ -762,9 +876,9 @@ export async function batchRenameRemotePaths(
     });
   }
   return {
-    success: prepared.length,
-    failed: 0,
-    results: prepared.map((item) => ({ oldPath: item.oldPath, newPath: item.newPath, ok: true })),
+    success: results.filter((item) => item.ok).length,
+    failed: results.filter((item) => !item.ok).length,
+    results,
   };
 }
 
@@ -789,11 +903,11 @@ export function isRemoteNotFoundError(error: any) {
 export async function deleteRemoteFiles(
   config: AppConfig,
   files: RemoteFileRecord[]
-): Promise<{ success: number; failed: number; results: Array<{ path: string; ok: boolean; error?: string }> }> {
+): Promise<{ success: number; failed: number; results: Array<{ path: string; ok: boolean; error?: string; status?: number; code?: string }> }> {
   const client = buildDavClient(config);
   let success = 0;
   let failed = 0;
-  const results: Array<{ path: string; ok: boolean; error?: string }> = [];
+  const results: Array<{ path: string; ok: boolean; error?: string; status?: number; code?: string }> = [];
 
   for (const file of files) {
     const targetPath = normalizeRemotePath(file.path);
@@ -816,8 +930,10 @@ export async function deleteRemoteFiles(
         continue;
       }
       failed++;
-      const message = error?.message || String(error);
-      results.push({ path: targetPath, ok: false, error: message });
+      const message = sanitizeUploadText(error?.message || error);
+      const status = Number(error?.status || error?.response?.status || error?.statusCode || 0) || undefined;
+      const code = String(error?.code || error?.cause?.code || "") || undefined;
+      results.push({ path: targetPath, ok: false, error: message, status, code });
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",

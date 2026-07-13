@@ -172,6 +172,18 @@ export class PersistentJobStore {
     return { updated: true, exhausted: false, attempts };
   }
 
+  retryIndefinitely(id: string, leaseOwner: string, error: string, notBefore: number) {
+    const now = Date.now();
+    const row = this.stateDatabase.db.prepare("SELECT attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
+    if (!row) return { updated: false, attempts: 0 };
+    const attempts = Number(row.attempts || 0) + 1;
+    const updated = this.stateDatabase.db.prepare(`
+      UPDATE jobs SET status='retry_wait', attempts=?, not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+        last_error=?, updated_at=? WHERE id=? AND lease_owner=?
+    `).run(attempts, Math.max(now, Math.floor(notBefore)), error.slice(0, 1000), now, id, leaseOwner).changes === 1;
+    return { updated, attempts };
+  }
+
   defer(id: string, leaseOwner: string, error: string, notBefore: number) {
     const now = Date.now();
     return this.stateDatabase.db.prepare(`
@@ -303,6 +315,55 @@ export class PersistentJobStore {
       UPDATE jobs SET status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
       WHERE kind IN (${placeholders}) AND status IN ('pending','retry_wait')
     `).run(now, now, ...kinds).changes;
+  }
+
+  listUserDependentJobs(userId: string) {
+    const id = String(userId || "");
+    return (this.stateDatabase.db.prepare(`
+      SELECT * FROM jobs
+      WHERE kind IN ('download','quality_download')
+        AND (user_id=? OR json_extract(payload_json, '$.primaryUserId')=?
+          OR json_extract(payload_json, '$.downloadUserId')=? OR json_extract(payload_json, '$.userId')=?)
+      ORDER BY created_at ASC
+    `).all(id, id, id, id) as any[]).map(rowToJob);
+  }
+
+  reassignDownloadJob(id: string, downloadUserId: string, payload: Record<string, unknown>) {
+    const now = Date.now();
+    return this.stateDatabase.db.prepare(`
+      UPDATE jobs SET user_id=CASE WHEN kind='quality_download' THEN ? ELSE user_id END,
+        payload_json=?, status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+        last_error=NULL, updated_at=? WHERE id=? AND kind IN ('download','quality_download')
+    `).run(downloadUserId, JSON.stringify({ ...payload, downloadUserId, pausedForUserId: undefined }), now, now, id).changes === 1;
+  }
+
+  pauseDetachedUserJob(id: string, userId: string, payload: Record<string, unknown>) {
+    const now = Date.now();
+    return this.stateDatabase.db.prepare(`
+      UPDATE jobs SET payload_json=?, status='retry_wait', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+        last_error='等待原账号重新登录', updated_at=? WHERE id=? AND kind IN ('download','quality_download')
+    `).run(JSON.stringify({ ...payload, pausedForUserId: userId }), Number.MAX_SAFE_INTEGER, now, id).changes === 1;
+  }
+
+  resumeDetachedUserJobs(userId: string, now = Date.now()) {
+    const jobs = (this.stateDatabase.db.prepare(`
+      SELECT * FROM jobs WHERE kind IN ('download','quality_download')
+        AND json_extract(payload_json, '$.pausedForUserId')=?
+    `).all(userId) as any[]).map(rowToJob);
+    const update = this.stateDatabase.db.prepare(`
+      UPDATE jobs SET user_id=CASE WHEN kind='quality_download' THEN ? ELSE user_id END,
+        payload_json=?, status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+        last_error=NULL, updated_at=? WHERE id=?
+    `);
+    const transaction = this.stateDatabase.db.transaction(() => {
+      for (const job of jobs) {
+        const payload = { ...job.payload, downloadUserId: userId };
+        delete (payload as any).pausedForUserId;
+        update.run(userId, JSON.stringify(payload), now, now, job.id);
+      }
+    });
+    transaction();
+    return jobs.length;
   }
 
   cancelUserDependentJobs(userId: string) {

@@ -39,5 +39,16 @@ export async function createTestDir(prefix: string) {
 }
 
 export async function removeTestDir(target: string) {
-  await fs.promises.rm(target, { recursive: true, force: true });
+  const retryableCodes = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+  const maxAttempts = 20;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await fs.promises.rm(target, { recursive: true, force: true });
+      return;
+    } catch (error: any) {
+      if (!retryableCodes.has(error?.code) || attempt === maxAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 }

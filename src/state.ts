@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { dataDir } from "./paths.js";
 import { historySessionGroups, readDownloadSession } from "./download-session.js";
 import type { PersistedDownloadApiCooldown } from "./download-api-health.js";
@@ -376,6 +377,11 @@ function failedKey(mediaId: number, bvid: string) {
 
 function folderKey(userId: string, mediaId: number) {
   return `${userId}:${mediaId}`;
+}
+
+export interface DatabaseReplacementHandle {
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
 }
 
 export class StateManager {
@@ -967,6 +973,7 @@ export class StateManager {
       relation.folderTitle = folderTitle;
       relation.lastSeenAt = seenAt;
       relation.activeInFavorite = true;
+      relation.accountDetachedAt = undefined;
       relation.favoriteUnavailable = favoriteUnavailable || undefined;
       relation.selfVisible = item.selfVisible || undefined;
       if (Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0) {
@@ -1416,6 +1423,21 @@ export class StateManager {
         if (!tracked) continue;
         tracked.activeInFavorite = false;
         tracked.accountDetachedAt = detachedAt;
+        changed += 1;
+      }
+    });
+    return changed;
+  }
+
+  reattachUserRelations(userId: string) {
+    let changed = 0;
+    const relations = this.database.listRelationsForUser(userId);
+    this.runBatch(() => {
+      for (const relation of relations) {
+        const tracked = this.getRelation(userId, relation.mediaId, relation.bvid);
+        if (!tracked || !tracked.accountDetachedAt) continue;
+        tracked.accountDetachedAt = undefined;
+        tracked.activeInFavorite = true;
         changed += 1;
       }
     });
@@ -2218,56 +2240,79 @@ export class StateManager {
   }
 
   renameRemoteFile(bvid: string, oldPath: string, newPath: string) {
+    return this.renameRemoteFilesBatch(bvid, [{ oldPath, newPath }]);
+  }
+
+  renameRemoteFilesBatch(bvid: string, renames: Array<{ oldPath: string; newPath: string }>) {
     const entry = this.state.videos?.[bvid];
-    if (!entry) return false;
+    if (!entry || renames.length === 0) return false;
     const at = nowIso();
-    const oldName = path.posix.basename(oldPath);
-    const newName = path.posix.basename(newPath);
-    const oldDir = path.posix.dirname(oldPath);
-    const newDir = path.posix.dirname(newPath);
+    const normalized = renames.map((item) => ({
+      oldPath: item.oldPath.replace(/\\/g, "/"),
+      newPath: item.newPath.replace(/\\/g, "/"),
+      oldName: path.posix.basename(item.oldPath.replace(/\\/g, "/")),
+      newName: path.posix.basename(item.newPath.replace(/\\/g, "/")),
+      oldDir: path.posix.dirname(item.oldPath.replace(/\\/g, "/")),
+      newDir: path.posix.dirname(item.newPath.replace(/\\/g, "/")),
+    }));
+    const byOldPath = new Map(normalized.map((item) => [item.oldPath, item]));
+    const byOldNameDir = new Map<string, typeof normalized[number] | null>();
+    for (const item of normalized) {
+      const key = `${item.oldDir}\0${item.oldName}`;
+      byOldNameDir.set(key, byOldNameDir.has(key) ? null : item);
+    }
     const updateFiles = (files?: RemoteFileRecord[]) => {
-      if (!Array.isArray(files)) return false;
-      let changed = false;
+      if (!Array.isArray(files)) return new Set<string>();
+      const matched = new Set<string>();
+      const updates: Array<{ file: RemoteFileRecord; target: typeof normalized[number] }> = [];
       for (const file of files) {
-        if (file.path === oldPath) {
-          file.path = newPath;
-          file.name = newName;
-          changed = true;
-        } else if (file.name === oldName && path.posix.dirname(file.path) === oldDir) {
-          file.path = newPath;
-          file.name = newName;
-          changed = true;
-        }
+        const filePath = file.path.replace(/\\/g, "/");
+        const direct = byOldPath.get(filePath);
+        const fallback = direct ? undefined : byOldNameDir.get(`${path.posix.dirname(filePath)}\0${file.name}`);
+        const target = direct || fallback || undefined;
+        if (target) updates.push({ file, target });
       }
-      return changed;
+      for (const { file, target } of updates) {
+        file.path = target.newPath;
+        file.name = target.newName;
+        matched.add(target.oldPath);
+      }
+      return matched;
     };
-    let changed = updateFiles(entry.remoteFiles);
-    if (!changed) {
-      entry.remoteFiles ||= [];
-      if (!entry.remoteFiles.some((file) => file.path === newPath)) {
-        entry.remoteFiles.push({ name: newName, path: newPath });
+    const entryMatches = updateFiles(entry.remoteFiles);
+    let changed = entryMatches.size > 0;
+    entry.remoteFiles ||= [];
+    for (const item of normalized) {
+      if (!entryMatches.has(item.oldPath) && !entry.remoteFiles.some((file) => file.path === item.newPath)) {
+        entry.remoteFiles.push({ name: item.newName, path: item.newPath });
         changed = true;
       }
     }
     this.setVideoStatus(entry, "verified", at);
-    entry.remotePath = newDir;
+    const entryRename = normalized.find((item) => !entry.remotePath || entry.remotePath === item.oldDir || entry.remotePath === item.newDir);
+    if (entryRename) entry.remotePath = entryRename.newDir;
     entry.verifiedAt = at;
     entry.lastRemoteCheckAt = at;
     entry.nextRemoteCheckAt = undefined;
     entry.remoteMissingCount = 0;
     entry.lastError = undefined;
-    for (const relation of this.listRelationsForBvid(bvid)) {
-      const relationChanged = updateFiles(relation.remoteFiles);
+    for (const relationSnapshot of this.listRelationsForBvid(bvid)) {
+      const relation = this.getRelation(relationSnapshot.userId, relationSnapshot.mediaId, bvid);
+      if (!relation) continue;
+      const relationMatches = updateFiles(relation.remoteFiles);
       const relationDir = relation.remotePath || path.posix.dirname(relation.remoteFiles?.[0]?.path || "");
-      if (!relationChanged && (!relationDir || relationDir === oldDir || relationDir === newDir)) {
+      const relevant = normalized.filter((item) => !relationDir || relationDir === item.oldDir || relationDir === item.newDir);
+      if (relevant.length > 0) {
         relation.remoteFiles ||= [];
-        if (!relation.remoteFiles.some((file) => file.path === newPath)) {
-          relation.remoteFiles.push({ name: newName, path: newPath });
+        for (const item of relevant) {
+          if (!relationMatches.has(item.oldPath) && !relation.remoteFiles.some((file) => file.path === item.newPath)) {
+            relation.remoteFiles.push({ name: item.newName, path: item.newPath });
+          }
         }
       }
-      if (relationChanged || relationDir === oldDir || relationDir === newDir || !relationDir) {
+      if (relationMatches.size > 0 || relevant.length > 0) {
         this.setRelationStatus(relation, "verified", at);
-        relation.remotePath = newDir;
+        relation.remotePath = relevant[0]?.newDir || relation.remotePath;
         relation.verifiedAt = at;
         relation.lastRemoteCheckAt = at;
         relation.nextRemoteCheckAt = undefined;
@@ -2898,16 +2943,38 @@ export class StateManager {
     await this.database.backupTo(destination);
   }
 
-  async replaceDatabaseFile(source: string) {
+  private reloadDatabaseView() {
+    this.videoCache.clear();
+    this.relationCache.clear();
+    this.videoDeletes.clear();
+    this.relationDeletes.clear();
+    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
+    this.lazyState = true;
+    this.resetDirtySet();
+  }
+
+  async beginDatabaseReplacement(source: string): Promise<DatabaseReplacementHandle> {
     if (this.dbPath === ":memory:") {
       const imported = new StateDatabase(source);
+      const previousState = this.snapshotState();
       try {
         imported.integrityCheck();
         this.replaceStateSnapshot(imported.loadState());
+      } catch (error) {
+        this.replaceStateSnapshot(previousState);
+        throw error;
       } finally {
         imported.close();
       }
-      return;
+      let settled = false;
+      return {
+        commit: async () => { settled = true; },
+        rollback: async () => {
+          if (settled) return;
+          this.replaceStateSnapshot(previousState);
+          settled = true;
+        },
+      };
     }
     const validation = new StateDatabase(source);
     try {
@@ -2916,32 +2983,56 @@ export class StateManager {
       validation.close();
     }
     this.flush();
-    const replacement = `${this.dbPath}.importing`;
-    const previous = `${this.dbPath}.before-import`;
+    const operationId = crypto.randomUUID().replace(/-/g, "");
+    const replacement = `${this.dbPath}.importing-${operationId}`;
+    const previous = `${this.dbPath}.before-import-${operationId}`;
     for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${replacement}${suffix}`, { force: true });
     fs.copyFileSync(source, replacement);
     this.database.close();
     for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${previous}${suffix}`, { force: true });
     try {
-      if (fs.existsSync(this.dbPath)) fs.renameSync(this.dbPath, previous);
+      for (const suffix of ["", "-wal", "-shm"]) {
+        if (fs.existsSync(`${this.dbPath}${suffix}`)) fs.renameSync(`${this.dbPath}${suffix}`, `${previous}${suffix}`);
+      }
       fs.renameSync(replacement, this.dbPath);
       this.database = new StateDatabase(this.dbPath);
       this.database.integrityCheck();
-      fs.rmSync(previous, { force: true });
+      this.reloadDatabaseView();
     } catch (error) {
       try { if (this.database?.db?.open) this.database.close(); } catch {}
-      fs.rmSync(this.dbPath, { force: true });
-      if (fs.existsSync(previous)) fs.renameSync(previous, this.dbPath);
+      for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
+      for (const suffix of ["", "-wal", "-shm"]) {
+        if (fs.existsSync(`${previous}${suffix}`)) fs.renameSync(`${previous}${suffix}`, `${this.dbPath}${suffix}`);
+      }
       this.database = new StateDatabase(this.dbPath);
+      this.reloadDatabaseView();
       throw error;
     }
-    this.videoCache.clear();
-    this.relationCache.clear();
-    this.videoDeletes.clear();
-    this.relationDeletes.clear();
-    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
-    this.lazyState = true;
-    this.resetDirtySet();
+    let settled = false;
+    return {
+      commit: async () => {
+        if (settled) return;
+        for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${previous}${suffix}`, { force: true });
+        settled = true;
+      },
+      rollback: async () => {
+        if (settled) return;
+        this.database.close();
+        for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
+        for (const suffix of ["", "-wal", "-shm"]) {
+          if (fs.existsSync(`${previous}${suffix}`)) fs.renameSync(`${previous}${suffix}`, `${this.dbPath}${suffix}`);
+        }
+        this.database = new StateDatabase(this.dbPath);
+        this.database.integrityCheck();
+        this.reloadDatabaseView();
+        settled = true;
+      },
+    };
+  }
+
+  async replaceDatabaseFile(source: string) {
+    const replacement = await this.beginDatabaseReplacement(source);
+    await replacement.commit();
   }
 
   replaceStateSnapshot(state: StateFile) {

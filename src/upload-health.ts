@@ -1,3 +1,5 @@
+import { sanitizeDiagnosticText } from "./diagnostics.js";
+
 export type UploadFailureCategory =
   | "auth"
   | "deterministic"
@@ -40,8 +42,6 @@ const NETWORK_CODES = new Set([
   "EHOSTUNREACH",
 ]);
 
-const SENSITIVE_KEY = "authorization|cookie|token|session(?:key)?|password|passwd|secret|sign(?:ature)?|access[_-]?key|refresh[_-]?token";
-
 function stringifyErrorDetail(value: unknown) {
   if (typeof value === "string") return value;
   if (Buffer.isBuffer(value)) return value.toString("utf-8");
@@ -56,13 +56,11 @@ function stringifyErrorDetail(value: unknown) {
 }
 
 export function sanitizeUploadText(value: unknown, maxLength = 500) {
-  let text = stringifyErrorDetail(value).replace(/[\r\n\t]+/g, " ").trim();
-  text = text.replace(/(https?:\/\/)([^\s\/@:]+):([^\s\/@]+)@/gi, "$1[REDACTED]@");
-  text = text.replace(/(authorization\s*[:=]\s*)(?:(?:bearer|basic)\s+)?[^,;\s]+/gi, "$1[REDACTED]");
-  text = text.replace(new RegExp(`([?&](?:${SENSITIVE_KEY})=)[^&\\s]+`, "gi"), "$1[REDACTED]");
-  text = text.replace(new RegExp(`(\"(?:${SENSITIVE_KEY})\"\\s*:\\s*\")[^\"]*`, "gi"), "$1[REDACTED]");
-  text = text.replace(new RegExp(`((?:${SENSITIVE_KEY})\\s*[:=]\\s*)[^,;\\s\"'&}\\]]+`, "gi"), "$1[REDACTED]");
-  return text.slice(0, maxLength) || "Unknown upload error";
+  const text = sanitizeDiagnosticText(stringifyErrorDetail(value), maxLength)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\[redacted\]/gi, "[REDACTED]")
+    .trim();
+  return text || "Unknown upload error";
 }
 
 export async function captureUploadResponseBody(error: any, maxBytes = 4096) {

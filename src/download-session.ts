@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { isBBDownCredentialDirectoryName } from "./credential-temp.js";
 import type { AppConfig } from "./config.js";
 import { writeJsonFile } from "./storage.js";
 
@@ -827,6 +828,11 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const downloadDir = path.join(rootDir, entry.name);
+    if (isBBDownCredentialDirectoryName(entry.name)) {
+      await fs.promises.rm(downloadDir, { recursive: true, force: true });
+      result.removedDirectories += 1;
+      continue;
+    }
     if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE))) {
       result.removedBytes += directorySizeSync(downloadDir);
       await fs.promises.rm(downloadDir, { recursive: true, force: true });
@@ -879,6 +885,9 @@ export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySu
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = path.join(rootDir, entry.name);
+    if (isBBDownCredentialDirectoryName(entry.name)) {
+      continue;
+    }
     const bytes = directorySizeSync(dir);
     if (fs.existsSync(path.join(dir, DOWNLOAD_RETAINED_FILE))) {
       summary.cleanupEligibleBytes += bytes;

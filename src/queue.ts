@@ -139,6 +139,21 @@ export class TaskQueue extends EventEmitter {
     return [...this.queue];
   }
 
+  removePendingTasks(predicate: (task: Task) => boolean) {
+    const removed = this.queue.filter((task) =>
+      (task.status === "pending" || task.status === "retry_wait") && predicate(task)
+    );
+    if (removed.length === 0) return [];
+    const removedIds = new Set(removed.map((task) => task.id));
+    this.queue = this.queue.filter((task) => !removedIds.has(task.id));
+    for (const task of removed) {
+      task.status = "error";
+      this.emit("taskSettled", task);
+    }
+    this.processQueue();
+    return removed;
+  }
+
   getActiveCount() {
     return this.activeCount;
   }

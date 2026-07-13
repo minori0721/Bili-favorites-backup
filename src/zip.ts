@@ -22,7 +22,13 @@ function updateCrc32(crc: number, buffer: Buffer) {
   return next;
 }
 
-export async function createZipFromSources(sources: Array<{ root: string; prefix: string | false }>, outputPath: string) {
+export interface ZipSource {
+  root: string;
+  prefix: string | false;
+  files?: string[];
+}
+
+export async function createZipFromSources(sources: ZipSource[], outputPath: string) {
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(outputPath);
@@ -31,7 +37,17 @@ export async function createZipFromSources(sources: Array<{ root: string; prefix
     output.once("error", reject);
     archive.once("error", reject);
     archive.pipe(output);
-    for (const source of sources) archive.directory(source.root, source.prefix);
+    for (const source of sources) {
+      if (!source.files) {
+        archive.directory(source.root, source.prefix);
+        continue;
+      }
+      for (const relative of source.files) {
+        const normalized = relative.replace(/\\/g, "/").replace(/^\/+/, "");
+        const name = source.prefix ? path.posix.join(source.prefix, normalized) : normalized;
+        archive.file(path.join(source.root, relative), { name });
+      }
+    }
     void archive.finalize();
   });
 }

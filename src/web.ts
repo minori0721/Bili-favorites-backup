@@ -1764,8 +1764,20 @@ function getAppScript() {
         const failed = Number(result.failed || 0);
         const allResults = Array.isArray(result.results) ? result.results : [];
         const lines = ['完成：成功 ' + success + ' 个，失败 ' + failed + ' 个。'];
+        const statusLabels = {
+          renamed: '已完成',
+          rolled_back: '已回滚',
+          stranded: '需人工处理（停在临时路径）',
+          conflict: '需人工处理（多路径冲突）',
+          missing: '需人工处理（文件缺失）'
+        };
         allResults.forEach((item) => {
-          lines.push((item.ok ? '成功：' : '失败：') + item.oldPath + ' → ' + item.newPath + (item.error ? '，原因：' + item.error : ''));
+          const label = statusLabels[item.status] || (item.ok ? '已完成' : '失败');
+          const actual = item.actualPath ? '，实际路径：' + item.actualPath : '';
+          const observed = Array.isArray(item.observedPaths) && item.observedPaths.length > 1
+            ? '，检测到：' + item.observedPaths.join('、')
+            : '';
+          lines.push(label + '：' + item.oldPath + ' → ' + item.newPath + actual + observed + (item.error ? '，原因：' + item.error : ''));
         });
         resultBlock.textContent = lines.join('\\n');
         showToast('远端重命名完成', failed ? 'info' : 'success');
@@ -1944,7 +1956,8 @@ function getAppScript() {
         const running = Array.isArray(data.running) ? data.running : [];
         const completed = Array.isArray(data.completed) ? data.completed : [];
         if (!running.length && !completed.length) return;
-        setStatus(st, '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。', 'muted');
+        const cleanupRetrying = running.filter((item) => item.stageLabel === '旧文件清理重试中').length;
+        setStatus(st, '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。' + (cleanupRetrying ? ' 旧文件清理重试中 ' + cleanupRetrying + ' 个。' : ''), 'muted');
       } catch(e) {
         setStatus(st, '画质重调状态读取失败: ' + e.message, 'error');
       }

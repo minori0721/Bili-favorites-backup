@@ -23,21 +23,25 @@ export interface LogEntry {
 const MAX_LOG_ENTRIES = 500;
 export const logsPath = path.join(dataDir, "logs.json");
 
-class LogManager extends EventEmitter {
-  private entries: LogEntry[] = readJsonFile<LogEntry[]>(logsPath, []);
+export class LogManager extends EventEmitter {
+  private entries: LogEntry[];
   private persistTimer: NodeJS.Timeout | null = null;
+  private readonly filePath: string;
+
+  constructor(filePath = logsPath) {
+    super();
+    this.filePath = filePath;
+    this.entries = this.sanitizeEntries(readJsonFile<LogEntry[]>(this.filePath, []));
+  }
 
   push(entry: LogEntry) {
-    this.entries.push({
-      ...entry,
-      summary: sanitizeDiagnosticText(entry.summary, 1_000),
-      raw: sanitizeDiagnosticText(entry.raw, 2_000),
-    });
+    const sanitizedEntry = this.sanitizeEntry(entry);
+    this.entries.push(sanitizedEntry);
     if (this.entries.length > MAX_LOG_ENTRIES) {
       this.entries.splice(0, this.entries.length - MAX_LOG_ENTRIES);
     }
     this.schedulePersist();
-    this.emit("log", entry);
+    this.emit("log", sanitizedEntry);
   }
 
   getAll(): LogEntry[] {
@@ -45,7 +49,7 @@ class LogManager extends EventEmitter {
   }
 
   reload() {
-    this.entries = readJsonFile<LogEntry[]>(logsPath, []);
+    this.entries = this.sanitizeEntries(readJsonFile<LogEntry[]>(this.filePath, []));
     return this.getAll();
   }
 
@@ -56,7 +60,7 @@ class LogManager extends EventEmitter {
       this.persistTimer = null;
     }
     try {
-      fs.rmSync(logsPath, { force: true });
+      fs.rmSync(this.filePath, { force: true });
     } catch {
       // ignore log cleanup failure
     }
@@ -67,7 +71,7 @@ class LogManager extends EventEmitter {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
-    writeJsonFile(logsPath, this.entries);
+    writeJsonFile(this.filePath, this.entries);
   }
 
   close() {
@@ -81,8 +85,20 @@ class LogManager extends EventEmitter {
     }
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      writeJsonFile(logsPath, this.entries);
+      writeJsonFile(this.filePath, this.entries);
     }, 300);
+  }
+
+  private sanitizeEntry(entry: LogEntry): LogEntry {
+    return {
+      ...entry,
+      summary: sanitizeDiagnosticText(entry.summary, 1_000),
+      raw: sanitizeDiagnosticText(entry.raw, 2_000),
+    };
+  }
+
+  private sanitizeEntries(entries: LogEntry[]) {
+    return Array.isArray(entries) ? entries.map((entry) => this.sanitizeEntry(entry)) : [];
   }
 }
 

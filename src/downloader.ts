@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { tempDir } from "./paths.js";
+import { createBBDownCredentialDirectory } from "./credential-temp.js";
 import { buildCookieString, BiliCookie } from "./users.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
 import { logManager, parseBBDownOutput } from "./logger.js";
@@ -441,8 +442,7 @@ function replaceOptionValue(args: string[], option: string, value: string) {
 }
 
 async function createBBDownCredentialConfig(cookieString: string, appAccessToken: string) {
-  await fs.promises.mkdir(tempDir, { recursive: true });
-  const configDir = await fs.promises.mkdtemp(path.join(tempDir, "bbdown-credentials-"));
+  const configDir = await createBBDownCredentialDirectory();
   const configPath = path.join(configDir, "BBDown.config");
   const lines: string[] = [];
   if (cookieString) {
@@ -452,6 +452,7 @@ async function createBBDownCredentialConfig(cookieString: string, appAccessToken
     lines.push(`--access-token ${sanitizeCredentialLine(appAccessToken)}`);
   }
   await fs.promises.writeFile(configPath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.promises.chmod(configPath, 0o600);
   return {
     configPath,
     sensitiveValues: [cookieString, appAccessToken].filter((value) => value.length > 0),

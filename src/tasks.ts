@@ -273,6 +273,20 @@ export class QualityUpgradeTask extends Task {
   async runCleanupPhase() {
     this.qualityStageLabel = "清理旧文件备份";
     this.deleteResult = await deleteRemoteFiles(this.config, this.backupFiles || []);
+    if (this.deleteResult.failed > 0) {
+      const failedItems = this.deleteResult.results.filter((item) => !item.ok);
+      const failedPaths = failedItems
+        .map((item) => item.path)
+        .slice(0, 5);
+      this.qualityStageLabel = "旧文件清理重试中";
+      const first = failedItems[0];
+      const error: any = new Error(
+        `Failed to delete ${this.deleteResult.failed} old quality backup file(s): ${failedPaths.join(", ")}${first?.error ? `; ${first.error}` : ""}`
+      );
+      if (first?.status) error.status = first.status;
+      if (first?.code) error.code = first.code;
+      throw error;
+    }
     this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
     if (this.downloadDir && (this.shouldCleanupLocal?.() ?? true)) await cleanupUploadedSessionFiles(this.downloadDir);

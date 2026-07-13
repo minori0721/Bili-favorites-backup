@@ -20,6 +20,7 @@ import {
   resolveSelfVisibleFavoriteItem,
 } from "./bili.js";
 import { normalizeEncodingPriority, normalizeQualityPriority, shutdownActiveDownloads } from "./downloader.js";
+import { cleanupStaleBBDownCredentialDirectories } from "./credential-temp.js";
 import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadRecoverySync, readDownloadSession } from "./download-session.js";
 import { clearDirectoryContents } from "./storage.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
@@ -37,7 +38,7 @@ import {
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
 import { sqlitePaths } from "./database.js";
-import { safeErrorSummary } from "./diagnostics.js";
+import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
 import { renderArchivedFilename } from "./filename.js";
 import {
   applyMigrationPackageFile,
@@ -45,6 +46,7 @@ import {
   estimateMigrationExport,
   previewMigrationPackageFile,
 } from "./migration.js";
+import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
 
 ensureAppDirs();
 
@@ -86,10 +88,20 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 async function startAfterRecovery() {
+  await cleanupBBDownCredentialResidue().catch((error) => {
+    console.warn(`[Security] Failed to clean stale BBDown credential directories: ${safeErrorSummary(error)}`);
+  });
   await recoverInterruptedQualityUpgrades();
   await recoverInterruptedQualityDownloads();
   scheduler.resumePersistedWorkOnStartup();
   scheduler.start();
+}
+
+async function cleanupBBDownCredentialResidue() {
+  const roots = new Set([os.tmpdir(), tempDir]);
+  let removed = 0;
+  for (const root of roots) removed += await cleanupStaleBBDownCredentialDirectories(root);
+  return removed;
 }
 
 async function recoverInterruptedQualityDownloads() {
@@ -140,7 +152,7 @@ function formatExpiresText(expires?: number) {
 
 function buildAuthHealth(user: BiliUser) {
   const autoRefreshEnabled = Boolean(user.accessToken && user.refreshToken);
-  const lastError = user.lastAuthRefreshError || "";
+  const lastError = sanitizeDiagnosticText(user.lastAuthRefreshError || "", 500);
   const expired = Boolean(user.expires && user.expires <= Date.now());
   const expiringSoon = Boolean(user.expires && user.expires > Date.now() && user.expires - Date.now() < 10 * 24 * 60 * 60 * 1000);
   const needsManualLogin = !autoRefreshEnabled || Boolean(lastError);
@@ -234,7 +246,7 @@ function startTokenRefreshLoop() {
               console.log(`[Auth] Token refreshed for user ${user.name}`);
             } catch (error: any) {
               userStore.updatePartial(user.id, {
-                lastAuthRefreshError: error?.message || String(error),
+                lastAuthRefreshError: safeErrorSummary(error),
               });
               console.warn(`[Auth] Token refresh failed for user ${user.name}: ${safeErrorSummary(error)}`);
             }
@@ -265,6 +277,8 @@ const adminUser = process.env.ADMIN_USER || "admin";
 const adminPass = process.env.ADMIN_PASS || "admin";
 const cookieExportEnabled = process.env.ALLOW_COOKIE_EXPORT !== "false";
 const secureSessionCookie = process.env.COOKIE_SECURE === "true";
+
+const loginRateLimiter = createLoginRateLimiter();
 
 app.set("trust proxy", 1);
 
@@ -520,7 +534,7 @@ app.get("/", (req, res) => {
   res.send(renderAppPage());
 });
 
-app.post("/api/login", requireSameOrigin, (req, res) => {
+app.post("/api/login", requireSameOrigin, loginRateLimiter, (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
   if (username === adminUser && password === adminPass) {
     req.session.regenerate((error) => {
@@ -579,7 +593,7 @@ app.get("/api/users", (req, res) => {
     expires: user.expires || 0,
     expiresText: formatExpiresText(user.expires),
     lastAuthRefreshAt: user.lastAuthRefreshAt || "",
-    lastAuthRefreshError: user.lastAuthRefreshError || "",
+    lastAuthRefreshError: sanitizeDiagnosticText(user.lastAuthRefreshError || "", 500),
     authHealth: buildAuthHealth(user),
   }));
   res.json({ success: true, data: users });
@@ -617,21 +631,22 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
           lastAuthRefreshAt: new Date().toISOString(),
           lastAuthRefreshError: "",
         });
+        scheduler.restoreUserAfterLogin(userId);
         scheduler.wakeChargingAccessProbes();
         setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
-        setLoginSession(loginId, { status: "error", qrDataUrl, message: error?.message || "Failed to save user" });
+        setLoginSession(loginId, { status: "error", qrDataUrl, message: safeErrorSummary(error, "Failed to save user") });
       }
     });
 
     login.emitter.on("error", (error: any) => {
-      const msg = error?.data?.message || error?.message || "Login failed";
+      const msg = safeErrorSummary({ message: error?.data?.message || error?.message }, "Login failed");
       setLoginSession(loginId, { status: "error", qrDataUrl, message: msg });
     });
 
     res.json({ success: true, data: { loginId, qrDataUrl } });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Failed to start login" });
+    res.status(500).json({ success: false, message: safeErrorSummary(err, "Failed to start login") });
   }
 }));
 
@@ -663,7 +678,7 @@ app.post("/api/users/:id/refresh-auth", asyncHandler(async (req, res) => {
       expires: updated?.expires || 0,
       expiresText: formatExpiresText(updated?.expires),
       lastAuthRefreshAt: updated?.lastAuthRefreshAt || "",
-      lastAuthRefreshError: updated?.lastAuthRefreshError || "",
+      lastAuthRefreshError: sanitizeDiagnosticText(updated?.lastAuthRefreshError || "", 500),
       authHealth: updated ? buildAuthHealth(updated) : null,
     },
   });
@@ -932,7 +947,7 @@ app.post("/api/sync/now", asyncHandler(async (req, res) => {
     }
     res.status(409).json({ success: false, message: "A sync task is already running" });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Sync failed" });
+    res.status(500).json({ success: false, message: safeErrorSummary(err, "Sync failed") });
   }
 }));
 
@@ -949,7 +964,7 @@ app.post("/api/sync/reconcile", asyncHandler(async (_req, res) => {
     }
     res.status(409).json({ success: false, message: "A sync task is already running" });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Reconcile failed" });
+    res.status(500).json({ success: false, message: safeErrorSummary(err, "Reconcile failed") });
   }
 }));
 
@@ -966,7 +981,7 @@ app.post("/api/sync/reconcile-remote", asyncHandler(async (_req, res) => {
     }
     res.status(409).json({ success: false, message: "A sync task is already running" });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || "Remote reconcile failed" });
+    res.status(500).json({ success: false, message: safeErrorSummary(err, "Remote reconcile failed") });
   }
 }));
 
@@ -1138,7 +1153,7 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
         await removeCleanupTarget(item);
         results.push({ key: item, label: cleanupItems[item].label, ok: true });
       } catch (error: any) {
-        results.push({ key: item, label: cleanupItems[item].label, ok: false, error: error?.message || String(error) });
+        results.push({ key: item, label: cleanupItems[item].label, ok: false, error: safeErrorSummary(error) });
       }
     }
     return results;
@@ -1254,6 +1269,7 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
       restoreCovers: parseBooleanOption(req.query.restoreCovers, true),
       restoreLogs: parseBooleanOption(req.query.restoreLogs, false),
       restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
+      reload: reloadStoresAfterImport,
     }, stateManager));
   } catch (error: any) {
     if (error?.statusCode === 409) throw error;
@@ -1261,7 +1277,6 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
   } finally {
     await fs.promises.rm(upload.root, { recursive: true, force: true });
   }
-  reloadStoresAfterImport();
   res.json({ success: true, data: result });
 }));
 
@@ -1284,7 +1299,7 @@ function remoteDirname(value: string) {
 function isRemotePathUnder(root: string, target: string) {
   const normalizedRoot = normalizeRemotePath(root);
   const normalizedTarget = normalizeRemotePath(target);
-  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+  return normalizedRoot === "/" || normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
 }
 
 function extractBvid(value: string) {
@@ -1755,14 +1770,17 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
       safeItems.push({ bvid, oldPath, newPath });
     }
     const result = await batchRenameRemotePaths(config, safeItems);
+    const stateRenames = new Map<string, Array<{ oldPath: string; newPath: string }>>();
     for (const item of result.results) {
-      if (!item.ok) continue;
       const source = safeItems.find((candidate) => candidate.oldPath === item.oldPath && candidate.newPath === item.newPath);
       const bvid = source?.bvid || extractBvid(item.oldPath) || extractBvid(item.newPath);
-      if (bvid) {
-        stateManager.renameRemoteFile(bvid, item.oldPath, item.newPath);
+      if (bvid && item.actualPath && item.actualPath !== item.oldPath) {
+        const itemsForBvid = stateRenames.get(bvid) || [];
+        itemsForBvid.push({ oldPath: item.oldPath, newPath: item.actualPath });
+        stateRenames.set(bvid, itemsForBvid);
       }
     }
+    for (const [bvid, renames] of stateRenames) stateManager.renameRemoteFilesBatch(bvid, renames);
     res.json({ success: true, data: result });
     return;
   }
@@ -1783,7 +1801,9 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 export async function closeAppResources() {
   scheduler.beginShutdown();
+  await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
+  await cleanupBBDownCredentialResidue().catch(() => undefined);
   logManager.close();
 }
 
@@ -1793,6 +1813,14 @@ if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.PORT || 3000);
   const server = app.listen(port, () => {
     console.log(`Server listening on http://localhost:${port}`);
+    for (const warning of collectSecurityConfigurationWarnings({
+      adminPassword: adminPass,
+      sessionSecret,
+      secureSessionCookie,
+      cookieExportEnabled,
+    })) {
+      console.warn(`[Security] ${warning}`);
+    }
     console.log(`[Runtime] BBDown release ${process.env.BBDOWN_RELEASE || "local"}; source commit ${process.env.BBDOWN_COMMIT || BBDOWN_SOURCE_COMMIT}; FFmpeg ${process.env.FFMPEG_VERSION || "system"}; aria2 resume enabled`);
   });
   let shuttingDown = false;
@@ -1807,6 +1835,9 @@ if (process.env.NODE_ENV !== "test") {
     });
     await scheduler.shutdown(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to checkpoint state database cleanly: ${safeErrorSummary(error)}`);
+    });
+    await cleanupBBDownCredentialResidue().catch((error) => {
+      console.warn(`[Shutdown] Failed to clean BBDown credential directories: ${safeErrorSummary(error)}`);
     });
     logManager.close();
     process.exit(0);

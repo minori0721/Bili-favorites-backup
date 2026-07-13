@@ -34,7 +34,7 @@ import {
 } from "./upload-health.js";
 import { DownloadApiHealth } from "./download-api-health.js";
 import { cancelActiveDownloadsForAccount } from "./downloader.js";
-import { safeErrorSummary } from "./diagnostics.js";
+import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
 import { PersistentJobStore, type PersistentJobKind } from "./job-store.js";
 import {
   DownloadTask,
@@ -92,6 +92,14 @@ interface SchedulerDependencies {
 export function computeUploadSessionRetryDelayMs(attempts: number) {
   const index = Math.max(0, Math.min(UPLOAD_SESSION_RETRY_DELAYS_MS.length - 1, Math.floor(attempts || 0)));
   return UPLOAD_SESSION_RETRY_DELAYS_MS[index];
+}
+
+export function computeQualityCleanupRetryDelayMs(attempts: number, random: () => number = Math.random) {
+  const minimum = 60_000;
+  const maximum = 6 * 60 * 60_000;
+  const base = Math.min(maximum, minimum * (2 ** Math.max(0, Math.min(20, Math.floor(attempts || 0)))));
+  const normalized = Math.max(0, Math.min(1, Number(random()) || 0));
+  return Math.max(minimum, Math.min(maximum, Math.round(base * (0.8 + normalized * 0.4))));
 }
 
 type QualityUploadPhaseTask = QualityUpgradeUploadReplaceTask | QualityUpgradeReplaceTask | QualityUpgradeCleanupTask;
@@ -168,6 +176,7 @@ export class SyncScheduler {
   private readonly videoAccessProbe: NonNullable<SchedulerDependencies["videoAccessProbe"]>;
   private readonly now: () => number;
   private readonly random: () => number;
+  private readonly retirementAbortedJobIds = new Set<string>();
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -238,6 +247,21 @@ export class SyncScheduler {
         this.handleChargingRestrictedTask(task, error);
         return;
       }
+      if (task.persistentJobId && this.retirementAbortedJobIds.delete(task.persistentJobId)) {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: "system",
+          level: "info",
+          summary: `账号已退役，下载会话已保留 ${task.bvid}`,
+          raw: `[Account] credential-dependent task stopped without recording a download failure: ${task.bvid}`,
+          bvid: task.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+        this.dispatchPersistentJobs();
+        return;
+      }
+      const safeTaskError = sanitizeUploadText(error?.message || error, 1_000);
       logTaskError(task, error);
       const apiRetryAt = this.handleDownloadApiFailure(task, error);
       if (task instanceof QualityUpgradeDownloadTask) {
@@ -271,19 +295,19 @@ export class SyncScheduler {
         timestamp: new Date().toISOString(),
         type: "download",
         level: "error",
-        summary: `下载失败 ${task.bvid}: ${error?.message || error}${error?.permanent ? "（已停止自动重试）" : (error?.deferToNextCycle ? "（下一轮再试）" : "")}`,
-        raw: `[Queue] Task ${task.name} ${error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed"}: ${error?.message || error}`,
+        summary: `下载失败 ${task.bvid}: ${safeTaskError}${error?.permanent ? "（已停止自动重试）" : (error?.deferToNextCycle ? "（下一轮再试）" : "")}`,
+        raw: `[Queue] Task ${task.name} ${error?.deferToNextCycle ? "deferred to next cycle" : "permanently failed"}: ${safeTaskError}`,
         bvid: task.bvid,
         simpleVisible: true,
       });
       const targets = this.collectUploadTargets(task.bvid, task.targets || this.makeSingleTarget(task));
       const session = task.downloadDir ? readDownloadSession(task.downloadDir) : null;
       if (task.downloadDir && session && !error?.permanent) {
-        this.stateManager.markDownloadInterrupted(task.bvid, task.downloadDir, error.message || "Download failure", targets);
+        this.stateManager.markDownloadInterrupted(task.bvid, task.downloadDir, safeTaskError || "Download failure", targets);
       } else {
         for (const target of targets) {
-          this.stateManager.markRelationRetryPending(task.bvid, target.userId, target.mediaId, error.message || "Download failure");
-          this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", Boolean(error?.permanent));
+          this.stateManager.markRelationRetryPending(task.bvid, target.userId, target.mediaId, safeTaskError || "Download failure");
+          this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, safeTaskError || "Download failure", Boolean(error?.permanent));
         }
       }
       if (task.persistentJobId) {
@@ -302,7 +326,7 @@ export class SyncScheduler {
           const result = this.jobStore.retry(task.persistentJobId, this.leaseOwner, sanitizeUploadText(error?.message || error), retryAt);
           if (result.exhausted) {
             for (const target of targets) {
-              this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, error.message || "Download failure", true);
+              this.stateManager.markFailed(target.userId, task.bvid, target.mediaId, safeTaskError || "Download failure", true);
             }
           }
         }
@@ -334,6 +358,18 @@ export class SyncScheduler {
         task.control.error = error;
         if (task.persistentJobId) {
           this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task.control));
+          if (task instanceof QualityUpgradeCleanupTask) {
+            const attempts = Number((task.persistentJob as any)?.attempts || 0);
+            const circuitRetryAt = this.uploadCircuit.getRetryAt();
+            const retryAt = circuitRetryAt && circuitRetryAt > Date.now()
+              ? circuitRetryAt
+              : Date.now() + computeQualityCleanupRetryDelayMs(attempts, this.random);
+            this.jobStore.retryIndefinitely(task.persistentJobId, this.leaseOwner, failure.summary, retryAt);
+            task.control.qualityStageLabel = "旧文件清理重试中";
+            this.syncQualityUpgradeControl(task, "retry_wait");
+            this.dispatchPersistentJobs();
+            return;
+          }
           const retryAt = this.uploadCircuit.getRetryAt() || Date.now() + Math.max(60_000, failure.retryAfterMs || 0);
           const result = this.jobStore.retry(task.persistentJobId, this.leaseOwner, failure.summary, retryAt);
           this.syncQualityUpgradeControl(task, result.exhausted ? "error" : "retry_wait");
@@ -631,24 +667,42 @@ export class SyncScheduler {
       .filter((relation) => !["uploaded", "verified", "partial_verified", "downloaded", "uploading", "upload_failed"].includes(relation.backupStatus || ""))
       .map((relation) => ({ relation, resolved: this.resolveRelation(relation) }))
       .filter((item): item is { relation: FavoriteRelation; resolved: NonNullable<ReturnType<SyncScheduler["resolveRelation"]>> } => Boolean(item.resolved));
-    if (relations.length === 0) return null;
+    const preservedTargets: UploadTarget[] = Array.isArray(payload.detachedTargets)
+      ? payload.detachedTargets.filter((item: any) =>
+        item && typeof item.userId === "string" && Number.isInteger(Number(item.mediaId))
+          && typeof item.folderTitle === "string" && typeof item.remotePath === "string"
+      ).map((item: any) => ({
+        userId: item.userId,
+        mediaId: Number(item.mediaId),
+        folderTitle: item.folderTitle,
+        remotePath: item.remotePath,
+      }))
+      : [];
+    if (relations.length === 0 && preservedTargets.length === 0) return null;
 
     const primary = relations.find((item) => item.relation.userId === payload.primaryUserId) || relations[0];
     const requestedDownloadUser = payload.downloadUserId
       ? this.userStore.getById(String(payload.downloadUserId))
       : null;
-    const downloadUser = requestedDownloadUser?.enabled ? requestedDownloadUser : primary.resolved.user;
-    const targets: UploadTarget[] = relations.map(({ relation, resolved }) => ({
-      userId: relation.userId,
-      mediaId: relation.mediaId,
-      folderTitle: resolved.folderTitle,
-      remotePath: relation.remotePath || resolveRemotePath({
+    const downloadUser = requestedDownloadUser?.enabled ? requestedDownloadUser : primary?.resolved.user;
+    if (!downloadUser?.enabled) return null;
+    const targetsByRelation = new Map<string, UploadTarget>();
+    for (const target of preservedTargets) targetsByRelation.set(`${target.userId}:${target.mediaId}`, target);
+    for (const { relation, resolved } of relations) {
+      targetsByRelation.set(`${relation.userId}:${relation.mediaId}`, {
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: resolved.folderTitle,
+        remotePath: relation.remotePath || resolveRemotePath({
         destination: config.alistDest,
         layout: config.uploadLayout,
         userName: resolved.user.name,
         folderName: resolved.folderTitle,
       }),
-    }));
+      });
+    }
+    const targets = [...targetsByRelation.values()];
+    if (targets.length === 0) return null;
     const task = new DownloadTask(bvid, {
       ...downloadUser.cookie,
       accessToken: downloadUser.accessToken || "",
@@ -657,8 +711,9 @@ export class SyncScheduler {
     task.persistentJobId = job.id;
     task.persistentJob = job;
     task.userId = downloadUser.id;
-    task.mediaId = primary.relation.mediaId;
-    task.folderTitle = primary.resolved.folderTitle;
+    task.downloadUserId = downloadUser.id;
+    task.mediaId = primary?.relation.mediaId || Number(payload.primaryMediaId || targets[0].mediaId);
+    task.folderTitle = primary?.resolved.folderTitle || String(payload.primaryFolderTitle || targets[0].folderTitle);
     task.remotePath = targets[0]?.remotePath;
     task.targets = targets;
     const meta = this.stateManager.getVideoMeta(bvid);
@@ -709,10 +764,15 @@ export class SyncScheduler {
     const payload = job.payload || {};
     const target = payload.target;
     const user = this.userStore.getById(String(payload.downloadUserId || payload.userId || job.userId || target?.userId || ""));
-    if (!user || !user.enabled || !target) return null;
-    const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), {
+    const needsDownloadCredentials = job.kind === "quality_download";
+    if (!target || (needsDownloadCredentials && (!user || !user.enabled))) return null;
+    const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), user ? {
       ...user.cookie,
       accessToken: user.accessToken || "",
+    } : {
+      SESSDATA: "",
+      bili_jct: "",
+      DedeUserID: "",
     }, this.configStore.get(), target);
     task.runId = payload.runId;
     task.downloadDir = payload.downloadDir;
@@ -724,8 +784,8 @@ export class SyncScheduler {
     task.backupRemotePath = payload.backupRemotePath;
     task.videoTitle = String(payload.videoTitle || task.bvid);
     task.folderTitle = String(payload.folderTitle || target.folderTitle || "");
-    task.downloadUserId = user.id;
-    task.userId = user.id;
+    task.downloadUserId = user?.id || String(payload.downloadUserId || payload.userId || "");
+    task.userId = user?.id || String(payload.downloadUserId || payload.userId || "");
     task.mediaId = target.mediaId;
     task.onStartUpgrade = () => {
       logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `开始重调画质 ${task.bvid}: ${task.videoTitle}`, raw: `[QualityUpgrade] start ${target.userId}:${target.mediaId}:${task.bvid}`, bvid: task.bvid, simpleVisible: true });
@@ -1446,9 +1506,174 @@ export class SyncScheduler {
     }
   }
 
+  private snapshotRetirementTargets(bvid: string) {
+    const config = this.configStore.get();
+    const targets = new Map<string, UploadTarget>();
+    for (const relation of this.stateManager.listRelationsForBvid(bvid)) {
+      if (["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || "")) continue;
+      const relationUser = this.userStore.getById(relation.userId);
+      if (!relationUser) continue;
+      const folder = relationUser.favorites.find((item) => item.mediaId === relation.mediaId);
+      const folderTitle = folder?.title || relation.folderTitle;
+      targets.set(`${relation.userId}:${relation.mediaId}`, {
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle,
+        remotePath: relation.remotePath || resolveRemotePath({
+          destination: config.alistDest,
+          layout: config.uploadLayout,
+          userName: relationUser.name,
+          folderName: folderTitle,
+        }),
+      });
+    }
+    return [...targets.values()];
+  }
+
+  private queueCompletedRetirementUpload(bvid: string, local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>, targets: UploadTarget[]) {
+    if (targets.length === 0) return 0;
+    const meta = this.stateManager.getVideoMeta(bvid);
+    this.stateManager.markDownloaded(bvid, local.localDir, targets);
+    for (const target of targets) {
+      this.queueUploadWork({
+        bvid,
+        localDir: local.localDir,
+        remotePath: target.remotePath,
+        userId: target.userId,
+        mediaId: target.mediaId,
+        folderTitle: target.folderTitle,
+        videoTitle: meta?.title || bvid,
+        upperName: meta?.upperName || "",
+        cover: meta?.cover || "",
+        files: local.files,
+        filenameMetadataByPath: this.buildFilenameMetadata(local.localDir, local.files),
+        partialBackup: local.partialBackup,
+        priority: true,
+      });
+      for (const history of historySessionGroups(local.localDir)) {
+        this.queueUploadWork({
+          bvid,
+          localDir: local.localDir,
+          remotePath: joinRemotePath(target.remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
+          userId: target.userId,
+          mediaId: target.mediaId,
+          folderTitle: target.folderTitle,
+          videoTitle: meta?.title || bvid,
+          upperName: meta?.upperName || "",
+          cover: meta?.cover || "",
+          files: history.files.map((file) => file.relativePath),
+          historyOnly: true,
+          historySnapshotAt: history.snapshotAt,
+          priority: false,
+        });
+      }
+    }
+    return targets.length;
+  }
+
+  private findCompletedQualitySession(job: any) {
+    const payload = job.payload || {};
+    const candidates = new Set<string>();
+    if (typeof payload.downloadDir === "string" && payload.downloadDir) candidates.add(payload.downloadDir);
+    try {
+      for (const entry of fs.readdirSync(tempDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.startsWith(`quality-upgrade-${job.bvid}-`)) {
+          candidates.add(path.join(tempDir, entry.name));
+        }
+      }
+    } catch {
+      // The cache directory may not exist yet.
+    }
+    for (const downloadDir of candidates) {
+      const manifest = readDownloadSession(downloadDir);
+      if (!manifest || manifest.kind !== "quality_upgrade" || manifest.status !== "complete" || manifest.outputs.length === 0) continue;
+      const outputFiles = manifest.outputs.map((output) => output.relativePath);
+      if (!outputFiles.every((relative) => fs.existsSync(path.join(downloadDir, relative)))) continue;
+      return { downloadDir, outputFiles, runId: payload.runId || `resume-${manifest.sessionId}` };
+    }
+    return null;
+  }
+
   async retireUser(user: BiliUser) {
-    const canceledJobs = this.jobStore.cancelUserDependentJobs(user.id);
+    const dependentJobs = this.jobStore.listUserDependentJobs(user.id);
+    const jobIds = new Set(dependentJobs.map((job) => job.id));
+    const targetsByBvid = new Map<string, UploadTarget[]>();
+    for (const relation of this.stateManager.getDatabase().listRelationsForUser(user.id)) {
+      if (!targetsByBvid.has(relation.bvid)) targetsByBvid.set(relation.bvid, this.snapshotRetirementTargets(relation.bvid));
+    }
+    for (const job of dependentJobs) {
+      const bvid = String(job.bvid || "");
+      if (bvid && !targetsByBvid.has(bvid)) targetsByBvid.set(bvid, this.snapshotRetirementTargets(bvid));
+    }
+    for (const [bvid, detachedTargets] of targetsByBvid) {
+      const existing = this.jobStore.findByDedupeKey(`download:${bvid}`);
+      if (!existing || jobIds.has(existing.id)) continue;
+      const merged = new Map<string, UploadTarget>();
+      for (const target of Array.isArray((existing.payload as any).detachedTargets) ? (existing.payload as any).detachedTargets : []) {
+        if (target?.userId && Number.isInteger(Number(target.mediaId))) merged.set(`${target.userId}:${target.mediaId}`, target);
+      }
+      for (const target of detachedTargets) merged.set(`${target.userId}:${target.mediaId}`, target);
+      this.jobStore.updatePayload(existing.id, { ...existing.payload, detachedTargets: [...merged.values()] });
+    }
+    for (const task of this.downloadQueue.getTasks()) {
+      if (task.persistentJobId && jobIds.has(task.persistentJobId) && task.status === "running") {
+        this.retirementAbortedJobIds.add(task.persistentJobId);
+      }
+    }
+    const removedQueuedTasks = this.downloadQueue.removePendingTasks((task) =>
+      Boolean(task.persistentJobId && jobIds.has(task.persistentJobId))
+    ).length;
     const canceledProcesses = await cancelActiveDownloadsForAccount(String(user.uid || user.cookie.DedeUserID || ""));
+    const alternateUser = this.userStore.list().find((candidate) => candidate.id !== user.id && candidate.enabled);
+    let reassignedJobs = 0;
+    let pausedJobs = 0;
+    let directUploadTargets = 0;
+
+    for (const job of dependentJobs) {
+      const bvid = String(job.bvid || "");
+      if (job.kind === "download") {
+        const local = bvid ? this.stateManager.getCompletedLocalDownload(bvid) : null;
+        if (local) {
+          this.jobStore.complete(job.id);
+          directUploadTargets += this.queueCompletedRetirementUpload(bvid, local, targetsByBvid.get(bvid) || []);
+          continue;
+        }
+      } else if (job.kind === "quality_download") {
+        const completed = this.findCompletedQualitySession(job);
+        if (completed && (job.payload as any).target) {
+          this.jobStore.complete(job.id);
+          const payload = {
+            ...job.payload,
+            downloadDir: completed.downloadDir,
+            outputFiles: completed.outputFiles,
+            runId: completed.runId,
+          };
+          this.jobStore.enqueue({
+            kind: "quality_upload",
+            dedupeKey: `quality-upload:${(job.payload as any).target.userId}:${(job.payload as any).target.mediaId}:${bvid}`,
+            bvid,
+            userId: (job.payload as any).target.userId,
+            mediaId: (job.payload as any).target.mediaId,
+            priority: 30,
+            maxAttempts: this.configStore.get().maxRetries + 1,
+            payload,
+          });
+          directUploadTargets += 1;
+          continue;
+        }
+      }
+
+      const payload = {
+        ...job.payload,
+        detachedTargets: job.kind === "download" ? (targetsByBvid.get(bvid) || []) : (job.payload as any).detachedTargets,
+      };
+      if (alternateUser) {
+        if (this.jobStore.reassignDownloadJob(job.id, alternateUser.id, payload)) reassignedJobs += 1;
+      } else if (this.jobStore.pauseDetachedUserJob(job.id, user.id, payload)) {
+        pausedJobs += 1;
+      }
+    }
+
     const detachedRelations = this.stateManager.detachUserRelations(user.id);
     for (const job of this.jobStore.list(["access_probe"], 100_000)) {
       const preferredUserId = String((job.payload as any)?.preferredUserId || "");
@@ -1457,7 +1682,34 @@ export class SyncScheduler {
       this.jobStore.wakeByBvid(String(job.bvid || ""), ["access_probe"], this.now());
     }
     this.dispatchPersistentJobs();
-    return { canceledJobs, canceledProcesses, detachedRelations };
+    return {
+      canceledJobs: dependentJobs.length,
+      canceledProcesses,
+      removedQueuedTasks,
+      reassignedJobs,
+      pausedJobs,
+      directUploadTargets,
+      detachedRelations,
+    };
+  }
+
+  restoreUserAfterLogin(userId: string) {
+    const user = this.userStore.getById(userId);
+    if (!user?.enabled) return { reattachedRelations: 0, resumedJobs: 0, queuedRelations: 0 };
+    const reattachedRelations = this.stateManager.reattachUserRelations(userId);
+    const resumedJobs = this.jobStore.resumeDetachedUserJobs(userId, this.now());
+    let queuedRelations = 0;
+    const relations = this.stateManager.getDatabase().listRelationsForUser(userId);
+    for (const relation of relations) {
+      if (!relation.activeInFavorite || ["uploaded", "verified", "partial_verified", "uploading", "downloaded"].includes(relation.backupStatus || "")) continue;
+      if (this.jobStore.findByDedupeKey(`download:${relation.bvid}`)) continue;
+      if (this.enqueueIfNeeded(user, relation.mediaId, relation.folderTitle, relation.bvid, { persisted: true, downloadUserId: user.id })) {
+        queuedRelations += 1;
+      }
+    }
+    this.wakeChargingAccessProbes();
+    this.dispatchPersistentJobs();
+    return { reattachedRelations, resumedJobs, queuedRelations };
   }
 
   start() {
@@ -1674,7 +1926,10 @@ export class SyncScheduler {
         userId: job.userId || payload.userId || "",
         mediaId: job.mediaId || payload.mediaId || 0,
         status: job.status === "retry_wait" ? "retry_wait" : (["leased", "running"].includes(job.status) ? "running" : "pending"),
-        error: job.lastError,
+        error: job.lastError ? sanitizeDiagnosticText(job.lastError, 500) : undefined,
+        stageLabel: job.kind === "quality_cleanup" && job.status === "retry_wait"
+          ? "旧文件清理重试中"
+          : String(payload.qualityStageLabel || ""),
         queuedAt: job.createdAt,
         startedAt: ["leased", "running"].includes(job.status) ? job.updatedAt : undefined,
       };
@@ -1816,7 +2071,7 @@ export class SyncScheduler {
       return {
         ...this.schedulerProgress,
         queuedActions,
-        lastError: this.lastSchedulerError,
+        lastError: sanitizeDiagnosticText(this.lastSchedulerError, 500),
         nextRunAt: this.nextAutoRunAt,
       };
     }
@@ -1829,10 +2084,10 @@ export class SyncScheduler {
         status: "cooldown" as const,
         mode: "cooldown",
         title: "账号冷却中",
-        detail: cooldown.reason,
+        detail: sanitizeDiagnosticText(cooldown.reason, 500),
         userName: user?.name || cooldown.userId,
         queuedActions,
-        lastError: cooldown.reason,
+        lastError: sanitizeDiagnosticText(cooldown.reason, 500),
         updatedAt: Date.now(),
         nextRunAt: cooldown.until,
       };
@@ -1844,7 +2099,7 @@ export class SyncScheduler {
       title: queuedActions.length ? "调度任务已排队" : "当前调度空闲",
       detail: queuedActions.length ? "已有同步/扫描/对账任务在等待当前任务结束后执行。" : "当前没有正在运行的同步、扫描或对账任务。",
       queuedActions,
-      lastError: this.lastSchedulerError,
+      lastError: sanitizeDiagnosticText(this.lastSchedulerError, 500),
       updatedAt: Date.now(),
       nextRunAt: this.nextAutoRunAt,
     };
@@ -1986,7 +2241,7 @@ export class SyncScheduler {
       await this.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true);
       this.logCycleSummary(this.cycleContext);
     } catch (error: any) {
-      const message = error?.message || String(error);
+      const message = sanitizeDiagnosticText(error?.message || String(error), 1_000);
       console.error("[Scheduler] Tick failed:", message);
       this.cycleContext.error = message;
       this.lastSchedulerError = message;
@@ -2086,7 +2341,7 @@ export class SyncScheduler {
         return await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
       } catch (refreshError: any) {
         this.userStore.updatePartial(user.id, {
-          lastAuthRefreshError: refreshError?.message || String(refreshError),
+          lastAuthRefreshError: safeErrorSummary(refreshError),
         });
         throw error;
       }

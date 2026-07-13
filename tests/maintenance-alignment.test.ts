@@ -65,7 +65,7 @@ test("schema 3 migration rejects allowed files missing from its checksum manifes
 });
 
 test("diagnostic sanitizer removes headers, json secrets, query tokens and URL credentials", () => {
-  const input = 'Authorization: Bearer abc Cookie=SESSDATA=secret https://user:pass@example.com/a?access_token=xyz {"password":"pw","ok":"visible"}';
+  const input = 'Authorization: Bearer abc\nCookie: SESSDATA=secret; bili_jct=csrf-secret\nhttps://user:pass@example.com/a?access_token=xyz {"password":"pw","ok":"visible"}';
   const output = sanitizeDiagnosticText(input);
   assert.doesNotMatch(output, /abc|secret|user:pass|xyz|"pw"/);
   assert.match(output, /visible/);
@@ -73,18 +73,25 @@ test("diagnostic sanitizer removes headers, json secrets, query tokens and URL c
 
 test("batch rename stages all paths and rolls back when a MOVE fails", async () => {
   const moves: Array<[string, string]> = [];
+  const paths = new Set(["/target/a-old.mp4", "/target/b-old.mp4"]);
   const client = {
+    async exists(target: string) {
+      return paths.has(target);
+    },
     async moveFile(from: string, to: string) {
       moves.push([from, to]);
       if (to === "/target/b.mp4") throw new Error("MOVE rejected");
+      if (!paths.delete(from)) throw new Error("source missing");
+      paths.add(to);
     },
   } as any;
-  const result = await batchRenameRemotePaths(testConfig(), [
+  const result = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [
     { oldPath: "/target/a-old.mp4", newPath: "/target/a.mp4" },
     { oldPath: "/target/b-old.mp4", newPath: "/target/b.mp4" },
   ], client);
   assert.equal(result.success, 0);
   assert.equal(result.failed, 2);
+  assert.deepEqual(result.results.map((item) => item.status), ["rolled_back", "rolled_back"]);
   assert.equal(moves.some(([from, to]) => from === "/target/a.mp4" && to === "/target/a-old.mp4"), true);
 });
 
