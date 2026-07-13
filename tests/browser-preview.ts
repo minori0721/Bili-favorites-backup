@@ -5,7 +5,7 @@ import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
 const requestedMode = process.env.BFB_PREVIEW_MODE;
-const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" ? requestedMode : "healthy";
+const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -252,6 +252,77 @@ if (mode === "charging") {
     lastLoginAt: now.toISOString(),
   }];
   await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ queuePrefetchLimit: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
+}
+
+if (mode === "quality") {
+  const now = new Date();
+  const bvid = "BVQUALITYSHARED";
+  const users = [1, 2, 3].map((index) => ({
+    id: `quality-user-${index}`,
+    uid: index,
+    name: `画质账号 ${index}`,
+    cookie: { SESSDATA: `preview-${index}`, bili_jct: `preview-${index}`, DedeUserID: String(index) },
+    favorites: [{ mediaId: index, title: `画质目标 ${index}` }],
+    enabled: true,
+    lastLoginAt: now.toISOString(),
+  }));
+  const remoteFile = (index: number) => ({
+    name: `${bvid}-${index}.mp4`,
+    path: `/backup/quality-${index}/${bvid}-${index}.mp4`,
+    size: 1024,
+    verificationStatus: "verified",
+    qualityProfile: { quality: "1080P", encoding: "AVC", hiRes: false, dolby: false },
+  });
+  const state = {
+    schemaVersion: 13,
+    processedByUser: {},
+    failedByUser: {},
+    videos: {
+      [bvid]: {
+        bvid,
+        title: "三个收藏夹共享一次新版下载",
+        upperName: "预览 UP",
+        firstSeenAt: now.toISOString(),
+        lastSeenAt: now.toISOString(),
+        biliStatus: "available",
+        backupStatus: "verified",
+      },
+    },
+    relations: Object.fromEntries(users.map((item, offset) => {
+      const index = offset + 1;
+      return [`${item.id}:${index}:${bvid}`, {
+        userId: item.id,
+        mediaId: index,
+        bvid,
+        folderTitle: `画质目标 ${index}`,
+        firstSeenAt: now.toISOString(),
+        lastSeenAt: now.toISOString(),
+        activeInFavorite: true,
+        backupStatus: "verified",
+        remotePath: `/backup/quality-${index}`,
+        remoteFiles: [remoteFile(index)],
+      }];
+    })),
+    folderScans: {},
+    userCooldowns: {},
+    downloadApiCooldown: {
+      until: now.getTime() + 30 * 60_000,
+      reason: "隔离预览暂停下载",
+      probeBvid: bvid,
+      probeUserId: users[0].id,
+      probeMode: "web",
+      setAt: now.toISOString(),
+    },
+  };
+  const config = testConfig({
+    queuePrefetchLimit: 5,
+    bbdownQuality: "4K",
+    bbdownEncoding: "HEVC",
+    bbdownApiMode: "web",
+  });
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(config, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }

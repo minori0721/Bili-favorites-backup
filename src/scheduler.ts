@@ -25,6 +25,7 @@ import {
   inspectDownloadRecoverySync,
   markHistoryGroupUploaded,
   readDownloadSession,
+  writeDownloadSession,
 } from "./download-session.js";
 import {
   classifyUploadError,
@@ -43,10 +44,19 @@ import {
   QualityUpgradeReplaceTask,
   QualityUpgradeTask,
   QualityUpgradeUploadReplaceTask,
+  qualityUpgradeTargetKey,
+  type QualityUpgradeTarget,
   UploadTarget,
   UploadTask,
   UploadVerificationTask,
 } from "./tasks.js";
+import {
+  applyQualityArtifactProfile,
+  buildQualityArtifactKey,
+  normalizeQualityArtifactProfile,
+  qualityArtifactProfileFromConfig,
+  type QualityArtifactProfile,
+} from "./quality-artifact.js";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -177,6 +187,7 @@ export class SyncScheduler {
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly retirementAbortedJobIds = new Set<string>();
+  private readonly qualityArtifactCleanupLocks = new Set<string>();
 
   private cycleContext: SyncCycleStats | null = null;
 
@@ -226,7 +237,7 @@ export class SyncScheduler {
       if (task.persistentJobId) this.jobStore.markRunning(task.persistentJobId, this.leaseOwner, 30 * 60_000);
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = "download";
-        task.control.qualityStageLabel = "下载新版";
+        task.control.qualityStageLabel = this.qualityDownloadStageLabel(task.control, "下载新版");
         this.syncQualityUpgradeControl(task, "running");
       }
     });
@@ -442,17 +453,36 @@ export class SyncScheduler {
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "等待上传替换";
+        const persisted = task.persistentJobId ? this.jobStore.findById(task.persistentJobId) : null;
+        const targets = this.qualityTargetsFromPayload(persisted?.payload as any, task.control.targets);
+        task.control.setTargets(targets);
+        if (task.control.downloadDir) {
+          const manifest = readDownloadSession(task.control.downloadDir);
+          if (manifest?.qualityUpgrade && manifest.bvid === task.bvid) {
+            manifest.qualityUpgrade = {
+              ...manifest.qualityUpgrade,
+              ...targets[0],
+              artifactKey: task.control.artifactKey,
+              qualityProfile: task.control.qualityProfile,
+              downloadUserId: task.control.downloadUserId,
+              targets,
+            };
+            writeDownloadSession(task.control.downloadDir, manifest);
+          }
+        }
         if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
-        this.jobStore.enqueue({
-          kind: "quality_upload",
-          dedupeKey: `quality-upload:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`,
-          bvid: task.bvid,
-          userId: task.control.target.userId,
-          mediaId: task.control.target.mediaId,
-          priority: 30,
-          maxAttempts: this.configStore.get().maxRetries + 1,
-          payload: this.serializeQualityUpgrade(task.control),
-        });
+        for (const target of targets) {
+          this.jobStore.enqueue({
+            kind: "quality_upload",
+            dedupeKey: `quality-upload:${target.userId}:${target.mediaId}:${task.bvid}`,
+            bvid: task.bvid,
+            userId: target.userId,
+            mediaId: target.mediaId,
+            priority: 30,
+            maxAttempts: this.configStore.get().maxRetries + 1,
+            payload: this.serializeQualityUpgrade(task.control, target, [target]),
+          });
+        }
         this.dispatchPersistentJobs();
         return;
       }
@@ -508,10 +538,10 @@ export class SyncScheduler {
       if (isQualityUploadPhaseTask(task)) {
         if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
         if (task instanceof QualityUpgradeUploadReplaceTask) {
-          this.jobStore.enqueue({ kind: "quality_replace", dedupeKey: `quality-replace:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 30, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control) });
+          this.jobStore.enqueue({ kind: "quality_replace", dedupeKey: `quality-replace:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 30, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control, task.control.target, [task.control.target]) });
           this.syncQualityUpgradeControl(task, "pending");
         } else if (task instanceof QualityUpgradeReplaceTask) {
-          this.jobStore.enqueue({ kind: "quality_cleanup", dedupeKey: `quality-cleanup:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 60, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control) });
+          this.jobStore.enqueue({ kind: "quality_cleanup", dedupeKey: `quality-cleanup:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 60, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control, task.control.target, [task.control.target]) });
           this.syncQualityUpgradeControl(task, "pending");
         } else {
           this.syncQualityUpgradeControl(task, "completed");
@@ -740,15 +770,53 @@ export class SyncScheduler {
     return task;
   }
 
-  private serializeQualityUpgrade(task: QualityUpgradeTask) {
+  private qualityTargetsFromPayload(payload: any, fallback: QualityUpgradeTarget[] = []) {
+    const candidates = [
+      ...(Array.isArray(payload?.targets) ? payload.targets : []),
+      ...(payload?.target ? [payload.target] : []),
+      ...fallback,
+    ];
+    const unique = new Map<string, QualityUpgradeTarget>();
+    for (const candidate of candidates) {
+      const userId = String(candidate?.userId || "");
+      const mediaId = Number(candidate?.mediaId);
+      const remotePath = String(candidate?.remotePath || "");
+      if (!userId || !Number.isInteger(mediaId) || !remotePath) continue;
+      const target: QualityUpgradeTarget = {
+        userId,
+        mediaId,
+        folderTitle: String(candidate?.folderTitle || ""),
+        remotePath,
+        oldFiles: Array.isArray(candidate?.oldFiles) ? candidate.oldFiles : [],
+      };
+      unique.set(qualityUpgradeTargetKey(target), target);
+    }
+    return [...unique.values()];
+  }
+
+  private qualityDownloadStageLabel(task: QualityUpgradeTask, label: string) {
+    return task.targets.length > 1 ? `${label} · ${task.targets.length}个目标` : label;
+  }
+
+  private serializeQualityUpgrade(
+    task: QualityUpgradeTask,
+    target: QualityUpgradeTarget = task.target,
+    targets: QualityUpgradeTarget[] = task.targets
+  ) {
+    const normalizedTargets = this.qualityTargetsFromPayload({ target, targets }, [target]);
     return {
       bvid: task.bvid,
-      userId: task.target.userId,
-      mediaId: task.target.mediaId,
+      userId: target.userId,
+      mediaId: target.mediaId,
       videoTitle: task.videoTitle || task.bvid,
-      folderTitle: task.folderTitle || task.target.folderTitle,
-      downloadUserId: task.downloadUserId || task.userId || task.target.userId,
-      target: task.target,
+      folderTitle: task.folderTitle || target.folderTitle,
+      downloadUserId: task.downloadUserId || task.userId || target.userId,
+      target,
+      targets: normalizedTargets,
+      targetCount: normalizedTargets.length,
+      artifactKey: task.artifactKey,
+      qualityProfile: task.qualityProfile,
+      qualityStageLabel: task.qualityStageLabel,
       runId: task.runId,
       downloadDir: task.downloadDir,
       outputFiles: task.outputFiles || [],
@@ -762,10 +830,14 @@ export class SyncScheduler {
 
   private buildQualityUpgradeTask(job: any) {
     const payload = job.payload || {};
-    const target = payload.target;
+    const targets = this.qualityTargetsFromPayload(payload);
+    const target = targets[0];
     const user = this.userStore.getById(String(payload.downloadUserId || payload.userId || job.userId || target?.userId || ""));
     const needsDownloadCredentials = job.kind === "quality_download";
     if (!target || (needsDownloadCredentials && (!user || !user.enabled))) return null;
+    const qualityProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
+    const artifactKey = String(payload.artifactKey || buildQualityArtifactKey(String(payload.bvid || job.bvid || ""), qualityProfile));
+    const taskConfig = applyQualityArtifactProfile(this.configStore.get(), qualityProfile);
     const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), user ? {
       ...user.cookie,
       accessToken: user.accessToken || "",
@@ -773,7 +845,7 @@ export class SyncScheduler {
       SESSDATA: "",
       bili_jct: "",
       DedeUserID: "",
-    }, this.configStore.get(), target);
+    }, taskConfig, target, { targets, artifactKey, qualityProfile });
     task.runId = payload.runId;
     task.downloadDir = payload.downloadDir;
     task.outputFiles = Array.isArray(payload.outputFiles) ? payload.outputFiles : [];
@@ -783,14 +855,18 @@ export class SyncScheduler {
     task.stageRemotePath = payload.stageRemotePath;
     task.backupRemotePath = payload.backupRemotePath;
     task.videoTitle = String(payload.videoTitle || task.bvid);
-    task.folderTitle = String(payload.folderTitle || target.folderTitle || "");
+    task.folderTitle = targets.length > 1 ? `${targets.length}个目标` : String(payload.folderTitle || target.folderTitle || "");
     task.downloadUserId = user?.id || String(payload.downloadUserId || payload.userId || "");
-    task.userId = user?.id || String(payload.downloadUserId || payload.userId || "");
+    task.userId = needsDownloadCredentials ? task.downloadUserId : target.userId;
     task.mediaId = target.mediaId;
+    task.qualityStageLabel = job.kind === "quality_download"
+      ? this.qualityDownloadStageLabel(task, String(payload.qualityStageLabel || "等待下载新版").split(" · ")[0])
+      : String(payload.qualityStageLabel || "");
     task.onStartUpgrade = () => {
-      logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `开始重调画质 ${task.bvid}: ${task.videoTitle}`, raw: `[QualityUpgrade] start ${target.userId}:${target.mediaId}:${task.bvid}`, bvid: task.bvid, simpleVisible: true });
+      logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `开始重调画质 ${task.bvid}: ${task.videoTitle}（${task.targets.length}个目标）`, raw: `[QualityUpgrade] start artifact=${task.artifactKey} targets=${task.targets.length} bvid=${task.bvid}`, bvid: task.bvid, simpleVisible: true });
     };
     task.onReplacing = (_task, stageRemotePath, backupRemotePath) => this.stateManager.markQualityUpgradeReplacing(task.bvid, target.userId, target.mediaId, {
+      artifactKey: task.artifactKey,
       stageRemotePath,
       backupRemotePath,
       oldRemotePath: target.remotePath,
@@ -807,7 +883,19 @@ export class SyncScheduler {
       const safeError = sanitizeUploadText(error?.message || error);
       logManager.push({ timestamp: new Date().toISOString(), type: task.qualityStage === "upload" ? "upload" : "download", level: "error", summary: `重调画质失败 ${task.bvid}: ${safeError}`, raw: `[QualityUpgrade] failed ${target.userId}:${target.mediaId}:${task.bvid}: ${safeError}`, bvid: task.bvid, simpleVisible: true, debugVisible: true });
     };
-    task.shouldCleanupLocal = () => this.jobStore.countJobsForBvid(task.bvid, ["quality_download", "quality_upload", "quality_replace", "quality_cleanup"]) <= 1;
+    task.shouldCleanupLocal = () => {
+      const canCleanup = task.artifactKey
+        ? this.jobStore.countQualityJobsForArtifact(task.artifactKey) <= 1
+        : this.jobStore.countJobsForBvid(task.bvid, ["quality_download", "quality_upload", "quality_replace", "quality_cleanup"]) <= 1;
+      if (canCleanup && task.artifactKey) this.qualityArtifactCleanupLocks.add(task.artifactKey);
+      return canCleanup;
+    };
+    task.onLocalCleanupFinished = () => {
+      if (task.artifactKey) this.qualityArtifactCleanupLocks.delete(task.artifactKey);
+      this.refreshLocalCacheState();
+      this.downloadQueue.poke();
+      this.dispatchPersistentJobs();
+    };
     return task;
   }
 
@@ -1108,11 +1196,12 @@ export class SyncScheduler {
     ) - this.downloadQueue.getSize());
     if (downloadCapacity > 0 && this.canCreateDownloadTask()) {
       const jobs = this.jobStore.claimDue(["quality_download", "download"], downloadCapacity, this.leaseOwner, 30 * 60_000);
-      const activeQualityBvids = new Set(this.downloadQueue.getTasks()
+      const activeQualityArtifacts = new Set(this.downloadQueue.getTasks()
         .filter((task) => task instanceof QualityUpgradeDownloadTask)
-        .map((task: any) => String(task.bvid || "")));
+        .map((task: any) => String(task.control?.artifactKey || task.bvid || "")));
       for (const job of jobs) {
-        if (job.kind === "quality_download" && activeQualityBvids.has(String(job.bvid || ""))) {
+        const qualityArtifact = String((job.payload as any)?.artifactKey || job.bvid || "");
+        if (job.kind === "quality_download" && activeQualityArtifacts.has(qualityArtifact)) {
           this.jobStore.defer(job.id, this.leaseOwner, "Shared quality download is active", Date.now() + 1_000);
           continue;
         }
@@ -1129,7 +1218,7 @@ export class SyncScheduler {
           this.jobStore.defer(job.id, this.leaseOwner, "Download queue is full", Date.now() + 1_000);
           break;
         }
-        if (job.kind === "quality_download") activeQualityBvids.add(String(job.bvid || ""));
+        if (job.kind === "quality_download") activeQualityArtifacts.add(qualityArtifact);
       }
     }
 
@@ -1477,9 +1566,101 @@ export class SyncScheduler {
 
   resumePersistedWorkOnStartup() {
     this.jobStore.recoverExpiredLeases();
+    this.migrateLegacyQualityDownloadJobs();
     this.bootstrapLegacyFailureClassification();
     this.resumePersistedWork();
     this.dispatchPersistentJobs();
+  }
+
+  private migrateLegacyQualityDownloadJobs() {
+    const jobs = this.jobStore.list(["quality_download"], 100_000);
+    if (jobs.length === 0) return 0;
+    const currentProfile = qualityArtifactProfileFromConfig(this.configStore.get());
+    const groups = new Map<string, { artifactKey: string; profile: QualityArtifactProfile; jobs: typeof jobs }>();
+    for (const job of jobs) {
+      const payload = job.payload as any;
+      const manifest = typeof payload.downloadDir === "string" ? readDownloadSession(payload.downloadDir) : null;
+      const profile = normalizeQualityArtifactProfile(
+        payload.qualityProfile
+        || manifest?.qualityUpgrade?.qualityProfile
+        || manifest?.configSnapshot
+        || currentProfile
+      );
+      const bvid = String(job.bvid || payload.bvid || manifest?.bvid || "");
+      if (!bvid) continue;
+      const artifactKey = String(payload.artifactKey || manifest?.qualityUpgrade?.artifactKey || buildQualityArtifactKey(bvid, profile));
+      const groupKey = `${bvid}:${artifactKey}`;
+      const group = groups.get(groupKey) || { artifactKey, profile, jobs: [] };
+      group.jobs.push(job);
+      groups.set(groupKey, group);
+    }
+
+    let migrated = 0;
+    for (const group of groups.values()) {
+      const targets = new Map<string, QualityUpgradeTarget>();
+      for (const job of group.jobs) {
+        for (const target of this.qualityTargetsFromPayload(job.payload as any)) {
+          targets.set(qualityUpgradeTargetKey(target), target);
+        }
+      }
+      const mergedTargets = [...targets.values()];
+      if (mergedTargets.length === 0) continue;
+      const bvid = String(group.jobs[0].bvid || (group.jobs[0].payload as any).bvid || "");
+      const dedupeKey = `quality-download:${bvid}:${group.artifactKey}`;
+      const alreadyShared = group.jobs.length === 1
+        && group.jobs[0].dedupeKey === dedupeKey
+        && typeof (group.jobs[0].payload as any).artifactKey === "string"
+        && Array.isArray((group.jobs[0].payload as any).targets);
+      if (alreadyShared) continue;
+      const base = [...group.jobs].sort((left, right) => {
+        const leftPayload = left.payload as any;
+        const rightPayload = right.payload as any;
+        const leftScore = (leftPayload.downloadDir ? 2 : 0) + (Array.isArray(leftPayload.outputFiles) && leftPayload.outputFiles.length > 0 ? 1 : 0);
+        const rightScore = (rightPayload.downloadDir ? 2 : 0) + (Array.isArray(rightPayload.outputFiles) && rightPayload.outputFiles.length > 0 ? 1 : 0);
+        return rightScore - leftScore || right.updatedAt - left.updatedAt;
+      })[0];
+      const enabledDownloadUser = group.jobs
+        .map((job) => String((job.payload as any).downloadUserId || job.userId || ""))
+        .find((id) => Boolean(this.userStore.getById(id)?.enabled));
+      const payload = {
+        ...(base.payload as any),
+        bvid,
+        userId: mergedTargets[0].userId,
+        mediaId: mergedTargets[0].mediaId,
+        folderTitle: mergedTargets.length > 1 ? `${mergedTargets.length}个目标` : mergedTargets[0].folderTitle,
+        downloadUserId: enabledDownloadUser || (base.payload as any).downloadUserId || base.userId || mergedTargets[0].userId,
+        target: mergedTargets[0],
+        targets: mergedTargets,
+        targetCount: mergedTargets.length,
+        artifactKey: group.artifactKey,
+        qualityProfile: group.profile,
+        qualityStageLabel: `等待下载新版${mergedTargets.length > 1 ? ` · ${mergedTargets.length}个目标` : ""}`,
+      };
+      this.jobStore.replaceQualityDownloadJobs(group.jobs, {
+        kind: "quality_download",
+        dedupeKey,
+        bvid,
+        userId: payload.downloadUserId,
+        mediaId: mergedTargets[0].mediaId,
+        priority: Math.min(...group.jobs.map((job) => job.priority)),
+        maxAttempts: Math.max(...group.jobs.map((job) => job.maxAttempts)),
+        notBefore: Math.max(...group.jobs.map((job) => job.notBefore)),
+        payload,
+      });
+      migrated += group.jobs.length;
+    }
+    if (migrated > 0) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "info",
+        summary: `已合并 ${migrated} 个旧画质下载任务`,
+        raw: `[QualityUpgrade] consolidated legacy download jobs=${migrated}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+    return migrated;
   }
 
   private bootstrapLegacyFailureClassification() {
@@ -1573,6 +1754,7 @@ export class SyncScheduler {
 
   private findCompletedQualitySession(job: any) {
     const payload = job.payload || {};
+    const expectedArtifactKey = String(payload.artifactKey || "");
     const candidates = new Set<string>();
     if (typeof payload.downloadDir === "string" && payload.downloadDir) candidates.add(payload.downloadDir);
     try {
@@ -1587,6 +1769,13 @@ export class SyncScheduler {
     for (const downloadDir of candidates) {
       const manifest = readDownloadSession(downloadDir);
       if (!manifest || manifest.kind !== "quality_upgrade" || manifest.status !== "complete" || manifest.outputs.length === 0) continue;
+      const manifestProfile = normalizeQualityArtifactProfile(
+        manifest.qualityUpgrade?.qualityProfile || manifest.configSnapshot || qualityArtifactProfileFromConfig(this.configStore.get())
+      );
+      const manifestArtifactKey = String(
+        manifest.qualityUpgrade?.artifactKey || buildQualityArtifactKey(manifest.bvid, manifestProfile)
+      );
+      if (expectedArtifactKey && manifestArtifactKey !== expectedArtifactKey) continue;
       const outputFiles = manifest.outputs.map((output) => output.relativePath);
       if (!outputFiles.every((relative) => fs.existsSync(path.join(downloadDir, relative)))) continue;
       return { downloadDir, outputFiles, runId: payload.runId || `resume-${manifest.sessionId}` };
@@ -1640,26 +1829,13 @@ export class SyncScheduler {
         }
       } else if (job.kind === "quality_download") {
         const completed = this.findCompletedQualitySession(job);
-        if (completed && (job.payload as any).target) {
-          this.jobStore.complete(job.id);
-          const payload = {
+        if (completed) {
+          job.payload = {
             ...job.payload,
             downloadDir: completed.downloadDir,
             outputFiles: completed.outputFiles,
             runId: completed.runId,
           };
-          this.jobStore.enqueue({
-            kind: "quality_upload",
-            dedupeKey: `quality-upload:${(job.payload as any).target.userId}:${(job.payload as any).target.mediaId}:${bvid}`,
-            bvid,
-            userId: (job.payload as any).target.userId,
-            mediaId: (job.payload as any).target.mediaId,
-            priority: 30,
-            maxAttempts: this.configStore.get().maxRetries + 1,
-            payload,
-          });
-          directUploadTargets += 1;
-          continue;
         }
       }
 
@@ -1742,7 +1918,7 @@ export class SyncScheduler {
       if (task instanceof DownloadTask) {
         task.config = { ...next };
       } else if (task instanceof QualityUpgradeDownloadTask) {
-        task.control.config = { ...next };
+        task.control.config = applyQualityArtifactProfile(next, task.control.qualityProfile);
       }
       task.apiModeOverride = undefined;
       task.apiProbe = false;
@@ -1875,23 +2051,38 @@ export class SyncScheduler {
     task.status = "pending";
     task.error = undefined;
     task.qualityStage = "download";
-    task.qualityStageLabel = "等待下载新版";
+    task.qualityStageLabel = this.qualityDownloadStageLabel(task, "等待下载新版");
     task.onApiReady = (control, mode) => this.handleDownloadApiReady(control, mode);
-    const dedupeKey = `quality-download:${task.target.userId}:${task.target.mediaId}:${task.bvid}`;
-    if (this.jobStore.findByDedupeKey(dedupeKey)
-      || this.jobStore.findByDedupeKey(`quality-upload:${task.target.userId}:${task.target.mediaId}:${task.bvid}`)) return false;
-    this.jobStore.enqueue({
+    const pendingTargets = task.targets.filter((target) => !this.jobStore.hasQualityTarget(target.userId, target.mediaId, task.bvid));
+    if (pendingTargets.length === 0) return false;
+    task.setTargets(pendingTargets);
+    task.qualityStageLabel = this.qualityDownloadStageLabel(task, "等待下载新版");
+    const target = task.target;
+    const dedupeKey = `quality-download:${task.bvid}:${task.artifactKey}`;
+    const merged = this.jobStore.mergeQualityDownload({
       kind: "quality_download",
       dedupeKey,
       bvid: task.bvid,
-      userId: task.target.userId,
-      mediaId: task.target.mediaId,
+      userId: task.downloadUserId || task.userId || target.userId,
+      mediaId: target.mediaId,
       priority: 35,
       maxAttempts: this.configStore.get().maxRetries + 1,
       payload: this.serializeQualityUpgrade(task),
     });
+    if (!merged.created && merged.targetAdded) {
+      const mergedTargets = this.qualityTargetsFromPayload(merged.job.payload as any);
+      for (const phase of this.downloadQueue.getTasks()) {
+        if (!(phase instanceof QualityUpgradeDownloadTask) || phase.control.artifactKey !== task.artifactKey) continue;
+        phase.control.setTargets(mergedTargets);
+        phase.control.qualityStageLabel = this.qualityDownloadStageLabel(
+          phase.control,
+          phase.control.status === "running" ? "下载新版" : "等待下载新版"
+        );
+        phase.folderTitle = mergedTargets.length > 1 ? `${mergedTargets.length}个目标` : mergedTargets[0]?.folderTitle;
+      }
+    }
     this.dispatchPersistentJobs();
-    return true;
+    return merged.created || merged.targetAdded;
   }
 
   wakeChargingAccessProbes() {
@@ -1906,30 +2097,35 @@ export class SyncScheduler {
   }
 
   hasQualityUpgrade(userId: string, mediaId: number, bvid: string) {
-    return Boolean(
-      this.jobStore.findByDedupeKey(`quality-download:${userId}:${mediaId}:${bvid}`)
-      || this.jobStore.findByDedupeKey(`quality-upload:${userId}:${mediaId}:${bvid}`)
-      || this.jobStore.findByDedupeKey(`quality-replace:${userId}:${mediaId}:${bvid}`)
-      || this.jobStore.findByDedupeKey(`quality-cleanup:${userId}:${mediaId}:${bvid}`)
-    );
+    return this.jobStore.hasQualityTarget(userId, mediaId, bvid);
   }
 
   getQualityUpgradeState() {
     const running = this.jobStore.list(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"], 100).map((job) => {
       const payload = job.payload as any;
+      const targets = this.qualityTargetsFromPayload(payload);
+      const targetCount = job.kind === "quality_download" ? Math.max(1, targets.length) : 1;
       return {
-        key: `${job.userId || payload.userId}:${job.mediaId || payload.mediaId}:${job.bvid || payload.bvid}`,
+        key: job.kind === "quality_download"
+          ? `artifact:${payload.artifactKey || job.id}`
+          : `${job.userId || payload.userId}:${job.mediaId || payload.mediaId}:${job.bvid || payload.bvid}`,
         id: job.id,
         bvid: job.bvid || payload.bvid,
+        artifactKey: payload.artifactKey,
+        targetCount,
         title: payload.videoTitle || job.bvid,
-        folderTitle: payload.folderTitle || payload.target?.folderTitle || "",
+        folderTitle: job.kind === "quality_download" && targetCount > 1
+          ? `${targetCount}个目标`
+          : (payload.folderTitle || payload.target?.folderTitle || ""),
         userId: job.userId || payload.userId || "",
         mediaId: job.mediaId || payload.mediaId || 0,
-        status: job.status === "retry_wait" ? "retry_wait" : (["leased", "running"].includes(job.status) ? "running" : "pending"),
+        status: job.status === "failed" ? "error" : (job.status === "retry_wait" ? "retry_wait" : (["leased", "running"].includes(job.status) ? "running" : "pending")),
         error: job.lastError ? sanitizeDiagnosticText(job.lastError, 500) : undefined,
         stageLabel: job.kind === "quality_cleanup" && job.status === "retry_wait"
           ? "旧文件清理重试中"
-          : String(payload.qualityStageLabel || ""),
+          : (job.kind === "quality_download"
+              ? `${String(payload.qualityStageLabel || "下载新版").split(" · ")[0]}${targetCount > 1 ? ` · ${targetCount}个目标` : ""}`
+              : String(payload.qualityStageLabel || "")),
         queuedAt: job.createdAt,
         startedAt: ["leased", "running"].includes(job.status) ? job.updatedAt : undefined,
       };
@@ -2029,6 +2225,9 @@ export class SyncScheduler {
   }
 
   private canStartDownloadTask(task?: DownloadTask | QualityUpgradeDownloadTask) {
+    if (task instanceof QualityUpgradeDownloadTask && this.qualityArtifactCleanupLocks.has(task.control.artifactKey)) {
+      return false;
+    }
     const snapshot = this.getLocalCacheSnapshot();
     const baseAllowed = !snapshot.paused
       && !this.uploadCircuit.isDownloadPaused()
@@ -2204,7 +2403,7 @@ export class SyncScheduler {
       },
       recovery: {
         pendingUploads: sumKinds(["upload", "history_upload"]),
-        pendingDownloads: sumKinds(["download"]),
+        pendingDownloads: sumKinds(["download", "quality_download"]),
         pendingVerifications: sumKinds(["verify_upload"]),
         chargingRestricted: sumKinds(["access_probe"]),
         leasedJobs,

@@ -290,6 +290,13 @@ test("pending upload verification query only returns awaiting relations", () => 
     });
     const pending = database.listPendingUploadVerifications(10);
     assert.deepEqual(pending.map((item) => item.relation.bvid), ["BVWAIT"]);
+    const plan = database.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT user_id, media_id, bvid FROM remote_files
+      WHERE status='awaiting_verification'
+      ORDER BY next_verify_at ASC LIMIT 10
+    `).all() as any[];
+    assert.match(plan.map((row) => row.detail).join("\n"), /idx_remote_files_verify/);
   } finally {
     database.close();
   }

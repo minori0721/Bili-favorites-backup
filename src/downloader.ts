@@ -9,6 +9,7 @@ import { logManager, parseBBDownOutput } from "./logger.js";
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
+import { createDebugLogPath, writeDebugLogAtomic } from "./debug-log-retention.js";
 import {
   buildSelectPageArgument,
   currentSessionFiles,
@@ -640,12 +641,6 @@ async function getDirectoryTotalSize(dir: string): Promise<number> {
   return total;
 }
 
-function createDebugLogPath(bvid: string) {
-  const debugDir = path.join(process.cwd(), "data", "debug");
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return path.join(debugDir, `${stamp}_${bvid}.log`);
-}
-
 async function runDebugProbe(
   bvid: string,
   baseArgs: string[],
@@ -653,9 +648,8 @@ async function runDebugProbe(
   sensitiveValues: string[]
 ) {
   const debugLogPath = createDebugLogPath(bvid);
-  await fs.promises.mkdir(path.dirname(debugLogPath), { recursive: true });
   const args = [...baseArgs, "--debug", "--only-show-info"];
-  return new Promise<string>((resolve) => {
+  return new Promise<string>((resolve, reject) => {
     const child = spawn("BBDown", args, {
       cwd,
       windowsHide: true,
@@ -663,33 +657,27 @@ async function runDebugProbe(
     });
     activeDownloadChildren.set(child, "");
     let out = "";
+    let settled = false;
     child.stdout.on("data", (chunk) => {
       out += chunk.toString();
     });
     child.stderr.on("data", (chunk) => {
       out += chunk.toString();
     });
-    child.on("close", async () => {
+    const persist = async (content: string) => {
+      if (settled) return;
+      settled = true;
       activeDownloadChildren.delete(child);
       try {
-        await fs.promises.writeFile(debugLogPath, redactSensitiveOutput(out, sensitiveValues), "utf8");
-      } catch {
-        // ignore write failure
+        await writeDebugLogAtomic(debugLogPath, redactSensitiveOutput(content, sensitiveValues));
+        resolve(debugLogPath);
+      } catch (error) {
+        reject(error);
       }
-      resolve(debugLogPath);
-    });
-    child.on("error", async (error) => {
-      activeDownloadChildren.delete(child);
-      try {
-        await fs.promises.writeFile(
-          debugLogPath,
-          redactSensitiveOutput(`${out}\n[debug probe error] ${error?.message || error}`, sensitiveValues),
-          "utf8"
-        );
-      } catch {
-        // ignore write failure
-      }
-      resolve(debugLogPath);
+    };
+    child.on("close", () => { void persist(out); });
+    child.on("error", (error) => {
+      void persist(`${out}\n[debug probe error] ${safeErrorSummary(error)}`);
     });
   });
 }

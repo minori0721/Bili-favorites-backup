@@ -1,5 +1,4 @@
 import path from "node:path";
-import crypto from "node:crypto";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles, type RemoteConflictArchiveResult } from "./uploader.js";
@@ -10,6 +9,13 @@ import { tempDir } from "./paths.js";
 import { joinRemotePath } from "./utils.js";
 import { cleanupUploadedSessionFiles, type DownloadSessionManifest } from "./download-session.js";
 import { sanitizeUploadText } from "./upload-health.js";
+import {
+  applyQualityArtifactProfile,
+  buildQualityArtifactKey,
+  normalizeQualityArtifactProfile,
+  qualityArtifactProfileFromConfig,
+  type QualityArtifactProfile,
+} from "./quality-artifact.js";
 
 export interface UploadTarget {
   userId: string;
@@ -85,11 +91,26 @@ export interface QualityUpgradeTarget {
   oldFiles: RemoteFileRecord[];
 }
 
+export function qualityUpgradeTargetKey(target: Pick<QualityUpgradeTarget, "userId" | "mediaId">) {
+  return `${target.userId}:${target.mediaId}`;
+}
+
+function uniqueQualityUpgradeTargets(targets: QualityUpgradeTarget[]) {
+  const unique = new Map<string, QualityUpgradeTarget>();
+  for (const target of targets) unique.set(qualityUpgradeTargetKey(target), target);
+  return [...unique.values()];
+}
+
 export class QualityUpgradeTask extends Task {
   bvid: string;
   cookie: BiliCookie;
   config: AppConfig;
   target: QualityUpgradeTarget;
+  targets: QualityUpgradeTarget[];
+  artifactKey: string;
+  qualityProfile: QualityArtifactProfile;
+  downloadUserId?: string;
+  downloadRunner = downloadWithBBDown;
   runId?: string;
   downloadDir?: string;
   outputFiles: string[] = [];
@@ -120,16 +141,35 @@ export class QualityUpgradeTask extends Task {
   onCompletedUpgrade?: (task: QualityUpgradeTask) => void;
   onFailed?: (task: QualityUpgradeTask, error: any) => void;
   shouldCleanupLocal?: () => boolean;
+  onLocalCleanupFinished?: (task: QualityUpgradeTask) => void;
   apiModeOverride?: BBDownApiMode;
   apiProbe = false;
   onApiReady?: (task: QualityUpgradeTask, mode: BBDownApiMode) => void;
 
-  constructor(bvid: string, cookie: BiliCookie, config: AppConfig, target: QualityUpgradeTarget) {
+  constructor(
+    bvid: string,
+    cookie: BiliCookie,
+    config: AppConfig,
+    target: QualityUpgradeTarget,
+    shared: {
+      targets?: QualityUpgradeTarget[];
+      artifactKey?: string;
+      qualityProfile?: QualityArtifactProfile;
+    } = {}
+  ) {
     super(`Quality upgrade ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
     this.cookie = cookie;
-    this.config = config;
-    this.target = target;
+    this.qualityProfile = normalizeQualityArtifactProfile(shared.qualityProfile || qualityArtifactProfileFromConfig(config));
+    this.config = applyQualityArtifactProfile(config, this.qualityProfile);
+    this.targets = uniqueQualityUpgradeTargets([target, ...(shared.targets || [])]);
+    this.target = this.targets[0];
+    this.artifactKey = shared.artifactKey || buildQualityArtifactKey(bvid, this.qualityProfile);
+  }
+
+  setTargets(targets: QualityUpgradeTarget[]) {
+    this.targets = uniqueQualityUpgradeTargets(targets);
+    if (this.targets.length > 0) this.target = this.targets[0];
   }
 
   async run() {
@@ -141,17 +181,11 @@ export class QualityUpgradeTask extends Task {
   async runDownloadPhase(runId: string) {
     console.log(`[Task] Starting quality-upgrade download for ${this.bvid}`);
     this.qualityStage = "download";
-    this.qualityStageLabel = "下载新版";
+    this.qualityStageLabel = this.targets.length > 1 ? `下载新版 · ${this.targets.length}个目标` : "下载新版";
     this.onStartUpgrade?.(this);
-    const profileKey = crypto.createHash("sha256").update(JSON.stringify({
-      quality: this.config.bbdownQuality,
-      encoding: this.config.bbdownEncoding,
-      hiRes: this.config.bbdownHiRes,
-      dolby: this.config.bbdownDolby,
-      apiMode: this.config.bbdownApiMode,
-    })).digest("hex").slice(0, 12);
-    const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
-      downloadDir: this.downloadDir || path.join(tempDir, `quality-upgrade-${this.bvid}-${profileKey}`),
+    this.config = applyQualityArtifactProfile(this.config, this.qualityProfile);
+    const result = await this.downloadRunner(this.bvid, this.cookie, this.config, {
+      downloadDir: this.downloadDir || path.join(tempDir, `quality-upgrade-${this.bvid}-${this.artifactKey.slice(0, 16)}`),
       kind: "quality_upgrade",
       qualityUpgrade: {
         userId: this.target.userId,
@@ -159,6 +193,10 @@ export class QualityUpgradeTask extends Task {
         folderTitle: this.target.folderTitle,
         remotePath: this.target.remotePath,
         oldFiles: this.target.oldFiles,
+        artifactKey: this.artifactKey,
+        qualityProfile: this.qualityProfile,
+        downloadUserId: this.downloadUserId,
+        targets: this.targets,
       },
       apiModeOverride: this.apiModeOverride,
       onApiReady: (mode) => this.onApiReady?.(this, mode),
@@ -289,7 +327,13 @@ export class QualityUpgradeTask extends Task {
     }
     this.qualityStageLabel = "画质重调完成";
     this.onCompletedUpgrade?.(this);
-    if (this.downloadDir && (this.shouldCleanupLocal?.() ?? true)) await cleanupUploadedSessionFiles(this.downloadDir);
+    if (this.downloadDir && (this.shouldCleanupLocal?.() ?? true)) {
+      try {
+        await cleanupUploadedSessionFiles(this.downloadDir);
+      } finally {
+        this.onLocalCleanupFinished?.(this);
+      }
+    }
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
   }
 }
@@ -309,7 +353,7 @@ abstract class QualityUpgradePhaseTask extends Task {
     this.control = control;
     this.bvid = control.bvid;
     this.videoTitle = control.videoTitle || control.bvid;
-    this.folderTitle = control.folderTitle || control.target.folderTitle;
+    this.folderTitle = control.targets.length > 1 ? `${control.targets.length}个目标` : (control.folderTitle || control.target.folderTitle);
     this.remotePath = control.target.remotePath;
     this.userId = control.target.userId;
     this.mediaId = control.target.mediaId;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { isBBDownCredentialDirectoryName } from "./credential-temp.js";
 import type { AppConfig } from "./config.js";
+import type { QualityArtifactProfile } from "./quality-artifact.js";
 import { writeJsonFile } from "./storage.js";
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
@@ -73,6 +74,16 @@ export interface DownloadSessionManifest {
     folderTitle: string;
     remotePath: string;
     oldFiles: Array<{ name: string; path: string; size?: number; qualityProfile?: { quality: string; encoding: string; hiRes: boolean; dolby: boolean } }>;
+    artifactKey?: string;
+    qualityProfile?: QualityArtifactProfile;
+    downloadUserId?: string;
+    targets?: Array<{
+      userId: string;
+      mediaId: number;
+      folderTitle: string;
+      remotePath: string;
+      oldFiles: Array<{ name: string; path: string; size?: number; qualityProfile?: { quality: string; encoding: string; hiRes: boolean; dolby: boolean } }>;
+    }>;
   };
   legacyAdopted?: boolean;
   lastError?: string;

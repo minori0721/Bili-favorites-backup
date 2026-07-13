@@ -284,7 +284,7 @@ test("remote conflict archival clears stale current proofs and keeps an audit re
   }
 });
 
-test("1000 persisted active records normalize with one full state write", async () => {
+test("1000 persisted active records normalize in bounded batches only once", async () => {
   const runtime = await createTestDir("state-stress");
   try {
     const state = baseState();
@@ -304,8 +304,10 @@ test("1000 persisted active records normalize with one full state write", async 
       onFlush() { flushes += 1; },
     });
     manager.normalizePersistedWorkForRecovery();
+    assert.equal(manager.normalizePersistedWorkForRecovery(), false);
     const snapshot = manager.getStateSnapshot();
-    assert.ok(flushes <= 1);
+    assert.ok(flushes <= 2);
+    assert.equal(manager.getDatabase().getMeta("runtime_recovery_normalization_v2"), "complete");
     assert.equal(Object.values(snapshot.videos || {}).filter((item) => item.backupStatus === "queued").length, 1000);
     manager.close();
     const sqliteBytes = (await fs.promises.stat(path.join(runtime, "bfb.sqlite"))).size;

@@ -10,6 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "state:export-json": "tsx src/scripts/sqlite-to-json.ts",
+    "benchmark:state": "tsx src/scripts/benchmark-state.ts",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
     "start": "node dist/index.js",
     "login": "tsx src/scripts/login.ts"

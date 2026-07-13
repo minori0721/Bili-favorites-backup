@@ -139,6 +139,7 @@ export interface VideoArchiveEntry {
 }
 
 export interface QualityUpgradeOperation {
+  artifactKey?: string;
   stageRemotePath: string;
   backupRemotePath: string;
   oldRemotePath: string;
@@ -400,12 +401,20 @@ export class StateManager {
   private videoDeletes = new Set<string>();
   private relationDeletes = new Set<string>();
   private readonly onFlush?: (dirty: StateDirtySet) => void;
+  private readonly onFullEnumeration?: (kind: "videos" | "relations") => void;
 
-  constructor(options: { statePath?: string; dbPath?: string; archiveDir?: string; onFlush?: (dirty: StateDirtySet) => void } = {}) {
+  constructor(options: {
+    statePath?: string;
+    dbPath?: string;
+    archiveDir?: string;
+    onFlush?: (dirty: StateDirtySet) => void;
+    onFullEnumeration?: (kind: "videos" | "relations") => void;
+  } = {}) {
     this.statePath = options.statePath || defaultStatePath;
     this.dbPath = options.dbPath || (options.statePath ? ":memory:" : databasePath);
     this.archiveDir = options.archiveDir || (this.dbPath === ":memory:" ? path.join(path.dirname(this.statePath), "backups") : path.join(path.dirname(this.dbPath), "backups"));
     this.onFlush = options.onFlush;
+    this.onFullEnumeration = options.onFullEnumeration;
     this.database = this.initializeDatabase();
     this.state = this.trackDatabaseState(this.database.loadStateMetadata());
     this.lazyState = true;
@@ -503,6 +512,7 @@ export class StateManager {
   }
 
   private trackLazyRecordMap<T extends object>(
+    kind: "videos" | "relations",
     cache: Map<string, T>,
     deletes: Set<string>,
     listKeys: () => string[],
@@ -565,7 +575,10 @@ export class StateManager {
         markKey(property);
         return true;
       },
-      ownKeys: () => [...new Set([...listKeys().filter((key) => !deletes.has(key)), ...cache.keys()])],
+      ownKeys: () => {
+        this.onFullEnumeration?.(kind);
+        return [...new Set([...listKeys().filter((key) => !deletes.has(key)), ...cache.keys()])];
+      },
       getOwnPropertyDescriptor: (_target, property) => {
         if (typeof property !== "string" || deletes.has(property)) return undefined;
         return { enumerable: true, configurable: true };
@@ -576,6 +589,7 @@ export class StateManager {
   private trackDatabaseState(input: StateFile): StateFile {
     const state = this.normalizeLoadedState(input);
     state.videos = this.trackLazyRecordMap(
+      "videos",
       this.videoCache,
       this.videoDeletes,
       () => this.database.listVideoKeys(),
@@ -584,6 +598,7 @@ export class StateManager {
       (key) => this.dirtySet.videos.has(key)
     );
     state.relations = this.trackLazyRecordMap(
+      "relations",
       this.relationCache,
       this.relationDeletes,
       () => this.database.listRelationKeys(),
@@ -776,6 +791,10 @@ export class StateManager {
 
   getStateSnapshot() {
     return this.snapshotState();
+  }
+
+  getLazyCacheStats() {
+    return { videos: this.videoCache.size, relations: this.relationCache.size, limit: 256 };
   }
 
   private getRelation(userId: string | undefined, mediaId: number | undefined, bvid: string) {
@@ -1933,19 +1952,19 @@ export class StateManager {
   }
 
   normalizePersistedWorkForRecovery() {
+    const marker = "runtime_recovery_normalization_v2";
+    if (this.database.getMeta(marker) === "complete") return false;
     let changed = false;
     const resumableStatuses = new Set<BackupStatus>(["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing", "failed"]);
     const at = nowIso();
-    const videos = this.lazyState ? this.database.listVideos() : Object.values(this.state.videos || {}).map((entry) => ({ ...entry }));
-    const relationRows = this.lazyState ? this.database.listRelations() : Object.values(this.state.relations || {}).map((relation) => ({ ...relation }));
-    const relationsByBvid = new Map<string, FavoriteRelation[]>();
-    for (const relation of relationRows) {
-      const list = relationsByBvid.get(relation.bvid) || [];
-      list.push(relation);
-      relationsByBvid.set(relation.bvid, list);
-    }
-
-    this.runBatch(() => {
+    const normalizeBatch = (videos: VideoArchiveEntry[], relationRows: FavoriteRelation[]) => this.runBatch(() => {
+      let batchChanged = false;
+      const relationsByBvid = new Map<string, FavoriteRelation[]>();
+      for (const relation of relationRows) {
+        const list = relationsByBvid.get(relation.bvid) || [];
+        list.push(relation);
+        relationsByBvid.set(relation.bvid, list);
+      }
       for (const entry of videos) {
         let videoChanged = false;
         const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
@@ -1970,12 +1989,14 @@ export class StateManager {
             if (JSON.stringify(entry.downloadSession) !== JSON.stringify(nextReference)) {
               entry.downloadSession = nextReference;
               videoChanged = true;
+              batchChanged = true;
               changed = true;
             }
           }
           if (resumableStatuses.has(entry.backupStatus) && entry.backupStatus !== entryTarget) {
             this.setVideoStatus(entry, entryTarget, at);
             videoChanged = true;
+            batchChanged = true;
             changed = true;
           }
           for (const relation of relations) {
@@ -1987,6 +2008,7 @@ export class StateManager {
             if (relation.backupStatus !== target) {
               this.setRelationStatus(relation, target, at);
               this.state.relations![relationKey(relation.userId, relation.mediaId, relation.bvid)] = relation;
+              batchChanged = true;
               changed = true;
             }
           }
@@ -1998,6 +2020,7 @@ export class StateManager {
           entry.localDir = undefined;
           entry.downloadSession = undefined;
           videoChanged = true;
+          batchChanged = true;
           changed = true;
         }
         if (resumableStatuses.has(entry.backupStatus)) {
@@ -2005,6 +2028,7 @@ export class StateManager {
           if (entry.backupStatus !== target) {
             this.setVideoStatus(entry, target, at);
             videoChanged = true;
+            batchChanged = true;
             changed = true;
           }
         }
@@ -2015,13 +2039,32 @@ export class StateManager {
           if (relation.backupStatus !== target) {
             this.setRelationStatus(relation, target, at);
             this.state.relations![relationKey(relation.userId, relation.mediaId, relation.bvid)] = relation;
+            batchChanged = true;
             changed = true;
           }
         }
         if (videoChanged) this.state.videos![entry.bvid] = entry;
       }
-      if (changed) this.save();
+      if (batchChanged) this.save();
     });
+
+    if (this.lazyState) {
+      let afterBvid = "";
+      while (true) {
+        const videos = this.database.listRecoveryNormalizationVideos(afterBvid, [...resumableStatuses], 500);
+        if (videos.length === 0) break;
+        const relations = this.database.listRelationsForBvids(videos.map((entry) => entry.bvid));
+        normalizeBatch(videos, relations);
+        afterBvid = videos[videos.length - 1].bvid;
+      }
+    } else {
+      normalizeBatch(
+        Object.values(this.state.videos || {}).map((entry) => ({ ...entry })),
+        Object.values(this.state.relations || {}).map((relation) => ({ ...relation }))
+      );
+    }
+
+    this.database.setMeta(marker, "complete");
 
     return changed;
   }
@@ -2135,6 +2178,7 @@ export class StateManager {
   }
 
   getRemoteFilePreviewRecords() {
+    if (this.lazyState) return this.database.listRemoteFilePreviewRecords();
     const records = new Map<string, RemoteFilePreviewVideoRecord>();
     for (const entry of Object.values(this.state.videos || {})) {
       records.set(entry.bvid, {

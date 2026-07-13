@@ -24,6 +24,23 @@ export interface EnqueuePersistentJob {
   notBefore?: number;
 }
 
+function qualityTargetKey(target: any) {
+  const userId = String(target?.userId || "");
+  const mediaId = Number(target?.mediaId);
+  return userId && Number.isInteger(mediaId) ? `${userId}:${mediaId}` : "";
+}
+
+function qualityTargetsFromPayload(payload: Record<string, any>) {
+  const targets = Array.isArray(payload.targets) ? payload.targets : [];
+  const candidates = payload.target ? [payload.target, ...targets] : targets;
+  const unique = new Map<string, any>();
+  for (const target of candidates) {
+    const key = qualityTargetKey(target);
+    if (key) unique.set(key, target);
+  }
+  return [...unique.values()];
+}
+
 function rowToJob(row: any): PersistentJobRecord {
   return {
     id: String(row.id),
@@ -86,6 +103,85 @@ export class PersistentJobStore {
       now,
     });
     return this.findByDedupeKey(input.dedupeKey)!;
+  }
+
+  mergeQualityDownload(input: EnqueuePersistentJob) {
+    if (input.kind !== "quality_download") throw new Error("mergeQualityDownload requires a quality_download job");
+    const transaction = this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE dedupe_key=?").get(input.dedupeKey) as any;
+      if (!row) {
+        return { job: this.enqueue(input), created: true, targetAdded: true };
+      }
+      const existing = rowToJob(row);
+      const existingPayload = existing.payload as Record<string, any>;
+      const incomingPayload = (input.payload || {}) as Record<string, any>;
+      const existingTargets = qualityTargetsFromPayload(existingPayload);
+      const incomingTargets = qualityTargetsFromPayload(incomingPayload);
+      const targets = new Map(existingTargets.map((target) => [qualityTargetKey(target), target]));
+      let targetAdded = false;
+      for (const target of incomingTargets) {
+        const key = qualityTargetKey(target);
+        if (!targets.has(key)) targetAdded = true;
+        targets.set(key, target);
+      }
+      const mergedTargets = [...targets.values()];
+      const mergedPayload = {
+        ...incomingPayload,
+        ...existingPayload,
+        artifactKey: existingPayload.artifactKey || incomingPayload.artifactKey,
+        qualityProfile: existingPayload.qualityProfile || incomingPayload.qualityProfile,
+        target: existingPayload.target || incomingPayload.target || mergedTargets[0],
+        targets: mergedTargets,
+      };
+      const now = Date.now();
+      this.stateDatabase.db.prepare(`
+        UPDATE jobs SET
+          status=CASE WHEN status='failed' THEN 'pending' ELSE status END,
+          priority=MIN(priority, ?),
+          payload_json=?,
+          attempts=CASE WHEN status='failed' THEN 0 ELSE attempts END,
+          not_before=CASE WHEN status='failed' THEN ? ELSE not_before END,
+          lease_owner=CASE WHEN status='failed' THEN NULL ELSE lease_owner END,
+          lease_expires_at=CASE WHEN status='failed' THEN NULL ELSE lease_expires_at END,
+          last_error=CASE WHEN status='failed' THEN NULL ELSE last_error END,
+          max_attempts=MAX(max_attempts, ?),
+          updated_at=?
+        WHERE id=?
+      `).run(
+        Math.floor(input.priority ?? 100),
+        JSON.stringify(mergedPayload),
+        Math.max(0, Math.floor(input.notBefore ?? now)),
+        Math.max(1, Math.floor(input.maxAttempts ?? 3)),
+        now,
+        existing.id
+      );
+      return { job: this.findById(existing.id)!, created: false, targetAdded };
+    });
+    return transaction();
+  }
+
+  replaceQualityDownloadJobs(jobs: PersistentJobRecord[], input: EnqueuePersistentJob) {
+    if (input.kind !== "quality_download" || jobs.length === 0) {
+      throw new Error("replaceQualityDownloadJobs requires existing quality_download jobs");
+    }
+    const transaction = this.stateDatabase.db.transaction(() => {
+      const ids = [...new Set(jobs.map((job) => job.id))];
+      const placeholders = ids.map(() => "?").join(",");
+      this.stateDatabase.db.prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`).run(...ids);
+      const replacement = this.enqueue(input);
+      const attempts = Math.max(...jobs.map((job) => Number(job.attempts || 0)), 0);
+      const notBefore = Math.max(...jobs.map((job) => Number(job.notBefore || 0)), Number(input.notBefore || 0));
+      const maxAttempts = Math.max(...jobs.map((job) => Number(job.maxAttempts || 1)), Number(input.maxAttempts || 1));
+      const createdAt = Math.min(...jobs.map((job) => Number(job.createdAt || Date.now())));
+      const lastError = [...jobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.lastError || null;
+      const status = notBefore > Date.now() || jobs.some((job) => job.status === "retry_wait") ? "retry_wait" : "pending";
+      this.stateDatabase.db.prepare(`
+        UPDATE jobs SET status=?, attempts=?, max_attempts=?, not_before=?, lease_owner=NULL,
+          lease_expires_at=NULL, last_error=?, created_at=?, updated_at=? WHERE id=?
+      `).run(status, attempts, maxAttempts, notBefore, lastError, createdAt, Date.now(), replacement.id);
+      return this.findById(replacement.id)!;
+    });
+    return transaction();
   }
 
   findByDedupeKey(dedupeKey: string) {
@@ -155,7 +251,7 @@ export class PersistentJobStore {
     const attempts = Number(row.attempts || 0) + 1;
     const exhausted = attempts >= Number(row.max_attempts || 1);
     if (exhausted) {
-      if (String(row.kind) === "upload") {
+      if (String(row.kind) === "upload" || ["quality_upload", "quality_replace", "quality_cleanup"].includes(String(row.kind))) {
         this.stateDatabase.db.prepare(`
           UPDATE jobs SET status='failed', attempts=?, not_before=?, lease_owner=NULL, lease_expires_at=NULL,
             last_error=?, updated_at=? WHERE id=? AND lease_owner=?
@@ -295,6 +391,34 @@ export class PersistentJobStore {
     return Number(row?.count || 0);
   }
 
+  countQualityJobsForArtifact(artifactKey: string) {
+    if (!artifactKey) return 0;
+    const row = this.stateDatabase.db.prepare(`
+      SELECT COUNT(*) AS count FROM jobs
+      WHERE kind IN ('quality_download','quality_upload','quality_replace','quality_cleanup')
+        AND json_extract(payload_json, '$.artifactKey')=?
+    `).get(artifactKey) as any;
+    return Number(row?.count || 0);
+  }
+
+  hasQualityTarget(userId: string, mediaId: number, bvid: string) {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT 1 FROM jobs
+      WHERE bvid=? AND (
+        (kind='quality_download' AND (
+          (json_extract(payload_json, '$.target.userId')=? AND CAST(json_extract(payload_json, '$.target.mediaId') AS INTEGER)=?)
+          OR EXISTS (
+            SELECT 1 FROM json_each(jobs.payload_json, '$.targets') AS target
+            WHERE json_extract(target.value, '$.userId')=?
+              AND CAST(json_extract(target.value, '$.mediaId') AS INTEGER)=?
+          )
+        ))
+        OR (kind IN ('quality_upload','quality_replace','quality_cleanup') AND user_id=? AND media_id=?)
+      ) LIMIT 1
+    `).get(bvid, userId, mediaId, userId, mediaId, userId, mediaId);
+    return Boolean(row);
+  }
+
   hasDedupePrefix(prefix: string) {
     return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ?").get(`${prefix}%`) as any).count || 0) > 0;
   }
@@ -321,11 +445,15 @@ export class PersistentJobStore {
     const id = String(userId || "");
     return (this.stateDatabase.db.prepare(`
       SELECT * FROM jobs
-      WHERE kind IN ('download','quality_download')
-        AND (user_id=? OR json_extract(payload_json, '$.primaryUserId')=?
-          OR json_extract(payload_json, '$.downloadUserId')=? OR json_extract(payload_json, '$.userId')=?)
+      WHERE (kind='download' AND (
+          user_id=? OR json_extract(payload_json, '$.primaryUserId')=?
+          OR json_extract(payload_json, '$.downloadUserId')=?
+        )) OR (kind='quality_download' AND (
+          user_id=? OR json_extract(payload_json, '$.downloadUserId')=?
+          OR json_extract(payload_json, '$.pausedForUserId')=?
+        ))
       ORDER BY created_at ASC
-    `).all(id, id, id, id) as any[]).map(rowToJob);
+    `).all(id, id, id, id, id, id) as any[]).map(rowToJob);
   }
 
   reassignDownloadJob(id: string, downloadUserId: string, payload: Record<string, unknown>) {
@@ -370,9 +498,13 @@ export class PersistentJobStore {
     const id = String(userId || "");
     return this.stateDatabase.db.prepare(`
       DELETE FROM jobs
-      WHERE kind IN ('download','quality_download')
-        AND (user_id=? OR json_extract(payload_json, '$.primaryUserId')=?
-          OR json_extract(payload_json, '$.downloadUserId')=? OR json_extract(payload_json, '$.userId')=?)
-    `).run(id, id, id, id).changes;
+      WHERE (kind='download' AND (
+          user_id=? OR json_extract(payload_json, '$.primaryUserId')=?
+          OR json_extract(payload_json, '$.downloadUserId')=?
+        )) OR (kind='quality_download' AND (
+          user_id=? OR json_extract(payload_json, '$.downloadUserId')=?
+          OR json_extract(payload_json, '$.pausedForUserId')=?
+        ))
+    `).run(id, id, id, id, id, id).changes;
   }
 }

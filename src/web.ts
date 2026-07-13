@@ -1922,6 +1922,8 @@ function getAppScript() {
         const chunkSize = 50;
         const queued = [];
         const skipped = [];
+        const downloadGroupKeys = new Set();
+        let reportedDownloadGroups = 0;
         for (let start = 0; start < payload.length; start += chunkSize) {
           const chunk = payload.slice(start, start + chunkSize);
           const batchIndex = Math.floor(start / chunkSize) + 1;
@@ -1932,10 +1934,17 @@ function getAppScript() {
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ items:chunk })
           });
-          if (Array.isArray(result.queued)) queued.push(...result.queued);
+          if (Array.isArray(result.queued)) {
+            queued.push(...result.queued);
+            result.queued.forEach((item) => {
+              if (item && item.artifactKey) downloadGroupKeys.add(item.artifactKey);
+            });
+          }
           if (Array.isArray(result.skipped)) skipped.push(...result.skipped);
+          reportedDownloadGroups += Number(result.downloadGroups || 0);
         }
-        const lines = ['已提交：' + queued.length + ' 个；跳过：' + skipped.length + ' 个。任务会在后台逐个执行，可在日志中查看进度。'];
+        const downloadGroups = downloadGroupKeys.size || reportedDownloadGroups;
+        const lines = ['已提交：' + queued.length + ' 个目标，合并为 ' + downloadGroups + ' 个下载组；跳过：' + skipped.length + ' 个。任务会在后台执行，可在队列中查看进度。'];
         queued.forEach((item) => lines.push('已提交：' + item.bvid + ' ' + (item.title || '')));
         skipped.forEach((item) => lines.push('跳过：' + (item.key || '<未知>') + '，原因：' + (item.reason || '未知')));
         resultBlock.textContent = lines.join('\\n');
@@ -1957,7 +1966,8 @@ function getAppScript() {
         const completed = Array.isArray(data.completed) ? data.completed : [];
         if (!running.length && !completed.length) return;
         const cleanupRetrying = running.filter((item) => item.stageLabel === '旧文件清理重试中').length;
-        setStatus(st, '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。' + (cleanupRetrying ? ' 旧文件清理重试中 ' + cleanupRetrying + ' 个。' : ''), 'muted');
+        const sharedDownloads = running.filter((item) => Number(item.targetCount || 0) > 1 && String(item.stageLabel || '').includes('下载新版')).length;
+        setStatus(st, '画质重调：运行中 ' + running.length + ' 个；最近完成/失败 ' + completed.length + ' 个。' + (sharedDownloads ? ' 共享下载 ' + sharedDownloads + ' 组。' : '') + (cleanupRetrying ? ' 旧文件清理重试中 ' + cleanupRetrying + ' 个。' : ''), 'muted');
       } catch(e) {
         setStatus(st, '画质重调状态读取失败: ' + e.message, 'error');
       }

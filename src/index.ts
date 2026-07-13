@@ -28,6 +28,12 @@ import { SyncScheduler } from "./scheduler.js";
 import { logManager, logsPath } from "./logger.js";
 import { QualityUpgradeTask } from "./tasks.js";
 import {
+  applyQualityArtifactProfile,
+  buildQualityArtifactKey,
+  normalizeQualityArtifactProfile,
+  qualityArtifactProfileFromConfig,
+} from "./quality-artifact.js";
+import {
   batchRenameRemotePaths,
   deleteRemoteFiles,
   listRemoteFilesRecursive,
@@ -47,6 +53,7 @@ import {
   previewMigrationPackageFile,
 } from "./migration.js";
 import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
+import { rotateDebugLogs } from "./debug-log-retention.js";
 
 ensureAppDirs();
 
@@ -88,6 +95,9 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 async function startAfterRecovery() {
+  await rotateDebugLogs().catch((error) => {
+    console.warn(`[DebugLog] 启动轮转失败: ${safeErrorSummary(error)}`);
+  });
   await cleanupBBDownCredentialResidue().catch((error) => {
     console.warn(`[Security] Failed to clean stale BBDown credential directories: ${safeErrorSummary(error)}`);
   });
@@ -116,24 +126,32 @@ async function recoverInterruptedQualityDownloads() {
     const manifest = readDownloadSession(downloadDir);
     const target = manifest?.qualityUpgrade;
     if (!manifest || manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;
-    const key = relationKey(target.userId, target.mediaId, manifest.bvid);
-    if (remoteRecoveryBlocked.has(key)) continue;
-    const user = userStore.getById(target.userId);
+    const targets = (Array.isArray(target.targets) && target.targets.length > 0 ? target.targets : [target])
+      .filter((candidate) => !remoteRecoveryBlocked.has(relationKey(candidate.userId, candidate.mediaId, manifest.bvid)));
+    if (targets.length === 0) continue;
+    const user = (target.downloadUserId ? userStore.getById(target.downloadUserId) : null)
+      || userStore.list().find((candidate) => candidate.enabled && Number(candidate.uid || candidate.cookie.DedeUserID || 0) === manifest.accountUid)
+      || userStore.getById(targets[0].userId);
     if (!user || !user.enabled) continue;
+    const qualityProfile = normalizeQualityArtifactProfile(
+      target.qualityProfile || manifest.configSnapshot || qualityArtifactProfileFromConfig(configStore.get())
+    );
+    const artifactKey = target.artifactKey || buildQualityArtifactKey(manifest.bvid, qualityProfile);
     const meta = stateManager.getVideoMeta(manifest.bvid);
-    const task = new QualityUpgradeTask(manifest.bvid, { ...user.cookie, accessToken: user.accessToken || "" }, configStore.get(), {
-      userId: target.userId,
-      mediaId: target.mediaId,
-      folderTitle: target.folderTitle,
-      remotePath: target.remotePath,
-      oldFiles: target.oldFiles,
-    });
+    const task = new QualityUpgradeTask(
+      manifest.bvid,
+      { ...user.cookie, accessToken: user.accessToken || "" },
+      applyQualityArtifactProfile(configStore.get(), qualityProfile),
+      targets[0],
+      { targets, artifactKey, qualityProfile }
+    );
     task.downloadDir = downloadDir;
     task.runId = `resume-${manifest.sessionId}`;
     task.videoTitle = meta?.title || manifest.bvid;
-    task.folderTitle = target.folderTitle;
-    task.userId = target.userId;
-    task.mediaId = target.mediaId;
+    task.folderTitle = targets.length > 1 ? `${targets.length}个目标` : targets[0].folderTitle;
+    task.downloadUserId = user.id;
+    task.userId = user.id;
+    task.mediaId = targets[0].mediaId;
     scheduler.enqueueQualityUpgrade(task);
   }
 }
@@ -1586,9 +1604,10 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
   const candidates = new Map(preview.candidates.map((item) => [item.key, item]));
   const uncertain = new Map(preview.uncertain.map((item) => [item.key, item]));
   const config = configStore.get();
-  const queued: Array<{ key: string; bvid: string; title: string }> = [];
+  const queued: Array<{ key: string; bvid: string; title: string; artifactKey: string }> = [];
   const skipped: Array<{ key: string; reason: string }> = [];
   const requestedKeys = new Set<string>();
+  const downloadGroups = new Set<string>();
 
   for (const item of items) {
     const key = item.key || (item.userId && item.mediaId && item.bvid ? relationKey(item.userId, Number(item.mediaId), item.bvid) : "");
@@ -1616,16 +1635,18 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
     });
     task.videoTitle = candidate.title;
     task.folderTitle = candidate.folderTitle;
+    task.downloadUserId = user.id;
     task.userId = candidate.userId;
     task.mediaId = candidate.mediaId;
     if (!scheduler.enqueueQualityUpgrade(task)) {
       skipped.push({ key, reason: "该任务已在持久化队列中" });
       continue;
     }
-    queued.push({ key, bvid: candidate.bvid, title: candidate.title });
+    queued.push({ key, bvid: candidate.bvid, title: candidate.title, artifactKey: task.artifactKey });
+    downloadGroups.add(task.artifactKey);
   }
 
-  res.json({ success: true, data: { queued, skipped } });
+  res.json({ success: true, data: { queued, skipped, downloadGroups: downloadGroups.size } });
 }));
 
 app.get("/api/quality-upgrade/state", (_req, res) => {
