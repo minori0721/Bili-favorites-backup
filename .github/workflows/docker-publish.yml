@@ -7,6 +7,12 @@ on:
       - dev
     tags:
       - "v*.*.*"
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "DEV_NOTES.md"
+      - ".github/workflows/docs-pages.yml"
+      - ".github/workflows/docker-publish.yml"
   workflow_dispatch:
 
 permissions:
