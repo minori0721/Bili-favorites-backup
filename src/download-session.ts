@@ -107,6 +107,14 @@ export interface DownloadRecoverySummary {
   cleanupEligibleBytes: number;
 }
 
+export interface DownloadCacheInspection {
+  usedBytes: number;
+  fileCount: number;
+  exportableBytes: number;
+  exportableFiles: number;
+  recovery: DownloadRecoverySummary;
+}
+
 export interface DownloadCleanupResult {
   removedFiles: number;
   removedDirectories: number;
@@ -781,16 +789,27 @@ function listFilesSync(rootDir: string) {
   return files;
 }
 
-function classifyManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
-  const files = listFilesSync(downloadDir);
+function emptyDownloadRecoverySummary(): DownloadRecoverySummary {
+  return {
+    resumableSessions: 0,
+    completedPages: 0,
+    totalPages: 0,
+    retainedBytes: 0,
+    legacyDirectories: 0,
+    legacyBytes: 0,
+    cleanupEligibleBytes: 0,
+  };
+}
+
+function classifyManifestRecoverySet(manifest: DownloadSessionManifest, files: Iterable<string>) {
   const retained = new Set<string>();
   const cleanup = new Set<string>();
-  const existing = new Set(files.map((file) => file.replace(/\\/g, "/")));
+  const existing = new Set([...files].map((file) => file.replace(/\\/g, "/")));
+  let aria2Controls = 0;
   for (const output of [...manifest.outputs, ...(manifest.history || [])]) {
     const relativePath = String(output.relativePath || "").replace(/\\/g, "/");
     if (relativePath && existing.has(relativePath)) retained.add(relativePath);
   }
-  let aria2Controls = 0;
   for (const relativeFile of existing) {
     const segments = relativeFile.split("/");
     if (segments.some((segment) => segment === "_invalid" || segment === "_incompatible")) continue;
@@ -807,11 +826,13 @@ function classifyManifestRecovery(downloadDir: string, manifest: DownloadSession
       continue;
     }
     if (/\.aria2$/i.test(relativeFile)) continue;
-    if (isUnsafeResumeArtifact(relativeFile) && !retained.has(relativeFile)) {
-      cleanup.add(relativeFile);
-    }
+    if (isUnsafeResumeArtifact(relativeFile) && !retained.has(relativeFile)) cleanup.add(relativeFile);
   }
   return { retained, cleanup, aria2Controls };
+}
+
+function classifyManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
+  return classifyManifestRecoverySet(manifest, listFilesSync(downloadDir));
 }
 
 function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
@@ -878,15 +899,7 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
 }
 
 export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySummary {
-  const summary: DownloadRecoverySummary = {
-    resumableSessions: 0,
-    completedPages: 0,
-    totalPages: 0,
-    retainedBytes: 0,
-    legacyDirectories: 0,
-    legacyBytes: 0,
-    cleanupEligibleBytes: 0,
-  };
+  const summary = emptyDownloadRecoverySummary();
   let entries: fs.Dirent[] = [];
   try {
     entries = fs.readdirSync(rootDir, { withFileTypes: true });
@@ -928,6 +941,129 @@ export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySu
     try { walk(dir); } catch { /* ignore files changing during scan */ }
   }
   return summary;
+}
+
+async function listFileSizes(rootDir: string) {
+  const files = new Map<string, number>();
+  const pending = [rootDir];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
+    } catch (error: any) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = await fs.promises.lstat(fullPath);
+        if (stat.isFile() && !stat.isSymbolicLink()) {
+          files.set(path.relative(rootDir, fullPath).replace(/\\/g, "/"), stat.size);
+        }
+      } catch (error: any) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
+  return files;
+}
+
+async function readDownloadSessionAsync(downloadDir: string) {
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(downloadSessionPath(downloadDir), "utf8")) as DownloadSessionManifest;
+    if (parsed?.schemaVersion !== 1 || !parsed.bvid || !Array.isArray(parsed.pages)) return null;
+    parsed.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(parsed.outputs);
+    parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
+    return parsed;
+  } catch (error: any) {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+export async function inspectDownloadCache(rootDir: string, concurrency = 4): Promise<DownloadCacheInspection> {
+  const result: DownloadCacheInspection = {
+    usedBytes: 0,
+    fileCount: 0,
+    exportableBytes: 0,
+    exportableFiles: 0,
+    recovery: emptyDownloadRecoverySummary(),
+  };
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return result;
+    throw error;
+  }
+
+  const directories = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink());
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    try {
+      const stat = await fs.promises.lstat(path.join(rootDir, entry.name));
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      result.usedBytes += stat.size;
+      result.fileCount += 1;
+      result.exportableBytes += stat.size;
+      result.exportableFiles += 1;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < directories.length) {
+      const entry = directories[cursor++];
+      const downloadDir = path.join(rootDir, entry.name);
+      const fileSizes = await listFileSizes(downloadDir);
+      const bytes = [...fileSizes.values()].reduce((total, size) => total + size, 0);
+      result.usedBytes += bytes;
+      result.fileCount += fileSizes.size;
+      if (!isBBDownCredentialDirectoryName(entry.name)) {
+        result.exportableBytes += bytes;
+        result.exportableFiles += fileSizes.size;
+      }
+      if (isBBDownCredentialDirectoryName(entry.name)) continue;
+      if (fileSizes.has(DOWNLOAD_RETAINED_FILE)) {
+        result.recovery.cleanupEligibleBytes += bytes;
+        continue;
+      }
+      if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
+      const manifest = await readDownloadSessionAsync(downloadDir);
+      if (!manifest) {
+        result.recovery.legacyDirectories += 1;
+        result.recovery.legacyBytes += bytes;
+        for (const [relativeFile, size] of fileSizes) {
+          if (/\.(aria2|tmp|vclip|aclip|part|download)$/i.test(relativeFile)) {
+            result.recovery.cleanupEligibleBytes += size;
+          }
+        }
+        continue;
+      }
+      const classified = classifyManifestRecoverySet(manifest, fileSizes.keys());
+      const sizeOf = (items: Set<string>) => [...items].reduce((total, relativeFile) => total + (fileSizes.get(relativeFile) || 0), 0);
+      if (["prepared", "downloading", "failed"].includes(manifest.status)
+        && (manifest.outputs.length > 0 || classified.aria2Controls > 0)) {
+        result.recovery.resumableSessions += 1;
+      }
+      result.recovery.completedPages += manifest.outputs.length;
+      result.recovery.totalPages += manifest.pages.length;
+      result.recovery.retainedBytes += sizeOf(classified.retained);
+      result.recovery.cleanupEligibleBytes += sizeOf(classified.cleanup);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(concurrency)), directories.length || 1) }, worker));
+  return result;
 }
 
 export function findLegacyCover(downloadDir: string) {

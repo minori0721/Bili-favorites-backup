@@ -102,6 +102,9 @@ test("application info derives safe dev, release, and local build labels", () =>
   }
   assert.match(renderAppPage(), /class="app-brand"/);
   assert.match(renderAppPage(), /class="header-actions"/);
+  assert.match(renderAppPage(), /setInterval\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, 1000\)/);
+  assert.match(renderAppPage(), /visibilitychange/);
+  assert.match(renderAppPage(), /if \(document\.hidden\) stopQueueBoardPolling\(\)/);
   assert.match(renderLoginPage(), /class="login-meta"/);
 });
 

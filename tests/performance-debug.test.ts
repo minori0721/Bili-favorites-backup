@@ -15,14 +15,15 @@ import { createTestDir, removeTestDir } from "./helpers.js";
 function insertStateRows(database: StateDatabase, count: number) {
   const timestamp = Date.parse("2026-07-13T00:00:00.000Z");
   const insertVideo = database.db.prepare(`
-    INSERT INTO videos(bvid, backup_status, bili_status, local_dir, payload_json, updated_at)
-    VALUES(?, ?, 'available', NULL, ?, ?)
+    INSERT INTO videos(bvid, backup_status, bili_status, local_dir, access_restriction_type,
+      access_last_checked_at, payload_json, updated_at)
+    VALUES(?, ?, 'available', NULL, NULL, NULL, ?, ?)
   `);
   const insertRelation = database.db.prepare(`
     INSERT INTO favorite_relations(user_id, media_id, bvid, backup_status, active_in_favorite,
       folder_title, fav_order, last_seen_at, favorite_unavailable, self_visible,
-      next_remote_check_at, account_detached_at, payload_json, updated_at)
-    VALUES('u1', 1, ?, ?, 1, 'Performance', ?, ?, 0, 0, NULL, NULL, ?, ?)
+      last_remote_check_at, next_remote_check_at, account_detached_at, payload_json, updated_at)
+    VALUES('u1', 1, ?, ?, 1, 'Performance', ?, ?, 0, 0, ?, NULL, NULL, ?, ?)
   `);
   database.db.transaction(() => {
     for (let index = 0; index < count; index += 1) {
@@ -49,7 +50,7 @@ function insertStateRows(database: StateDatabase, count: number) {
         backupStatus: status,
       };
       insertVideo.run(bvid, status, JSON.stringify(video), timestamp);
-      insertRelation.run(bvid, status, index, timestamp, JSON.stringify(relation), timestamp);
+      insertRelation.run(bvid, status, index, timestamp, status === "verified" ? timestamp + index : null, JSON.stringify(relation), timestamp);
     }
   })();
 }
@@ -94,6 +95,8 @@ test("SQLite hot-path indexes are present and selected by representative plans",
       "idx_failures_folder_time",
       "idx_remote_files_verify",
       "idx_jobs_due",
+      "idx_videos_access_restriction",
+      "idx_relations_remote_schedule",
     ]) assert.equal(indexes.has(name), true, name);
 
     const plans = [
@@ -106,6 +109,54 @@ test("SQLite hot-path indexes are present and selected by representative plans",
     assert.match(plans[1], /idx_relations_folder_status/);
     assert.match(plans[2], /idx_failures_folder_time/);
     assert.match(plans[3], /idx_jobs_due/);
+  } finally {
+    database.close();
+  }
+});
+
+test("schema 4 charging and remote verification queries stay indexed at 10000 rows", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    insertStateRows(database, 10_000);
+    const checkedAt = Date.parse("2026-07-15T00:00:00.000Z");
+    const updateVideo = database.db.prepare(`
+      UPDATE videos SET access_restriction_type='charging', access_last_checked_at=? WHERE bvid=?
+    `);
+    const updateRelation = database.db.prepare(`
+      UPDATE favorite_relations SET backup_status='charging_restricted' WHERE bvid=?
+    `);
+    database.db.transaction(() => {
+      for (let index = 1; index < 10_000; index += 100) {
+        const bvid = `BVPERF${String(index).padStart(8, "0")}`;
+        updateVideo.run(checkedAt + index, bvid);
+        updateRelation.run(bvid);
+      }
+    })();
+
+    const charging = database.getChargingRestrictionSummary();
+    assert.equal(charging.count, 100);
+    assert.equal(charging.lastCheckedAt, new Date(checkedAt + 9_901).toISOString());
+    database.db.prepare("UPDATE favorite_relations SET next_remote_check_at=? WHERE bvid='BVPERF00000000'")
+      .run(checkedAt + 60_000);
+    const remote = database.listRelationsForRemoteVerify(10, false, checkedAt + 20_000);
+    assert.deepEqual(remote.map((item) => item.bvid), Array.from({ length: 10 }, (_, index) => `BVPERF${String((index + 1) * 3).padStart(8, "0")}`));
+    assert.equal(database.listRelationsForRemoteVerify(1, true, checkedAt + 20_000)[0]?.bvid, "BVPERF00000000");
+
+    const chargingPlan = (database.db.prepare(`
+      EXPLAIN QUERY PLAN SELECT bvid FROM videos
+      WHERE access_restriction_type='charging' ORDER BY access_last_checked_at DESC LIMIT 10
+    `).all() as any[]).map((row) => row.detail).join("\n");
+    const remotePlan = (database.db.prepare(`
+      EXPLAIN QUERY PLAN SELECT bvid FROM favorite_relations
+      WHERE backup_status IN ('verified','partial_verified')
+        AND COALESCE(next_remote_check_at,last_remote_check_at,0)<=?
+      ORDER BY COALESCE(next_remote_check_at,last_remote_check_at,0), bvid LIMIT 10
+    `).all(checkedAt + 20_000) as any[]).map((row) => row.detail).join("\n");
+    assert.match(chargingPlan, /idx_videos_access_restriction/);
+    assert.match(remotePlan, /idx_relations_remote_schedule/);
+    assert.doesNotMatch(StateDatabase.prototype.listChargingRestrictedVideos.toString(), /json_extract/);
+    assert.doesNotMatch(StateDatabase.prototype.getChargingRestrictionSummary.toString(), /json_extract/);
+    assert.doesNotMatch(StateDatabase.prototype.listRelationsForRemoteVerify.toString(), /json_extract/);
   } finally {
     database.close();
   }

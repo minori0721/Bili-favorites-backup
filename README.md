@@ -79,6 +79,8 @@ docker compose up -d
 
 必须持久化`data:/app/data`和`temp:/app/temp`。前者保存SQLite、配置与账号，后者保存下载会话、aria2断点和待补传成品；使用内置AList时还必须持久化`alist:/opt/alist/data`。
 
+从`v2.4.2`开始，SQLite会自动升级到`user_version 4`。升级前会在`data/backups`生成一致性数据库备份和SHA256摘要；旧版镜像不能直接打开schema 4数据库，回滚时应恢复该备份或使用兼容JSON导出。
+
 ```bash
 docker compose pull
 docker compose up -d

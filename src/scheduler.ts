@@ -22,9 +22,11 @@ import {
   cleanupUploadedSessionFiles,
   DOWNLOAD_RETAINED_FILE,
   historySessionGroups,
-  inspectDownloadRecoverySync,
+  inspectDownloadCache,
   markHistoryGroupUploaded,
   readDownloadSession,
+  type DownloadCacheInspection,
+  type DownloadRecoverySummary,
   writeDownloadSession,
 } from "./download-session.js";
 import {
@@ -95,6 +97,7 @@ export function computeChargingTransientDelayMs(random: () => number = Math.rand
 
 interface SchedulerDependencies {
   videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string) => Promise<VideoPageSnapshotResult>;
+  cacheInspector?: (rootDir: string, concurrency?: number) => Promise<DownloadCacheInspection>;
   now?: () => number;
   random?: () => number;
 }
@@ -118,22 +121,6 @@ function isQualityUploadPhaseTask(task: unknown): task is QualityUploadPhaseTask
   return task instanceof QualityUpgradeUploadReplaceTask
     || task instanceof QualityUpgradeReplaceTask
     || task instanceof QualityUpgradeCleanupTask;
-}
-
-async function pathSize(targetPath: string): Promise<number> {
-  try {
-    const stat = await fs.promises.stat(targetPath);
-    if (stat.isFile()) return stat.size;
-    if (!stat.isDirectory()) return 0;
-    const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
-    let total = 0;
-    for (const entry of entries) {
-      total += await pathSize(path.join(targetPath, entry.name));
-    }
-    return total;
-  } catch {
-    return 0;
-  }
 }
 
 export class SyncScheduler {
@@ -181,9 +168,20 @@ export class SyncScheduler {
   private lastSchedulerError = "";
   private localCacheSnapshot: LocalCacheSnapshot | null = null;
   private localCacheRefresh: Promise<LocalCacheSnapshot> | null = null;
+  private localCacheRefreshQueued = false;
+  private downloadRecoverySnapshot: DownloadRecoverySummary = {
+    resumableSessions: 0,
+    completedPages: 0,
+    totalPages: 0,
+    retainedBytes: 0,
+    legacyDirectories: 0,
+    legacyBytes: 0,
+    cleanupEligibleBytes: 0,
+  };
   private readonly localCacheSnapshotTtlMs = 10_000;
   private readonly persistentJobWakeMinMs = 1_000;
   private readonly videoAccessProbe: NonNullable<SchedulerDependencies["videoAccessProbe"]>;
+  private readonly cacheInspector: NonNullable<SchedulerDependencies["cacheInspector"]>;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly retirementAbortedJobIds = new Set<string>();
@@ -196,6 +194,7 @@ export class SyncScheduler {
     this.userStore = userStore;
     this.stateManager = stateManager;
     this.videoAccessProbe = dependencies.videoAccessProbe || getVideoPageSnapshot;
+    this.cacheInspector = dependencies.cacheInspector || inspectDownloadCache;
     this.now = dependencies.now || Date.now;
     this.random = dependencies.random || Math.random;
     this.jobStore = new PersistentJobStore(this.stateManager.getDatabase());
@@ -1972,6 +1971,7 @@ export class SyncScheduler {
 
   beginShutdown() {
     this.acceptingJobs = false;
+    this.localCacheRefreshQueued = false;
     this.stop();
     this.ensureLeaseHeartbeat();
   }
@@ -1988,6 +1988,11 @@ export class SyncScheduler {
         this.accessProbePromise,
         delay(remaining()),
       ]);
+    }
+    while (this.localCacheRefresh && remaining() > 0) {
+      const activeRefresh = this.localCacheRefresh;
+      await Promise.race([activeRefresh.catch(() => undefined), delay(remaining())]);
+      if (this.localCacheRefresh === activeRefresh) break;
     }
     this.jobStore.releaseOwner(this.leaseOwner);
     this.stateManager.close();
@@ -2171,6 +2176,7 @@ export class SyncScheduler {
 
   private async refreshLocalCacheSnapshot(force = false) {
     if (this.localCacheRefresh) {
+      if (force) this.localCacheRefreshQueued = true;
       return this.localCacheRefresh;
     }
     const now = Date.now();
@@ -2179,20 +2185,31 @@ export class SyncScheduler {
       return this.localCacheSnapshot;
     }
     this.localCacheRefresh = (async () => {
-      const usedBytes = await pathSize(tempDir);
+      const inspection = await this.cacheInspector(tempDir, 4);
       const reserveBytes = this.getLocalCacheReserveBytes(limitBytes);
       const snapshot: LocalCacheSnapshot = {
         limitBytes,
-        usedBytes,
+        usedBytes: inspection.usedBytes,
         reserveBytes,
-        paused: limitBytes > 0 && usedBytes >= Math.max(0, limitBytes - reserveBytes),
+        paused: limitBytes > 0 && inspection.usedBytes >= Math.max(0, limitBytes - reserveBytes),
         checkedAt: Date.now(),
       };
       this.localCacheSnapshot = snapshot;
-      this.localCacheRefresh = null;
+      this.downloadRecoverySnapshot = inspection.recovery;
       return snapshot;
-    })().catch((error) => {
+    })().then((snapshot) => {
       this.localCacheRefresh = null;
+      if (this.localCacheRefreshQueued) {
+        this.localCacheRefreshQueued = false;
+        if (this.acceptingJobs) this.refreshLocalCacheAndWake(true);
+      }
+      return snapshot;
+    }, (error) => {
+      this.localCacheRefresh = null;
+      if (this.localCacheRefreshQueued) {
+        this.localCacheRefreshQueued = false;
+        if (this.acceptingJobs) this.refreshLocalCacheAndWake(true);
+      }
       throw error;
     });
     return this.localCacheRefresh;
@@ -2399,7 +2416,7 @@ export class SyncScheduler {
       localCache: this.getLocalCacheSnapshot(),
       uploadHealth: this.uploadCircuit.getSnapshot(),
       downloadApiHealth: this.downloadApiHealth.getSnapshot(),
-      downloadRecovery: inspectDownloadRecoverySync(tempDir),
+      downloadRecovery: this.downloadRecoverySnapshot,
       chargingAccess: {
         pending: chargingSchedule.count,
         nextCheckAt: chargingSchedule.nextAt,

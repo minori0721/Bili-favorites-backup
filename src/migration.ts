@@ -327,6 +327,9 @@ async function listFilesRecursive(root: string) {
 
 export async function estimateMigrationExport(options: MigrationExportOptions = {}, stateAccess?: MigrationStateAccess) {
   const includes = normalizeExportOptions(options);
+  const cacheInspection = includes.mode === "complete"
+    ? await (await import("./download-session.js")).inspectDownloadCache(tempDir)
+    : undefined;
   const roots: string[] = [];
   if (includes.includeConfig) roots.push(path.join(dataDir, "config.json"));
   if (includes.includeUsers) roots.push(path.join(dataDir, "users.json"));
@@ -339,6 +342,11 @@ export async function estimateMigrationExport(options: MigrationExportOptions = 
   let expandedBytes = 0;
   for (const root of roots) {
     if (!(await pathExists(root))) continue;
+    if (root === tempDir && cacheInspection) {
+      files += cacheInspection.exportableFiles;
+      expandedBytes += cacheInspection.exportableBytes;
+      continue;
+    }
     const stat = await fs.promises.stat(root);
     if (stat.isFile()) {
       files += 1;
@@ -354,9 +362,7 @@ export async function estimateMigrationExport(options: MigrationExportOptions = 
       expandedBytes += (await fs.promises.stat(path.join(root, relative))).size;
     }
   }
-  const recovery = includes.mode === "complete"
-    ? (await import("./download-session.js")).inspectDownloadRecoverySync(tempDir)
-    : undefined;
+  const recovery = cacheInspection?.recovery;
   return {
     mode: includes.mode,
     files,

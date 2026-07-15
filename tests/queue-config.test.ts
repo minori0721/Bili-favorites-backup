@@ -75,6 +75,53 @@ async function waitForCondition(check: () => boolean, timeoutMs = 500) {
   assert.fail("condition was not met before timeout");
 }
 
+test("queue snapshots reuse one asynchronous cache inspection and coalesce forced refreshes", async () => {
+  const runtime = await createTestDir("queue-cache-inspection");
+  const state = new StateManager({ statePath: path.join(runtime, "state.json") });
+  const resolvers: Array<(value: any) => void> = [];
+  let inspections = 0;
+  const cacheInspector = async () => {
+    inspections += 1;
+    return new Promise<any>((resolve) => resolvers.push(resolve));
+  };
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig({ localCacheLimitGB: 1 }) } as any,
+    { list: () => [], getById: () => undefined } as any,
+    state,
+    { cacheInspector }
+  ) as any;
+  const inspection = (usedBytes: number) => ({
+    usedBytes,
+    fileCount: 0,
+    exportableBytes: usedBytes,
+    exportableFiles: 0,
+    recovery: {
+      resumableSessions: 0, completedPages: 0, totalPages: 0, retainedBytes: 0,
+      legacyDirectories: 0, legacyBytes: 0, cleanupEligibleBytes: 0,
+    },
+  });
+  try {
+    assert.equal(inspections, 1);
+    for (let index = 0; index < 100; index += 1) scheduler.getQueueSnapshot();
+    assert.equal(inspections, 1);
+    scheduler.refreshLocalCacheState();
+    scheduler.refreshLocalCacheState();
+    assert.equal(inspections, 1);
+
+    resolvers[0](inspection(10));
+    await waitForCondition(() => inspections === 2);
+    assert.equal(resolvers.length, 2);
+    resolvers[1](inspection(20));
+    await waitForCondition(() => scheduler.localCacheRefresh === null);
+    assert.equal(scheduler.getQueueSnapshot().localCache.usedBytes, 20);
+    assert.equal(inspections, 2);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("task queue enforces its high-water size and batch admission", () => {
   const queue = new TaskQueue(1, 3);
   queue.setStartGate(() => false);

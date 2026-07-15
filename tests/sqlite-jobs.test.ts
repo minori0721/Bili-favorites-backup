@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import { StateDatabase } from "../src/database.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
@@ -247,26 +250,135 @@ test("an exhausted persistent job is retained and a later enqueue revives it", (
   }
 });
 
-test("database schema 3 refreshes the aggregate view and adds relation query columns", async () => {
+test("database schema 4 refreshes the aggregate view and adds query columns", async () => {
   const runtime = await createTestDir("sqlite-view-migration");
   const dbPath = path.join(runtime, "bfb.sqlite");
   try {
     const legacy = new StateDatabase(dbPath);
+    const checkedAt = "2026-07-15T01:02:03.456Z";
+    const remoteCheckedAt = "2026-07-14T04:05:06.789Z";
+    legacy.replaceState({
+      schemaVersion: 13,
+      processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
+      videos: {
+        BVMIGRATE4: {
+          bvid: "BVMIGRATE4", title: "Schema 4", upperName: "Tester",
+          firstSeenAt: checkedAt, lastSeenAt: checkedAt, biliStatus: "available",
+          backupStatus: "charging_restricted",
+          accessRestriction: {
+            type: "charging", firstDetectedAt: checkedAt, lastCheckedAt: checkedAt,
+            nextCheckAt: checkedAt, previewAvailable: true, checkedAccountUids: [],
+          },
+        },
+      },
+      relations: {
+        "u1:1:BVMIGRATE4": {
+          userId: "u1", mediaId: 1, bvid: "BVMIGRATE4", folderTitle: "Migration",
+          firstSeenAt: checkedAt, lastSeenAt: checkedAt, activeInFavorite: true,
+          backupStatus: "verified", lastRemoteCheckAt: remoteCheckedAt,
+        },
+      },
+    });
+    legacy.db.exec("UPDATE videos SET access_restriction_type=NULL, access_last_checked_at=NULL");
+    legacy.db.exec("UPDATE favorite_relations SET last_remote_check_at=NULL");
     legacy.db.exec("DROP VIEW IF EXISTS video_backup_summary");
     legacy.db.exec("CREATE VIEW video_backup_summary AS SELECT v.bvid, v.backup_status AS backup_status FROM videos v");
     legacy.db.pragma("user_version = 1");
     legacy.close();
 
     const migrated = new StateDatabase(dbPath);
-    const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
-    assert.match(String(row?.sql || ""), /charging_restricted/);
-    assert.equal(migrated.db.pragma("user_version", { simple: true }), 3);
-    const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as any[]).map((item) => item.name));
-    assert.equal(columns.has("fav_order"), true);
-    assert.equal(columns.has("account_detached_at"), true);
-    migrated.close();
+    try {
+      const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
+      assert.match(String(row?.sql || ""), /charging_restricted/);
+      assert.equal(migrated.db.pragma("user_version", { simple: true }), 4);
+      const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as any[]).map((item) => item.name));
+      assert.equal(columns.has("fav_order"), true);
+      assert.equal(columns.has("account_detached_at"), true);
+      assert.equal(columns.has("last_remote_check_at"), true);
+      const videoColumns = new Set((migrated.db.pragma("table_info(videos)") as any[]).map((item) => item.name));
+      assert.equal(videoColumns.has("access_restriction_type"), true);
+      assert.equal(videoColumns.has("access_last_checked_at"), true);
+      const migratedVideo = migrated.db.prepare("SELECT access_restriction_type, access_last_checked_at FROM videos WHERE bvid='BVMIGRATE4'").get() as any;
+      assert.equal(migratedVideo.access_restriction_type, "charging");
+      assert.equal(migratedVideo.access_last_checked_at, Date.parse(checkedAt));
+      const migratedRelation = migrated.db.prepare("SELECT last_remote_check_at FROM favorite_relations WHERE bvid='BVMIGRATE4'").get() as any;
+      assert.equal(migratedRelation.last_remote_check_at, Date.parse(remoteCheckedAt));
+    } finally {
+      migrated.close();
+    }
+
+    const backupDir = path.join(runtime, "backups");
+    const backupName = (await fs.promises.readdir(backupDir)).find((name) => name.endsWith(".sqlite"));
+    assert.ok(backupName);
+    const backupPath = path.join(backupDir, backupName);
+    const checksum = (await fs.promises.readFile(`${backupPath}.sha256`, "utf8")).split(/\s+/, 1)[0];
+    const actual = crypto.createHash("sha256").update(await fs.promises.readFile(backupPath)).digest("hex");
+    assert.equal(checksum, actual);
   } finally {
     await removeTestDir(runtime);
+  }
+});
+
+test("schema 4 upgrade aborts before mutation when its consistent backup cannot be created", async () => {
+  const runtime = await createTestDir("sqlite-schema-backup-failure");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  try {
+    const previous = new StateDatabase(dbPath);
+    previous.db.pragma("user_version = 3");
+    previous.close();
+    await fs.promises.writeFile(path.join(runtime, "backups"), "blocked", "utf8");
+
+    assert.throws(() => new StateDatabase(dbPath));
+    const raw = new Database(dbPath, { readonly: true });
+    try {
+      assert.equal(raw.pragma("user_version", { simple: true }), 3);
+    } finally {
+      raw.close();
+    }
+
+    await fs.promises.rm(path.join(runtime, "backups"), { force: true });
+    const upgraded = new StateDatabase(dbPath);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 4);
+    upgraded.close();
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 4 query projections keep invalid compatibility timestamps out of indexed columns", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    database.replaceState({
+      schemaVersion: 13,
+      processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
+      videos: {
+        BVINVALIDTIME: {
+          bvid: "BVINVALIDTIME", title: "Invalid time", upperName: "Tester",
+          firstSeenAt: "2026-07-15T00:00:00.000Z", lastSeenAt: "2026-07-15T00:00:00.000Z",
+          biliStatus: "available", backupStatus: "charging_restricted",
+          accessRestriction: {
+            type: "charging", firstDetectedAt: "invalid", lastCheckedAt: "invalid",
+            nextCheckAt: "invalid", previewAvailable: false, checkedAccountUids: [],
+          },
+        },
+      },
+      relations: {
+        "u1:1:BVINVALIDTIME": {
+          userId: "u1", mediaId: 1, bvid: "BVINVALIDTIME", folderTitle: "Invalid",
+          firstSeenAt: "2026-07-15T00:00:00.000Z", lastSeenAt: "2026-07-15T00:00:00.000Z",
+          activeInFavorite: true, backupStatus: "charging_restricted",
+          lastRemoteCheckAt: "invalid", nextRemoteCheckAt: "invalid",
+        },
+      },
+    });
+    const video = database.db.prepare("SELECT access_restriction_type, access_last_checked_at FROM videos WHERE bvid='BVINVALIDTIME'").get() as any;
+    const relation = database.db.prepare("SELECT last_remote_check_at, next_remote_check_at FROM favorite_relations WHERE bvid='BVINVALIDTIME'").get() as any;
+    assert.equal(video.access_restriction_type, "charging");
+    assert.equal(video.access_last_checked_at, null);
+    assert.equal(relation.last_remote_check_at, null);
+    assert.equal(relation.next_remote_check_at, null);
+  } finally {
+    database.close();
   }
 });
 

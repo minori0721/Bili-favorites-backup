@@ -12,7 +12,7 @@ import type {
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 3;
+export const DATABASE_SCHEMA_VERSION = 4;
 
 export interface StateDirtySet {
   videos: Set<string>;
@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS videos (
   backup_status TEXT NOT NULL,
   bili_status TEXT NOT NULL,
   local_dir TEXT,
+  access_restriction_type TEXT,
+  access_last_checked_at INTEGER,
   payload_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -83,6 +85,7 @@ CREATE TABLE IF NOT EXISTS favorite_relations (
   last_seen_at INTEGER NOT NULL DEFAULT 0,
   favorite_unavailable INTEGER NOT NULL DEFAULT 0,
   self_visible INTEGER NOT NULL DEFAULT 0,
+  last_remote_check_at INTEGER,
   next_remote_check_at INTEGER,
   account_detached_at INTEGER,
   payload_json TEXT NOT NULL,
@@ -224,6 +227,61 @@ function isoToMs(value: unknown, fallback = Date.now()) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function optionalIsoToMs(value: unknown) {
+  const parsed = isoToMs(value, Number.NaN);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hashFileSync(filePath: string) {
+  const hash = crypto.createHash("sha256");
+  const handle = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let read = 0;
+    do {
+      read = fs.readSync(handle, buffer, 0, buffer.length, null);
+      if (read > 0) hash.update(buffer.subarray(0, read));
+    } while (read > 0);
+  } finally {
+    fs.closeSync(handle);
+  }
+  return hash.digest("hex");
+}
+
+function createSchemaUpgradeBackup(db: Database.Database, filePath: string, currentVersion: number) {
+  if (filePath === ":memory:" || currentVersion <= 0 || currentVersion >= DATABASE_SCHEMA_VERSION) return null;
+  const backupDir = path.join(path.dirname(filePath), "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "").replace(/Z$/, "Z");
+  const baseName = `bfb-before-schema-${DATABASE_SCHEMA_VERSION}-v${currentVersion}-${stamp}-${crypto.randomUUID().slice(0, 8)}.sqlite`;
+  const backupPath = path.join(backupDir, baseName);
+  const checksumPath = `${backupPath}.sha256`;
+  const checksumTempPath = `${checksumPath}.tmp`;
+  try {
+    db.prepare("VACUUM INTO ?").run(backupPath);
+    const backup = new Database(backupPath, { readonly: true });
+    try {
+      const integrity = backup.pragma("integrity_check", { simple: true });
+      const foreignKeys = backup.pragma("foreign_key_check") as unknown[];
+      const version = Number(backup.pragma("user_version", { simple: true }) || 0);
+      if (integrity !== "ok" || foreignKeys.length > 0 || version !== currentVersion) {
+        throw new Error(`SQLite schema backup verification failed: integrity=${integrity}; foreignKeys=${foreignKeys.length}; version=${version}`);
+      }
+    } finally {
+      backup.close();
+    }
+    const sha256 = hashFileSync(backupPath);
+    fs.writeFileSync(checksumTempPath, `${sha256}  ${baseName}\n`, "utf8");
+    fs.renameSync(checksumTempPath, checksumPath);
+    return { backupPath, sha256 };
+  } catch (error) {
+    fs.rmSync(backupPath, { force: true });
+    fs.rmSync(checksumPath, { force: true });
+    fs.rmSync(checksumTempPath, { force: true });
+    throw error;
+  }
+}
+
 function relationParts(key: string, relation: FavoriteRelation) {
   return {
     userId: String(relation.userId || key.split(":")[0] || ""),
@@ -249,6 +307,7 @@ export class StateDatabase {
       if (currentVersion > DATABASE_SCHEMA_VERSION) {
         throw new Error(`SQLite schema ${currentVersion} is newer than supported schema ${DATABASE_SCHEMA_VERSION}`);
       }
+      createSchemaUpgradeBackup(this.db, this.filePath, currentVersion);
       this.db.transaction(() => {
         if (currentVersion < 2) {
           this.db.exec("DROP VIEW IF EXISTS video_backup_summary");
@@ -282,16 +341,50 @@ export class StateDatabase {
               isoToMs(relation.lastSeenAt, 0),
               relation.favoriteUnavailable ? 1 : 0,
               relation.selfVisible ? 1 : 0,
-              relation.nextRemoteCheckAt ? isoToMs(relation.nextRemoteCheckAt, 0) : null,
+              optionalIsoToMs(relation.nextRemoteCheckAt),
               relation.accountDetachedAt ? isoToMs(relation.accountDetachedAt, 0) : null,
               row.user_id, row.media_id, row.bvid
             );
           }
         }
+        if (currentVersion > 0 && currentVersion < 4) {
+          const videoColumns = new Set((this.db.pragma("table_info(videos)") as any[]).map((row) => String(row.name)));
+          if (!videoColumns.has("access_restriction_type")) this.db.exec("ALTER TABLE videos ADD COLUMN access_restriction_type TEXT");
+          if (!videoColumns.has("access_last_checked_at")) this.db.exec("ALTER TABLE videos ADD COLUMN access_last_checked_at INTEGER");
+          const relationColumns = new Set((this.db.pragma("table_info(favorite_relations)") as any[]).map((row) => String(row.name)));
+          if (!relationColumns.has("last_remote_check_at")) this.db.exec("ALTER TABLE favorite_relations ADD COLUMN last_remote_check_at INTEGER");
+
+          const updateVideo = this.db.prepare(`
+            UPDATE videos SET access_restriction_type=?, access_last_checked_at=? WHERE bvid=?
+          `);
+          for (const row of this.db.prepare("SELECT bvid, payload_json FROM videos").all() as any[]) {
+            const video = parseJson<VideoArchiveEntry>(row.payload_json, {} as VideoArchiveEntry);
+            updateVideo.run(
+              video.accessRestriction?.type || null,
+              optionalIsoToMs(video.accessRestriction?.lastCheckedAt),
+              row.bvid
+            );
+          }
+
+          const updateRelation = this.db.prepare(`
+            UPDATE favorite_relations SET last_remote_check_at=? WHERE user_id=? AND media_id=? AND bvid=?
+          `);
+          for (const row of this.db.prepare("SELECT user_id, media_id, bvid, payload_json FROM favorite_relations").all() as any[]) {
+            const relation = parseJson<FavoriteRelation>(row.payload_json, {} as FavoriteRelation);
+            updateRelation.run(optionalIsoToMs(relation.lastRemoteCheckAt), row.user_id, row.media_id, row.bvid);
+          }
+        }
+        const remoteScheduleIndex = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_relations_remote_schedule'").get() as any;
+        if (remoteScheduleIndex && !/ON favorite_relations\s*\(backup_status,/i.test(String(remoteScheduleIndex.sql || ""))) {
+          this.db.exec("DROP INDEX idx_relations_remote_schedule");
+        }
         this.db.exec(`
           CREATE INDEX IF NOT EXISTS idx_relations_folder_page ON favorite_relations(user_id, media_id, active_in_favorite, fav_order, last_seen_at DESC);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_due ON favorite_relations(backup_status, next_remote_check_at);
           CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable ON favorite_relations(user_id, favorite_unavailable, last_seen_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_videos_access_restriction ON videos(access_restriction_type, access_last_checked_at DESC, bvid);
+          CREATE INDEX IF NOT EXISTS idx_relations_remote_schedule
+            ON favorite_relations(backup_status, COALESCE(next_remote_check_at, last_remote_check_at, 0), bvid);
         `);
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
@@ -444,7 +537,7 @@ export class StateDatabase {
   }
 
   listChargingRestrictedVideos() {
-    return (this.db.prepare("SELECT payload_json FROM videos WHERE json_extract(payload_json, '$.accessRestriction.type')='charging'").all() as any[])
+    return (this.db.prepare("SELECT payload_json FROM videos WHERE access_restriction_type='charging'").all() as any[])
       .map((row) => parseJson<VideoArchiveEntry>(row.payload_json, undefined as any))
       .filter(Boolean);
   }
@@ -452,9 +545,9 @@ export class StateDatabase {
   getChargingRestrictionSummary() {
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count,
-        MAX(json_extract(v.payload_json, '$.accessRestriction.lastCheckedAt')) AS last_checked_at
+        MAX(v.access_last_checked_at) AS last_checked_at
       FROM videos v
-      WHERE json_extract(v.payload_json, '$.accessRestriction.type')='charging'
+      WHERE v.access_restriction_type='charging'
         AND EXISTS (
           SELECT 1 FROM favorite_relations r
           WHERE r.bvid=v.bvid AND r.active_in_favorite=1
@@ -463,7 +556,9 @@ export class StateDatabase {
     `).get() as any;
     return {
       count: Number(row?.count || 0),
-      lastCheckedAt: row?.last_checked_at ? String(row.last_checked_at) : undefined,
+      lastCheckedAt: Number.isFinite(Number(row?.last_checked_at)) && Number(row.last_checked_at) > 0
+        ? new Date(Number(row.last_checked_at)).toISOString()
+        : undefined,
     };
   }
 
@@ -690,14 +785,17 @@ export class StateDatabase {
     const conditions = ["backup_status IN ('verified','partial_verified')"];
     const params: any[] = [];
     if (!includeDeferred) {
-      conditions.push("(next_remote_check_at IS NULL OR next_remote_check_at <= ?)");
+      conditions.push("COALESCE(next_remote_check_at, last_remote_check_at, 0) <= ?");
       params.push(now);
     }
     const limitSql = typeof limit === "number" ? " LIMIT ?" : "";
     if (typeof limit === "number") params.push(Math.max(1, Math.floor(limit)));
+    const orderSql = includeDeferred
+      ? "COALESCE(last_remote_check_at, 0) ASC, bvid ASC"
+      : "COALESCE(next_remote_check_at, last_remote_check_at, 0) ASC, bvid ASC";
     return (this.db.prepare(`
       SELECT payload_json FROM favorite_relations WHERE ${conditions.join(" AND ")}
-      ORDER BY COALESCE(json_extract(payload_json, '$.lastRemoteCheckAt'), '') ASC${limitSql}
+      ORDER BY ${orderSql}${limitSql}
     `).all(...params) as any[])
       .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
       .filter(Boolean);
@@ -706,7 +804,7 @@ export class StateDatabase {
   countRelationsForRemoteVerify(includeDeferred = false, now = Date.now()) {
     const row = includeDeferred
       ? this.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE backup_status IN ('verified','partial_verified')").get()
-      : this.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE backup_status IN ('verified','partial_verified') AND (next_remote_check_at IS NULL OR next_remote_check_at <= ?)").get(now);
+      : this.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE backup_status IN ('verified','partial_verified') AND COALESCE(next_remote_check_at, last_remote_check_at, 0) <= ?").get(now);
     return Number((row as any)?.count || 0);
   }
 
@@ -803,24 +901,30 @@ export class StateDatabase {
   flushState(state: StateFile, dirty: StateDirtySet) {
     const now = Date.now();
     const upsertVideo = this.db.prepare(`
-      INSERT INTO videos(bvid, backup_status, bili_status, local_dir, payload_json, updated_at)
-      VALUES(@bvid, @backupStatus, @biliStatus, @localDir, @payload, @updatedAt)
+      INSERT INTO videos(bvid, backup_status, bili_status, local_dir, access_restriction_type,
+        access_last_checked_at, payload_json, updated_at)
+      VALUES(@bvid, @backupStatus, @biliStatus, @localDir, @accessRestrictionType,
+        @accessLastCheckedAt, @payload, @updatedAt)
       ON CONFLICT(bvid) DO UPDATE SET backup_status=excluded.backup_status, bili_status=excluded.bili_status,
-        local_dir=excluded.local_dir, payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        local_dir=excluded.local_dir, access_restriction_type=excluded.access_restriction_type,
+        access_last_checked_at=excluded.access_last_checked_at, payload_json=excluded.payload_json,
+        updated_at=excluded.updated_at
     `);
     const deleteVideo = this.db.prepare("DELETE FROM videos WHERE bvid=?");
     const upsertRelation = this.db.prepare(`
       INSERT INTO favorite_relations(user_id, media_id, bvid, backup_status, active_in_favorite, folder_title,
-        fav_order, last_seen_at, favorite_unavailable, self_visible, next_remote_check_at, account_detached_at,
-        payload_json, updated_at)
+        fav_order, last_seen_at, favorite_unavailable, self_visible, last_remote_check_at,
+        next_remote_check_at, account_detached_at, payload_json, updated_at)
       VALUES(@userId, @mediaId, @bvid, @backupStatus, @active, @folderTitle, @favOrder, @lastSeenAt,
-        @favoriteUnavailable, @selfVisible, @nextRemoteCheckAt, @accountDetachedAt, @payload, @updatedAt)
+        @favoriteUnavailable, @selfVisible, @lastRemoteCheckAt, @nextRemoteCheckAt, @accountDetachedAt,
+        @payload, @updatedAt)
       ON CONFLICT(user_id, media_id, bvid) DO UPDATE SET backup_status=excluded.backup_status,
         active_in_favorite=excluded.active_in_favorite, folder_title=excluded.folder_title,
         fav_order=excluded.fav_order, last_seen_at=excluded.last_seen_at,
         favorite_unavailable=excluded.favorite_unavailable, self_visible=excluded.self_visible,
-        next_remote_check_at=excluded.next_remote_check_at, account_detached_at=excluded.account_detached_at,
-        payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        last_remote_check_at=excluded.last_remote_check_at, next_remote_check_at=excluded.next_remote_check_at,
+        account_detached_at=excluded.account_detached_at, payload_json=excluded.payload_json,
+        updated_at=excluded.updated_at
     `);
     const deleteRelation = this.db.prepare("DELETE FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?");
     const upsertFolder = this.db.prepare(`
@@ -841,6 +945,8 @@ export class StateDatabase {
           backupStatus: video.backupStatus || "discovered",
           biliStatus: video.biliStatus || "unknown",
           localDir: video.localDir || null,
+          accessRestrictionType: video.accessRestriction?.type || null,
+          accessLastCheckedAt: optionalIsoToMs(video.accessRestriction?.lastCheckedAt),
           payload: JSON.stringify(video),
           updatedAt: isoToMs(video.statusUpdatedAt || video.lastSeenAt, now),
         });
@@ -867,7 +973,8 @@ export class StateDatabase {
           lastSeenAt: isoToMs(relation.lastSeenAt, now),
           favoriteUnavailable: relation.favoriteUnavailable ? 1 : 0,
           selfVisible: relation.selfVisible ? 1 : 0,
-          nextRemoteCheckAt: relation.nextRemoteCheckAt ? isoToMs(relation.nextRemoteCheckAt, now) : null,
+          lastRemoteCheckAt: optionalIsoToMs(relation.lastRemoteCheckAt),
+          nextRemoteCheckAt: optionalIsoToMs(relation.nextRemoteCheckAt),
           accountDetachedAt: relation.accountDetachedAt ? isoToMs(relation.accountDetachedAt, now) : null,
           payload: JSON.stringify(relation),
           updatedAt: isoToMs(relation.statusUpdatedAt || relation.lastSeenAt, now),

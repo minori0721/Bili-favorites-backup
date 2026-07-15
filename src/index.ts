@@ -21,7 +21,7 @@ import {
 } from "./bili.js";
 import { normalizeEncodingPriority, normalizeQualityPriority, shutdownActiveDownloads } from "./downloader.js";
 import { cleanupStaleBBDownCredentialDirectories } from "./credential-temp.js";
-import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadRecoverySync, readDownloadSession } from "./download-session.js";
+import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadCache, readDownloadSession } from "./download-session.js";
 import { clearDirectoryContents } from "./storage.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
 import { appInfo } from "./app-info.js";
@@ -1114,13 +1114,16 @@ async function removeCleanupTarget(item: CleanupItem) {
 }
 
 app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
-  const downloadRecovery = inspectDownloadRecoverySync(tempDir);
+  const cacheInspection = await inspectDownloadCache(tempDir);
+  const downloadRecovery = cacheInspection.recovery;
   const items = await Promise.all(allCleanupKeys.map(async (key) => ({
     key,
     label: cleanupItems[key].label,
     important: cleanupItems[key].important,
     bytes: key === "orphan-fragments"
       ? downloadRecovery.cleanupEligibleBytes
+      : key === "temp"
+        ? cacheInspection.usedBytes
       : key === "state"
         ? (await Promise.all(sqlitePaths(databasePath).map((file) => pathSize(file)))).reduce((sum, value) => sum + value, 0)
       : cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,

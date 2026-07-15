@@ -3044,7 +3044,6 @@ function getAppScript() {
         clearInterval(queueBoardPollTimer);
         queueBoardPollTimer = null;
       }
-      queueBoardRequestInFlight = false;
     }
 
     function resetQueueBoardState() {
@@ -3061,6 +3060,7 @@ function getAppScript() {
 
     function startQueueBoardPolling() {
       stopQueueBoardPolling();
+      if (document.hidden) return;
       void refreshQueueBoard();
       queueBoardPollTimer = setInterval(() => {
         void refreshQueueBoard();
@@ -3317,6 +3317,11 @@ function getAppScript() {
     if (queueBtn) {
       queueBtn.addEventListener('click', () => setLogMode('queue'));
     }
+    document.addEventListener('visibilitychange', () => {
+      if (logMode !== 'queue') return;
+      if (document.hidden) stopQueueBoardPolling();
+      else startQueueBoardPolling();
+    });
     document.getElementById('logSimpleBtn').addEventListener('click', () => setLogMode('simple'));
     document.getElementById('logRawBtn').addEventListener('click', () => setLogMode('raw'));
     document.getElementById('logDebugBtn').addEventListener('click', () => setLogMode('debug'));
