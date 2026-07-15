@@ -33,6 +33,7 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(loginPage.status, 200);
     const loginHtml = await loginPage.text();
     assert.match(loginHtml, /B站收藏夹同步/);
+    assert.match(loginHtml, /rel="icon" type="image\/svg\+xml"/);
     assert.match(loginHtml, /class="login-meta"/);
     assert.match(loginHtml, /class="github-link login-link"/);
 
@@ -49,6 +50,7 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(root.status, 200);
     const html = await root.text();
     assert.match(html, /任务预取上限/);
+    assert.match(html, /rel="icon" type="image\/svg\+xml"/);
     assert.match(html, /upload-health-status/);
     assert.match(html, /网页接口/);
     assert.match(html, /download-api-health-status/);

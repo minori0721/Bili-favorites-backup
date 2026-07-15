@@ -95,6 +95,8 @@ test("application info derives safe dev, release, and local build labels", () =>
   for (const html of [renderLoginPage(), renderAppPage()]) {
     assert.match(html, /class="version-link/);
     assert.match(html, /class="github-link/);
+    assert.match(html, /rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,/);
+    assert.match(html, /%2339C5BB/);
     assert.match(html, /target="_blank" rel="noopener noreferrer"/);
     assert.match(html, /https:\/\/github\.com\/minori0721\/Bili-favorites-backup/);
   }

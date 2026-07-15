@@ -4,41 +4,61 @@ import { defineConfig } from "vitepress";
 const require = createRequire(import.meta.url);
 const rootPackage = require("../../package.json") as { version: string };
 const repository = "https://github.com/minori0721/Bili-favorites-backup";
+const siteBase = "/Bili-favorites-backup/";
 
 export default defineConfig({
   lang: "zh-CN",
   title: "Bili-favorites-backup",
   titleTemplate: ":title | BFB 文档",
   description: "把B站收藏夹持续归档到AList云盘，并确认远端文件真的存在。",
-  base: "/Bili-favorites-backup/",
+  base: siteBase,
   cleanUrls: true,
   lastUpdated: true,
   sitemap: {
     hostname: "https://minori0721.github.io/Bili-favorites-backup/",
   },
   head: [
-    ["link", { rel: "icon", type: "image/svg+xml", href: "/Bili-favorites-backup/favicon.svg" }],
-    ["meta", { name: "theme-color", content: "#159570" }],
+    ["link", { rel: "icon", href: `${siteBase}favicon.ico`, sizes: "any" }],
+    ["link", { rel: "icon", type: "image/svg+xml", href: `${siteBase}favicon.svg` }],
+    ["meta", { name: "theme-color", content: "#3451b2" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:title", content: "Bili-favorites-backup 文档" }],
     ["meta", { property: "og:description", content: "面向AList云盘的B站收藏夹持续备份系统" }],
   ],
+  vite: {
+    plugins: [
+      {
+        name: "bfb-local-favicon",
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url !== "/favicon.ico") return next();
+            res.statusCode = 302;
+            res.setHeader("Location", `${siteBase}favicon.ico`);
+            res.end();
+          });
+        },
+      },
+    ],
+  },
   markdown: {
     lineNumbers: true,
   },
   themeConfig: {
     logo: "/logo.svg",
-    siteTitle: "BFB 文档",
+    siteTitle: "BFB",
     nav: [
+      { text: "首页", link: "/" },
       { text: "快速开始", link: "/guide/introduction" },
+      { text: "连接AList", link: "/alist/overview" },
       { text: "功能演示", link: "/features/workflow" },
+      { text: "日常维护", link: "/operations/update" },
       { text: "问题排查", link: "/troubleshooting/docker-hub" },
       { text: `v${rootPackage.version}`, link: "/reference/releases" },
     ],
     sidebar: {
-      "/guide/": [
+      "/": [
         {
-          text: "快速开始",
+          text: "01 快速开始",
           items: [
             { text: "项目定位", link: "/guide/introduction" },
             { text: "5分钟 Docker 部署", link: "/guide/docker" },
@@ -47,10 +67,8 @@ export default defineConfig({
             { text: "完成首次同步", link: "/guide/first-sync" },
           ],
         },
-      ],
-      "/alist/": [
         {
-          text: "连接 AList",
+          text: "02 连接 AList",
           items: [
             { text: "选择接入方式", link: "/alist/overview" },
             { text: "使用内置 AList", link: "/alist/built-in" },
@@ -59,10 +77,8 @@ export default defineConfig({
             { text: "升级与备份 AList", link: "/alist/upgrade" },
           ],
         },
-      ],
-      "/features/": [
         {
-          text: "功能演示",
+          text: "03 功能演示",
           items: [
             { text: "整体运行流程", link: "/features/workflow" },
             { text: "四列任务队列", link: "/features/queue" },
@@ -73,10 +89,8 @@ export default defineConfig({
             { text: "共享画质重调", link: "/features/quality-upgrade" },
           ],
         },
-      ],
-      "/operations/": [
         {
-          text: "日常维护",
+          text: "04 日常维护",
           items: [
             { text: "更新镜像", link: "/operations/update" },
             { text: "日志", link: "/operations/logs" },
@@ -85,10 +99,8 @@ export default defineConfig({
             { text: "安全配置", link: "/operations/security" },
           ],
         },
-      ],
-      "/troubleshooting/": [
         {
-          text: "问题排查",
+          text: "05 问题排查",
           items: [
             { text: "Docker Hub 拉取超时", link: "/troubleshooting/docker-hub" },
             { text: "B站风控与账号失效", link: "/troubleshooting/bilibili" },
@@ -98,10 +110,8 @@ export default defineConfig({
             { text: "容器重启恢复", link: "/troubleshooting/restart" },
           ],
         },
-      ],
-      "/reference/": [
         {
-          text: "参考",
+          text: "06 参考",
           items: [
             { text: "配置项", link: "/reference/configuration" },
             { text: "状态含义", link: "/reference/statuses" },

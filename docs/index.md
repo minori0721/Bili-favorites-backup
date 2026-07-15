@@ -1,59 +1,61 @@
 ---
-layout: doc
-pageClass: home-doc
-title: Bili-favorites-backup
-description: 把B站收藏夹持续归档到AList云盘，并确认远端文件真的存在
-sidebar: false
-aside: false
-outline: false
-editLink: false
-lastUpdated: false
+layout: home
+
+hero:
+  name: Bili-favorites-backup
+  text: 面向AList云盘的B站收藏夹持续备份系统
+  tagline: 持续监控收藏夹，可靠下载、上传，并确认远端文件真正存在
+  actions:
+    - theme: brand
+      text: 快速开始
+      link: /guide/introduction
+    - theme: alt
+      text: Docker部署
+      link: /guide/docker
+
+features:
+  - icon: ☁️
+    title: 云盘持续归档
+    details: 使用BBDown下载收藏内容，并通过AList WebDAV持续写入目标网盘。
+  - icon: ♻️
+    title: 中断自动恢复
+    details: SQLite持久任务、aria2断点和下载会话共同支持容器重启恢复。
+  - icon: ✅
+    title: 远端最终确认
+    details: 远端文件可见且大小一致后，才确认备份完成并安全清理本地成品。
 ---
 
-<div class="home-intro">
-  <h1>Bili-favorites-backup</h1>
-  <p class="value">把B站收藏夹持续归档到AList云盘，并确认远端文件真的存在</p>
-  <div class="home-actions">
-    <a class="home-action primary" href="./guide/docker">5分钟部署</a>
-    <a class="home-action" href="./features/workflow">查看运行流程</a>
-    <a class="home-action" href="https://github.com/minori0721/Bili-favorites-backup" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-  </div>
-</div>
+## 项目简介
 
-![Bili-favorites-backup 主界面与全局设置](/screenshots/dashboard-desktop.png){.product-shot}
+Bili-favorites-backup（BFB）是一个面向云盘归档的B站收藏夹持续备份系统，重点解决以下问题：
 
-<p class="shot-caption">合成数据演示：账号、路径和BV号均不来自真实部署</p>
+- 持续发现多个账号、多个收藏夹中的新增与状态变化。
+- 使用固定版本BBDown与aria2完成下载、分P识别和中断恢复。
+- 通过AList WebDAV上传，并在远端文件真正可见后确认备份完成。
 
-<div class="capability-strip">
-  <section class="capability-item">
-    <h2>云盘归档</h2>
-    <p>BBDown下载后通过AList WebDAV写入国内网盘，多账号、多个收藏夹和多个目标分别保留归档证明。</p>
-  </section>
-  <section class="capability-item">
-    <h2>可恢复</h2>
-    <p>SQLite持久任务、aria2断点和下载会话共同保存进度，容器重启后继续未完成工作。</p>
-  </section>
-  <section class="capability-item">
-    <h2>远端确认</h2>
-    <p>上传成功不等于备份完成；系统会等待远端同名同大小文件可见后，才清理本地成品。</p>
-  </section>
-</div>
+## 适合什么场景
 
-## 它适合什么场景
+- 已经使用AList管理阿里云盘、夸克、百度网盘或115等存储。
+- 希望收藏夹内容长期自动留档，并保留旧分P与下架内容的备份证明。
+- 需要多账号、多收藏夹和多个远端目标分别确认上传状态。
+- 希望Docker重启后继续下载、补传和远端确认，而不是重新开始。
 
-BFB适合把AList作为统一云盘入口、希望收藏夹内容持续留档，并且在意上传后能否真正找回文件的用户。它不是在线播放媒体库，也不会替你购买充电权限或绕过B站访问限制。
+## 明确边界
 
-<div class="workflow-line">
-  <span>收藏夹扫描</span><i>→</i><span>BBDown + aria2</span><i>→</i><span>本地验证</span><i>→</i><span>AList WebDAV</span><i>→</i><span>远端确认</span>
-</div>
+- BFB不是Emby、Jellyfin或Infuse媒体库，不负责刮削与在线播放。
+- BFB不会绕过付费、充电、地区或账号权限，试看也不算完整备份。
+- 本地`data`与`temp`必须持久化，迁移包和账号文件需要按敏感数据保管。
 
-## 从这里开始
+## 推荐阅读路径
 
-- 第一次部署：阅读[5分钟 Docker 部署](./guide/docker)。
-- 已经有AList：直接看[接入已有 AList](./alist/existing)。
-- 想知道任务为何暂停：查看[异常熔断与恢复](./features/recovery)和[问题排查](./troubleshooting/docker-hub)。
-- 准备升级或迁移：先读[迁移、备份与回滚](./operations/migration)。
+1. 第一次使用：[项目定位](/guide/introduction)与[5分钟Docker部署](/guide/docker)
+2. 准备上传：[连接AList](/alist/overview)
+3. 了解任务行为：[整体运行流程](/features/workflow)
+4. 日常维护：[更新镜像](/operations/update)与[迁移、备份和回滚](/operations/migration)
+5. 遇到异常：[问题排查](/troubleshooting/docker-hub)
 
-::: warning 使用前须知
-请持久化挂载`data`和`temp`，并立即修改默认管理员密码、会话密钥和AList密码。迁移包可能包含B站Cookie或APP token，不能公开分享。
-:::
+## 版本说明
+
+- 当前文档维护`main`稳定版的用户可见行为。
+- 导航中的版本号自动读取仓库根目录`package.json`。
+- 版本变更与兼容性说明见[版本与升级记录](/reference/releases)。

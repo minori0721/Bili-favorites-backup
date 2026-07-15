@@ -1,5 +1,15 @@
 import { appInfo } from "./app-info.js";
 
+const appFaviconHref = `data:image/svg+xml,${encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#39C5BB"/>
+  <path d="M22 16l10 8 10-8" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="14" y="23" width="36" height="27" rx="7" fill="none" stroke="#fff" stroke-width="4"/>
+  <rect x="24" y="33" width="5" height="4" rx="1.5" fill="#fff"/>
+  <rect x="35" y="33" width="5" height="4" rx="1.5" fill="#fff"/>
+</svg>
+`)}`;
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
     "&": "&amp;",
@@ -26,12 +36,17 @@ function getVersionLinks(className = "") {
   return `${getVersionLink(className)}\n    ${getGithubLink(className)}`;
 }
 
+function getFaviconLink() {
+  return `<link rel="icon" type="image/svg+xml" href="${appFaviconHref}" />`;
+}
+
 export function renderLoginPage() {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${getFaviconLink()}
   <title>B站收藏夹同步 - 登录</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
@@ -163,6 +178,7 @@ export function renderAppPage() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${getFaviconLink()}
   <title>B站收藏夹同步</title>
   ${getAppStyles()}
 </head>
