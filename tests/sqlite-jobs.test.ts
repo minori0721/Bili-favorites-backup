@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { StateDatabase } from "../src/database.js";
+import {
+  LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
+  LEGACY_TEMP_CACHE_MARKER,
+  StateDatabase,
+} from "../src/database.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
@@ -63,13 +67,15 @@ test("video status reads use relation priority with the video row as fallback", 
   }
 });
 
-test("full state replacement clears stale jobs and resets one-time state markers", () => {
+test("full state replacement clears jobs and state markers while preserving the local cache marker", () => {
   const database = new StateDatabase(":memory:");
   try {
     const jobs = new PersistentJobStore(database);
     jobs.enqueue({ kind: "download", dedupeKey: "download:stale", bvid: "BVSTALE" });
     database.setMeta("persistent_jobs_bootstrap_v1", "complete");
     database.setMeta("legacy_failure_classification_v1", "complete");
+    database.setMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, "complete");
+    database.setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
     database.replaceState({
       schemaVersion: 11,
       processedByUser: {},
@@ -82,6 +88,8 @@ test("full state replacement clears stale jobs and resets one-time state markers
     assert.equal(jobs.countOutstanding(["download"]), 0);
     assert.equal(database.getMeta("persistent_jobs_bootstrap_v1"), null);
     assert.equal(database.getMeta("legacy_failure_classification_v1"), null);
+    assert.equal(database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+    assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
   } finally {
     database.close();
   }
@@ -92,9 +100,13 @@ test("clearing state and jobs resets one-time state markers", () => {
   try {
     database.setMeta("persistent_jobs_bootstrap_v1", "complete");
     database.setMeta("legacy_failure_classification_v1", "complete");
+    database.setMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, "complete");
+    database.setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
     database.clearStateAndJobs();
     assert.equal(database.getMeta("persistent_jobs_bootstrap_v1"), null);
     assert.equal(database.getMeta("legacy_failure_classification_v1"), null);
+    assert.equal(database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+    assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), null);
   } finally {
     database.close();
   }

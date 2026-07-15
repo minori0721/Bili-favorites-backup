@@ -13,6 +13,8 @@ import type {
 } from "./state.js";
 
 export const DATABASE_SCHEMA_VERSION = 4;
+export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
+export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 
 export interface StateDirtySet {
   videos: Set<string>;
@@ -884,6 +886,7 @@ export class StateDatabase {
       this.deleteMeta("persistent_jobs_bootstrap_v1");
       this.deleteMeta("legacy_failure_classification_v1");
       this.deleteMeta("runtime_recovery_normalization_v2");
+      this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
       const dirty: StateDirtySet = {
         videos: new Set(Object.keys(state.videos || {})),
         relations: new Set(Object.keys(state.relations || {})),
@@ -1196,6 +1199,8 @@ export class StateDatabase {
       this.deleteMeta("persistent_jobs_bootstrap_v1");
       this.deleteMeta("legacy_failure_classification_v1");
       this.deleteMeta("runtime_recovery_normalization_v2");
+      this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
+      this.deleteMeta(LEGACY_TEMP_CACHE_MARKER);
     });
     transaction();
   }

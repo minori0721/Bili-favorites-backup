@@ -1281,6 +1281,7 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
     res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再导入。" });
     return;
   }
+  const previousLegacyRecoveryMarkers = scheduler.captureLegacyRecoveryMarkers();
   const upload = await receiveMigrationArchive(req);
   let result: Awaited<ReturnType<typeof applyMigrationPackageFile>>;
   try {
@@ -1298,6 +1299,11 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
     throw badRequest(error?.message || "导入包无法解析");
   } finally {
     await fs.promises.rm(upload.root, { recursive: true, force: true });
+  }
+  try {
+    scheduler.recheckLegacyRecoveryAfterImport(result.restored, previousLegacyRecoveryMarkers);
+  } catch (error) {
+    console.warn(`[Recovery] Failed to start post-import legacy checks: ${safeErrorSummary(error)}`);
   }
   res.json({ success: true, data: result });
 }));

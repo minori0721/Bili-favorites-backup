@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { PersistentJobStore } from "../src/job-store.js";
+import { LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER } from "../src/database.js";
 import {
   buildQualityArtifactKey,
   qualityArtifactProfileFromConfig,
@@ -175,8 +176,141 @@ test("legacy per-target quality downloads merge without shortening retry time", 
     assert.equal(merged.notBefore, now + 60_000);
     assert.equal(merged.payload.targets.length, 2);
     assert.ok(merged.payload.artifactKey);
+    assert.equal(manager.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), "complete");
+    scheduler.jobStore.countLegacyQualityDownloadJobs = () => {
+      throw new Error("completed migration must not query jobs");
+    };
+    assert.equal(scheduler.migrateLegacyQualityDownloadJobs(), 0);
   } finally {
     await scheduler.shutdown(100);
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy quality migration enforces its safety limit without listing or marking jobs", async () => {
+  const runtime = await createTestDir("quality-legacy-limit");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => null } as any,
+    manager
+  ) as any;
+  try {
+    scheduler.beginShutdown();
+    scheduler.jobStore.countLegacyQualityDownloadJobs = () => 100_001;
+    scheduler.jobStore.listLegacyQualityDownloadJobs = () => {
+      throw new Error("over-limit migration must not list jobs");
+    };
+    assert.equal(scheduler.migrateLegacyQualityDownloadJobs(), 0);
+    assert.equal(manager.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+  } finally {
+    await scheduler.shutdown(100);
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a database with only shared quality jobs marks legacy migration complete without changing them", async () => {
+  const runtime = await createTestDir("quality-legacy-empty");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => null } as any,
+    manager
+  ) as any;
+  try {
+    scheduler.beginShutdown();
+    const shared = scheduler.jobStore.enqueue({
+      kind: "quality_download",
+      dedupeKey: "quality-download:BVSHAREDONLY:artifact",
+      bvid: "BVSHAREDONLY",
+      payload: {
+        bvid: "BVSHAREDONLY",
+        artifactKey: "artifact",
+        targets: [target("u1", 1)],
+      },
+    });
+    assert.equal(scheduler.migrateLegacyQualityDownloadJobs(), 0);
+    assert.equal(scheduler.jobStore.findById(shared.id)?.dedupeKey, shared.dedupeKey);
+    assert.equal(manager.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), "complete");
+    scheduler.jobStore.countLegacyQualityDownloadJobs = () => {
+      throw new Error("completed empty migration must not query jobs");
+    };
+    assert.equal(scheduler.migrateLegacyQualityDownloadJobs(), 0);
+  } finally {
+    await scheduler.shutdown(100);
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy quality migration leaves its marker absent when a candidate has no BVID", async () => {
+  const runtime = await createTestDir("quality-legacy-missing-bvid");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => null } as any,
+    manager
+  ) as any;
+  try {
+    scheduler.beginShutdown();
+    const legacy = scheduler.jobStore.enqueue({
+      kind: "quality_download",
+      dedupeKey: "quality-download:missing-bvid",
+      payload: { target: target("u1", 1) },
+    });
+    assert.throws(() => scheduler.migrateLegacyQualityDownloadJobs(), /missing its BVID/);
+    assert.ok(scheduler.jobStore.findById(legacy.id));
+    assert.equal(manager.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+  } finally {
+    await scheduler.shutdown(100);
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy quality migration rolls back all replacements before writing its marker", async () => {
+  const runtime = await createTestDir("quality-legacy-rollback");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  try {
+    const jobs = new PersistentJobStore(manager.getDatabase());
+    const first = jobs.enqueue({
+      kind: "quality_download",
+      dedupeKey: "quality-download:u1:1:BVROLLBACK1",
+      bvid: "BVROLLBACK1",
+      payload: { bvid: "BVROLLBACK1", target: target("u1", 1) },
+    });
+    const second = jobs.enqueue({
+      kind: "quality_download",
+      dedupeKey: "quality-download:u2:2:BVROLLBACK2",
+      bvid: "BVROLLBACK2",
+      payload: { bvid: "BVROLLBACK2", target: target("u2", 2) },
+    });
+    assert.throws(() => jobs.applyQualityDownloadMigration([
+      {
+        jobs: [first],
+        replacement: {
+          kind: "quality_download",
+          dedupeKey: "quality-download:BVROLLBACK1:artifact",
+          bvid: "BVROLLBACK1",
+          payload: { artifactKey: "artifact", targets: [target("u1", 1)] },
+        },
+      },
+      {
+        jobs: [second],
+        replacement: {
+          kind: "download",
+          dedupeKey: "invalid",
+          bvid: "BVROLLBACK2",
+        },
+      },
+    ], LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER));
+    assert.ok(jobs.findById(first.id));
+    assert.ok(jobs.findById(second.id));
+    assert.equal(jobs.findByDedupeKey("quality-download:BVROLLBACK1:artifact"), null);
+    assert.equal(manager.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+  } finally {
     manager.close();
     await removeTestDir(runtime);
   }

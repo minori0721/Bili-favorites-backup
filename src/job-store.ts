@@ -24,6 +24,11 @@ export interface EnqueuePersistentJob {
   notBefore?: number;
 }
 
+export interface QualityDownloadMigrationPlan {
+  jobs: PersistentJobRecord[];
+  replacement: EnqueuePersistentJob;
+}
+
 function qualityTargetKey(target: any) {
   const userId = String(target?.userId || "");
   const mediaId = Number(target?.mediaId);
@@ -165,28 +170,67 @@ export class PersistentJobStore {
     return transaction();
   }
 
-  replaceQualityDownloadJobs(jobs: PersistentJobRecord[], input: EnqueuePersistentJob) {
+  private replaceQualityDownloadJobsUnsafe(jobs: PersistentJobRecord[], input: EnqueuePersistentJob) {
     if (input.kind !== "quality_download" || jobs.length === 0) {
       throw new Error("replaceQualityDownloadJobs requires existing quality_download jobs");
     }
-    const transaction = this.stateDatabase.db.transaction(() => {
-      const ids = [...new Set(jobs.map((job) => job.id))];
-      const placeholders = ids.map(() => "?").join(",");
-      this.stateDatabase.db.prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`).run(...ids);
-      const replacement = this.enqueue(input);
-      const attempts = Math.max(...jobs.map((job) => Number(job.attempts || 0)), 0);
-      const notBefore = Math.max(...jobs.map((job) => Number(job.notBefore || 0)), Number(input.notBefore || 0));
-      const maxAttempts = Math.max(...jobs.map((job) => Number(job.maxAttempts || 1)), Number(input.maxAttempts || 1));
-      const createdAt = Math.min(...jobs.map((job) => Number(job.createdAt || Date.now())));
-      const lastError = [...jobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.lastError || null;
-      const status = notBefore > Date.now() || jobs.some((job) => job.status === "retry_wait") ? "retry_wait" : "pending";
-      this.stateDatabase.db.prepare(`
-        UPDATE jobs SET status=?, attempts=?, max_attempts=?, not_before=?, lease_owner=NULL,
-          lease_expires_at=NULL, last_error=?, created_at=?, updated_at=? WHERE id=?
-      `).run(status, attempts, maxAttempts, notBefore, lastError, createdAt, Date.now(), replacement.id);
-      return this.findById(replacement.id)!;
-    });
-    return transaction();
+    const ids = [...new Set(jobs.map((job) => job.id))];
+    const placeholders = ids.map(() => "?").join(",");
+    this.stateDatabase.db.prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`).run(...ids);
+    const replacement = this.enqueue(input);
+    const attempts = Math.max(...jobs.map((job) => Number(job.attempts || 0)), 0);
+    const notBefore = Math.max(...jobs.map((job) => Number(job.notBefore || 0)), Number(input.notBefore || 0));
+    const maxAttempts = Math.max(...jobs.map((job) => Number(job.maxAttempts || 1)), Number(input.maxAttempts || 1));
+    const createdAt = Math.min(...jobs.map((job) => Number(job.createdAt || Date.now())));
+    const lastError = [...jobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.lastError || null;
+    const status = notBefore > Date.now() || jobs.some((job) => job.status === "retry_wait") ? "retry_wait" : "pending";
+    this.stateDatabase.db.prepare(`
+      UPDATE jobs SET status=?, attempts=?, max_attempts=?, not_before=?, lease_owner=NULL,
+        lease_expires_at=NULL, last_error=?, created_at=?, updated_at=? WHERE id=?
+    `).run(status, attempts, maxAttempts, notBefore, lastError, createdAt, Date.now(), replacement.id);
+    return this.findById(replacement.id)!;
+  }
+
+  replaceQualityDownloadJobs(jobs: PersistentJobRecord[], input: EnqueuePersistentJob) {
+    return this.stateDatabase.db.transaction(() => this.replaceQualityDownloadJobsUnsafe(jobs, input))();
+  }
+
+  countLegacyQualityDownloadJobs() {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT COUNT(*) AS count FROM jobs
+      WHERE kind='quality_download' AND (
+        json_type(payload_json, '$.artifactKey') IS NULL
+        OR COALESCE(json_type(payload_json, '$.targets'), '') != 'array'
+        OR bvid IS NULL
+        OR dedupe_key NOT LIKE ('quality-download:' || bvid || ':%')
+      )
+    `).get() as any;
+    return Number(row?.count || 0);
+  }
+
+  listLegacyQualityDownloadJobs(limit = 100_001) {
+    return (this.stateDatabase.db.prepare(`
+      SELECT * FROM jobs
+      WHERE kind='quality_download' AND (
+        json_type(payload_json, '$.artifactKey') IS NULL
+        OR COALESCE(json_type(payload_json, '$.targets'), '') != 'array'
+        OR bvid IS NULL
+        OR dedupe_key NOT LIKE ('quality-download:' || bvid || ':%')
+      )
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.floor(limit))) as any[]).map(rowToJob);
+  }
+
+  applyQualityDownloadMigration(plans: QualityDownloadMigrationPlan[], markerKey: string) {
+    return this.stateDatabase.db.transaction(() => {
+      const migrated = plans.reduce((total, plan) => {
+        this.replaceQualityDownloadJobsUnsafe(plan.jobs, plan.replacement);
+        return total + plan.jobs.length;
+      }, 0);
+      this.stateDatabase.setMeta(markerKey, "complete");
+      return migrated;
+    })();
   }
 
   findByDedupeKey(dedupeKey: string) {

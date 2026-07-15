@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import path from "node:path";
 import { normalizeLoadedConfig, validateBBDownRuntimeConfig, validateConfig } from "../src/config.js";
@@ -7,6 +8,10 @@ import { computeUploadSessionRetryDelayMs, SyncScheduler } from "../src/schedule
 import { StateManager } from "../src/state.js";
 import { DownloadTask, QualityUpgradeTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import {
+  LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
+  LEGACY_TEMP_CACHE_MARKER,
+} from "../src/database.js";
 
 class IdleTask extends Task {
   async run() {}
@@ -115,6 +120,178 @@ test("queue snapshots reuse one asynchronous cache inspection and coalesce force
     await waitForCondition(() => scheduler.localCacheRefresh === null);
     assert.equal(scheduler.getQueueSnapshot().localCache.usedBytes, 20);
     assert.equal(inspections, 2);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy local cache recovery is asynchronous, persistent, and skipped after completion", async () => {
+  const runtime = await createTestDir("legacy-cache-once");
+  const legacyTemp = path.join(runtime, "temp");
+  const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const user = seedQueuedDownload(state, "BVLEGACYCACHE");
+  await fs.promises.mkdir(path.join(legacyTemp, "BVLEGACYCACHE"), { recursive: true });
+  await fs.promises.writeFile(path.join(legacyTemp, "BVLEGACYCACHE", "track.part"), "partial");
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [user], getById: () => user } as any,
+    state,
+    { legacyTempDir: legacyTemp }
+  ) as any;
+  try {
+    scheduler.downloadQueue.setStartGate(() => false);
+    scheduler.resumePersistedWorkOnStartup();
+    assert.equal(scheduler.legacyTempRecoveryPending, true);
+    assert.ok(scheduler.getQueueSnapshot());
+    await scheduler.legacyTempRecoveryPromise;
+    assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
+    assert.equal(state.getDatabase().getVideo("BVLEGACYCACHE")?.localDir, path.join(legacyTemp, "BVLEGACYCACHE"));
+    assert.equal(scheduler.jobStore.countOutstanding(["download"]), 1);
+
+    let repeatedScans = 0;
+    scheduler.recoverLegacyDownloadDirs = async () => { repeatedScans += 1; };
+    scheduler.startLegacyTempCacheRecovery();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(repeatedScans, 0);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy local cache recovery treats a corrupt manifest as an interrupted legacy directory", async () => {
+  const runtime = await createTestDir("legacy-cache-corrupt-manifest");
+  const legacyTemp = path.join(runtime, "temp");
+  const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const user = seedQueuedDownload(state, "BVCORRUPTCACHE");
+  const downloadDir = path.join(legacyTemp, "BVCORRUPTCACHE");
+  await fs.promises.mkdir(downloadDir, { recursive: true });
+  await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), "{broken", "utf8");
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [user], getById: () => user } as any,
+    state,
+    { legacyTempDir: legacyTemp }
+  ) as any;
+  try {
+    scheduler.downloadQueue.setStartGate(() => false);
+    scheduler.startLegacyTempCacheRecovery();
+    await scheduler.legacyTempRecoveryPromise;
+    assert.equal(state.getDatabase().getVideo("BVCORRUPTCACHE")?.localDir, downloadDir);
+    assert.equal(scheduler.jobStore.countOutstanding(["download"]), 1);
+    assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy cache failure leaves downloads gated only until the attempt settles", async () => {
+  const runtime = await createTestDir("legacy-cache-failure");
+  const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => null } as any,
+    state,
+    { legacyTempDir: path.join(runtime, "temp") }
+  ) as any;
+  try {
+    let rejectScan!: (error: Error) => void;
+    scheduler.recoverLegacyDownloadDirs = () => new Promise<void>((_resolve, reject) => { rejectScan = reject; });
+    scheduler.startLegacyTempCacheRecovery();
+    assert.equal(scheduler.legacyTempRecoveryPending, true);
+    assert.equal(scheduler.canStartDownloadTask(), false);
+    rejectScan(new Error("permission denied: C:/secret/path"));
+    await scheduler.legacyTempRecoveryPromise;
+    assert.equal(scheduler.legacyTempRecoveryPending, false);
+    assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), null);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy cache scan skips managed sessions and symlinks and retains unresolved BV directories once", async () => {
+  const runtime = await createTestDir("legacy-cache-filtering");
+  const legacyTemp = path.join(runtime, "temp");
+  const managed = path.join(legacyTemp, "BVMANAGEDCACHE");
+  const unresolved = path.join(legacyTemp, "BVUNRESOLVEDCACHE");
+  const linkTarget = path.join(runtime, "link-target");
+  await fs.promises.mkdir(managed, { recursive: true });
+  await fs.promises.mkdir(unresolved, { recursive: true });
+  await fs.promises.mkdir(linkTarget, { recursive: true });
+  await fs.promises.writeFile(path.join(managed, ".bfb-download.json"), JSON.stringify({
+    schemaVersion: 1,
+    sessionId: "managed",
+    kind: "backup",
+    bvid: "BVMANAGEDCACHE",
+    pages: [],
+    outputs: [],
+    history: [],
+  }));
+  await fs.promises.symlink(linkTarget, path.join(legacyTemp, "BVLINKCACHE"), "junction");
+  const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => null } as any,
+    state,
+    { legacyTempDir: legacyTemp }
+  ) as any;
+  try {
+    scheduler.startLegacyTempCacheRecovery();
+    await scheduler.legacyTempRecoveryPromise;
+    assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
+    assert.equal(scheduler.jobStore.countOutstanding(["download"]), 0);
+    let repeatedScans = 0;
+    scheduler.recoverLegacyDownloadDirs = async () => { repeatedScans += 1; };
+    scheduler.startLegacyTempCacheRecovery();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(repeatedScans, 0);
+    assert.equal(fs.existsSync(unresolved), true);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("migration restore invalidates only the matching legacy recovery markers", async () => {
+  const runtime = await createTestDir("legacy-import-markers");
+  const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => null } as any,
+    state
+  ) as any;
+  try {
+    const database = state.getDatabase();
+    database.setMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, "complete");
+    database.setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
+    const previousMarkers = scheduler.captureLegacyRecoveryMarkers();
+    let stateRecoveries = 0;
+    let cacheChecks = 0;
+    scheduler.resumePersistedWorkOnStartup = () => { stateRecoveries += 1; };
+    scheduler.startLegacyTempCacheRecovery = () => { cacheChecks += 1; };
+
+    scheduler.recheckLegacyRecoveryAfterImport(["config", "users"], previousMarkers);
+    assert.equal(stateRecoveries, 0);
+    assert.equal(cacheChecks, 0);
+    assert.equal(database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), "complete");
+    assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
+
+    scheduler.recheckLegacyRecoveryAfterImport(["state"], previousMarkers);
+    assert.equal(stateRecoveries, 1);
+    assert.equal(database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+    assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
+
+    scheduler.recheckLegacyRecoveryAfterImport(["temp"], previousMarkers);
+    assert.equal(cacheChecks, 1);
+    assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), null);
   } finally {
     scheduler.stop();
     state.close();

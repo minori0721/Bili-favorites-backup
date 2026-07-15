@@ -835,18 +835,6 @@ function classifyManifestRecovery(downloadDir: string, manifest: DownloadSession
   return classifyManifestRecoverySet(manifest, listFilesSync(downloadDir));
 }
 
-function summarizeManifestRecovery(downloadDir: string, manifest: DownloadSessionManifest) {
-  const { retained, cleanup, aria2Controls } = classifyManifestRecovery(downloadDir, manifest);
-  const sizeOf = (items: Set<string>) => [...items].reduce((total, relativeFile) =>
-    total + directorySizeSync(path.join(downloadDir, relativeFile)), 0);
-  const incomplete = ["prepared", "downloading", "failed"].includes(manifest.status);
-  return {
-    resumable: incomplete && (manifest.outputs.length > 0 || aria2Controls > 0),
-    retainedBytes: sizeOf(retained),
-    cleanupEligibleBytes: sizeOf(cleanup),
-  };
-}
-
 export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise<DownloadCleanupResult> {
   const result: DownloadCleanupResult = { removedFiles: 0, removedDirectories: 0, removedBytes: 0 };
   let entries: fs.Dirent[];
@@ -898,51 +886,6 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
   return result;
 }
 
-export function inspectDownloadRecoverySync(rootDir: string): DownloadRecoverySummary {
-  const summary = emptyDownloadRecoverySummary();
-  let entries: fs.Dirent[] = [];
-  try {
-    entries = fs.readdirSync(rootDir, { withFileTypes: true });
-  } catch {
-    return summary;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const dir = path.join(rootDir, entry.name);
-    if (isBBDownCredentialDirectoryName(entry.name)) {
-      continue;
-    }
-    const bytes = directorySizeSync(dir);
-    if (fs.existsSync(path.join(dir, DOWNLOAD_RETAINED_FILE))) {
-      summary.cleanupEligibleBytes += bytes;
-      continue;
-    }
-    const manifest = readDownloadSession(dir);
-    if (manifest) {
-      const recovery = summarizeManifestRecovery(dir, manifest);
-      if (recovery.resumable) summary.resumableSessions += 1;
-      summary.completedPages += manifest.outputs.length;
-      summary.totalPages += manifest.pages.length;
-      summary.retainedBytes += recovery.retainedBytes;
-      summary.cleanupEligibleBytes += recovery.cleanupEligibleBytes;
-      continue;
-    }
-    if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
-    summary.legacyDirectories += 1;
-    summary.legacyBytes += bytes;
-    const walk = (target: string) => {
-      for (const name of fs.readdirSync(target)) {
-        const fullPath = path.join(target, name);
-        const stat = fs.statSync(fullPath);
-        if (stat.isDirectory()) walk(fullPath);
-        else if (/\.(aria2|tmp|vclip|aclip|part|download)$/i.test(name)) summary.cleanupEligibleBytes += stat.size;
-      }
-    };
-    try { walk(dir); } catch { /* ignore files changing during scan */ }
-  }
-  return summary;
-}
-
 async function listFileSizes(rootDir: string) {
   const files = new Map<string, number>();
   const pending = [rootDir];
@@ -976,7 +919,7 @@ async function listFileSizes(rootDir: string) {
   return files;
 }
 
-async function readDownloadSessionAsync(downloadDir: string) {
+export async function readDownloadSessionAsync(downloadDir: string) {
   try {
     const parsed = JSON.parse(await fs.promises.readFile(downloadSessionPath(downloadDir), "utf8")) as DownloadSessionManifest;
     if (parsed?.schemaVersion !== 1 || !parsed.bvid || !Array.isArray(parsed.pages)) return null;
@@ -1038,9 +981,9 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
         result.recovery.cleanupEligibleBytes += bytes;
         continue;
       }
-      if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
       const manifest = await readDownloadSessionAsync(downloadDir);
       if (!manifest) {
+        if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
         result.recovery.legacyDirectories += 1;
         result.recovery.legacyBytes += bytes;
         for (const [relativeFile, size] of fileSizes) {

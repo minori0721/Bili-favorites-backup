@@ -25,10 +25,15 @@ import {
   inspectDownloadCache,
   markHistoryGroupUploaded,
   readDownloadSession,
+  readDownloadSessionAsync,
   type DownloadCacheInspection,
   type DownloadRecoverySummary,
   writeDownloadSession,
 } from "./download-session.js";
+import {
+  LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
+  LEGACY_TEMP_CACHE_MARKER,
+} from "./database.js";
 import {
   classifyUploadError,
   sanitizeUploadText,
@@ -38,7 +43,12 @@ import {
 import { DownloadApiHealth } from "./download-api-health.js";
 import { cancelActiveDownloadsForAccount } from "./downloader.js";
 import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
-import { PersistentJobStore, type EnqueuePersistentJob, type PersistentJobKind } from "./job-store.js";
+import {
+  PersistentJobStore,
+  type EnqueuePersistentJob,
+  type PersistentJobKind,
+  type QualityDownloadMigrationPlan,
+} from "./job-store.js";
 import {
   DownloadTask,
   QualityUpgradeCleanupTask,
@@ -98,6 +108,7 @@ export function computeChargingTransientDelayMs(random: () => number = Math.rand
 interface SchedulerDependencies {
   videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string) => Promise<VideoPageSnapshotResult>;
   cacheInspector?: (rootDir: string, concurrency?: number) => Promise<DownloadCacheInspection>;
+  legacyTempDir?: string;
   now?: () => number;
   random?: () => number;
 }
@@ -141,6 +152,8 @@ export class SyncScheduler {
   private leaseHeartbeatTimer: NodeJS.Timeout | null = null;
   private accessProbePromise: Promise<void> | null = null;
   private accessProbeJobId: string | null = null;
+  private legacyTempRecoveryPromise: Promise<void> | null = null;
+  private legacyTempRecoveryPending = false;
   private readonly hotScanMinPages = 3;
   private readonly hotScanMaxPages = 12;
   private readonly hotScanBurstBudget = 3;
@@ -182,6 +195,7 @@ export class SyncScheduler {
   private readonly persistentJobWakeMinMs = 1_000;
   private readonly videoAccessProbe: NonNullable<SchedulerDependencies["videoAccessProbe"]>;
   private readonly cacheInspector: NonNullable<SchedulerDependencies["cacheInspector"]>;
+  private readonly legacyTempDir: string;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly retirementAbortedJobIds = new Set<string>();
@@ -195,6 +209,7 @@ export class SyncScheduler {
     this.stateManager = stateManager;
     this.videoAccessProbe = dependencies.videoAccessProbe || getVideoPageSnapshot;
     this.cacheInspector = dependencies.cacheInspector || inspectDownloadCache;
+    this.legacyTempDir = dependencies.legacyTempDir || tempDir;
     this.now = dependencies.now || Date.now;
     this.random = dependencies.random || Math.random;
     this.jobStore = new PersistentJobStore(this.stateManager.getDatabase());
@@ -1186,7 +1201,7 @@ export class SyncScheduler {
   }
 
   private dispatchPersistentJobs() {
-    if (!this.acceptingJobs) return;
+    if (!this.acceptingJobs || this.cleanupLocked) return;
     this.dispatchChargingAccessProbe();
     const config = this.configStore.get();
     const downloadCapacity = Math.max(0, this.queueHighWater(
@@ -1569,15 +1584,41 @@ export class SyncScheduler {
 
   resumePersistedWorkOnStartup() {
     this.jobStore.recoverExpiredLeases();
-    this.migrateLegacyQualityDownloadJobs();
+    try {
+      this.migrateLegacyQualityDownloadJobs();
+    } catch (error) {
+      console.warn(`[Recovery] Failed to migrate legacy quality downloads: ${safeErrorSummary(error)}`);
+    }
     this.bootstrapLegacyFailureClassification();
     this.resumePersistedWork();
+    this.startLegacyTempCacheRecovery();
     this.dispatchPersistentJobs();
   }
 
   private migrateLegacyQualityDownloadJobs() {
-    const jobs = this.jobStore.list(["quality_download"], 100_000);
-    if (jobs.length === 0) return 0;
+    const database = this.stateManager.getDatabase();
+    if (database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER) === "complete") return 0;
+    const candidateCount = this.jobStore.countLegacyQualityDownloadJobs();
+    if (candidateCount > 100_000) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: "warn",
+        summary: `旧画质下载任务超过安全上限，已保留待下次处理`,
+        raw: `[QualityUpgrade] legacy migration candidate limit exceeded count=${candidateCount}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      return 0;
+    }
+    const jobs = this.jobStore.listLegacyQualityDownloadJobs(100_001);
+    if (jobs.length !== candidateCount) {
+      throw new Error(`Legacy quality migration changed while preparing: expected=${candidateCount}; actual=${jobs.length}`);
+    }
+    if (jobs.length === 0) {
+      this.jobStore.applyQualityDownloadMigration([], LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
+      return 0;
+    }
     const currentProfile = qualityArtifactProfileFromConfig(this.configStore.get());
     const groups = new Map<string, { artifactKey: string; profile: QualityArtifactProfile; jobs: typeof jobs }>();
     for (const job of jobs) {
@@ -1590,7 +1631,7 @@ export class SyncScheduler {
         || currentProfile
       );
       const bvid = String(job.bvid || payload.bvid || manifest?.bvid || "");
-      if (!bvid) continue;
+      if (!bvid) throw new Error(`Legacy quality download ${job.id} is missing its BVID`);
       const artifactKey = String(payload.artifactKey || manifest?.qualityUpgrade?.artifactKey || buildQualityArtifactKey(bvid, profile));
       const groupKey = `${bvid}:${artifactKey}`;
       const group = groups.get(groupKey) || { artifactKey, profile, jobs: [] };
@@ -1598,8 +1639,15 @@ export class SyncScheduler {
       groups.set(groupKey, group);
     }
 
-    let migrated = 0;
+    const plans: QualityDownloadMigrationPlan[] = [];
     for (const group of groups.values()) {
+      const bvid = String(group.jobs[0].bvid || (group.jobs[0].payload as any).bvid || "");
+      if (!bvid) throw new Error("Legacy quality download is missing its BVID");
+      const dedupeKey = `quality-download:${bvid}:${group.artifactKey}`;
+      const existingShared = this.jobStore.findByDedupeKey(dedupeKey);
+      if (existingShared && !group.jobs.some((job) => job.id === existingShared.id)) {
+        group.jobs.push(existingShared);
+      }
       const targets = new Map<string, QualityUpgradeTarget>();
       for (const job of group.jobs) {
         for (const target of this.qualityTargetsFromPayload(job.payload as any)) {
@@ -1607,14 +1655,7 @@ export class SyncScheduler {
         }
       }
       const mergedTargets = [...targets.values()];
-      if (mergedTargets.length === 0) continue;
-      const bvid = String(group.jobs[0].bvid || (group.jobs[0].payload as any).bvid || "");
-      const dedupeKey = `quality-download:${bvid}:${group.artifactKey}`;
-      const alreadyShared = group.jobs.length === 1
-        && group.jobs[0].dedupeKey === dedupeKey
-        && typeof (group.jobs[0].payload as any).artifactKey === "string"
-        && Array.isArray((group.jobs[0].payload as any).targets);
-      if (alreadyShared) continue;
+      if (mergedTargets.length === 0) throw new Error(`Legacy quality download ${bvid} has no recoverable target`);
       const base = [...group.jobs].sort((left, right) => {
         const leftPayload = left.payload as any;
         const rightPayload = right.payload as any;
@@ -1639,31 +1680,34 @@ export class SyncScheduler {
         qualityProfile: group.profile,
         qualityStageLabel: `等待下载新版${mergedTargets.length > 1 ? ` · ${mergedTargets.length}个目标` : ""}`,
       };
-      this.jobStore.replaceQualityDownloadJobs(group.jobs, {
-        kind: "quality_download",
-        dedupeKey,
-        bvid,
-        userId: payload.downloadUserId,
-        mediaId: mergedTargets[0].mediaId,
-        priority: Math.min(...group.jobs.map((job) => job.priority)),
-        maxAttempts: Math.max(...group.jobs.map((job) => job.maxAttempts)),
-        notBefore: Math.max(...group.jobs.map((job) => job.notBefore)),
-        payload,
+      plans.push({
+        jobs: group.jobs,
+        replacement: {
+          kind: "quality_download",
+          dedupeKey,
+          bvid,
+          userId: payload.downloadUserId,
+          mediaId: mergedTargets[0].mediaId,
+          priority: Math.min(...group.jobs.map((job) => job.priority)),
+          maxAttempts: Math.max(...group.jobs.map((job) => job.maxAttempts)),
+          notBefore: Math.max(...group.jobs.map((job) => job.notBefore)),
+          payload,
+        },
       });
-      migrated += group.jobs.length;
     }
-    if (migrated > 0) {
+    this.jobStore.applyQualityDownloadMigration(plans, LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
+    if (candidateCount > 0) {
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
         level: "info",
-        summary: `已合并 ${migrated} 个旧画质下载任务`,
-        raw: `[QualityUpgrade] consolidated legacy download jobs=${migrated}`,
+        summary: `已合并 ${candidateCount} 个旧画质下载任务`,
+        raw: `[QualityUpgrade] consolidated legacy download jobs=${candidateCount}`,
         simpleVisible: true,
         debugVisible: true,
       });
     }
-    return migrated;
+    return candidateCount;
   }
 
   private bootstrapLegacyFailureClassification() {
@@ -1989,6 +2033,12 @@ export class SyncScheduler {
         delay(remaining()),
       ]);
     }
+    if (this.legacyTempRecoveryPromise && remaining() > 0) {
+      await Promise.race([
+        this.legacyTempRecoveryPromise.catch(() => undefined),
+        delay(remaining()),
+      ]);
+    }
     while (this.localCacheRefresh && remaining() > 0) {
       const activeRefresh = this.localCacheRefresh;
       await Promise.race([activeRefresh.catch(() => undefined), delay(remaining())]);
@@ -2027,7 +2077,7 @@ export class SyncScheduler {
   }
 
   hasActiveOrQueuedSchedulerWork() {
-    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked;
+    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || Boolean(this.legacyTempRecoveryPromise);
   }
 
   refreshLocalCacheState() {
@@ -2100,9 +2150,39 @@ export class SyncScheduler {
     return changed;
   }
 
+  captureLegacyRecoveryMarkers() {
+    const database = this.stateManager.getDatabase();
+    return {
+      quality: database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER),
+      temp: database.getMeta(LEGACY_TEMP_CACHE_MARKER),
+    };
+  }
+
   reloadStateDatabase() {
     this.jobStore.rebind(this.stateManager.getDatabase());
-    this.resumePersistedWorkOnStartup();
+  }
+
+  recheckLegacyRecoveryAfterImport(
+    restored: string[],
+    previousMarkers: ReturnType<SyncScheduler["captureLegacyRecoveryMarkers"]>
+  ) {
+    const database = this.stateManager.getDatabase();
+    const restoredSet = new Set(restored);
+    if (restoredSet.has("state")) {
+      database.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
+      if (!restoredSet.has("temp")) {
+        if (previousMarkers.temp === "complete") database.setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
+        else database.deleteMeta(LEGACY_TEMP_CACHE_MARKER);
+      }
+    }
+    if (restoredSet.has("temp")) {
+      database.deleteMeta(LEGACY_TEMP_CACHE_MARKER);
+    }
+    if (restoredSet.has("state")) this.resumePersistedWorkOnStartup();
+    else {
+      if (restoredSet.has("temp")) this.startLegacyTempCacheRecovery();
+      this.dispatchPersistentJobs();
+    }
   }
 
   hasQualityUpgrade(userId: string, mediaId: number, bvid: string) {
@@ -2246,6 +2326,7 @@ export class SyncScheduler {
   }
 
   private canStartDownloadTask(task?: DownloadTask | QualityUpgradeDownloadTask) {
+    if (this.legacyTempRecoveryPending) return false;
     if (task instanceof QualityUpgradeDownloadTask && this.qualityArtifactCleanupLocks.has(task.control.artifactKey)) {
       return false;
     }
@@ -3406,16 +3487,58 @@ export class SyncScheduler {
     return backoff + jitter;
   }
 
-  private queueLegacyDownloadDirsForRecovery() {
-    let entries: fs.Dirent[] = [];
-    try { entries = fs.readdirSync(tempDir, { withFileTypes: true }); } catch { return; }
+  private startLegacyTempCacheRecovery() {
+    if (this.stateManager.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER) === "complete") return;
+    if (this.legacyTempRecoveryPromise) return;
+    this.legacyTempRecoveryPending = true;
+    this.legacyTempRecoveryPromise = this.recoverLegacyDownloadDirs()
+      .catch((error) => {
+        console.warn(`[Recovery] Failed to inspect legacy local cache: ${safeErrorSummary(error)}`);
+      })
+      .finally(() => {
+        this.legacyTempRecoveryPending = false;
+        this.legacyTempRecoveryPromise = null;
+        if (!this.acceptingJobs) return;
+        this.downloadQueue.poke();
+        this.dispatchPersistentJobs();
+      });
+  }
+
+  private async recoverLegacyDownloadDirs() {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(this.legacyTempDir, { withFileTypes: true });
+    } catch (error: any) {
+      if (error?.code === "ENOENT") entries = [];
+      else throw error;
+    }
+    let recovered = 0;
+    let unresolved = 0;
     for (const entry of entries) {
-      if (!entry.isDirectory() || !/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
-      const localDir = path.join(tempDir, entry.name);
-      if (fs.existsSync(path.join(localDir, DOWNLOAD_RETAINED_FILE))) continue;
-      if (readDownloadSession(localDir)) continue;
+      if (!this.acceptingJobs) return;
+      if (entry.isSymbolicLink() || !entry.isDirectory() || !/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
+      const localDir = path.join(this.legacyTempDir, entry.name);
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.lstat(localDir);
+      } catch (error: any) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      try {
+        const retained = await fs.promises.lstat(path.join(localDir, DOWNLOAD_RETAINED_FILE));
+        if (retained.isFile() && !retained.isSymbolicLink()) continue;
+      } catch (error: any) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      if (await readDownloadSessionAsync(localDir)) continue;
+      if (!this.acceptingJobs) return;
       const resolved = this.findBestRelationForBvid(entry.name);
-      if (!resolved) continue;
+      if (!resolved) {
+        unresolved += 1;
+        continue;
+      }
       this.stateManager.markDownloadInterrupted(
         entry.name,
         localDir,
@@ -3423,11 +3546,26 @@ export class SyncScheduler {
         [{ userId: resolved.user.id, mediaId: resolved.mediaId }]
       );
       this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.name, { persisted: true });
+      recovered += 1;
+    }
+    if (!this.acceptingJobs) return;
+    this.stateManager.getDatabase().setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
+    if (recovered > 0 || unresolved > 0) {
+      logManager.push({
+        timestamp: new Date().toISOString(),
+        type: "system",
+        level: unresolved > 0 ? "warn" : "info",
+        summary: unresolved > 0
+          ? `旧缓存已恢复 ${recovered} 项，另有 ${unresolved} 项保留待识别`
+          : `已恢复 ${recovered} 项旧缓存`,
+        raw: `[Recovery] legacy local cache recovered=${recovered} unresolved=${unresolved}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
     }
   }
 
   private resumePersistedWork() {
-    this.queueLegacyDownloadDirsForRecovery();
     this.ensurePersistedChargingAccessProbes();
     if (this.stateManager.hasPersistentJobBootstrap()) {
       this.recoverOrphanedUploadFailures();

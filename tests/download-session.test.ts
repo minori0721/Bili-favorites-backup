@@ -9,7 +9,6 @@ import {
   cleanupUploadedSessionFiles,
   DOWNLOAD_RETAINED_FILE,
   inspectDownloadCache,
-  inspectDownloadRecoverySync,
   prepareDownloadSession,
   quarantineBrokenAria2Track,
   readDownloadSession,
@@ -56,6 +55,10 @@ async function createVideo(filePath: string, seconds = 2) {
   });
 }
 
+async function inspectRecovery(rootDir: string) {
+  return (await inspectDownloadCache(rootDir)).recovery;
+}
+
 test("select-page argument compacts long consecutive ranges", () => {
   const pages = [1, 2, 3, 5, 7, 8].map((index) => ({ index, cid: index, title: `P${index}`, duration: 1 }));
   assert.equal(buildSelectPageArgument(pages), "1-3,5,7,8");
@@ -80,8 +83,6 @@ test("async download cache inspection matches recovery classification without bl
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(settled, false);
     const inspection = await pending;
-    const legacy = inspectDownloadRecoverySync(runtime);
-    assert.deepEqual(inspection.recovery, legacy);
     assert.equal(inspection.usedBytes, 10_007);
     assert.equal(inspection.fileCount, 10_001);
     assert.equal(inspection.exportableBytes, 10_000);
@@ -116,7 +117,7 @@ test("invalid quarantined files are cleanup bytes instead of resumable retained 
       outputs: [],
       history: [],
     });
-    const summary = inspectDownloadRecoverySync(runtime);
+    const summary = await inspectRecovery(runtime);
     assert.equal(summary.resumableSessions, 0);
     assert.equal(summary.retainedBytes, 0);
     assert.equal(summary.cleanupEligibleBytes, 1024);
@@ -125,7 +126,7 @@ test("invalid quarantined files are cleanup bytes instead of resumable retained 
     assert.equal(cleanup.removedBytes, 1024);
     assert.equal(fs.existsSync(path.join(downloadDir, "_invalid", "old", "preview.mp4")), false);
     assert.equal(fs.existsSync(path.join(downloadDir, ".bfb-download.json")), true);
-    assert.equal(inspectDownloadRecoverySync(runtime).cleanupEligibleBytes, 0);
+    assert.equal((await inspectRecovery(runtime)).cleanupEligibleBytes, 0);
   } finally {
     await removeTestDir(runtime);
   }
@@ -170,7 +171,7 @@ test("manual fragment cleanup preserves verified outputs and resumable aria2 tra
     assert.equal(fs.existsSync(output), true);
     assert.equal(fs.existsSync(track), true);
     assert.equal(fs.existsSync(control), true);
-    const summary = inspectDownloadRecoverySync(runtime);
+    const summary = await inspectRecovery(runtime);
     assert.equal(summary.cleanupEligibleBytes, 0);
     assert.equal(summary.resumableSessions, 1);
     assert.ok(summary.retainedBytes >= 2048 + 4096 + 64);
@@ -362,7 +363,7 @@ test("successful uploads remove only verified session files and retain unknown a
     assert.equal(fs.existsSync(path.join(downloadDir, "video-BV1SELECTIVECLEAN.mp4")), false);
     assert.equal(fs.existsSync(unknown), true);
     assert.equal(fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE)), true);
-    const summary = inspectDownloadRecoverySync(runtime);
+    const summary = await inspectRecovery(runtime);
     assert.ok(summary.cleanupEligibleBytes >= 32);
     assert.equal(summary.resumableSessions, 0);
   } finally {
@@ -543,7 +544,7 @@ test("recovery summary separates managed sessions from legacy fragments", async 
       pages: [{ index: 1, cid: 2, title: "One", duration: 1 }],
     });
     await fs.promises.writeFile(path.join(quality, "track.m4a.aria2"), "resume");
-    const summary = inspectDownloadRecoverySync(runtime);
+    const summary = await inspectRecovery(runtime);
     assert.equal(summary.resumableSessions, 2);
     assert.equal(summary.legacyDirectories, 1);
     assert.equal(summary.cleanupEligibleBytes, 64);
