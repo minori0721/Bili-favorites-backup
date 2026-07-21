@@ -17,7 +17,7 @@ docker compose logs --tail=100 app
 - 阅读[版本与升级记录](../reference/releases)中的迁移说明。
 - 涉及AList版本变化时，先备份`alist/`并阅读[AList升级](../alist/upgrade)。
 - 大版本回滚前先导出旧镜像可读取的JSON快照。
-- 从schema 4回滚到`v2.4.1`或更早镜像时，先恢复`data/backups`中的升级前SQLite备份，不能让旧镜像直接打开新版数据库。
+- 从schema 5回滚到`v2.4.1`或更早镜像时，先恢复`data/backups`中的升级前SQLite备份，不能让旧镜像直接打开新版数据库。
 
 ## 更新后检查
 

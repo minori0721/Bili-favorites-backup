@@ -10,7 +10,8 @@ export type PersistentJobKind =
   | "quality_download"
   | "quality_upload"
   | "quality_replace"
-  | "quality_cleanup";
+  | "quality_cleanup"
+  | "path_migration";
 
 export interface EnqueuePersistentJob {
   kind: PersistentJobKind;
@@ -236,6 +237,32 @@ export class PersistentJobStore {
   findByDedupeKey(dedupeKey: string) {
     const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE dedupe_key=?").get(dedupeKey);
     return row ? rowToJob(row) : null;
+  }
+
+  claimByDedupeKey(dedupeKey: string, leaseOwner: string, leaseMs = 30 * 60_000, now = Date.now()) {
+    const transaction = this.stateDatabase.db.transaction(() => {
+      this.recoverExpiredLeases(now);
+      const row = this.stateDatabase.db.prepare(`
+        SELECT * FROM jobs
+        WHERE dedupe_key=? AND status IN ('pending','retry_wait') AND not_before<=?
+        LIMIT 1
+      `).get(dedupeKey, now) as any;
+      if (!row) return null;
+      const leaseExpiresAt = now + Math.max(10_000, leaseMs);
+      const updated = this.stateDatabase.db.prepare(`
+        UPDATE jobs SET status='running', lease_owner=?, lease_expires_at=?, updated_at=?
+        WHERE id=? AND status IN ('pending','retry_wait')
+      `).run(leaseOwner, leaseExpiresAt, now, row.id);
+      if (updated.changes !== 1) return null;
+      return rowToJob({
+        ...row,
+        status: "running",
+        lease_owner: leaseOwner,
+        lease_expires_at: leaseExpiresAt,
+        updated_at: now,
+      });
+    });
+    return transaction();
   }
 
   findById(id: string) {

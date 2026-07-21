@@ -40,7 +40,7 @@ export async function createTestDir(prefix: string) {
 
 export async function removeTestDir(target: string) {
   const retryableCodes = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-  const maxAttempts = 20;
+  const maxAttempts = 60;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {

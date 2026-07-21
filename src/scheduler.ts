@@ -170,6 +170,8 @@ export class SyncScheduler {
   private remoteVerifyPathQueue = new Map<string, number>();
   private pendingTickOptions: TickOptions | null = null;
   private cleanupLocked = false;
+  private pathMigrationLocked = false;
+  private pathMigrationMaintenance: { id: string; status: string; sourceRoot: string; destinationRoot: string } | null = null;
   private uploadProbeTimer: NodeJS.Timeout | null = null;
   private readonly uploadCircuit = new UploadCircuitBreaker();
   private readonly downloadApiHealth = new DownloadApiHealth();
@@ -234,8 +236,8 @@ export class SyncScheduler {
       if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
       return this.canStartDownloadTask(task);
     });
-    this.uploadQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
-    this.verificationQueue.setStartGate((task) => this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
+    this.uploadQueue.setStartGate((task) => !this.pathMigrationLocked && this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
+    this.verificationQueue.setStartGate((task) => !this.pathMigrationLocked && this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
     this.refreshLocalCacheAndWake(true);
 
     const logTaskError = (task: any, error: any) => {
@@ -1201,7 +1203,7 @@ export class SyncScheduler {
   }
 
   private dispatchPersistentJobs() {
-    if (!this.acceptingJobs || this.cleanupLocked) return;
+    if (!this.acceptingJobs || this.cleanupLocked || this.pathMigrationLocked) return;
     this.dispatchChargingAccessProbe();
     const config = this.configStore.get();
     const downloadCapacity = Math.max(0, this.queueHighWater(
@@ -1953,6 +1955,24 @@ export class SyncScheduler {
     this.dispatchPersistentJobs();
   }
 
+  setPathMigrationMaintenance(
+    locked: boolean,
+    summary?: { id: string; status: string; sourceRoot: string; destinationRoot: string }
+  ) {
+    this.pathMigrationLocked = locked;
+    this.pathMigrationMaintenance = locked && summary ? { ...summary } : null;
+    if (!locked) {
+      this.downloadQueue.poke();
+      this.uploadQueue.poke();
+      this.verificationQueue.poke();
+      this.dispatchPersistentJobs();
+    }
+  }
+
+  isPathMigrationLocked() {
+    return this.pathMigrationLocked;
+  }
+
   applyConfigUpdate(previous: AppConfig, next: AppConfig) {
     this.downloadApiHealth.configure(next.bbdownApiMode || "web");
     if (next.bbdownApiMode === "app") {
@@ -2076,8 +2096,26 @@ export class SyncScheduler {
     return this.downloadQueue.isBusy() || this.uploadQueue.isBusy() || this.verificationQueue.isBusy();
   }
 
+  hasPersistentTransferWork() {
+    const transferKinds: PersistentJobKind[] = [
+      "download",
+      "upload",
+      "history_upload",
+      "verify_upload",
+      "quality_download",
+      "quality_upload",
+      "quality_replace",
+      "quality_cleanup",
+    ];
+    const counts = this.jobStore.counts();
+    return transferKinds.some((kind) => {
+      const statuses = counts[kind] || {};
+      return ["pending", "retry_wait", "leased", "running"].some((status) => Number(statuses[status] || 0) > 0);
+    });
+  }
+
   hasActiveOrQueuedSchedulerWork() {
-    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || Boolean(this.legacyTempRecoveryPromise);
+    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || this.pathMigrationLocked || Boolean(this.legacyTempRecoveryPromise);
   }
 
   refreshLocalCacheState() {
@@ -2326,7 +2364,7 @@ export class SyncScheduler {
   }
 
   private canStartDownloadTask(task?: DownloadTask | QualityUpgradeDownloadTask) {
-    if (this.legacyTempRecoveryPending) return false;
+    if (this.legacyTempRecoveryPending || this.pathMigrationLocked) return false;
     if (task instanceof QualityUpgradeDownloadTask && this.qualityArtifactCleanupLocks.has(task.control.artifactKey)) {
       return false;
     }
@@ -2358,7 +2396,8 @@ export class SyncScheduler {
 
   private canCreateDownloadTask() {
     const snapshot = this.getLocalCacheSnapshot();
-    return !snapshot.paused
+    return !this.pathMigrationLocked
+      && !snapshot.paused
       && !this.uploadCircuit.isDownloadPaused()
       && this.uploadQueue.getSize() === 0
       && this.jobStore.countDue(["upload", "history_upload"], 20) === 0
@@ -2512,11 +2551,12 @@ export class SyncScheduler {
         retryJobs,
         prefetchLimit: this.configStore.get().queuePrefetchLimit || 25,
       },
+      maintenance: this.pathMigrationMaintenance ? { ...this.pathMigrationMaintenance } : undefined,
     };
   }
 
   async tick(manual = false, options: TickOptions = {}) {
-    if (this.cleanupLocked || this.running) {
+    if (this.cleanupLocked || this.pathMigrationLocked || this.running) {
       return false;
     }
     const trigger: SyncTrigger = options.trigger || (manual ? "manual" : "auto");
@@ -3119,7 +3159,7 @@ export class SyncScheduler {
   }
 
   private triggerOrQueueTick(options: TickOptions) {
-    if (this.cleanupLocked) {
+    if (this.cleanupLocked || this.pathMigrationLocked) {
       return { started: false, queued: false };
     }
     if (this.running) {

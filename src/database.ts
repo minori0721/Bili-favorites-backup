@@ -12,7 +12,7 @@ import type {
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 4;
+export const DATABASE_SCHEMA_VERSION = 5;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 
@@ -96,7 +96,6 @@ CREATE TABLE IF NOT EXISTS favorite_relations (
 );
 CREATE INDEX IF NOT EXISTS idx_relations_bvid ON favorite_relations(bvid);
 CREATE INDEX IF NOT EXISTS idx_relations_status ON favorite_relations(backup_status);
-CREATE INDEX IF NOT EXISTS idx_relations_folder_status ON favorite_relations(user_id, media_id, backup_status, last_seen_at DESC);
 
 CREATE VIEW IF NOT EXISTS video_backup_summary AS
 SELECT v.bvid,
@@ -208,6 +207,53 @@ CREATE TABLE IF NOT EXISTS quality_upgrades (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(user_id, media_id, bvid)
 );
+
+CREATE TABLE IF NOT EXISTS path_migrations (
+  id TEXT PRIMARY KEY,
+  source_root TEXT NOT NULL,
+  destination_root TEXT NOT NULL,
+  alist_identity_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  source_manifest_hash TEXT,
+  entry_count INTEGER NOT NULL DEFAULT 0,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  directory_count INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER NOT NULL DEFAULT 0,
+  reusable_count INTEGER NOT NULL DEFAULT 0,
+  copied_count INTEGER NOT NULL DEFAULT 0,
+  verified_count INTEGER NOT NULL DEFAULT 0,
+  conflict_count INTEGER NOT NULL DEFAULT 0,
+  extra_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  switched_at INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_path_migrations_active
+  ON path_migrations(status)
+  WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending');
+
+CREATE TABLE IF NOT EXISTS path_migration_items (
+  migration_id TEXT NOT NULL REFERENCES path_migrations(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  item_type TEXT NOT NULL,
+  expected_size INTEGER,
+  source_path TEXT NOT NULL,
+  destination_path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  verification_started_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(migration_id, relative_path)
+);
+CREATE INDEX IF NOT EXISTS idx_path_migration_items_status
+  ON path_migration_items(migration_id, status, next_attempt_at, relative_path);
+CREATE INDEX IF NOT EXISTS idx_path_migration_items_path
+  ON path_migration_items(migration_id, relative_path);
 `;
 
 function parseJson<T>(value: string, fallback: T): T {
@@ -227,6 +273,93 @@ function parseVideoRow(row: any) {
 function isoToMs(value: unknown, fallback = Date.now()) {
   const parsed = Date.parse(String(value || ""));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function pathMigrationFromRow(row: any): PathMigrationRecord {
+  return {
+    id: String(row.id),
+    sourceRoot: String(row.source_root),
+    destinationRoot: String(row.destination_root),
+    alistIdentityHash: String(row.alist_identity_hash),
+    status: String(row.status) as PathMigrationStatus,
+    sourceManifestHash: row.source_manifest_hash || undefined,
+    entryCount: Number(row.entry_count || 0),
+    fileCount: Number(row.file_count || 0),
+    directoryCount: Number(row.directory_count || 0),
+    totalBytes: Number(row.total_bytes || 0),
+    reusableCount: Number(row.reusable_count || 0),
+    copiedCount: Number(row.copied_count || 0),
+    verifiedCount: Number(row.verified_count || 0),
+    conflictCount: Number(row.conflict_count || 0),
+    extraCount: Number(row.extra_count || 0),
+    lastError: row.last_error || undefined,
+    createdAt: Number(row.created_at || 0),
+    updatedAt: Number(row.updated_at || 0),
+    switchedAt: row.switched_at == null ? undefined : Number(row.switched_at),
+  };
+}
+
+function pathMigrationItemFromRow(row: any): PathMigrationItemRecord {
+  return {
+    migrationId: String(row.migration_id),
+    relativePath: String(row.relative_path),
+    itemType: String(row.item_type) === "directory" ? "directory" : "file",
+    expectedSize: row.expected_size == null ? undefined : Number(row.expected_size),
+    sourcePath: String(row.source_path),
+    destinationPath: String(row.destination_path),
+    status: String(row.status) as PathMigrationItemStatus,
+    attempts: Number(row.attempts || 0),
+    nextAttemptAt: Number(row.next_attempt_at || 0),
+    verificationStartedAt: Number(row.verification_started_at || 0),
+    lastError: row.last_error || undefined,
+    createdAt: Number(row.created_at || 0),
+    updatedAt: Number(row.updated_at || 0),
+  };
+}
+
+export type PathMigrationStatus =
+  | "scanning" | "ready" | "copying" | "verifying" | "paused"
+  | "switching" | "cleanup_pending" | "completed" | "cancelled" | "failed";
+export type PathMigrationItemStatus =
+  | "pending" | "reusable" | "copying" | "awaiting_verification"
+  | "verified" | "conflict" | "failed";
+
+export interface PathMigrationRecord {
+  id: string;
+  sourceRoot: string;
+  destinationRoot: string;
+  alistIdentityHash: string;
+  status: PathMigrationStatus;
+  sourceManifestHash?: string;
+  entryCount: number;
+  fileCount: number;
+  directoryCount: number;
+  totalBytes: number;
+  reusableCount: number;
+  copiedCount: number;
+  verifiedCount: number;
+  conflictCount: number;
+  extraCount: number;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
+  switchedAt?: number;
+}
+
+export interface PathMigrationItemRecord {
+  migrationId: string;
+  relativePath: string;
+  itemType: "file" | "directory";
+  expectedSize?: number;
+  sourcePath: string;
+  destinationPath: string;
+  status: PathMigrationItemStatus;
+  attempts: number;
+  nextAttemptAt: number;
+  verificationStartedAt?: number;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 function optionalIsoToMs(value: unknown) {
@@ -315,6 +448,10 @@ export class StateDatabase {
           this.db.exec("DROP VIEW IF EXISTS video_backup_summary");
         }
         this.db.exec(SCHEMA_SQL);
+        const pathMigrationItemColumns = new Set((this.db.pragma("table_info(path_migration_items)") as any[]).map((row) => String(row.name)));
+        if (!pathMigrationItemColumns.has("verification_started_at")) {
+          this.db.exec("ALTER TABLE path_migration_items ADD COLUMN verification_started_at INTEGER NOT NULL DEFAULT 0");
+        }
         if (currentVersion > 0 && currentVersion < 3) {
           const columns = new Set((this.db.pragma("table_info(favorite_relations)") as any[]).map((row) => String(row.name)));
           const additions = [
@@ -381,6 +518,7 @@ export class StateDatabase {
           this.db.exec("DROP INDEX idx_relations_remote_schedule");
         }
         this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_relations_folder_status ON favorite_relations(user_id, media_id, backup_status, last_seen_at DESC);
           CREATE INDEX IF NOT EXISTS idx_relations_folder_page ON favorite_relations(user_id, media_id, active_in_favorite, fav_order, last_seen_at DESC);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_due ON favorite_relations(backup_status, next_remote_check_at);
           CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable ON favorite_relations(user_id, favorite_unavailable, last_seen_at DESC);
@@ -392,7 +530,14 @@ export class StateDatabase {
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
       })();
     } catch (error) {
-      try { if (this.db.open) this.db.close(); } catch {}
+      try {
+        if (this.db.open) {
+          if (this.filePath !== ":memory:") {
+            try { this.db.pragma("wal_checkpoint(TRUNCATE)"); } catch {}
+          }
+          this.db.close();
+        }
+      } catch {}
       throw error;
     }
   }
@@ -426,6 +571,250 @@ export class StateDatabase {
 
   deleteMeta(key: string) {
     this.db.prepare("DELETE FROM schema_meta WHERE key=?").run(key);
+  }
+
+  hasRemoteArchivePathData() {
+    const row = this.db.prepare(`
+      SELECT EXISTS(SELECT 1 FROM remote_files LIMIT 1)
+        OR EXISTS(SELECT 1 FROM quality_upgrades LIMIT 1)
+        OR EXISTS(SELECT 1 FROM jobs WHERE kind IN ('upload','history_upload','verify_upload','quality_upload','quality_replace','quality_cleanup'))
+        OR EXISTS(SELECT 1 FROM videos WHERE json_type(payload_json, '$.remotePath') IS NOT NULL)
+        OR EXISTS(SELECT 1 FROM favorite_relations WHERE json_type(payload_json, '$.remotePath') IS NOT NULL)
+        AS present
+    `).get() as any;
+    return Boolean(row?.present);
+  }
+
+  getActivePathMigration() {
+    const row = this.db.prepare(`
+      SELECT * FROM path_migrations
+      WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending')
+      ORDER BY created_at DESC LIMIT 1
+    `).get() as any;
+    return row ? pathMigrationFromRow(row) : undefined;
+  }
+
+  getPathMigration(id: string) {
+    const row = this.db.prepare("SELECT * FROM path_migrations WHERE id=?").get(id) as any;
+    return row ? pathMigrationFromRow(row) : undefined;
+  }
+
+  createPathMigration(input: Omit<PathMigrationRecord, "createdAt" | "updatedAt">) {
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO path_migrations(
+        id, source_root, destination_root, alist_identity_hash, status, source_manifest_hash,
+        entry_count, file_count, directory_count, total_bytes, reusable_count, copied_count,
+        verified_count, conflict_count, extra_count, last_error, created_at, updated_at, switched_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      input.id, input.sourceRoot, input.destinationRoot, input.alistIdentityHash, input.status,
+      input.sourceManifestHash || null, input.entryCount, input.fileCount, input.directoryCount,
+      input.totalBytes, input.reusableCount, input.copiedCount, input.verifiedCount,
+      input.conflictCount, input.extraCount, input.lastError || null, now, now, input.switchedAt || null
+    );
+    return this.getPathMigration(input.id)!;
+  }
+
+  updatePathMigration(id: string, patch: Partial<Omit<PathMigrationRecord, "id" | "createdAt" | "updatedAt">>) {
+    const current = this.getPathMigration(id);
+    if (!current) return undefined;
+    const next = { ...current, ...patch };
+    this.db.prepare(`
+      UPDATE path_migrations SET source_root=?, destination_root=?, alist_identity_hash=?, status=?,
+        source_manifest_hash=?, entry_count=?, file_count=?, directory_count=?, total_bytes=?,
+        reusable_count=?, copied_count=?, verified_count=?, conflict_count=?, extra_count=?,
+        last_error=?, updated_at=?, switched_at=? WHERE id=?
+    `).run(
+      next.sourceRoot, next.destinationRoot, next.alistIdentityHash, next.status,
+      next.sourceManifestHash || null, next.entryCount, next.fileCount, next.directoryCount,
+      next.totalBytes, next.reusableCount, next.copiedCount, next.verifiedCount,
+      next.conflictCount, next.extraCount, next.lastError || null, Date.now(), next.switchedAt || null, id
+    );
+    return this.getPathMigration(id);
+  }
+
+  insertPathMigrationItems(items: PathMigrationItemRecord[]) {
+    if (items.length === 0) return;
+    const insert = this.db.prepare(`
+      INSERT INTO path_migration_items(
+        migration_id, relative_path, item_type, expected_size, source_path, destination_path,
+        status, attempts, next_attempt_at, verification_started_at, last_error, created_at, updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(migration_id, relative_path) DO UPDATE SET
+        item_type=excluded.item_type, expected_size=excluded.expected_size,
+        source_path=excluded.source_path, destination_path=excluded.destination_path,
+        status=excluded.status, attempts=excluded.attempts, next_attempt_at=excluded.next_attempt_at,
+        verification_started_at=excluded.verification_started_at,
+        last_error=excluded.last_error, updated_at=excluded.updated_at
+    `);
+    const transaction = this.db.transaction(() => {
+      for (const item of items) {
+        const now = item.updatedAt || Date.now();
+        insert.run(
+          item.migrationId, item.relativePath, item.itemType, item.expectedSize ?? null,
+          item.sourcePath, item.destinationPath, item.status, item.attempts || 0,
+          item.nextAttemptAt || 0, item.verificationStartedAt || 0,
+          item.lastError || null, item.createdAt || now, now
+        );
+      }
+    });
+    transaction();
+  }
+
+  getPathMigrationItem(migrationId: string, relativePath: string) {
+    const row = this.db.prepare("SELECT * FROM path_migration_items WHERE migration_id=? AND relative_path=?")
+      .get(migrationId, relativePath) as any;
+    return row ? pathMigrationItemFromRow(row) : undefined;
+  }
+
+  listPathMigrationItems(migrationId: string, statuses: PathMigrationItemStatus[] = [], offset = 0, limit = 100) {
+    const params: any[] = [migrationId];
+    const statusSql = statuses.length > 0
+      ? ` AND status IN (${statuses.map(() => "?").join(",")})`
+      : "";
+    params.push(...statuses, Math.max(1, Math.min(1000, Math.floor(limit))), Math.max(0, Math.floor(offset)));
+    return (this.db.prepare(`
+      SELECT * FROM path_migration_items WHERE migration_id=?${statusSql}
+      ORDER BY relative_path ASC LIMIT ? OFFSET ?
+    `).all(...params) as any[]).map(pathMigrationItemFromRow);
+  }
+
+  nextPathMigrationItem(migrationId: string, now = Date.now()) {
+    const row = this.db.prepare(`
+      SELECT * FROM path_migration_items
+      WHERE migration_id=? AND status IN ('pending','reusable','copying','awaiting_verification','failed')
+        AND next_attempt_at<=?
+      ORDER BY relative_path ASC LIMIT 1
+    `).get(migrationId, now) as any;
+    return row ? pathMigrationItemFromRow(row) : undefined;
+  }
+
+  nextPathMigrationAttemptAt(migrationId: string, now = Date.now()) {
+    const row = this.db.prepare(`
+      SELECT MIN(next_attempt_at) AS next_attempt_at
+      FROM path_migration_items
+      WHERE migration_id=?
+        AND status IN ('copying','awaiting_verification','failed')
+        AND next_attempt_at>?
+    `).get(migrationId, now) as any;
+    if (row?.next_attempt_at == null) return undefined;
+    const next = Number(row.next_attempt_at);
+    return Number.isFinite(next) ? next : undefined;
+  }
+
+  updatePathMigrationItem(migrationId: string, relativePath: string, patch: Partial<Omit<PathMigrationItemRecord, "migrationId" | "relativePath" | "createdAt" | "updatedAt">>) {
+    const current = this.getPathMigrationItem(migrationId, relativePath);
+    if (!current) return undefined;
+    const next = { ...current, ...patch };
+    this.db.prepare(`
+      UPDATE path_migration_items SET item_type=?, expected_size=?, source_path=?, destination_path=?,
+        status=?, attempts=?, next_attempt_at=?, verification_started_at=?, last_error=?, updated_at=?
+      WHERE migration_id=? AND relative_path=?
+    `).run(
+      next.itemType, next.expectedSize ?? null, next.sourcePath, next.destinationPath,
+      next.status, next.attempts, next.nextAttemptAt, next.verificationStartedAt || 0,
+      next.lastError || null, Date.now(), migrationId, relativePath
+    );
+    return this.getPathMigrationItem(migrationId, relativePath);
+  }
+
+  countPathMigrationItems(migrationId: string) {
+    const rows = this.db.prepare(`
+      SELECT status, COUNT(*) AS count, COALESCE(SUM(expected_size), 0) AS bytes
+      FROM path_migration_items WHERE migration_id=? GROUP BY status
+    `).all(migrationId) as any[];
+    const result: Record<string, { count: number; bytes: number }> = {};
+    for (const row of rows) result[String(row.status)] = { count: Number(row.count || 0), bytes: Number(row.bytes || 0) };
+    return result;
+  }
+
+  hashPathMigrationItems(migrationId: string) {
+    const hash = crypto.createHash("sha256");
+    for (const row of this.db.prepare(`
+      SELECT relative_path, item_type, COALESCE(expected_size, -1) AS expected_size
+      FROM path_migration_items WHERE migration_id=? ORDER BY relative_path ASC
+    `).iterate(migrationId) as Iterable<any>) {
+      hash.update(`${row.relative_path}\0${row.item_type}\0${row.expected_size}\n`);
+    }
+    return hash.digest("hex");
+  }
+
+  deletePathMigration(id: string) {
+    return this.db.prepare("DELETE FROM path_migrations WHERE id=?").run(id).changes > 0;
+  }
+
+  rewriteArchiveRoot(migrationId: string, sourceRoot: string, destinationRoot: string) {
+    const rewriteValue = (value: unknown) => {
+      if (typeof value !== "string") return value;
+      if (value === sourceRoot) return destinationRoot;
+      return value.startsWith(`${sourceRoot}/`) ? `${destinationRoot}${value.slice(sourceRoot.length)}` : value;
+    };
+    const pathKeys = new Set([
+      "remotePath", "path", "remoteFile", "oldRemotePath", "stageRemotePath", "backupRemotePath",
+      "archivePath", "archivedPath", "oldPath", "newPath", "tempPath", "sourcePath", "destinationPath",
+    ]);
+    const rewritePayload = (value: any): any => {
+      if (Array.isArray(value)) return value.map(rewritePayload);
+      if (!value || typeof value !== "object") return value;
+      const output: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(value)) {
+        output[key] = pathKeys.has(key) ? rewriteValue(child) : rewritePayload(child);
+      }
+      return output;
+    };
+    const rewriteDedupeKey = (row: any, payload: any) => {
+      const kind = String(row.kind);
+      if (kind === "verify_upload") {
+        const historySegment = payload.historyOnly ? `history:${payload.historySnapshotAt || "unknown"}` : "main";
+        return `verify:${payload.userId || row.user_id || "video"}:${payload.mediaId || row.media_id || 0}:${payload.bvid || row.bvid}:${historySegment}:${String(payload.remoteFile || "")}`;
+      }
+      if (kind === "upload" || kind === "history_upload") {
+        const userId = payload.userId || row.user_id || "video";
+        const mediaId = payload.mediaId || row.media_id || 0;
+        const bvid = payload.bvid || row.bvid || "";
+        const remotePath = String(payload.remotePath || "");
+        const historySnapshotAt = payload.historySnapshotAt || "main";
+        return `upload:${userId}:${mediaId}:${bvid}:${remotePath}:${historySnapshotAt}`;
+      }
+      return row.dedupe_key;
+    };
+    return this.db.transaction(() => {
+      for (const row of this.db.prepare("SELECT bvid, payload_json FROM videos").all() as any[]) {
+        const payload = rewritePayload(parseJson<Record<string, unknown>>(row.payload_json, {}));
+        this.db.prepare("UPDATE videos SET local_dir=local_dir, payload_json=?, updated_at=? WHERE bvid=?")
+          .run(JSON.stringify(payload), Date.now(), row.bvid);
+      }
+      for (const row of this.db.prepare("SELECT user_id, media_id, bvid, payload_json FROM favorite_relations").all() as any[]) {
+        const payload = rewritePayload(parseJson<Record<string, unknown>>(row.payload_json, {}));
+        this.db.prepare("UPDATE favorite_relations SET payload_json=?, updated_at=? WHERE user_id=? AND media_id=? AND bvid=?")
+          .run(JSON.stringify(payload), Date.now(), row.user_id, row.media_id, row.bvid);
+      }
+      this.db.prepare("UPDATE remote_files SET remote_path=CASE WHEN remote_path=? THEN ? WHEN substr(remote_path,1,?)=? THEN ? || substr(remote_path, ?) ELSE remote_path END, updated_at=?")
+        .run(
+          sourceRoot,
+          destinationRoot,
+          sourceRoot.length + 1,
+          `${sourceRoot}/`,
+          destinationRoot,
+          sourceRoot.length + 1,
+          Date.now()
+        );
+      for (const row of this.db.prepare("SELECT user_id, media_id, bvid, payload_json FROM quality_upgrades").all() as any[]) {
+        const payload = rewritePayload(parseJson<Record<string, unknown>>(row.payload_json, {}));
+        this.db.prepare("UPDATE quality_upgrades SET payload_json=?, updated_at=? WHERE user_id=? AND media_id=? AND bvid=?")
+          .run(JSON.stringify(payload), Date.now(), row.user_id, row.media_id, row.bvid);
+      }
+      for (const row of this.db.prepare("SELECT id, kind, dedupe_key, payload_json, bvid, user_id, media_id FROM jobs WHERE kind IN ('upload','history_upload','verify_upload','quality_upload','quality_replace','quality_cleanup')").all() as any[]) {
+        const payload = rewritePayload(parseJson<Record<string, unknown>>(row.payload_json, {}));
+        const dedupeKey = rewriteDedupeKey(row, payload);
+        const collision = this.db.prepare("SELECT id FROM jobs WHERE dedupe_key=? AND id<>?").get(dedupeKey, row.id) as any;
+        if (collision) throw new Error(`迁移后任务去重键冲突: ${row.kind}`);
+        this.db.prepare("UPDATE jobs SET dedupe_key=?, payload_json=?, updated_at=? WHERE id=?")
+          .run(dedupeKey, JSON.stringify(payload), Date.now(), row.id);
+      }
+      return true;
+    })();
   }
 
   loadState(): StateFile {
@@ -874,6 +1263,8 @@ export class StateDatabase {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
         DELETE FROM jobs;
+        DELETE FROM path_migration_items;
+        DELETE FROM path_migrations;
         DELETE FROM quality_upgrades;
         DELETE FROM remote_files;
         DELETE FROM download_sessions;
@@ -887,6 +1278,7 @@ export class StateDatabase {
       this.deleteMeta("legacy_failure_classification_v1");
       this.deleteMeta("runtime_recovery_normalization_v2");
       this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
+      this.deleteMeta("path_migration_active");
       const dirty: StateDirtySet = {
         videos: new Set(Object.keys(state.videos || {})),
         relations: new Set(Object.keys(state.relations || {})),
@@ -1187,6 +1579,8 @@ export class StateDatabase {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
         DELETE FROM jobs;
+        DELETE FROM path_migration_items;
+        DELETE FROM path_migrations;
         DELETE FROM quality_upgrades;
         DELETE FROM remote_files;
         DELETE FROM download_sessions;
@@ -1201,6 +1595,7 @@ export class StateDatabase {
       this.deleteMeta("runtime_recovery_normalization_v2");
       this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
       this.deleteMeta(LEGACY_TEMP_CACHE_MARKER);
+      this.deleteMeta("path_migration_active");
     });
     transaction();
   }

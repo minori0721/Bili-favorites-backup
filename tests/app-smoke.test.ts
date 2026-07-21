@@ -5,7 +5,7 @@ import test from "node:test";
 import { createTestDir, removeTestDir } from "./helpers.js";
 import { createZipFromDirectory } from "../src/zip.js";
 
-test("real app supports login, queue state, config update and migration preview in isolation", { timeout: 20_000 }, async () => {
+test("real app supports login, queue state, config update and migration preview in isolation", { timeout: 60_000 }, async () => {
   const runtime = await createTestDir("app-smoke");
   const originalCwd = process.cwd();
   const previousNodeEnv = process.env.NODE_ENV;

@@ -6,7 +6,7 @@
 
 - 分支：`dev`
 - 基准版本：`2.4.2`
-- 当前dev变更：旧启动恢复逻辑轻量收口；应用版本、SQLite `user_version 4`、状态schema 13和迁移包schema 3均未变化。
+- 当前dev变更：新增AList归档路径安全迁移；应用版本仍为`2.4.2`，状态schema 13和迁移包schema 3不变，SQLite升级到`user_version 5`。
 - 文档站：<https://minori0721.github.io/Bili-favorites-backup/>
 
 ## 启动恢复标记
@@ -18,6 +18,10 @@
 - 恢复状态但未恢复`temp`时保留本机原有缓存标记；仅恢复配置、账号、封面或日志不改变两个标记。
 
 ## 实现审计
+
+- `path_migrations`和`path_migration_items`以SQLite保存迁移阶段与逐相对路径清单；扫描每批写入，复制固定单并发，目标确认后才执行状态和配置切换。
+- 新旧路径要求绝对、不同、互不嵌套且第一段挂载名一致；全程使用WebDAV COPY、不覆盖目标，旧目录清理必须重新核验并输入`DELETE OLD ARCHIVE`。
+- 迁移维护锁阻止调度器领取同步、下载、上传、远端确认和画质任务；队列、日志、登录和迁移状态接口继续可用。扫描、复制、核验、暂停和切换阶段拒绝导入/导出，`cleanup_pending`允许导出但仍禁止导入。
 
 - `inspectDownloadRecoverySync()`及其专用汇总代码已删除，生产源码和测试均统一读取`inspectDownloadCache(...).recovery`。
 - 异步检查器补齐`quality-upgrade-*`有效清单识别，分类结果继续覆盖可续传会话、有效分P、保留字节、旧缓存和待清理残片。
@@ -34,10 +38,11 @@ npm --prefix docs ci
 npm --prefix docs run docs:build
 ```
 
-- 应用测试：170项，169通过、0失败、1项仅因本机缺少`aria2c`跳过。
+- 路径迁移定向测试：14项通过，额外覆盖缺失目标根目录、延迟可见重试、重启后`copying`恢复、开始前维护锁、历史归档路径和SQL通配符边界。
+- 全量测试：184项中183项通过、1项因本机缺少aria2跳过、0项失败；生产构建与文档构建均通过。
 - TypeScript生产构建与`git diff --check`通过。
-- 文档生产构建通过，生产依赖审计为0。
-- 根依赖审计保留`fast-xml-parser`的2个中危，不执行破坏性`audit fix --force`。
+- 文档生产构建通过，文档站生产依赖审计为0。
+- 根依赖`npm audit --omit=dev`当前报告15项上游依赖风险：`axios`、`body-parser`和`brace-expansion`的部分问题暂无修复，另有`fast-xml-parser`中危项；不执行破坏性`audit fix --force`。
 
 ## 后续合并规则
 

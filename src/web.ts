@@ -525,7 +525,7 @@ function getSettingsSection() {
         <div class="field-full"><label>AList 内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244" autocomplete="off" /></div>
         <div><label>AList 账号 (WebDAV 用户名)</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
         <div><label>AList 密码 (WebDAV 密码)</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
-        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted field-hint">修改目标路径只影响后续新上传，已有网盘文件不会自动迁移。修改后建议执行 AList 状态对账。</p></div>
+        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted field-hint">已有归档时请使用“迁移归档路径”，系统会先复制并确认新目录，旧目录不会自动删除。</p></div>
         <div class="field-full"><label>上传目录结构</label>
           <select id="uploadLayout">
             <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
@@ -597,6 +597,7 @@ function getSettingsSection() {
         <button id="saveConfigBtn">保存设置并生效</button>
         <button id="renameBtn" class="rename-btn">检查旧命名文件</button>
         <button id="qualityUpgradeBtn" class="ghost" type="button">检查可升级画质</button>
+        <button id="pathMigrationBtn" class="ghost" type="button">迁移归档路径</button>
         <button id="migrationBtn" class="ghost" type="button">数据迁移</button>
         <button id="cleanupDataBtn" class="ghost" type="button">清理数据</button>
       </div>
@@ -811,6 +812,30 @@ function getModals() {
     </div>
   </div>
 
+  <div class="modal" id="pathMigrationModal">
+    <div class="panel panel-large">
+      <h2>迁移归档路径</h2>
+      <p class="muted">系统会在同一 AList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
+      <div class="settings-grid">
+        <div><label>当前归档路径</label><input id="pathMigrationSource" type="text" readonly /></div>
+        <div><label>新归档路径</label><input id="pathMigrationDestination" type="text" placeholder="例如: /阿里云盘/bili-backup-2" /></div>
+      </div>
+      <div id="pathMigrationSummary" class="cleanup-list"></div>
+      <div id="pathMigrationItems" class="rename-skip-list"></div>
+      <div id="pathMigrationStatus" class="rename-result result-block is-hidden"></div>
+      <div class="row modal-actions split-actions">
+        <button id="pathMigrationPreviewBtn" type="button">扫描并生成预览</button>
+        <button id="pathMigrationStartBtn" type="button" class="ghost">开始迁移</button>
+        <button id="pathMigrationPauseBtn" type="button" class="ghost">暂停</button>
+        <button id="pathMigrationResumeBtn" type="button" class="ghost">继续</button>
+        <button id="pathMigrationCancelBtn" type="button" class="ghost">取消（切换前）</button>
+        <button id="pathMigrationKeepBtn" type="button" class="ghost">保留旧目录并结束</button>
+        <button id="pathMigrationCleanupBtn" type="button" class="ghost">清理旧目录</button>
+        <button id="closePathMigrationBtn" class="ghost full-width" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="cleanupHelpModal">
     <div class="panel panel-narrow">
       <h2>清理小贴士</h2>
@@ -860,6 +885,7 @@ function getAppScript() {
     let logEntries = [];
     let queueBoardPollTimer = null;
     let queueBoardRequestInFlight = false;
+    let pathMigrationPollTimer = null;
     const queueBoardState = {
       columns: {},
       cards: new Map(),
@@ -950,6 +976,7 @@ function getAppScript() {
         unavailableHasMore = false;
         unavailableLoading = false;
       }
+      if (modal.id === 'pathMigrationModal') stopPathMigrationPolling();
       if (modal.id === 'confirmActionModal' && pendingConfirmAction) {
         pendingConfirmAction(false);
         return;
@@ -1063,6 +1090,7 @@ function getAppScript() {
         const data = await res.json();
         if (!data.success) {
           const error = new Error(data.message || '请求失败');
+          error.code = data.code;
           error.details = data.data;
           throw error;
         }
@@ -1165,6 +1193,11 @@ function getAppScript() {
         setStatus(st, '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、AList 路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
       } catch(e) {
         setStatus(st, '保存失败: '+e.message, 'error');
+        if (e.code === 'PATH_MIGRATION_REQUIRED') {
+          await openPathMigration();
+          document.getElementById('pathMigrationDestination').value = payload.alistDest;
+          setStatus('pathMigrationStatus', '已有归档数据，请先完成新路径迁移。', 'muted');
+        }
       } finally {
         btn.textContent = '保存设置并生效';
         setTimeout(()=>{ if(!st.classList.contains('status-error')) setStatus(st, ''); },3000);
@@ -1700,6 +1733,90 @@ function getAppScript() {
     async function openRenamePreview() {
       openModal('renamePreviewModal', document.getElementById('renameBtn'));
       await loadRenamePreview();
+    }
+
+    function stopPathMigrationPolling() {
+      if (pathMigrationPollTimer) {
+        clearInterval(pathMigrationPollTimer);
+        pathMigrationPollTimer = null;
+      }
+    }
+
+    function renderPathMigrationState(state) {
+      const summary = document.getElementById('pathMigrationSummary');
+      const source = document.getElementById('pathMigrationSource');
+      const destination = document.getElementById('pathMigrationDestination');
+      const status = document.getElementById('pathMigrationStatus');
+      const items = document.getElementById('pathMigrationItems');
+      if (!summary || !status) return;
+      source.value = state?.sourceRoot || source.value || '';
+      if (state?.destinationRoot) destination.value = state.destinationRoot;
+      if (!state) {
+        summary.innerHTML = '<div class="cleanup-item"><div><div class="cleanup-item-title">还没有路径预览</div><div class="cleanup-item-desc">输入新路径后生成扫描预览。现有归档不会被移动或删除。</div></div></div>';
+        items.innerHTML = '';
+        setHidden(status, true);
+        return;
+      }
+      const labels = { scanning:'扫描中', ready:'可以开始', copying:'复制中', verifying:'等待远端确认', paused:'已暂停', switching:'切换状态中', cleanup_pending:'等待清理旧目录', completed:'已完成', cancelled:'已取消', failed:'需要处理' };
+      const toCopy = Math.max(0, Number(state.entryCount || 0) - Number(state.verifiedCount || 0));
+      summary.innerHTML =
+        '<div class="cleanup-item"><div><div class="cleanup-item-title">阶段：' + escapeHtml(labels[state.status] || state.status) + '</div><div class="cleanup-item-desc">' + escapeHtml(state.sourceRoot) + ' → ' + escapeHtml(state.destinationRoot) + '</div></div><strong>' + escapeHtml(String(state.progress?.completed || 0)) + ' / ' + escapeHtml(String(state.entryCount || 0)) + '</strong></div>' +
+        '<div class="cleanup-item"><div><div class="cleanup-item-title">文件与目录</div><div class="cleanup-item-desc">文件 ' + escapeHtml(String(state.fileCount || 0)) + '，目录 ' + escapeHtml(String(state.directoryCount || 0)) + '，总大小 ' + escapeHtml(formatBytes(state.totalBytes)) + '</div></div><strong>待复制 ' + escapeHtml(String(toCopy)) + '</strong></div>' +
+        '<div class="cleanup-item"><div><div class="cleanup-item-title">安全检查</div><div class="cleanup-item-desc">可复用 ' + escapeHtml(String(state.reusableCount || 0)) + '，冲突 ' + escapeHtml(String(state.conflictCount || 0)) + '，目标额外内容 ' + escapeHtml(String(state.extraCount || 0)) + '</div></div></div>';
+      setHidden(status, false);
+      status.textContent = state.lastError || ('当前阶段：' + (labels[state.status] || state.status));
+      status.className = 'rename-result result-block ' + ((state.status === 'failed' || state.conflictCount > 0) ? 'status-error' : (state.status === 'completed' ? 'status-success' : 'status-muted'));
+      const busy = ['scanning','copying','verifying','switching'].includes(state.status);
+      document.getElementById('pathMigrationStartBtn').disabled = state.status !== 'ready' || state.conflictCount > 0;
+      document.getElementById('pathMigrationPauseBtn').disabled = !['copying','verifying'].includes(state.status);
+      document.getElementById('pathMigrationResumeBtn').disabled = state.status !== 'paused';
+      document.getElementById('pathMigrationCancelBtn').disabled = ['switching','cleanup_pending','completed','cancelled'].includes(state.status);
+      document.getElementById('pathMigrationCleanupBtn').disabled = state.status !== 'cleanup_pending';
+      document.getElementById('pathMigrationKeepBtn').disabled = state.status !== 'cleanup_pending';
+      if (items) {
+        items.innerHTML = state.conflictCount || state.failedCount ? '<div class="muted">冲突/失败项目可在接口分页查看；为避免大清单阻塞页面，这里只显示计数。</div>' : '';
+      }
+      if (busy || state.status === 'paused' || state.status === 'cleanup_pending') startPathMigrationPolling();
+    }
+
+    async function refreshPathMigrationState() {
+      try { renderPathMigrationState(await fetchJsonSilent('/api/path-migration/state')); } catch (error) { setStatus('pathMigrationStatus', '状态读取失败：' + error.message, 'error'); }
+    }
+
+    function startPathMigrationPolling() {
+      if (pathMigrationPollTimer) return;
+      pathMigrationPollTimer = setInterval(() => { void refreshPathMigrationState(); }, 1500);
+    }
+
+    async function openPathMigration() {
+      openModal('pathMigrationModal', document.getElementById('pathMigrationBtn'));
+      stopPathMigrationPolling();
+      const config = await fetchJson('/api/config');
+      document.getElementById('pathMigrationSource').value = config.alistDest || '';
+      document.getElementById('pathMigrationDestination').value = '';
+      await refreshPathMigrationState();
+    }
+
+    async function previewPathMigration() {
+      const destinationRoot = document.getElementById('pathMigrationDestination').value.trim();
+      if (!destinationRoot) { setStatus('pathMigrationStatus', '请填写新归档路径。', 'error'); return; }
+      try {
+        await fetchJson('/api/path-migration/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ destinationRoot }) });
+        startPathMigrationPolling();
+        await refreshPathMigrationState();
+      } catch (error) { setStatus('pathMigrationStatus', '预览失败：' + error.message, 'error'); }
+    }
+
+    async function pathMigrationAction(action, body = {}) {
+      try {
+        await fetchJson('/api/path-migration/' + action, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+        await refreshPathMigrationState();
+      } catch (error) { setStatus('pathMigrationStatus', '操作失败：' + error.message, 'error'); }
+    }
+
+    async function cleanupOldPathMigration() {
+      const ok = await confirmAction({ title:'确认清理旧归档目录', message:'系统会重新验证源目录与目标文件，确认一致后删除旧归档根目录。', detail:'删除后无法由本项目恢复旧目录，请只在确认新目录完整可用后执行。', requiredText:'DELETE OLD ARCHIVE', confirmText:'删除旧目录', trigger:document.getElementById('pathMigrationCleanupBtn') });
+      if (ok) await pathMigrationAction('cleanup-old', { confirmation:'DELETE OLD ARCHIVE' });
     }
 
     async function loadRenamePreview() {
@@ -2847,6 +2964,7 @@ function getAppScript() {
       grid.className = 'scheduler-status-grid';
       const rows = [
         ['任务状态', status.status || 'idle'],
+        ...(status.maintenance ? [['维护锁', '归档路径迁移：' + (status.maintenance.status || '进行中')]] : []),
         ['账号', status.userName || '无'],
         ['收藏夹', status.folderTitle || '无'],
         ['页码', status.page ? String(status.page) : '无'],
@@ -3008,7 +3126,7 @@ function getAppScript() {
           board.appendChild(grid);
           queueBoardState.columns = {};
         }
-        renderSchedulerStatus(grid, { ...(snapshot.scheduler || {}), recovery: snapshot.recovery || {} });
+        renderSchedulerStatus(grid, { ...(snapshot.scheduler || {}), recovery: snapshot.recovery || {}, maintenance: snapshot.maintenance || null });
         renderLocalCacheStatus(grid, snapshot.localCache || null, snapshot.downloadRecovery || null, snapshot.chargingAccess || null);
         renderDownloadApiHealthStatus(grid, snapshot.downloadApiHealth || null);
         renderUploadHealthStatus(grid, snapshot.uploadHealth || null);
@@ -3329,6 +3447,18 @@ function getAppScript() {
     // Rename and quality upgrade buttons
     document.getElementById('renameBtn').addEventListener('click', openRenamePreview);
     document.getElementById('qualityUpgradeBtn').addEventListener('click', openQualityUpgradePreview);
+    document.getElementById('pathMigrationBtn').addEventListener('click', openPathMigration);
+    document.getElementById('pathMigrationPreviewBtn').addEventListener('click', previewPathMigration);
+    document.getElementById('pathMigrationStartBtn').addEventListener('click', () => pathMigrationAction('start', {}));
+    document.getElementById('pathMigrationPauseBtn').addEventListener('click', () => pathMigrationAction('pause', {}));
+    document.getElementById('pathMigrationResumeBtn').addEventListener('click', () => pathMigrationAction('resume', {}));
+    document.getElementById('pathMigrationCancelBtn').addEventListener('click', async () => {
+      const ok = await confirmAction({ title:'取消路径迁移', message:'会保留已经复制到新目录的文件，但不会切换配置；下次可重新预览。', confirmText:'确认取消', trigger:document.getElementById('pathMigrationCancelBtn') });
+      if (ok) await pathMigrationAction('cancel', {});
+    });
+    document.getElementById('pathMigrationKeepBtn').addEventListener('click', () => pathMigrationAction('cleanup-old', { keepOld:true }));
+    document.getElementById('pathMigrationCleanupBtn').addEventListener('click', cleanupOldPathMigration);
+    document.getElementById('closePathMigrationBtn').addEventListener('click', () => { stopPathMigrationPolling(); closeModal('pathMigrationModal'); });
 
     // Init
     loadConfig();

@@ -302,7 +302,7 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
     try {
       const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
       assert.match(String(row?.sql || ""), /charging_restricted/);
-      assert.equal(migrated.db.pragma("user_version", { simple: true }), 4);
+      assert.equal(migrated.db.pragma("user_version", { simple: true }), 5);
       const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as any[]).map((item) => item.name));
       assert.equal(columns.has("fav_order"), true);
       assert.equal(columns.has("account_detached_at"), true);
@@ -350,7 +350,7 @@ test("schema 4 upgrade aborts before mutation when its consistent backup cannot 
 
     await fs.promises.rm(path.join(runtime, "backups"), { force: true });
     const upgraded = new StateDatabase(dbPath);
-    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 4);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 5);
     upgraded.close();
   } finally {
     await removeTestDir(runtime);

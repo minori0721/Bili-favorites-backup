@@ -55,6 +55,7 @@ import {
 } from "./migration.js";
 import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
 import { rotateDebugLogs } from "./debug-log-retention.js";
+import { PathMigrationService } from "./path-migration.js";
 
 ensureAppDirs();
 
@@ -62,6 +63,13 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
+const pathMigration = new PathMigrationService(stateManager.getDatabase(), configStore, {
+  isSchedulerIdle: () => !scheduler.hasRunningTransferTasks()
+    && !scheduler.hasPersistentTransferWork()
+    && !scheduler.hasActiveOrQueuedSchedulerWork(),
+  setMaintenance: (locked, summary) => scheduler.setPathMigrationMaintenance(locked, summary),
+  onConfigSwitched: (previous, next) => scheduler.applyConfigUpdate(previous, next),
+});
 
 const favoriteItemsCache = new Map<
   string,
@@ -102,6 +110,7 @@ async function startAfterRecovery() {
   await cleanupBBDownCredentialResidue().catch((error) => {
     console.warn(`[Security] Failed to clean stale BBDown credential directories: ${safeErrorSummary(error)}`);
   });
+  await pathMigration.resumePersisted();
   await recoverInterruptedQualityUpgrades();
   await recoverInterruptedQualityDownloads();
   scheduler.resumePersistedWorkOnStartup();
@@ -588,6 +597,25 @@ app.put("/api/config", (req, res) => {
     return;
   }
   const previous = configStore.get();
+  const activePathMigration = stateManager.getDatabase().getActivePathMigration();
+  const protectedAlistKeys = ["alistUrl", "alistUsername", "alistPassword", "alistDest", "uploadLayout"] as const;
+  const protectedChanged = activePathMigration && protectedAlistKeys.some((key) => {
+    if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
+    if (key === "alistDest") {
+      return normalizeRemotePath(String(req.body[key] || "")) !== normalizeRemotePath(String(previous[key] || ""));
+    }
+    return req.body[key] !== previous[key];
+  });
+  if (protectedChanged) {
+    res.status(409).json({ success: false, code: "PATH_MIGRATION_ACTIVE", message: "归档路径迁移期间不能修改 AList 连接、路径或目录结构" });
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, "alistDest")
+    && String(req.body.alistDest || "").trim() !== String(previous.alistDest || "").trim()
+    && stateManager.getDatabase().hasRemoteArchivePathData()) {
+    res.status(409).json({ success: false, code: "PATH_MIGRATION_REQUIRED", message: "已有归档数据，请先使用“迁移归档路径”完成远端复制和确认" });
+    return;
+  }
   const candidate = { ...previous, ...req.body };
   const runtimeError = validateBBDownRuntimeConfig(candidate, userStore.list());
   if (runtimeError) {
@@ -598,6 +626,54 @@ app.put("/api/config", (req, res) => {
   scheduler.applyConfigUpdate(previous, updated);
   res.json({ success: true, data: updated });
 });
+
+app.post("/api/path-migration/preview", asyncHandler(async (req, res) => {
+  const destinationRoot = String(req.body?.destinationRoot || "").trim();
+  if (!destinationRoot) {
+    res.status(400).json({ success: false, message: "destinationRoot is required" });
+    return;
+  }
+  const record = await pathMigration.preview(destinationRoot);
+  res.status(202).json({ success: true, data: record });
+}));
+
+app.get("/api/path-migration/state", (_req, res) => {
+  res.json({ success: true, data: pathMigration.getState() || null });
+});
+
+app.get("/api/path-migration/items", (req, res) => {
+  const rawStatus = String(req.query.status || "conflict,failed");
+  const statuses = rawStatus.split(",").filter((value): value is any => ["pending", "reusable", "copying", "awaiting_verification", "verified", "conflict", "failed"].includes(value));
+  const offset = Math.max(0, Number(req.query.offset || 0));
+  const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 100)));
+  res.json({ success: true, data: pathMigration.listItems(statuses, offset, limit) });
+});
+
+app.post("/api/path-migration/start", asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await pathMigration.start(req.body?.id) });
+}));
+
+app.post("/api/path-migration/pause", (_req, res) => {
+  res.json({ success: true, data: pathMigration.pause() });
+});
+
+app.post("/api/path-migration/resume", (_req, res) => {
+  res.json({ success: true, data: pathMigration.resume() });
+});
+
+app.post("/api/path-migration/cancel", (_req, res) => {
+  res.json({ success: true, data: pathMigration.cancel() });
+});
+
+app.post("/api/path-migration/cleanup-old", asyncHandler(async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const keepOld = req.body?.keepOld === true;
+  if (!keepOld && confirmation !== "DELETE OLD ARCHIVE") {
+    res.status(400).json({ success: false, message: "请输入 DELETE OLD ARCHIVE 以确认删除旧归档目录" });
+    return;
+  }
+  res.json({ success: true, data: await pathMigration.cleanupOld(req.body?.id, keepOld) });
+}));
 
 app.get("/api/users", (req, res) => {
   const users = userStore.list().map((user) => ({
@@ -1236,12 +1312,18 @@ function reloadStoresAfterImport() {
   configStore.reload();
   userStore.reload();
   stateManager.reload();
+  pathMigration.rebind(stateManager.getDatabase());
   scheduler.reloadStateDatabase();
   logManager.reload();
   scheduler.updateInterval();
 }
 
 app.post("/api/migration/export", asyncHandler(async (req, res) => {
+  const activePathMigration = stateManager.getDatabase().getActivePathMigration();
+  if (activePathMigration && activePathMigration.status !== "cleanup_pending") {
+    res.status(409).json({ success: false, message: "归档路径迁移期间禁止导出迁移包" });
+    return;
+  }
   const options = parseMigrationOptions(req.body);
   if (options.mode === "complete" && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
     res.status(409).json({ success: false, message: "完整迁移要求调度和传输任务全部空闲。" });
@@ -1259,10 +1341,19 @@ app.post("/api/migration/export", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/migration/estimate", asyncHandler(async (req, res) => {
+  const activePathMigration = stateManager.getDatabase().getActivePathMigration();
+  if (activePathMigration && activePathMigration.status !== "cleanup_pending") {
+    res.status(409).json({ success: false, message: "归档路径迁移期间禁止估算迁移包" });
+    return;
+  }
   res.json({ success: true, data: await estimateMigrationExport(parseMigrationOptions(req.body), stateManager) });
 }));
 
 app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
+  if (stateManager.getDatabase().getActivePathMigration()) {
+    res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
+    return;
+  }
   const upload = await receiveMigrationArchive(req);
   let preview: Awaited<ReturnType<typeof previewMigrationPackageFile>>;
   try {
@@ -1277,6 +1368,10 @@ app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/migration/import", asyncHandler(async (req, res) => {
+  if (stateManager.getDatabase().getActivePathMigration()) {
+    res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
+    return;
+  }
   if (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork()) {
     res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再导入。" });
     return;
@@ -1832,6 +1927,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 export async function closeAppResources() {
   scheduler.beginShutdown();
+  pathMigration.stop();
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
   await cleanupBBDownCredentialResidue().catch(() => undefined);
@@ -1860,6 +1956,7 @@ if (process.env.NODE_ENV !== "test") {
     shuttingDown = true;
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
     scheduler.beginShutdown();
+    pathMigration.stop();
     server.close();
     await shutdownActiveDownloads(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
