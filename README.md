@@ -79,7 +79,7 @@ docker compose up -d
 
 必须持久化`data:/app/data`和`temp:/app/temp`。前者保存SQLite、配置与账号，后者保存下载会话、aria2断点和待补传成品；使用内置AList时还必须持久化`alist:/opt/alist/data`。
 
-当前`v2.4.2`开发版的SQLite会自动升级到`user_version 5`。升级前会在`data/backups`生成一致性数据库备份和SHA256摘要；仍使用schema 4或更早版本的旧镜像不能直接打开schema 5数据库，回滚时应恢复该备份或使用兼容JSON导出。
+`v2.4.3`的SQLite会自动升级到`user_version 5`。升级前会在`data/backups`生成一致性数据库备份和SHA256摘要；仍使用schema 4或更早版本的旧镜像不能直接打开schema 5数据库，回滚时应恢复该备份或使用兼容JSON导出。
 
 已有远端归档时，设置页不能直接改`alistDest`。请使用“迁移归档路径”：它只支持同一AList挂载存储，先扫描预览，再用WebDAV COPY复制并确认整个旧目录，最后切换配置。新旧目录不会混用，旧目录默认保留，确认无误后还需手动输入`DELETE OLD ARCHIVE`才能清理。
 
