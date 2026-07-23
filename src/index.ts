@@ -10,6 +10,7 @@ import { backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir
 import { type AppConfig, ConfigStore, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
+import { mergeLiveFavoriteDetailItem, selectFavoriteDetailSource } from "./favorite-detail.js";
 import {
   BiliRiskOrLoginError,
   getUserInfo,
@@ -450,6 +451,80 @@ function getBiliListErrorMessage(error: unknown) {
   return error instanceof Error && error.message ? error.message : "Failed to list items";
 }
 
+async function loadFavoriteDetailData(
+  user: BiliUser,
+  mediaId: number,
+  folderTitle: string,
+  page: number,
+  pageSize: number,
+  filter: FolderDetailFilter
+) {
+  const trackedFolder = user.favorites.find((favorite) => favorite.mediaId === mediaId);
+  const tracked = Boolean(trackedFolder);
+  const source = selectFavoriteDetailSource(tracked, filter);
+  const resolvedFolderTitle = trackedFolder?.title || folderTitle;
+  const scan = stateManager.getExistingFolderScan(user.id, mediaId);
+
+  if (source === "state") {
+    const offset = (page - 1) * pageSize;
+    const result = stateManager.listFolderItemsForUser(user.id, mediaId, offset, pageSize, filter);
+    const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, scan?.total);
+    return {
+      items: result.items,
+      summary: result.summary,
+      indexSummary,
+      page,
+      pageSize,
+      hasMore: result.hasMore,
+      total: result.totalFiltered,
+      source,
+      tracked,
+      lastSyncedAt: scan?.lastScannedAt,
+      coverage: indexSummary.complete ? "complete" : "partial",
+    };
+  }
+
+  pruneFavoriteItemsCache();
+  const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
+  const cached = favoriteItemsCache.get(cacheKey);
+  let pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>;
+  if (cached && cached.expiresAt > Date.now()) {
+    pageResult = cached.data;
+  } else {
+    if (cached) favoriteItemsCache.delete(cacheKey);
+    pageResult = await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
+    favoriteItemsCache.set(cacheKey, {
+      expiresAt: Date.now() + favoriteItemsCacheTtlMs,
+      data: pageResult,
+    });
+  }
+
+  pageResult = await recordFavoritePageMetadata(user, mediaId, resolvedFolderTitle, pageResult);
+  const items = pageResult.items.map((item) => mergeLiveFavoriteDetailItem(
+    item,
+    stateManager.getFolderItemForUser(user.id, mediaId, item.bvid),
+    { mediaId, folderTitle: resolvedFolderTitle }
+  ));
+  const indexed = stateManager.listFolderItemsForUser(user.id, mediaId, 0, 1, "all");
+  const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, pageResult.total);
+  return {
+    items,
+    summary: {
+      ...indexed.summary,
+      total: pageResult.total ?? indexed.summary.activeTotal,
+    },
+    indexSummary,
+    page: pageResult.page,
+    pageSize: pageResult.pageSize,
+    hasMore: pageResult.hasMore,
+    total: pageResult.total ?? items.length,
+    source,
+    tracked,
+    lastSyncedAt: scan?.lastScannedAt,
+    coverage: "live" as const,
+  };
+}
+
 function parseUnavailableCursor(value: unknown) {
   if (!value) {
     return { offset: 0 };
@@ -872,63 +947,10 @@ app.get("/api/users/:id/favorites/:mediaId/items", asyncHandler(async (req, res)
   }
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/detail-items", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  try {
-    pruneFavoriteItemsCache();
-    const mediaId = Number(req.params.mediaId);
-    if (!Number.isFinite(mediaId) || mediaId < 1) {
-      res.status(400).json({ success: false, message: "Invalid mediaId" });
-      return;
-    }
-
-    const page = parsePositiveInteger(req.query.page, 1);
-    const pageSize = normalizePageSize(req.query.pageSize);
-    const folderTitle = String(req.query.folderTitle || "favorites");
-    const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
-    const cached = favoriteItemsCache.get(cacheKey);
-    let pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>;
-    if (cached && cached.expiresAt > Date.now()) {
-      pageResult = cached.data;
-    } else {
-      if (cached) {
-        favoriteItemsCache.delete(cacheKey);
-      }
-      pageResult = await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
-      favoriteItemsCache.set(cacheKey, {
-        expiresAt: Date.now() + favoriteItemsCacheTtlMs,
-        data: pageResult,
-      });
-    }
-
-    pageResult = await recordFavoritePageMetadata(user, mediaId, folderTitle, pageResult);
-    const withStatus = withProcessedStatus(user.id, mediaId, pageResult);
-    const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, pageResult.total);
-    res.json({
-      success: true,
-      data: {
-        ...withStatus,
-        summary: {
-          total: pageResult.total ?? withStatus.items.length,
-          uploaded: indexSummary.uploaded,
-          pending: indexSummary.pending,
-          pendingUnavailable: indexSummary.pendingUnavailable,
-          uploadedUnavailable: indexSummary.uploadedUnavailable,
-        },
-        indexSummary,
-        source: "bili",
-      },
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
-  }
-}));
-
-app.get("/api/users/:id/favorites/:mediaId/state-items", asyncHandler(async (req, res) => {
+app.get([
+  "/api/users/:id/favorites/:mediaId/detail-items",
+  "/api/users/:id/favorites/:mediaId/state-items",
+], asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
@@ -940,26 +962,16 @@ app.get("/api/users/:id/favorites/:mediaId/state-items", asyncHandler(async (req
     return;
   }
 
-  const pageSize = normalizePageSize(req.query.pageSize);
-  const page = parsePositiveInteger(req.query.page, 1);
-  const filter = parseFolderDetailFilter(req.query.filter);
-  const offset = (page - 1) * pageSize;
-  const result = stateManager.listFolderItemsForUser(user.id, mediaId, offset, pageSize, filter);
-  const folderTitle = String(req.query.folderTitle || "favorites");
-  const scan = stateManager.getFolderScan(user.id, mediaId, folderTitle);
-  const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, scan.total);
-  res.json({
-    success: true,
-    data: {
-      items: result.items,
-      summary: result.summary,
-      indexSummary,
-      page,
-      pageSize,
-      hasMore: result.hasMore,
-      total: result.totalFiltered,
-    },
-  });
+  try {
+    const pageSize = normalizePageSize(req.query.pageSize);
+    const page = parsePositiveInteger(req.query.page, 1);
+    const filter = parseFolderDetailFilter(req.query.filter);
+    const folderTitle = String(req.query.folderTitle || "favorites");
+    const data = await loadFavoriteDetailData(user, mediaId, folderTitle, page, pageSize, filter);
+    res.json({ success: true, data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
+  }
 }));
 
 app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
@@ -1931,6 +1943,7 @@ export async function closeAppResources() {
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
   await cleanupBBDownCredentialResidue().catch(() => undefined);
+  stateManager.close();
   logManager.close();
 }
 
@@ -1967,6 +1980,7 @@ if (process.env.NODE_ENV !== "test") {
     await cleanupBBDownCredentialResidue().catch((error) => {
       console.warn(`[Shutdown] Failed to clean BBDown credential directories: ${safeErrorSummary(error)}`);
     });
+    stateManager.close();
     logManager.close();
     process.exit(0);
   };

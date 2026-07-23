@@ -5,7 +5,7 @@ import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
 const requestedMode = process.env.BFB_PREVIEW_MODE;
-const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" ? requestedMode : "healthy";
+const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" || requestedMode === "detail" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -327,16 +327,116 @@ if (mode === "quality") {
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
 
+if (mode === "detail") {
+  const now = "2026-07-22T08:30:00.000Z";
+  const coverDir = path.join(runtimeDir, "data", "covers");
+  await fs.promises.mkdir(coverDir, { recursive: true });
+  const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNkYPj/n4GBgYGJAQoAHgQCAfbi8S8AAAAASUVORK5CYII=", "base64");
+  const definitions = [
+    { bvid: "BVDETAILLOST", title: "已上传后失效但仍应显示归档前完整标题与本地封面", status: "verified", unavailable: true, active: true, order: 1 },
+    { bvid: "BVDETAILCONFIRM", title: "上传完成，正在等待远端最终确认", status: "uploaded", unavailable: false, active: true, order: 2 },
+    { bvid: "BVDETAILPARTIAL", title: "多分P视频当前只完成了部分备份", status: "partial_verified", unavailable: false, active: true, order: 3 },
+    { bvid: "BVDETAILCHARGE", title: "充电专属视频等待七日权限复查", status: "charging_restricted", unavailable: false, active: true, order: 4 },
+    { bvid: "BVDETAILFAILED", title: "下载失败后保留诊断状态的视频", status: "failed", unavailable: false, active: true, order: 5 },
+    { bvid: "BVDETAILHISTORY", title: "已经移出收藏夹但备份证据仍然保留的历史记录", status: "verified", unavailable: false, active: false, order: 0 },
+  ] as const;
+  for (const item of definitions) {
+    await fs.promises.writeFile(path.join(coverDir, `${item.bvid}.png`), tinyPng);
+  }
+  const videos = Object.fromEntries(definitions.map((item) => [item.bvid, {
+    bvid: item.bvid,
+    title: item.unavailable ? "已失效视频" : item.title,
+    upperName: item.unavailable ? "Unknown" : "脱敏预览 UP",
+    cover: item.unavailable ? undefined : "/",
+    firstSeenAt: "2026-07-10T00:00:00.000Z",
+    lastSeenAt: item.active ? now : "2026-07-20T08:30:00.000Z",
+    biliStatus: item.unavailable ? "unavailable" : "available",
+    favoriteUnavailable: item.unavailable || undefined,
+    backupStatus: item.status,
+    originalMeta: {
+      title: item.title,
+      upperName: "脱敏预览 UP",
+      cover: "/",
+      coverLocalPath: `covers/${item.bvid}.png`,
+      capturedAt: "2026-07-10T00:00:00.000Z",
+    },
+    accessRestriction: item.status === "charging_restricted" ? {
+      type: "charging",
+      detectedAt: now,
+      lastCheckedAt: now,
+      nextCheckAt: "2026-07-29T08:30:00.000Z",
+      checkedAccountUids: ["1"],
+    } : undefined,
+    accessClassification: item.status === "failed" ? {
+      purpose: "legacy_failure_classification",
+      classifiedAt: now,
+      result: "other_restricted",
+    } : undefined,
+  }]));
+  const relations = Object.fromEntries(definitions.map((item) => [`preview-user:1:${item.bvid}`, {
+    userId: "preview-user",
+    mediaId: 1,
+    bvid: item.bvid,
+    folderTitle: "查看详情脱敏预览",
+    firstSeenAt: "2026-07-10T00:00:00.000Z",
+    lastSeenAt: item.active ? now : "2026-07-20T08:30:00.000Z",
+    favOrder: item.order,
+    activeInFavorite: item.active,
+    favoriteUnavailable: item.unavailable || undefined,
+    backupStatus: item.status,
+  }]));
+  const state = {
+    schemaVersion: 13,
+    processedByUser: {},
+    failedByUser: {
+      "preview-user": {
+        "1:BVDETAILFAILED": {
+          bvid: "BVDETAILFAILED", mediaId: 1, failedAt: now,
+          reason: "脱敏预览中的固定下载失败", permanent: true,
+        },
+      },
+    },
+    videos,
+    relations,
+    folderScans: {
+      "preview-user:1": {
+        userId: "preview-user", mediaId: 1, folderTitle: "查看详情脱敏预览",
+        initStatus: "complete", nextHistoryPage: 1, catchupPage: 1,
+        total: 5, lastScannedAt: now,
+      },
+    },
+    userCooldowns: {},
+  };
+  const users = [{
+    id: "preview-user",
+    uid: 1,
+    name: "预览账号",
+    cookie: { SESSDATA: "preview", bili_jct: "preview", DedeUserID: "1" },
+    favorites: [{ mediaId: 1, title: "查看详情脱敏预览" }],
+    enabled: false,
+    lastLoginAt: now,
+  }];
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ queuePrefetchLimit: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
+}
+
 process.chdir(runtimeDir);
-process.env.NODE_ENV = "browser-preview";
+process.env.NODE_ENV = mode === "detail" ? "test" : "browser-preview";
 process.env.ADMIN_PASS = process.env.ADMIN_PASS || "preview-pass";
 process.env.PORT = String(port);
-await import("../src/index.js");
+const appModule = await import("../src/index.js");
+let previewServer: http.Server | undefined;
+if (mode === "detail") {
+  previewServer = appModule.app.listen(port, "127.0.0.1");
+  await new Promise<void>((resolve) => previewServer!.once("listening", resolve));
+}
 
 console.log(`Browser preview (${mode}) listening on http://127.0.0.1:${port}`);
 
 const shutdown = () => {
   fakeDav?.close();
+  previewServer?.close();
   process.exit(0);
 };
 process.once("SIGINT", shutdown);

@@ -250,6 +250,8 @@ export interface FolderDetailItem {
 
 export interface FolderDetailSummary {
   total: number;
+  activeTotal: number;
+  historicalTotal: number;
   uploaded: number;
   pending: number;
   pendingUnavailable: number;
@@ -1876,6 +1878,11 @@ export class StateManager {
     return { ...this.state.folderScans![key] };
   }
 
+  getExistingFolderScan(userId: string, mediaId: number) {
+    const scan = this.state.folderScans?.[folderKey(userId, mediaId)];
+    return scan ? { ...scan } : null;
+  }
+
   updateFolderScan(userId: string, mediaId: number, patch: Partial<FolderScanState>) {
     const key = folderKey(userId, mediaId);
     if (!this.state.folderScans![key]) {
@@ -2477,28 +2484,7 @@ export class StateManager {
     const normalizedLimit = Math.max(1, Math.floor(limit));
     if (this.lazyState) {
       const query = this.database.queryFolderPage(userId, mediaId, filter, normalizedOffset, normalizedLimit);
-      const items = query.rows.map(({ relation, video }) => ({
-        bvid: video.bvid,
-        title: displayTitle(video),
-        upperName: displayUpperName(video),
-        cover: displayCover(video),
-        coverLocalPath: displayCoverLocalPath(video),
-        description: displayDescription(video),
-        favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
-        selfVisible: relation.selfVisible || video.selfVisible,
-        favOrder: relation.favOrder,
-        favPage: relation.favPage,
-        favIndexInPage: relation.favIndexInPage,
-        unavailable: relationTreatsUnavailable(relation, video),
-        processed: BACKED_UP_STATUSES.has(relation.backupStatus || video.backupStatus),
-        failed: this.isFailed(userId, video.bvid, mediaId),
-        backupStatus: relation.backupStatus || video.backupStatus,
-        mediaId: relation.mediaId,
-        folderTitle: relation.folderTitle,
-        lastSeenAt: relation.lastSeenAt,
-        activeInFavorite: relation.activeInFavorite,
-        accessRestriction: video.accessRestriction,
-      }));
+      const items = query.rows.map(({ relation, video }) => this.buildFolderDetailItem(userId, relation, video));
       const nextOffset = normalizedOffset + normalizedLimit < query.totalFiltered ? normalizedOffset + normalizedLimit : null;
       return { items, summary: query.summary, hasMore: nextOffset !== null, nextOffset, totalFiltered: query.totalFiltered };
     }
@@ -2507,6 +2493,12 @@ export class StateManager {
       .map((relation) => ({ relation, video: this.state.videos?.[relation.bvid] }))
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } => Boolean(item.video))
       .sort((a, b) => {
+        if (a.relation.activeInFavorite !== b.relation.activeInFavorite) {
+          return a.relation.activeInFavorite ? -1 : 1;
+        }
+        if (!a.relation.activeInFavorite) {
+          return Date.parse(b.relation.lastSeenAt) - Date.parse(a.relation.lastSeenAt);
+        }
         const leftOrder = Number.isInteger(a.relation.favOrder) ? Number(a.relation.favOrder) : Number.POSITIVE_INFINITY;
         const rightOrder = Number.isInteger(b.relation.favOrder) ? Number(b.relation.favOrder) : Number.POSITIVE_INFINITY;
         if (leftOrder !== rightOrder) {
@@ -2515,42 +2507,23 @@ export class StateManager {
         return Date.parse(b.relation.lastSeenAt) - Date.parse(a.relation.lastSeenAt);
       });
 
-    const allItems = rows.map(({ relation, video }) => {
-      const unavailable = relationTreatsUnavailable(relation, video);
-      const processed = this.isProcessed(userId, video.bvid, mediaId);
-      const item: FolderDetailItem = {
-        bvid: video.bvid,
-        title: displayTitle(video),
-        upperName: displayUpperName(video),
-        cover: displayCover(video),
-        coverLocalPath: displayCoverLocalPath(video),
-        description: displayDescription(video),
-        favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
-        selfVisible: relation.selfVisible || video.selfVisible,
-        favOrder: relation.favOrder,
-        favPage: relation.favPage,
-        favIndexInPage: relation.favIndexInPage,
-        unavailable,
-        processed,
-        failed: this.isFailed(userId, video.bvid, mediaId),
-        backupStatus: relation.backupStatus || video.backupStatus,
-        mediaId: relation.mediaId,
-        folderTitle: relation.folderTitle,
-        lastSeenAt: relation.lastSeenAt,
-        activeInFavorite: relation.activeInFavorite,
-        accessRestriction: video.accessRestriction,
-      };
-      return item;
-    });
+    const allItems = rows.map(({ relation, video }) => this.buildFolderDetailItem(userId, relation, video));
 
     const summary: FolderDetailSummary = {
       total: allItems.length,
+      activeTotal: 0,
+      historicalTotal: 0,
       uploaded: 0,
       pending: 0,
       pendingUnavailable: 0,
       uploadedUnavailable: 0,
     };
     for (const item of allItems) {
+      if (item.activeInFavorite) {
+        summary.activeTotal += 1;
+      } else {
+        summary.historicalTotal += 1;
+      }
       if (item.processed) {
         summary.uploaded += 1;
       } else if (!item.unavailable) {
@@ -2579,6 +2552,39 @@ export class StateManager {
       hasMore: normalizedOffset + normalizedLimit < filtered.length,
       nextOffset: normalizedOffset + normalizedLimit < filtered.length ? normalizedOffset + normalizedLimit : null,
       totalFiltered: filtered.length,
+    };
+  }
+
+  getFolderItemForUser(userId: string, mediaId: number, bvid: string) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    const video = this.state.videos?.[bvid];
+    if (!relation || !video) return null;
+    return this.buildFolderDetailItem(userId, relation, video);
+  }
+
+  private buildFolderDetailItem(userId: string, relation: FavoriteRelation, video: VideoArchiveEntry): FolderDetailItem {
+    const backupStatus = relation.backupStatus || video.backupStatus;
+    return {
+      bvid: video.bvid,
+      title: displayTitle(video),
+      upperName: displayUpperName(video),
+      cover: displayCover(video),
+      coverLocalPath: displayCoverLocalPath(video),
+      description: displayDescription(video),
+      favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
+      selfVisible: relation.selfVisible || video.selfVisible,
+      favOrder: relation.favOrder,
+      favPage: relation.favPage,
+      favIndexInPage: relation.favIndexInPage,
+      unavailable: relationTreatsUnavailable(relation, video),
+      processed: BACKED_UP_STATUSES.has(backupStatus),
+      failed: this.isFailed(userId, video.bvid, relation.mediaId),
+      backupStatus,
+      mediaId: relation.mediaId,
+      folderTitle: relation.folderTitle,
+      lastSeenAt: relation.lastSeenAt,
+      activeInFavorite: relation.activeInFavorite,
+      accessRestriction: video.accessRestriction,
     };
   }
 
@@ -2656,15 +2662,15 @@ export class StateManager {
       const scan = this.state.folderScans?.[folderKey(userId, mediaId)];
       const effectiveBiliTotal = typeof biliTotal === "number" ? biliTotal : scan?.total;
       const scanComplete = scan?.initStatus === "complete";
-      const unreturnedCount = scanComplete && typeof effectiveBiliTotal === "number" ? Math.max(0, effectiveBiliTotal - summary.total) : 0;
+      const unreturnedCount = scanComplete && typeof effectiveBiliTotal === "number" ? Math.max(0, effectiveBiliTotal - summary.activeTotal) : 0;
       return {
         ...summary,
-        indexed: summary.total,
+        indexed: summary.activeTotal,
         biliTotal: effectiveBiliTotal,
-        complete: scanComplete || (typeof effectiveBiliTotal === "number" ? summary.total >= effectiveBiliTotal : false),
+        complete: scanComplete || (typeof effectiveBiliTotal === "number" ? summary.activeTotal >= effectiveBiliTotal : false),
         scanStatus: scan?.initStatus || "pending",
         scanComplete,
-        scannedTotal: summary.total,
+        scannedTotal: summary.activeTotal,
         unreturnedCount,
       };
     }
@@ -2675,15 +2681,18 @@ export class StateManager {
     const scan = this.state.folderScans?.[folderKey(userId, mediaId)];
     const effectiveBiliTotal = typeof biliTotal === "number" ? biliTotal : scan?.total;
     const scanComplete = scan?.initStatus === "complete";
-    const unreturnedCount = scanComplete && typeof effectiveBiliTotal === "number" ? Math.max(0, effectiveBiliTotal - rows.length) : 0;
+    const activeTotal = rows.filter(({ relation }) => relation.activeInFavorite).length;
+    const unreturnedCount = scanComplete && typeof effectiveBiliTotal === "number" ? Math.max(0, effectiveBiliTotal - activeTotal) : 0;
     const summary: FolderIndexSummary = {
       total: rows.length,
-      indexed: rows.length,
+      activeTotal,
+      historicalTotal: rows.length - activeTotal,
+      indexed: activeTotal,
       biliTotal: effectiveBiliTotal,
-      complete: scanComplete || (typeof effectiveBiliTotal === "number" ? rows.length >= effectiveBiliTotal : false),
+      complete: scanComplete || (typeof effectiveBiliTotal === "number" ? activeTotal >= effectiveBiliTotal : false),
       scanStatus: scan?.initStatus || "pending",
       scanComplete,
-      scannedTotal: rows.length,
+      scannedTotal: activeTotal,
       unreturnedCount,
       uploaded: 0,
       pending: 0,

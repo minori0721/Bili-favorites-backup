@@ -1099,7 +1099,11 @@ export class StateDatabase {
     return (this.db.prepare(`
       SELECT payload_json FROM favorite_relations
       WHERE user_id=? AND media_id=?
-      ORDER BY CASE WHEN fav_order IS NULL THEN 1 ELSE 0 END, fav_order ASC, last_seen_at DESC
+      ORDER BY active_in_favorite DESC,
+        CASE WHEN active_in_favorite=1 AND fav_order IS NULL THEN 1 ELSE 0 END,
+        CASE WHEN active_in_favorite=1 THEN fav_order END ASC,
+        last_seen_at DESC,
+        bvid ASC
     `).all(userId, mediaId) as any[])
       .map((row) => parseJson<FavoriteRelation>(row.payload_json, undefined as any))
       .filter(Boolean);
@@ -1117,11 +1121,17 @@ export class StateDatabase {
     const rows = this.db.prepare(`
       SELECT r.payload_json AS relation_json, v.payload_json AS video_json
       ${base} AND (${filterSql})
-      ORDER BY CASE WHEN r.fav_order IS NULL THEN 1 ELSE 0 END, r.fav_order ASC, r.last_seen_at DESC
+      ORDER BY r.active_in_favorite DESC,
+        CASE WHEN r.active_in_favorite=1 AND r.fav_order IS NULL THEN 1 ELSE 0 END,
+        CASE WHEN r.active_in_favorite=1 THEN r.fav_order END ASC,
+        r.last_seen_at DESC,
+        r.bvid ASC
       LIMIT ? OFFSET ?
     `).all(userId, mediaId, Math.max(1, limit), Math.max(0, offset)) as any[];
     const summary = this.db.prepare(`
       SELECT COUNT(*) AS total,
+        SUM(CASE WHEN r.active_in_favorite=1 THEN 1 ELSE 0 END) AS active_total,
+        SUM(CASE WHEN r.active_in_favorite=0 THEN 1 ELSE 0 END) AS historical_total,
         SUM(CASE WHEN ${processed} THEN 1 ELSE 0 END) AS uploaded,
         SUM(CASE WHEN NOT (${processed}) AND NOT (${unavailable}) THEN 1 ELSE 0 END) AS pending,
         SUM(CASE WHEN NOT (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS pending_unavailable,
@@ -1136,7 +1146,8 @@ export class StateDatabase {
         video: parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry),
       })),
       summary: {
-        total: Number(summary?.total || 0), uploaded: Number(summary?.uploaded || 0), pending: Number(summary?.pending || 0),
+        total: Number(summary?.total || 0), activeTotal: Number(summary?.active_total || 0),
+        historicalTotal: Number(summary?.historical_total || 0), uploaded: Number(summary?.uploaded || 0), pending: Number(summary?.pending || 0),
         pendingUnavailable: Number(summary?.pending_unavailable || 0), uploadedUnavailable: Number(summary?.uploaded_unavailable || 0),
       },
       totalFiltered,

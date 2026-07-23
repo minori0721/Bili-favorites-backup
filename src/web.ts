@@ -293,10 +293,11 @@ function getAppStyles() {
     .fav-title { font-weight:600; }
     .fav-count { font-size:12px; color:var(--muted); }
     /* Video items in detail modal */
-    .video-grid { display:grid; gap:12px; max-height:500px; overflow-y:auto; overflow-x:hidden; }
+    .video-grid { display:grid; gap:12px; max-height:min(500px, calc(90vh - 250px)); overflow-y:auto; overflow-x:hidden; }
     .video-item { min-width:0; max-width:100%; overflow:hidden; display:flex; gap:12px; padding:11px; border-radius:12px; border:1px solid var(--glass-border); align-items:center; transition:all 0.2s; background:rgba(255,255,255,0.62); }
     .video-detail-status { text-align:center; padding:10px; color:var(--muted); font-size:13px; }
     .video-detail-status.error { color:#E57373; }
+    .video-detail-status .retry-button { margin-left:8px; padding:5px 10px; min-height:30px; }
     .video-detail-hint { color:var(--muted); font-size:12px; margin:-4px 0 10px; line-height:1.6; }
     .video-item.processed { background:var(--success-bg); border-color:var(--success); }
     .video-item.unavailable-uploaded { background:#FFF8E1; border-color:#FFC107; box-shadow:0 0 0 1px #FFC107; }
@@ -305,6 +306,7 @@ function getAppStyles() {
     .video-info { flex:1 1 auto; min-width:0; overflow:hidden; }
     .video-title { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .video-meta { font-size:12px; color:var(--muted); margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .video-badges { flex:0 0 auto; display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }
     .video-badge { flex:0 0 auto; display:inline-block; white-space:nowrap; font-size:11px; padding:2px 8px; border-radius:6px; font-weight:600; }
     .video-badge.done { background:var(--success); color:white; }
     .video-badge.pending { background:var(--border); color:var(--muted); }
@@ -312,6 +314,7 @@ function getAppStyles() {
     .video-badge.partial { background:#42A5F5; color:white; }
     .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
     .video-badge.removed-missing { background:#EF9A9A; color:white; }
+    .video-badge.history { background:rgba(77,94,92,0.12); color:var(--muted); border:1px solid var(--glass-border-strong); }
     .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     .filter-toggle button { padding:6px 16px; border-radius:999px; border:1px solid var(--glass-border-strong); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .filter-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
@@ -471,7 +474,7 @@ function getAppStyles() {
       .video-item { align-items:flex-start; flex-wrap:wrap; }
       .video-cover { width:96px; height:60px; }
       .video-info { flex:1 1 calc(100% - 108px); }
-      .video-badge { margin-left:auto; }
+      .video-badges { width:100%; justify-content:flex-end; }
       .log-toggle { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
       .log-toggle button { min-height:36px; padding:6px 10px; }
       .queue-board { display:block; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; scroll-snap-type:x proximity; }
@@ -902,11 +905,17 @@ function getAppScript() {
       mediaId: null,
       filter: 'all',
       summary: null,
+      indexSummary: null,
+      source: null,
+      tracked: false,
+      lastSyncedAt: null,
+      coverage: null,
       page: 0,
       pageSize: 20,
       hasMore: true,
       loading: false,
-      token: 0
+      token: 0,
+      controller: null
     };
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
@@ -968,9 +977,15 @@ function getAppScript() {
         currentLoginId = null;
       }
       if (modal.id === 'videoDetailModal') {
+        if (videoDetailState.controller) videoDetailState.controller.abort();
+        videoDetailState.controller = null;
         videoDetailState.token += 1;
         videoDetailState.loading = false;
         videoDetailState.hasMore = false;
+        if (videoDetailThrottleTimer) {
+          clearTimeout(videoDetailThrottleTimer);
+          videoDetailThrottleTimer = null;
+        }
       }
       if (modal.id === 'unavailableModal') {
         unavailableHasMore = false;
@@ -1096,7 +1111,7 @@ function getAppScript() {
         }
         return data.data;
       } catch (e) {
-        showToast(e.message || String(e), 'error');
+        if (e && e.name !== 'AbortError') showToast(e.message || String(e), 'error');
         throw e;
       }
     }
@@ -2355,6 +2370,37 @@ function getAppScript() {
     }
 
     // ---- Video Detail Modal ----
+    function appendVideoDetailCover(container, item) {
+      const cachedCoverUrl = localCoverUrl(item);
+      const remoteCoverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const candidates = (item.unavailable ? [cachedCoverUrl, remoteCoverUrl] : [remoteCoverUrl, cachedCoverUrl])
+        .filter((value, index, all) => value && all.indexOf(value) === index);
+      if (!candidates.length) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'video-cover';
+        container.appendChild(placeholder);
+        return;
+      }
+
+      const img = document.createElement('img');
+      img.className = 'video-cover';
+      img.referrerPolicy = 'no-referrer';
+      img.loading = 'lazy';
+      let candidateIndex = 0;
+      img.src = candidates[candidateIndex];
+      img.addEventListener('error', () => {
+        candidateIndex += 1;
+        if (candidateIndex < candidates.length) {
+          img.src = candidates[candidateIndex];
+          return;
+        }
+        const placeholder = document.createElement('div');
+        placeholder.className = 'video-cover';
+        img.replaceWith(placeholder);
+      });
+      container.appendChild(img);
+    }
+
     function renderVideoDetailItem(item) {
       const div = document.createElement('div');
       let stateClass = '';
@@ -2363,7 +2409,7 @@ function getAppScript() {
       if (item.backupStatus === 'uploaded') {
         stateClass = item.unavailable ? 'unavailable-uploaded' : 'processed';
         badgeClass = 'upload-pending';
-        badgeText = item.unavailable ? '已下架（确认中）' : '已上传·确认中';
+        badgeText = item.unavailable ? '失效·确认中' : '上传确认中';
       } else if (item.backupStatus === 'partial_verified') {
         stateClass = 'processed';
         badgeClass = 'partial';
@@ -2371,11 +2417,11 @@ function getAppScript() {
       } else if (item.unavailable && item.processed) {
         stateClass = 'unavailable-uploaded';
         badgeClass = 'removed-uploaded';
-        badgeText = '已下架（已上传）';
+        badgeText = '已上传且失效';
       } else if (item.unavailable && !item.processed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
-        badgeText = '已下架（未上传）';
+        badgeText = '未上传且失效';
       } else if (item.processed) {
         stateClass = 'processed';
         badgeClass = 'done';
@@ -2388,6 +2434,21 @@ function getAppScript() {
         stateClass = '';
         badgeClass = 'pending';
         badgeText = '充电视频';
+      } else if (item.backupStatus === 'downloading') {
+        badgeClass = 'pending';
+        badgeText = '下载中';
+      } else if (item.backupStatus === 'downloaded') {
+        badgeClass = 'pending';
+        badgeText = '待上传';
+      } else if (item.backupStatus === 'uploading') {
+        badgeClass = 'upload-pending';
+        badgeText = '上传中';
+      } else if (item.backupStatus === 'queued') {
+        badgeClass = 'pending';
+        badgeText = '已排队';
+      } else if (item.backupStatus === 'missing') {
+        badgeClass = 'removed-missing';
+        badgeText = '远端缺失';
       } else if (item.failed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -2399,21 +2460,7 @@ function getAppScript() {
       }
 
       div.className = 'video-item ' + stateClass;
-      const cachedCoverUrl = localCoverUrl(item);
-      const remoteCoverUrl = item.cover ? item.cover.replace('http://','https://') : '';
-      const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
-      if (coverUrl) {
-        const img = document.createElement('img');
-        img.className = 'video-cover';
-        img.src = coverUrl;
-        img.referrerPolicy = 'no-referrer';
-        img.loading = 'lazy';
-        div.appendChild(img);
-      } else {
-        const cover = document.createElement('div');
-        cover.className = 'video-cover';
-        div.appendChild(cover);
-      }
+      appendVideoDetailCover(div, item);
 
       const info = document.createElement('div');
       info.className = 'video-info';
@@ -2431,10 +2478,19 @@ function getAppScript() {
       info.appendChild(meta);
       div.appendChild(info);
 
+      const badges = document.createElement('div');
+      badges.className = 'video-badges';
       const badge = document.createElement('span');
       badge.className = 'video-badge ' + badgeClass;
       badge.textContent = badgeText;
-      div.appendChild(badge);
+      badges.appendChild(badge);
+      if (item.activeInFavorite === false) {
+        const historyBadge = document.createElement('span');
+        historyBadge.className = 'video-badge history';
+        historyBadge.textContent = '历史记录';
+        badges.appendChild(historyBadge);
+      }
+      div.appendChild(badges);
       return div;
     }
 
@@ -2454,6 +2510,24 @@ function getAppScript() {
 
     function setVideoDetailStatus(text, isError) {
       setGridStatus('videoGrid', 'video-detail', text, isError);
+    }
+
+    function setVideoDetailError(text) {
+      const grid = document.getElementById('videoGrid');
+      let status = grid.querySelector('[data-status-marker="video-detail"]');
+      if (!status) {
+        status = document.createElement('div');
+        status.dataset.statusMarker = 'video-detail';
+        grid.appendChild(status);
+      }
+      status.className = 'empty-state video-detail-status error';
+      status.replaceChildren(document.createTextNode(text));
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'ghost retry-button';
+      retry.textContent = '重试';
+      retry.addEventListener('click', () => loadNextVideoDetailPage());
+      status.appendChild(retry);
     }
 
     const videoDetailFilterButtons = [
@@ -2488,7 +2562,7 @@ function getAppScript() {
       document.getElementById('vdFilterUploadedUnavailableBtn').textContent = '已上传且失效 (' + (s.uploadedUnavailable || 0) + ')';
     }
 
-    function updateVideoDetailIndexHint(indexSummary, filter) {
+    function updateVideoDetailIndexHint(data, filter) {
       let hint = document.getElementById('videoDetailIndexHint');
       const grid = document.getElementById('videoGrid');
       if (!hint) {
@@ -2497,28 +2571,46 @@ function getAppScript() {
         hint.className = 'video-detail-hint';
         grid.parentElement.insertBefore(hint, grid);
       }
-      const indexed = Number(indexSummary && indexSummary.indexed || 0);
-      const biliTotal = Number(indexSummary && indexSummary.biliTotal || 0);
-      const scanComplete = Boolean(indexSummary && indexSummary.scanComplete);
-      const unreturnedCount = Number(indexSummary && indexSummary.unreturnedCount || 0);
-      if (!indexSummary || !biliTotal || indexed >= biliTotal) {
+      if (!data) {
         hint.textContent = '';
         setHidden(hint, true);
         return;
       }
+      const indexSummary = data.indexSummary || {};
+      const summary = data.summary || {};
+      const indexed = Number(indexSummary.indexed || 0);
+      const biliTotal = Number(indexSummary.biliTotal || 0);
+      const scanComplete = Boolean(indexSummary.scanComplete);
+      const unreturnedCount = Number(indexSummary.unreturnedCount || 0);
+      const activeTotal = Number(summary.activeTotal || indexSummary.activeTotal || 0);
+      const historicalTotal = Number(summary.historicalTotal || indexSummary.historicalTotal || 0);
+      const parts = [];
+      if (data.source === 'bili') {
+        parts.push('列表来自 B 站实时数据；备份状态只基于已索引记录。');
+      } else {
+        parts.push('列表来自本地索引，不会因打开详情请求 B 站。');
+        if (data.lastSyncedAt) parts.push('最近同步：' + formatDateTime(data.lastSyncedAt) + '。');
+      }
+      parts.push('当前记录 ' + activeTotal + ' 项，历史记录 ' + historicalTotal + ' 项。');
       setHidden(hint, false);
       if (scanComplete && unreturnedCount > 0) {
-        hint.textContent = 'B 站报告收藏夹总数 ' + biliTotal + ' 条；当前接口可索引到 ' + indexed + ' 条视频。全量扫描已完成，剩余 ' + unreturnedCount + ' 条未返回具体视频信息，可能是隐藏、失效、非视频或接口过滤项，不会再提示“继续扫描后补齐”。';
-      } else if (filter === 'all') {
-        hint.textContent = '全部列表来自 B 站实时数据；状态计数基于已索引 ' + indexed + '/' + biliTotal + ' 条，当前全量扫描尚未完成，继续滚动浏览或执行全量扫描并对账后会补齐。';
-      } else {
-        hint.textContent = '当前筛选基于已索引 ' + indexed + '/' + biliTotal + ' 条；全量扫描完成前不代表整个收藏夹的最终数量。';
+        parts.push('B 站报告 ' + biliTotal + ' 项，当前活动关系已索引 ' + indexed + ' 项；另有 ' + unreturnedCount + ' 项未返回具体视频信息。');
+      } else if (data.coverage === 'partial' && biliTotal > indexed) {
+        parts.push('当前索引覆盖 ' + indexed + '/' + biliTotal + ' 项，筛选数量尚不是最终结果。');
+      } else if (data.source === 'bili' && filter !== 'all') {
+        parts.push('当前筛选仅覆盖已索引记录。');
       }
+      hint.textContent = parts.join('');
     }
 
     async function applyVideoDetailFilter(filter) {
       if (!videoDetailState.userId || !videoDetailState.mediaId) return;
-      if (videoDetailState.loading) return;
+      if (videoDetailState.controller) videoDetailState.controller.abort();
+      videoDetailState.controller = null;
+      if (videoDetailThrottleTimer) {
+        clearTimeout(videoDetailThrottleTimer);
+        videoDetailThrottleTimer = null;
+      }
       videoDetailState.token += 1;
       videoDetailState.filter = filter;
       videoDetailState.page = 0;
@@ -2537,30 +2629,34 @@ function getAppScript() {
       const token = videoDetailState.token;
       const nextPage = videoDetailState.page + 1;
       const grid = document.getElementById('videoGrid');
+      const controller = new AbortController();
+      videoDetailState.controller = controller;
       videoDetailState.loading = true;
       setVideoDetailStatus(nextPage === 1 ? '加载视频列表...' : '加载更多...');
       try {
-        const usingLiveSource = (videoDetailState.filter || 'all') === 'all';
-        const endpoint = usingLiveSource ? '/detail-items' : '/state-items';
         let url =
           '/api/users/' + videoDetailState.userId +
           '/favorites/' + videoDetailState.mediaId +
-          endpoint + '?page=' + nextPage +
+          '/detail-items?page=' + nextPage +
           '&pageSize=' + videoDetailState.pageSize +
           '&filter=' + encodeURIComponent(videoDetailState.filter || 'all');
         url += '&folderTitle=' + encodeURIComponent(videoDetailState.title || 'favorites');
-        const data = await fetchJson(url);
+        const data = await fetchJson(url, { signal: controller.signal });
         if (token !== videoDetailState.token) return;
         videoDetailState.summary = data.summary || null;
         videoDetailState.indexSummary = data.indexSummary || videoDetailState.indexSummary || null;
+        videoDetailState.source = data.source || null;
+        videoDetailState.tracked = Boolean(data.tracked);
+        videoDetailState.lastSyncedAt = data.lastSyncedAt || null;
+        videoDetailState.coverage = data.coverage || null;
         updateVideoDetailFilterCounts(videoDetailState.summary);
-        updateVideoDetailIndexHint(videoDetailState.indexSummary, videoDetailState.filter || 'all');
+        updateVideoDetailIndexHint(data, videoDetailState.filter || 'all');
         const items = Array.isArray(data.items) ? data.items : [];
         if (nextPage === 1 && items.length === 0) {
           grid.innerHTML = '';
           videoDetailState.page = data.page || nextPage;
           videoDetailState.hasMore = false;
-          setVideoDetailStatus(usingLiveSource ? '此收藏夹为空' : '已索引范围内没有匹配视频');
+          setVideoDetailStatus(data.source === 'bili' ? '此收藏夹为空' : '已索引范围内没有匹配视频');
         } else if (Array.isArray(data.items)) {
           const oldStatus = grid.querySelector('[data-status-marker="video-detail"]');
           if (oldStatus) oldStatus.remove();
@@ -2574,21 +2670,23 @@ function getAppScript() {
         }
       } catch(e) {
         if (token !== videoDetailState.token) return;
+        if (e && e.name === 'AbortError') return;
         const msg = e instanceof Error ? e.message : String(e);
         if (/412|风控|risk/i.test(msg)) {
-          setVideoDetailStatus('触发B站风控，请等待几分钟后再试', true);
+          setVideoDetailError('触发B站风控，请等待几分钟后再试');
         } else {
-          setVideoDetailStatus('加载失败: ' + msg, true);
+          setVideoDetailError('加载失败: ' + msg);
         }
-        videoDetailState.hasMore = false;
       } finally {
         if (token === videoDetailState.token) {
           videoDetailState.loading = false;
+          if (videoDetailState.controller === controller) videoDetailState.controller = null;
         }
       }
     }
 
     async function openVideoDetail(userId, mediaId, title) {
+      if (videoDetailState.controller) videoDetailState.controller.abort();
       videoDetailState.token += 1;
       videoDetailState = {
         userId,
@@ -2597,15 +2695,21 @@ function getAppScript() {
         filter: 'all',
         summary: null,
         indexSummary: null,
+        source: null,
+        tracked: false,
+        lastSyncedAt: null,
+        coverage: null,
         page: 0,
         pageSize: 20,
         hasMore: true,
         loading: false,
-        token: videoDetailState.token
+        token: videoDetailState.token,
+        controller: null
       };
       document.getElementById('videoDetailTitle').textContent = '📁 ' + title;
       setVideoDetailFilterActive('all');
       updateVideoDetailFilterCounts(null);
+      updateVideoDetailIndexHint(null, 'all');
       const grid = document.getElementById('videoGrid');
       grid.innerHTML = '';
       grid.scrollTop = 0;

@@ -200,6 +200,8 @@ test("10000 favorite relations are paged and aggregated in SQLite", () => {
     assert.equal(page.totalFiltered, 5_000);
     assert.deepEqual(page.summary, {
       total: 10_000,
+      activeTotal: 10_000,
+      historicalTotal: 0,
       uploaded: 5_000,
       pending: 5_000,
       pendingUnavailable: 0,
@@ -354,6 +356,46 @@ test("schema 4 upgrade aborts before mutation when its consistent backup cannot 
     upgraded.close();
   } finally {
     await removeTestDir(runtime);
+  }
+});
+
+test("folder detail keeps current order ahead of historical relations", () => {
+  const database = new StateDatabase(":memory:");
+  const at = "2026-07-22T00:00:00.000Z";
+  const video = (bvid: string) => ({
+    bvid, title: bvid, upperName: "Tester", firstSeenAt: at, lastSeenAt: at,
+    biliStatus: "available", backupStatus: "verified",
+  });
+  const relation = (bvid: string, activeInFavorite: boolean, favOrder: number, lastSeenAt: string) => ({
+    userId: "u1", mediaId: 1, bvid, folderTitle: "Detail", firstSeenAt: at, lastSeenAt,
+    activeInFavorite, favOrder, backupStatus: "verified",
+  });
+  try {
+    database.replaceState({
+      schemaVersion: 13,
+      processedByUser: {},
+      failedByUser: {},
+      folderScans: {},
+      userCooldowns: {},
+      videos: {
+        BVCURRENT2: video("BVCURRENT2") as any,
+        BVCURRENT1: video("BVCURRENT1") as any,
+        BVHISTORY: video("BVHISTORY") as any,
+      },
+      relations: {
+        "u1:1:BVCURRENT2": relation("BVCURRENT2", true, 2, "2026-07-20T00:00:00.000Z") as any,
+        "u1:1:BVCURRENT1": relation("BVCURRENT1", true, 1, "2026-07-19T00:00:00.000Z") as any,
+        "u1:1:BVHISTORY": relation("BVHISTORY", false, 0, "2026-07-22T00:00:00.000Z") as any,
+      },
+    });
+
+    const page = database.queryFolderPage("u1", 1, "all", 0, 10);
+    assert.deepEqual(page.rows.map(({ relation: item }) => item.bvid), ["BVCURRENT1", "BVCURRENT2", "BVHISTORY"]);
+    assert.equal(page.summary.total, 3);
+    assert.equal(page.summary.activeTotal, 2);
+    assert.equal(page.summary.historicalTotal, 1);
+  } finally {
+    database.close();
   }
 });
 

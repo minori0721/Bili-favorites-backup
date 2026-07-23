@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import archiver from "archiver";
+import { ZipArchive } from "archiver";
 import yauzl from "yauzl";
 
 const crcTable = new Uint32Array(256);
@@ -32,7 +32,7 @@ export async function createZipFromSources(sources: ZipSource[], outputPath: str
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(outputPath);
-    const archive = archiver("zip", { zlib: { level: 6 }, forceZip64: true });
+    const archive = new ZipArchive({ zlib: { level: 6 }, forceZip64: true });
     output.once("close", () => resolve());
     output.once("error", reject);
     archive.once("error", reject);
