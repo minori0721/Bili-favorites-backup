@@ -72,6 +72,8 @@ test("tracked favorite detail is served from SQLite with history and original me
           lastSeenAt: now,
           biliStatus: "unavailable",
           backupStatus: "verified",
+          remotePath: "/archive/BVDETAILLOST",
+          remoteFiles: [{ name: "BVDETAILLOST.mp4", path: "/archive/BVDETAILLOST/BVDETAILLOST.mp4", size: 128, verificationStatus: "verified" }],
           favoriteUnavailable: true,
           originalMeta: {
             title: "归档前标题",
@@ -90,6 +92,8 @@ test("tracked favorite detail is served from SQLite with history and original me
           lastSeenAt: now,
           biliStatus: "available",
           backupStatus: "verified",
+          remotePath: "/archive/BVDETAILACTIVE",
+          remoteFiles: [{ name: "BVDETAILACTIVE.mp4", path: "/archive/BVDETAILACTIVE/BVDETAILACTIVE.mp4", size: 256, verificationStatus: "verified" }],
         },
         BVDETAILHISTORY: {
           bvid: "BVDETAILHISTORY",
@@ -106,11 +110,15 @@ test("tracked favorite detail is served from SQLite with history and original me
           userId: "detail-user", mediaId: 1, bvid: "BVDETAILLOST", folderTitle: "详情测试",
           firstSeenAt: "2026-07-10T00:00:00.000Z", lastSeenAt: now, favOrder: 1,
           activeInFavorite: true, backupStatus: "verified", favoriteUnavailable: true,
+          remotePath: "/archive/BVDETAILLOST",
+          remoteFiles: [{ name: "BVDETAILLOST.mp4", path: "/archive/BVDETAILLOST/BVDETAILLOST.mp4", size: 128, verificationStatus: "verified" }],
         },
         "detail-user:1:BVDETAILACTIVE": {
           userId: "detail-user", mediaId: 1, bvid: "BVDETAILACTIVE", folderTitle: "详情测试",
           firstSeenAt: "2026-07-11T00:00:00.000Z", lastSeenAt: now, favOrder: 2,
           activeInFavorite: true, backupStatus: "verified",
+          remotePath: "/archive/BVDETAILACTIVE",
+          remoteFiles: [{ name: "BVDETAILACTIVE.mp4", path: "/archive/BVDETAILACTIVE/BVDETAILACTIVE.mp4", size: 256, verificationStatus: "verified" }],
         },
         "detail-user:1:BVDETAILHISTORY": {
           userId: "detail-user", mediaId: 1, bvid: "BVDETAILHISTORY", folderTitle: "详情测试",
@@ -159,6 +167,7 @@ test("tracked favorite detail is served from SQLite with history and original me
     assert.deepEqual(detail.items.map((item: any) => item.bvid), ["BVDETAILLOST", "BVDETAILACTIVE", "BVDETAILHISTORY"]);
     assert.equal(detail.items[0].title, "归档前标题");
     assert.equal(detail.items[0].coverLocalPath, "covers/BVDETAILLOST.jpg");
+    assert.deepEqual(detail.items[0].playback, { available: true, partCount: 1, partial: false });
     assert.equal(detail.items[2].activeInFavorite, false);
     assert.equal(detail.summary.total, 3);
     assert.equal(detail.summary.activeTotal, 2);
@@ -174,6 +183,23 @@ test("tracked favorite detail is served from SQLite with history and original me
     assert.equal(aliasResponse.status, 200);
     assert.deepEqual(aliasJson.data.items.map((item: any) => item.bvid), detail.items.map((item: any) => item.bvid));
     assert.equal(aliasJson.data.source, "state");
+
+    const unauthorizedQueue = await fetch(`${base}/api/users/detail-user/favorites/1/playback-queue?focusBvid=BVDETAILLOST`);
+    assert.equal(unauthorizedQueue.status, 401);
+
+    const queueResponse = await fetch(`${base}/api/users/detail-user/favorites/1/playback-queue?focusBvid=BVDETAILLOST&pageSize=30`, {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(queueResponse.status, 200);
+    const queueJson: any = await queueResponse.json();
+    assert.equal(queueJson.data.mode, "favorite");
+    assert.deepEqual(queueJson.data.items.map((item: any) => item.bvid), ["BVDETAILLOST", "BVDETAILACTIVE"]);
+    assert.equal(JSON.stringify(queueJson).includes("/archive/"), false);
+
+    const playerAsset = await fetch(`${base}/assets/vendor/artplayer-5.4.0.js`, { headers: { Cookie: cookie } });
+    assert.equal(playerAsset.status, 200);
+    assert.match(playerAsset.headers.get("content-type") || "", /javascript/);
+    assert.match(await playerAsset.text(), /Artplayer/);
 
     const unavailableResponse = await fetch(`${base}/api/users/detail-user/favorites/1/detail-items?page=1&pageSize=20&filter=uploaded_unavailable`, {
       headers: { Cookie: cookie },

@@ -11,7 +11,7 @@ Bili-favorites-backup（BFB）是一个面向**云盘归档**的B站收藏夹持
 
 ## 不适合你，如果
 
-- 你主要想搭建Emby、Jellyfin或Infuse媒体库。BFB不负责刮削和播放。
+- 你主要想搭建Emby、Jellyfin或Infuse媒体库。BFB不负责刮削或转码，内置播放器只用于直接查看远端已验证归档。
 - 你只需要偶尔手动下载单个BV。直接使用BBDown会更简单。
 - 你不愿持久化`data`和`temp`，或无法为缓存预留空间。
 

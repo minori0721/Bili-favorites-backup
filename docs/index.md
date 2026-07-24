@@ -42,7 +42,7 @@ Bili-favorites-backup（BFB）是一个面向云盘归档的B站收藏夹持续�
 
 ## 明确边界
 
-- BFB不是Emby、Jellyfin或Infuse媒体库，不负责刮削与在线播放。
+- BFB不是Emby、Jellyfin或Infuse媒体库，不负责刮削或转码；内置播放器只用于直接查看远端已验证归档。
 - BFB不会绕过付费、充电、地区或账号权限，试看也不算完整备份。
 - 本地`data`与`temp`必须持久化，迁移包和账号文件需要按敏感数据保管。
 

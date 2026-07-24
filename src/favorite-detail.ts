@@ -51,5 +51,6 @@ export function mergeLiveFavoriteDetailItem(
     lastSeenAt: stored?.lastSeenAt || observedAt,
     activeInFavorite: stored?.activeInFavorite ?? true,
     accessRestriction: stored?.accessRestriction,
+    playback: stored?.playback || { available: false, partCount: 0, partial: false, reason: "not_verified" },
   };
 }

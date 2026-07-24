@@ -81,6 +81,7 @@ export default defineConfig({
           text: "03 功能演示",
           items: [
             { text: "整体运行流程", link: "/features/workflow" },
+            { text: "归档播放器", link: "/features/player" },
             { text: "四列任务队列", link: "/features/queue" },
             { text: "上传确认", link: "/features/upload-verification" },
             { text: "异常熔断与恢复", link: "/features/recovery" },

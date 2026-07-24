@@ -255,7 +255,9 @@ function getAppStyles() {
     .user-meta { margin:0; }
     .user-actions { margin-top:4px; }
     .favorite-chip-list { margin:4px 0; }
-    .favorite-chip { display:inline-block; padding:4px 10px; background:rgba(57,197,187,0.1); border-radius:999px; font-size:12px; margin:2px; }
+    .favorite-chip { display:inline-block; padding:4px 10px; background:rgba(57,197,187,0.1); color:var(--ink); border:1px solid transparent; border-radius:999px; font:inherit; font-size:12px; margin:2px; }
+    button.favorite-chip { cursor:pointer; }
+    button.favorite-chip:hover,button.favorite-chip:focus-visible { border-color:var(--accent); color:var(--accent); outline:none; background:rgba(57,197,187,0.16); }
     .auth-health { border:1px solid var(--glass-border); border-radius:12px; padding:10px 12px; background:rgba(255,255,255,0.76); font-size:12px; line-height:1.7; }
     .auth-health.ok { border-color:var(--success); background:var(--success-bg); }
     .auth-health.warn { border-color:#FFB74D; background:#FFF8E1; }
@@ -315,6 +317,63 @@ function getAppStyles() {
     .video-badge.removed-uploaded { background:#FFC107; color:#1A2F2D; }
     .video-badge.removed-missing { background:#EF9A9A; color:white; }
     .video-badge.history { background:rgba(77,94,92,0.12); color:var(--muted); border:1px solid var(--glass-border-strong); }
+    .video-item.playable { cursor:pointer; }
+    .video-item.playable:hover { border-color:var(--accent); box-shadow:0 8px 22px rgba(57,197,187,0.13); transform:translateY(-1px); }
+    .video-item.playable:focus-visible { outline:3px solid rgba(57,197,187,0.30); outline-offset:2px; border-color:var(--accent); }
+    .video-cover-wrap { position:relative; flex:0 0 auto; width:120px; height:75px; border-radius:8px; overflow:hidden; background:#eee; }
+    .video-cover-wrap .video-cover { width:100%; height:100%; border-radius:0; }
+    .video-play-affordance { position:absolute; inset:0; display:grid; place-items:center; background:rgba(18,28,27,0.32); color:white; font-size:24px; text-shadow:0 2px 8px rgba(0,0,0,0.35); transition:background .18s ease,transform .18s ease; }
+    .video-item.playable:hover .video-play-affordance { background:rgba(18,28,27,0.46); transform:scale(1.04); }
+    .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
+    body.playback-open { overflow:hidden; }
+    .playback-modal { z-index:300; padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
+    .playback-shell { width:min(1480px,100%); min-width:0; height:calc(100dvh - 36px); margin:auto; overflow:hidden; display:flex; flex-direction:column; color:#F4F7F6; background:#151B1A; border:1px solid #34413F; border-radius:8px; box-shadow:0 28px 80px rgba(0,0,0,0.38); animation:playbackEnter .18s ease-out; }
+    .playback-header { flex:0 0 auto; min-width:0; display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:68px; padding:13px 16px 13px 20px; border-bottom:1px solid #2D3836; background:#19201F; }
+    .playback-heading { min-width:0; }
+    .playback-eyebrow { color:#69D9D0; font-size:11px; font-weight:700; }
+    .playback-heading h2 { margin:3px 0 0; color:#F4F7F6; font-size:17px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:0; }
+    .playback-close { width:38px; height:38px; flex:0 0 auto; border:1px solid #465451; border-radius:50%; background:#222B29; color:#F4F7F6; font-size:22px; line-height:1; cursor:pointer; }
+    .playback-close:hover,.playback-close:focus-visible { border-color:#39C5BB; color:#69D9D0; outline:none; }
+    .playback-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 320px; }
+    .playback-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#0F1413; }
+    .playback-stage { position:relative; min-width:0; flex:1 1 auto; min-height:260px; display:grid; place-items:center; overflow:hidden; background:#090C0B; }
+    .playback-stage.is-portrait .art-video-player video { object-fit:contain!important; }
+    .playback-art { width:100%; height:100%; min-height:0; }
+    .playback-art .art-video-player { width:100%; height:100%; }
+    .playback-stage-message { position:absolute; inset:0; z-index:999; display:flex; align-items:center; justify-content:center; padding:28px; background:#090C0B; }
+    .playback-message-inner { max-width:520px; text-align:center; }
+    .playback-message-inner strong { display:block; color:#F4F7F6; font-size:18px; margin-bottom:8px; }
+    .playback-message-inner p { margin:0; color:#A9B5B2; line-height:1.7; font-size:13px; }
+    .playback-message-actions { margin-top:18px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap; }
+    .playback-message-actions button,.playback-tool-button { min-height:36px; border:1px solid #475653; border-radius:6px; background:#202927; color:#F4F7F6; padding:7px 12px; cursor:pointer; font-weight:600; }
+    .playback-tool-button:disabled { opacity:.38; cursor:not-allowed; }
+    .playback-message-actions button.primary,.playback-tool-button.active { border-color:#39C5BB; background:#39C5BB; color:#0B1B19; }
+    .playback-now { flex:0 0 auto; min-width:0; padding:14px 18px 15px; border-top:1px solid #293331; background:#171E1D; }
+    .playback-now-line { min-width:0; display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+    .playback-now-copy { min-width:0; }
+    .playback-now-title { margin:0; color:#F4F7F6; font-size:16px; line-height:1.45; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .playback-now-meta { color:#98A6A3; font-size:12px; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .playback-tools { flex:0 0 auto; display:flex; gap:8px; align-items:center; }
+    .playback-tool-button { width:38px; padding:0; font-size:18px; }
+    .playback-continuous { width:auto; min-width:82px; padding:0 10px; font-size:12px; }
+    .playback-part-list { display:flex; gap:7px; min-width:0; margin-top:11px; overflow-x:auto; padding-bottom:2px; }
+    .playback-part-button { flex:0 0 auto; min-width:42px; min-height:30px; border:1px solid #3E4B49; border-radius:5px; background:#202725; color:#C5CECC; padding:5px 9px; cursor:pointer; font-size:12px; }
+    .playback-part-button.active { border-color:#39C5BB; background:rgba(57,197,187,0.16); color:#7FE4DC; }
+    .playback-queue { min-width:0; min-height:0; display:flex; flex-direction:column; border-left:1px solid #2D3836; background:#171E1D; }
+    .playback-queue-head { flex:0 0 auto; display:flex; justify-content:space-between; gap:12px; align-items:center; padding:16px; border-bottom:1px solid #2D3836; }
+    .playback-queue-head strong { color:#F4F7F6; font-size:14px; }
+    .playback-queue-head span { color:#899794; font-size:11px; }
+    .playback-queue-list { min-height:0; flex:1 1 auto; overflow-y:auto; padding:7px; }
+    .playback-queue-item { width:100%; min-width:0; display:grid; grid-template-columns:34px 1fr; gap:8px; align-items:start; border:1px solid transparent; border-radius:5px; background:transparent; color:#DCE3E1; padding:10px 8px; text-align:left; cursor:pointer; transition:background .16s ease,border-color .16s ease; }
+    .playback-queue-item:hover,.playback-queue-item:focus-visible { background:#202927; border-color:#34413F; outline:none; }
+    .playback-queue-item.active { background:rgba(57,197,187,0.11); border-color:#39C5BB; }
+    .playback-queue-number { color:#6E7E7A; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; padding-top:2px; text-align:right; }
+    .playback-queue-item.active .playback-queue-number { color:#69D9D0; }
+    .playback-queue-copy { min-width:0; }
+    .playback-queue-title { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font-size:12px; font-weight:650; line-height:1.45; }
+    .playback-queue-meta { color:#85938F; font-size:11px; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .playback-queue-empty { color:#82908D; font-size:12px; text-align:center; padding:28px 12px; }
+    @keyframes playbackEnter { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
     .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     .filter-toggle button { padding:6px 16px; border-radius:999px; border:1px solid var(--glass-border-strong); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
     .filter-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
@@ -473,6 +532,7 @@ function getAppStyles() {
       .modal .panel { padding:20px; border-radius:20px; max-height:calc(100vh - 20px); }
       .video-item { align-items:flex-start; flex-wrap:wrap; }
       .video-cover { width:96px; height:60px; }
+      .video-cover-wrap { width:96px; height:60px; }
       .video-info { flex:1 1 calc(100% - 108px); }
       .video-badges { width:100%; justify-content:flex-end; }
       .log-toggle { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
@@ -482,6 +542,41 @@ function getAppStyles() {
       .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
+    }
+    @media (max-width: 720px) {
+      .playback-modal { padding:0; background:#0F1413; }
+      .playback-shell { width:100%; height:100dvh; border:0; border-radius:0; box-shadow:none; }
+      .playback-header { min-height:58px; padding:10px 10px 10px 14px; }
+      .playback-heading h2 { font-size:14px; }
+      .playback-layout { display:block; overflow-y:auto; }
+      .playback-main { min-height:auto; }
+      .playback-stage { width:100%; min-height:0; height:56.25vw; max-height:62dvh; flex:none; }
+      .playback-stage.is-portrait { height:62dvh; }
+      .playback-now { padding:12px; }
+      .playback-now-line { display:block; }
+      .playback-now-title { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+      .playback-tools { margin-top:11px; }
+      .playback-part-list { margin-top:10px; }
+      .playback-queue { min-height:260px; border-left:0; border-top:1px solid #2D3836; }
+      .playback-queue-list { max-height:none; overflow:visible; }
+    }
+    @media (max-width: 420px) {
+      .playback-art .art-video-player { --art-control-icon-size:28px; --art-control-height:34px; --art-padding:10px; }
+      .playback-art .art-control-volume { display:none!important; }
+      .playback-art .art-control-time { font-size:12px; }
+    }
+    @media (min-width: 721px) and (max-height: 500px) and (orientation: landscape) {
+      .playback-modal { padding:0; }
+      .playback-shell { width:100%; height:100dvh; border:0; border-radius:0; }
+      .playback-header { min-height:52px; padding:7px 10px 7px 14px; }
+      .playback-layout { grid-template-columns:minmax(0,1fr) 270px; }
+      .playback-now { padding:8px 12px; }
+      .playback-part-list { margin-top:7px; }
+      .playback-stage { min-height:160px; }
+      .playback-queue-head { padding:11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .playback-shell,.video-item.playable { animation:none; transition:none; }
     }
   </style>`;
 }
@@ -666,6 +761,56 @@ function getModals() {
         <button id="closeVideoDetailBtn" class="ghost full-width">关闭</button>
       </div>
     </div>
+  </div>
+
+  <div class="modal playback-modal" id="playbackModal">
+    <section class="playback-shell" aria-labelledby="playbackDialogTitle">
+      <div class="playback-header">
+        <div class="playback-heading">
+          <div class="playback-eyebrow">AList 已验证归档</div>
+          <h2 id="playbackDialogTitle">收藏夹播放器</h2>
+        </div>
+        <button id="closePlaybackBtn" class="playback-close" type="button" aria-label="关闭播放器" title="关闭播放器">×</button>
+      </div>
+      <div class="playback-layout">
+        <section class="playback-main">
+          <div class="playback-stage" id="playbackStage">
+            <div class="playback-art" id="playbackArt"></div>
+            <div class="playback-stage-message is-hidden" id="playbackStageMessage">
+              <div class="playback-message-inner">
+                <strong id="playbackMessageTitle">正在准备播放器</strong>
+                <p id="playbackMessageDetail">正在读取远端已验证文件。</p>
+                <div class="playback-message-actions">
+                  <button id="playbackRetryBtn" class="primary" type="button">重试</button>
+                  <button id="playbackSkipBtn" type="button">跳过此视频</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="playback-now">
+            <div class="playback-now-line">
+              <div class="playback-now-copy">
+                <h3 class="playback-now-title" id="playbackNowTitle">未选择视频</h3>
+                <div class="playback-now-meta" id="playbackNowMeta"></div>
+              </div>
+              <div class="playback-tools">
+                <button id="playbackPreviousBtn" class="playback-tool-button" type="button" aria-label="上一项" title="上一项">←</button>
+                <button id="playbackNextBtn" class="playback-tool-button" type="button" aria-label="下一项" title="下一项">→</button>
+                <button id="playbackContinuousBtn" class="playback-tool-button playback-continuous active" type="button" aria-pressed="true">连续播放</button>
+              </div>
+            </div>
+            <div class="playback-part-list" id="playbackPartList" aria-label="分P列表"></div>
+          </div>
+        </section>
+        <aside class="playback-queue" aria-label="收藏夹播放队列">
+          <div class="playback-queue-head">
+            <strong>收藏夹顺序</strong>
+            <span id="playbackQueueCount">0 项</span>
+          </div>
+          <div class="playback-queue-list" id="playbackQueueList"></div>
+        </aside>
+      </div>
+    </section>
   </div>
 
   <div class="modal" id="unavailableModal">
@@ -917,6 +1062,27 @@ function getAppScript() {
       token: 0,
       controller: null
     };
+    const PLAYBACK_STORAGE_KEY = 'bfb-playback-v1';
+    let artplayerLoader = null;
+    let playbackState = {
+      art: null,
+      userId: null,
+      mediaId: null,
+      mode: 'favorite',
+      page: 1,
+      pageSize: 30,
+      total: 0,
+      focusIndex: -1,
+      items: [],
+      itemIndex: 0,
+      partIndex: 0,
+      loadingToken: 0,
+      progressTimer: null,
+      continuous: true,
+      preferences: null,
+      trigger: null,
+      focusBvid: null
+    };
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
     let qualityUpgradePreviewState = { candidates: [], uncertain: [], skipped: [], target: {} };
@@ -977,6 +1143,11 @@ function getAppScript() {
         currentLoginId = null;
       }
       if (modal.id === 'videoDetailModal') {
+        if (document.getElementById('playbackModal').classList.contains('active')) {
+          destroyPlaybackSession();
+          document.getElementById('playbackModal').classList.remove('active');
+          document.getElementById('playbackModal').setAttribute('aria-hidden', 'true');
+        }
         if (videoDetailState.controller) videoDetailState.controller.abort();
         videoDetailState.controller = null;
         videoDetailState.token += 1;
@@ -987,6 +1158,7 @@ function getAppScript() {
           videoDetailThrottleTimer = null;
         }
       }
+      if (modal.id === 'playbackModal') destroyPlaybackSession();
       if (modal.id === 'unavailableModal') {
         unavailableHasMore = false;
         unavailableLoading = false;
@@ -2189,9 +2361,14 @@ function getAppScript() {
         const favoritesWrap = document.createElement('div');
         favoritesWrap.className = 'favorite-chip-list';
         for (const favorite of (user.favorites || [])) {
-          const chip = document.createElement('span');
+          const chip = document.createElement('button');
+          chip.type = 'button';
           chip.className = 'favorite-chip';
           chip.textContent = safeText(favorite.title, '未命名收藏夹');
+          chip.dataset.action = 'favorite_detail';
+          chip.dataset.id = String(user.id || '');
+          chip.dataset.mediaId = String(favorite.mediaId || '');
+          chip.dataset.title = safeText(favorite.title, '未命名收藏夹');
           favoritesWrap.appendChild(chip);
         }
 
@@ -2371,6 +2548,8 @@ function getAppScript() {
 
     // ---- Video Detail Modal ----
     function appendVideoDetailCover(container, item) {
+      const wrap = document.createElement('div');
+      wrap.className = 'video-cover-wrap';
       const cachedCoverUrl = localCoverUrl(item);
       const remoteCoverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
       const candidates = (item.unavailable ? [cachedCoverUrl, remoteCoverUrl] : [remoteCoverUrl, cachedCoverUrl])
@@ -2378,27 +2557,34 @@ function getAppScript() {
       if (!candidates.length) {
         const placeholder = document.createElement('div');
         placeholder.className = 'video-cover';
-        container.appendChild(placeholder);
-        return;
+        wrap.appendChild(placeholder);
+      } else {
+        const img = document.createElement('img');
+        img.className = 'video-cover';
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        let candidateIndex = 0;
+        img.src = candidates[candidateIndex];
+        img.addEventListener('error', () => {
+          candidateIndex += 1;
+          if (candidateIndex < candidates.length) {
+            img.src = candidates[candidateIndex];
+            return;
+          }
+          const placeholder = document.createElement('div');
+          placeholder.className = 'video-cover';
+          img.replaceWith(placeholder);
+        });
+        wrap.appendChild(img);
       }
-
-      const img = document.createElement('img');
-      img.className = 'video-cover';
-      img.referrerPolicy = 'no-referrer';
-      img.loading = 'lazy';
-      let candidateIndex = 0;
-      img.src = candidates[candidateIndex];
-      img.addEventListener('error', () => {
-        candidateIndex += 1;
-        if (candidateIndex < candidates.length) {
-          img.src = candidates[candidateIndex];
-          return;
-        }
-        const placeholder = document.createElement('div');
-        placeholder.className = 'video-cover';
-        img.replaceWith(placeholder);
-      });
-      container.appendChild(img);
+      if (item.playback && item.playback.available) {
+        const affordance = document.createElement('span');
+        affordance.className = 'video-play-affordance';
+        affordance.setAttribute('aria-hidden', 'true');
+        affordance.textContent = '▶';
+        wrap.appendChild(affordance);
+      }
+      container.appendChild(wrap);
     }
 
     function renderVideoDetailItem(item) {
@@ -2459,7 +2645,14 @@ function getAppScript() {
         badgeText = '待备份';
       }
 
-      div.className = 'video-item ' + stateClass;
+      const canPlay = Boolean(item.playback && item.playback.available);
+      div.className = 'video-item ' + stateClass + (canPlay ? ' playable' : '');
+      if (canPlay) {
+        div.tabIndex = 0;
+        div.setAttribute('role', 'button');
+        div.setAttribute('aria-label', '播放 ' + safeText(item.title || item.bvid, '归档视频'));
+        div.dataset.playbackBvid = String(item.bvid || '');
+      }
       appendVideoDetailCover(div, item);
 
       const info = document.createElement('div');
@@ -2473,9 +2666,20 @@ function getAppScript() {
       const chargingCheck = item.accessRestriction && item.accessRestriction.nextCheckAt
         ? ' | 下次检查：' + formatDateTime(item.accessRestriction.nextCheckAt)
         : '';
-      meta.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-') + chargingCheck;
+      const playbackMeta = canPlay ? ' | 可播放 ' + Number(item.playback.partCount || 1) + ' 个分P' : '';
+      meta.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-') + chargingCheck + playbackMeta;
       info.appendChild(titleEl);
       info.appendChild(meta);
+      if (!canPlay && item.playback && item.playback.reason) {
+        const reason = document.createElement('span');
+        reason.className = 'video-play-reason';
+        reason.textContent = item.playback.reason === 'awaiting_verification'
+          ? '远端仍在确认，确认完成后可播放'
+          : item.playback.reason === 'no_playable_media'
+            ? '归档容器暂不支持浏览器直接播放'
+            : '尚未形成可播放的已验证归档';
+        info.appendChild(reason);
+      }
       div.appendChild(info);
 
       const badges = document.createElement('div');
@@ -2715,6 +2919,517 @@ function getAppScript() {
       grid.scrollTop = 0;
       openModal('videoDetailModal');
       await loadNextVideoDetailPage();
+    }
+
+    // ---- Archive Playback ----
+    function loadPlaybackPreferences() {
+      const fallback = {
+        version: 1,
+        volume: 0.8,
+        muted: false,
+        rate: 1,
+        continuous: true,
+        progress: {}
+      };
+      try {
+        const parsed = JSON.parse(localStorage.getItem(PLAYBACK_STORAGE_KEY) || 'null');
+        if (!parsed || parsed.version !== 1 || typeof parsed !== 'object') return fallback;
+        return {
+          version: 1,
+          volume: Number.isFinite(Number(parsed.volume)) ? Math.min(1, Math.max(0, Number(parsed.volume))) : fallback.volume,
+          muted: Boolean(parsed.muted),
+          rate: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].includes(Number(parsed.rate)) ? Number(parsed.rate) : 1,
+          continuous: parsed.continuous !== false,
+          progress: parsed.progress && typeof parsed.progress === 'object' ? parsed.progress : {}
+        };
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function persistPlaybackPreferences() {
+      const prefs = playbackState.preferences;
+      if (!prefs) return;
+      const entries = Object.entries(prefs.progress || {})
+        .filter((entry) => entry[1] && Number.isFinite(Number(entry[1].updatedAt)))
+        .sort((left, right) => Number(right[1].updatedAt) - Number(left[1].updatedAt))
+        .slice(0, 500);
+      prefs.progress = Object.fromEntries(entries);
+      try {
+        localStorage.setItem(PLAYBACK_STORAGE_KEY, JSON.stringify(prefs));
+      } catch (_) {
+        // Playback continues when private browsing or storage quotas block persistence.
+      }
+    }
+
+    function currentPlaybackItem() {
+      return playbackState.items[playbackState.itemIndex] || null;
+    }
+
+    function currentPlaybackPart() {
+      const item = currentPlaybackItem();
+      return item && item.parts ? item.parts[playbackState.partIndex] || null : null;
+    }
+
+    function savePlaybackProgress() {
+      const art = playbackState.art;
+      const part = currentPlaybackPart();
+      const prefs = playbackState.preferences;
+      if (!art || !part || !prefs) return;
+      const currentTime = Number(art.currentTime || 0);
+      const duration = Number(art.duration || 0);
+      if (!Number.isFinite(currentTime) || !Number.isFinite(duration) || duration <= 0) return;
+      if (currentTime < 10 || duration - currentTime < 15) {
+        delete prefs.progress[part.fingerprint];
+      } else {
+        prefs.progress[part.fingerprint] = { time: currentTime, updatedAt: Date.now() };
+      }
+      prefs.volume = Number(art.volume || 0);
+      prefs.muted = Boolean(art.muted);
+      prefs.rate = Number(art.playbackRate || 1);
+      persistPlaybackPreferences();
+      updateMediaSessionPosition();
+    }
+
+    function destroyCurrentArt() {
+      if (!playbackState.art) return;
+      const art = playbackState.art;
+      playbackState.art = null;
+      try { art.destroy(true); } catch (_) {}
+      document.getElementById('playbackArt').replaceChildren();
+    }
+
+    function clearMediaSession() {
+      if (!('mediaSession' in navigator)) return;
+      try {
+        ['play', 'pause', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto'].forEach((action) => {
+          navigator.mediaSession.setActionHandler(action, null);
+        });
+        navigator.mediaSession.metadata = null;
+      } catch (_) {}
+    }
+
+    function destroyPlaybackSession() {
+      playbackState.loadingToken += 1;
+      savePlaybackProgress();
+      if (playbackState.progressTimer) clearInterval(playbackState.progressTimer);
+      playbackState.progressTimer = null;
+      destroyCurrentArt();
+      clearMediaSession();
+      document.body.classList.remove('playback-open');
+      document.getElementById('playbackStage').classList.remove('is-portrait');
+      const detailModal = document.getElementById('videoDetailModal');
+      if (detailModal.classList.contains('active')) {
+        detailModal.inert = false;
+        detailModal.setAttribute('aria-hidden', 'false');
+      }
+      playbackState.items = [];
+      playbackState.userId = null;
+      playbackState.mediaId = null;
+      playbackState.trigger = null;
+      playbackState.focusBvid = null;
+    }
+
+    function loadArtplayer() {
+      if (window.Artplayer) return Promise.resolve(window.Artplayer);
+      if (artplayerLoader) return artplayerLoader;
+      artplayerLoader = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = '/assets/vendor/artplayer-5.4.0.js';
+        script.async = true;
+        script.dataset.bfbArtplayer = '5.4.0';
+        script.addEventListener('load', () => {
+          if (window.Artplayer) resolve(window.Artplayer);
+          else reject(new Error('播放器脚本加载完成但未能初始化'));
+        }, { once:true });
+        script.addEventListener('error', () => {
+          script.remove();
+          reject(new Error('播放器脚本加载失败，请重新登录后再试'));
+        }, { once:true });
+        document.head.appendChild(script);
+      }).catch((error) => {
+        artplayerLoader = null;
+        throw error;
+      });
+      return artplayerLoader;
+    }
+
+    function setPlaybackMessage(title, detail, options = {}) {
+      document.getElementById('playbackMessageTitle').textContent = title || '无法播放';
+      document.getElementById('playbackMessageDetail').textContent = detail || '';
+      setHidden('playbackRetryBtn', options.retry === false);
+      setHidden('playbackSkipBtn', options.skip === false);
+      setHidden('playbackStageMessage', false);
+    }
+
+    function hidePlaybackMessage() {
+      setHidden('playbackStageMessage', true);
+    }
+
+    function playbackCoverUrl(item) {
+      return localCoverUrl(item) || (item && item.cover ? String(item.cover).replace('http://', 'https://') : '');
+    }
+
+    function updatePlaybackNavigation() {
+      const item = currentPlaybackItem();
+      const hasPrevious = Boolean(item) && (playbackState.partIndex > 0
+        || playbackState.itemIndex > 0
+        || (playbackState.mode === 'favorite' && playbackState.page > 1));
+      const hasNext = Boolean(item) && (playbackState.partIndex + 1 < item.parts.length
+        || playbackState.itemIndex + 1 < playbackState.items.length
+        || (playbackState.mode === 'favorite' && (playbackState.page * playbackState.pageSize) < playbackState.total));
+      document.getElementById('playbackPreviousBtn').disabled = !hasPrevious;
+      document.getElementById('playbackNextBtn').disabled = !hasNext;
+      const continuous = document.getElementById('playbackContinuousBtn');
+      continuous.classList.toggle('active', playbackState.continuous);
+      continuous.setAttribute('aria-pressed', String(playbackState.continuous));
+    }
+
+    function renderPlaybackParts() {
+      const host = document.getElementById('playbackPartList');
+      host.replaceChildren();
+      const item = currentPlaybackItem();
+      if (!item) return;
+      item.parts.forEach((part, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'playback-part-button' + (index === playbackState.partIndex ? ' active' : '');
+        button.setAttribute('aria-pressed', String(index === playbackState.partIndex));
+        button.textContent = part.label || ('P' + (index + 1));
+        const detail = [part.quality, part.codec].filter(Boolean).join(' · ');
+        button.title = detail || button.textContent;
+        button.addEventListener('click', () => {
+          if (index === playbackState.partIndex) return;
+          savePlaybackProgress();
+          playbackState.partIndex = index;
+          playCurrentSelection(true);
+        });
+        host.appendChild(button);
+      });
+    }
+
+    function renderPlaybackQueue() {
+      const host = document.getElementById('playbackQueueList');
+      host.replaceChildren();
+      const offset = (playbackState.page - 1) * playbackState.pageSize;
+      document.getElementById('playbackQueueCount').textContent = playbackState.mode === 'single'
+        ? '历史记录 · 单独播放'
+        : playbackState.total + ' 个视频';
+      if (!playbackState.items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'playback-queue-empty';
+        empty.textContent = '当前没有可播放归档';
+        host.appendChild(empty);
+        return;
+      }
+      playbackState.items.forEach((item, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'playback-queue-item' + (index === playbackState.itemIndex ? ' active' : '');
+        if (index === playbackState.itemIndex) button.setAttribute('aria-current', 'true');
+        button.dataset.playbackQueueIndex = String(index);
+        const number = document.createElement('span');
+        number.className = 'playback-queue-number';
+        number.textContent = playbackState.mode === 'single' ? 'H' : String(offset + index + 1).padStart(2, '0');
+        const copy = document.createElement('span');
+        copy.className = 'playback-queue-copy';
+        const title = document.createElement('span');
+        title.className = 'playback-queue-title';
+        title.textContent = safeText(item.title || item.bvid, '未知视频');
+        const meta = document.createElement('span');
+        meta.className = 'playback-queue-meta';
+        meta.textContent = item.parts.length + ' 个分P' + (item.partial ? ' · 部分备份' : '') + ' · ' + safeText(item.upperName, '未知UP');
+        copy.appendChild(title);
+        copy.appendChild(meta);
+        button.appendChild(number);
+        button.appendChild(copy);
+        button.addEventListener('click', () => {
+          if (index === playbackState.itemIndex && playbackState.partIndex === 0) return;
+          savePlaybackProgress();
+          playbackState.itemIndex = index;
+          playbackState.partIndex = 0;
+          playCurrentSelection(true);
+        });
+        host.appendChild(button);
+      });
+      requestAnimationFrame(() => {
+        const active = host.querySelector('.playback-queue-item.active');
+        if (active) active.scrollIntoView({ block:'nearest' });
+      });
+    }
+
+    function updatePlaybackNow() {
+      const item = currentPlaybackItem();
+      const part = currentPlaybackPart();
+      document.getElementById('playbackDialogTitle').textContent = item ? safeText(item.title || item.bvid, '收藏夹播放器') : '收藏夹播放器';
+      document.getElementById('playbackNowTitle').textContent = item ? safeText(item.title || item.bvid, '未知视频') : '未选择视频';
+      const meta = [];
+      if (item) meta.push(safeText(item.upperName, '未知UP'));
+      if (part) {
+        meta.push(part.label || ('P' + (playbackState.partIndex + 1)));
+        if (part.quality) meta.push(part.quality);
+        if (part.codec) meta.push(part.codec);
+        if (part.size) meta.push(formatBytes(Number(part.size)));
+      }
+      if (item && item.partial) meta.push('部分备份');
+      document.getElementById('playbackNowMeta').textContent = meta.join(' · ');
+      renderPlaybackParts();
+      renderPlaybackQueue();
+      updatePlaybackNavigation();
+    }
+
+    function updateMediaSessionPosition() {
+      if (!('mediaSession' in navigator) || typeof navigator.mediaSession.setPositionState !== 'function') return;
+      const art = playbackState.art;
+      if (!art) return;
+      const duration = Number(art.duration || 0);
+      const position = Number(art.currentTime || 0);
+      const rate = Number(art.playbackRate || 1);
+      if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(position)) return;
+      try {
+        navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: rate > 0 ? rate : 1,
+          position: Math.min(duration, Math.max(0, position))
+        });
+      } catch (_) {}
+    }
+
+    function setupMediaSession(item, part) {
+      if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+      try {
+        const cover = playbackCoverUrl(item);
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: safeText(item.title || item.bvid, '归档视频') + (item.parts.length > 1 ? ' · ' + part.label : ''),
+          artist: safeText(item.upperName, '未知UP'),
+          album: 'BFB 收藏夹归档',
+          artwork: cover ? [{ src:cover }] : []
+        });
+        navigator.mediaSession.setActionHandler('play', () => playbackState.art && playbackState.art.play());
+        navigator.mediaSession.setActionHandler('pause', () => playbackState.art && playbackState.art.pause());
+        navigator.mediaSession.setActionHandler('previoustrack', () => stepPlayback(-1));
+        navigator.mediaSession.setActionHandler('nexttrack', () => stepPlayback(1));
+        navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+          if (playbackState.art) playbackState.art.currentTime = Math.max(0, playbackState.art.currentTime - Number(details.seekOffset || 10));
+        });
+        navigator.mediaSession.setActionHandler('seekforward', (details) => {
+          if (playbackState.art) playbackState.art.currentTime = Math.min(playbackState.art.duration || Infinity, playbackState.art.currentTime + Number(details.seekOffset || 10));
+        });
+        navigator.mediaSession.setActionHandler('seekto', (details) => {
+          if (playbackState.art && Number.isFinite(Number(details.seekTime))) playbackState.art.currentTime = Number(details.seekTime);
+        });
+      } catch (_) {}
+    }
+
+    async function playCurrentSelection(autoplay) {
+      const item = currentPlaybackItem();
+      const part = currentPlaybackPart();
+      if (!item || !part) {
+        setPlaybackMessage('没有可播放文件', '该条目的远端文件状态可能已经变化。', { retry:false, skip:true });
+        return;
+      }
+      const token = ++playbackState.loadingToken;
+      destroyCurrentArt();
+      updatePlaybackNow();
+      setPlaybackMessage('正在连接归档文件', '播放器将从BFB代理读取AList字节流。', { retry:false, skip:false });
+      try {
+        const Artplayer = await loadArtplayer();
+        if (token !== playbackState.loadingToken) return;
+        const prefs = playbackState.preferences || loadPlaybackPreferences();
+        const art = new Artplayer({
+          container: document.getElementById('playbackArt'),
+          url: part.streamUrl,
+          title: safeText(item.title || item.bvid, '归档视频'),
+          poster: playbackCoverUrl(item),
+          theme: '#39C5BB',
+          volume: prefs.volume,
+          muted: prefs.muted,
+          autoplay: Boolean(autoplay),
+          playbackRate: true,
+          aspectRatio: true,
+          setting: true,
+          pip: true,
+          fullscreen: true,
+          fullscreenWeb: true,
+          playsInline: true,
+          autoOrientation: true,
+          hotkey: true,
+          mutex: true,
+          moreVideoAttr: { preload:'metadata', playsinline:'', 'webkit-playsinline':'' }
+        });
+        playbackState.art = art;
+        art.playbackRate = prefs.rate;
+        art.on('video:loadedmetadata', () => {
+          if (token !== playbackState.loadingToken) return;
+          const isPortrait = Number(art.video.videoHeight || 0) > Number(art.video.videoWidth || 0);
+          document.getElementById('playbackStage').classList.toggle('is-portrait', isPortrait);
+          const saved = prefs.progress && prefs.progress[part.fingerprint];
+          const savedTime = Number(saved && saved.time || 0);
+          const duration = Number(art.duration || 0);
+          if (savedTime >= 10 && duration - savedTime >= 15) art.currentTime = savedTime;
+          hidePlaybackMessage();
+          updateMediaSessionPosition();
+        });
+        art.on('video:canplay', hidePlaybackMessage);
+        art.on('video:pause', savePlaybackProgress);
+        art.on('video:volumechange', () => {
+          prefs.volume = Number(art.volume || 0);
+          prefs.muted = Boolean(art.muted);
+          persistPlaybackPreferences();
+        });
+        art.on('video:ratechange', () => {
+          prefs.rate = Number(art.playbackRate || 1);
+          persistPlaybackPreferences();
+          updateMediaSessionPosition();
+        });
+        art.on('video:play', () => {
+          try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; } catch (_) {}
+        });
+        art.on('video:pause', () => {
+          try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; } catch (_) {}
+        });
+        art.on('video:ended', () => {
+          if (prefs.progress) delete prefs.progress[part.fingerprint];
+          persistPlaybackPreferences();
+          if (playbackState.continuous) stepPlayback(1, true);
+        });
+        art.on('video:error', () => {
+          if (token !== playbackState.loadingToken) return;
+          const isHevc = /hevc|h\.265|h265/i.test(String(part.codec || ''));
+          setPlaybackMessage(
+            isHevc ? '当前浏览器无法解码HEVC' : '归档视频无法直接播放',
+            isHevc
+              ? '请使用支持HEVC的Edge、Safari、系统浏览器或AList客户端。本项目不会转码视频。'
+              : '文件可能暂时不可见、会话已过期，或当前浏览器不支持此媒体编码。',
+            { retry:true, skip:true }
+          );
+        });
+        setupMediaSession(item, part);
+      } catch (error) {
+        if (token !== playbackState.loadingToken) return;
+        setPlaybackMessage('播放器初始化失败', error instanceof Error ? error.message : String(error), { retry:true, skip:true });
+      }
+    }
+
+    async function loadPlaybackPage(page, itemIndex, partIndex, autoplay) {
+      const data = await fetchJson(
+        '/api/users/' + encodeURIComponent(playbackState.userId) +
+        '/favorites/' + playbackState.mediaId +
+        '/playback-queue?page=' + page + '&pageSize=' + playbackState.pageSize
+      );
+      playbackState.mode = data.mode || 'favorite';
+      playbackState.page = Number(data.page || page);
+      playbackState.total = Number(data.total || 0);
+      playbackState.focusIndex = Number(data.focusIndex ?? -1);
+      playbackState.items = Array.isArray(data.items) ? data.items : [];
+      playbackState.itemIndex = Math.min(Math.max(0, itemIndex), Math.max(0, playbackState.items.length - 1));
+      const item = currentPlaybackItem();
+      playbackState.partIndex = item ? Math.min(Math.max(0, partIndex), item.parts.length - 1) : 0;
+      await playCurrentSelection(autoplay);
+    }
+
+    async function stepPlayback(direction, fromEnded = false) {
+      const item = currentPlaybackItem();
+      if (!item) return;
+      try {
+        savePlaybackProgress();
+        if (direction > 0) {
+          if (playbackState.partIndex + 1 < item.parts.length) {
+            playbackState.partIndex += 1;
+            await playCurrentSelection(true);
+            return;
+          }
+          if (playbackState.itemIndex + 1 < playbackState.items.length) {
+            playbackState.itemIndex += 1;
+            playbackState.partIndex = 0;
+            await playCurrentSelection(true);
+            return;
+          }
+          if (playbackState.mode === 'favorite' && playbackState.page * playbackState.pageSize < playbackState.total) {
+            await loadPlaybackPage(playbackState.page + 1, 0, 0, true);
+            return;
+          }
+          if (fromEnded) setPlaybackMessage('已播放到收藏夹末尾', '你可以选择队列中的视频重新播放。', { retry:false, skip:false });
+          return;
+        }
+        if (playbackState.partIndex > 0) {
+          playbackState.partIndex -= 1;
+          await playCurrentSelection(true);
+          return;
+        }
+        if (playbackState.itemIndex > 0) {
+          playbackState.itemIndex -= 1;
+          playbackState.partIndex = playbackState.items[playbackState.itemIndex].parts.length - 1;
+          await playCurrentSelection(true);
+          return;
+        }
+        if (playbackState.mode === 'favorite' && playbackState.page > 1) {
+          await loadPlaybackPage(playbackState.page - 1, playbackState.pageSize - 1, Number.MAX_SAFE_INTEGER, true);
+        }
+      } catch (error) {
+        setPlaybackMessage('无法读取下一页队列', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
+      }
+    }
+
+    function skipCurrentPlaybackVideo() {
+      const item = currentPlaybackItem();
+      if (!item) return;
+      savePlaybackProgress();
+      if (playbackState.itemIndex + 1 < playbackState.items.length) {
+        playbackState.itemIndex += 1;
+        playbackState.partIndex = 0;
+        playCurrentSelection(true);
+        return;
+      }
+      if (playbackState.mode === 'favorite' && playbackState.page * playbackState.pageSize < playbackState.total) {
+        loadPlaybackPage(playbackState.page + 1, 0, 0, true).catch((error) => {
+          setPlaybackMessage('无法读取下一页队列', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
+        });
+        return;
+      }
+      setPlaybackMessage('已到收藏夹末尾', '当前没有下一条可播放归档。', { retry:false, skip:false });
+    }
+
+    async function openArchivePlayback(bvid, trigger) {
+      if (!videoDetailState.userId || !videoDetailState.mediaId || !bvid) return;
+      destroyPlaybackSession();
+      playbackState.userId = videoDetailState.userId;
+      playbackState.mediaId = videoDetailState.mediaId;
+      playbackState.pageSize = 30;
+      playbackState.preferences = loadPlaybackPreferences();
+      playbackState.continuous = playbackState.preferences.continuous;
+      playbackState.trigger = trigger || null;
+      playbackState.focusBvid = bvid;
+      document.body.classList.add('playback-open');
+      const detailModal = document.getElementById('videoDetailModal');
+      detailModal.inert = true;
+      detailModal.setAttribute('aria-hidden', 'true');
+      openModal('playbackModal', trigger);
+      setPlaybackMessage('正在准备播放队列', '只会列出当前收藏夹中已通过远端确认的归档视频。', { retry:false, skip:false });
+      const token = ++playbackState.loadingToken;
+      try {
+        const data = await fetchJson(
+          '/api/users/' + encodeURIComponent(playbackState.userId) +
+          '/favorites/' + playbackState.mediaId +
+          '/playback-queue?focusBvid=' + encodeURIComponent(bvid) + '&pageSize=' + playbackState.pageSize
+        );
+        if (token !== playbackState.loadingToken) return;
+        playbackState.mode = data.mode || 'favorite';
+        playbackState.page = Number(data.page || 1);
+        playbackState.total = Number(data.total || 0);
+        playbackState.focusIndex = Number(data.focusIndex ?? -1);
+        playbackState.items = Array.isArray(data.items) ? data.items : [];
+        const offset = (playbackState.page - 1) * playbackState.pageSize;
+        const focusInPage = playbackState.mode === 'single' ? 0 : playbackState.focusIndex - offset;
+        const foundIndex = playbackState.items.findIndex((item) => item.bvid === bvid);
+        playbackState.itemIndex = foundIndex >= 0 ? foundIndex : Math.max(0, focusInPage);
+        playbackState.partIndex = 0;
+        playbackState.progressTimer = setInterval(savePlaybackProgress, 5000);
+        await playCurrentSelection(true);
+      } catch (error) {
+        if (token !== playbackState.loadingToken) return;
+        setPlaybackMessage('无法打开归档播放器', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
+      }
     }
 
     // ---- Unavailable Videos Modal ----
@@ -3320,6 +4035,20 @@ function getAppScript() {
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
     document.getElementById('closeVideoDetailBtn').addEventListener('click', () => closeModal('videoDetailModal'));
+    document.getElementById('closePlaybackBtn').addEventListener('click', () => closeModal('playbackModal'));
+    document.getElementById('playbackPreviousBtn').addEventListener('click', () => stepPlayback(-1));
+    document.getElementById('playbackNextBtn').addEventListener('click', () => stepPlayback(1));
+    document.getElementById('playbackContinuousBtn').addEventListener('click', () => {
+      playbackState.continuous = !playbackState.continuous;
+      if (playbackState.preferences) playbackState.preferences.continuous = playbackState.continuous;
+      persistPlaybackPreferences();
+      updatePlaybackNavigation();
+    });
+    document.getElementById('playbackRetryBtn').addEventListener('click', () => {
+      if (currentPlaybackPart()) playCurrentSelection(true);
+      else if (playbackState.focusBvid) openArchivePlayback(playbackState.focusBvid, playbackState.trigger);
+    });
+    document.getElementById('playbackSkipBtn').addEventListener('click', skipCurrentPlaybackVideo);
     document.getElementById('closeUnavailableBtn').addEventListener('click', () => closeModal('unavailableModal'));
     document.getElementById('syncHelpBtn').addEventListener('click', openSyncHelp);
     document.getElementById('settingsHelpBtn').addEventListener('click', openSettingsHelp);
@@ -3391,6 +4120,17 @@ function getAppScript() {
         }, 800);
       }
     });
+    document.getElementById('videoGrid').addEventListener('click', (event) => {
+      const row = event.target instanceof Element ? event.target.closest('[data-playback-bvid]') : null;
+      if (row && row.dataset.playbackBvid) openArchivePlayback(row.dataset.playbackBvid, row);
+    });
+    document.getElementById('videoGrid').addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const row = event.target instanceof Element ? event.target.closest('[data-playback-bvid]') : null;
+      if (!row || !row.dataset.playbackBvid) return;
+      event.preventDefault();
+      openArchivePlayback(row.dataset.playbackBvid, row);
+    });
     let unavailableThrottleTimer = null;
     document.getElementById('unavailableGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('unavailableGrid');
@@ -3408,6 +4148,9 @@ function getAppScript() {
       if (!(t instanceof HTMLElement)) return;
       const action = t.dataset.action, userId = t.dataset.id;
       if (action === 'favorites') await openFavorites(userId);
+      if (action === 'favorite_detail' && t.dataset.mediaId) {
+        await openVideoDetail(userId, t.dataset.mediaId, t.dataset.title || '收藏夹详情');
+      }
       if (action === 'unavailable') await openUnavailable(userId);
       if (action === 'remove') {
         const confirmed = await confirmAction({

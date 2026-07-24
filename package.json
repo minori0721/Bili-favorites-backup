@@ -23,6 +23,7 @@
   "dependencies": {
     "@renmu/bili-api": "^2.14.0",
     "archiver": "^8.0.0",
+    "artplayer": "5.4.0",
     "better-sqlite3": "12.11.1",
     "express": "^4.22.2",
     "express-rate-limit": "8.5.2",

@@ -11,6 +11,7 @@ import {
   type StateDirtySet,
   type UploadFailureRecoveryCursor,
 } from "./database.js";
+import { playbackAvailability, type PlaybackAvailability } from "./playback.js";
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -246,6 +247,7 @@ export interface FolderDetailItem {
   lastSeenAt: string;
   activeInFavorite: boolean;
   accessRestriction?: ChargingAccessRestriction;
+  playback: PlaybackAvailability;
 }
 
 export interface FolderDetailSummary {
@@ -2585,6 +2587,7 @@ export class StateManager {
       lastSeenAt: relation.lastSeenAt,
       activeInFavorite: relation.activeInFavorite,
       accessRestriction: video.accessRestriction,
+      playback: playbackAvailability(backupStatus, relation.remoteFiles || video.remoteFiles),
     };
   }
 

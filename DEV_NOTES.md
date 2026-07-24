@@ -6,7 +6,7 @@
 
 - 分支：`dev`
 - 基准版本：`2.4.3`
-- 当前dev变更：收藏夹“查看详情”统一数据源并修复已上传后失效视频的标题、封面与状态展示；Archiver升级到8.0.0。
+- 当前dev变更：收藏夹“查看详情”统一数据源并修复已上传后失效视频的标题、封面与状态展示；新增AList归档播放器；Archiver升级到8.0.0。
 - SQLite：`user_version 5`
 - JSON兼容状态：schema 13
 - 迁移包：schema 3
@@ -27,7 +27,7 @@ git diff --check
 
 - `v2.4.3`发布基线：184项中183项通过、1项因本机缺少aria2跳过、0项失败。
 - TypeScript生产构建和VitePress文档构建通过。
-- `v2.4.3`发布时根生产依赖审计保留15项上游风险；当前dev升级Archiver后降至10项。文档站生产依赖审计为0，不执行破坏性`npm audit fix --force`。
+- `v2.4.3`发布时根生产依赖审计保留15项上游风险；当前dev为5项（1项低危、2项中危、2项高危），Artplayer未增加独立告警。文档站生产依赖审计为0，不执行破坏性`npm audit fix --force`。
 
 ## 未发布详情修复
 
@@ -40,8 +40,18 @@ git diff --check
 ## 未发布依赖维护
 
 - `archiver`与`@types/archiver`同步升级到8.0.0，ZIP构造改用原生ESM导出的`ZipArchive`；ZIP64、压缩级别、文件清单和流式输出行为保持不变。
-- Archiver依赖链已使用`readdir-glob 3`、`minimatch 10`和`brace-expansion 5`，不再携带旧`archiver-utils/glob`链；`npm audit --omit=dev`从15项降至10项（3项低危、3项中危、4项高危）。
+- Archiver依赖链已使用`readdir-glob 3`、`minimatch 10`和`brace-expansion 5`，不再携带旧`archiver-utils/glob`链；当前`npm audit --omit=dev`为5项（1项低危、2项中危、2项高危）。
 - 迁移、ZIP和真实应用专项24项全部通过；更新锁文件后`npm ci`成功，完整回归仍为187项中186项通过、1项因本机缺少aria2跳过、0项失败，TypeScript生产构建通过。
+
+## 未发布归档播放器
+
+- 详情项增加有限的`playback`可用性摘要；只有关系状态为`verified`或`partial_verified`且文件自身通过远端确认时才显示播放入口。
+- 新增SQLite分页播放队列和登录态保护的AList WebDAV流代理。代理校验用户、收藏夹、文件ID、关系状态与规范路径，只转发单段Range并在客户端断开时中止上游流。
+- 播放队列按收藏夹顺序排列，分P优先使用保存的页码，其次解析旧文件`_P<number>`；历史关系只单独播放。播放器偏好和最多500条分P进度保存在版本化本地存储中。
+- 前端保持原生HTML/CSS/JavaScript，固定并按需加载`artplayer@5.4.0`；不解析B站在线流、不缓存完整媒体、不转码，HEVC继续依赖设备原生解码。
+- 新增横屏及竖屏H.264脱敏夹具，并覆盖可用性、焦点分页、跨页顺序、24P旧记录、Range、206/416、重定向、慢流中断、上游错误脱敏和路径记录变化。
+- 本地浏览器已实际通过BFB Range代理播放横屏P1与竖屏P2；1280×720、390×844和844×390布局均完成检查。
+- 完整回归共192项：190项通过、1项因本机缺少aria2跳过；唯一失败为Windows结束后删除隔离目录时偶发`EBUSY`，对应真实应用用例单独复跑为1项通过、0项失败。根项目与文档站构建、`git diff --check`均通过。
 
 ### 本地验收
 

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
@@ -57,6 +58,7 @@ import {
 import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
+import { getPlaybackQueue, PlaybackHttpError, streamPlaybackFile } from "./playback.js";
 
 ensureAppDirs();
 
@@ -81,6 +83,7 @@ const favoriteItemsCache = new Map<
 >();
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
+const artplayerAssetPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/artplayer/dist/artplayer.js");
 
 type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "exports" | "backups" | "state" | "users" | "config";
 
@@ -362,6 +365,17 @@ app.use("/covers", requireAuth, express.static(coversDir, {
   maxAge: "30d",
   immutable: true,
 }));
+
+app.get("/assets/vendor/artplayer-5.4.0.js", requireAuth, (req, res, next) => {
+  res.sendFile(artplayerAssetPath, {
+    headers: {
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "Content-Type": "text/javascript; charset=utf-8",
+    },
+  }, (error) => {
+    if (error) next(error);
+  });
+});
 
 function parsePositiveInteger(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -973,6 +987,71 @@ app.get([
     res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
   }
 }));
+
+app.get("/api/users/:id/favorites/:mediaId/playback-queue", (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const mediaId = Number(req.params.mediaId);
+  if (!Number.isInteger(mediaId) || mediaId < 1) {
+    res.status(400).json({ success: false, message: "Invalid mediaId" });
+    return;
+  }
+  const page = req.query.page === undefined ? undefined : Number(req.query.page);
+  const pageSize = req.query.pageSize === undefined ? 30 : Number(req.query.pageSize);
+  if ((page !== undefined && (!Number.isInteger(page) || page < 1))
+    || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
+    res.status(400).json({ success: false, message: "Invalid playback pagination" });
+    return;
+  }
+  const focusBvid = String(req.query.focusBvid || "").trim();
+  if (focusBvid.length > 64 || /[\\/\0]/.test(focusBvid)) {
+    res.status(400).json({ success: false, message: "Invalid focusBvid" });
+    return;
+  }
+  const data = getPlaybackQueue(stateManager.getDatabase(), user.id, mediaId, {
+    focusBvid: focusBvid || undefined,
+    page,
+    pageSize,
+  });
+  if (!data) {
+    res.status(404).json({ success: false, code: "PLAYBACK_NOT_AVAILABLE", message: "该归档当前不可播放" });
+    return;
+  }
+  res.json({ success: true, data });
+});
+
+const playbackFileHandler = asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const mediaId = Number(req.params.mediaId);
+  const fileId = Number(req.params.fileId);
+  if (!Number.isInteger(mediaId) || mediaId < 1 || !Number.isInteger(fileId) || fileId < 1) {
+    res.status(400).json({ success: false, message: "Invalid playback file" });
+    return;
+  }
+  try {
+    await streamPlaybackFile(stateManager.getDatabase(), configStore.get(), req, res, {
+      userId: user.id,
+      mediaId,
+      fileId,
+    });
+  } catch (error) {
+    if (error instanceof PlaybackHttpError && !res.headersSent) {
+      res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      return;
+    }
+    throw error;
+  }
+});
+
+app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId", playbackFileHandler);
+app.head("/api/users/:id/favorites/:mediaId/playback/files/:fileId", playbackFileHandler);
 
 app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);

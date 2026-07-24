@@ -13,6 +13,7 @@ BFB是一个面向云盘归档的B站收藏夹持续备份系统：定时扫描�
 - **云盘归档**：支持多B站账号、多收藏夹和多个AList目标，按关系分别保存远端备份证明。
 - **持久恢复**：SQLite任务队列、任务租约、aria2控制文件和分P CID会话共同支持容器重启恢复。
 - **可靠上传**：PUT成功后进入“已上传·确认中”，远端最终确认前保留本地成品；同名异大小旧版归档到`_history`。
+- **归档播放**：在收藏夹详情中直接播放远端已验证的MP4、M4V和WebM，支持分P、连续播放、进度恢复、横竖屏、全屏和画中画。
 - **风险控制**：Web/APP播放接口可选，B站`v_voucher`触发固定3分钟冷却与单任务探测，AList异常会暂停新下载。
 - **长期维护**：充电视频七日权限复查、下架与部分备份、分P历史归档、画质共享下载、迁移包和远端对账。
 
@@ -114,10 +115,13 @@ npm run build
 
 项目当前使用固定BBDown fork Release、固定FFmpeg构建和aria2续传，不在构建时跟随上游`master`。
 
+归档播放器通过BFB代理AList字节流，不公开AList地址或凭据，也不执行转码。HEVC等编码能否播放取决于浏览器和设备的原生解码能力。
+
 ## 鸣谢
 
 - [BBDown](https://github.com/nilaoda/BBDown)
 - [AList](https://alist.nn.ci/)
+- [Artplayer](https://artplayer.org/)
 - [biliAPI](https://github.com/renmu123/biliAPI)
 - [FFmpeg](https://ffmpeg.org/)
 - [Bilibili API Collect](https://socialsisteryi.github.io/bilibili-API-collect/)

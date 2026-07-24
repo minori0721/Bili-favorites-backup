@@ -5,7 +5,7 @@ import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
 const requestedMode = process.env.BFB_PREVIEW_MODE;
-const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" || requestedMode === "detail" ? requestedMode : "healthy";
+const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" || requestedMode === "detail" || requestedMode === "playback" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -327,19 +327,75 @@ if (mode === "quality") {
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
 
-if (mode === "detail") {
+if (mode === "detail" || mode === "playback") {
   const now = "2026-07-22T08:30:00.000Z";
   const coverDir = path.join(runtimeDir, "data", "covers");
   await fs.promises.mkdir(coverDir, { recursive: true });
   const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNkYPj/n4GBgYGJAQoAHgQCAfbi8S8AAAAASUVORK5CYII=", "base64");
+  const horizontalVideo = await fs.promises.readFile(path.resolve(process.cwd(), "tests", "fixtures", "playback-horizontal.mp4"));
+  const verticalVideo = await fs.promises.readFile(path.resolve(process.cwd(), "tests", "fixtures", "playback-vertical.mp4"));
+  const davFiles = new Map<string, Buffer>();
+  fakeDav = http.createServer((req, res) => {
+    const requestPath = decodeURIComponent(new URL(req.url || "/", "http://preview.invalid").pathname);
+    const body = davFiles.get(requestPath);
+    if (!body) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("not found");
+      return;
+    }
+    const range = String(req.headers.range || "");
+    let start = 0;
+    let end = body.length - 1;
+    if (range) {
+      const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+      if (!match || Number(match[1]) >= body.length) {
+        res.writeHead(416, { "Content-Range": `bytes */${body.length}`, "Accept-Ranges": "bytes" });
+        res.end();
+        return;
+      }
+      start = Number(match[1]);
+      end = match[2] ? Math.min(Number(match[2]), end) : end;
+    }
+    const selected = body.subarray(start, end + 1);
+    res.writeHead(range ? 206 : 200, {
+      "Content-Type": "video/mp4",
+      "Accept-Ranges": "bytes",
+      "Content-Length": String(selected.length),
+      ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}),
+      ETag: '"bfb-playback-preview"',
+    });
+    if (req.method === "HEAD") res.end();
+    else res.end(selected);
+  });
+  await new Promise<void>((resolve) => fakeDav!.listen(0, "127.0.0.1", resolve));
+  const davAddress = fakeDav.address();
+  if (!davAddress || typeof davAddress === "string") throw new Error("Failed to start playback preview WebDAV server");
   const definitions = [
-    { bvid: "BVDETAILLOST", title: "已上传后失效但仍应显示归档前完整标题与本地封面", status: "verified", unavailable: true, active: true, order: 1 },
-    { bvid: "BVDETAILCONFIRM", title: "上传完成，正在等待远端最终确认", status: "uploaded", unavailable: false, active: true, order: 2 },
-    { bvid: "BVDETAILPARTIAL", title: "多分P视频当前只完成了部分备份", status: "partial_verified", unavailable: false, active: true, order: 3 },
-    { bvid: "BVDETAILCHARGE", title: "充电专属视频等待七日权限复查", status: "charging_restricted", unavailable: false, active: true, order: 4 },
-    { bvid: "BVDETAILFAILED", title: "下载失败后保留诊断状态的视频", status: "failed", unavailable: false, active: true, order: 5 },
-    { bvid: "BVDETAILHISTORY", title: "已经移出收藏夹但备份证据仍然保留的历史记录", status: "verified", unavailable: false, active: false, order: 0 },
+    { bvid: "BVDETAILLOST", title: "已上传后失效但仍应显示归档前完整标题与本地封面", status: "verified", unavailable: true, active: true, order: 1, parts: ["horizontal"] },
+    { bvid: "BVDETAILCONFIRM", title: "上传完成，正在等待远端最终确认", status: "uploaded", unavailable: false, active: true, order: 2, parts: [] },
+    { bvid: "BVDETAILPARTIAL", title: "多分P视频当前只完成了部分备份", status: "partial_verified", unavailable: false, active: true, order: 3, parts: ["horizontal", "vertical"] },
+    { bvid: "BVDETAILCHARGE", title: "充电专属视频等待七日权限复查", status: "charging_restricted", unavailable: false, active: true, order: 4, parts: [] },
+    { bvid: "BVDETAILFAILED", title: "下载失败后保留诊断状态的视频", status: "failed", unavailable: false, active: true, order: 5, parts: [] },
+    { bvid: "BVDETAILHISTORY", title: "已经移出收藏夹但备份证据仍然保留的历史记录", status: "verified", unavailable: false, active: false, order: 0, parts: ["vertical"] },
   ] as const;
+  const remoteFilesFor = (item: typeof definitions[number]) => item.parts.map((orientation, index) => {
+    const name = `${item.bvid}_P${index + 1}.mp4`;
+    const remotePath = `/archive/${item.bvid}/${name}`;
+    const content = orientation === "vertical" ? verticalVideo : horizontalVideo;
+    davFiles.set(`/dav${remotePath}`, content);
+    return {
+      name,
+      path: remotePath,
+      size: content.length,
+      verificationStatus: "verified",
+      filenameMetadata: {
+        pageIndex: index + 1,
+        cid: 1000 + index,
+        dfn: "1080P",
+        videoCodecs: "AVC",
+      },
+    };
+  });
   for (const item of definitions) {
     await fs.promises.writeFile(path.join(coverDir, `${item.bvid}.png`), tinyPng);
   }
@@ -353,6 +409,8 @@ if (mode === "detail") {
     biliStatus: item.unavailable ? "unavailable" : "available",
     favoriteUnavailable: item.unavailable || undefined,
     backupStatus: item.status,
+    remotePath: item.parts.length ? `/archive/${item.bvid}` : undefined,
+    remoteFiles: remoteFilesFor(item),
     originalMeta: {
       title: item.title,
       upperName: "脱敏预览 UP",
@@ -384,6 +442,8 @@ if (mode === "detail") {
     activeInFavorite: item.active,
     favoriteUnavailable: item.unavailable || undefined,
     backupStatus: item.status,
+    remotePath: item.parts.length ? `/archive/${item.bvid}` : undefined,
+    remoteFiles: remoteFilesFor(item),
   }]));
   const state = {
     schemaVersion: 13,
@@ -416,18 +476,24 @@ if (mode === "detail") {
     enabled: false,
     lastLoginAt: now,
   }];
-  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({ queuePrefetchLimit: 5 }), null, 2));
+  await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({
+    queuePrefetchLimit: 5,
+    alistUrl: `http://127.0.0.1:${davAddress.port}`,
+    alistUsername: "preview",
+    alistPassword: "preview",
+    alistDest: "/archive",
+  }), null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "users.json"), JSON.stringify(users, null, 2));
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
 
 process.chdir(runtimeDir);
-process.env.NODE_ENV = mode === "detail" ? "test" : "browser-preview";
+process.env.NODE_ENV = mode === "detail" || mode === "playback" ? "test" : "browser-preview";
 process.env.ADMIN_PASS = process.env.ADMIN_PASS || "preview-pass";
 process.env.PORT = String(port);
 const appModule = await import("../src/index.js");
 let previewServer: http.Server | undefined;
-if (mode === "detail") {
+if (mode === "detail" || mode === "playback") {
   previewServer = appModule.app.listen(port, "127.0.0.1");
   await new Promise<void>((resolve) => previewServer!.once("listening", resolve));
 }

@@ -100,11 +100,18 @@ test("application info derives safe dev, release, and local build labels", () =>
     assert.match(html, /target="_blank" rel="noopener noreferrer"/);
     assert.match(html, /https:\/\/github\.com\/minori0721\/Bili-favorites-backup/);
   }
-  assert.match(renderAppPage(), /class="app-brand"/);
-  assert.match(renderAppPage(), /class="header-actions"/);
-  assert.match(renderAppPage(), /setInterval\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, 1000\)/);
-  assert.match(renderAppPage(), /visibilitychange/);
-  assert.match(renderAppPage(), /if \(document\.hidden\) stopQueueBoardPolling\(\)/);
+  const appHtml = renderAppPage();
+  assert.match(appHtml, /class="app-brand"/);
+  assert.match(appHtml, /class="header-actions"/);
+  assert.match(appHtml, /setInterval\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, 1000\)/);
+  assert.match(appHtml, /visibilitychange/);
+  assert.match(appHtml, /if \(document\.hidden\) stopQueueBoardPolling\(\)/);
+  assert.match(appHtml, /id="playbackModal"/);
+  assert.match(appHtml, /artplayer-5\.4\.0\.js/);
+  assert.match(appHtml, /PLAYBACK_STORAGE_KEY = 'bfb-playback-v1'/);
+  const inlineScripts = [...appHtml.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];
+  assert.equal(inlineScripts.length, 1);
+  assert.doesNotThrow(() => new Function(inlineScripts[0][1]));
   assert.match(renderLoginPage(), /class="login-meta"/);
 });
 
