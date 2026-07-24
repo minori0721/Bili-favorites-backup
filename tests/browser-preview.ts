@@ -370,15 +370,38 @@ if (mode === "detail" || mode === "playback") {
   await new Promise<void>((resolve) => fakeDav!.listen(0, "127.0.0.1", resolve));
   const davAddress = fakeDav.address();
   if (!davAddress || typeof davAddress === "string") throw new Error("Failed to start playback preview WebDAV server");
-  const definitions = [
+  type PreviewDefinition = {
+    bvid: string;
+    title: string;
+    status: string;
+    unavailable: boolean;
+    active: boolean;
+    order: number;
+    parts: Array<"horizontal" | "vertical">;
+  };
+  const extendedPlaybackQueue: PreviewDefinition[] = mode === "playback"
+    ? Array.from({ length: 34 }, (_, index) => ({
+      bvid: `BVQUEUE${String(index + 1).padStart(3, "0")}`,
+      title: index === 7
+        ? "长队列测试视频 08 · 这是一条用于检查桌面右栏长标题和稳定滚动行为的脱敏标题"
+        : `长队列测试视频 ${String(index + 1).padStart(2, "0")}`,
+      status: "verified",
+      unavailable: false,
+      active: true,
+      order: index + 6,
+      parts: [index % 3 === 2 ? "vertical" : "horizontal"],
+    }))
+    : [];
+  const definitions: PreviewDefinition[] = [
     { bvid: "BVDETAILLOST", title: "已上传后失效但仍应显示归档前完整标题与本地封面", status: "verified", unavailable: true, active: true, order: 1, parts: ["horizontal"] },
     { bvid: "BVDETAILCONFIRM", title: "上传完成，正在等待远端最终确认", status: "uploaded", unavailable: false, active: true, order: 2, parts: [] },
     { bvid: "BVDETAILPARTIAL", title: "多分P视频当前只完成了部分备份", status: "partial_verified", unavailable: false, active: true, order: 3, parts: ["horizontal", "vertical"] },
     { bvid: "BVDETAILCHARGE", title: "充电专属视频等待七日权限复查", status: "charging_restricted", unavailable: false, active: true, order: 4, parts: [] },
     { bvid: "BVDETAILFAILED", title: "下载失败后保留诊断状态的视频", status: "failed", unavailable: false, active: true, order: 5, parts: [] },
+    ...extendedPlaybackQueue,
     { bvid: "BVDETAILHISTORY", title: "已经移出收藏夹但备份证据仍然保留的历史记录", status: "verified", unavailable: false, active: false, order: 0, parts: ["vertical"] },
-  ] as const;
-  const remoteFilesFor = (item: typeof definitions[number]) => item.parts.map((orientation, index) => {
+  ];
+  const remoteFilesFor = (item: PreviewDefinition) => item.parts.map((orientation, index) => {
     const name = `${item.bvid}_P${index + 1}.mp4`;
     const remotePath = `/archive/${item.bvid}/${name}`;
     const content = orientation === "vertical" ? verticalVideo : horizontalVideo;

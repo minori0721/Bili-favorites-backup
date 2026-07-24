@@ -322,8 +322,15 @@ function getAppStyles() {
     .video-item.playable:focus-visible { outline:3px solid rgba(57,197,187,0.30); outline-offset:2px; border-color:var(--accent); }
     .video-cover-wrap { position:relative; flex:0 0 auto; width:120px; height:75px; border-radius:8px; overflow:hidden; background:#eee; }
     .video-cover-wrap .video-cover { width:100%; height:100%; border-radius:0; }
-    .video-play-affordance { position:absolute; inset:0; display:grid; place-items:center; background:rgba(18,28,27,0.32); color:white; font-size:24px; text-shadow:0 2px 8px rgba(0,0,0,0.35); transition:background .18s ease,transform .18s ease; }
-    .video-item.playable:hover .video-play-affordance { background:rgba(18,28,27,0.46); transform:scale(1.04); }
+    .video-play-affordance { position:absolute; inset:0; display:none; place-items:center; opacity:0; pointer-events:none; background:transparent; color:white; font-size:24px; text-shadow:0 2px 8px rgba(0,0,0,0.35); transform:scale(0.96); transition:opacity .16s ease,background-color .16s ease,transform .16s ease; }
+    @media (hover:hover) and (pointer:fine) {
+      .video-play-affordance { display:grid; }
+      .video-item.playable:hover .video-play-affordance,
+      .video-item.playable:focus-visible .video-play-affordance { opacity:1; background:rgba(18,28,27,0.42); transform:scale(1); }
+    }
+    @media (max-width:720px), (hover:none), (pointer:coarse) {
+      .video-play-affordance { display:none!important; }
+    }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
     body.playback-open { overflow:hidden; }
     .playback-modal { z-index:300; padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
@@ -363,12 +370,14 @@ function getAppStyles() {
     .playback-queue-head { flex:0 0 auto; display:flex; justify-content:space-between; gap:12px; align-items:center; padding:16px; border-bottom:1px solid #2D3836; }
     .playback-queue-head strong { color:#F4F7F6; font-size:14px; }
     .playback-queue-head span { color:#899794; font-size:11px; }
-    .playback-queue-list { min-height:0; flex:1 1 auto; overflow-y:auto; padding:7px; }
-    .playback-queue-item { width:100%; min-width:0; display:grid; grid-template-columns:34px 1fr; gap:8px; align-items:start; border:1px solid transparent; border-radius:5px; background:transparent; color:#DCE3E1; padding:10px 8px; text-align:left; cursor:pointer; transition:background .16s ease,border-color .16s ease; }
-    .playback-queue-item:hover,.playback-queue-item:focus-visible { background:#202927; border-color:#34413F; outline:none; }
-    .playback-queue-item.active { background:rgba(57,197,187,0.11); border-color:#39C5BB; }
+    .playback-queue-list { min-height:0; flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:7px 8px; }
+    .playback-queue-item { width:100%; min-width:0; display:grid; grid-template-columns:30px 1fr; gap:9px; align-items:start; border:0; border-left:3px solid transparent; border-radius:4px; background:transparent; color:#DCE3E1; padding:10px 9px 10px 6px; text-align:left; cursor:pointer; transition:background-color .15s ease,border-color .15s ease,color .15s ease; }
+    .playback-queue-item:hover { background:#202927; }
+    .playback-queue-item:focus-visible { background:#202927; outline:1px solid #52605E; outline-offset:-1px; }
+    .playback-queue-item.active { background:rgba(57,197,187,0.10); border-left-color:#39C5BB; color:#F2FAF8; }
     .playback-queue-number { color:#6E7E7A; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; padding-top:2px; text-align:right; }
     .playback-queue-item.active .playback-queue-number { color:#69D9D0; }
+    .playback-queue-item.active .playback-queue-title { color:#F2FAF8; }
     .playback-queue-copy { min-width:0; }
     .playback-queue-title { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font-size:12px; font-weight:650; line-height:1.45; }
     .playback-queue-meta { color:#85938F; font-size:11px; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -576,7 +585,7 @@ function getAppStyles() {
       .playback-queue-head { padding:11px; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .playback-shell,.video-item.playable { animation:none; transition:none; }
+      .playback-shell,.video-item.playable,.video-play-affordance,.playback-queue-item { animation:none; transition:none; }
     }
   </style>`;
 }
@@ -3028,6 +3037,10 @@ function getAppScript() {
       playbackState.mediaId = null;
       playbackState.trigger = null;
       playbackState.focusBvid = null;
+      const queueHost = document.getElementById('playbackQueueList');
+      queueHost.replaceChildren();
+      queueHost.scrollTop = 0;
+      delete queueHost.dataset.queueKey;
     }
 
     function loadArtplayer() {
@@ -3108,54 +3121,117 @@ function getAppScript() {
       });
     }
 
+    function playbackQueueRenderKey() {
+      return [
+        playbackState.userId || '',
+        playbackState.mediaId || '',
+        playbackState.mode,
+        playbackState.page,
+        ...playbackState.items.map((item) => JSON.stringify([
+          item.bvid,
+          item.title,
+          item.upperName,
+          Boolean(item.partial),
+          item.parts.map((part) => part.fileId)
+        ]))
+      ].join(':');
+    }
+
+    function isPlaybackMobileLayout() {
+      return window.matchMedia('(max-width: 720px)').matches;
+    }
+
+    function syncPlaybackQueueSelection(options = {}) {
+      const host = document.getElementById('playbackQueueList');
+      const buttons = host.querySelectorAll('.playback-queue-item');
+      buttons.forEach((button) => {
+        const active = Number(button.dataset.playbackQueueIndex) === playbackState.itemIndex;
+        button.classList.toggle('active', active);
+        if (active) button.setAttribute('aria-current', 'true');
+        else button.removeAttribute('aria-current');
+      });
+
+      if (isPlaybackMobileLayout()) {
+        const layout = document.querySelector('.playback-layout');
+        const preserved = Number(options.mobileLayoutScrollTop);
+        if (layout && Number.isFinite(preserved)) {
+          layout.scrollTop = preserved;
+          requestAnimationFrame(() => {
+            if (layout.isConnected) layout.scrollTop = preserved;
+          });
+        }
+        return;
+      }
+
+      if (options.alignDesktop === false) return;
+      requestAnimationFrame(() => {
+        const active = host.querySelector('.playback-queue-item.active');
+        if (!active || !host.isConnected) return;
+        const hostRect = host.getBoundingClientRect();
+        const activeRect = active.getBoundingClientRect();
+        const margin = 7;
+        let delta = 0;
+        if (activeRect.top < hostRect.top + margin) delta = activeRect.top - hostRect.top - margin;
+        else if (activeRect.bottom > hostRect.bottom - margin) delta = activeRect.bottom - hostRect.bottom + margin;
+        if (!delta) return;
+        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        host.scrollTo({
+          top: Math.max(0, host.scrollTop + delta),
+          behavior: reducedMotion ? 'auto' : 'smooth'
+        });
+      });
+    }
+
     function renderPlaybackQueue() {
       const host = document.getElementById('playbackQueueList');
-      host.replaceChildren();
+      const layout = document.querySelector('.playback-layout');
+      const mobileLayoutScrollTop = isPlaybackMobileLayout() && layout ? layout.scrollTop : undefined;
       const offset = (playbackState.page - 1) * playbackState.pageSize;
       document.getElementById('playbackQueueCount').textContent = playbackState.mode === 'single'
         ? '历史记录 · 单独播放'
         : playbackState.total + ' 个视频';
-      if (!playbackState.items.length) {
+      const queueKey = playbackQueueRenderKey();
+      const shouldRebuild = host.dataset.queueKey !== queueKey;
+      if (shouldRebuild) host.replaceChildren();
+      if (shouldRebuild && !playbackState.items.length) {
         const empty = document.createElement('div');
         empty.className = 'playback-queue-empty';
         empty.textContent = '当前没有可播放归档';
         host.appendChild(empty);
-        return;
       }
-      playbackState.items.forEach((item, index) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'playback-queue-item' + (index === playbackState.itemIndex ? ' active' : '');
-        if (index === playbackState.itemIndex) button.setAttribute('aria-current', 'true');
-        button.dataset.playbackQueueIndex = String(index);
-        const number = document.createElement('span');
-        number.className = 'playback-queue-number';
-        number.textContent = playbackState.mode === 'single' ? 'H' : String(offset + index + 1).padStart(2, '0');
-        const copy = document.createElement('span');
-        copy.className = 'playback-queue-copy';
-        const title = document.createElement('span');
-        title.className = 'playback-queue-title';
-        title.textContent = safeText(item.title || item.bvid, '未知视频');
-        const meta = document.createElement('span');
-        meta.className = 'playback-queue-meta';
-        meta.textContent = item.parts.length + ' 个分P' + (item.partial ? ' · 部分备份' : '') + ' · ' + safeText(item.upperName, '未知UP');
-        copy.appendChild(title);
-        copy.appendChild(meta);
-        button.appendChild(number);
-        button.appendChild(copy);
-        button.addEventListener('click', () => {
-          if (index === playbackState.itemIndex && playbackState.partIndex === 0) return;
-          savePlaybackProgress();
-          playbackState.itemIndex = index;
-          playbackState.partIndex = 0;
-          playCurrentSelection(true);
+      if (shouldRebuild && playbackState.items.length) {
+        playbackState.items.forEach((item, index) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'playback-queue-item';
+          button.dataset.playbackQueueIndex = String(index);
+          const number = document.createElement('span');
+          number.className = 'playback-queue-number';
+          number.textContent = playbackState.mode === 'single' ? 'H' : String(offset + index + 1).padStart(2, '0');
+          const copy = document.createElement('span');
+          copy.className = 'playback-queue-copy';
+          const title = document.createElement('span');
+          title.className = 'playback-queue-title';
+          title.textContent = safeText(item.title || item.bvid, '未知视频');
+          const meta = document.createElement('span');
+          meta.className = 'playback-queue-meta';
+          meta.textContent = item.parts.length + ' 个分P' + (item.partial ? ' · 部分备份' : '') + ' · ' + safeText(item.upperName, '未知UP');
+          copy.appendChild(title);
+          copy.appendChild(meta);
+          button.appendChild(number);
+          button.appendChild(copy);
+          button.addEventListener('click', () => {
+            if (index === playbackState.itemIndex && playbackState.partIndex === 0) return;
+            savePlaybackProgress();
+            playbackState.itemIndex = index;
+            playbackState.partIndex = 0;
+            playCurrentSelection(true);
+          });
+          host.appendChild(button);
         });
-        host.appendChild(button);
-      });
-      requestAnimationFrame(() => {
-        const active = host.querySelector('.playback-queue-item.active');
-        if (active) active.scrollIntoView({ block:'nearest' });
-      });
+      }
+      host.dataset.queueKey = queueKey;
+      syncPlaybackQueueSelection({ mobileLayoutScrollTop });
     }
 
     function updatePlaybackNow() {

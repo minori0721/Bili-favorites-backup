@@ -109,6 +109,11 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /id="playbackModal"/);
   assert.match(appHtml, /artplayer-5\.4\.0\.js/);
   assert.match(appHtml, /PLAYBACK_STORAGE_KEY = 'bfb-playback-v1'/);
+  assert.match(appHtml, /@media \(hover:hover\) and \(pointer:fine\)/);
+  assert.match(appHtml, /@media \(max-width:720px\), \(hover:none\), \(pointer:coarse\)/);
+  assert.match(appHtml, /function syncPlaybackQueueSelection\(options = \{\}\)/);
+  assert.match(appHtml, /dataset\.queueKey/);
+  assert.doesNotMatch(appHtml, /scrollIntoView/);
   const inlineScripts = [...appHtml.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];
   assert.equal(inlineScripts.length, 1);
   assert.doesNotThrow(() => new Function(inlineScripts[0][1]));
