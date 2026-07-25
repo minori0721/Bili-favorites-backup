@@ -1060,11 +1060,17 @@ const playbackFileHandler = asyncHandler(async (req, res) => {
     res.status(400).json({ success: false, message: "Invalid playback file" });
     return;
   }
+  const delivery = req.query.delivery;
+  if (delivery !== undefined && delivery !== "proxy") {
+    res.status(400).json({ success: false, message: "Invalid playback delivery mode" });
+    return;
+  }
   try {
     await streamPlaybackFile(stateManager.getDatabase(), configStore.get(), req, res, {
       userId: user.id,
       mediaId,
       fileId,
+      forceProxy: delivery === "proxy",
     });
   } catch (error) {
     if (error instanceof PlaybackHttpError && !res.headersSent) {

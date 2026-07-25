@@ -199,6 +199,12 @@ test("tracked favorite detail is served from SQLite with history and original me
     assert.deepEqual(queueJson.data.items.map((item: any) => item.queuePosition), [1, 2]);
     assert.equal(JSON.stringify(queueJson).includes("/archive/"), false);
 
+    const invalidDelivery = await fetch(`${base}${queueJson.data.items[0].parts[0].streamUrl}?delivery=direct`, {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(invalidDelivery.status, 400);
+    assert.equal((await invalidDelivery.json() as any).message, "Invalid playback delivery mode");
+
     const searchResponse = await fetch(`${base}/api/users/detail-user/favorites/1/playback-search?q=${encodeURIComponent("归档 UP")}&pageSize=50`, {
       headers: { Cookie: cookie },
     });

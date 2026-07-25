@@ -11,6 +11,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     alistUsername: "test",
     alistPassword: "test",
     alistDest: "/backup",
+    playbackDeliveryMode: "auto",
     maxRetries: 2,
     retryDelaySeconds: 1,
     concurrentDownloads: 1,

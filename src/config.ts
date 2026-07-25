@@ -4,6 +4,7 @@ import { readJsonFile, writeJsonFile } from "./storage.js";
 
 export type UploadLayout = "user-folder-video" | "folder-video" | "video-only";
 export type BBDownApiMode = "web" | "app";
+export type PlaybackDeliveryMode = "auto" | "proxy";
 
 export interface AppConfig {
   pollIntervalMinutes: number;
@@ -13,6 +14,7 @@ export interface AppConfig {
   alistUsername: string;
   alistPassword: string;
   alistDest: string;
+  playbackDeliveryMode: PlaybackDeliveryMode;
   maxRetries: number;
   retryDelaySeconds: number;
   concurrentDownloads: number;
@@ -42,6 +44,7 @@ const defaultConfig: AppConfig = {
   alistUsername: "admin",
   alistPassword: "",
   alistDest: "/bili-backup/videos",
+  playbackDeliveryMode: "auto",
   maxRetries: 3,
   retryDelaySeconds: 5,
   concurrentDownloads: 1,
@@ -87,6 +90,9 @@ export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecov
     merged.bbdownApiMode = "app";
   }
   merged.filenameTemplate = normalizeFilenameTemplate(merged.filenameTemplate);
+  if (merged.playbackDeliveryMode !== "auto" && merged.playbackDeliveryMode !== "proxy") {
+    merged.playbackDeliveryMode = defaultConfig.playbackDeliveryMode;
+  }
   return merged;
 }
 
@@ -141,6 +147,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "alistUsername",
   "alistPassword",
   "alistDest",
+  "playbackDeliveryMode",
   "maxRetries",
   "retryDelaySeconds",
   "concurrentDownloads",
@@ -257,6 +264,12 @@ export function validateConfig(input: Partial<AppConfig>) {
     if (!input.alistDest.trim().startsWith("/")) {
       return "alistDest must start with /";
     }
+  }
+
+  if (input.playbackDeliveryMode !== undefined
+    && input.playbackDeliveryMode !== "auto"
+    && input.playbackDeliveryMode !== "proxy") {
+    return "playbackDeliveryMode must be auto or proxy";
   }
 
   if (input.uploadLayout !== undefined) {

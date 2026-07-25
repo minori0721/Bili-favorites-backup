@@ -316,6 +316,15 @@ test("queue prefetch setting validates its range and migrates the legacy name", 
   assert.equal(normalizeLoadedConfig({ startupRecoveryBatchSize: 37 }).queuePrefetchLimit, 37);
 });
 
+test("playback delivery defaults to safe redirect preference and validates proxy mode", () => {
+  assert.equal(normalizeLoadedConfig({}).playbackDeliveryMode, "auto");
+  assert.equal(normalizeLoadedConfig({ playbackDeliveryMode: "proxy" }).playbackDeliveryMode, "proxy");
+  assert.equal(normalizeLoadedConfig({ playbackDeliveryMode: "invalid" as any }).playbackDeliveryMode, "auto");
+  assert.equal(validateConfig({ playbackDeliveryMode: "auto" }), null);
+  assert.equal(validateConfig({ playbackDeliveryMode: "proxy" }), null);
+  assert.match(String(validateConfig({ playbackDeliveryMode: "invalid" as any })), /auto or proxy/);
+});
+
 test("upload file interval validates its range and session retries use bounded backoff", () => {
   assert.equal(validateConfig({ uploadFileIntervalSeconds: 0 }), null);
   assert.equal(validateConfig({ uploadFileIntervalSeconds: 10 }), null);

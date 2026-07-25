@@ -8,6 +8,7 @@ import {
   getPlaybackSearch,
   playbackAvailability,
   PlaybackHttpError,
+  safePlaybackRedirectLocation,
   streamPlaybackFile,
 } from "../src/playback.js";
 import type { FavoriteRelation, RemoteFileRecord, StateFile, VideoArchiveEntry } from "../src/state.js";
@@ -113,6 +114,37 @@ test("playback availability only exposes verified playable archive files", () =>
   assert.equal(playbackAvailability("uploaded", [remoteFile("video.mp4")]).reason, "awaiting_verification");
   assert.equal(playbackAvailability("verified", [remoteFile("video.mkv")]).reason, "no_playable_media");
   assert.equal(playbackAvailability("verified", [remoteFile("video.mp4", { verificationStatus: "failed" })]).available, false);
+});
+
+test("playback redirect validation only accepts external public HTTPS locations", () => {
+  const alistBase = new URL("http://alist:5244");
+  assert.equal(
+    safePlaybackRedirectLocation("https://media.example.com/video.mp4?signature=test#ignored", alistBase),
+    "https://media.example.com/video.mp4?signature=test"
+  );
+  assert.equal(safePlaybackRedirectLocation("https://1.1.1.1/video.mp4", alistBase), "https://1.1.1.1/video.mp4");
+  for (const location of [
+    null,
+    "/storage/video.mp4",
+    "http://media.example.com/video.mp4",
+    "https://user:pass@media.example.com/video.mp4",
+    "https://alist/video.mp4",
+    "https://localhost/video.mp4",
+    "https://files.local/video.mp4",
+    "https://127.0.0.1/video.mp4",
+    "https://10.0.0.1/video.mp4",
+    "https://100.64.0.1/video.mp4",
+    "https://169.254.1.2/video.mp4",
+    "https://172.16.0.1/video.mp4",
+    "https://192.168.1.2/video.mp4",
+    "https://[::1]/video.mp4",
+    "https://[fd00::1]/video.mp4",
+    "https://[fe80::1]/video.mp4",
+    "not a URL",
+  ]) {
+    assert.equal(safePlaybackRedirectLocation(location, alistBase), null, String(location));
+  }
+  assert.equal(safePlaybackRedirectLocation(`https://media.example.com/${"x".repeat(8_192)}`, alistBase), null);
 });
 
 test("playback queue uses favorite order, focus pagination, stable parts, and historical single mode", () => {
@@ -289,7 +321,8 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
   const content = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
   let upstreamRequests = 0;
   let upstreamClosed = false;
-  let mode: "normal" | "slow" | "auth" | "forbidden" | "missing" | "error" | "redirect" | "wrongtype" = "normal";
+  let mode: "normal" | "slow" | "auth" | "forbidden" | "missing" | "error" | "redirect" | "direct" | "httpredirect" | "wrongtype" = "normal";
+  let upstreamBase = "";
   const upstream = http.createServer((req, res) => {
     upstreamRequests += 1;
     assert.equal(req.headers.authorization, `Basic ${Buffer.from("alist-user:alist-pass").toString("base64")}`);
@@ -299,6 +332,14 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
     if (mode === "error") { res.writeHead(503).end("upstream secret body"); return; }
     if (mode === "redirect" && String(req.url || "").startsWith("/dav/")) {
       res.writeHead(302, { Location: "/storage/playback.mp4" }).end();
+      return;
+    }
+    if (mode === "direct" && String(req.url || "").startsWith("/dav/")) {
+      res.writeHead(302, { Location: "https://media.example.com/playback.mp4?signature=test" }).end("must not be relayed");
+      return;
+    }
+    if (mode === "httpredirect" && String(req.url || "").startsWith("/dav/")) {
+      res.writeHead(302, { Location: `${upstreamBase}/storage/playback.mp4` }).end();
       return;
     }
     const range = String(req.headers.range || "");
@@ -340,7 +381,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
   state.videos!.BVPLAY001.remoteFiles = [file];
   database.replaceState(state);
   const fileId = Number((database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'").get() as any).id);
-  const upstreamBase = await listen(upstream);
+  upstreamBase = await listen(upstream);
   const app = express();
   app.all("/stream", async (req, res) => {
     try {
@@ -348,6 +389,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
         alistUrl: upstreamBase,
         alistUsername: "alist-user",
         alistPassword: "alist-pass",
+        playbackDeliveryMode: "auto",
       } as any, req, res, { userId: "u1", mediaId: 10, fileId });
     } catch (error) {
       if (error instanceof PlaybackHttpError && !res.headersSent) {
@@ -406,6 +448,29 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
     const redirected = await fetch(`${proxyBase}/stream`, { headers: { Range: "bytes=0-3" } });
     assert.equal(redirected.status, 206);
     assert.equal(await redirected.text(), "0123");
+
+    mode = "httpredirect";
+    const insecureRedirect = await fetch(`${proxyBase}/stream`, { headers: { Range: "bytes=1-3" } });
+    assert.equal(insecureRedirect.status, 206);
+    assert.equal(await insecureRedirect.text(), "123");
+
+    mode = "direct";
+    const beforeDirect = upstreamRequests;
+    const direct = await fetch(`${proxyBase}/stream`, {
+      headers: { Range: "bytes=0-3" },
+      redirect: "manual",
+    });
+    assert.equal(direct.status, 302);
+    assert.equal(direct.headers.get("location"), "https://media.example.com/playback.mp4?signature=test");
+    assert.equal(direct.headers.get("cache-control"), "private, no-store");
+    assert.equal(direct.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(direct.headers.get("content-length"), "0");
+    assert.equal(await direct.text(), "");
+    assert.equal(upstreamRequests, beforeDirect + 1);
+
+    const directHead = await fetch(`${proxyBase}/stream`, { method: "HEAD", redirect: "manual" });
+    assert.equal(directHead.status, 302);
+    assert.equal(directHead.headers.get("location"), "https://media.example.com/playback.mp4?signature=test");
 
     mode = "wrongtype";
     const forcedMediaType = await fetch(`${proxyBase}/stream`);

@@ -658,6 +658,13 @@ function getSettingsSection() {
           </select>
           <p class="muted field-hint">目录结构变化只影响新任务，不会移动已有远端文件。</p>
         </div>
+        <div class="field-full"><label>归档播放传输方式</label>
+          <select id="playbackDeliveryMode">
+            <option value="auto">优先网盘直连，失败自动代理</option>
+            <option value="proxy">始终由 BFB 代理</option>
+          </select>
+          <p class="muted field-hint">直连可节省 BFB 服务器流量，但网盘临时签名地址会在当前浏览器的网络请求中可见。</p>
+        </div>
 
         <div class="settings-group"><div class="settings-group-title">下载控制 (BBDown)</div></div>
         <div class="field-full"><label>播放接口</label>
@@ -1121,6 +1128,7 @@ function getAppScript() {
       itemIndex: 0,
       partIndex: 0,
       loadingToken: 0,
+      deliveryMode: 'auto',
       progressTimer: null,
       continuous: true,
       preferences: null,
@@ -1383,6 +1391,8 @@ function getAppScript() {
       document.getElementById('alistUsername').value = d.alistUsername || '';
       document.getElementById('alistPassword').value = d.alistPassword || '';
       document.getElementById('alistDest').value = d.alistDest || '';
+      document.getElementById('playbackDeliveryMode').value = d.playbackDeliveryMode === 'proxy' ? 'proxy' : 'auto';
+      playbackState.deliveryMode = d.playbackDeliveryMode === 'proxy' ? 'proxy' : 'auto';
       document.getElementById('bbdownEncoding').value = d.bbdownEncoding || '';
       document.getElementById('bbdownQuality').value = d.bbdownQuality || '';
       setBBDownApiMode(d.bbdownApiMode || 'web');
@@ -1415,6 +1425,7 @@ function getAppScript() {
         alistUsername: document.getElementById('alistUsername').value.trim(),
         alistPassword: document.getElementById('alistPassword').value.trim(),
         alistDest: document.getElementById('alistDest').value.trim(),
+        playbackDeliveryMode: document.getElementById('playbackDeliveryMode').value === 'proxy' ? 'proxy' : 'auto',
         bbdownEncoding: document.getElementById('bbdownEncoding').value,
         bbdownQuality: document.getElementById('bbdownQuality').value,
         bbdownApiMode: getBBDownApiMode(),
@@ -1435,6 +1446,7 @@ function getAppScript() {
       };
       try {
         await fetchJson('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+        playbackState.deliveryMode = payload.playbackDeliveryMode;
         setStatus(st, '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、AList 路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
       } catch(e) {
         setStatus(st, '保存失败: '+e.message, 'error');
@@ -3608,24 +3620,35 @@ function getAppScript() {
       } catch (_) {}
     }
 
-    async function playCurrentSelection(autoplay) {
+    function playbackStreamUrl(part, forceProxy) {
+      if (!forceProxy) return part.streamUrl;
+      return part.streamUrl + (part.streamUrl.includes('?') ? '&' : '?') + 'delivery=proxy';
+    }
+
+    async function playCurrentSelection(autoplay, options = {}) {
       const item = currentPlaybackItem();
       const part = currentPlaybackPart();
       if (!item || !part) {
         setPlaybackMessage('没有可播放文件', '该条目的远端文件状态可能已经变化。', { retry:false, skip:true });
         return;
       }
+      const forceProxy = playbackState.deliveryMode === 'proxy' || options.forceProxy === true;
+      const resumeTime = Number(options.resumeTime || 0);
       const token = ++playbackState.loadingToken;
       destroyCurrentArt();
       updatePlaybackNow();
-      setPlaybackMessage('正在连接归档文件', '播放器将从BFB代理读取AList字节流。', { retry:false, skip:false });
+      setPlaybackMessage(
+        '正在连接归档文件',
+        forceProxy ? '正在通过 BFB 代理连接归档文件。' : '正在获取网盘直连，必要时将自动使用 BFB 代理。',
+        { retry:false, skip:false }
+      );
       try {
         const Artplayer = await loadArtplayer();
         if (token !== playbackState.loadingToken) return;
         const prefs = playbackState.preferences || loadPlaybackPreferences();
         const art = new Artplayer({
           container: document.getElementById('playbackArt'),
-          url: part.streamUrl,
+          url: playbackStreamUrl(part, forceProxy),
           title: safeText(item.title || item.bvid, '归档视频'),
           poster: playbackCoverUrl(item),
           theme: '#39C5BB',
@@ -3642,10 +3665,11 @@ function getAppScript() {
           autoOrientation: true,
           hotkey: true,
           mutex: true,
-          moreVideoAttr: { preload:'metadata', playsinline:'', 'webkit-playsinline':'' }
+          moreVideoAttr: { preload:'metadata', playsinline:'', 'webkit-playsinline':'', referrerpolicy:'no-referrer' }
         });
         playbackState.art = art;
         art.playbackRate = prefs.rate;
+        let fallbackStarted = false;
         art.on('video:loadedmetadata', () => {
           if (token !== playbackState.loadingToken) return;
           const isPortrait = Number(art.video.videoHeight || 0) > Number(art.video.videoWidth || 0);
@@ -3653,7 +3677,8 @@ function getAppScript() {
           const saved = prefs.progress && prefs.progress[part.fingerprint];
           const savedTime = Number(saved && saved.time || 0);
           const duration = Number(art.duration || 0);
-          if (savedTime >= 10 && duration - savedTime >= 15) art.currentTime = savedTime;
+          if (resumeTime > 0 && duration - resumeTime > 1) art.currentTime = resumeTime;
+          else if (savedTime >= 10 && duration - savedTime >= 15) art.currentTime = savedTime;
           hidePlaybackMessage();
           updateMediaSessionPosition();
         });
@@ -3683,6 +3708,16 @@ function getAppScript() {
         art.on('video:error', () => {
           if (token !== playbackState.loadingToken) return;
           const isHevc = /hevc|h\.265|h265/i.test(String(part.codec || ''));
+          if (!isHevc && !forceProxy && !fallbackStarted) {
+            fallbackStarted = true;
+            const failedAt = Number(art.currentTime || 0);
+            setPlaybackMessage('网盘直连暂时不可用', '正在切换为 BFB 代理播放。', { retry:false, skip:false });
+            setTimeout(() => {
+              if (token !== playbackState.loadingToken) return;
+              void playCurrentSelection(true, { forceProxy:true, resumeTime:failedAt });
+            }, 0);
+            return;
+          }
           setPlaybackMessage(
             isHevc ? '当前浏览器无法解码HEVC' : '归档视频无法直接播放',
             isHevc

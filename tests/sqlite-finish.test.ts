@@ -107,6 +107,7 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /visibilitychange/);
   assert.match(appHtml, /if \(document\.hidden\) stopQueueBoardPolling\(\)/);
   assert.match(appHtml, /id="playbackModal"/);
+  assert.match(appHtml, /id="playbackDeliveryMode"/);
   assert.match(appHtml, /artplayer-5\.4\.0\.js/);
   assert.match(appHtml, /PLAYBACK_STORAGE_KEY = 'bfb-playback-v1'/);
   assert.match(appHtml, /@media \(hover:hover\) and \(pointer:fine\)/);
@@ -118,6 +119,10 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /image\.loading = 'lazy'/);
   assert.match(appHtml, /queuePosition/);
   assert.match(appHtml, /dataset\.queueKey/);
+  assert.match(appHtml, /delivery=proxy/);
+  assert.match(appHtml, /referrerpolicy:'no-referrer'/);
+  assert.match(appHtml, /let fallbackStarted = false/);
+  assert.match(appHtml, /if \(!isHevc && !forceProxy && !fallbackStarted\)/);
   assert.doesNotMatch(appHtml, /scrollIntoView/);
   const inlineScripts = [...appHtml.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];
   assert.equal(inlineScripts.length, 1);

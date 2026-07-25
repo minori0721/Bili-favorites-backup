@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import net from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -463,12 +464,63 @@ function copyPlaybackHeaders(upstream: Response, res: express.Response, fallback
   res.setHeader("Vary", "Range");
 }
 
+function isPrivateIpv4(hostname: string) {
+  const octets = hostname.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return true;
+  const [first, second] = octets;
+  return first === 0
+    || first === 10
+    || first === 127
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 198 && (second === 18 || second === 19))
+    || first >= 224;
+}
+
+function isPrivateIpv6(hostname: string) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").split("%")[0];
+  if (normalized === "::" || normalized === "::1") return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("ff")) return true;
+  if (/^fe[89ab]/.test(normalized)) return true;
+  if (normalized.startsWith("::ffff:")) {
+    const mapped = normalized.slice("::ffff:".length);
+    return net.isIP(mapped) === 4 ? isPrivateIpv4(mapped) : true;
+  }
+  return false;
+}
+
+function isPrivatePlaybackHost(hostname: string) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!normalized || normalized === "localhost" || normalized.endsWith(".localhost") || normalized.endsWith(".local")) {
+    return true;
+  }
+  const ipVersion = net.isIP(normalized);
+  if (ipVersion === 4) return isPrivateIpv4(normalized);
+  if (ipVersion === 6) return isPrivateIpv6(normalized);
+  return false;
+}
+
+export function safePlaybackRedirectLocation(location: string | null, alistBase: URL) {
+  if (!location || location.length > 8_192 || !/^https:\/\//i.test(location)) return null;
+  try {
+    const target = new URL(location);
+    if (target.protocol !== "https:" || target.username || target.password || target.hostname === alistBase.hostname) return null;
+    if (isPrivatePlaybackHost(target.hostname)) return null;
+    target.hash = "";
+    return target.toString();
+  } catch {
+    return null;
+  }
+}
+
 export async function streamPlaybackFile(
   database: StateDatabase,
   config: AppConfig,
   req: express.Request,
   res: express.Response,
-  input: { userId: string; mediaId: number; fileId: number }
+  input: { userId: string; mediaId: number; fileId: number; forceProxy?: boolean }
 ) {
   const file = resolvePlaybackFile(database, input.userId, input.mediaId, input.fileId);
   const range = String(req.headers.range || "").trim();
@@ -499,12 +551,36 @@ export async function streamPlaybackFile(
   if (ifRange) headers["If-Range"] = ifRange;
 
   try {
-    const upstream = await fetch(target, {
+    const preferRedirect = config.playbackDeliveryMode !== "proxy" && !input.forceProxy;
+    let upstream = await fetch(target, {
       method: req.method === "HEAD" ? "HEAD" : "GET",
       headers,
       signal: controller.signal,
-      redirect: "follow",
+      redirect: preferRedirect ? "manual" : "follow",
     });
+    if (preferRedirect && upstream.status === 302) {
+      const directLocation = safePlaybackRedirectLocation(upstream.headers.get("location"), base);
+      if (directLocation) {
+        await upstream.body?.cancel();
+        clearTimeout(timeout);
+        res.status(302);
+        res.setHeader("Location", directLocation);
+        res.setHeader("Cache-Control", "private, no-store");
+        res.setHeader("Referrer-Policy", "no-referrer");
+        res.setHeader("Content-Length", "0");
+        res.end();
+        return;
+      }
+    }
+    if (preferRedirect && upstream.status >= 300 && upstream.status < 400) {
+      await upstream.body?.cancel();
+      upstream = await fetch(target, {
+        method: req.method === "HEAD" ? "HEAD" : "GET",
+        headers,
+        signal: controller.signal,
+        redirect: "follow",
+      });
+    }
     clearTimeout(timeout);
     if (upstream.status === 401 || upstream.status === 403) {
       await upstream.body?.cancel();
