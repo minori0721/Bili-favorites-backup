@@ -5,6 +5,7 @@ import express from "express";
 import { StateDatabase } from "../src/database.js";
 import {
   getPlaybackQueue,
+  getPlaybackSearch,
   playbackAvailability,
   PlaybackHttpError,
   streamPlaybackFile,
@@ -125,6 +126,7 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
     assert.equal(page.total, 3);
     assert.equal(page.focusIndex, 2);
     assert.deepEqual(page.items.map((item) => item.bvid), ["BVPLAY003"]);
+    assert.equal(page.items[0].queuePosition, 3);
     assert.deepEqual(page.items[0].parts.map((part) => [part.pageIndex, part.label, part.cid]), [
       [1, "P1", 301],
       [2, "P2 · 1", 302],
@@ -137,8 +139,108 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
     assert.ok(history);
     assert.equal(history.mode, "single");
     assert.equal(history.total, 1);
+    assert.equal(history.items[0].queuePosition, 1);
     assert.equal(history.items[0].activeInFavorite, false);
     assert.equal(getPlaybackQueue(database, "u1", 10, { focusBvid: "BVPENDING" }), null);
+  } finally {
+    database.close();
+  }
+});
+
+test("playback search matches archived metadata, BVID, Chinese, AND terms, and literal wildcards", () => {
+  const database = new StateDatabase(":memory:");
+  const state = playbackState();
+  state.videos!.BVPLAY001.title = "当前别名 %_";
+  state.videos!.BVPLAY001.upperName = "当前作者";
+  state.videos!.BVPLAY001.originalMeta = {
+    title: "归档前中文标题",
+    upperName: "原始 UP",
+    cover: "https://example.invalid/original.jpg",
+    capturedAt: now,
+  };
+  state.videos!.BVPLAY002.title = "另一个中文示例";
+  state.videos!.BVPLAY002.upperName = "Alice Creator";
+  state.videos!.BVHISTORY.title = "EXCLUDED 历史";
+  state.videos!.BVPENDING.title = "EXCLUDED 确认中";
+  const unsupported = remoteFile("unsupported.mkv", { path: "/archive/BVUNSUPPORTED/unsupported.mkv" });
+  state.videos!.BVUNSUPPORTED = video("BVUNSUPPORTED", "EXCLUDED 不支持", [unsupported]);
+  state.relations!["u1:10:BVUNSUPPORTED"] = relation("BVUNSUPPORTED", 6, [unsupported]);
+  try {
+    database.replaceState(state);
+    const archived = getPlaybackSearch(database, "u1", 10, { query: "归档前 原始", pageSize: 50 });
+    assert.equal(archived.total, 1);
+    assert.deepEqual(archived.items.map((item) => [item.bvid, item.queuePosition, item.title, item.upperName]), [
+      ["BVPLAY001", 1, "归档前中文标题", "原始 UP"],
+    ]);
+    assert.deepEqual(getPlaybackSearch(database, "u1", 10, { query: "当前别名" }).items.map((item) => item.bvid), ["BVPLAY001"]);
+    assert.deepEqual(getPlaybackSearch(database, "u1", 10, { query: "%_" }).items.map((item) => item.bvid), ["BVPLAY001"]);
+    assert.deepEqual(getPlaybackSearch(database, "u1", 10, { query: "Alice 中文" }).items.map((item) => item.bvid), ["BVPLAY002"]);
+    assert.deepEqual(getPlaybackSearch(database, "u1", 10, { query: "BVPLAY003" }).items.map((item) => item.bvid), ["BVPLAY003"]);
+    assert.equal(getPlaybackSearch(database, "u1", 10, { query: "EXCLUDED" }).total, 0);
+    assert.equal(getPlaybackSearch(database, "u1", 10, { query: "不存在" }).total, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("playback pagination and search stay bounded with 10000 SQLite relations", { timeout: 30_000 }, () => {
+  const database = new StateDatabase(":memory:");
+  const insertVideo = database.db.prepare(`
+    INSERT INTO videos(bvid,backup_status,bili_status,payload_json,updated_at)
+    VALUES(?,'verified','available',?,?)
+  `);
+  const insertRelation = database.db.prepare(`
+    INSERT INTO favorite_relations(user_id,media_id,bvid,backup_status,active_in_favorite,folder_title,fav_order,last_seen_at,payload_json,updated_at)
+    VALUES('scale-user',88,?,'verified',1,'规模测试',?,?,?,?)
+  `);
+  const insertRemote = database.db.prepare(`
+    INSERT INTO remote_files(bvid,user_id,media_id,kind,name,remote_path,expected_size,status,updated_at)
+    VALUES(?,'scale-user',88,'main',?,?,128,'verified',?)
+  `);
+  const insertAll = database.db.transaction(() => {
+    for (let index = 1; index <= 10_000; index += 1) {
+      const bvid = `BVSCALE${String(index).padStart(6, "0")}`;
+      const name = `${bvid}.mp4`;
+      const remotePath = `/archive/${bvid}/${name}`;
+      const title = index === 9876 ? "Needle 9876" : `规模视频 ${index}`;
+      const file = remoteFile(name, { path: remotePath });
+      const videoEntry = video(bvid, title, [file]);
+      videoEntry.upperName = index === 9876 ? "Scale UP" : "批量账号";
+      const relationEntry = relation(bvid, index, [file]);
+      relationEntry.userId = "scale-user";
+      relationEntry.mediaId = 88;
+      insertVideo.run(bvid, JSON.stringify(videoEntry), index);
+      insertRelation.run(bvid, index, index, JSON.stringify(relationEntry), index);
+      insertRemote.run(bvid, name, remotePath, index);
+    }
+  });
+  try {
+    insertAll();
+    const focus = getPlaybackQueue(database, "scale-user", 88, { focusBvid: "BVSCALE000525", pageSize: 50 });
+    assert.ok(focus);
+    assert.equal(focus.page, 11);
+    assert.equal(focus.total, 10_000);
+    assert.equal(focus.items.length, 50);
+    assert.equal(focus.items[0].queuePosition, 501);
+    assert.equal(focus.items[24].bvid, "BVSCALE000525");
+    assert.equal(focus.items[49].queuePosition, 550);
+
+    const previous = getPlaybackQueue(database, "scale-user", 88, { page: 10, pageSize: 50 });
+    const next = getPlaybackQueue(database, "scale-user", 88, { page: 12, pageSize: 50 });
+    assert.deepEqual([previous?.items[0].queuePosition, previous?.items.at(-1)?.queuePosition], [451, 500]);
+    assert.deepEqual([next?.items[0].queuePosition, next?.items.at(-1)?.queuePosition], [551, 600]);
+
+    const search = getPlaybackSearch(database, "scale-user", 88, { query: "Needle UP 9876", pageSize: 50 });
+    assert.equal(search.total, 1);
+    assert.equal(search.items[0].bvid, "BVSCALE009876");
+    assert.equal(search.items[0].queuePosition, 9876);
+    const plan = database.db.prepare(`
+      EXPLAIN QUERY PLAN SELECT r.bvid FROM favorite_relations r
+      WHERE r.user_id=? AND r.media_id=? AND r.active_in_favorite=1
+      ORDER BY CASE WHEN r.fav_order IS NULL THEN 1 ELSE 0 END, r.fav_order ASC, r.last_seen_at DESC, r.bvid ASC
+      LIMIT 50
+    `).all("scale-user", 88) as any[];
+    assert.match(plan.map((row) => String(row.detail || "")).join("\n"), /idx_relations_folder_page/);
   } finally {
     database.close();
   }

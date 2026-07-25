@@ -341,7 +341,7 @@ function getAppStyles() {
     .playback-heading h2 { margin:3px 0 0; color:#F4F7F6; font-size:17px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:0; }
     .playback-close { width:38px; height:38px; flex:0 0 auto; border:1px solid #465451; border-radius:50%; background:#222B29; color:#F4F7F6; font-size:22px; line-height:1; cursor:pointer; }
     .playback-close:hover,.playback-close:focus-visible { border-color:#39C5BB; color:#69D9D0; outline:none; }
-    .playback-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 320px; }
+    .playback-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) clamp(320px,27vw,380px); }
     .playback-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#0F1413; }
     .playback-stage { position:relative; min-width:0; flex:1 1 auto; min-height:260px; display:grid; place-items:center; overflow:hidden; background:#090C0B; }
     .playback-stage.is-portrait .art-video-player video { object-fit:contain!important; }
@@ -367,21 +367,37 @@ function getAppStyles() {
     .playback-part-button { flex:0 0 auto; min-width:42px; min-height:30px; border:1px solid #3E4B49; border-radius:5px; background:#202725; color:#C5CECC; padding:5px 9px; cursor:pointer; font-size:12px; }
     .playback-part-button.active { border-color:#39C5BB; background:rgba(57,197,187,0.16); color:#7FE4DC; }
     .playback-queue { min-width:0; min-height:0; display:flex; flex-direction:column; border-left:1px solid #2D3836; background:#171E1D; }
-    .playback-queue-head { flex:0 0 auto; display:flex; justify-content:space-between; gap:12px; align-items:center; padding:16px; border-bottom:1px solid #2D3836; }
-    .playback-queue-head strong { color:#F4F7F6; font-size:14px; }
-    .playback-queue-head span { color:#899794; font-size:11px; }
-    .playback-queue-list { min-height:0; flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:7px 8px; }
-    .playback-queue-item { width:100%; min-width:0; display:grid; grid-template-columns:30px 1fr; gap:9px; align-items:start; border:0; border-left:3px solid transparent; border-radius:4px; background:transparent; color:#DCE3E1; padding:10px 9px 10px 6px; text-align:left; cursor:pointer; transition:background-color .15s ease,border-color .15s ease,color .15s ease; }
+    .playback-queue-head { flex:0 0 auto; display:flex; flex-direction:column; gap:11px; padding:14px 14px 12px; border-bottom:1px solid #2D3836; }
+    .playback-queue-heading { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .playback-queue-heading strong { color:#F4F7F6; font-size:14px; }
+    .playback-queue-heading span,.playback-search-status { color:#899794; font-size:11px; }
+    .playback-search-controls { min-width:0; }
+    .playback-search-box { position:relative; display:block; }
+    .playback-search-input { width:100%; height:36px; border:1px solid #394744; border-radius:6px; background:#101615; color:#EFF5F3; padding:7px 35px 7px 11px; font:inherit; font-size:12px; outline:none; }
+    .playback-search-input::placeholder { color:#71807C; }
+    .playback-search-input:focus { border-color:#39C5BB; box-shadow:0 0 0 2px rgba(57,197,187,0.12); }
+    .playback-search-clear { position:absolute; top:4px; right:4px; width:28px; height:28px; border:0; border-radius:4px; background:transparent; color:#93A19E; font-size:18px; line-height:1; cursor:pointer; }
+    .playback-search-clear:hover,.playback-search-clear:focus-visible { background:#27312F; color:#F4F7F6; outline:none; }
+    .playback-search-status { display:block; min-height:16px; margin-top:5px; }
+    .playback-search-status button { border:0; background:transparent; color:#69D9D0; padding:0 0 0 6px; cursor:pointer; font:inherit; font-weight:650; }
+    .playback-queue-list { min-height:0; flex:1 1 auto; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:7px 8px; }
+    .playback-queue-item { width:100%; min-width:0; display:grid; grid-template-columns:26px 72px minmax(0,1fr); gap:8px; align-items:center; overflow:hidden; border:0; border-left:3px solid transparent; border-radius:4px; background:transparent; color:#DCE3E1; padding:8px 7px 8px 4px; text-align:left; cursor:pointer; overflow-anchor:auto; transition:background-color .15s ease,border-color .15s ease,color .15s ease; }
     .playback-queue-item:hover { background:#202927; }
     .playback-queue-item:focus-visible { background:#202927; outline:1px solid #52605E; outline-offset:-1px; }
     .playback-queue-item.active { background:rgba(57,197,187,0.10); border-left-color:#39C5BB; color:#F2FAF8; }
-    .playback-queue-number { color:#6E7E7A; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; padding-top:2px; text-align:right; }
+    .playback-queue-number { color:#6E7E7A; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:10px; text-align:right; }
     .playback-queue-item.active .playback-queue-number { color:#69D9D0; }
     .playback-queue-item.active .playback-queue-title { color:#F2FAF8; }
+    .playback-queue-thumb { position:relative; width:72px; height:45px; overflow:hidden; border-radius:4px; background:#222A28; }
+    .playback-queue-thumb img { display:block; width:100%; height:100%; object-fit:cover; }
+    .playback-queue-placeholder { position:absolute; inset:0; display:grid; place-items:center; color:#65736F; font-size:15px; font-weight:750; background:#202725; }
     .playback-queue-copy { min-width:0; }
     .playback-queue-title { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font-size:12px; font-weight:650; line-height:1.45; }
     .playback-queue-meta { color:#85938F; font-size:11px; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .playback-queue-empty { color:#82908D; font-size:12px; text-align:center; padding:28px 12px; }
+    .playback-queue-sentinel { min-height:1px; overflow-anchor:none; }
+    .playback-queue-feedback { display:flex; justify-content:center; align-items:center; min-height:28px; padding:4px 8px; color:#82908D; font-size:11px; text-align:center; overflow-anchor:none; }
+    .playback-queue-feedback button { border:0; background:transparent; color:#69D9D0; padding:4px 6px; cursor:pointer; font:inherit; font-weight:650; }
     @keyframes playbackEnter { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
     .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     .filter-toggle button { padding:6px 16px; border-radius:999px; border:1px solid var(--glass-border-strong); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
@@ -568,6 +584,7 @@ function getAppStyles() {
       .playback-part-list { margin-top:10px; }
       .playback-queue { min-height:260px; border-left:0; border-top:1px solid #2D3836; }
       .playback-queue-list { max-height:none; overflow:visible; }
+      .playback-queue-head { position:sticky; top:0; z-index:4; background:#171E1D; }
     }
     @media (max-width: 420px) {
       .playback-art .art-video-player { --art-control-icon-size:28px; --art-control-height:34px; --art-padding:10px; }
@@ -813,8 +830,17 @@ function getModals() {
         </section>
         <aside class="playback-queue" aria-label="收藏夹播放队列">
           <div class="playback-queue-head">
-            <strong>收藏夹顺序</strong>
-            <span id="playbackQueueCount">0 项</span>
+            <div class="playback-queue-heading">
+              <strong>收藏夹顺序</strong>
+              <span id="playbackQueueCount">0 项</span>
+            </div>
+            <div class="playback-search-controls" id="playbackSearchControls">
+              <label class="playback-search-box">
+                <input class="playback-search-input" id="playbackSearchInput" type="search" maxlength="80" autocomplete="off" placeholder="搜索标题、UP主或BV号" aria-label="搜索可播放归档">
+                <button class="playback-search-clear is-hidden" id="playbackSearchClearBtn" type="button" aria-label="清除搜索" title="清除搜索">×</button>
+              </label>
+              <span class="playback-search-status" id="playbackSearchStatus" aria-live="polite"></span>
+            </div>
           </div>
           <div class="playback-queue-list" id="playbackQueueList"></div>
         </aside>
@@ -1079,10 +1105,19 @@ function getAppScript() {
       mediaId: null,
       mode: 'favorite',
       page: 1,
-      pageSize: 30,
+      pageSize: 50,
       total: 0,
       focusIndex: -1,
       items: [],
+      pages: new Map(),
+      queueNodes: new Map(),
+      queueObserver: null,
+      queueController: null,
+      queuePromise: null,
+      queueToken: 0,
+      queueLoading: false,
+      queueLoadingDirection: null,
+      queueError: null,
       itemIndex: 0,
       partIndex: 0,
       loadingToken: 0,
@@ -1090,7 +1125,21 @@ function getAppScript() {
       continuous: true,
       preferences: null,
       trigger: null,
-      focusBvid: null
+      focusBvid: null,
+      search: {
+        query: '',
+        shownQuery: '',
+        page: 0,
+        total: 0,
+        hasMore: false,
+        items: [],
+        nodes: new Map(),
+        timer: null,
+        controller: null,
+        token: 0,
+        loading: false,
+        error: null
+      }
     };
     let syncHelpMode = 'simple';
     let renamePreviewState = { candidates: [], skipped: [] };
@@ -3020,6 +3069,17 @@ function getAppScript() {
 
     function destroyPlaybackSession() {
       playbackState.loadingToken += 1;
+      playbackState.queueToken += 1;
+      playbackState.search.token += 1;
+      if (playbackState.queueController) playbackState.queueController.abort();
+      if (playbackState.search.controller) playbackState.search.controller.abort();
+      if (playbackState.search.timer) clearTimeout(playbackState.search.timer);
+      if (playbackState.queueObserver) playbackState.queueObserver.disconnect();
+      playbackState.queueController = null;
+      playbackState.queuePromise = null;
+      playbackState.search.controller = null;
+      playbackState.search.timer = null;
+      playbackState.queueObserver = null;
       savePlaybackProgress();
       if (playbackState.progressTimer) clearInterval(playbackState.progressTimer);
       playbackState.progressTimer = null;
@@ -3033,6 +3093,20 @@ function getAppScript() {
         detailModal.setAttribute('aria-hidden', 'false');
       }
       playbackState.items = [];
+      playbackState.pages.clear();
+      playbackState.queueNodes.clear();
+      playbackState.search.items = [];
+      playbackState.search.nodes.clear();
+      playbackState.search.query = '';
+      playbackState.search.shownQuery = '';
+      playbackState.search.page = 0;
+      playbackState.search.total = 0;
+      playbackState.search.hasMore = false;
+      playbackState.search.loading = false;
+      playbackState.search.error = null;
+      playbackState.queueLoading = false;
+      playbackState.queueLoadingDirection = null;
+      playbackState.queueError = null;
       playbackState.userId = null;
       playbackState.mediaId = null;
       playbackState.trigger = null;
@@ -3041,6 +3115,10 @@ function getAppScript() {
       queueHost.replaceChildren();
       queueHost.scrollTop = 0;
       delete queueHost.dataset.queueKey;
+      const searchInput = document.getElementById('playbackSearchInput');
+      if (searchInput) searchInput.value = '';
+      setHidden('playbackSearchClearBtn', true);
+      setStatus('playbackSearchStatus', '');
     }
 
     function loadArtplayer() {
@@ -3085,12 +3163,11 @@ function getAppScript() {
 
     function updatePlaybackNavigation() {
       const item = currentPlaybackItem();
+      const queuePosition = Number(item && item.queuePosition || 0);
       const hasPrevious = Boolean(item) && (playbackState.partIndex > 0
-        || playbackState.itemIndex > 0
-        || (playbackState.mode === 'favorite' && playbackState.page > 1));
+        || (playbackState.mode === 'favorite' ? queuePosition > 1 : playbackState.itemIndex > 0));
       const hasNext = Boolean(item) && (playbackState.partIndex + 1 < item.parts.length
-        || playbackState.itemIndex + 1 < playbackState.items.length
-        || (playbackState.mode === 'favorite' && (playbackState.page * playbackState.pageSize) < playbackState.total));
+        || (playbackState.mode === 'favorite' ? queuePosition < playbackState.total : playbackState.itemIndex + 1 < playbackState.items.length));
       document.getElementById('playbackPreviousBtn').disabled = !hasPrevious;
       document.getElementById('playbackNextBtn').disabled = !hasNext;
       const continuous = document.getElementById('playbackContinuousBtn');
@@ -3126,14 +3203,7 @@ function getAppScript() {
         playbackState.userId || '',
         playbackState.mediaId || '',
         playbackState.mode,
-        playbackState.page,
-        ...playbackState.items.map((item) => JSON.stringify([
-          item.bvid,
-          item.title,
-          item.upperName,
-          Boolean(item.partial),
-          item.parts.map((part) => part.fileId)
-        ]))
+        ...Array.from(playbackState.pages.keys()).sort((left, right) => left - right)
       ].join(':');
     }
 
@@ -3141,29 +3211,201 @@ function getAppScript() {
       return window.matchMedia('(max-width: 720px)').matches;
     }
 
+    function isPlaybackSearchView() {
+      return playbackState.mode === 'favorite' && Boolean(playbackState.search.shownQuery);
+    }
+
+    function playbackPageBounds() {
+      const pages = Array.from(playbackState.pages.keys()).sort((left, right) => left - right);
+      return {
+        first: pages.length ? pages[0] : 1,
+        last: pages.length ? pages[pages.length - 1] : 0
+      };
+    }
+
+    function createPlaybackThumbnail(item) {
+      const thumb = document.createElement('span');
+      thumb.className = 'playback-queue-thumb';
+      const placeholder = document.createElement('span');
+      placeholder.className = 'playback-queue-placeholder';
+      placeholder.textContent = 'B';
+      placeholder.setAttribute('aria-hidden', 'true');
+      thumb.appendChild(placeholder);
+      const local = localCoverUrl(item);
+      const remote = item && item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const sources = [...new Set([local, remote].filter(Boolean))];
+      if (!sources.length) return thumb;
+      const image = document.createElement('img');
+      image.alt = '';
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.referrerPolicy = 'no-referrer';
+      let sourceIndex = 0;
+      image.addEventListener('load', () => placeholder.classList.add('is-hidden'));
+      image.addEventListener('error', () => {
+        sourceIndex += 1;
+        if (sourceIndex < sources.length) {
+          image.src = sources[sourceIndex];
+          return;
+        }
+        image.remove();
+        placeholder.classList.remove('is-hidden');
+      });
+      image.src = sources[0];
+      thumb.appendChild(image);
+      return thumb;
+    }
+
+    function createPlaybackQueueNode(item, view) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'playback-queue-item';
+      button.dataset.playbackQueueBvid = item.bvid;
+      button.dataset.playbackQueueView = view;
+      const number = document.createElement('span');
+      number.className = 'playback-queue-number';
+      number.textContent = playbackState.mode === 'single' ? 'H' : String(Number(item.queuePosition || 0)).padStart(2, '0');
+      const copy = document.createElement('span');
+      copy.className = 'playback-queue-copy';
+      const title = document.createElement('span');
+      title.className = 'playback-queue-title';
+      title.textContent = safeText(item.title || item.bvid, '未知视频');
+      const meta = document.createElement('span');
+      meta.className = 'playback-queue-meta';
+      meta.textContent = item.parts.length + ' 个分P' + (item.partial ? ' · 部分备份' : '') + ' · ' + safeText(item.upperName, '未知UP');
+      copy.appendChild(title);
+      copy.appendChild(meta);
+      button.appendChild(number);
+      button.appendChild(createPlaybackThumbnail(item));
+      button.appendChild(copy);
+      button.addEventListener('click', () => {
+        if (view === 'search') {
+          selectPlaybackSearchResult(item, button);
+          return;
+        }
+        const index = playbackState.items.findIndex((candidate) => candidate.bvid === item.bvid);
+        if (index < 0 || (index === playbackState.itemIndex && playbackState.partIndex === 0)) return;
+        savePlaybackProgress();
+        playbackState.itemIndex = index;
+        playbackState.partIndex = 0;
+        playCurrentSelection(true);
+      });
+      return button;
+    }
+
+    function setPlaybackQueueFeedback(element, text, retry) {
+      if (!element) return;
+      element.replaceChildren();
+      if (text) element.append(document.createTextNode(text));
+      if (retry) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '重试';
+        button.addEventListener('click', retry);
+        element.appendChild(button);
+      }
+    }
+
+    function updatePlaybackSearchHeader() {
+      const controls = document.getElementById('playbackSearchControls');
+      setHidden(controls, playbackState.mode === 'single');
+      const search = playbackState.search;
+      setHidden('playbackSearchClearBtn', !String(search.query || '').trim());
+      const status = document.getElementById('playbackSearchStatus');
+      status.replaceChildren();
+      if (playbackState.mode === 'single') {
+        return;
+      } else if (search.loading) {
+        status.textContent = search.shownQuery ? '正在搜索，保留当前结果' : '正在搜索';
+      } else if (search.error) {
+        status.textContent = search.shownQuery ? '搜索失败，保留上次结果' : '搜索失败';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = '重试';
+        retry.addEventListener('click', () => runPlaybackSearch(search.query || search.shownQuery, 1, false));
+        status.appendChild(retry);
+      } else if (search.shownQuery) {
+        status.textContent = search.total + ' 个结果';
+      } else {
+        status.textContent = '';
+      }
+    }
+
+    function updatePlaybackQueueFeedback() {
+      const host = document.getElementById('playbackQueueList');
+      const top = host.querySelector('[data-playback-boundary="top"]');
+      const bottom = host.querySelector('[data-playback-boundary="bottom"]');
+      if (isPlaybackSearchView()) {
+        setPlaybackQueueFeedback(top, '', null);
+        const search = playbackState.search;
+        if (search.loading && search.page > 0) setPlaybackQueueFeedback(bottom, '正在加载更多结果', null);
+        else if (search.error && search.error.page > 1) {
+          setPlaybackQueueFeedback(bottom, '更多结果加载失败', () => runPlaybackSearch(search.shownQuery, search.error.page, true));
+        } else setPlaybackQueueFeedback(bottom, '', null);
+        return;
+      }
+      const error = playbackState.queueError;
+      const loadingDirection = playbackState.queueLoadingDirection;
+      if (error && error.direction === 'prepend') {
+        setPlaybackQueueFeedback(top, '前面的队列加载失败', () => loadPlaybackQueuePage(error.page, { direction:'prepend' }).catch(() => undefined));
+      } else {
+        setPlaybackQueueFeedback(top, loadingDirection === 'prepend' ? '正在加载前面的归档' : '', null);
+      }
+      if (error && error.direction === 'append') {
+        setPlaybackQueueFeedback(bottom, '后面的队列加载失败', () => loadPlaybackQueuePage(error.page, { direction:'append' }).catch(() => undefined));
+      } else {
+        setPlaybackQueueFeedback(bottom, loadingDirection === 'append' ? '正在加载更多归档' : '', null);
+      }
+    }
+
+    function createPlaybackQueueBoundary(direction) {
+      const boundary = document.createElement('div');
+      boundary.className = 'playback-queue-feedback';
+      boundary.dataset.playbackBoundary = direction;
+      return boundary;
+    }
+
+    function renderPlaybackQueueStructure(view) {
+      const host = document.getElementById('playbackQueueList');
+      host.replaceChildren();
+      host.appendChild(createPlaybackQueueBoundary('top'));
+      const items = view === 'search' ? playbackState.search.items : playbackState.items;
+      const nodeMap = view === 'search' ? playbackState.search.nodes : playbackState.queueNodes;
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'playback-queue-empty';
+        empty.textContent = view === 'search' ? '没有匹配的可播放归档' : '当前没有可播放归档';
+        host.appendChild(empty);
+      } else {
+        for (const item of items) {
+          let node = nodeMap.get(item.bvid);
+          if (!node) {
+            node = createPlaybackQueueNode(item, view);
+            nodeMap.set(item.bvid, node);
+          }
+          host.appendChild(node);
+        }
+      }
+      host.appendChild(createPlaybackQueueBoundary('bottom'));
+      host.dataset.queueView = view;
+      host.dataset.queueKey = view === 'search' ? 'search:' + playbackState.search.shownQuery : playbackQueueRenderKey();
+      updatePlaybackQueueFeedback();
+      setupPlaybackQueueObserver();
+    }
+
     function syncPlaybackQueueSelection(options = {}) {
       const host = document.getElementById('playbackQueueList');
+      const item = currentPlaybackItem();
+      const activeBvid = item ? item.bvid : '';
       const buttons = host.querySelectorAll('.playback-queue-item');
       buttons.forEach((button) => {
-        const active = Number(button.dataset.playbackQueueIndex) === playbackState.itemIndex;
+        const active = button.dataset.playbackQueueBvid === activeBvid;
         button.classList.toggle('active', active);
         if (active) button.setAttribute('aria-current', 'true');
         else button.removeAttribute('aria-current');
       });
 
-      if (isPlaybackMobileLayout()) {
-        const layout = document.querySelector('.playback-layout');
-        const preserved = Number(options.mobileLayoutScrollTop);
-        if (layout && Number.isFinite(preserved)) {
-          layout.scrollTop = preserved;
-          requestAnimationFrame(() => {
-            if (layout.isConnected) layout.scrollTop = preserved;
-          });
-        }
-        return;
-      }
-
-      if (options.alignDesktop === false) return;
+      if (isPlaybackMobileLayout() || options.alignDesktop === false) return;
       requestAnimationFrame(() => {
         const active = host.querySelector('.playback-queue-item.active');
         if (!active || !host.isConnected) return;
@@ -3182,56 +3424,125 @@ function getAppScript() {
       });
     }
 
-    function renderPlaybackQueue() {
+    function setupPlaybackQueueObserver() {
+      if (playbackState.queueObserver) playbackState.queueObserver.disconnect();
+      playbackState.queueObserver = null;
+      if (typeof IntersectionObserver !== 'function' || playbackState.mode === 'single') return;
       const host = document.getElementById('playbackQueueList');
-      const layout = document.querySelector('.playback-layout');
-      const mobileLayoutScrollTop = isPlaybackMobileLayout() && layout ? layout.scrollTop : undefined;
-      const offset = (playbackState.page - 1) * playbackState.pageSize;
+      const root = isPlaybackMobileLayout() ? document.querySelector('.playback-layout') : host;
+      if (!root) return;
+      const observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const direction = entry.target.dataset.playbackBoundary;
+          if (isPlaybackSearchView()) {
+            const search = playbackState.search;
+            if (direction === 'bottom' && search.hasMore && !search.loading && search.query === search.shownQuery) {
+              runPlaybackSearch(search.shownQuery, search.page + 1, true);
+            }
+            continue;
+          }
+          if (playbackState.queueLoading) continue;
+          const bounds = playbackPageBounds();
+          if (direction === 'top' && bounds.first > 1) {
+            loadPlaybackQueuePage(bounds.first - 1, { direction:'prepend' }).catch(() => undefined);
+          } else if (direction === 'bottom' && bounds.last * playbackState.pageSize < playbackState.total) {
+            loadPlaybackQueuePage(bounds.last + 1, { direction:'append' }).catch(() => undefined);
+          }
+        }
+      }, { root, rootMargin:'140px 0px' });
+      host.querySelectorAll('[data-playback-boundary]').forEach((boundary) => observer.observe(boundary));
+      playbackState.queueObserver = observer;
+    }
+
+    function rebuildPlaybackItems(selectedBvid) {
+      const current = selectedBvid || currentPlaybackItem()?.bvid;
+      const seen = new Set();
+      playbackState.items = Array.from(playbackState.pages.entries())
+        .sort((left, right) => left[0] - right[0])
+        .flatMap((entry) => entry[1])
+        .filter((item) => {
+          if (!item || seen.has(item.bvid)) return false;
+          seen.add(item.bvid);
+          return true;
+        })
+        .sort((left, right) => Number(left.queuePosition || 0) - Number(right.queuePosition || 0));
+      const index = current ? playbackState.items.findIndex((item) => item.bvid === current) : -1;
+      playbackState.itemIndex = index >= 0 ? index : Math.min(playbackState.itemIndex, Math.max(0, playbackState.items.length - 1));
+      playbackState.items.forEach((item, itemIndex) => {
+        const node = playbackState.queueNodes.get(item.bvid);
+        if (node) node.dataset.playbackQueueIndex = String(itemIndex);
+      });
+    }
+
+    function insertPlaybackQueueItems(items, direction) {
+      const host = document.getElementById('playbackQueueList');
+      if (host.dataset.queueView !== 'normal') return;
+      const bottom = host.querySelector('[data-playback-boundary="bottom"]');
+      if (!bottom) return;
+      const beforeHeight = host.scrollHeight;
+      const fragment = document.createDocumentFragment();
+      for (const item of items) {
+        let node = playbackState.queueNodes.get(item.bvid);
+        if (!node) {
+          node = createPlaybackQueueNode(item, 'normal');
+          playbackState.queueNodes.set(item.bvid, node);
+        }
+        if (!node.isConnected) fragment.appendChild(node);
+      }
+      if (!fragment.childNodes.length) return;
+      if (direction === 'prepend') {
+        const firstItem = host.querySelector('.playback-queue-item');
+        host.insertBefore(fragment, firstItem || bottom);
+        if (!isPlaybackMobileLayout()) host.scrollTop += host.scrollHeight - beforeHeight;
+      } else {
+        host.insertBefore(fragment, bottom);
+      }
+    }
+
+    function applyPlaybackQueuePage(data, options = {}) {
+      const page = Number(data.page || options.page || 1);
+      const pageItems = (Array.isArray(data.items) ? data.items : []).map((item, index) => ({
+        ...item,
+        queuePosition: Number(item.queuePosition || ((page - 1) * playbackState.pageSize + index + 1))
+      }));
+      const selectedBvid = options.selectedBvid || currentPlaybackItem()?.bvid;
+      if (options.reset) {
+        playbackState.pages.clear();
+        playbackState.queueNodes.clear();
+        playbackState.items = [];
+      }
+      playbackState.mode = data.mode || 'favorite';
+      playbackState.page = page;
+      playbackState.total = Number(data.total || 0);
+      playbackState.focusIndex = Number(data.focusIndex ?? -1);
+      playbackState.pages.set(page, pageItems);
+      rebuildPlaybackItems(selectedBvid);
+      if (options.selectedBvid) {
+        const selectedIndex = playbackState.items.findIndex((item) => item.bvid === options.selectedBvid);
+        if (selectedIndex >= 0) playbackState.itemIndex = selectedIndex;
+      }
+      if (options.render === false) return;
+      if (options.reset || document.getElementById('playbackQueueList').dataset.queueView !== 'normal') {
+        renderPlaybackQueue(true);
+      } else {
+        insertPlaybackQueueItems(pageItems, options.direction || 'append');
+        updatePlaybackQueueFeedback();
+        setupPlaybackQueueObserver();
+        syncPlaybackQueueSelection({ alignDesktop:false });
+      }
+    }
+
+    function renderPlaybackQueue(force = false) {
+      const host = document.getElementById('playbackQueueList');
       document.getElementById('playbackQueueCount').textContent = playbackState.mode === 'single'
         ? '历史记录 · 单独播放'
         : playbackState.total + ' 个视频';
-      const queueKey = playbackQueueRenderKey();
-      const shouldRebuild = host.dataset.queueKey !== queueKey;
-      if (shouldRebuild) host.replaceChildren();
-      if (shouldRebuild && !playbackState.items.length) {
-        const empty = document.createElement('div');
-        empty.className = 'playback-queue-empty';
-        empty.textContent = '当前没有可播放归档';
-        host.appendChild(empty);
-      }
-      if (shouldRebuild && playbackState.items.length) {
-        playbackState.items.forEach((item, index) => {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'playback-queue-item';
-          button.dataset.playbackQueueIndex = String(index);
-          const number = document.createElement('span');
-          number.className = 'playback-queue-number';
-          number.textContent = playbackState.mode === 'single' ? 'H' : String(offset + index + 1).padStart(2, '0');
-          const copy = document.createElement('span');
-          copy.className = 'playback-queue-copy';
-          const title = document.createElement('span');
-          title.className = 'playback-queue-title';
-          title.textContent = safeText(item.title || item.bvid, '未知视频');
-          const meta = document.createElement('span');
-          meta.className = 'playback-queue-meta';
-          meta.textContent = item.parts.length + ' 个分P' + (item.partial ? ' · 部分备份' : '') + ' · ' + safeText(item.upperName, '未知UP');
-          copy.appendChild(title);
-          copy.appendChild(meta);
-          button.appendChild(number);
-          button.appendChild(copy);
-          button.addEventListener('click', () => {
-            if (index === playbackState.itemIndex && playbackState.partIndex === 0) return;
-            savePlaybackProgress();
-            playbackState.itemIndex = index;
-            playbackState.partIndex = 0;
-            playCurrentSelection(true);
-          });
-          host.appendChild(button);
-        });
-      }
-      host.dataset.queueKey = queueKey;
-      syncPlaybackQueueSelection({ mobileLayoutScrollTop });
+      updatePlaybackSearchHeader();
+      const view = isPlaybackSearchView() ? 'search' : 'normal';
+      if (force || host.dataset.queueView !== view) renderPlaybackQueueStructure(view);
+      else updatePlaybackQueueFeedback();
+      syncPlaybackQueueSelection();
     }
 
     function updatePlaybackNow() {
@@ -3387,21 +3698,261 @@ function getAppScript() {
       }
     }
 
-    async function loadPlaybackPage(page, itemIndex, partIndex, autoplay) {
-      const data = await fetchJson(
-        '/api/users/' + encodeURIComponent(playbackState.userId) +
-        '/favorites/' + playbackState.mediaId +
-        '/playback-queue?page=' + page + '&pageSize=' + playbackState.pageSize
-      );
-      playbackState.mode = data.mode || 'favorite';
-      playbackState.page = Number(data.page || page);
-      playbackState.total = Number(data.total || 0);
-      playbackState.focusIndex = Number(data.focusIndex ?? -1);
-      playbackState.items = Array.isArray(data.items) ? data.items : [];
-      playbackState.itemIndex = Math.min(Math.max(0, itemIndex), Math.max(0, playbackState.items.length - 1));
+    function playbackQueueApiPath(suffix) {
+      return '/api/users/' + encodeURIComponent(playbackState.userId) +
+        '/favorites/' + playbackState.mediaId + suffix;
+    }
+
+    async function loadPlaybackQueuePage(page, options = {}) {
+      const normalizedPage = Math.max(1, Number(page || 1));
+      if (playbackState.pages.has(normalizedPage) && !options.reset) return playbackState.pages.get(normalizedPage);
+      if (playbackState.queueLoading) {
+        const pending = playbackState.queuePromise;
+        if (!pending) return null;
+        await pending.catch(() => undefined);
+        if (playbackState.pages.has(normalizedPage) && !options.reset) return playbackState.pages.get(normalizedPage);
+        if (playbackState.queueLoading) return null;
+        return loadPlaybackQueuePage(normalizedPage, options);
+      }
+      playbackState.queueLoading = true;
+      playbackState.queueLoadingDirection = options.direction || 'append';
+      playbackState.queueError = null;
+      if (playbackState.queueController) playbackState.queueController.abort();
+      const controller = new AbortController();
+      playbackState.queueController = controller;
+      const token = ++playbackState.queueToken;
+      updatePlaybackQueueFeedback();
+      const operation = (async () => {
+        try {
+          const data = await fetchJson(
+            playbackQueueApiPath('/playback-queue?page=' + normalizedPage + '&pageSize=' + playbackState.pageSize),
+            { signal:controller.signal }
+          );
+          if (token !== playbackState.queueToken) return null;
+          applyPlaybackQueuePage(data, {
+            page: normalizedPage,
+            direction: options.direction || 'append',
+            reset: Boolean(options.reset),
+            selectedBvid: options.selectedBvid
+          });
+          return data;
+        } catch (error) {
+          if (error && error.name === 'AbortError') return null;
+          if (token === playbackState.queueToken) {
+            playbackState.queueError = {
+              page: normalizedPage,
+              direction: options.direction || 'append',
+              message: error instanceof Error ? error.message : String(error)
+            };
+            updatePlaybackQueueFeedback();
+          }
+          throw error;
+        } finally {
+          if (token === playbackState.queueToken) {
+            playbackState.queueLoading = false;
+            playbackState.queueLoadingDirection = null;
+            playbackState.queueController = null;
+            updatePlaybackQueueFeedback();
+            setupPlaybackQueueObserver();
+          }
+        }
+      })();
+      playbackState.queuePromise = operation;
+      try {
+        return await operation;
+      } finally {
+        if (playbackState.queuePromise === operation) playbackState.queuePromise = null;
+      }
+    }
+
+    async function selectPlaybackQueuePosition(queuePosition, partIndex, autoplay) {
+      const position = Math.max(1, Number(queuePosition || 1));
+      let index = playbackState.items.findIndex((item) => Number(item.queuePosition) === position);
+      if (index < 0) {
+        const currentPosition = Number(currentPlaybackItem()?.queuePosition || 0);
+        const page = Math.floor((position - 1) / playbackState.pageSize) + 1;
+        await loadPlaybackQueuePage(page, { direction:position < currentPosition ? 'prepend' : 'append' });
+        index = playbackState.items.findIndex((item) => Number(item.queuePosition) === position);
+      }
+      if (index < 0) throw new Error('播放队列已变化，请重新打开播放器');
+      playbackState.itemIndex = index;
       const item = currentPlaybackItem();
-      playbackState.partIndex = item ? Math.min(Math.max(0, partIndex), item.parts.length - 1) : 0;
+      playbackState.page = Math.floor((position - 1) / playbackState.pageSize) + 1;
+      playbackState.partIndex = item ? Math.min(Math.max(0, Number(partIndex || 0)), item.parts.length - 1) : 0;
       await playCurrentSelection(autoplay);
+    }
+
+    function clearPlaybackSearch(options = {}) {
+      const search = playbackState.search;
+      search.token += 1;
+      if (search.timer) clearTimeout(search.timer);
+      if (search.controller) search.controller.abort();
+      search.timer = null;
+      search.controller = null;
+      search.query = '';
+      search.shownQuery = '';
+      search.page = 0;
+      search.total = 0;
+      search.hasMore = false;
+      search.items = [];
+      search.nodes.clear();
+      search.loading = false;
+      search.error = null;
+      const input = document.getElementById('playbackSearchInput');
+      if (input) input.value = '';
+      updatePlaybackSearchHeader();
+      if (options.render !== false) renderPlaybackQueue(true);
+    }
+
+    function appendPlaybackSearchItems(items) {
+      const host = document.getElementById('playbackQueueList');
+      if (host.dataset.queueView !== 'search') return;
+      const bottom = host.querySelector('[data-playback-boundary="bottom"]');
+      if (!bottom) return;
+      const fragment = document.createDocumentFragment();
+      for (const item of items) {
+        let node = playbackState.search.nodes.get(item.bvid);
+        if (!node) {
+          node = createPlaybackQueueNode(item, 'search');
+          playbackState.search.nodes.set(item.bvid, node);
+        }
+        if (!node.isConnected) fragment.appendChild(node);
+      }
+      host.insertBefore(fragment, bottom);
+    }
+
+    async function runPlaybackSearch(query, page = 1, append = false) {
+      const normalizedQuery = String(query || '').trim().slice(0, 80);
+      if (!normalizedQuery || playbackState.mode === 'single') {
+        clearPlaybackSearch();
+        return;
+      }
+      const search = playbackState.search;
+      if (search.controller) search.controller.abort();
+      const controller = new AbortController();
+      search.controller = controller;
+      const token = ++search.token;
+      search.loading = true;
+      search.error = null;
+      updatePlaybackSearchHeader();
+      updatePlaybackQueueFeedback();
+      try {
+        const data = await fetchJson(
+          playbackQueueApiPath('/playback-search?q=' + encodeURIComponent(normalizedQuery) + '&page=' + page + '&pageSize=' + playbackState.pageSize),
+          { signal:controller.signal }
+        );
+        if (token !== search.token || search.query !== normalizedQuery) return;
+        const incoming = Array.isArray(data.items) ? data.items : [];
+        const canAppend = append && search.shownQuery === normalizedQuery;
+        if (canAppend) {
+          const known = new Set(search.items.map((item) => item.bvid));
+          const fresh = incoming.filter((item) => !known.has(item.bvid));
+          search.items.push(...fresh);
+          appendPlaybackSearchItems(fresh);
+        } else {
+          search.items = incoming;
+          search.nodes.clear();
+        }
+        search.shownQuery = normalizedQuery;
+        search.page = Number(data.page || page);
+        search.total = Number(data.total || 0);
+        search.hasMore = Boolean(data.hasMore);
+        search.error = null;
+        if (canAppend) {
+          updatePlaybackQueueFeedback();
+          setupPlaybackQueueObserver();
+          syncPlaybackQueueSelection({ alignDesktop:false });
+        } else {
+          renderPlaybackQueue(true);
+        }
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        if (token === search.token) {
+          search.error = { page, message:error instanceof Error ? error.message : String(error) };
+          updatePlaybackSearchHeader();
+          updatePlaybackQueueFeedback();
+        }
+      } finally {
+        if (token === search.token) {
+          search.loading = false;
+          search.controller = null;
+          updatePlaybackSearchHeader();
+          updatePlaybackQueueFeedback();
+          if (isPlaybackSearchView()) setupPlaybackQueueObserver();
+        }
+      }
+    }
+
+    function schedulePlaybackSearch() {
+      const search = playbackState.search;
+      const input = document.getElementById('playbackSearchInput');
+      const query = String(input.value || '').trim();
+      search.query = query;
+      if (search.timer) clearTimeout(search.timer);
+      if (search.controller) search.controller.abort();
+      search.token += 1;
+      search.timer = null;
+      search.controller = null;
+      if (!query) {
+        clearPlaybackSearch();
+        return;
+      }
+      search.loading = true;
+      search.error = null;
+      updatePlaybackSearchHeader();
+      search.timer = setTimeout(() => {
+        search.timer = null;
+        runPlaybackSearch(query, 1, false);
+      }, 300);
+    }
+
+    async function selectPlaybackSearchResult(item, trigger) {
+      if (!item || !item.bvid) return;
+      if (playbackState.queueLoading) {
+        const pending = playbackState.queuePromise;
+        if (pending) await pending.catch(() => undefined);
+        if (playbackState.queueLoading) return;
+      }
+      const previousBvid = currentPlaybackItem()?.bvid;
+      const previousPart = playbackState.partIndex;
+      playbackState.queueLoading = true;
+      playbackState.search.loading = true;
+      updatePlaybackSearchHeader();
+      if (playbackState.queueController) playbackState.queueController.abort();
+      const controller = new AbortController();
+      playbackState.queueController = controller;
+      const token = ++playbackState.queueToken;
+      try {
+        const data = await fetchJson(
+          playbackQueueApiPath('/playback-queue?focusBvid=' + encodeURIComponent(item.bvid) + '&pageSize=' + playbackState.pageSize),
+          { signal:controller.signal }
+        );
+        if (token !== playbackState.queueToken) return;
+        applyPlaybackQueuePage(data, { reset:true, selectedBvid:item.bvid, render:false });
+        playbackState.partIndex = previousBvid === item.bvid
+          ? Math.min(previousPart, Math.max(0, (currentPlaybackItem()?.parts.length || 1) - 1))
+          : 0;
+        clearPlaybackSearch({ render:false });
+        renderPlaybackQueue(true);
+        if (document.activeElement === trigger) {
+          const normalNode = playbackState.queueNodes.get(item.bvid);
+          if (normalNode) normalNode.focus({ preventScroll:true });
+        }
+        if (previousBvid === item.bvid) updatePlaybackNow();
+        else await playCurrentSelection(true);
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        playbackState.search.error = { page:1, message:error instanceof Error ? error.message : String(error) };
+        updatePlaybackSearchHeader();
+        updatePlaybackQueueFeedback();
+      } finally {
+        if (token === playbackState.queueToken) {
+          playbackState.queueLoading = false;
+          playbackState.search.loading = false;
+          playbackState.queueController = null;
+          updatePlaybackSearchHeader();
+        }
+      }
     }
 
     async function stepPlayback(direction, fromEnded = false) {
@@ -3415,14 +3966,9 @@ function getAppScript() {
             await playCurrentSelection(true);
             return;
           }
-          if (playbackState.itemIndex + 1 < playbackState.items.length) {
-            playbackState.itemIndex += 1;
-            playbackState.partIndex = 0;
-            await playCurrentSelection(true);
-            return;
-          }
-          if (playbackState.mode === 'favorite' && playbackState.page * playbackState.pageSize < playbackState.total) {
-            await loadPlaybackPage(playbackState.page + 1, 0, 0, true);
+          const nextPosition = Number(item.queuePosition || 0) + 1;
+          if (playbackState.mode === 'favorite' && nextPosition <= playbackState.total) {
+            await selectPlaybackQueuePosition(nextPosition, 0, true);
             return;
           }
           if (fromEnded) setPlaybackMessage('已播放到收藏夹末尾', '你可以选择队列中的视频重新播放。', { retry:false, skip:false });
@@ -3433,14 +3979,9 @@ function getAppScript() {
           await playCurrentSelection(true);
           return;
         }
-        if (playbackState.itemIndex > 0) {
-          playbackState.itemIndex -= 1;
-          playbackState.partIndex = playbackState.items[playbackState.itemIndex].parts.length - 1;
-          await playCurrentSelection(true);
-          return;
-        }
-        if (playbackState.mode === 'favorite' && playbackState.page > 1) {
-          await loadPlaybackPage(playbackState.page - 1, playbackState.pageSize - 1, Number.MAX_SAFE_INTEGER, true);
+        const previousPosition = Number(item.queuePosition || 0) - 1;
+        if (playbackState.mode === 'favorite' && previousPosition >= 1) {
+          await selectPlaybackQueuePosition(previousPosition, Number.MAX_SAFE_INTEGER, true);
         }
       } catch (error) {
         setPlaybackMessage('无法读取下一页队列', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
@@ -3451,14 +3992,9 @@ function getAppScript() {
       const item = currentPlaybackItem();
       if (!item) return;
       savePlaybackProgress();
-      if (playbackState.itemIndex + 1 < playbackState.items.length) {
-        playbackState.itemIndex += 1;
-        playbackState.partIndex = 0;
-        playCurrentSelection(true);
-        return;
-      }
-      if (playbackState.mode === 'favorite' && playbackState.page * playbackState.pageSize < playbackState.total) {
-        loadPlaybackPage(playbackState.page + 1, 0, 0, true).catch((error) => {
+      const nextPosition = Number(item.queuePosition || 0) + 1;
+      if (playbackState.mode === 'favorite' && nextPosition <= playbackState.total) {
+        selectPlaybackQueuePosition(nextPosition, 0, true).catch((error) => {
           setPlaybackMessage('无法读取下一页队列', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
         });
         return;
@@ -3471,7 +4007,7 @@ function getAppScript() {
       destroyPlaybackSession();
       playbackState.userId = videoDetailState.userId;
       playbackState.mediaId = videoDetailState.mediaId;
-      playbackState.pageSize = 30;
+      playbackState.pageSize = 50;
       playbackState.preferences = loadPlaybackPreferences();
       playbackState.continuous = playbackState.preferences.continuous;
       playbackState.trigger = trigger || null;
@@ -3482,29 +4018,29 @@ function getAppScript() {
       detailModal.setAttribute('aria-hidden', 'true');
       openModal('playbackModal', trigger);
       setPlaybackMessage('正在准备播放队列', '只会列出当前收藏夹中已通过远端确认的归档视频。', { retry:false, skip:false });
-      const token = ++playbackState.loadingToken;
+      const controller = new AbortController();
+      playbackState.queueController = controller;
+      const token = ++playbackState.queueToken;
       try {
         const data = await fetchJson(
           '/api/users/' + encodeURIComponent(playbackState.userId) +
           '/favorites/' + playbackState.mediaId +
-          '/playback-queue?focusBvid=' + encodeURIComponent(bvid) + '&pageSize=' + playbackState.pageSize
+          '/playback-queue?focusBvid=' + encodeURIComponent(bvid) + '&pageSize=' + playbackState.pageSize,
+          { signal:controller.signal }
         );
-        if (token !== playbackState.loadingToken) return;
-        playbackState.mode = data.mode || 'favorite';
-        playbackState.page = Number(data.page || 1);
-        playbackState.total = Number(data.total || 0);
-        playbackState.focusIndex = Number(data.focusIndex ?? -1);
-        playbackState.items = Array.isArray(data.items) ? data.items : [];
-        const offset = (playbackState.page - 1) * playbackState.pageSize;
-        const focusInPage = playbackState.mode === 'single' ? 0 : playbackState.focusIndex - offset;
+        if (token !== playbackState.queueToken) return;
+        applyPlaybackQueuePage(data, { reset:true, selectedBvid:bvid, render:false });
         const foundIndex = playbackState.items.findIndex((item) => item.bvid === bvid);
-        playbackState.itemIndex = foundIndex >= 0 ? foundIndex : Math.max(0, focusInPage);
+        playbackState.itemIndex = foundIndex >= 0 ? foundIndex : 0;
         playbackState.partIndex = 0;
         playbackState.progressTimer = setInterval(savePlaybackProgress, 5000);
         await playCurrentSelection(true);
       } catch (error) {
-        if (token !== playbackState.loadingToken) return;
+        if (error && error.name === 'AbortError') return;
+        if (token !== playbackState.queueToken) return;
         setPlaybackMessage('无法打开归档播放器', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
+      } finally {
+        if (token === playbackState.queueToken) playbackState.queueController = null;
       }
     }
 
@@ -4114,6 +4650,14 @@ function getAppScript() {
     document.getElementById('closePlaybackBtn').addEventListener('click', () => closeModal('playbackModal'));
     document.getElementById('playbackPreviousBtn').addEventListener('click', () => stepPlayback(-1));
     document.getElementById('playbackNextBtn').addEventListener('click', () => stepPlayback(1));
+    document.getElementById('playbackSearchInput').addEventListener('input', schedulePlaybackSearch);
+    document.getElementById('playbackSearchClearBtn').addEventListener('click', () => {
+      clearPlaybackSearch();
+      document.getElementById('playbackSearchInput').focus({ preventScroll:true });
+    });
+    window.matchMedia('(max-width: 720px)').addEventListener('change', () => {
+      if (document.getElementById('playbackModal').classList.contains('active')) setupPlaybackQueueObserver();
+    });
     document.getElementById('playbackContinuousBtn').addEventListener('click', () => {
       playbackState.continuous = !playbackState.continuous;
       if (playbackState.preferences) playbackState.preferences.continuous = playbackState.continuous;

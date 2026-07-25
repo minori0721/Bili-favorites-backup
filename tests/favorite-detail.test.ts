@@ -186,6 +186,8 @@ test("tracked favorite detail is served from SQLite with history and original me
 
     const unauthorizedQueue = await fetch(`${base}/api/users/detail-user/favorites/1/playback-queue?focusBvid=BVDETAILLOST`);
     assert.equal(unauthorizedQueue.status, 401);
+    const unauthorizedSearch = await fetch(`${base}/api/users/detail-user/favorites/1/playback-search?q=归档`);
+    assert.equal(unauthorizedSearch.status, 401);
 
     const queueResponse = await fetch(`${base}/api/users/detail-user/favorites/1/playback-queue?focusBvid=BVDETAILLOST&pageSize=30`, {
       headers: { Cookie: cookie },
@@ -194,7 +196,23 @@ test("tracked favorite detail is served from SQLite with history and original me
     const queueJson: any = await queueResponse.json();
     assert.equal(queueJson.data.mode, "favorite");
     assert.deepEqual(queueJson.data.items.map((item: any) => item.bvid), ["BVDETAILLOST", "BVDETAILACTIVE"]);
+    assert.deepEqual(queueJson.data.items.map((item: any) => item.queuePosition), [1, 2]);
     assert.equal(JSON.stringify(queueJson).includes("/archive/"), false);
+
+    const searchResponse = await fetch(`${base}/api/users/detail-user/favorites/1/playback-search?q=${encodeURIComponent("归档 UP")}&pageSize=50`, {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(searchResponse.status, 200);
+    const searchJson: any = await searchResponse.json();
+    assert.equal(searchJson.data.query, "归档 UP");
+    assert.equal(searchJson.data.total, 1);
+    assert.deepEqual(searchJson.data.items.map((item: any) => [item.bvid, item.queuePosition]), [["BVDETAILLOST", 1]]);
+    assert.equal(JSON.stringify(searchJson).includes("/archive/"), false);
+
+    const emptySearch = await fetch(`${base}/api/users/detail-user/favorites/1/playback-search?q=`, { headers: { Cookie: cookie } });
+    assert.equal(emptySearch.status, 400);
+    const oversizedSearch = await fetch(`${base}/api/users/detail-user/favorites/1/playback-search?q=test&pageSize=51`, { headers: { Cookie: cookie } });
+    assert.equal(oversizedSearch.status, 400);
 
     const playerAsset = await fetch(`${base}/assets/vendor/artplayer-5.4.0.js`, { headers: { Cookie: cookie } });
     assert.equal(playerAsset.status, 200);

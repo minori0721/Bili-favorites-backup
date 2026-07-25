@@ -380,10 +380,12 @@ if (mode === "detail" || mode === "playback") {
     parts: Array<"horizontal" | "vertical">;
   };
   const extendedPlaybackQueue: PreviewDefinition[] = mode === "playback"
-    ? Array.from({ length: 34 }, (_, index) => ({
+    ? Array.from({ length: 104 }, (_, index) => ({
       bvid: `BVQUEUE${String(index + 1).padStart(3, "0")}`,
       title: index === 7
         ? "长队列测试视频 08 · 这是一条用于检查桌面右栏长标题和稳定滚动行为的脱敏标题"
+        : index === 87
+          ? "可搜索定位的深页视频 · SQLite 媒体库队列"
         : `长队列测试视频 ${String(index + 1).padStart(2, "0")}`,
       status: "verified",
       unavailable: false,

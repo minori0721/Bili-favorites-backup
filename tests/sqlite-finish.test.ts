@@ -112,6 +112,11 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /@media \(hover:hover\) and \(pointer:fine\)/);
   assert.match(appHtml, /@media \(max-width:720px\), \(hover:none\), \(pointer:coarse\)/);
   assert.match(appHtml, /function syncPlaybackQueueSelection\(options = \{\}\)/);
+  assert.match(appHtml, /pageSize: 50/);
+  assert.match(appHtml, /playback-search\?q=/);
+  assert.match(appHtml, /new IntersectionObserver/);
+  assert.match(appHtml, /image\.loading = 'lazy'/);
+  assert.match(appHtml, /queuePosition/);
   assert.match(appHtml, /dataset\.queueKey/);
   assert.doesNotMatch(appHtml, /scrollIntoView/);
   const inlineScripts = [...appHtml.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];

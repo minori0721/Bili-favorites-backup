@@ -30,6 +30,7 @@ export interface PlaybackPart {
 
 export interface PlaybackQueueItem {
   bvid: string;
+  queuePosition: number;
   title: string;
   upperName: string;
   cover?: string;
@@ -46,6 +47,15 @@ export interface PlaybackQueuePage {
   pageSize: number;
   total: number;
   focusIndex: number;
+  hasMore: boolean;
+  items: PlaybackQueueItem[];
+}
+
+export interface PlaybackSearchPage {
+  query: string;
+  page: number;
+  pageSize: number;
+  total: number;
   hasMore: boolean;
   items: PlaybackQueueItem[];
 }
@@ -177,7 +187,8 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
 function buildQueueItem(
   relation: FavoriteRelation,
   video: VideoArchiveEntry,
-  rows: PlaybackFileRow[]
+  rows: PlaybackFileRow[],
+  queuePosition: number
 ): PlaybackQueueItem | null {
   const recordedByPath = new Map(
     (relation.remoteFiles || [])
@@ -216,6 +227,7 @@ function buildQueueItem(
 
   return {
     bvid: video.bvid,
+    queuePosition,
     title: displayTitle(video),
     upperName: displayUpperName(video),
     cover: displayCover(video),
@@ -254,7 +266,7 @@ export function getPlaybackQueue(
   if (focus && !focus.relation.activeInFavorite) {
     if (!playableStatuses.has(String(focus.relation.backupStatus || ""))) return null;
     const rows = rowsForBvid(database, userId, mediaId, [focusBvid]);
-    const item = buildQueueItem(focus.relation, focus.video, rows.get(focusBvid) || []);
+    const item = buildQueueItem(focus.relation, focus.video, rows.get(focusBvid) || [], 1);
     if (!item) return null;
     return { mode: "single", page: 1, pageSize: 1, total: 1, focusIndex: 0, hasMore: false, items: [item] };
   }
@@ -292,7 +304,12 @@ export function getPlaybackQueue(
   })).filter((item) => item.relation && item.video);
   const fileRows = rowsForBvid(database, userId, mediaId, records.map((item) => item.relation.bvid));
   const items = records
-    .map(({ relation, video }) => buildQueueItem(relation, video, fileRows.get(relation.bvid) || []))
+    .map(({ relation, video }, index) => buildQueueItem(
+      relation,
+      video,
+      fileRows.get(relation.bvid) || [],
+      offset + index + 1
+    ))
     .filter((item): item is PlaybackQueueItem => Boolean(item));
   return {
     mode: "favorite",
@@ -300,6 +317,80 @@ export function getPlaybackQueue(
     pageSize,
     total,
     focusIndex,
+    hasMore: offset + pageSize < total,
+    items,
+  };
+}
+
+function escapeSqlLike(value: string) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+export function getPlaybackSearch(
+  database: StateDatabase,
+  userId: string,
+  mediaId: number,
+  options: { query: string; page?: number; pageSize?: number }
+): PlaybackSearchPage {
+  const query = String(options.query || "").trim();
+  const pageSize = Math.min(50, Math.max(1, Math.floor(options.pageSize || 50)));
+  const page = Math.max(1, Math.floor(options.page || 1));
+  const terms = query.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    return { query, page, pageSize, total: 0, hasMore: false, items: [] };
+  }
+
+  const termClause = `(
+    lower(COALESCE(p.bvid, '')) LIKE ? ESCAPE '\\'
+    OR lower(COALESCE(json_extract(p.video_json, '$.title'), '')) LIKE ? ESCAPE '\\'
+    OR lower(COALESCE(json_extract(p.video_json, '$.originalMeta.title'), '')) LIKE ? ESCAPE '\\'
+    OR lower(COALESCE(json_extract(p.video_json, '$.upperName'), '')) LIKE ? ESCAPE '\\'
+    OR lower(COALESCE(json_extract(p.video_json, '$.originalMeta.upperName'), '')) LIKE ? ESCAPE '\\'
+  )`;
+  const matchSql = terms.map(() => termClause).join(" AND ");
+  const matchParams = terms.flatMap((term) => {
+    const pattern = `%${escapeSqlLike(term.toLowerCase())}%`;
+    return [pattern, pattern, pattern, pattern, pattern];
+  });
+  const cteSql = `
+    WITH playable AS (
+      SELECT r.payload_json AS relation_json, v.payload_json AS video_json, r.bvid,
+        ROW_NUMBER() OVER (ORDER BY ${queueOrderSql}) AS queue_position
+      FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
+      WHERE ${playableRelationSql}
+    ), matched AS (
+      SELECT * FROM playable p WHERE ${matchSql}
+    )
+  `;
+  const total = Number((database.db.prepare(`${cteSql} SELECT COUNT(*) AS count FROM matched`)
+    .get(userId, mediaId, ...matchParams) as any)?.count || 0);
+  const offset = (page - 1) * pageSize;
+  const rows = database.db.prepare(`
+    ${cteSql}
+    SELECT relation_json, video_json, bvid, queue_position
+    FROM matched
+    ORDER BY queue_position ASC
+    LIMIT ? OFFSET ?
+  `).all(userId, mediaId, ...matchParams, pageSize, offset) as any[];
+  const records = rows.map((row) => ({
+    relation: parseJson<FavoriteRelation>(row.relation_json, undefined as any),
+    video: parseJson<VideoArchiveEntry>(row.video_json, undefined as any),
+    queuePosition: Number(row.queue_position),
+  })).filter((item) => item.relation && item.video && Number.isInteger(item.queuePosition));
+  const fileRows = rowsForBvid(database, userId, mediaId, records.map((item) => item.relation.bvid));
+  const items = records
+    .map(({ relation, video, queuePosition }) => buildQueueItem(
+      relation,
+      video,
+      fileRows.get(relation.bvid) || [],
+      queuePosition
+    ))
+    .filter((item): item is PlaybackQueueItem => Boolean(item));
+  return {
+    query,
+    page,
+    pageSize,
+    total,
     hasMore: offset + pageSize < total,
     items,
   };

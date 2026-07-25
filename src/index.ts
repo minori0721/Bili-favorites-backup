@@ -58,7 +58,7 @@ import {
 import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
-import { getPlaybackQueue, PlaybackHttpError, streamPlaybackFile } from "./playback.js";
+import { getPlaybackQueue, getPlaybackSearch, PlaybackHttpError, streamPlaybackFile } from "./playback.js";
 
 ensureAppDirs();
 
@@ -1020,6 +1020,31 @@ app.get("/api/users/:id/favorites/:mediaId/playback-queue", (req, res) => {
     res.status(404).json({ success: false, code: "PLAYBACK_NOT_AVAILABLE", message: "该归档当前不可播放" });
     return;
   }
+  res.json({ success: true, data });
+});
+
+app.get("/api/users/:id/favorites/:mediaId/playback-search", (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const mediaId = Number(req.params.mediaId);
+  const page = req.query.page === undefined ? 1 : Number(req.query.page);
+  const pageSize = req.query.pageSize === undefined ? 50 : Number(req.query.pageSize);
+  const query = String(req.query.q || "").trim();
+  if (!Number.isInteger(mediaId) || mediaId < 1
+    || !Number.isInteger(page) || page < 1
+    || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50
+    || !query || query.length > 80 || query.includes("\0")) {
+    res.status(400).json({ success: false, message: "Invalid playback search" });
+    return;
+  }
+  const data = getPlaybackSearch(stateManager.getDatabase(), user.id, mediaId, {
+    query,
+    page,
+    pageSize,
+  });
   res.json({ success: true, data });
 });
 
