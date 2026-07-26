@@ -366,6 +366,8 @@ function getAppStyles() {
     .playback-part-list { display:flex; gap:7px; min-width:0; margin-top:11px; overflow-x:auto; padding-bottom:2px; }
     .playback-part-button { flex:0 0 auto; min-width:42px; min-height:30px; border:1px solid #3E4B49; border-radius:5px; background:#202725; color:#C5CECC; padding:5px 9px; cursor:pointer; font-size:12px; }
     .playback-part-button.active { border-color:#39C5BB; background:rgba(57,197,187,0.16); color:#7FE4DC; }
+    .playback-mobile-mode-toggle { display:none; width:auto; min-width:94px; padding:0 10px; font-size:12px; }
+    .playback-immersive-topbar,.playback-immersive-meta,.playback-drawer-backdrop,.playback-queue-close { display:none; }
     .playback-queue { min-width:0; min-height:0; display:flex; flex-direction:column; border-left:1px solid #2D3836; background:#171E1D; }
     .playback-queue-head { flex:0 0 auto; display:flex; flex-direction:column; gap:11px; padding:14px 14px 12px; border-bottom:1px solid #2D3836; }
     .playback-queue-heading { display:flex; justify-content:space-between; gap:12px; align-items:center; }
@@ -585,6 +587,33 @@ function getAppStyles() {
       .playback-queue { min-height:260px; border-left:0; border-top:1px solid #2D3836; }
       .playback-queue-list { max-height:none; overflow:visible; }
       .playback-queue-head { position:sticky; top:0; z-index:4; background:#171E1D; }
+      .playback-mobile-mode-toggle { display:inline-flex; align-items:center; justify-content:center; }
+      .playback-shell.is-mobile-immersive { position:relative; height:100dvh; background:#090C0B; }
+      .playback-shell.is-mobile-immersive .playback-header { display:none; }
+      .playback-shell.is-mobile-immersive .playback-layout { position:relative; display:block; width:100%; height:100%; overflow:hidden; }
+      .playback-shell.is-mobile-immersive .playback-main { width:100%; height:100%; min-height:0; }
+      .playback-shell.is-mobile-immersive .playback-stage { width:100%; height:100%; max-height:none; flex:1 1 auto; touch-action:pan-x; }
+      .playback-shell.is-mobile-immersive .playback-stage.is-portrait { height:100%; }
+      .playback-shell.is-mobile-immersive .playback-art { min-height:100%; transform:translate3d(0,var(--playback-swipe-offset,0),0); transition:transform .15s ease; }
+      .playback-shell.is-mobile-immersive .playback-stage.is-swiping .playback-art { transition:none; }
+      .playback-shell.is-mobile-immersive .playback-art .art-video-player video { object-fit:contain!important; }
+      .playback-shell.is-mobile-immersive .playback-now { display:none; }
+      .playback-shell.is-mobile-immersive .playback-immersive-topbar { position:absolute; z-index:1100; top:0; left:0; right:0; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; min-height:58px; padding:max(10px,env(safe-area-inset-top)) 10px 8px; pointer-events:none; }
+      .playback-immersive-actions { display:flex; align-items:center; gap:7px; pointer-events:auto; }
+      .playback-immersive-control { min-width:38px; height:38px; display:inline-flex; align-items:center; justify-content:center; border:1px solid rgba(222,236,232,0.28); border-radius:6px; background:rgba(11,16,15,0.78); color:#F4F7F6; padding:0 10px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+      .playback-immersive-back { width:38px; padding:0; border-radius:50%; font-size:22px; pointer-events:auto; }
+      .playback-immersive-control:focus-visible { border-color:#69D9D0; outline:2px solid rgba(57,197,187,0.35); outline-offset:2px; }
+      .playback-immersive-position { min-width:0; color:#E5ECEA; font-size:12px; font-weight:700; text-align:center; text-shadow:0 1px 3px rgba(0,0,0,0.85); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .playback-shell.is-mobile-immersive .playback-immersive-meta { position:absolute; z-index:1090; left:12px; right:12px; bottom:max(68px,calc(54px + env(safe-area-inset-bottom))); display:block; width:max-content; max-width:calc(100% - 24px); padding:8px 10px; border-radius:6px; background:rgba(11,16,15,0.76); color:#F4F7F6; pointer-events:none; }
+      .playback-immersive-title { display:-webkit-box; margin:0; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; font-size:14px; line-height:1.45; }
+      .playback-immersive-detail { margin-top:4px; color:#B8C4C1; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .playback-shell.is-mobile-immersive .playback-drawer-backdrop { position:absolute; z-index:1140; inset:0; display:block; border:0; background:rgba(0,0,0,0.52); opacity:0; pointer-events:none; transition:opacity .15s ease; }
+      .playback-shell.is-mobile-immersive .playback-queue { position:absolute; z-index:1150; left:0; right:0; bottom:0; height:min(72dvh,620px); min-height:280px; max-height:calc(100dvh - max(58px,env(safe-area-inset-top))); overflow:hidden; border:0; border-top:1px solid #3A4744; border-radius:8px 8px 0 0; box-shadow:0 -18px 46px rgba(0,0,0,0.42); transform:translateY(100%); visibility:hidden; transition:transform .16s ease,visibility 0s linear .16s; }
+      .playback-shell.is-mobile-immersive.queue-open .playback-drawer-backdrop { opacity:1; pointer-events:auto; }
+      .playback-shell.is-mobile-immersive.queue-open .playback-queue { transform:translateY(0); visibility:visible; transition-delay:0s; }
+      .playback-shell.is-mobile-immersive .playback-queue-head { position:relative; top:auto; padding-top:14px; }
+      .playback-shell.is-mobile-immersive .playback-queue-list { min-height:0; max-height:none; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+      .playback-shell.is-mobile-immersive .playback-queue-close { display:inline-flex; width:30px; height:30px; align-items:center; justify-content:center; border:0; border-radius:50%; background:#27312F; color:#DDE5E3; padding:0; font-size:19px; cursor:pointer; }
     }
     @media (max-width: 420px) {
       .playback-art .art-video-player { --art-control-icon-size:28px; --art-control-height:34px; --art-padding:10px; }
@@ -602,7 +631,7 @@ function getAppStyles() {
       .playback-queue-head { padding:11px; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .playback-shell,.video-item.playable,.video-play-affordance,.playback-queue-item { animation:none; transition:none; }
+      .playback-shell,.video-item.playable,.video-play-affordance,.playback-queue-item,.playback-art,.playback-queue,.playback-drawer-backdrop { animation:none; transition:none!important; }
     }
   </style>`;
 }
@@ -809,6 +838,18 @@ function getModals() {
         <section class="playback-main">
           <div class="playback-stage" id="playbackStage">
             <div class="playback-art" id="playbackArt"></div>
+            <div class="playback-immersive-topbar" aria-label="沉浸竖屏控制栏">
+              <button id="closePlaybackImmersiveBtn" class="playback-immersive-control playback-immersive-back" type="button" aria-label="关闭播放器" title="关闭播放器">←</button>
+              <span class="playback-immersive-position" id="playbackImmersivePosition">收藏夹播放器</span>
+              <div class="playback-immersive-actions">
+                <button id="playbackImmersiveQueueBtn" class="playback-immersive-control" type="button" aria-expanded="false">列表</button>
+                <button id="playbackImmersiveExitBtn" class="playback-immersive-control" type="button">普通</button>
+              </div>
+            </div>
+            <div class="playback-immersive-meta">
+              <h3 class="playback-immersive-title" id="playbackImmersiveTitle">未选择视频</h3>
+              <div class="playback-immersive-detail" id="playbackImmersiveDetail"></div>
+            </div>
             <div class="playback-stage-message is-hidden" id="playbackStageMessage">
               <div class="playback-message-inner">
                 <strong id="playbackMessageTitle">正在准备播放器</strong>
@@ -830,16 +871,19 @@ function getModals() {
                 <button id="playbackPreviousBtn" class="playback-tool-button" type="button" aria-label="上一项" title="上一项">←</button>
                 <button id="playbackNextBtn" class="playback-tool-button" type="button" aria-label="下一项" title="下一项">→</button>
                 <button id="playbackContinuousBtn" class="playback-tool-button playback-continuous active" type="button" aria-pressed="true">连续播放</button>
+                <button id="playbackMobilePortraitBtn" class="playback-tool-button playback-mobile-mode-toggle active" type="button" aria-pressed="true">沉浸竖屏</button>
               </div>
             </div>
             <div class="playback-part-list" id="playbackPartList" aria-label="分P列表"></div>
           </div>
         </section>
+        <button id="playbackDrawerBackdrop" class="playback-drawer-backdrop" type="button" aria-label="关闭播放列表" tabindex="-1"></button>
         <aside class="playback-queue" aria-label="收藏夹播放队列">
           <div class="playback-queue-head">
             <div class="playback-queue-heading">
               <strong>收藏夹顺序</strong>
               <span id="playbackQueueCount">0 项</span>
+              <button id="playbackQueueCloseBtn" class="playback-queue-close" type="button" aria-label="关闭播放列表" title="关闭播放列表">×</button>
             </div>
             <div class="playback-search-controls" id="playbackSearchControls">
               <label class="playback-search-box">
@@ -1132,6 +1176,16 @@ function getAppScript() {
       progressTimer: null,
       continuous: true,
       preferences: null,
+      drawerOpen: false,
+      swipeChanging: false,
+      swipe: {
+        pointerId: null,
+        startX: 0,
+        startY: 0,
+        deltaX: 0,
+        deltaY: 0,
+        tracking: false
+      },
       trigger: null,
       focusBvid: null,
       search: {
@@ -2999,6 +3053,7 @@ function getAppScript() {
         muted: false,
         rate: 1,
         continuous: true,
+        mobilePortraitMode: true,
         progress: {}
       };
       try {
@@ -3010,6 +3065,7 @@ function getAppScript() {
           muted: Boolean(parsed.muted),
           rate: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].includes(Number(parsed.rate)) ? Number(parsed.rate) : 1,
           continuous: parsed.continuous !== false,
+          mobilePortraitMode: parsed.mobilePortraitMode !== false,
           progress: parsed.progress && typeof parsed.progress === 'object' ? parsed.progress : {}
         };
       } catch (_) {
@@ -3098,7 +3154,22 @@ function getAppScript() {
       destroyCurrentArt();
       clearMediaSession();
       document.body.classList.remove('playback-open');
-      document.getElementById('playbackStage').classList.remove('is-portrait');
+      const shell = document.querySelector('.playback-shell');
+      shell.classList.remove('is-mobile-immersive', 'queue-open');
+      const stage = document.getElementById('playbackStage');
+      stage.classList.remove('is-portrait', 'is-swiping');
+      stage.style.removeProperty('--playback-swipe-offset');
+      const queue = document.querySelector('.playback-queue');
+      queue.removeAttribute('inert');
+      queue.setAttribute('aria-hidden', 'false');
+      document.getElementById('playbackImmersiveQueueBtn').setAttribute('aria-expanded', 'false');
+      document.getElementById('playbackDrawerBackdrop').tabIndex = -1;
+      playbackState.drawerOpen = false;
+      playbackState.swipeChanging = false;
+      playbackState.swipe.pointerId = null;
+      playbackState.swipe.tracking = false;
+      playbackState.swipe.deltaX = 0;
+      playbackState.swipe.deltaY = 0;
       const detailModal = document.getElementById('videoDetailModal');
       if (detailModal.classList.contains('active')) {
         detailModal.inert = false;
@@ -3127,6 +3198,7 @@ function getAppScript() {
       queueHost.replaceChildren();
       queueHost.scrollTop = 0;
       delete queueHost.dataset.queueKey;
+      delete queueHost.dataset.queueView;
       const searchInput = document.getElementById('playbackSearchInput');
       if (searchInput) searchInput.value = '';
       setHidden('playbackSearchClearBtn', true);
@@ -3223,6 +3295,161 @@ function getAppScript() {
       return window.matchMedia('(max-width: 720px)').matches;
     }
 
+    function isPlaybackPortraitViewport() {
+      return window.matchMedia('(max-width: 720px) and (orientation: portrait)').matches;
+    }
+
+    function isPlaybackImmersiveActive() {
+      const modal = document.getElementById('playbackModal');
+      const prefs = playbackState.preferences;
+      return Boolean(
+        modal.classList.contains('active')
+        && prefs
+        && prefs.mobilePortraitMode !== false
+        && isPlaybackPortraitViewport()
+      );
+    }
+
+    function syncPlaybackMobileModeButton() {
+      const enabled = !playbackState.preferences || playbackState.preferences.mobilePortraitMode !== false;
+      const button = document.getElementById('playbackMobilePortraitBtn');
+      button.classList.toggle('active', enabled);
+      button.setAttribute('aria-pressed', String(enabled));
+      button.title = enabled ? '沉浸竖屏已开启，设备横屏时自动使用普通布局' : '开启沉浸竖屏';
+    }
+
+    function setPlaybackQueueDrawer(open) {
+      const shell = document.querySelector('.playback-shell');
+      const queue = document.querySelector('.playback-queue');
+      const queueButton = document.getElementById('playbackImmersiveQueueBtn');
+      const immersive = isPlaybackImmersiveActive();
+      const nextOpen = Boolean(open && immersive);
+      if (!nextOpen && queue.contains(document.activeElement) && immersive) {
+        queueButton.focus({ preventScroll:true });
+      }
+      playbackState.drawerOpen = nextOpen;
+      shell.classList.toggle('queue-open', nextOpen);
+      queueButton.setAttribute('aria-expanded', String(nextOpen));
+      if (immersive && !nextOpen) queue.setAttribute('inert', '');
+      else queue.removeAttribute('inert');
+      queue.setAttribute('aria-hidden', String(immersive && !nextOpen));
+      document.getElementById('playbackDrawerBackdrop').tabIndex = nextOpen ? 0 : -1;
+      setupPlaybackQueueObserver();
+      if (nextOpen) {
+        syncPlaybackQueueSelection({ forceQueue:true, alignDesktop:true, behavior:'auto' });
+      }
+    }
+
+    function syncPlaybackImmersiveMode() {
+      const shell = document.querySelector('.playback-shell');
+      const active = isPlaybackImmersiveActive();
+      shell.classList.toggle('is-mobile-immersive', active);
+      syncPlaybackMobileModeButton();
+      if (!active) {
+        playbackState.drawerOpen = false;
+        shell.classList.remove('queue-open');
+        const queue = document.querySelector('.playback-queue');
+        queue.removeAttribute('inert');
+        queue.setAttribute('aria-hidden', 'false');
+        document.getElementById('playbackImmersiveQueueBtn').setAttribute('aria-expanded', 'false');
+        document.getElementById('playbackDrawerBackdrop').tabIndex = -1;
+        resetPlaybackSwipe();
+      } else if (!playbackState.drawerOpen) {
+        const queue = document.querySelector('.playback-queue');
+        queue.setAttribute('inert', '');
+        queue.setAttribute('aria-hidden', 'true');
+      }
+      setupPlaybackQueueObserver();
+      return active;
+    }
+
+    function setPlaybackMobilePortraitMode(enabled) {
+      if (!playbackState.preferences) playbackState.preferences = loadPlaybackPreferences();
+      playbackState.preferences.mobilePortraitMode = Boolean(enabled);
+      persistPlaybackPreferences();
+      const active = syncPlaybackImmersiveMode();
+      if (active) {
+        setTimeout(() => document.getElementById('closePlaybackImmersiveBtn').focus({ preventScroll:true }), 0);
+      }
+    }
+
+    function resetPlaybackSwipe() {
+      const swipe = playbackState.swipe;
+      const stage = document.getElementById('playbackStage');
+      swipe.pointerId = null;
+      swipe.startX = 0;
+      swipe.startY = 0;
+      swipe.deltaX = 0;
+      swipe.deltaY = 0;
+      swipe.tracking = false;
+      stage.classList.remove('is-swiping');
+      stage.style.removeProperty('--playback-swipe-offset');
+    }
+
+    function playbackSwipeStartsOnControl(target) {
+      if (!(target instanceof Element)) return true;
+      return Boolean(target.closest([
+        'button',
+        'input',
+        'select',
+        'textarea',
+        'a',
+        '[role="button"]',
+        '[contenteditable="true"]',
+        '.art-controls',
+        '.art-setting',
+        '.art-selector',
+        '.art-contextmenus',
+        '.art-info',
+        '.art-notice'
+      ].join(',')));
+    }
+
+    function handlePlaybackSwipeStart(event) {
+      if (!isPlaybackImmersiveActive() || playbackState.drawerOpen || playbackState.swipeChanging) return;
+      if (!event.isPrimary || event.button !== 0 || playbackSwipeStartsOnControl(event.target)) return;
+      const swipe = playbackState.swipe;
+      swipe.pointerId = event.pointerId;
+      swipe.startX = event.clientX;
+      swipe.startY = event.clientY;
+      swipe.deltaX = 0;
+      swipe.deltaY = 0;
+      swipe.tracking = true;
+      try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) {}
+    }
+
+    function handlePlaybackSwipeMove(event) {
+      const swipe = playbackState.swipe;
+      if (!swipe.tracking || swipe.pointerId !== event.pointerId) return;
+      swipe.deltaX = event.clientX - swipe.startX;
+      swipe.deltaY = event.clientY - swipe.startY;
+      const vertical = Math.abs(swipe.deltaY) > 10 && Math.abs(swipe.deltaY) > Math.abs(swipe.deltaX) * 1.2;
+      if (!vertical) return;
+      event.preventDefault();
+      const stage = document.getElementById('playbackStage');
+      stage.classList.add('is-swiping');
+      const offset = Math.max(-48, Math.min(48, swipe.deltaY * 0.35));
+      stage.style.setProperty('--playback-swipe-offset', offset + 'px');
+    }
+
+    function handlePlaybackSwipeEnd(event) {
+      const swipe = playbackState.swipe;
+      if (!swipe.tracking || swipe.pointerId !== event.pointerId) return;
+      const deltaX = swipe.deltaX;
+      const deltaY = swipe.deltaY;
+      const shouldChange = Math.abs(deltaY) >= 72 && Math.abs(deltaY) > Math.abs(deltaX) * 1.25;
+      resetPlaybackSwipe();
+      if (!shouldChange || playbackState.swipeChanging) return;
+      playbackState.swipeChanging = true;
+      void stepPlayback(deltaY < 0 ? 1 : -1).finally(() => {
+        playbackState.swipeChanging = false;
+      });
+    }
+
+    function handlePlaybackSwipeCancel(event) {
+      if (playbackState.swipe.pointerId === event.pointerId) resetPlaybackSwipe();
+    }
+
     function isPlaybackSearchView() {
       return playbackState.mode === 'favorite' && Boolean(playbackState.search.shownQuery);
     }
@@ -3290,17 +3517,22 @@ function getAppScript() {
       button.appendChild(number);
       button.appendChild(createPlaybackThumbnail(item));
       button.appendChild(copy);
-      button.addEventListener('click', () => {
+      button.addEventListener('click', async () => {
         if (view === 'search') {
-          selectPlaybackSearchResult(item, button);
+          await selectPlaybackSearchResult(item, button);
           return;
         }
         const index = playbackState.items.findIndex((candidate) => candidate.bvid === item.bvid);
-        if (index < 0 || (index === playbackState.itemIndex && playbackState.partIndex === 0)) return;
+        if (index < 0) return;
+        if (index === playbackState.itemIndex && playbackState.partIndex === 0) {
+          setPlaybackQueueDrawer(false);
+          return;
+        }
         savePlaybackProgress();
         playbackState.itemIndex = index;
         playbackState.partIndex = 0;
-        playCurrentSelection(true);
+        await playCurrentSelection(true);
+        setPlaybackQueueDrawer(false);
       });
       return button;
     }
@@ -3417,7 +3649,7 @@ function getAppScript() {
         else button.removeAttribute('aria-current');
       });
 
-      if (isPlaybackMobileLayout() || options.alignDesktop === false) return;
+      if ((isPlaybackMobileLayout() && options.forceQueue !== true) || options.alignDesktop === false) return;
       requestAnimationFrame(() => {
         const active = host.querySelector('.playback-queue-item.active');
         if (!active || !host.isConnected) return;
@@ -3431,7 +3663,7 @@ function getAppScript() {
         const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         host.scrollTo({
           top: Math.max(0, host.scrollTop + delta),
-          behavior: reducedMotion ? 'auto' : 'smooth'
+          behavior: options.behavior || (reducedMotion ? 'auto' : 'smooth')
         });
       });
     }
@@ -3441,7 +3673,9 @@ function getAppScript() {
       playbackState.queueObserver = null;
       if (typeof IntersectionObserver !== 'function' || playbackState.mode === 'single') return;
       const host = document.getElementById('playbackQueueList');
-      const root = isPlaybackMobileLayout() ? document.querySelector('.playback-layout') : host;
+      const root = isPlaybackImmersiveActive()
+        ? host
+        : (isPlaybackMobileLayout() ? document.querySelector('.playback-layout') : host);
       if (!root) return;
       const observer = new IntersectionObserver((entries) => {
         for (const entry of entries) {
@@ -3506,7 +3740,7 @@ function getAppScript() {
       if (direction === 'prepend') {
         const firstItem = host.querySelector('.playback-queue-item');
         host.insertBefore(fragment, firstItem || bottom);
-        if (!isPlaybackMobileLayout()) host.scrollTop += host.scrollHeight - beforeHeight;
+        if (!isPlaybackMobileLayout() || isPlaybackImmersiveActive()) host.scrollTop += host.scrollHeight - beforeHeight;
       } else {
         host.insertBefore(fragment, bottom);
       }
@@ -3572,6 +3806,16 @@ function getAppScript() {
       }
       if (item && item.partial) meta.push('部分备份');
       document.getElementById('playbackNowMeta').textContent = meta.join(' · ');
+      document.getElementById('playbackImmersiveTitle').textContent = item ? safeText(item.title || item.bvid, '未知视频') : '未选择视频';
+      document.getElementById('playbackImmersiveDetail').textContent = meta.join(' · ');
+      const queuePosition = Number(item && item.queuePosition || 0);
+      const position = playbackState.mode === 'favorite' && queuePosition
+        ? queuePosition + ' / ' + playbackState.total
+        : '历史记录';
+      const partPosition = item && item.parts && item.parts.length > 1
+        ? ' · P' + (playbackState.partIndex + 1) + ' / ' + item.parts.length
+        : '';
+      document.getElementById('playbackImmersivePosition').textContent = position + partPosition;
       renderPlaybackParts();
       renderPlaybackQueue();
       updatePlaybackNavigation();
@@ -3975,6 +4219,7 @@ function getAppScript() {
         }
         if (previousBvid === item.bvid) updatePlaybackNow();
         else await playCurrentSelection(true);
+        setPlaybackQueueDrawer(false);
       } catch (error) {
         if (error && error.name === 'AbortError') return;
         playbackState.search.error = { page:1, message:error instanceof Error ? error.message : String(error) };
@@ -4052,6 +4297,10 @@ function getAppScript() {
       detailModal.inert = true;
       detailModal.setAttribute('aria-hidden', 'true');
       openModal('playbackModal', trigger);
+      setPlaybackQueueDrawer(false);
+      if (syncPlaybackImmersiveMode()) {
+        setTimeout(() => document.getElementById('closePlaybackImmersiveBtn').focus({ preventScroll:true }), 0);
+      }
       setPlaybackMessage('正在准备播放队列', '只会列出当前收藏夹中已通过远端确认的归档视频。', { retry:false, skip:false });
       const controller = new AbortController();
       playbackState.queueController = controller;
@@ -4683,6 +4932,21 @@ function getAppScript() {
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
     document.getElementById('closeVideoDetailBtn').addEventListener('click', () => closeModal('videoDetailModal'));
     document.getElementById('closePlaybackBtn').addEventListener('click', () => closeModal('playbackModal'));
+    document.getElementById('closePlaybackImmersiveBtn').addEventListener('click', () => closeModal('playbackModal'));
+    document.getElementById('playbackImmersiveQueueBtn').addEventListener('click', () => setPlaybackQueueDrawer(!playbackState.drawerOpen));
+    document.getElementById('playbackImmersiveExitBtn').addEventListener('click', () => setPlaybackMobilePortraitMode(false));
+    document.getElementById('playbackMobilePortraitBtn').addEventListener('click', () => {
+      const enabled = !playbackState.preferences || playbackState.preferences.mobilePortraitMode !== false;
+      setPlaybackMobilePortraitMode(!enabled);
+    });
+    document.getElementById('playbackDrawerBackdrop').addEventListener('click', () => setPlaybackQueueDrawer(false));
+    document.getElementById('playbackQueueCloseBtn').addEventListener('click', () => setPlaybackQueueDrawer(false));
+    const playbackStage = document.getElementById('playbackStage');
+    playbackStage.addEventListener('pointerdown', handlePlaybackSwipeStart);
+    playbackStage.addEventListener('pointermove', handlePlaybackSwipeMove);
+    playbackStage.addEventListener('pointerup', handlePlaybackSwipeEnd);
+    playbackStage.addEventListener('pointercancel', handlePlaybackSwipeCancel);
+    playbackStage.addEventListener('lostpointercapture', handlePlaybackSwipeCancel);
     document.getElementById('playbackPreviousBtn').addEventListener('click', () => stepPlayback(-1));
     document.getElementById('playbackNextBtn').addEventListener('click', () => stepPlayback(1));
     document.getElementById('playbackSearchInput').addEventListener('input', schedulePlaybackSearch);
@@ -4690,9 +4954,12 @@ function getAppScript() {
       clearPlaybackSearch();
       document.getElementById('playbackSearchInput').focus({ preventScroll:true });
     });
-    window.matchMedia('(max-width: 720px)').addEventListener('change', () => {
-      if (document.getElementById('playbackModal').classList.contains('active')) setupPlaybackQueueObserver();
-    });
+    const handlePlaybackViewportChange = () => {
+      if (!document.getElementById('playbackModal').classList.contains('active')) return;
+      syncPlaybackImmersiveMode();
+    };
+    window.matchMedia('(max-width: 720px)').addEventListener('change', handlePlaybackViewportChange);
+    window.matchMedia('(orientation: portrait)').addEventListener('change', handlePlaybackViewportChange);
     document.getElementById('playbackContinuousBtn').addEventListener('click', () => {
       playbackState.continuous = !playbackState.continuous;
       if (playbackState.preferences) playbackState.preferences.continuous = playbackState.continuous;
@@ -4762,6 +5029,11 @@ function getAppScript() {
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
         const modal = activeModal();
+        if (modal && modal.id === 'playbackModal' && playbackState.drawerOpen) {
+          event.preventDefault();
+          setPlaybackQueueDrawer(false);
+          return;
+        }
         if (modal) closeModal(modal);
       }
     });
