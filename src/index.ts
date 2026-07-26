@@ -7,7 +7,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
+import { authSessionDatabasePath, backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
 import { type AppConfig, ConfigStore, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
 import { type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
@@ -59,6 +59,13 @@ import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
 import { getPlaybackQueue, getPlaybackSearch, PlaybackHttpError, streamPlaybackFile } from "./playback.js";
+import {
+  ADMIN_REMEMBER_TTL_MS,
+  ADMIN_SESSION_COOKIE_NAME,
+  ADMIN_SESSION_TTL_MS,
+  AdminSessionStore,
+  buildAdminAuthFingerprint,
+} from "./admin-session.js";
 
 ensureAppDirs();
 
@@ -309,6 +316,19 @@ const adminUser = process.env.ADMIN_USER || "admin";
 const adminPass = process.env.ADMIN_PASS || "admin";
 const cookieExportEnabled = process.env.ALLOW_COOKIE_EXPORT !== "false";
 const secureSessionCookie = process.env.COOKIE_SECURE === "true";
+const adminAuthFingerprint = buildAdminAuthFingerprint(sessionSecret, adminUser, adminPass);
+const adminSessionStore = new AdminSessionStore({
+  filePath: authSessionDatabasePath,
+  sessionSecret,
+  adminUser,
+  adminPassword: adminPass,
+});
+const sessionCookieOptions = {
+  httpOnly: true,
+  sameSite: "lax" as const,
+  secure: secureSessionCookie,
+  path: "/",
+};
 
 const loginRateLimiter = createLoginRateLimiter();
 
@@ -316,20 +336,22 @@ app.set("trust proxy", 1);
 
 app.use(
   session({
+    name: ADMIN_SESSION_COOKIE_NAME,
     secret: sessionSecret,
+    store: adminSessionStore,
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: secureSessionCookie,
-    },
+    rolling: false,
+    cookie: sessionCookieOptions,
   })
 );
 
 declare module "express-session" {
   interface SessionData {
     user?: { name: string };
+    authFingerprint?: string;
+    absoluteExpiresAt?: number;
+    remember?: boolean;
   }
 }
 
@@ -652,15 +674,27 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/login", requireSameOrigin, loginRateLimiter, (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
+  const { username, password, remember } = req.body as { username?: string; password?: string; remember?: boolean };
   if (username === adminUser && password === adminPass) {
     req.session.regenerate((error) => {
       if (error) {
         res.status(500).json({ success: false, message: "Failed to create session" });
         return;
       }
+      const keepSignedIn = remember === true;
+      const sessionTtlMs = keepSignedIn ? ADMIN_REMEMBER_TTL_MS : ADMIN_SESSION_TTL_MS;
       req.session.user = { name: username };
-      res.json({ success: true });
+      req.session.authFingerprint = adminAuthFingerprint;
+      req.session.absoluteExpiresAt = Date.now() + sessionTtlMs;
+      req.session.remember = keepSignedIn;
+      if (keepSignedIn) req.session.cookie.maxAge = ADMIN_REMEMBER_TTL_MS;
+      req.session.save((saveError) => {
+        if (saveError) {
+          res.status(500).json({ success: false, message: "Failed to save session" });
+          return;
+        }
+        res.json({ success: true });
+      });
     });
     return;
   }
@@ -670,7 +704,12 @@ app.post("/api/login", requireSameOrigin, loginRateLimiter, (req, res) => {
 app.use("/api", requireAuth, requireSameOrigin);
 
 app.post("/api/logout", (req, res) => {
-  req.session.destroy(() => {
+  req.session.destroy((error) => {
+    res.clearCookie(ADMIN_SESSION_COOKIE_NAME, sessionCookieOptions);
+    if (error) {
+      res.status(500).json({ success: false, message: "Failed to destroy session" });
+      return;
+    }
     res.json({ success: true });
   });
 });
@@ -2053,6 +2092,7 @@ export async function closeAppResources() {
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
   await cleanupBBDownCredentialResidue().catch(() => undefined);
+  adminSessionStore.close();
   stateManager.close();
   logManager.close();
 }
@@ -2090,6 +2130,7 @@ if (process.env.NODE_ENV !== "test") {
     await cleanupBBDownCredentialResidue().catch((error) => {
       console.warn(`[Shutdown] Failed to clean BBDown credential directories: ${safeErrorSummary(error)}`);
     });
+    adminSessionStore.close();
     stateManager.close();
     logManager.close();
     process.exit(0);

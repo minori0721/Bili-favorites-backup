@@ -97,7 +97,9 @@ docker compose logs --tail=100 app
 - 立即修改`ADMIN_PASS`、`SESSION_SECRET`和AList管理员密码。
 - 不需要网页导出B站Cookie时保持`ALLOW_COOKIE_EXPORT=false`。
 - 仅在HTTPS反向代理下设置`COOKIE_SECURE=true`；纯HTTP开启后浏览器不会发送会话Cookie。
+- 管理员会话保存在`data/auth-sessions.sqlite`：普通登录使用浏览器会话Cookie且服务端最长保留24小时，登录页可主动选择固定保持30天；修改管理员账号、密码或`SESSION_SECRET`会使旧会话失效。
 - 迁移包和`data/users.json`可能包含B站Cookie或APP token，不能公开分享。
+- 迁移包不会包含管理员会话库；手工备份整个`data/`仍应按敏感数据保管。
 - 原始日志虽经过脱敏，仍可能包含BVID、文件名与路径，公开前请人工复核。
 
 ## 镜像与开发

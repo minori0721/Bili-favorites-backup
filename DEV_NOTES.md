@@ -6,7 +6,7 @@
 
 - 分支：`dev`
 - 基准版本：`2.4.3`
-- 当前dev变更：收藏夹“查看详情”统一数据源并修复已上传后失效视频的标题、封面与状态展示；新增AList归档播放器、全量队列浏览、搜索与手机沉浸竖屏；Archiver升级到8.0.0。
+- 当前dev变更：收藏夹“查看详情”统一数据源并修复已上传后失效视频的标题、封面与状态展示；新增AList归档播放器、全量队列浏览、搜索与手机沉浸竖屏；管理员登录增加独立SQLite持久Session；Archiver升级到8.0.0。
 - SQLite：`user_version 5`
 - JSON兼容状态：schema 13
 - 迁移包：schema 3
@@ -40,7 +40,7 @@ git diff --check
 ## 未发布依赖维护
 
 - `archiver`与`@types/archiver`同步升级到8.0.0，ZIP构造改用原生ESM导出的`ZipArchive`；ZIP64、压缩级别、文件清单和流式输出行为保持不变。
-- Archiver依赖链已使用`readdir-glob 3`、`minimatch 10`和`brace-expansion 5`，不再携带旧`archiver-utils/glob`链；当前`npm audit --omit=dev`为5项（1项低危、2项中危、2项高危）。
+- Archiver依赖链已使用`readdir-glob 3`、`minimatch 10`和`brace-expansion 5`，不再携带旧`archiver-utils/glob`链；当前`npm audit --omit=dev`为10项（3项低危、3项中危、4项高危）。
 - 迁移、ZIP和真实应用专项24项全部通过；更新锁文件后`npm ci`成功，完整回归仍为187项中186项通过、1项因本机缺少aria2跳过、0项失败，TypeScript生产构建通过。
 
 ## 未发布归档播放器
@@ -88,6 +88,15 @@ git diff --check
 - 播放器、详情和SQLite专项13项全部通过；完整回归196项中194项通过、1项因本机缺少aria2跳过，唯一失败为Windows结束后删除隔离目录时偶发`EBUSY`，对应真实应用用例单独复跑1项通过。
 - TypeScript生产构建、VitePress文档构建和`git diff --check`通过；`npm audit --omit=dev`仍为10项上游风险，文档站生产依赖审计为0。
 - 脱敏浏览器实测390x844默认进入沉浸模式，上下滑动、两分P顺序、控件隔离、抽屉搜索和第90项定位均保持外层视角；844x390自动恢复横屏布局，1280x720桌面队列正常。三种视口均无横向溢出或控制台错误。
+
+## 未发布管理员持久会话
+
+- 管理员Session从`express-session`默认内存Store迁移到独立`data/auth-sessions.sqlite`；业务SQLite仍为`user_version 5`，迁移包仍为schema 3，不增加运行依赖。
+- 会话库只保存HMAC后的Session ID、管理员凭据指纹、有限会话数据和固定过期时间。普通登录使用浏览器会话Cookie并设置24小时服务端上限，勾选后固定保持30天，每个管理员最多10个会话。
+- Store不实现`touch`且Session不开启`rolling`；真实应用连续100次读取队列状态后，Cookie未重发且会话行`updated_at`保持不变。
+- 修改`ADMIN_USER`、`ADMIN_PASS`或`SESSION_SECRET`会清理旧会话；启动清理同时校验管理员主体、Cookie对象、凭据指纹和绝对到期时间，非法或损坏会话行按未登录处理。
+- 迁移估算、普通/完整导出和导入前自动备份均不包含会话库；数据库损坏会保留副本并创建空库，无法建立安全会话库时拒绝静默退回内存Store。
+- 管理员会话专项与真实应用链路7项全部通过；完整回归共202项，201项通过、1项因本机缺少aria2跳过、0项失败。受限环境曾阻止下载器测试结束其假BBDown进程树，正常权限复跑后关停用例与全量回归均通过。
 
 ### 本地验收
 

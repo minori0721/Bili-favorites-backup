@@ -89,7 +89,7 @@ export function renderLoginPage() {
     h1 { margin: 0 0 8px; font-size: 26px; font-weight: 700; color: var(--accent); }
     p { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
     label { display: block; font-weight: 500; margin: 0 0 8px; color: var(--ink); }
-    input {
+    input:not([type="checkbox"]) {
       width: 100%;
       padding: 14px 16px;
       border-radius: 12px;
@@ -100,10 +100,31 @@ export function renderLoginPage() {
       outline: none;
       background: rgba(255, 255, 255, 0.9);
     }
-    input:focus {
+    input:not([type="checkbox"]):focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 4px rgba(57, 197, 187, 0.16);
     }
+    .remember-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: -2px 0 20px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .remember-option input {
+      width: 17px;
+      height: 17px;
+      margin: 2px 0 0;
+      accent-color: var(--accent);
+      flex: 0 0 auto;
+    }
+    .remember-option input:focus-visible {
+      outline: 3px solid rgba(57, 197, 187, 0.24);
+      outline-offset: 2px;
+    }
+    .remember-copy { display: grid; gap: 3px; line-height: 1.35; }
+    .remember-hint { color: var(--muted); font-size: 12px; font-weight: 400; }
     button {
       width: 100%;
       padding: 14px 16px;
@@ -140,25 +161,36 @@ export function renderLoginPage() {
   <div class="card">
     <h1>B站收藏夹同步</h1>
     <p>欢迎回来 · 登录以管理您的同步任务。</p>
-    <label>管理员用户名</label>
-    <input id="username" type="text" autocomplete="username" placeholder="输入用户名" />
-    <label>密码</label>
-    <input id="password" type="password" autocomplete="current-password" placeholder="输入密码" />
-    <button id="loginBtn">进入系统</button>
-    <div class="error" id="error"></div>
+    <form id="loginForm">
+      <label for="username">管理员用户名</label>
+      <input id="username" type="text" autocomplete="username" placeholder="输入用户名" />
+      <label for="password">密码</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="输入密码" />
+      <label class="remember-option" for="rememberLogin">
+        <input id="rememberLogin" type="checkbox" />
+        <span class="remember-copy">
+          <span>保持登录30天</span>
+          <span class="remember-hint">未勾选时为浏览器会话，服务端最长保留24小时</span>
+        </span>
+      </label>
+      <button id="loginBtn" type="submit">进入系统</button>
+    </form>
+    <div class="error" id="error" aria-live="polite"></div>
     <div class="login-meta">${getVersionLinks("login-link")}</div>
   </div>
   <script>
-    const loginBtn = document.getElementById('loginBtn');
+    const loginForm = document.getElementById('loginForm');
     const errorEl = document.getElementById('error');
-    loginBtn.addEventListener('click', async () => {
+    loginForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
       errorEl.textContent = '';
       const username = document.getElementById('username').value.trim();
       const password = document.getElementById('password').value.trim();
+      const remember = document.getElementById('rememberLogin').checked;
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username, password, remember })
       });
       const data = await res.json();
       if (data.success) {
