@@ -11,7 +11,7 @@
 ## 本轮语义
 
 - 下架清单由SQLite按`missing/uploaded`服务端筛选，使用`last_seen_at + bvid + media_id`键集游标；前端两个标签各自缓存节点和游标，翻页不重建旧卡片。
-- `unavailable_cover_backfill_v1`只记录一次性封面回填数量摘要；完整状态或封面导入会删除标记并重新异步检查。
+- `unavailable_cover_backfill_v2`只记录一次性封面回填数量摘要；v2会重试曾因旧HTTP封面地址失败的v1数据，完整状态或封面导入会删除当前标记并重新异步检查。
 - `qualityProfile`继续表示请求目标；`remote_files.actual_*`和`mediaMetadata`才表示已确认的实际媒体参数。旧记录的`dfn`不会回填为真实画质。
 - 浏览器媒体上报只接受宽高和时长，使用当前fileId、大小、路径及更新时间组成的fingerprint；ffprobe结果优先且原位更新不改变fileId。
 - 播放传输attempt状态只在内存保留5分钟；AList入口只返回受保护的302，不进入播放队列JSON。
@@ -35,6 +35,8 @@ npm --prefix docs audit --omit=dev
 ```
 
 本轮完整逻辑套件共222项：221项通过，1项因本机未安装aria2跳过，0项失败。首次完整回归的全部业务断言完成后，Windows删除烟雾测试隔离目录时出现一次`EBUSY`；单项复跑及第二轮完整回归均通过，遗留测试目录已删除。浏览器插件按用户明确要求完全不调用，1280×720、390×844和844×390视觉验收记为未执行，不计为代码测试通过。
+
+阿里云现场只读验证的908条失效视频封面在升级为HTTPS后全部返回`200 image/jpeg`；29个分层样本均可完整下载并由ffprobe解码，12个HTTP/HTTPS对照样本的SHA256完全一致，7个无Cookie/Referer样本均可按BFB参数转换为WebP。验证未写入SQLite、AList或封面目录。
 
 ## 后续合并规则
 

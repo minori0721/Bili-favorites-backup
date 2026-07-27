@@ -16,7 +16,8 @@ import type {
 export const DATABASE_SCHEMA_VERSION = 6;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
-export const UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
+export const LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
+export const UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v2";
 
 export interface StateDirtySet {
   videos: Set<string>;

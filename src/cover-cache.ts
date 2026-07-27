@@ -6,7 +6,10 @@ import { spawn } from "node:child_process";
 import { coversDir, tempDir } from "./paths.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import type { StateManager, VideoArchiveEntry } from "./state.js";
-import { UNAVAILABLE_COVER_BACKFILL_MARKER } from "./database.js";
+import {
+  LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER,
+  UNAVAILABLE_COVER_BACKFILL_MARKER,
+} from "./database.js";
 
 interface CoverJobResult {
   path: string | null;
@@ -126,7 +129,7 @@ function isPrivateIp(address: string) {
     || normalized.startsWith("::ffff:");
 }
 
-export async function validateBilibiliCoverUrl(value: string) {
+export function normalizeBilibiliCoverUrl(value: string) {
   let url: URL;
   try {
     url = new URL(value);
@@ -134,10 +137,24 @@ export async function validateBilibiliCoverUrl(value: string) {
     throw new CoverDownloadError("cover URL is invalid");
   }
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  const allowedHost = allowedCoverHosts.some((suffix) => hostname.endsWith(suffix));
+  if (url.protocol === "http:" && allowedHost && !url.username && !url.password
+    && (!url.port || url.port === "80")) {
+    url.protocol = "https:";
+    url.port = "";
+  }
   if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")
-    || !allowedCoverHosts.some((suffix) => hostname.endsWith(suffix))) {
+    || !allowedHost) {
     throw new CoverDownloadError("cover URL is outside allowed Bilibili image hosts");
   }
+  url.hostname = hostname;
+  url.hash = "";
+  return url;
+}
+
+export async function validateBilibiliCoverUrl(value: string) {
+  const url = normalizeBilibiliCoverUrl(value);
+  const hostname = url.hostname;
   if (net.isIP(hostname) && isPrivateIp(hostname)) throw new CoverDownloadError("cover URL resolves to a private address");
   let addresses: dns.LookupAddress[];
   try {
@@ -148,7 +165,6 @@ export async function validateBilibiliCoverUrl(value: string) {
   if (addresses.length === 0 || addresses.some((entry) => isPrivateIp(entry.address))) {
     throw new CoverDownloadError("cover host resolved to a private address");
   }
-  url.hash = "";
   return url;
 }
 
@@ -504,6 +520,7 @@ export class UnavailableCoverBackfill {
       if (!completed) summary.failed += 1;
     }
     if (this.stopped) return;
+    database.deleteMeta(LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER);
     database.setMeta(UNAVAILABLE_COVER_BACKFILL_MARKER, JSON.stringify({ ...summary, completedAt: new Date().toISOString() }));
     console.log(`[CoverBackfill] Complete: linked=${summary.linked}, downloaded=${summary.downloaded}, skipped=${summary.skipped}, failed=${summary.failed}`);
   }
