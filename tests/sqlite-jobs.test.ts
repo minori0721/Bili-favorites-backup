@@ -8,6 +8,7 @@ import {
   LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
   LEGACY_TEMP_CACHE_MARKER,
   StateDatabase,
+  UNAVAILABLE_COVER_BACKFILL_MARKER,
 } from "../src/database.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
@@ -76,6 +77,7 @@ test("full state replacement clears jobs and state markers while preserving the 
     database.setMeta("legacy_failure_classification_v1", "complete");
     database.setMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, "complete");
     database.setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
+    database.setMeta(UNAVAILABLE_COVER_BACKFILL_MARKER, "complete");
     database.replaceState({
       schemaVersion: 11,
       processedByUser: {},
@@ -90,6 +92,7 @@ test("full state replacement clears jobs and state markers while preserving the 
     assert.equal(database.getMeta("legacy_failure_classification_v1"), null);
     assert.equal(database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
     assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
+    assert.equal(database.getMeta(UNAVAILABLE_COVER_BACKFILL_MARKER), null);
   } finally {
     database.close();
   }
@@ -102,11 +105,13 @@ test("clearing state and jobs resets one-time state markers", () => {
     database.setMeta("legacy_failure_classification_v1", "complete");
     database.setMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, "complete");
     database.setMeta(LEGACY_TEMP_CACHE_MARKER, "complete");
+    database.setMeta(UNAVAILABLE_COVER_BACKFILL_MARKER, "complete");
     database.clearStateAndJobs();
     assert.equal(database.getMeta("persistent_jobs_bootstrap_v1"), null);
     assert.equal(database.getMeta("legacy_failure_classification_v1"), null);
     assert.equal(database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
     assert.equal(database.getMeta(LEGACY_TEMP_CACHE_MARKER), null);
+    assert.equal(database.getMeta(UNAVAILABLE_COVER_BACKFILL_MARKER), null);
   } finally {
     database.close();
   }
@@ -304,7 +309,7 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
     try {
       const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
       assert.match(String(row?.sql || ""), /charging_restricted/);
-      assert.equal(migrated.db.pragma("user_version", { simple: true }), 5);
+      assert.equal(migrated.db.pragma("user_version", { simple: true }), 6);
       const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as any[]).map((item) => item.name));
       assert.equal(columns.has("fav_order"), true);
       assert.equal(columns.has("account_detached_at"), true);
@@ -352,8 +357,78 @@ test("schema 4 upgrade aborts before mutation when its consistent backup cannot 
 
     await fs.promises.rm(path.join(runtime, "backups"), { force: true });
     const upgraded = new StateDatabase(dbPath);
-    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 5);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 6);
     upgraded.close();
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 6 adds actual media columns without treating requested quality as measured metadata", async () => {
+  const runtime = await createTestDir("sqlite-schema-6-media");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  const at = "2026-07-26T00:00:00.000Z";
+  try {
+    const previous = new StateDatabase(dbPath);
+    const file = {
+      name: "target-4k.mp4",
+      path: "/archive/BVSCHEMA6/target-4k.mp4",
+      size: 123,
+      verificationStatus: "verified" as const,
+      qualityProfile: { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false },
+      filenameMetadata: { dfn: "4K", videoCodecs: "HEVC" },
+    };
+    previous.replaceState({
+      schemaVersion: 13,
+      processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
+      videos: {
+        BVSCHEMA6: {
+          bvid: "BVSCHEMA6", title: "Schema 6", upperName: "Tester",
+          firstSeenAt: at, lastSeenAt: at, biliStatus: "available", backupStatus: "verified",
+          remotePath: "/archive/BVSCHEMA6", remoteFiles: [file],
+        },
+      },
+      relations: {
+        "u1:1:BVSCHEMA6": {
+          userId: "u1", mediaId: 1, bvid: "BVSCHEMA6", folderTitle: "Schema",
+          firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: "verified",
+          remotePath: "/archive/BVSCHEMA6", remoteFiles: [file],
+        },
+      },
+    });
+    previous.close();
+
+    const raw = new Database(dbPath);
+    for (const column of [
+      "actual_width", "actual_height", "actual_fps", "actual_duration", "actual_codec",
+      "actual_metadata_source", "actual_metadata_at",
+    ]) raw.exec(`ALTER TABLE remote_files DROP COLUMN ${column}`);
+    raw.pragma("user_version = 5");
+    raw.close();
+
+    const upgraded = new StateDatabase(dbPath);
+    try {
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 6);
+      const columns = new Set((upgraded.db.pragma("table_info(remote_files)") as any[]).map((row) => String(row.name)));
+      for (const column of [
+        "actual_width", "actual_height", "actual_fps", "actual_duration", "actual_codec",
+        "actual_metadata_source", "actual_metadata_at",
+      ]) assert.equal(columns.has(column), true, column);
+      const row = upgraded.db.prepare(`
+        SELECT quality_json, actual_width, actual_height, actual_codec, actual_metadata_source
+        FROM remote_files WHERE user_id='u1' AND media_id=1
+      `).get() as any;
+      assert.equal(JSON.parse(row.quality_json).quality, "4K");
+      assert.equal(row.actual_width, null);
+      assert.equal(row.actual_height, null);
+      assert.equal(row.actual_codec, null);
+      assert.equal(row.actual_metadata_source, null);
+    } finally {
+      upgraded.close();
+    }
+    const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
+      .filter((name) => name.includes("before-schema-6-v5") && name.endsWith(".sqlite"));
+    assert.equal(backups.length, 1);
   } finally {
     await removeTestDir(runtime);
   }

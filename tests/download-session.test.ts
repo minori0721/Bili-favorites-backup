@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
   buildSelectPageArgument,
@@ -17,6 +18,7 @@ import {
 import {
   detectAria2TrackRecoveryIssue,
   downloadWithBBDown,
+  runWindowsTaskkill,
   sanitizeDownloadDiagnosticText,
   shutdownActiveDownloads,
 } from "../src/downloader.js";
@@ -798,6 +800,47 @@ test("downloader quarantines only the broken aria2 track before the next retry",
   } finally {
     await removeTestDir(runtime);
   }
+});
+
+test("Windows taskkill helper is bounded and reports success, failure, and timeout", async () => {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const fakeSpawn = ((command: string, args: string[]) => {
+    calls.push({ command, args });
+    const child = new EventEmitter() as any;
+    child.kill = () => true;
+    queueMicrotask(() => child.emit("close", 0));
+    return child;
+  }) as typeof spawn;
+  const success = await runWindowsTaskkill(1234, true, { timeoutMs: 50, spawnImpl: fakeSpawn });
+  assert.deepEqual(success, { ok: true, timedOut: false, code: 0 });
+  assert.deepEqual(calls[0], { command: "taskkill", args: ["/PID", "1234", "/T", "/F"] });
+
+  const nonzeroSpawn = (() => {
+    const child = new EventEmitter() as any;
+    child.kill = () => true;
+    queueMicrotask(() => child.emit("close", 128));
+    return child;
+  }) as typeof spawn;
+  assert.deepEqual(
+    await runWindowsTaskkill(9, false, { timeoutMs: 50, spawnImpl: nonzeroSpawn }),
+    { ok: false, timedOut: false, code: 128 }
+  );
+
+  let killed = false;
+  const hangingSpawn = (() => {
+    const child = new EventEmitter() as any;
+    child.kill = () => { killed = true; return true; };
+    return child;
+  }) as typeof spawn;
+  const timedOut = await runWindowsTaskkill(10, false, { timeoutMs: 20, spawnImpl: hangingSpawn });
+  assert.equal(timedOut.timedOut, true);
+  assert.equal(timedOut.ok, false);
+  assert.equal(killed, true);
+
+  const throwingSpawn = (() => { throw new Error("missing taskkill"); }) as typeof spawn;
+  const failed = await runWindowsTaskkill(11, false, { timeoutMs: 20, spawnImpl: throwingSpawn });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error || "", /missing taskkill/);
 });
 
 test("shutdown terminates the BBDown process tree", async () => {

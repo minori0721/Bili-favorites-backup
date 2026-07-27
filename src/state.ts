@@ -8,7 +8,10 @@ import { databasePath } from "./paths.js";
 import {
   archiveLegacyStateFile,
   StateDatabase,
+  type BrowserMediaMetadataInput,
   type StateDirtySet,
+  type UnavailablePageCursor,
+  type UnavailablePageFilter,
   type UploadFailureRecoveryCursor,
 } from "./database.js";
 import { playbackAvailability, type PlaybackAvailability } from "./playback.js";
@@ -52,25 +55,42 @@ export interface RemoteFileQualityProfile {
   dolby: boolean;
 }
 
+export interface RemoteFileMediaMetadata {
+  width: number;
+  height: number;
+  duration?: number;
+  fps?: number;
+  codec?: string;
+  source: "ffprobe" | "browser";
+  observedAt: string;
+}
+
+export interface RemoteFileFilenameMetadata {
+  publishDate?: number;
+  videoDate?: number;
+  cid?: number;
+  pageIndex?: number;
+  dfn?: string;
+  videoCodecs?: string;
+}
+
+export type UploadFileMetadata = RemoteFileFilenameMetadata & {
+  mediaMetadata?: RemoteFileMediaMetadata;
+};
+
 export interface RemoteFileRecord {
   name: string;
   path: string;
   size?: number;
   qualityProfile?: RemoteFileQualityProfile;
+  mediaMetadata?: RemoteFileMediaMetadata;
   localRelativePath?: string;
   verificationStatus?: "awaiting_verification" | "verified" | "failed";
   putCompletedAt?: string;
   verifyAttempts?: number;
   nextVerifyAt?: string;
   lastError?: string;
-  filenameMetadata?: {
-    publishDate?: number;
-    videoDate?: number;
-    cid?: number;
-    pageIndex?: number;
-    dfn?: string;
-    videoCodecs?: string;
-  };
+  filenameMetadata?: RemoteFileFilenameMetadata;
 }
 
 export interface RemoteConflictArchiveRecord {
@@ -2591,10 +2611,14 @@ export class StateManager {
     };
   }
 
-  listUnavailableForUser(userId: string, offset: number, limit: number) {
+  listUnavailableForUser(
+    userId: string,
+    options: { filter: UnavailablePageFilter; cursor: UnavailablePageCursor | null; legacyOffset?: number },
+    limit: number
+  ) {
     if (this.lazyState) {
-      const query = this.database.queryUnavailablePage(userId, offset, limit);
-      const items = query.rows.map(({ relation, video }) => ({
+      const query = this.database.queryUnavailablePage(userId, options.filter, options.cursor, limit, options.legacyOffset);
+      const items = query.rows.map(({ relation, video, processed, failed }) => ({
         bvid: video.bvid,
         title: displayTitle(video),
         upperName: displayUpperName(video),
@@ -2604,14 +2628,14 @@ export class StateManager {
         favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
         selfVisible: relation.selfVisible || video.selfVisible,
         unavailable: true,
-        processed: BACKED_UP_STATUSES.has(relation.backupStatus || video.backupStatus),
-        failed: this.isFailed(userId, video.bvid, relation.mediaId),
+        processed,
+        failed,
         backupStatus: relation.backupStatus || video.backupStatus,
         mediaId: relation.mediaId,
         folderTitle: relation.folderTitle,
+        lastSeenAt: relation.lastSeenAt,
       }));
-      const nextOffset = offset + limit < query.total ? offset + limit : null;
-      return { items, hasMore: nextOffset !== null, nextOffset };
+      return { items, hasMore: query.hasMore, nextCursor: query.nextCursor };
     }
     const dedup = new Map<string, { relation: FavoriteRelation; video: VideoArchiveEntry }>();
     const relations = (this.lazyState ? this.database.listRelationsForUser(userId) : Object.values(this.state.relations || {}))
@@ -2620,7 +2644,9 @@ export class StateManager {
       .filter((item): item is { relation: FavoriteRelation; video: VideoArchiveEntry } =>
         Boolean(item.video && relationTreatsUnavailable(item.relation, item.video))
       )
-      .sort((a, b) => Date.parse(b.video.lastSeenAt) - Date.parse(a.video.lastSeenAt));
+      .sort((a, b) => Date.parse(b.relation.lastSeenAt) - Date.parse(a.relation.lastSeenAt)
+        || a.video.bvid.localeCompare(b.video.bvid)
+        || a.relation.mediaId - b.relation.mediaId);
 
     for (const item of relations) {
       if (!dedup.has(item.video.bvid)) {
@@ -2628,9 +2654,21 @@ export class StateManager {
       }
     }
 
-    const uniqueRelations = Array.from(dedup.values());
+    const uniqueRelations = Array.from(dedup.values()).filter(({ relation, video }) => {
+      const processed = this.isProcessed(userId, video.bvid, relation.mediaId);
+      return options.filter === "all" || (options.filter === "uploaded" ? processed : !processed);
+    });
 
-    const page = uniqueRelations.slice(offset, offset + limit).map(({ relation, video }) => ({
+    const afterCursor = options.cursor ? uniqueRelations.filter(({ relation, video }) => {
+      const lastSeenAt = Date.parse(relation.lastSeenAt) || 0;
+      return lastSeenAt < options.cursor!.lastSeenAt
+        || (lastSeenAt === options.cursor!.lastSeenAt && video.bvid > options.cursor!.bvid)
+        || (lastSeenAt === options.cursor!.lastSeenAt && video.bvid === options.cursor!.bvid && relation.mediaId > options.cursor!.mediaId);
+    }) : uniqueRelations;
+    const offset = options.cursor ? 0 : Math.max(0, Number(options.legacyOffset || 0));
+
+    const selected = afterCursor.slice(offset, offset + limit);
+    const page = selected.map(({ relation, video }) => ({
       bvid: video.bvid,
       title: displayTitle(video),
       upperName: displayUpperName(video),
@@ -2645,12 +2683,20 @@ export class StateManager {
       backupStatus: relation.backupStatus || video.backupStatus,
       mediaId: relation.mediaId,
       folderTitle: relation.folderTitle,
+      lastSeenAt: relation.lastSeenAt,
     }));
+
+    const last = selected[selected.length - 1];
+    const hasMore = offset + limit < afterCursor.length;
 
     return {
       items: page,
-      hasMore: offset + limit < uniqueRelations.length,
-      nextOffset: offset + limit < uniqueRelations.length ? offset + limit : null,
+      hasMore,
+      nextCursor: hasMore && last ? {
+        lastSeenAt: Date.parse(last.relation.lastSeenAt) || 0,
+        bvid: last.video.bvid,
+        mediaId: last.relation.mediaId,
+      } : null,
     };
   }
 
@@ -3039,6 +3085,18 @@ export class StateManager {
 
   getDatabase() {
     return this.database;
+  }
+
+  updatePlaybackMediaMetadata(userId: string, mediaId: number, fileId: number, input: BrowserMediaMetadataInput) {
+    this.flush();
+    const result = this.database.updateBrowserMediaMetadata(userId, mediaId, fileId, input);
+    if (result) {
+      this.videoCache.delete(result.bvid);
+      for (const [key, relation] of this.relationCache) {
+        if (relation.bvid === result.bvid) this.relationCache.delete(key);
+      }
+    }
+    return result;
   }
 
   getMigrationPendingUploadCount() {

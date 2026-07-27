@@ -106,6 +106,119 @@ test("path migration copies the complete tree, switches state, and keeps the old
   db.close();
 });
 
+test("path migration cleanup deletes the old tree only after target verification", async () => {
+  const db = new StateDatabase(":memory:");
+  const config = fakeConfig();
+  const dav = new FakeDav();
+  const service = new PathMigrationService(db, fakeStore(config), {
+    clientFactory: () => dav,
+    isSchedulerIdle: () => true,
+    sleep: async () => undefined,
+  });
+  const preview = await service.preview("/drive/new");
+  await waitFor(service, (state) => state.status === "ready");
+  await service.start(preview.id);
+  await waitFor(service, (state) => state.status === "cleanup_pending");
+
+  const result = await service.cleanupOld(preview.id, false);
+  assert.equal(result?.status, "completed");
+  assert.equal(dav.files.has("/drive/old"), false);
+  assert.equal(dav.files.has("/drive/new/视频.mp4"), true);
+  db.close();
+});
+
+test("path migration cleanup atomically excludes concurrent keep and delete requests", async () => {
+  const db = new StateDatabase(":memory:");
+  const config = fakeConfig();
+  const dav = new FakeDav();
+  const service = new PathMigrationService(db, fakeStore(config), {
+    clientFactory: () => dav,
+    isSchedulerIdle: () => true,
+    sleep: async () => undefined,
+  });
+  const preview = await service.preview("/drive/new");
+  await waitFor(service, (state) => state.status === "ready");
+  await service.start(preview.id);
+  await waitFor(service, (state) => state.status === "cleanup_pending");
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const originalStat = dav.stat.bind(dav);
+  let blocked = false;
+  dav.stat = async (target: string) => {
+    if (!blocked && target.startsWith("/drive/new/")) {
+      blocked = true;
+      await gate;
+    }
+    return originalStat(target);
+  };
+  const deleting = service.cleanupOld(preview.id, false);
+  while (!blocked) await new Promise((resolve) => setTimeout(resolve, 1));
+  await assert.rejects(
+    () => service.cleanupOld(preview.id, true),
+    (error: any) => error?.statusCode === 409
+  );
+  await assert.rejects(
+    () => service.cleanupOld(preview.id, false),
+    (error: any) => error?.statusCode === 409
+  );
+  release();
+  await deleting;
+  assert.equal(service.getState()?.status, "completed");
+  db.close();
+});
+
+test("path migration cleanup failures return to manual confirmation", async () => {
+  const db = new StateDatabase(":memory:");
+  const config = fakeConfig();
+  const dav = new FakeDav();
+  const service = new PathMigrationService(db, fakeStore(config), {
+    clientFactory: () => dav,
+    isSchedulerIdle: () => true,
+    sleep: async () => undefined,
+  });
+  const preview = await service.preview("/drive/new");
+  await waitFor(service, (state) => state.status === "ready");
+  await service.start(preview.id);
+  await waitFor(service, (state) => state.status === "cleanup_pending");
+  dav.deleteFile = async () => { throw Object.assign(new Error("remote denied"), { status: 403 }); };
+
+  await assert.rejects(() => service.cleanupOld(preview.id, false), /remote denied/);
+  assert.equal(service.getState()?.status, "cleanup_pending");
+  assert.match(service.getState()?.lastError || "", /remote denied/);
+  assert.equal(dav.files.has("/drive/old/视频.mp4"), true);
+  db.close();
+});
+
+test("interrupted path cleanup never resumes deletion automatically", async () => {
+  const db = new StateDatabase(":memory:");
+  const config = fakeConfig();
+  const dav = new FakeDav();
+  db.createPathMigration({
+    id: "cleanup-interrupted",
+    sourceRoot: "/drive/old",
+    destinationRoot: "/drive/new",
+    alistIdentityHash: "hash",
+    status: "cleanup_running",
+    sourceManifestHash: "hash",
+    entryCount: 0,
+    fileCount: 0,
+    directoryCount: 0,
+    totalBytes: 0,
+    reusableCount: 0,
+    copiedCount: 0,
+    verifiedCount: 0,
+    conflictCount: 0,
+    extraCount: 0,
+  });
+  const service = new PathMigrationService(db, fakeStore(config), { clientFactory: () => dav });
+  await service.resumePersisted();
+  assert.equal(service.getState()?.status, "cleanup_pending");
+  assert.match(service.getState()?.lastError || "", /重新确认/);
+  assert.equal(dav.files.has("/drive/old/视频.mp4"), true);
+  db.close();
+});
+
 test("path migration creates a missing nested destination root", async () => {
   const db = new StateDatabase(":memory:");
   const config = fakeConfig();
@@ -148,6 +261,58 @@ test("cancelling a slow preview cannot be overwritten by its late completion", a
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(service.getState()?.status, "cancelled");
   assert.equal(db.countPathMigrationItems(preview.id).pending?.count || 0, 0);
+  db.close();
+});
+
+test("stopping a slow path preview prevents late SQLite writes", async () => {
+  const db = new StateDatabase(":memory:");
+  const config = fakeConfig();
+  const dav = new FakeDav();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const originalList = dav.getDirectoryContents.bind(dav);
+  let entered = false;
+  dav.getDirectoryContents = async (directory: string) => {
+    if (!entered && directory === "/drive/old") {
+      entered = true;
+      await gate;
+    }
+    return originalList(directory);
+  };
+  const service = new PathMigrationService(db, fakeStore(config), { clientFactory: () => dav });
+  const preview = await service.preview("/drive/new");
+  while (!entered) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(await service.stop(10), false);
+  release();
+  assert.equal(await service.stop(100), true);
+  assert.equal(db.getPathMigration(preview.id)?.status, "scanning");
+  assert.equal(db.countPathMigrationItems(preview.id).pending?.count || 0, 0);
+  service.rebind(db);
+  db.close();
+});
+
+test("path migration active index permits only one unfinished migration", () => {
+  const db = new StateDatabase(":memory:");
+  const record = {
+    sourceRoot: "/drive/old",
+    destinationRoot: "/drive/new",
+    alistIdentityHash: "hash",
+    sourceManifestHash: undefined,
+    entryCount: 0,
+    fileCount: 0,
+    directoryCount: 0,
+    totalBytes: 0,
+    reusableCount: 0,
+    copiedCount: 0,
+    verifiedCount: 0,
+    conflictCount: 0,
+    extraCount: 0,
+  };
+  db.createPathMigration({ id: "active-one", status: "scanning", ...record });
+  assert.throws(
+    () => db.createPathMigration({ id: "active-two", status: "ready", ...record }),
+    /UNIQUE constraint failed/
+  );
   db.close();
 });
 

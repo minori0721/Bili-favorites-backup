@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ConfigStore, type AppConfig, type BBDownApiMode } from "./config.js";
-import { FavoriteRelation, StateManager, VideoArchiveEntry, type RemoteFileRecord } from "./state.js";
+import { FavoriteRelation, StateManager, VideoArchiveEntry, type RemoteFileRecord, type UploadFileMetadata } from "./state.js";
 import { BiliUser, UserStore } from "./users.js";
 import {
   BiliRiskOrLoginError,
@@ -18,6 +18,7 @@ import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import { computeTaskRetryDelayMs, mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
 import { queueCoverCache } from "./cover-cache.js";
+import { actualQualityLabel, normalizeActualCodec } from "./media-metadata.js";
 import {
   cleanupUploadedSessionFiles,
   DOWNLOAD_RETAINED_FILE,
@@ -3001,18 +3002,29 @@ export class SyncScheduler {
     const manifest = readDownloadSession(downloadDir);
     if (!manifest) return undefined;
     const selected = new Set(files.map((file) => file.replace(/\\/g, "/")));
-    const result: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>> = {};
+    const result: Record<string, UploadFileMetadata> = {};
     for (const output of manifest.outputs) {
       const relativePath = output.relativePath.replace(/\\/g, "/");
       if (!selected.has(relativePath)) continue;
       const page = manifest.pages.find((candidate) => candidate.cid === output.cid);
+      const codec = normalizeActualCodec(output.videoCodec);
+      const mediaMetadata = output.width && output.height ? {
+        width: output.width,
+        height: output.height,
+        duration: output.duration,
+        fps: output.frameRate,
+        codec,
+        source: "ffprobe" as const,
+        observedAt: output.verifiedAt,
+      } : undefined;
       result[relativePath] = {
         publishDate: manifest.publishedAt,
         videoDate: page?.publishedAt || manifest.publishedAt,
         cid: output.cid,
         pageIndex: output.pageIndex,
-        dfn: manifest.configSnapshot.quality || undefined,
-        videoCodecs: output.videoCodec || manifest.configSnapshot.encoding || undefined,
+        dfn: actualQualityLabel(mediaMetadata),
+        videoCodecs: codec,
+        mediaMetadata,
       };
     }
     return Object.keys(result).length > 0 ? result : undefined;

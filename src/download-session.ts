@@ -6,6 +6,7 @@ import { isBBDownCredentialDirectoryName } from "./credential-temp.js";
 import type { AppConfig } from "./config.js";
 import type { QualityArtifactProfile } from "./quality-artifact.js";
 import { writeJsonFile } from "./storage.js";
+import { parseFrameRate } from "./media-metadata.js";
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
@@ -34,6 +35,7 @@ export interface DownloadOutputRecord {
   audioCodec?: string;
   width?: number;
   height?: number;
+  frameRate?: number;
   quickHash: string;
   verifiedAt: string;
 }
@@ -210,7 +212,7 @@ async function runFfprobe(filePath: string) {
   const args = [
     "-v", "error",
     "-show_entries",
-    "format=duration,size:stream=index,codec_type,codec_name,width,height,duration:stream_disposition=attached_pic",
+    "format=duration,size:stream=index,codec_type,codec_name,width,height,duration,avg_frame_rate,r_frame_rate:stream_disposition=attached_pic",
     "-of", "json",
     filePath,
   ];
@@ -286,6 +288,7 @@ export async function validateMediaOutput(
     audioCodec: audio?.codec_name ? String(audio.codec_name) : undefined,
     width: Number(video.width || 0) || undefined,
     height: Number(video.height || 0) || undefined,
+    frameRate: parseFrameRate(video.avg_frame_rate) || parseFrameRate(video.r_frame_rate),
     quickHash: await quickFileHash(filePath, stat.size),
   };
 }

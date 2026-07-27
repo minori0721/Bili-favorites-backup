@@ -407,17 +407,29 @@ if (mode === "detail" || mode === "playback") {
     const name = `${item.bvid}_P${index + 1}.mp4`;
     const remotePath = `/archive/${item.bvid}/${name}`;
     const content = orientation === "vertical" ? verticalVideo : horizontalVideo;
+    const hasActualMetadata = item.bvid === "BVDETAILLOST"
+      || (item.bvid === "BVDETAILPARTIAL" && index === 0);
+    const mediaMetadata = hasActualMetadata ? {
+      width: orientation === "vertical" ? 1080 : 1920,
+      height: orientation === "vertical" ? 1920 : 1080,
+      duration: 1,
+      fps: 30,
+      codec: "h264",
+      source: "ffprobe" as const,
+      observedAt: now,
+    } : undefined;
     davFiles.set(`/dav${remotePath}`, content);
     return {
       name,
       path: remotePath,
       size: content.length,
       verificationStatus: "verified",
+      qualityProfile: { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false },
+      mediaMetadata,
       filenameMetadata: {
         pageIndex: index + 1,
         cid: 1000 + index,
-        dfn: "1080P",
-        videoCodecs: "AVC",
+        ...(mediaMetadata ? { dfn: "1080p", videoCodecs: "AVC" } : {}),
       },
     };
   });
@@ -504,6 +516,7 @@ if (mode === "detail" || mode === "playback") {
   await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({
     queuePrefetchLimit: 5,
     alistUrl: `http://127.0.0.1:${davAddress.port}`,
+    alistBrowserUrl: `http://127.0.0.1:${davAddress.port}/dav`,
     alistUsername: "preview",
     alistPassword: "preview",
     alistDest: "/archive",

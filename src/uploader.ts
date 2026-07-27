@@ -29,7 +29,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
-import { type RemoteFileQualityProfile, type RemoteFileRecord } from "./state.js";
+import { type RemoteFileQualityProfile, type RemoteFileRecord, type UploadFileMetadata } from "./state.js";
 import { captureUploadResponseBody, classifyUploadError, sanitizeUploadText, UploadOperationError } from "./upload-health.js";
 
 export function buildDavClient(config: AppConfig): WebDAVClient {
@@ -375,7 +375,7 @@ export async function uploadWithAList(
     verificationDelaysMs?: number[];
     log?: Pick<typeof logManager, "push">;
     files?: string[];
-    filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
+    filenameMetadataByPath?: Record<string, UploadFileMetadata>;
     conflictArchiveSegment?: string;
     onConflictArchived?: (result: RemoteConflictArchiveResult) => void | Promise<void>;
     uploadStartLimiter?: UploadStartLimiter;
@@ -530,13 +530,16 @@ export async function uploadWithAList(
         simpleVisible: true,
       });
 
+      const uploadMetadata = options.filenameMetadataByPath?.[entry.relativePath.replace(/\\/g, "/")];
+      const { mediaMetadata, ...filenameMetadata } = uploadMetadata || {};
       uploadedFiles.push({
         name: uploadedName,
         path: uploadedRemoteFile,
         size: stat.size,
         qualityProfile,
+        mediaMetadata,
         localRelativePath: entry.relativePath,
-        filenameMetadata: options.filenameMetadataByPath?.[entry.relativePath.replace(/\\/g, "/")],
+        filenameMetadata: uploadMetadata ? filenameMetadata : undefined,
         verificationStatus: transferResult.verificationStatus,
         putCompletedAt: transferResult.skippedUpload ? undefined : new Date().toISOString(),
         verifyAttempts: transferResult.verificationStatus === "verified" ? 1 : 0,

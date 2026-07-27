@@ -29,7 +29,7 @@ export interface PathMigrationOptions {
   onConfigSwitched?: (previous: AppConfig, next: AppConfig) => void;
 }
 
-const ACTIVE_STATUSES: PathMigrationStatus[] = ["scanning", "ready", "copying", "verifying", "paused", "switching", "cleanup_pending"];
+const ACTIVE_STATUSES: PathMigrationStatus[] = ["scanning", "ready", "copying", "verifying", "paused", "switching", "cleanup_pending", "cleanup_running"];
 const TERMINAL_ITEM_STATUSES: PathMigrationItemStatus[] = ["reusable", "verified"];
 const MAX_ENTRIES = 100_000;
 const VERIFY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -135,6 +135,7 @@ export class PathMigrationService {
   private readonly setMaintenance: NonNullable<PathMigrationOptions["setMaintenance"]>;
   private readonly onConfigSwitched: NonNullable<PathMigrationOptions["onConfigSwitched"]>;
   private worker: Promise<void> | null = null;
+  private previewTask: Promise<void> | null = null;
   private starting = false;
   private stopped = false;
   private readonly ensuredDirectories = new Set<string>();
@@ -202,13 +203,24 @@ export class PathMigrationService {
       conflictCount: 0,
       extraCount: 0,
     });
-    void this.runPreview(record.id).catch((error) => {
-      const current = this.db.getPathMigration(record.id);
-      if (current && current.status !== "cancelled") {
-        this.db.updatePathMigration(record.id, { status: "failed", lastError: safeErrorSummary(error) });
-      }
-    });
+    this.startPreview(record.id);
     return record;
+  }
+
+  private startPreview(id: string) {
+    if (this.previewTask) return this.previewTask;
+    let task: Promise<void>;
+    task = this.runPreview(id).catch((error) => {
+      if (this.stopped) return;
+      const current = this.db.getPathMigration(id);
+      if (current && current.status !== "cancelled") {
+        this.db.updatePathMigration(id, { status: "failed", lastError: safeErrorSummary(error) });
+      }
+    }).finally(() => {
+      if (this.previewTask === task) this.previewTask = null;
+    });
+    this.previewTask = task;
+    return task;
   }
 
   private latestMigrationId() {
@@ -217,10 +229,11 @@ export class PathMigrationService {
   }
 
   private previewStillActive(id: string) {
-    return this.db.getPathMigration(id)?.status === "scanning";
+    return !this.stopped && this.db.getPathMigration(id)?.status === "scanning";
   }
 
   rebind(database: StateDatabase) {
+    if (this.previewTask) throw new Error("归档路径预览仍在运行，不能替换状态数据库");
     this.db = database;
     this.jobStore.rebind(database);
     this.ensuredDirectories.clear();
@@ -702,7 +715,7 @@ export class PathMigrationService {
 
   cancel(id?: string) {
     const record = this.db.getPathMigration(id || this.latestMigrationId());
-    if (!record || ["switching", "cleanup_pending", "completed", "cancelled"].includes(record.status)) throw new Error("切换后不能取消迁移");
+    if (!record || ["switching", "cleanup_pending", "cleanup_running", "completed", "cancelled"].includes(record.status)) throw new Error("切换后不能取消迁移");
     this.db.updatePathMigration(record.id, { status: "cancelled" });
     const migrationJob = this.jobStore.findByDedupeKey(`path-migration:${record.id}`);
     if (migrationJob) this.jobStore.complete(migrationJob.id);
@@ -712,47 +725,75 @@ export class PathMigrationService {
 
   async cleanupOld(id?: string, keepOld = false) {
     const record = this.db.getPathMigration(id || this.latestMigrationId());
+    if (record?.status === "cleanup_running") {
+      throw migrationConflictError("旧归档目录正在由另一个请求处理，请稍后刷新状态");
+    }
     if (!record || record.status !== "cleanup_pending") throw new Error("只有切换完成的迁移才能处理旧目录");
+    if (!this.db.claimPathMigrationCleanup(record.id)) {
+      throw migrationConflictError("旧归档目录正在由另一个请求处理，请稍后刷新状态");
+    }
     if (keepOld) {
       this.db.updatePathMigration(record.id, { status: "completed", lastError: "旧归档目录按用户选择保留" });
       return this.getState();
     }
-    const config = this.configStore.get();
-    const client = this.clientFactory(config);
-    const currentManifest = await this.computeManifest(client, record.sourceRoot, record.id);
-    if (currentManifest !== record.sourceManifestHash) throw new Error("旧目录已发生变化，已拒绝删除");
-    const counts = this.db.countPathMigrationItems(record.id);
-    if (Number(counts.verified?.count || 0) + Number(counts.reusable?.count || 0) !== record.entryCount) {
-      throw new Error("目标目录仍未完成全部确认，已拒绝删除旧目录");
-    }
-    for (let offset = 0; offset < record.entryCount; offset += 1000) {
-      const page = this.db.listPathMigrationItems(record.id, [], offset, 1000);
-      for (const item of page) {
-        const stat = await client.stat(item.destinationPath);
-        if (entryType(stat) !== item.itemType || (item.itemType === "file" && Number(stat?.size) !== Number(item.expectedSize))) {
-          throw new Error(`目标文件复核失败: ${item.relativePath}`);
+    try {
+      const config = this.configStore.get();
+      const client = this.clientFactory(config);
+      const counts = this.db.countPathMigrationItems(record.id);
+      if (Number(counts.verified?.count || 0) + Number(counts.reusable?.count || 0) !== record.entryCount) {
+        throw new Error("目标目录仍未完成全部确认，已拒绝删除旧目录");
+      }
+      for (let offset = 0; offset < record.entryCount; offset += 1000) {
+        const page = this.db.listPathMigrationItems(record.id, [], offset, 1000);
+        for (const item of page) {
+          const stat = await client.stat(item.destinationPath);
+          if (entryType(stat) !== item.itemType || (item.itemType === "file" && Number(stat?.size) !== Number(item.expectedSize))) {
+            throw new Error(`目标文件复核失败: ${item.relativePath}`);
+          }
+        }
+        if (page.length < 1000) break;
+      }
+
+      let sourceMissing = false;
+      try {
+        await client.stat(record.sourceRoot);
+      } catch (error) {
+        if (!isRemoteNotFoundError(error)) throw error;
+        sourceMissing = true;
+      }
+      if (!sourceMissing) {
+        const currentManifest = await this.computeManifest(client, record.sourceRoot, record.id);
+        if (currentManifest !== record.sourceManifestHash) throw new Error("旧目录已发生变化，已拒绝删除");
+        try { await client.deleteFile(record.sourceRoot); } catch (error) {
+          if (!isRemoteNotFoundError(error)) throw error;
         }
       }
-      if (page.length < 1000) break;
-    }
-    try { await client.deleteFile(record.sourceRoot); } catch (error) {
-      if (!isRemoteNotFoundError(error)) throw error;
-    }
-    try { await client.stat(record.sourceRoot); } catch (error) {
-      if (isRemoteNotFoundError(error)) {
-        this.db.updatePathMigration(record.id, { status: "completed", lastError: undefined });
-        return this.getState();
+      try { await client.stat(record.sourceRoot); } catch (error) {
+        if (isRemoteNotFoundError(error)) {
+          this.db.updatePathMigration(record.id, { status: "completed", lastError: undefined });
+          return this.getState();
+        }
+        throw error;
       }
+      throw new Error("旧归档目录删除后仍可见，未标记完成");
+    } catch (error) {
+      this.db.updatePathMigration(record.id, { status: "cleanup_pending", lastError: safeErrorSummary(error) });
       throw error;
     }
-    throw new Error("旧归档目录删除后仍可见，未标记完成");
   }
 
   async resumePersisted() {
     const record = this.db.getActivePathMigration();
     if (!record) return;
     if (record.status === "scanning") {
-      try { await this.runPreview(record.id); } catch (error) { this.db.updatePathMigration(record.id, { status: "failed", lastError: safeErrorSummary(error) }); }
+      await this.startPreview(record.id);
+      return;
+    }
+    if (record.status === "cleanup_running") {
+      this.db.updatePathMigration(record.id, {
+        status: "cleanup_pending",
+        lastError: "上次旧目录清理被中断，请重新确认并执行核验",
+      });
       return;
     }
     if (["copying", "verifying", "paused", "switching"].includes(record.status)) {
@@ -761,7 +802,7 @@ export class PathMigrationService {
     }
   }
 
-  stop() {
+  async stop(timeoutMs = 20_000) {
     this.stopped = true;
     this.ensuredDirectories.clear();
     if (this.leaseTimer) {
@@ -774,5 +815,16 @@ export class PathMigrationService {
       // The state database may already have been replaced during shutdown/import.
     }
     this.setMaintenance(false);
+    const tasks = [this.previewTask, this.worker].filter((task): task is Promise<void> => Boolean(task));
+    if (tasks.length === 0) return true;
+    let timer: NodeJS.Timeout | null = null;
+    const timedOut = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
+      timer.unref?.();
+    });
+    const completed = Promise.allSettled(tasks).then(() => true);
+    const result = await Promise.race([completed, timedOut]);
+    if (timer) clearTimeout(timer);
+    return result;
   }
 }

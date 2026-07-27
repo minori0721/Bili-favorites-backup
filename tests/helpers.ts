@@ -8,6 +8,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     perVideoDelaySeconds: 0,
     uploadLayout: "user-folder-video",
     alistUrl: "http://127.0.0.1:1",
+    alistBrowserUrl: "",
     alistUsername: "test",
     alistPassword: "test",
     alistDest: "/backup",

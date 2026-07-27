@@ -323,6 +323,13 @@ test("playback delivery defaults to safe redirect preference and validates proxy
   assert.equal(validateConfig({ playbackDeliveryMode: "auto" }), null);
   assert.equal(validateConfig({ playbackDeliveryMode: "proxy" }), null);
   assert.match(String(validateConfig({ playbackDeliveryMode: "invalid" as any })), /auto or proxy/);
+  assert.equal(normalizeLoadedConfig({}).alistBrowserUrl, "");
+  assert.equal(normalizeLoadedConfig({ alistBrowserUrl: " https://alist.example.com/base/ " }).alistBrowserUrl, "https://alist.example.com/base/");
+  assert.equal(validateConfig({ alistBrowserUrl: "https://alist.example.com/base" }), null);
+  assert.equal(validateConfig({ alistBrowserUrl: "http://alist.example.com" }), null);
+  assert.match(String(validateConfig({ alistBrowserUrl: "ftp://alist.example.com" })), /http\(s\)/);
+  assert.match(String(validateConfig({ alistBrowserUrl: "https://user:pass@alist.example.com" })), /credentials/);
+  assert.match(String(validateConfig({ alistBrowserUrl: "https://alist.example.com/?token=secret" })), /query/);
 });
 
 test("upload file interval validates its range and session retries use bounded backoff", () => {

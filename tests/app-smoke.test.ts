@@ -66,6 +66,10 @@ test("real app supports login, queue state, config update and migration preview 
     assert.match(html, /class="app-brand"/);
     assert.match(html, /class="version-link header-meta"/);
     assert.match(html, /class="github-link header-meta"/);
+    assert.match(html, /input\[type="url"\]/);
+    assert.match(html, /传输方式未知/);
+    assert.match(html, /cleanup_running/);
+    assert.match(html, /metadataRetryTimers/);
 
     const invalidPremiumAudio = await fetch(`${base}/api/config`, {
       method: "PUT",

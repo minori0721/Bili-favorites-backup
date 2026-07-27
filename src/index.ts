@@ -46,7 +46,7 @@ import {
 } from "./uploader.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
-import { sqlitePaths } from "./database.js";
+import { sqlitePaths, UNAVAILABLE_COVER_BACKFILL_MARKER, type UnavailablePageCursor, type UnavailablePageFilter } from "./database.js";
 import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
 import { renderArchivedFilename } from "./filename.js";
 import {
@@ -58,7 +58,18 @@ import {
 import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
-import { getPlaybackQueue, getPlaybackSearch, PlaybackHttpError, streamPlaybackFile } from "./playback.js";
+import {
+  closePlaybackDeliveryTracker,
+  getPlaybackDeliveryStatus,
+  getPlaybackQueue,
+  getPlaybackSearch,
+  playbackFileAlistLocation,
+  PlaybackHttpError,
+  resolvePlaybackFile,
+  streamPlaybackFile,
+} from "./playback.js";
+import { validBrowserMediaMetadata } from "./media-metadata.js";
+import { UnavailableCoverBackfill, waitForCoverCacheIdle } from "./cover-cache.js";
 import {
   ADMIN_REMEMBER_TTL_MS,
   ADMIN_SESSION_COOKIE_NAME,
@@ -73,6 +84,7 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
+const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
 const pathMigration = new PathMigrationService(stateManager.getDatabase(), configStore, {
   isSchedulerIdle: () => !scheduler.hasRunningTransferTasks()
     && !scheduler.hasPersistentTransferWork()
@@ -91,6 +103,11 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
 const artplayerAssetPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/artplayer/dist/artplayer.js");
+
+if (process.env.NODE_ENV !== "test") {
+  const backfillStart = setImmediate(() => { void unavailableCoverBackfill.start(); });
+  backfillStart.unref?.();
+}
 
 type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "exports" | "backups" | "state" | "users" | "config";
 
@@ -561,27 +578,41 @@ async function loadFavoriteDetailData(
   };
 }
 
-function parseUnavailableCursor(value: unknown) {
+function parseUnavailableFilter(value: unknown): UnavailablePageFilter {
+  const filter = String(value || "all");
+  return filter === "missing" || filter === "uploaded" ? filter : "all";
+}
+
+function parseUnavailableCursor(value: unknown, filter: UnavailablePageFilter) {
   if (!value) {
-    return { offset: 0 };
+    return { cursor: null, legacyOffset: 0 };
   }
   try {
     const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
     if (typeof parsed !== "object" || parsed === null) {
-      return { offset: 0 };
+      return { cursor: null, legacyOffset: 0 };
+    }
+    if (parsed.version === 2 && parsed.filter === filter) {
+      const lastSeenAt = Number(parsed.lastSeenAt);
+      const bvid = String(parsed.bvid || "");
+      const mediaId = Number(parsed.mediaId);
+      if (Number.isFinite(lastSeenAt) && lastSeenAt >= 0 && bvid.length > 0 && bvid.length <= 64
+        && Number.isInteger(mediaId) && mediaId > 0) {
+        return { cursor: { lastSeenAt, bvid, mediaId } satisfies UnavailablePageCursor, legacyOffset: 0 };
+      }
     }
     const offset = Math.max(0, Number(parsed.offset) || 0);
     if (offset > 1_000_000) {
-      return { offset: 0 };
+      return { cursor: null, legacyOffset: 0 };
     }
-    return { offset };
+    return { cursor: null, legacyOffset: offset };
   } catch {
-    return { offset: 0 };
+    return { cursor: null, legacyOffset: 0 };
   }
 }
 
-function encodeUnavailableCursor(offset: number) {
-  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
+function encodeUnavailableCursor(cursor: UnavailablePageCursor, filter: UnavailablePageFilter) {
+  return Buffer.from(JSON.stringify({ version: 2, filter, ...cursor }), "utf8").toString("base64url");
 }
 
 const loginSessions = new Map<
@@ -1087,6 +1118,83 @@ app.get("/api/users/:id/favorites/:mediaId/playback-search", (req, res) => {
   res.json({ success: true, data });
 });
 
+app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata", (req, res) => {
+  const user = userStore.getById(req.params.id);
+  const mediaId = Number(req.params.mediaId);
+  const fileId = Number(req.params.fileId);
+  const fingerprint = String(req.body?.fingerprint || "");
+  const metadata = validBrowserMediaMetadata(req.body || {});
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  if (!Number.isInteger(mediaId) || mediaId < 1 || !Number.isInteger(fileId) || fileId < 1
+    || !metadata || !fingerprint || fingerprint.length > 160 || fingerprint.includes("\0")) {
+    res.status(400).json({ success: false, message: "Invalid playback media metadata" });
+    return;
+  }
+  try {
+    resolvePlaybackFile(stateManager.getDatabase(), user.id, mediaId, fileId);
+    const result = stateManager.updatePlaybackMediaMetadata(user.id, mediaId, fileId, { fingerprint, ...metadata });
+    if (!result) {
+      res.status(409).json({ success: false, code: "PLAYBACK_FILE_CHANGED", message: "播放文件记录已变化，请重新打开播放器" });
+      return;
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    if (error instanceof PlaybackHttpError) {
+      res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      return;
+    }
+    throw error;
+  }
+});
+
+app.get("/api/users/:id/favorites/:mediaId/playback/delivery/:attemptId", (req, res) => {
+  const user = userStore.getById(req.params.id);
+  const mediaId = Number(req.params.mediaId);
+  const attemptId = String(req.params.attemptId || "");
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  if (!Number.isInteger(mediaId) || mediaId < 1 || !/^[0-9a-f]{32}$/i.test(attemptId)) {
+    res.status(400).json({ success: false, message: "Invalid playback delivery attempt" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: getPlaybackDeliveryStatus(req.sessionID, user.id, mediaId, attemptId) });
+});
+
+app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId/open-in-alist", (req, res) => {
+  const user = userStore.getById(req.params.id);
+  const mediaId = Number(req.params.mediaId);
+  const fileId = Number(req.params.fileId);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  if (!Number.isInteger(mediaId) || mediaId < 1 || !Number.isInteger(fileId) || fileId < 1) {
+    res.status(400).json({ success: false, message: "Invalid playback file" });
+    return;
+  }
+  try {
+    const location = playbackFileAlistLocation(stateManager.getDatabase(), configStore.get(), user.id, mediaId, fileId);
+    res.status(302);
+    res.setHeader("Location", location);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Content-Length", "0");
+    res.end();
+  } catch (error) {
+    if (error instanceof PlaybackHttpError) {
+      res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      return;
+    }
+    throw error;
+  }
+});
+
 const playbackFileHandler = asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
@@ -1100,8 +1208,13 @@ const playbackFileHandler = asyncHandler(async (req, res) => {
     return;
   }
   const delivery = req.query.delivery;
+  const attemptId = req.query.attempt === undefined ? undefined : String(req.query.attempt);
   if (delivery !== undefined && delivery !== "proxy") {
     res.status(400).json({ success: false, message: "Invalid playback delivery mode" });
+    return;
+  }
+  if (attemptId !== undefined && !/^[0-9a-f]{32}$/i.test(attemptId)) {
+    res.status(400).json({ success: false, message: "Invalid playback delivery attempt" });
     return;
   }
   try {
@@ -1109,6 +1222,8 @@ const playbackFileHandler = asyncHandler(async (req, res) => {
       userId: user.id,
       mediaId,
       fileId,
+      ownerKey: req.sessionID,
+      attemptId,
       forceProxy: delivery === "proxy",
     });
   } catch (error) {
@@ -1132,14 +1247,15 @@ app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
 
   try {
     const pageSize = normalizePageSize(req.query.pageSize);
-    const cursor = parseUnavailableCursor(req.query.cursor);
-    const page = stateManager.listUnavailableForUser(user.id, cursor.offset, pageSize);
+    const filter = parseUnavailableFilter(req.query.filter);
+    const cursor = parseUnavailableCursor(req.query.cursor, filter);
+    const page = stateManager.listUnavailableForUser(user.id, { filter, ...cursor }, pageSize);
     res.json({
       success: true,
       data: {
         items: page.items,
         hasMore: page.hasMore,
-        nextCursor: page.hasMore && page.nextOffset !== null ? encodeUnavailableCursor(page.nextOffset) : null,
+        nextCursor: page.hasMore && page.nextCursor ? encodeUnavailableCursor(page.nextCursor, filter) : null,
       },
     });
   } catch (err: any) {
@@ -1299,7 +1415,7 @@ function normalizeCleanupItems(value: unknown): CleanupItem[] {
 }
 
 function cleanupRequiresIdle(items: CleanupItem[]) {
-  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs" && item !== "covers" && item !== "exports" && item !== "backups");
+  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs" && item !== "exports" && item !== "backups");
 }
 
 function cleanupConfirmationRequired(items: CleanupItem[]) {
@@ -1338,6 +1454,7 @@ async function removeCleanupTarget(item: CleanupItem) {
   await fs.promises.rm(targetPath, { recursive: true, force: true });
   if (item === "covers") {
     await fs.promises.mkdir(coversDir, { recursive: true });
+    stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
   } else if (item === "exports") {
     await fs.promises.mkdir(exportsDir, { recursive: true });
   } else if (item === "backups") {
@@ -1382,6 +1499,10 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     res.status(400).json({ success: false, message: "请选择要清理的内容" });
     return;
   }
+  if (items.includes("state") && stateManager.getDatabase().getActivePathMigration()) {
+    res.status(409).json({ success: false, message: "归档路径迁移期间不能清理业务状态" });
+    return;
+  }
   const requiresIdle = cleanupRequiresIdle(items);
   if (requiresIdle && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
     res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
@@ -1393,6 +1514,15 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     return;
   }
   const runCleanup = async () => {
+    const quiesceCoverWork = items.includes("covers") || items.includes("state");
+    if (quiesceCoverWork) {
+      const stopped = await unavailableCoverBackfill.stop(30_000);
+      const idle = stopped && await waitForCoverCacheIdle(30_000);
+      if (!stopped || !idle) {
+        unavailableCoverBackfill.restart();
+        throw Object.assign(new Error("封面任务未能在安全期限内停止，请稍后重试清理"), { statusCode: 409 });
+      }
+    }
     const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string; skipped?: boolean; note?: string }> = [];
     for (const item of items) {
       if (item === "orphan-fragments" && items.includes("temp")) {
@@ -1415,6 +1545,7 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
         results.push({ key: item, label: cleanupItems[item].label, ok: false, error: safeErrorSummary(error) });
       }
     }
+    if (quiesceCoverWork) unavailableCoverBackfill.restart();
     return results;
   };
   const results = requiresIdle ? await scheduler.withCleanupLock(runCleanup) : await runCleanup();
@@ -1541,6 +1672,11 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
   const upload = await receiveMigrationArchive(req);
   let result: Awaited<ReturnType<typeof applyMigrationPackageFile>>;
   try {
+    const backfillStopped = await unavailableCoverBackfill.stop(30_000);
+    const coverQueueIdle = backfillStopped && await waitForCoverCacheIdle(30_000);
+    if (!backfillStopped || !coverQueueIdle) {
+      throw Object.assign(new Error("封面任务未能在安全期限内停止，请稍后重试导入"), { statusCode: 409 });
+    }
     result = await scheduler.withCleanupLock(async () => applyMigrationPackageFile(upload.archivePath, {
       restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
       restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
@@ -1550,11 +1686,15 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
       restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
       reload: reloadStoresAfterImport,
     }, stateManager));
+    if (result.restored.some((item) => item === "state" || item === "covers")) {
+      stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
+    }
   } catch (error: any) {
     if (error?.statusCode === 409) throw error;
     throw badRequest(error?.message || "导入包无法解析");
   } finally {
     await fs.promises.rm(upload.root, { recursive: true, force: true });
+    unavailableCoverBackfill.restart();
   }
   try {
     scheduler.recheckLegacyRecoveryAfterImport(result.restored, previousLegacyRecoveryMarkers);
@@ -2088,10 +2228,15 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 export async function closeAppResources() {
   scheduler.beginShutdown();
-  pathMigration.stop();
+  const pathMigrationStopped = pathMigration.stop(5_000);
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
+  if (!await pathMigrationStopped) throw new Error("Path migration did not stop before closing the state database");
+  const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000);
+  const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
+  if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
   await cleanupBBDownCredentialResidue().catch(() => undefined);
+  closePlaybackDeliveryTracker();
   adminSessionStore.close();
   stateManager.close();
   logManager.close();
@@ -2119,7 +2264,7 @@ if (process.env.NODE_ENV !== "test") {
     shuttingDown = true;
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
     scheduler.beginShutdown();
-    pathMigration.stop();
+    const pathMigrationStopped = pathMigration.stop(20_000);
     server.close();
     await shutdownActiveDownloads(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
@@ -2127,11 +2272,24 @@ if (process.env.NODE_ENV !== "test") {
     await scheduler.shutdown(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to checkpoint state database cleanly: ${safeErrorSummary(error)}`);
     });
+    if (!await pathMigrationStopped) {
+      console.warn("[Shutdown] Path migration preview or worker did not stop before the shutdown deadline");
+    }
     await cleanupBBDownCredentialResidue().catch((error) => {
       console.warn(`[Shutdown] Failed to clean BBDown credential directories: ${safeErrorSummary(error)}`);
     });
+    const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000).catch((error) => {
+      console.warn(`[Shutdown] Failed to stop unavailable cover backfill cleanly: ${safeErrorSummary(error)}`);
+      return false;
+    });
+    const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
+    closePlaybackDeliveryTracker();
     adminSessionStore.close();
-    stateManager.close();
+    if (await pathMigrationStopped && coverBackfillStopped && coverQueueIdle) {
+      stateManager.close();
+    } else {
+      console.warn("[Shutdown] Skipped explicit state database close because background work did not quiesce");
+    }
     logManager.close();
     process.exit(0);
   };

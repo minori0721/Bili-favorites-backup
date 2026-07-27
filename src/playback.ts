@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import dns from "node:dns";
 import net from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -7,6 +8,7 @@ import type express from "express";
 import type { AppConfig } from "./config.js";
 import type { StateDatabase } from "./database.js";
 import type { FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
+import { actualQualityLabel, normalizeActualCodec } from "./media-metadata.js";
 
 export type PlaybackUnavailableReason = "not_verified" | "awaiting_verification" | "no_playable_media";
 
@@ -23,6 +25,13 @@ export interface PlaybackPart {
   cid?: number;
   label: string;
   size?: number;
+  requestedQuality?: string;
+  requestedCodec?: string;
+  actualQuality?: string;
+  actualWidth?: number;
+  actualHeight?: number;
+  actualFps?: number;
+  mediaMetadataSource?: "ffprobe" | "browser";
   quality?: string;
   codec?: string;
   fingerprint: string;
@@ -68,7 +77,88 @@ interface PlaybackFileRow {
   remotePath: string;
   expectedSize?: number;
   qualityProfile?: Record<string, unknown>;
+  actualWidth?: number;
+  actualHeight?: number;
+  actualFps?: number;
+  actualDuration?: number;
+  actualCodec?: string;
+  actualMetadataSource?: "ffprobe" | "browser";
   updatedAt: number;
+}
+
+export type PlaybackDeliveryStatus = "pending" | "direct" | "proxy" | "failed";
+
+interface PlaybackDeliveryRecord {
+  ownerHash: string;
+  userId: string;
+  mediaId: number;
+  fileId: number;
+  attemptId: string;
+  status: PlaybackDeliveryStatus;
+  updatedAt: number;
+}
+
+const playbackDeliveryTtlMs = 5 * 60 * 1000;
+const playbackDeliveryMaxEntries = 1_000;
+const playbackDeliveries = new Map<string, PlaybackDeliveryRecord>();
+
+function playbackOwnerHash(ownerKey: string) {
+  return crypto.createHash("sha256").update(ownerKey).digest("hex");
+}
+
+function playbackDeliveryKey(ownerKey: string, userId: string, mediaId: number, attemptId: string) {
+  return `${playbackOwnerHash(ownerKey)}:${userId}:${mediaId}:${attemptId}`;
+}
+
+function prunePlaybackDeliveries(now = Date.now()) {
+  for (const [key, record] of playbackDeliveries) {
+    if (now - record.updatedAt >= playbackDeliveryTtlMs) playbackDeliveries.delete(key);
+  }
+  if (playbackDeliveries.size <= playbackDeliveryMaxEntries) return;
+  const oldest = [...playbackDeliveries.entries()]
+    .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
+    .slice(0, playbackDeliveries.size - playbackDeliveryMaxEntries);
+  for (const [key] of oldest) playbackDeliveries.delete(key);
+}
+
+const playbackDeliveryCleanupTimer = setInterval(prunePlaybackDeliveries, 60_000);
+playbackDeliveryCleanupTimer.unref?.();
+
+function markPlaybackDelivery(
+  input: { ownerKey: string; userId: string; mediaId: number; fileId: number; attemptId?: string },
+  status: PlaybackDeliveryStatus
+) {
+  if (!input.attemptId) return;
+  const key = playbackDeliveryKey(input.ownerKey, input.userId, input.mediaId, input.attemptId);
+  const previous = playbackDeliveries.get(key);
+  if (previous && previous.fileId !== input.fileId) return;
+  if (previous?.status === "proxy" && status !== "proxy") return;
+  playbackDeliveries.set(key, {
+    ownerHash: playbackOwnerHash(input.ownerKey),
+    userId: input.userId,
+    mediaId: input.mediaId,
+    fileId: input.fileId,
+    attemptId: input.attemptId,
+    status,
+    updatedAt: Date.now(),
+  });
+  prunePlaybackDeliveries();
+}
+
+export function getPlaybackDeliveryStatus(
+  ownerKey: string,
+  userId: string,
+  mediaId: number,
+  attemptId: string
+) {
+  prunePlaybackDeliveries();
+  const record = playbackDeliveries.get(playbackDeliveryKey(ownerKey, userId, mediaId, attemptId));
+  return record ? { status: record.status, updatedAt: record.updatedAt } : { status: "pending" as const, updatedAt: Date.now() };
+}
+
+export function closePlaybackDeliveryTracker() {
+  clearInterval(playbackDeliveryCleanupTimer);
+  playbackDeliveries.clear();
 }
 
 const playableStatuses = new Set(["verified", "partial_verified"]);
@@ -157,7 +247,9 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
   if (bvids.length === 0) return new Map<string, PlaybackFileRow[]>();
   const placeholders = bvids.map(() => "?").join(",");
   const rows = database.db.prepare(`
-    SELECT id, bvid, name, remote_path, expected_size, quality_json, updated_at
+    SELECT id, bvid, name, remote_path, expected_size, quality_json,
+      actual_width, actual_height, actual_fps, actual_duration, actual_codec,
+      actual_metadata_source, updated_at
     FROM remote_files
     WHERE user_id=? AND media_id=? AND status='verified' AND bvid IN (${placeholders})
       AND (
@@ -178,6 +270,14 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
       remotePath: String(row.remote_path || ""),
       expectedSize: row.expected_size == null ? undefined : Number(row.expected_size),
       qualityProfile: parseJson(row.quality_json, undefined as any),
+      actualWidth: row.actual_width == null ? undefined : Number(row.actual_width),
+      actualHeight: row.actual_height == null ? undefined : Number(row.actual_height),
+      actualFps: row.actual_fps == null ? undefined : Number(row.actual_fps),
+      actualDuration: row.actual_duration == null ? undefined : Number(row.actual_duration),
+      actualCodec: row.actual_codec || undefined,
+      actualMetadataSource: row.actual_metadata_source === "ffprobe" || row.actual_metadata_source === "browser"
+        ? row.actual_metadata_source
+        : undefined,
       updatedAt: Number(row.updated_at || 0),
     });
     result.set(bvid, group);
@@ -213,14 +313,25 @@ function buildQueueItem(
     seen.set(pageIndex, duplicateIndex);
     const duplicateSuffix = (duplicates.get(pageIndex) || 0) > 1 ? ` · ${duplicateIndex}` : "";
     const qualityProfile = (file.qualityProfile || row.qualityProfile || {}) as Record<string, unknown>;
+    const actualQuality = row.actualWidth && row.actualHeight
+      ? actualQualityLabel({ width: row.actualWidth, height: row.actualHeight, fps: row.actualFps })
+      : undefined;
+    const actualCodec = normalizeActualCodec(row.actualCodec);
     return {
       fileId: row.id,
       pageIndex,
       cid: Number.isInteger(Number(file.filenameMetadata?.cid)) ? Number(file.filenameMetadata?.cid) : undefined,
       label: `${paired.length === 1 && !file.filenameMetadata?.pageIndex ? "正片" : `P${pageIndex}`}${duplicateSuffix}`,
       size: row.expectedSize,
-      quality: String(file.filenameMetadata?.dfn || qualityProfile.quality || "") || undefined,
-      codec: String(file.filenameMetadata?.videoCodecs || qualityProfile.encoding || "") || undefined,
+      requestedQuality: String(qualityProfile.quality || "") || undefined,
+      requestedCodec: String(qualityProfile.encoding || "") || undefined,
+      actualQuality,
+      actualWidth: row.actualWidth,
+      actualHeight: row.actualHeight,
+      actualFps: row.actualFps,
+      mediaMetadataSource: row.actualMetadataSource,
+      quality: actualQuality,
+      codec: actualCodec,
       fingerprint: `${row.id}:${row.expectedSize || 0}:${row.updatedAt}`,
       streamUrl: `/api/users/${encodeURIComponent(relation.userId)}/favorites/${relation.mediaId}/playback/files/${row.id}`,
     } satisfies PlaybackPart;
@@ -428,7 +539,7 @@ export class PlaybackHttpError extends Error {
   }
 }
 
-function resolvePlaybackFile(database: StateDatabase, userId: string, mediaId: number, fileId: number) {
+export function resolvePlaybackFile(database: StateDatabase, userId: string, mediaId: number, fileId: number) {
   const row = database.db.prepare(`
     SELECT rf.id, rf.bvid, rf.name, rf.remote_path, rf.expected_size, r.payload_json AS relation_json
     FROM remote_files rf JOIN favorite_relations r
@@ -450,6 +561,34 @@ function resolvePlaybackFile(database: StateDatabase, userId: string, mediaId: n
     remotePath,
     size: row.expected_size == null ? undefined : Number(row.expected_size),
   };
+}
+
+export function playbackFileAlistLocation(
+  database: StateDatabase,
+  config: AppConfig,
+  userId: string,
+  mediaId: number,
+  fileId: number
+) {
+  const file = resolvePlaybackFile(database, userId, mediaId, fileId);
+  if (!config.alistBrowserUrl) {
+    throw new PlaybackHttpError(404, "PLAYBACK_ALIST_BROWSER_NOT_CONFIGURED", "尚未配置AList网页访问地址");
+  }
+  let base: URL;
+  try {
+    base = new URL(config.alistBrowserUrl);
+  } catch {
+    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_BROWSER_CONFIG", "AList网页访问地址无效");
+  }
+  if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash
+    || base.toString().length > 4_096) {
+    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_BROWSER_CONFIG", "AList网页访问地址无效");
+  }
+  const basePath = base.pathname.replace(/\/+$/, "");
+  base.pathname = `${basePath}${encodeDavPath(file.remotePath)}`;
+  base.search = "";
+  base.hash = "";
+  return base.toString();
 }
 
 function copyPlaybackHeaders(upstream: Response, res: express.Response, fallbackType: string) {
@@ -475,7 +614,11 @@ function isPrivateIpv4(hostname: string) {
     || (first === 169 && second === 254)
     || (first === 172 && second >= 16 && second <= 31)
     || (first === 192 && second === 168)
+    || (first === 192 && second === 0 && (octets[2] === 0 || octets[2] === 2))
+    || (first === 192 && second === 88 && octets[2] === 99)
     || (first === 198 && (second === 18 || second === 19))
+    || (first === 198 && second === 51 && octets[2] === 100)
+    || (first === 203 && second === 0 && octets[2] === 113)
     || first >= 224;
 }
 
@@ -484,6 +627,7 @@ function isPrivateIpv6(hostname: string) {
   if (normalized === "::" || normalized === "::1") return true;
   if (normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("ff")) return true;
   if (/^fe[89ab]/.test(normalized)) return true;
+  if (normalized.startsWith("2001:db8:")) return true;
   if (normalized.startsWith("::ffff:")) {
     const mapped = normalized.slice("::ffff:".length);
     return net.isIP(mapped) === 4 ? isPrivateIpv4(mapped) : true;
@@ -507,6 +651,7 @@ export function safePlaybackRedirectLocation(location: string | null, alistBase:
   try {
     const target = new URL(location);
     if (target.protocol !== "https:" || target.username || target.password || target.hostname === alistBase.hostname) return null;
+    if (target.port && target.port !== "443") return null;
     if (isPrivatePlaybackHost(target.hostname)) return null;
     target.hash = "";
     return target.toString();
@@ -515,17 +660,118 @@ export function safePlaybackRedirectLocation(location: string | null, alistBase:
   }
 }
 
+type PlaybackLookup = typeof dns.promises.lookup;
+type PlaybackFetch = typeof fetch;
+
+export interface PlaybackTransportOptions {
+  lookup?: PlaybackLookup;
+  fetch?: PlaybackFetch;
+}
+
+async function validatedExternalPlaybackLocation(
+  value: string,
+  alistBase: URL,
+  lookup: PlaybackLookup
+) {
+  const normalized = safePlaybackRedirectLocation(value, alistBase);
+  if (!normalized) return null;
+  const target = new URL(normalized);
+  if (net.isIP(target.hostname)) return normalized;
+  let addresses: dns.LookupAddress[];
+  try {
+    addresses = await lookup(target.hostname, { all: true, verbatim: true }) as dns.LookupAddress[];
+  } catch {
+    return null;
+  }
+  if (addresses.length === 0 || addresses.some((entry) => isPrivatePlaybackHost(entry.address))) return null;
+  return normalized;
+}
+
+const PLAYBACK_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+export async function fetchPlaybackUpstream(
+  target: URL,
+  alistBase: URL,
+  method: "GET" | "HEAD",
+  authenticatedHeaders: Record<string, string>,
+  signal: AbortSignal,
+  preferDirect: boolean,
+  options: PlaybackTransportOptions
+) {
+  const fetchImpl = options.fetch || fetch;
+  const lookup = options.lookup || dns.promises.lookup;
+  const seen = new Set<string>();
+  let current = target;
+  let crossedOrigin = target.origin !== alistBase.origin;
+
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const key = current.toString();
+    if (seen.has(key)) {
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LOOP", "AList播放地址出现循环跳转");
+    }
+    seen.add(key);
+    const sameAlistOrigin = current.origin === alistBase.origin;
+    const requestHeaders = sameAlistOrigin && !crossedOrigin
+      ? authenticatedHeaders
+      : Object.fromEntries(Object.entries(authenticatedHeaders).filter(([name]) => name.toLowerCase() !== "authorization"));
+    const response = await fetchImpl(current, {
+      method,
+      headers: requestHeaders,
+      signal,
+      redirect: "manual",
+    });
+    if (!PLAYBACK_REDIRECT_STATUSES.has(response.status)) return { response };
+
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (!location) {
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_INVALID", "AList返回了缺少目标的播放跳转");
+    }
+    if (redirects === 5) {
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "AList播放地址跳转次数过多");
+    }
+    let next: URL;
+    try {
+      next = new URL(location, current);
+    } catch {
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_INVALID", "AList返回了无效的播放跳转");
+    }
+    if (next.origin !== current.origin) crossedOrigin = true;
+    if (next.origin === alistBase.origin) {
+      current = next;
+      continue;
+    }
+    const external = await validatedExternalPlaybackLocation(next.toString(), alistBase, lookup);
+    if (!external) {
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_UNSAFE", "AList返回了不安全的外部播放地址");
+    }
+    if (preferDirect) return { directLocation: external };
+    current = new URL(external);
+  }
+  throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "AList播放地址跳转次数过多");
+}
+
 export async function streamPlaybackFile(
   database: StateDatabase,
   config: AppConfig,
   req: express.Request,
   res: express.Response,
-  input: { userId: string; mediaId: number; fileId: number; forceProxy?: boolean }
+  input: {
+    userId: string;
+    mediaId: number;
+    fileId: number;
+    ownerKey: string;
+    attemptId?: string;
+    forceProxy?: boolean;
+    transport?: PlaybackTransportOptions;
+  }
 ) {
   const file = resolvePlaybackFile(database, input.userId, input.mediaId, input.fileId);
+  markPlaybackDelivery(input, "pending");
   const range = String(req.headers.range || "").trim();
   if (range && !/^bytes=(?:\d+-\d*|-\d+)$/i.test(range)) {
     if (file.size) res.setHeader("Content-Range", `bytes */${file.size}`);
+    markPlaybackDelivery(input, "failed");
     throw new PlaybackHttpError(416, "PLAYBACK_RANGE_INVALID", "仅支持单段字节范围请求");
   }
 
@@ -533,6 +779,7 @@ export async function streamPlaybackFile(
   try {
     base = new URL(String(config.alistUrl || ""));
   } catch {
+    markPlaybackDelivery(input, "failed");
     throw new PlaybackHttpError(502, "PLAYBACK_ALIST_CONFIG", "AList连接配置无效");
   }
   const basePath = base.pathname.replace(/\/+$/, "");
@@ -552,35 +799,27 @@ export async function streamPlaybackFile(
 
   try {
     const preferRedirect = config.playbackDeliveryMode !== "proxy" && !input.forceProxy;
-    let upstream = await fetch(target, {
-      method: req.method === "HEAD" ? "HEAD" : "GET",
+    const result = await fetchPlaybackUpstream(
+      target,
+      base,
+      req.method === "HEAD" ? "HEAD" : "GET",
       headers,
-      signal: controller.signal,
-      redirect: preferRedirect ? "manual" : "follow",
-    });
-    if (preferRedirect && upstream.status === 302) {
-      const directLocation = safePlaybackRedirectLocation(upstream.headers.get("location"), base);
-      if (directLocation) {
-        await upstream.body?.cancel();
-        clearTimeout(timeout);
-        res.status(302);
-        res.setHeader("Location", directLocation);
-        res.setHeader("Cache-Control", "private, no-store");
-        res.setHeader("Referrer-Policy", "no-referrer");
-        res.setHeader("Content-Length", "0");
-        res.end();
-        return;
-      }
+      controller.signal,
+      preferRedirect,
+      input.transport || {}
+    );
+    if (result.directLocation) {
+      markPlaybackDelivery(input, "direct");
+      clearTimeout(timeout);
+      res.status(302);
+      res.setHeader("Location", result.directLocation);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("Content-Length", "0");
+      res.end();
+      return;
     }
-    if (preferRedirect && upstream.status >= 300 && upstream.status < 400) {
-      await upstream.body?.cancel();
-      upstream = await fetch(target, {
-        method: req.method === "HEAD" ? "HEAD" : "GET",
-        headers,
-        signal: controller.signal,
-        redirect: "follow",
-      });
-    }
+    const upstream = result.response!;
     clearTimeout(timeout);
     if (upstream.status === 401 || upstream.status === 403) {
       await upstream.body?.cancel();
@@ -600,6 +839,8 @@ export async function streamPlaybackFile(
     }
 
     res.status(upstream.status);
+    if (upstream.status === 200 || upstream.status === 206) markPlaybackDelivery(input, "proxy");
+    else if (upstream.status === 416) markPlaybackDelivery(input, "failed");
     copyPlaybackHeaders(upstream, res, mimeTypeForName(file.name));
     if (req.method === "HEAD" || upstream.status === 416 || !upstream.body) {
       await upstream.body?.cancel();
@@ -609,6 +850,7 @@ export async function streamPlaybackFile(
     await pipeline(Readable.fromWeb(upstream.body as any), res);
   } catch (error: any) {
     clearTimeout(timeout);
+    markPlaybackDelivery(input, "failed");
     if (error instanceof PlaybackHttpError) throw error;
     if (controller.signal.aborted && (req.aborted || res.destroyed)) return;
     if (res.headersSent) {

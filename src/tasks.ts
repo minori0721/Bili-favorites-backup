@@ -4,7 +4,7 @@ import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles, type RemoteConflictArchiveResult } from "./uploader.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
 import { BiliCookie } from "./users.js";
-import { RemoteFileRecord } from "./state.js";
+import type { RemoteFileRecord, UploadFileMetadata } from "./state.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath } from "./utils.js";
 import { cleanupUploadedSessionFiles, type DownloadSessionManifest } from "./download-session.js";
@@ -428,7 +428,7 @@ export class UploadTask extends Task {
   onUploading?: (task: UploadTask) => void;
   cleanupLocal: boolean;
   files?: string[];
-  filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
+  filenameMetadataByPath?: Record<string, UploadFileMetadata>;
   partialBackup = false;
   historyOnly = false;
   historySnapshotAt?: string;
@@ -440,7 +440,7 @@ export class UploadTask extends Task {
     downloadDir: string,
     remotePath: string,
     config: AppConfig,
-    options: { cleanupLocal?: boolean; files?: string[]; filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string; conflictArchiveSegment?: string } = {}
+    options: { cleanupLocal?: boolean; files?: string[]; filenameMetadataByPath?: Record<string, UploadFileMetadata>; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string; conflictArchiveSegment?: string } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;

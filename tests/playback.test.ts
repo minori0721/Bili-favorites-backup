@@ -5,7 +5,10 @@ import express from "express";
 import { StateDatabase } from "../src/database.js";
 import {
   getPlaybackQueue,
+  getPlaybackDeliveryStatus,
   getPlaybackSearch,
+  playbackFileAlistLocation,
+  fetchPlaybackUpstream,
   playbackAvailability,
   PlaybackHttpError,
   safePlaybackRedirectLocation,
@@ -59,6 +62,11 @@ function relation(bvid: string, order: number, files: RemoteFileRecord[], active
 function playbackState(): StateFile {
   const p1 = remoteFile("合集_P1.mp4", {
     path: "/archive/BVPLAY003/合集_P1.mp4",
+    qualityProfile: { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false },
+    mediaMetadata: {
+      width: 1920, height: 1080, duration: 120, fps: 60, codec: "h264",
+      source: "ffprobe", observedAt: now,
+    },
     filenameMetadata: { pageIndex: 1, cid: 301, dfn: "1080P", videoCodecs: "AVC" },
   });
   const p2a = remoteFile("合集_P2-a.mp4", {
@@ -137,14 +145,115 @@ test("playback redirect validation only accepts external public HTTPS locations"
     "https://169.254.1.2/video.mp4",
     "https://172.16.0.1/video.mp4",
     "https://192.168.1.2/video.mp4",
+    "https://192.0.2.1/video.mp4",
+    "https://198.51.100.1/video.mp4",
+    "https://203.0.113.1/video.mp4",
     "https://[::1]/video.mp4",
     "https://[fd00::1]/video.mp4",
     "https://[fe80::1]/video.mp4",
+    "https://[2001:db8::1]/video.mp4",
+    "https://media.example.com:8443/video.mp4",
     "not a URL",
   ]) {
     assert.equal(safePlaybackRedirectLocation(location, alistBase), null, String(location));
   }
   assert.equal(safePlaybackRedirectLocation(`https://media.example.com/${"x".repeat(8_192)}`, alistBase), null);
+});
+
+test("playback proxy validates every redirect and strips AList authorization across origins", async () => {
+  const alistBase = new URL("http://alist:5244");
+  const requests: Array<{ url: string; authorization: string | null; range: string | null }> = [];
+  const fetchImpl = async (value: string | URL | Request, init?: RequestInit) => {
+    const url = String(value);
+    const headers = new Headers(init?.headers);
+    requests.push({ url, authorization: headers.get("authorization"), range: headers.get("range") });
+    if (url.startsWith("http://alist:5244")) {
+      return new Response(null, { status: 302, headers: { Location: "https://media.example.com/first" } });
+    }
+    if (url.endsWith("/first")) {
+      return new Response(null, { status: 307, headers: { Location: "https://cdn.example.com/final" } });
+    }
+    return new Response("data", { status: 206, headers: { "Content-Type": "video/mp4" } });
+  };
+  const result = await fetchPlaybackUpstream(
+    new URL("http://alist:5244/dav/video.mp4"),
+    alistBase,
+    "GET",
+    { Authorization: "Basic secret", Range: "bytes=0-3" },
+    new AbortController().signal,
+    false,
+    {
+      fetch: fetchImpl as typeof fetch,
+      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+    }
+  );
+  assert.equal(result.response?.status, 206);
+  assert.deepEqual(requests.map((request) => request.authorization), ["Basic secret", null, null]);
+  assert.deepEqual(requests.map((request) => request.range), ["bytes=0-3", "bytes=0-3", "bytes=0-3"]);
+});
+
+test("playback proxy never restores AList authorization after an external redirect", async () => {
+  const alistBase = new URL("http://alist:5244");
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const fetchImpl = async (value: string | URL | Request, init?: RequestInit) => {
+    const url = String(value);
+    requests.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+    if (requests.length === 1) {
+      return new Response(null, { status: 302, headers: { Location: "https://media.example.com/first" } });
+    }
+    if (requests.length === 2) {
+      return new Response(null, { status: 302, headers: { Location: "http://alist:5244/storage/video.mp4" } });
+    }
+    return new Response("data", { status: 206, headers: { "Content-Type": "video/mp4" } });
+  };
+  const result = await fetchPlaybackUpstream(
+    new URL("http://alist:5244/dav/video.mp4"),
+    alistBase,
+    "GET",
+    { Authorization: "Basic secret" },
+    new AbortController().signal,
+    false,
+    {
+      fetch: fetchImpl as typeof fetch,
+      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+    }
+  );
+  assert.equal(result.response?.status, 206);
+  assert.deepEqual(requests.map((request) => request.authorization), ["Basic secret", null, null]);
+});
+
+test("playback proxy rejects private DNS, HTTP, cyclic, and excessive redirects", async () => {
+  const alistBase = new URL("http://alist:5244");
+  const auth = { Authorization: "Basic secret" };
+  const signal = new AbortController().signal;
+  const redirectFetch = (location: string) => (async () => new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
+
+  await assert.rejects(
+    () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
+      fetch: redirectFetch("https://private.example/video.mp4"),
+      lookup: (async () => [{ address: "10.0.0.2", family: 4 }]) as any,
+    }),
+    (error: any) => error?.code === "PLAYBACK_REDIRECT_UNSAFE"
+  );
+  await assert.rejects(
+    () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
+      fetch: redirectFetch("http://public.example/video.mp4"),
+    }),
+    (error: any) => error?.code === "PLAYBACK_REDIRECT_UNSAFE"
+  );
+  await assert.rejects(
+    () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
+      fetch: redirectFetch("/dav/video.mp4"),
+    }),
+    (error: any) => error?.code === "PLAYBACK_REDIRECT_LOOP"
+  );
+  let hop = 0;
+  await assert.rejects(
+    () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
+      fetch: (async () => new Response(null, { status: 302, headers: { Location: `/hop-${++hop}` } })) as typeof fetch,
+    }),
+    (error: any) => error?.code === "PLAYBACK_REDIRECT_LIMIT"
+  );
 });
 
 test("playback queue uses favorite order, focus pagination, stable parts, and historical single mode", () => {
@@ -164,6 +273,27 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
       [2, "P2 · 1", 302],
       [2, "P2 · 2", 303],
     ]);
+    assert.deepEqual({
+      requestedQuality: page.items[0].parts[0].requestedQuality,
+      requestedCodec: page.items[0].parts[0].requestedCodec,
+      actualQuality: page.items[0].parts[0].actualQuality,
+      actualWidth: page.items[0].parts[0].actualWidth,
+      actualHeight: page.items[0].parts[0].actualHeight,
+      actualFps: page.items[0].parts[0].actualFps,
+      quality: page.items[0].parts[0].quality,
+      codec: page.items[0].parts[0].codec,
+      mediaMetadataSource: page.items[0].parts[0].mediaMetadataSource,
+    }, {
+      requestedQuality: "4K",
+      requestedCodec: "HEVC",
+      actualQuality: "1080p60",
+      actualWidth: 1920,
+      actualHeight: 1080,
+      actualFps: 60,
+      quality: "1080p60",
+      codec: "AVC",
+      mediaMetadataSource: "ffprobe",
+    });
     assert.match(page.items[0].parts[0].streamUrl, /\/playback\/files\/\d+$/);
     assert.equal(JSON.stringify(page).includes("/archive/"), false);
 
@@ -210,6 +340,169 @@ test("playback search matches archived metadata, BVID, Chinese, AND terms, and l
     assert.deepEqual(getPlaybackSearch(database, "u1", 10, { query: "BVPLAY003" }).items.map((item) => item.bvid), ["BVPLAY003"]);
     assert.equal(getPlaybackSearch(database, "u1", 10, { query: "EXCLUDED" }).total, 0);
     assert.equal(getPlaybackSearch(database, "u1", 10, { query: "不存在" }).total, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("browser metadata fills missing dimensions in place without replacing ffprobe proof", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const state = playbackState();
+    const file = state.relations!["u1:10:BVPLAY001"].remoteFiles![0];
+    file.qualityProfile = { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false };
+    state.videos!.BVPLAY001.remoteFiles = [file];
+    database.replaceState(state);
+    const before = database.db.prepare(`
+      SELECT id, expected_size, updated_at FROM remote_files
+      WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
+    `).get() as any;
+    const fingerprint = `${before.id}:${before.expected_size}:${before.updated_at}`;
+    const result = database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
+      fingerprint,
+      width: 1080,
+      height: 1920,
+      duration: 90,
+    });
+    assert.equal(result?.status, "updated");
+    const after = database.db.prepare(`
+      SELECT id, updated_at, actual_width, actual_height, actual_duration, actual_metadata_source
+      FROM remote_files WHERE id=?
+    `).get(before.id) as any;
+    assert.deepEqual(after, {
+      id: before.id,
+      updated_at: before.updated_at,
+      actual_width: 1080,
+      actual_height: 1920,
+      actual_duration: 90,
+      actual_metadata_source: "browser",
+    });
+    const queue = getPlaybackQueue(database, "u1", 10, { focusBvid: "BVPLAY001" });
+    assert.equal(queue?.items[0].parts[0].requestedQuality, "4K");
+    assert.equal(queue?.items[0].parts[0].actualQuality, "1080p");
+    assert.equal(queue?.items[0].parts[0].codec, undefined);
+    assert.equal(database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
+      fingerprint,
+      width: 720,
+      height: 1280,
+      duration: 80,
+    })?.status, "unchanged");
+    assert.equal(database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
+      fingerprint: `${before.id}:999:${before.updated_at}`,
+      width: 720,
+      height: 1280,
+      duration: 80,
+    }), null);
+
+    database.db.prepare(`
+      UPDATE remote_files SET actual_width=3840, actual_height=2160, actual_codec='hevc',
+        actual_metadata_source='ffprobe', actual_metadata_at=? WHERE id=?
+    `).run(Date.parse(now), before.id);
+    assert.equal(database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
+      fingerprint,
+      width: 720,
+      height: 1280,
+      duration: 80,
+    })?.status, "ffprobe_preserved");
+  } finally {
+    database.close();
+  }
+});
+
+test("browser metadata propagates only to equivalent verified remote-file rows", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const state = playbackState();
+    const shared = state.relations!["u1:10:BVPLAY001"].remoteFiles![0];
+    state.videos!.BVPLAY001.remoteFiles = [shared];
+    state.relations!["u1:11:BVPLAY001"] = {
+      ...relation("BVPLAY001", 1, [shared]),
+      mediaId: 11,
+      folderTitle: "Second folder",
+    };
+    database.replaceState(state);
+    const primary = database.db.prepare(`
+      SELECT id, expected_size, updated_at FROM remote_files
+      WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
+    `).get() as any;
+    database.db.prepare(`
+      INSERT INTO remote_files(bvid,user_id,media_id,name,remote_path,expected_size,status,updated_at)
+      VALUES('BVPLAY001','isolated',99,'same.mp4',?,999,'verified',?)
+    `).run(shared.path, Date.now());
+
+    const result = database.updateBrowserMediaMetadata("u1", 10, Number(primary.id), {
+      fingerprint: `${primary.id}:${primary.expected_size}:${primary.updated_at}`,
+      width: 1920,
+      height: 1080,
+      duration: 120,
+    });
+    assert.equal(result?.status, "updated");
+    const equivalent = database.db.prepare(`
+      SELECT actual_width,actual_height,actual_metadata_source FROM remote_files
+      WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
+    `).get() as any;
+    assert.deepEqual(equivalent, {
+      actual_width: 1920,
+      actual_height: 1080,
+      actual_metadata_source: "browser",
+    });
+    const isolated = database.db.prepare(`
+      SELECT actual_width FROM remote_files WHERE user_id='isolated' AND media_id=99
+    `).get() as any;
+    assert.equal(isolated.actual_width, null);
+    const relationPayload = JSON.parse(String((database.db.prepare(`
+      SELECT payload_json FROM favorite_relations
+      WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
+    `).get() as any).payload_json));
+    assert.equal(relationPayload.remoteFiles[0].mediaMetadata.width, 1920);
+
+    database.db.prepare(`
+      UPDATE remote_files SET actual_width=3840,actual_height=2160,actual_codec='hevc',
+        actual_metadata_source='ffprobe',actual_metadata_at=?
+      WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
+    `).run(Date.parse(now));
+    database.updateBrowserMediaMetadata("u1", 10, Number(primary.id), {
+      fingerprint: `${primary.id}:${primary.expected_size}:${primary.updated_at}`,
+      width: 1280,
+      height: 720,
+      duration: 60,
+    });
+    const protectedRow = database.db.prepare(`
+      SELECT actual_width,actual_height,actual_metadata_source FROM remote_files
+      WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
+    `).get() as any;
+    assert.deepEqual(protectedRow, {
+      actual_width: 3840,
+      actual_height: 2160,
+      actual_metadata_source: "ffprobe",
+    });
+  } finally {
+    database.close();
+  }
+});
+
+test("AList browser links preserve base paths and encode archive paths without exposing them in queue JSON", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const state = playbackState();
+    const file = state.relations!["u1:10:BVPLAY001"].remoteFiles![0];
+    file.path = "/天翼云盘/收藏 夹/视频#1.mp4";
+    file.name = "视频#1.mp4";
+    state.relations!["u1:10:BVPLAY001"].remotePath = "/天翼云盘/收藏 夹";
+    state.videos!.BVPLAY001.remoteFiles = [file];
+    database.replaceState(state);
+    const fileId = Number((database.db.prepare(`
+      SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
+    `).get() as any).id);
+    const location = playbackFileAlistLocation(database, {
+      alistBrowserUrl: "https://alist.example.com/base/",
+    } as any, "u1", 10, fileId);
+    assert.equal(location, "https://alist.example.com/base/%E5%A4%A9%E7%BF%BC%E4%BA%91%E7%9B%98/%E6%94%B6%E8%97%8F%20%E5%A4%B9/%E8%A7%86%E9%A2%91%231.mp4");
+    assert.throws(() => playbackFileAlistLocation(database, {
+      alistBrowserUrl: "https://user:pass@alist.example.com/base",
+    } as any, "u1", 10, fileId), PlaybackHttpError);
+    const queue = getPlaybackQueue(database, "u1", 10, { focusBvid: "BVPLAY001" });
+    assert.equal(JSON.stringify(queue).includes("天翼云盘"), false);
   } finally {
     database.close();
   }
@@ -390,7 +683,17 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
         alistUsername: "alist-user",
         alistPassword: "alist-pass",
         playbackDeliveryMode: "auto",
-      } as any, req, res, { userId: "u1", mediaId: 10, fileId });
+      } as any, req, res, {
+        userId: "u1",
+        mediaId: 10,
+        fileId,
+        ownerKey: "test-owner",
+        attemptId: typeof req.query.attempt === "string" ? req.query.attempt : undefined,
+        forceProxy: req.query.forceProxy === "1",
+        transport: {
+          lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+        },
+      });
     } catch (error) {
       if (error instanceof PlaybackHttpError && !res.headersSent) {
         res.status(error.statusCode).json({ code: error.code, message: error.message });
@@ -472,6 +775,16 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
     assert.equal(directHead.status, 302);
     assert.equal(directHead.headers.get("location"), "https://media.example.com/playback.mp4?signature=test");
 
+    const attemptId = "0123456789abcdef0123456789abcdef";
+    const directTracked = await fetch(`${proxyBase}/stream?attempt=${attemptId}`, { redirect: "manual" });
+    assert.equal(directTracked.status, 302);
+    assert.equal(getPlaybackDeliveryStatus("test-owner", "u1", 10, attemptId).status, "direct");
+    mode = "normal";
+    const proxiedTracked = await fetch(`${proxyBase}/stream?attempt=${attemptId}&forceProxy=1`);
+    assert.equal(proxiedTracked.status, 200);
+    await proxiedTracked.body?.cancel();
+    assert.equal(getPlaybackDeliveryStatus("test-owner", "u1", 10, attemptId).status, "proxy");
+
     mode = "wrongtype";
     const forcedMediaType = await fetch(`${proxyBase}/stream`);
     assert.equal(forcedMediaType.status, 200);
@@ -511,12 +824,12 @@ test("playback file resolver rejects wrong relation and replaced paths", async (
   const response = { once() {}, off() {} } as any;
   try {
     await assert.rejects(
-      streamPlaybackFile(database, {} as any, request, response, { userId: "other", mediaId: 10, fileId: Number(row.id) }),
+      streamPlaybackFile(database, {} as any, request, response, { userId: "other", mediaId: 10, fileId: Number(row.id), ownerKey: "test" }),
       (error: any) => error instanceof PlaybackHttpError && error.statusCode === 404
     );
     database.db.prepare("UPDATE remote_files SET remote_path='/archive/replaced.mp4' WHERE id=?").run(row.id);
     await assert.rejects(
-      streamPlaybackFile(database, {} as any, request, response, { userId: "u1", mediaId: 10, fileId: Number(row.id) }),
+      streamPlaybackFile(database, {} as any, request, response, { userId: "u1", mediaId: 10, fileId: Number(row.id), ownerKey: "test" }),
       (error: any) => error instanceof PlaybackHttpError && error.statusCode === 404
     );
   } finally {

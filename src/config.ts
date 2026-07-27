@@ -11,6 +11,7 @@ export interface AppConfig {
   perVideoDelaySeconds: number;
   uploadLayout: UploadLayout;
   alistUrl: string;
+  alistBrowserUrl: string;
   alistUsername: string;
   alistPassword: string;
   alistDest: string;
@@ -41,6 +42,7 @@ const defaultConfig: AppConfig = {
   perVideoDelaySeconds: 15,
   uploadLayout: "user-folder-video",
   alistUrl: "http://alist:5244",
+  alistBrowserUrl: "",
   alistUsername: "admin",
   alistPassword: "",
   alistDest: "/bili-backup/videos",
@@ -90,6 +92,7 @@ export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecov
     merged.bbdownApiMode = "app";
   }
   merged.filenameTemplate = normalizeFilenameTemplate(merged.filenameTemplate);
+  merged.alistBrowserUrl = String(merged.alistBrowserUrl || "").trim();
   if (merged.playbackDeliveryMode !== "auto" && merged.playbackDeliveryMode !== "proxy") {
     merged.playbackDeliveryMode = defaultConfig.playbackDeliveryMode;
   }
@@ -125,10 +128,10 @@ export class ConfigStore {
   }
 
   update(next: Partial<AppConfig>) {
-    const merged: AppConfig = {
+    const merged = normalizeLoadedConfig({
       ...this.config,
       ...next,
-    };
+    });
     this.config = merged;
     writeJsonFile(configPath, this.config);
     return this.get();
@@ -144,6 +147,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "perVideoDelaySeconds",
   "uploadLayout",
   "alistUrl",
+  "alistBrowserUrl",
   "alistUsername",
   "alistPassword",
   "alistDest",
@@ -263,6 +267,24 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
     if (!input.alistDest.trim().startsWith("/")) {
       return "alistDest must start with /";
+    }
+  }
+
+  if (input.alistBrowserUrl !== undefined) {
+    if (typeof input.alistBrowserUrl !== "string") return "alistBrowserUrl must be a string";
+    const raw = input.alistBrowserUrl.trim();
+    if (raw) {
+      try {
+        const url = new URL(raw);
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+          return "alistBrowserUrl must be an http(s) URL";
+        }
+        if (url.username || url.password || url.search || url.hash) {
+          return "alistBrowserUrl cannot contain credentials, query, or fragment";
+        }
+      } catch {
+        return "alistBrowserUrl must be a valid URL";
+      }
     }
   }
 

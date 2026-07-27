@@ -97,6 +97,8 @@ test("SQLite hot-path indexes are present and selected by representative plans",
       "idx_jobs_due",
       "idx_videos_access_restriction",
       "idx_relations_remote_schedule",
+      "idx_relations_user_unavailable_page",
+      "idx_relations_user_unavailable_latest",
     ]) assert.equal(indexes.has(name), true, name);
 
     const plans = [
@@ -109,6 +111,60 @@ test("SQLite hot-path indexes are present and selected by representative plans",
     assert.match(plans[1], /idx_relations_folder_status/);
     assert.match(plans[2], /idx_failures_folder_time/);
     assert.match(plans[3], /idx_jobs_due/);
+  } finally {
+    database.close();
+  }
+});
+
+test("schema 6 unavailable pages use server filters, stable cursors, and no per-item failure lookup", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    insertStateRows(database, 10_000);
+    database.db.exec("UPDATE videos SET bili_status='unavailable'");
+    const missing = database.queryUnavailablePage("u1", "missing", null, 50);
+    const uploaded = database.queryUnavailablePage("u1", "uploaded", null, 50);
+    assert.equal(missing.rows.length, 50);
+    assert.equal(uploaded.rows.length, 50);
+    assert.equal(missing.rows.every((row) => row.processed === false), true);
+    assert.equal(uploaded.rows.every((row) => row.processed === true), true);
+    assert.ok(missing.nextCursor);
+    const next = database.queryUnavailablePage("u1", "missing", missing.nextCursor, 50);
+    assert.equal(next.rows.length, 50);
+    assert.equal(new Set([
+      ...missing.rows.map((row) => row.video.bvid),
+      ...next.rows.map((row) => row.video.bvid),
+    ]).size, 100);
+    assert.doesNotMatch(StateDatabase.prototype.queryUnavailablePage.toString(), /COUNT\s*\(\s*DISTINCT|ROW_NUMBER/i);
+    const plan = database.explainUnavailablePageQuery("missing")
+      .map((row) => String(row.detail || "")).join("\n");
+    assert.match(plan, /idx_relations_user_unavailable_page/);
+    assert.match(plan, /idx_relations_user_unavailable_latest/);
+    assert.doesNotMatch(plan, /TEMP B-TREE/i);
+  } finally {
+    database.close();
+  }
+});
+
+test("schema 6 unavailable keyset pagination stays bounded at 50000 rows", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    insertStateRows(database, 50_000);
+    database.db.exec("UPDATE videos SET bili_status='unavailable'");
+    let cursor = null;
+    const bvids = new Set<string>();
+    for (let pageIndex = 0; pageIndex < 22; pageIndex += 1) {
+      const page = database.queryUnavailablePage("u1", "missing", cursor, 50);
+      assert.equal(page.rows.length, 50);
+      page.rows.forEach((row) => bvids.add(row.video.bvid));
+      cursor = page.nextCursor;
+      assert.ok(cursor);
+    }
+    assert.equal(bvids.size, 1_100);
+    const plan = database.explainUnavailablePageQuery("missing", cursor)
+      .map((row) => String(row.detail || "")).join("\n");
+    assert.match(plan, /idx_relations_user_unavailable_page/);
+    assert.match(plan, /idx_relations_user_unavailable_latest/);
+    assert.doesNotMatch(plan, /TEMP B-TREE/i);
   } finally {
     database.close();
   }

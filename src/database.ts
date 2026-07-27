@@ -8,13 +8,15 @@ import type {
   FavoriteRelation,
   FolderScanState,
   FailedEntry,
+  RemoteFileMediaMetadata,
   UserCooldown,
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 5;
+export const DATABASE_SCHEMA_VERSION = 6;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
+export const UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
 
 export interface StateDirtySet {
   videos: Set<string>;
@@ -136,6 +138,13 @@ CREATE TABLE IF NOT EXISTS remote_files (
   expected_size INTEGER,
   status TEXT NOT NULL DEFAULT 'verified',
   quality_json TEXT,
+  actual_width INTEGER,
+  actual_height INTEGER,
+  actual_fps REAL,
+  actual_duration REAL,
+  actual_codec TEXT,
+  actual_metadata_source TEXT,
+  actual_metadata_at INTEGER,
   put_completed_at INTEGER,
   verify_attempts INTEGER NOT NULL DEFAULT 0,
   next_verify_at INTEGER,
@@ -231,8 +240,8 @@ CREATE TABLE IF NOT EXISTS path_migrations (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_path_migrations_active
-  ON path_migrations(status)
-  WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending');
+  ON path_migrations((1))
+  WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending','cleanup_running');
 
 CREATE TABLE IF NOT EXISTS path_migration_items (
   migration_id TEXT NOT NULL REFERENCES path_migrations(id) ON DELETE CASCADE,
@@ -319,7 +328,7 @@ function pathMigrationItemFromRow(row: any): PathMigrationItemRecord {
 
 export type PathMigrationStatus =
   | "scanning" | "ready" | "copying" | "verifying" | "paused"
-  | "switching" | "cleanup_pending" | "completed" | "cancelled" | "failed";
+  | "switching" | "cleanup_pending" | "cleanup_running" | "completed" | "cancelled" | "failed";
 export type PathMigrationItemStatus =
   | "pending" | "reusable" | "copying" | "awaiting_verification"
   | "verified" | "conflict" | "failed";
@@ -360,6 +369,27 @@ export interface PathMigrationItemRecord {
   lastError?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export type UnavailablePageFilter = "all" | "missing" | "uploaded";
+
+export interface UnavailablePageCursor {
+  lastSeenAt: number;
+  bvid: string;
+  mediaId: number;
+}
+
+export interface BrowserMediaMetadataInput {
+  fingerprint: string;
+  width: number;
+  height: number;
+  duration?: number;
+}
+
+export interface BrowserMediaMetadataUpdateResult {
+  status: "updated" | "unchanged" | "ffprobe_preserved";
+  bvid: string;
+  mediaMetadata?: RemoteFileMediaMetadata;
 }
 
 function optionalIsoToMs(value: unknown) {
@@ -513,15 +543,38 @@ export class StateDatabase {
             updateRelation.run(optionalIsoToMs(relation.lastRemoteCheckAt), row.user_id, row.media_id, row.bvid);
           }
         }
+        if (currentVersion > 0 && currentVersion < 6) {
+          const remoteFileColumns = new Set((this.db.pragma("table_info(remote_files)") as any[]).map((row) => String(row.name)));
+          const additions = [
+            ["actual_width", "INTEGER"],
+            ["actual_height", "INTEGER"],
+            ["actual_fps", "REAL"],
+            ["actual_duration", "REAL"],
+            ["actual_codec", "TEXT"],
+            ["actual_metadata_source", "TEXT"],
+            ["actual_metadata_at", "INTEGER"],
+          ] as const;
+          for (const [name, definition] of additions) {
+            if (!remoteFileColumns.has(name)) this.db.exec(`ALTER TABLE remote_files ADD COLUMN ${name} ${definition}`);
+          }
+        }
         const remoteScheduleIndex = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_relations_remote_schedule'").get() as any;
         if (remoteScheduleIndex && !/ON favorite_relations\s*\(backup_status,/i.test(String(remoteScheduleIndex.sql || ""))) {
           this.db.exec("DROP INDEX idx_relations_remote_schedule");
         }
+        this.db.exec("DROP INDEX IF EXISTS idx_relations_user_unavailable");
+        this.db.exec("DROP INDEX IF EXISTS idx_path_migrations_active");
         this.db.exec(`
+          CREATE UNIQUE INDEX idx_path_migrations_active
+            ON path_migrations((1))
+            WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending','cleanup_running');
           CREATE INDEX IF NOT EXISTS idx_relations_folder_status ON favorite_relations(user_id, media_id, backup_status, last_seen_at DESC);
           CREATE INDEX IF NOT EXISTS idx_relations_folder_page ON favorite_relations(user_id, media_id, active_in_favorite, fav_order, last_seen_at DESC);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_due ON favorite_relations(backup_status, next_remote_check_at);
-          CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable ON favorite_relations(user_id, favorite_unavailable, last_seen_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable_page
+            ON favorite_relations(user_id, self_visible, last_seen_at DESC, bvid, media_id);
+          CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable_latest
+            ON favorite_relations(user_id, bvid, self_visible, last_seen_at DESC, media_id DESC);
           CREATE INDEX IF NOT EXISTS idx_videos_access_restriction ON videos(access_restriction_type, access_last_checked_at DESC, bvid);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_schedule
             ON favorite_relations(backup_status, COALESCE(next_remote_check_at, last_remote_check_at, 0), bvid);
@@ -588,7 +641,7 @@ export class StateDatabase {
   getActivePathMigration() {
     const row = this.db.prepare(`
       SELECT * FROM path_migrations
-      WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending')
+      WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending','cleanup_running')
       ORDER BY created_at DESC LIMIT 1
     `).get() as any;
     return row ? pathMigrationFromRow(row) : undefined;
@@ -632,6 +685,14 @@ export class StateDatabase {
       next.conflictCount, next.extraCount, next.lastError || null, Date.now(), next.switchedAt || null, id
     );
     return this.getPathMigration(id);
+  }
+
+  claimPathMigrationCleanup(id: string) {
+    return this.db.prepare(`
+      UPDATE path_migrations
+      SET status='cleanup_running', last_error=NULL, updated_at=?
+      WHERE id=? AND status='cleanup_pending'
+    `).run(Date.now(), id).changes === 1;
   }
 
   insertPathMigrationItems(items: PathMigrationItemRecord[]) {
@@ -933,6 +994,110 @@ export class StateDatabase {
       .filter(Boolean);
   }
 
+  updateBrowserMediaMetadata(
+    userId: string,
+    mediaId: number,
+    fileId: number,
+    input: BrowserMediaMetadataInput
+  ): BrowserMediaMetadataUpdateResult | null {
+    const transaction = this.db.transaction((): BrowserMediaMetadataUpdateResult | null => {
+      const row = this.db.prepare(`
+        SELECT rf.id, rf.bvid, rf.remote_path, rf.expected_size, rf.status, rf.updated_at,
+          rf.actual_width, rf.actual_height, rf.actual_duration, rf.actual_fps, rf.actual_codec,
+          rf.actual_metadata_source, rf.actual_metadata_at,
+          r.payload_json AS relation_json, v.payload_json AS video_json
+        FROM remote_files rf
+        JOIN favorite_relations r
+          ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
+        JOIN videos v ON v.bvid=rf.bvid
+        WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified'
+          AND r.backup_status IN ('verified','partial_verified')
+      `).get(fileId, userId, mediaId) as any;
+      if (!row) return null;
+
+      const fingerprint = `${Number(row.id)}:${Number(row.expected_size || 0)}:${Number(row.updated_at || 0)}`;
+      if (!crypto.timingSafeEqual(
+        Buffer.from(crypto.createHash("sha256").update(fingerprint).digest()),
+        Buffer.from(crypto.createHash("sha256").update(String(input.fingerprint || "")).digest())
+      )) return null;
+
+      const existingMetadata = row.actual_width && row.actual_height ? {
+        width: Number(row.actual_width),
+        height: Number(row.actual_height),
+        duration: row.actual_duration == null ? undefined : Number(row.actual_duration),
+        fps: row.actual_fps == null ? undefined : Number(row.actual_fps),
+        codec: row.actual_codec || undefined,
+        source: row.actual_metadata_source === "ffprobe" ? "ffprobe" : "browser",
+        observedAt: row.actual_metadata_at
+          ? new Date(Number(row.actual_metadata_at)).toISOString()
+          : new Date(Number(row.updated_at || Date.now())).toISOString(),
+      } satisfies RemoteFileMediaMetadata : undefined;
+      const status: BrowserMediaMetadataUpdateResult["status"] = row.actual_metadata_source === "ffprobe"
+        ? "ffprobe_preserved"
+        : existingMetadata ? "unchanged" : "updated";
+      const observedAtMs = existingMetadata?.observedAt
+        ? isoToMs(existingMetadata.observedAt, Date.now())
+        : Date.now();
+      const mediaMetadata: RemoteFileMediaMetadata = existingMetadata || {
+        width: input.width,
+        height: input.height,
+        duration: input.duration,
+        source: "browser",
+        observedAt: new Date(observedAtMs).toISOString(),
+      };
+      this.db.prepare(`
+        UPDATE remote_files SET actual_width=?, actual_height=?,
+          actual_duration=COALESCE(?, actual_duration), actual_fps=COALESCE(?, actual_fps),
+          actual_codec=COALESCE(?, actual_codec), actual_metadata_source=?, actual_metadata_at=?
+        WHERE bvid=? AND remote_path=?
+          AND COALESCE(expected_size,-1)=COALESCE(?,-1) AND status='verified'
+          AND COALESCE(actual_metadata_source,'')<>'ffprobe'
+      `).run(
+        mediaMetadata.width, mediaMetadata.height, mediaMetadata.duration ?? null,
+        mediaMetadata.fps ?? null, mediaMetadata.codec ?? null, mediaMetadata.source,
+        observedAtMs, row.bvid, row.remote_path, row.expected_size ?? null
+      );
+
+      const equivalentRelations = this.db.prepare(`
+        SELECT DISTINCT r.user_id, r.media_id, r.payload_json
+        FROM favorite_relations r
+        JOIN remote_files rf
+          ON rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid
+        WHERE r.bvid=? AND rf.remote_path=?
+          AND COALESCE(rf.expected_size,-1)=COALESCE(?,-1) AND rf.status='verified'
+      `).all(row.bvid, row.remote_path, row.expected_size ?? null) as any[];
+
+      const updatePayload = <T extends VideoArchiveEntry | FavoriteRelation>(payload: T) => {
+        let changed = false;
+        payload.remoteFiles = (payload.remoteFiles || []).map((file) => {
+          if (String(file.path || "") !== String(row.remote_path)) return file;
+          if (row.expected_size != null && Number(file.size) !== Number(row.expected_size)) return file;
+          if (file.mediaMetadata?.source === "ffprobe") return file;
+          changed = true;
+          return { ...file, mediaMetadata };
+        });
+        return changed ? JSON.stringify(payload) : null;
+      };
+      const updateRelation = this.db.prepare(`
+        UPDATE favorite_relations SET payload_json=?
+        WHERE user_id=? AND media_id=? AND bvid=?
+      `);
+      for (const equivalent of equivalentRelations) {
+        const relation = parseJson<FavoriteRelation>(equivalent.payload_json, {} as FavoriteRelation);
+        const relationPayload = updatePayload(relation);
+        if (relationPayload) {
+          updateRelation.run(relationPayload, equivalent.user_id, equivalent.media_id, row.bvid);
+        }
+      }
+      const video = parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry);
+      const videoPayload = updatePayload(video);
+      if (videoPayload) this.db.prepare("UPDATE videos SET payload_json=? WHERE bvid=?").run(videoPayload, row.bvid);
+
+      return { status, bvid: String(row.bvid), mediaMetadata };
+    });
+    return transaction();
+  }
+
   getChargingRestrictionSummary() {
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count,
@@ -1154,24 +1319,100 @@ export class StateDatabase {
     };
   }
 
-  queryUnavailablePage(userId: string, offset: number, limit: number) {
-    const rows = this.db.prepare(`
-      WITH ranked AS (
-        SELECT r.payload_json AS relation_json, v.payload_json AS video_json, r.bvid, r.last_seen_at,
-          ROW_NUMBER() OVER (PARTITION BY r.bvid ORDER BY r.last_seen_at DESC) AS rank
-        FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
-        WHERE r.user_id=? AND v.bili_status='unavailable' AND r.self_visible=0
-      )
-      SELECT relation_json, video_json FROM ranked WHERE rank=1 ORDER BY last_seen_at DESC LIMIT ? OFFSET ?
-    `).all(userId, Math.max(1, limit), Math.max(0, offset)) as any[];
-    const total = Number((this.db.prepare(`
-      SELECT COUNT(DISTINCT r.bvid) AS count FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
-      WHERE r.user_id=? AND v.bili_status='unavailable' AND r.self_visible=0
-    `).get(userId) as any)?.count || 0);
+  queryUnavailablePage(
+    userId: string,
+    filter: UnavailablePageFilter,
+    cursor: UnavailablePageCursor | null,
+    limit: number,
+    legacyOffset = 0
+  ) {
+    const normalizedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const keySql = this.unavailablePageKeySql(filter, Boolean(cursor));
+    const keyRows = this.db.prepare(keySql).all({
+      userId,
+      lastSeenAt: cursor?.lastSeenAt || 0,
+      cursorBvid: cursor?.bvid || "",
+      cursorMediaId: cursor?.mediaId || 0,
+      limit: normalizedLimit + 1,
+      offset: cursor ? 0 : Math.max(0, legacyOffset),
+    }) as any[];
+    const hasMore = keyRows.length > normalizedLimit;
+    const pageRows = keyRows.slice(0, normalizedLimit);
+    if (pageRows.length === 0) return { rows: [], hasMore: false, nextCursor: null };
+
+    const values = pageRows.map(() => "(?,?,?)").join(",");
+    const params: Array<string | number> = [];
+    pageRows.forEach((row, index) => params.push(index, Number(row.media_id), String(row.bvid)));
+    params.push(userId);
+    const hydratedRows = this.db.prepare(`
+      WITH page(ord, media_id, bvid) AS (VALUES ${values})
+      SELECT page.ord, r.payload_json AS relation_json, v.payload_json AS video_json,
+        CASE WHEN r.backup_status IN ('uploaded','verified','partial_verified') THEN 1 ELSE 0 END AS processed,
+        CASE WHEN r.backup_status IN ('failed','lost') OR EXISTS (
+          SELECT 1 FROM failures f
+          WHERE f.user_id=r.user_id AND f.bvid=r.bvid AND f.media_id IN (r.media_id,0)
+        ) THEN 1 ELSE 0 END AS failed
+      FROM page
+      JOIN favorite_relations r ON r.user_id=? AND r.media_id=page.media_id AND r.bvid=page.bvid
+      JOIN videos v ON v.bvid=page.bvid
+      ORDER BY page.ord
+    `).all(...params) as any[];
+    const last = pageRows[pageRows.length - 1];
     return {
-      rows: rows.map((row) => ({ relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation), video: parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry) })),
-      total,
+      rows: hydratedRows.map((row) => ({
+        relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation),
+        video: parseJson<VideoArchiveEntry>(row.video_json, {} as VideoArchiveEntry),
+        processed: Boolean(row.processed),
+        failed: Boolean(row.failed),
+      })),
+      hasMore,
+      nextCursor: hasMore && last ? {
+        lastSeenAt: Number(last.last_seen_at || 0),
+        bvid: String(last.bvid || ""),
+        mediaId: Number(last.media_id || 0),
+      } satisfies UnavailablePageCursor : null,
     };
+  }
+
+  private unavailablePageKeySql(filter: UnavailablePageFilter, hasCursor: boolean) {
+    const filterSql = filter === "uploaded"
+      ? "AND r.backup_status IN ('uploaded','verified','partial_verified')"
+      : filter === "missing"
+        ? "AND r.backup_status NOT IN ('uploaded','verified','partial_verified')"
+        : "";
+    const cursorSql = hasCursor ? `
+      AND (r.last_seen_at<@lastSeenAt
+        OR (r.last_seen_at=@lastSeenAt AND r.bvid>@cursorBvid)
+        OR (r.last_seen_at=@lastSeenAt AND r.bvid=@cursorBvid AND r.media_id>@cursorMediaId))
+    ` : "";
+    return `
+      SELECT r.bvid, r.media_id, r.last_seen_at
+      FROM favorite_relations AS r INDEXED BY idx_relations_user_unavailable_page
+      JOIN videos v ON v.bvid=r.bvid
+      WHERE r.user_id=@userId AND r.self_visible=0 AND v.bili_status='unavailable'
+        ${filterSql}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM favorite_relations AS newer INDEXED BY idx_relations_user_unavailable_latest
+          WHERE newer.user_id=r.user_id AND newer.bvid=r.bvid AND newer.self_visible=0
+            AND (newer.last_seen_at>r.last_seen_at
+              OR (newer.last_seen_at=r.last_seen_at AND newer.media_id>r.media_id))
+        )
+        ${cursorSql}
+      ORDER BY r.last_seen_at DESC, r.bvid ASC, r.media_id ASC
+      LIMIT @limit OFFSET @offset
+    `;
+  }
+
+  explainUnavailablePageQuery(filter: UnavailablePageFilter, cursor: UnavailablePageCursor | null = null) {
+    return this.db.prepare(`EXPLAIN QUERY PLAN ${this.unavailablePageKeySql(filter, Boolean(cursor))}`).all({
+      userId: "explain",
+      lastSeenAt: cursor?.lastSeenAt || 0,
+      cursorBvid: cursor?.bvid || "",
+      cursorMediaId: cursor?.mediaId || 0,
+      limit: 51,
+      offset: 0,
+    }) as any[];
   }
 
   listRelationsForUser(userId: string, unavailableOnly = false) {
@@ -1289,6 +1530,7 @@ export class StateDatabase {
       this.deleteMeta("legacy_failure_classification_v1");
       this.deleteMeta("runtime_recovery_normalization_v2");
       this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
+      this.deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
       this.deleteMeta("path_migration_active");
       const dirty: StateDirtySet = {
         videos: new Set(Object.keys(state.videos || {})),
@@ -1452,8 +1694,10 @@ export class StateDatabase {
     const insert = this.db.prepare(`
       INSERT INTO remote_files(
         bvid, user_id, media_id, kind, local_relative_path, name, remote_path, expected_size,
-        status, quality_json, put_completed_at, verify_attempts, next_verify_at, last_error, updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        status, quality_json, actual_width, actual_height, actual_fps, actual_duration, actual_codec,
+        actual_metadata_source, actual_metadata_at, put_completed_at, verify_attempts, next_verify_at,
+        last_error, updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     for (const file of files) {
       insert.run(
@@ -1467,6 +1711,13 @@ export class StateDatabase {
         typeof file.size === "number" ? file.size : null,
         file.verificationStatus || "verified",
         file.qualityProfile ? JSON.stringify(file.qualityProfile) : null,
+        Number.isInteger(file.mediaMetadata?.width) ? file.mediaMetadata.width : null,
+        Number.isInteger(file.mediaMetadata?.height) ? file.mediaMetadata.height : null,
+        Number.isFinite(file.mediaMetadata?.fps) ? file.mediaMetadata.fps : null,
+        Number.isFinite(file.mediaMetadata?.duration) ? file.mediaMetadata.duration : null,
+        file.mediaMetadata?.codec || null,
+        file.mediaMetadata?.source || null,
+        file.mediaMetadata?.observedAt ? isoToMs(file.mediaMetadata.observedAt, now) : null,
         file.putCompletedAt ? isoToMs(file.putCompletedAt, now) : null,
         Number(file.verifyAttempts || 0),
         file.nextVerifyAt ? isoToMs(file.nextVerifyAt, now) : null,
@@ -1606,6 +1857,7 @@ export class StateDatabase {
       this.deleteMeta("runtime_recovery_normalization_v2");
       this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
       this.deleteMeta(LEGACY_TEMP_CACHE_MARKER);
+      this.deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
       this.deleteMeta("path_migration_active");
     });
     transaction();

@@ -87,7 +87,13 @@ export async function shutdownActiveDownloads(timeoutMs = 20_000) {
   while (activeDownloadChildren.size > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  await Promise.all(children.map((child) => terminateDownloadProcessTree(child, true)));
+  const forceTargets = children.filter((child) => activeDownloadChildren.has(child));
+  await Promise.all(forceTargets.map((child) => terminateDownloadProcessTree(child, true)));
+  for (const child of forceTargets) {
+    if (activeDownloadChildren.has(child)) {
+      console.warn(`[BBDown] Process ${child.pid || "unknown"} remained active after forced shutdown`);
+    }
+  }
 }
 
 export async function cancelActiveDownloadsForAccount(accountUid: string, timeoutMs = 20_000) {
@@ -103,6 +109,47 @@ export async function cancelActiveDownloadsForAccount(accountUid: string, timeou
   return children.length;
 }
 
+export interface WindowsTaskkillResult {
+  ok: boolean;
+  timedOut: boolean;
+  code?: number | null;
+  error?: string;
+}
+
+export async function runWindowsTaskkill(
+  pid: number,
+  force: boolean,
+  options: { timeoutMs?: number; spawnImpl?: typeof spawn } = {}
+): Promise<WindowsTaskkillResult> {
+  const args = ["/PID", String(pid), "/T"];
+  if (force) args.push("/F");
+  const spawnImpl = options.spawnImpl || spawn;
+  const timeoutMs = Math.max(1, options.timeoutMs ?? 3_000);
+  return new Promise((resolve) => {
+    let killer: ReturnType<typeof spawn>;
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (result: WindowsTaskkillResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    try {
+      killer = spawnImpl("taskkill", args, { windowsHide: true });
+    } catch (error) {
+      finish({ ok: false, timedOut: false, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    timer = setTimeout(() => {
+      try { killer.kill("SIGKILL"); } catch { /* command may have exited concurrently */ }
+      finish({ ok: false, timedOut: true });
+    }, timeoutMs);
+    killer.once("error", (error) => finish({ ok: false, timedOut: false, error: error.message }));
+    killer.once("close", (code) => finish({ ok: code === 0, timedOut: false, code }));
+  });
+}
+
 async function terminateDownloadProcessTree(child: ReturnType<typeof spawn>, force: boolean) {
   if (!child.pid) return;
   if (process.platform !== "win32") {
@@ -114,13 +161,11 @@ async function terminateDownloadProcessTree(child: ReturnType<typeof spawn>, for
       return;
     }
   }
-  await new Promise<void>((resolve) => {
-    const args = ["/PID", String(child.pid), "/T"];
-    if (force) args.push("/F");
-    const killer = spawn("taskkill", args, { windowsHide: true });
-    killer.once("error", () => resolve());
-    killer.once("close", () => resolve());
-  });
+  const result = await runWindowsTaskkill(child.pid, force);
+  if (result.ok) return;
+  try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch { /* target may already be gone */ }
+  const reason = result.timedOut ? "timed out" : result.error ? "failed to start" : `exited with code ${result.code ?? "unknown"}`;
+  console.warn(`[BBDown] taskkill ${reason} for process ${child.pid}; used direct-process fallback`);
 }
 
 export async function downloadWithBBDown(
