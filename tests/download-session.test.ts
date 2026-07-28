@@ -611,7 +611,8 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
       const bvid = /video\\/(BV[0-9A-Za-z]+)/.exec(args[0])?.[1] || 'BV1FAKEBBDOWN';
       fs.copyFileSync(process.env.FAKE_MEDIA_SOURCE, path.join(process.cwd(), 'video-' + bvid + '.mp4'));
       console.log('[2026-07-11 00:00:00.000] - BFB_SIGNAL:PLAYURL_READY:' + (args.includes('-app') ? 'APP' : 'WEB'));
-      console.log('[视频] [1080P 60帧] [1080x1920] [HEVC]');
+      console.log('[视频] [1080P 60帧] [HEVC] [4000 kbps] [~12 MB]');
+      console.log('视频标题: [视频] [720P 高清] [AVC] [1000 kbps]');
       console.log('任务完成');
     `, "utf8");
     const previousSource = process.env.FAKE_MEDIA_SOURCE;

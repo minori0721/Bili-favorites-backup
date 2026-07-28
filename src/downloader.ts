@@ -5,7 +5,7 @@ import { tempDir } from "./paths.js";
 import { createBBDownCredentialDirectory } from "./credential-temp.js";
 import { buildCookieString, BiliCookie } from "./users.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
-import { createBBDownSelectionTracker, logManager, parseBBDownOutput, type BBDownSelectedVideoStream } from "./logger.js";
+import { createBBDownSelectionTracker, logManager, parseBBDownOutput, type BBDownSelectedVideoSelection } from "./logger.js";
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
@@ -301,7 +301,7 @@ export async function downloadWithBBDown(
       if (/^\d+$/.test(selected)) return Number(selected);
       return prepared.manifest.pages.length === 1 ? prepared.manifest.pages[0].index : undefined;
     };
-    const persistSelectedStream = (stream: BBDownSelectedVideoStream) => {
+    const persistSelectedStream = (stream: BBDownSelectedVideoSelection) => {
       try {
         recordDownloadSelectedStream(downloadDir, stream);
       } catch (error) {
@@ -764,7 +764,7 @@ function runCommand(
     onApiReady?: (mode: BBDownApiMode) => void;
     accountUid?: string;
     defaultPageIndex?: number;
-    onSelectedStream?: (stream: BBDownSelectedVideoStream) => void;
+    onSelectedStream?: (stream: BBDownSelectedVideoSelection) => void;
   }
 ) {
   return new Promise<void>((resolve, reject) => {

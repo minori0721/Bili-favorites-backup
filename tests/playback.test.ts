@@ -567,7 +567,9 @@ test("playback pagination and search stay bounded with 10000 SQLite relations", 
       ORDER BY CASE WHEN r.fav_order IS NULL THEN 1 ELSE 0 END, r.fav_order ASC, r.last_seen_at DESC, r.bvid ASC
       LIMIT 50
     `).all("scale-user", 88) as any[];
-    assert.match(plan.map((row) => String(row.detail || "")).join("\n"), /idx_relations_folder_page/);
+    const planText = plan.map((row) => String(row.detail || "")).join("\n");
+    assert.match(planText, /idx_relations_(?:folder_page|library_folder)/);
+    assert.doesNotMatch(planText, /SCAN r(?:\s|$)/);
   } finally {
     database.close();
   }

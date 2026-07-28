@@ -49,11 +49,16 @@ export interface PlaybackQueueItem {
   favoriteOrder?: number;
   partial: boolean;
   activeInFavorite: boolean;
+  source: {
+    userId: string;
+    mediaId: number;
+    folderTitle: string;
+  };
   parts: PlaybackPart[];
 }
 
 export interface PlaybackQueuePage {
-  mode: "favorite" | "single";
+  mode: "favorite" | "single" | "library";
   page: number;
   pageSize: number;
   total: number;
@@ -287,7 +292,69 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
   return result;
 }
 
-function buildQueueItem(
+export interface PlaybackQueueSource {
+  relation: FavoriteRelation;
+  video: VideoArchiveEntry;
+  queuePosition: number;
+}
+
+function playbackSourceKey(userId: string, mediaId: number, bvid: string) {
+  return `${userId}:${mediaId}:${bvid}`;
+}
+
+function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[]) {
+  const unique = new Map<string, PlaybackQueueSource>();
+  for (const source of sources) {
+    unique.set(playbackSourceKey(source.relation.userId, source.relation.mediaId, source.relation.bvid), source);
+  }
+  if (unique.size === 0) return new Map<string, PlaybackFileRow[]>();
+  const values = [...unique.values()].map(() => "(?,?,?)").join(",");
+  const params = [...unique.values()].flatMap((source) => [
+    source.relation.userId,
+    source.relation.mediaId,
+    source.relation.bvid,
+  ]);
+  const rows = database.db.prepare(`
+    WITH requested(user_id, media_id, bvid) AS (VALUES ${values})
+    SELECT rf.id, rf.bvid, rf.user_id, rf.media_id, rf.name, rf.remote_path, rf.expected_size, rf.quality_json,
+      rf.actual_width, rf.actual_height, rf.actual_fps, rf.actual_duration, rf.actual_codec,
+      rf.actual_metadata_source, rf.updated_at
+    FROM requested q
+    JOIN remote_files rf ON rf.user_id=q.user_id AND rf.media_id=q.media_id AND rf.bvid=q.bvid
+    WHERE rf.status='verified' AND (
+      lower(rf.name) LIKE '%.mp4'
+      OR lower(rf.name) LIKE '%.m4v'
+      OR lower(rf.name) LIKE '%.webm'
+    )
+    ORDER BY rf.user_id, rf.media_id, rf.bvid, rf.id
+  `).all(...params) as any[];
+  const result = new Map<string, PlaybackFileRow[]>();
+  for (const row of rows) {
+    const key = playbackSourceKey(String(row.user_id), Number(row.media_id), String(row.bvid));
+    const group = result.get(key) || [];
+    group.push({
+      id: Number(row.id),
+      bvid: String(row.bvid),
+      name: String(row.name || ""),
+      remotePath: String(row.remote_path || ""),
+      expectedSize: row.expected_size == null ? undefined : Number(row.expected_size),
+      qualityProfile: parseJson(row.quality_json, undefined as any),
+      actualWidth: row.actual_width == null ? undefined : Number(row.actual_width),
+      actualHeight: row.actual_height == null ? undefined : Number(row.actual_height),
+      actualFps: row.actual_fps == null ? undefined : Number(row.actual_fps),
+      actualDuration: row.actual_duration == null ? undefined : Number(row.actual_duration),
+      actualCodec: row.actual_codec || undefined,
+      actualMetadataSource: row.actual_metadata_source === "ffprobe" || row.actual_metadata_source === "browser"
+        ? row.actual_metadata_source
+        : undefined,
+      updatedAt: Number(row.updated_at || 0),
+    });
+    result.set(key, group);
+  }
+  return result;
+}
+
+export function buildQueueItem(
   relation: FavoriteRelation,
   video: VideoArchiveEntry,
   rows: PlaybackFileRow[],
@@ -350,8 +417,29 @@ function buildQueueItem(
     favoriteOrder: Number.isInteger(relation.favOrder) ? Number(relation.favOrder) : undefined,
     partial: relation.backupStatus === "partial_verified",
     activeInFavorite: relation.activeInFavorite,
+    source: {
+      userId: relation.userId,
+      mediaId: relation.mediaId,
+      folderTitle: relation.folderTitle,
+    },
     parts,
   };
+}
+
+export function buildPlaybackQueueItems(database: StateDatabase, sources: PlaybackQueueSource[]) {
+  const fileRows = rowsForSources(database, sources);
+  return sources
+    .map((source) => buildQueueItem(
+      source.relation,
+      source.video,
+      fileRows.get(playbackSourceKey(
+        source.relation.userId,
+        source.relation.mediaId,
+        source.relation.bvid
+      )) || [],
+      source.queuePosition
+    ))
+    .filter((item): item is PlaybackQueueItem => Boolean(item));
 }
 
 function exactRelation(database: StateDatabase, userId: string, mediaId: number, bvid: string) {

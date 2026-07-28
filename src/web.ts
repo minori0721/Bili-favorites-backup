@@ -367,6 +367,128 @@ function getAppStyles() {
       .video-play-affordance { display:none!important; }
     }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
+    body.archive-library-open { overflow:hidden; }
+    .archive-library-modal { z-index:180; padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
+    .archive-library-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:#F5F9F8; color:var(--ink); }
+    .archive-library-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:#EEF5F3; }
+    .archive-library-brand { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid #DCE8E6; }
+    .archive-library-brand h2 { margin:0; font-size:18px; color:#21413D; letter-spacing:0; }
+    .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close { width:36px; height:36px; display:inline-grid; place-items:center; border:1px solid #CADAD7; border-radius:50%; background:#FFFFFF; color:#38534F; padding:0; font-size:21px; cursor:pointer; }
+    .archive-library-close:hover,.archive-library-close:focus-visible,.archive-library-mobile-back:hover,.archive-library-mobile-back:focus-visible,.archive-library-detail-close:hover,.archive-library-detail-close:focus-visible { border-color:var(--accent); color:var(--accent); outline:2px solid rgba(57,197,187,0.18); outline-offset:2px; }
+    .archive-library-nav { min-height:0; flex:1 1 auto; overflow:auto; padding:10px; overscroll-behavior:contain; }
+    .archive-nav-account { margin-top:12px; }
+    .archive-nav-account:first-child { margin-top:0; }
+    .archive-nav-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; color:#667D79; font-size:11px; font-weight:750; }
+    .archive-nav-heading strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#375550; font-size:12px; }
+    .archive-nav-list { display:grid; gap:3px; }
+    .archive-nav-item { width:100%; min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; border:0; border-left:3px solid transparent; border-radius:5px; background:transparent; color:#395550; padding:9px 9px 9px 8px; text-align:left; cursor:pointer; }
+    .archive-nav-preview { display:none; position:relative; width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:5px; background:#DFE9E7; }
+    .archive-nav-preview img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+    .archive-nav-item:hover { background:#E4EFEC; }
+    .archive-nav-item:focus-visible { outline:2px solid rgba(57,197,187,0.35); outline-offset:1px; }
+    .archive-nav-item.active { border-left-color:var(--accent); background:#DDF1ED; color:#183F3A; }
+    .archive-nav-copy { min-width:0; }
+    .archive-nav-title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:680; }
+    .archive-nav-meta { display:block; margin-top:2px; color:#718581; font-size:10px; }
+    .archive-nav-count { color:#718581; font-size:11px; font-variant-numeric:tabular-nums; }
+    .archive-nav-empty { padding:18px 10px; color:#718581; font-size:12px; text-align:center; }
+    .archive-nav-inactive { margin-top:7px; border-top:1px solid #DCE8E6; padding-top:7px; }
+    .archive-nav-inactive summary { cursor:pointer; color:#718581; font-size:11px; font-weight:700; padding:7px 8px; }
+    .archive-library-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#F8FBFA; }
+    .archive-library-topbar { flex:0 0 auto; min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); }
+    .archive-library-heading { min-width:0; }
+    .archive-library-heading h2 { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:18px; letter-spacing:0; }
+    .archive-library-heading span { display:block; margin-top:3px; color:#718581; font-size:11px; }
+    .archive-library-mobile-back { display:none; flex:0 0 auto; font-size:19px; }
+    .archive-library-toolbar { flex:0 0 auto; display:grid; grid-template-columns:minmax(220px,1fr) auto auto; gap:10px; align-items:center; padding:12px 20px; border-bottom:1px solid #E5EDEA; background:#FFFFFF; }
+    .archive-library-search { position:relative; min-width:0; }
+    .archive-library-search input { width:100%; height:40px; border:1px solid #CCDAD7; border-radius:6px; background:#F8FBFA; padding:8px 38px 8px 12px; font:inherit; font-size:13px; }
+    .archive-library-search input:focus { border-color:var(--accent); outline:none; box-shadow:0 0 0 3px rgba(57,197,187,0.13); }
+    .archive-library-search-clear { position:absolute; top:5px; right:5px; width:30px; height:30px; border:0; border-radius:4px; background:transparent; color:#6D817D; padding:0; font-size:18px; cursor:pointer; }
+    .archive-library-search-clear:hover,.archive-library-search-clear:focus-visible { background:#E8F1EF; outline:none; color:#244B46; }
+    .archive-library-segment { display:flex; min-width:0; gap:2px; padding:3px; border:1px solid #D7E2E0; border-radius:6px; background:#F2F7F6; }
+    .archive-library-segment button { min-height:30px; border:0; border-radius:4px; background:transparent; color:#667D79; padding:5px 10px; font:inherit; font-size:11px; font-weight:680; cursor:pointer; white-space:nowrap; }
+    .archive-library-segment button.active { background:#FFFFFF; color:#176E66; box-shadow:0 1px 4px rgba(31,65,61,0.10); }
+    .archive-library-segment button:focus-visible { outline:2px solid rgba(57,197,187,0.30); outline-offset:1px; }
+    .archive-library-sort { width:auto; min-width:118px; height:38px; border-radius:6px; padding:7px 28px 7px 10px; font-size:12px; background:#FFFFFF; }
+    .archive-library-filterbar { flex:0 0 auto; display:flex; align-items:center; gap:7px; padding:10px 20px; overflow-x:auto; border-bottom:1px solid #E7EFED; background:#F8FBFA; scrollbar-width:thin; }
+    .archive-library-filterbar button { flex:0 0 auto; border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#607672; padding:6px 11px; font:inherit; font-size:11px; font-weight:680; cursor:pointer; }
+    .archive-library-filterbar button.active { border-color:#52BDB4; background:#E4F5F2; color:#176E66; }
+    .archive-library-filterbar button:focus-visible { outline:2px solid rgba(57,197,187,0.28); outline-offset:2px; }
+    .archive-library-results { min-height:0; flex:1 1 auto; overflow:auto; overscroll-behavior:contain; padding:18px 20px 28px; scrollbar-gutter:stable; }
+    .archive-library-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:18px 14px; align-items:start; }
+    .archive-library-card { min-width:0; overflow:hidden; border:1px solid transparent; border-radius:7px; background:transparent; color:inherit; padding:0; text-align:left; cursor:pointer; }
+    .archive-library-card:hover { background:#FFFFFF; border-color:#DCE7E5; box-shadow:0 8px 22px rgba(36,72,67,0.09); }
+    .archive-library-card:focus-visible { outline:3px solid rgba(57,197,187,0.28); outline-offset:2px; border-color:var(--accent); }
+    .archive-library-cover { position:relative; width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:6px; background:#E3EBE9; }
+    .archive-library-cover img { display:block; width:100%; height:100%; object-fit:cover; }
+    .archive-library-placeholder { position:absolute; inset:0; display:grid; place-items:center; color:#82938F; font-size:22px; font-weight:800; background:#E5ECEA; }
+    .archive-library-cover-badges { position:absolute; left:7px; right:7px; bottom:7px; display:flex; justify-content:space-between; gap:6px; align-items:flex-end; pointer-events:none; }
+    .archive-library-cover-badge { max-width:75%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-radius:4px; background:rgba(18,28,27,0.80); color:#F4F7F6; padding:3px 6px; font-size:10px; }
+    .archive-library-card-copy { display:block; padding:9px 7px 10px; }
+    .archive-library-title { display:-webkit-box; min-height:39px; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; color:#263F3B; font-size:13px; font-weight:720; line-height:1.48; }
+    .archive-library-meta { display:block; margin-top:6px; overflow:hidden; color:#718581; font-size:10px; line-height:1.55; text-overflow:ellipsis; white-space:nowrap; }
+    .archive-library-memberships { display:block; margin-top:5px; overflow:hidden; color:#5A716D; font-size:10px; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
+    .archive-library-status { display:inline-flex; flex:0 0 auto; align-items:center; max-width:100%; border-radius:4px; padding:3px 6px; font-size:10px; font-weight:750; white-space:nowrap; }
+    .archive-library-status.playable { background:#DDF4E7; color:#267047; }
+    .archive-library-status.pending { background:#FFF0CF; color:#8A6111; }
+    .archive-library-status.issue { background:#FDE4E2; color:#A0433C; }
+    .archive-library-footer { min-height:38px; display:flex; justify-content:center; align-items:center; padding:10px; color:#718581; font-size:11px; text-align:center; }
+    .archive-library-footer button { margin-left:7px; border:0; background:transparent; color:#16877D; padding:4px; font:inherit; font-weight:700; cursor:pointer; }
+    .archive-library-empty { grid-column:1/-1; min-height:220px; display:grid; place-items:center; color:#718581; font-size:13px; text-align:center; }
+    .archive-library-detail { position:absolute; z-index:4; top:0; right:0; bottom:0; width:min(440px,100%); display:flex; flex-direction:column; border-left:1px solid #D8E3E0; background:#FFFFFF; box-shadow:-20px 0 50px rgba(25,52,48,0.14); transform:translateX(102%); visibility:hidden; transition:transform .16s ease,visibility 0s linear .16s; }
+    .archive-library-detail.open { transform:translateX(0); visibility:visible; transition-delay:0s; }
+    .archive-library-detail-head { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:64px; padding:12px 16px; border-bottom:1px solid #E0EAE8; }
+    .archive-library-detail-head h3 { margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:16px; }
+    .archive-library-detail-body { min-height:0; overflow:auto; padding:16px; }
+    .archive-library-detail-cover { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:6px; background:#E5ECEA; }
+    .archive-library-detail-meta { margin:10px 0 14px; color:#667D79; font-size:12px; line-height:1.65; }
+    .archive-library-source { border-top:1px solid #E5ECEA; padding:12px 0; }
+    .archive-library-source:first-child { border-top:0; }
+    .archive-library-source strong { display:block; color:#2D4B46; font-size:13px; }
+    .archive-library-source span { display:block; margin-top:4px; color:#718581; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+    .archive-library-detail-retry { margin-top:12px; border:1px solid #63BFB7; border-radius:5px; background:#EDF8F6; color:#176E66; padding:7px 12px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+    .archive-library-detail-retry:focus-visible { outline:2px solid rgba(57,197,187,0.30); outline-offset:2px; }
+    @media (max-width:720px), (max-height:480px) and (pointer:coarse) {
+      .archive-library-shell { display:block; }
+      .archive-library-sidebar,.archive-library-main { position:absolute; inset:0; width:100%; height:100%; border:0; transition:transform .16s ease; }
+      .archive-library-sidebar { z-index:2; background:#F4F8F7; }
+      .archive-library-main { z-index:3; transform:translateX(100%); }
+      .archive-library-shell.show-content .archive-library-sidebar { transform:translateX(-22%); visibility:hidden; }
+      .archive-library-shell.show-content .archive-library-main { transform:translateX(0); }
+      .archive-library-brand { min-height:62px; }
+      .archive-library-nav { padding:10px 12px 24px; }
+      .archive-nav-account { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:14px; }
+      .archive-nav-heading,.archive-nav-inactive { grid-column:1/-1; }
+      .archive-nav-list { display:contents; }
+      .archive-nav-item { min-height:104px; display:flex; flex-direction:column; justify-content:flex-end; align-items:stretch; border:1px solid #D7E3E0; border-left-width:1px; border-radius:7px; padding:8px; background:#FFFFFF; }
+      .archive-nav-item.active { border-color:#62C7BE; }
+      .archive-nav-preview { display:block; margin-bottom:7px; }
+      .archive-nav-copy { width:100%; }
+      .archive-nav-count { margin-top:5px; }
+      .archive-library-topbar { min-height:62px; justify-content:flex-start; padding:9px 12px; }
+      .archive-library-mobile-back { display:inline-grid; }
+      .archive-library-heading { flex:1 1 auto; }
+      .archive-library-heading h2 { font-size:16px; }
+      .archive-library-toolbar { grid-template-columns:minmax(0,1fr) auto; padding:10px 12px; }
+      .archive-library-segment { grid-column:1/-1; order:3; }
+      .archive-library-segment button { flex:1; }
+      .archive-library-sort { min-width:106px; }
+      .archive-library-filterbar { padding:8px 12px; }
+      .archive-library-results { padding:12px 10px 22px; scrollbar-gutter:auto; }
+      .archive-library-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 8px; }
+      .archive-library-card-copy { padding:8px 4px; }
+      .archive-library-title { min-height:37px; font-size:12px; }
+      .archive-library-memberships { display:none; }
+      .archive-library-detail { top:auto; width:100%; height:min(72dvh,620px); border-left:0; border-top:1px solid #D8E3E0; transform:translateY(102%); }
+      .archive-library-detail.open { transform:translateY(0); }
+    }
+    @media (max-width:380px) {
+      .archive-library-grid { grid-template-columns:1fr; }
+    }
+    @media (prefers-reduced-motion:reduce) {
+      .archive-library-card,.archive-library-detail,.archive-library-sidebar,.archive-library-main { transition:none!important; }
+    }
     body.playback-open { overflow:hidden; }
     .playback-modal { z-index:300; padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
     .playback-shell { width:min(1480px,100%); min-width:0; height:calc(100dvh - 36px); margin:auto; overflow:hidden; display:flex; flex-direction:column; color:#F4F7F6; background:#151B1A; border:1px solid #34413F; border-radius:8px; box-shadow:0 28px 80px rgba(0,0,0,0.38); animation:playbackEnter .18s ease-out; }
@@ -696,6 +818,7 @@ function getAccountSection() {
         <button class="ghost" id="syncNowBtn">立即同步</button>
         <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
         <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
+        <button class="ghost" id="archiveLibraryBtn">归档库</button>
         <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明" aria-label="查看同步按钮说明">?</button>
       </div>
       <div class="user-list" id="userList"></div>
@@ -847,6 +970,59 @@ function getModals() {
     </div>
   </div>
 
+  <div class="modal archive-library-modal" id="archiveLibraryModal">
+    <section class="archive-library-shell" aria-labelledby="archiveLibraryTitle">
+      <aside class="archive-library-sidebar" aria-label="归档目录">
+        <div class="archive-library-brand">
+          <h2>归档库</h2>
+          <button id="closeArchiveLibraryBtn" class="archive-library-close" type="button" aria-label="关闭归档库" title="关闭">×</button>
+        </div>
+        <nav class="archive-library-nav" id="archiveLibraryNav"></nav>
+      </aside>
+      <section class="archive-library-main">
+        <div class="archive-library-topbar">
+          <button id="archiveLibraryMobileBackBtn" class="archive-library-mobile-back" type="button" aria-label="返回归档目录" title="返回">←</button>
+          <div class="archive-library-heading">
+            <h2 id="archiveLibraryTitle">全部归档</h2>
+            <span id="archiveLibrarySummary">0 个视频</span>
+          </div>
+        </div>
+        <div class="archive-library-toolbar">
+          <label class="archive-library-search">
+            <input id="archiveLibrarySearchInput" type="search" maxlength="80" autocomplete="off" placeholder="搜索标题、UP主或BV号" aria-label="搜索归档库">
+            <button id="archiveLibrarySearchClearBtn" class="archive-library-search-clear is-hidden" type="button" aria-label="清除搜索" title="清除">×</button>
+          </label>
+          <div class="archive-library-segment" aria-label="搜索范围">
+            <button id="archiveSearchCurrentBtn" class="active" type="button">当前目录</button>
+            <button id="archiveSearchGlobalBtn" type="button">全部归档</button>
+          </div>
+          <select id="archiveLibrarySort" class="archive-library-sort" aria-label="归档排序">
+            <option value="context">默认顺序</option>
+            <option value="title_asc">标题正序</option>
+            <option value="title_desc">标题倒序</option>
+          </select>
+        </div>
+        <div class="archive-library-filterbar" id="archiveLibraryFilterbar" aria-label="归档状态筛选">
+          <button class="active" type="button" data-archive-filter="all">全部</button>
+          <button type="button" data-archive-filter="playable">可播放</button>
+          <button type="button" data-archive-filter="pending">待处理</button>
+          <button type="button" data-archive-filter="issue">异常</button>
+        </div>
+        <div class="archive-library-results" id="archiveLibraryResults">
+          <div class="archive-library-grid" id="archiveLibraryGrid"></div>
+          <div class="archive-library-footer" id="archiveLibraryFooter" aria-live="polite"></div>
+        </div>
+      </section>
+      <aside class="archive-library-detail" id="archiveLibraryDetail" aria-hidden="true">
+        <div class="archive-library-detail-head">
+          <h3 id="archiveLibraryDetailTitle">归档详情</h3>
+          <button id="archiveLibraryDetailCloseBtn" class="archive-library-detail-close" type="button" aria-label="关闭详情" title="关闭">×</button>
+        </div>
+        <div class="archive-library-detail-body" id="archiveLibraryDetailBody"></div>
+      </aside>
+    </section>
+  </div>
+
   <div class="modal" id="videoDetailModal">
     <div class="panel panel-medium">
       <h2 id="videoDetailTitle">收藏夹详情</h2>
@@ -921,7 +1097,7 @@ function getModals() {
         <aside class="playback-queue" aria-label="收藏夹播放队列">
           <div class="playback-queue-head">
             <div class="playback-queue-heading">
-              <strong>收藏夹顺序</strong>
+              <strong id="playbackQueueHeading">收藏夹顺序</strong>
               <span id="playbackQueueCount">0 项</span>
               <button id="playbackQueueCloseBtn" class="playback-queue-close" type="button" aria-label="关闭播放列表" title="关闭播放列表">×</button>
             </div>
@@ -1193,6 +1369,33 @@ function getAppScript() {
       token: 0,
       controller: null
     };
+    const ARCHIVE_LIBRARY_STORAGE_KEY = 'bfb-archive-library-v1';
+    let archiveLibraryState = {
+      navigation: null,
+      scope: 'global',
+      userId: null,
+      mediaId: null,
+      title: '全部归档',
+      query: '',
+      searchScope: 'current',
+      filter: 'all',
+      sort: 'context',
+      items: [],
+      nodes: new Map(),
+      nextCursor: null,
+      hasMore: true,
+      summary: null,
+      loading: false,
+      error: null,
+      token: 0,
+      controller: null,
+      searchTimer: null,
+      scrollTimer: null,
+      detailController: null,
+      detailToken: 0,
+      scrollPositions: {},
+      trigger: null
+    };
     const PLAYBACK_STORAGE_KEY = 'bfb-playback-v1';
     let artplayerLoader = null;
     let playbackState = {
@@ -1241,6 +1444,7 @@ function getAppScript() {
       },
       trigger: null,
       focusBvid: null,
+      libraryContext: null,
       search: {
         query: '',
         shownQuery: '',
@@ -1312,6 +1516,7 @@ function getAppScript() {
     function closeModal(modalOrId) {
       const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
       if (!modal) return;
+      const closeTrigger = modal.id === 'archiveLibraryModal' ? archiveLibraryState.trigger : lastModalTrigger;
       if (modal.id === 'loginModal') {
         currentLoginId = null;
       }
@@ -1332,6 +1537,14 @@ function getAppScript() {
         }
       }
       if (modal.id === 'playbackModal') destroyPlaybackSession();
+      if (modal.id === 'archiveLibraryModal') {
+        if (document.getElementById('playbackModal').classList.contains('active')) {
+          destroyPlaybackSession();
+          document.getElementById('playbackModal').classList.remove('active');
+          document.getElementById('playbackModal').setAttribute('aria-hidden', 'true');
+        }
+        cleanupArchiveLibrary();
+      }
       if (modal.id === 'unavailableModal') {
         if (unavailableThrottleTimer) {
           clearTimeout(unavailableThrottleTimer);
@@ -1350,8 +1563,8 @@ function getAppScript() {
       }
       modal.classList.remove('active');
       modal.setAttribute('aria-hidden', 'true');
-      if (lastModalTrigger && typeof lastModalTrigger.focus === 'function' && document.contains(lastModalTrigger)) {
-        lastModalTrigger.focus();
+      if (closeTrigger && typeof closeTrigger.focus === 'function' && document.contains(closeTrigger)) {
+        closeTrigger.focus();
       }
     }
 
@@ -2742,6 +2955,569 @@ function getAppScript() {
       });
     }
 
+    // ---- Local Archive Library ----
+    function loadArchiveLibraryPreference() {
+      const fallback = { version:1, scope:'global', userId:null, mediaId:null, filter:'all', sort:'context', scrollPositions:{} };
+      try {
+        const parsed = JSON.parse(localStorage.getItem(ARCHIVE_LIBRARY_STORAGE_KEY) || 'null');
+        if (!parsed || parsed.version !== 1) return fallback;
+        return {
+          version:1,
+          scope:['global','account','folder'].includes(parsed.scope) ? parsed.scope : 'global',
+          userId:parsed.userId || null,
+          mediaId:Number(parsed.mediaId || 0) || null,
+          filter:['all','playable','pending','issue'].includes(parsed.filter) ? parsed.filter : 'all',
+          sort:['context','title_asc','title_desc'].includes(parsed.sort) ? parsed.sort : 'context',
+          scrollPositions:parsed.scrollPositions && typeof parsed.scrollPositions === 'object' ? parsed.scrollPositions : {}
+        };
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function archiveContextKey(state = archiveLibraryState) {
+      return [state.scope, state.userId || '', state.mediaId || 0, state.filter, state.sort].join(':');
+    }
+
+    function persistArchiveLibraryPreference() {
+      try {
+        localStorage.setItem(ARCHIVE_LIBRARY_STORAGE_KEY, JSON.stringify({
+          version:1,
+          scope:archiveLibraryState.scope,
+          userId:archiveLibraryState.userId,
+          mediaId:archiveLibraryState.mediaId,
+          filter:archiveLibraryState.filter,
+          sort:archiveLibraryState.sort,
+          scrollPositions:archiveLibraryState.scrollPositions
+        }));
+      } catch (_) {}
+    }
+
+    function saveArchiveLibraryScroll() {
+      const results = document.getElementById('archiveLibraryResults');
+      if (!results || archiveLibraryState.query) return;
+      archiveLibraryState.scrollPositions[archiveContextKey()] = Math.max(0, Math.round(results.scrollTop));
+      const entries = Object.entries(archiveLibraryState.scrollPositions).slice(-80);
+      archiveLibraryState.scrollPositions = Object.fromEntries(entries);
+      persistArchiveLibraryPreference();
+    }
+
+    function cleanupArchiveLibrary() {
+      saveArchiveLibraryScroll();
+      archiveLibraryState.token += 1;
+      if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
+      if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
+      if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
+      if (archiveLibraryState.scrollTimer) clearTimeout(archiveLibraryState.scrollTimer);
+      archiveLibraryState.controller = null;
+      archiveLibraryState.detailController = null;
+      archiveLibraryState.detailToken += 1;
+      archiveLibraryState.searchTimer = null;
+      archiveLibraryState.scrollTimer = null;
+      archiveLibraryState.loading = false;
+      closeArchiveLibraryDetail();
+      document.body.classList.remove('archive-library-open');
+    }
+
+    function archiveLibraryQueryParams(options = {}) {
+      const params = new URLSearchParams({
+        scope:archiveLibraryState.scope,
+        q:archiveLibraryState.query,
+        searchScope:archiveLibraryState.searchScope,
+        filter:archiveLibraryState.filter,
+        sort:archiveLibraryState.sort,
+        pageSize:String(archiveLibraryState.pageSize || 50)
+      });
+      if (archiveLibraryState.userId) params.set('userId', archiveLibraryState.userId);
+      if (archiveLibraryState.mediaId) params.set('mediaId', String(archiveLibraryState.mediaId));
+      if (options.cursor) params.set('cursor', options.cursor);
+      return params;
+    }
+
+    function archiveLibraryContextSnapshot() {
+      return {
+        scope:archiveLibraryState.scope,
+        userId:archiveLibraryState.userId,
+        mediaId:archiveLibraryState.mediaId,
+        query:archiveLibraryState.query,
+        searchScope:archiveLibraryState.searchScope,
+        filter:archiveLibraryState.filter,
+        sort:archiveLibraryState.sort
+      };
+    }
+
+    function isArchiveLibraryMobileLayout() {
+      return window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)').matches;
+    }
+
+    function archiveSummaryText(summary) {
+      if (!summary) return '正在读取本地归档';
+      return Number(summary.total || 0) + ' 个视频 · 可播放 ' + Number(summary.playable || 0) +
+        ' · 待处理 ' + Number(summary.pending || 0) + ' · 异常 ' + Number(summary.issue || 0);
+    }
+
+    function archiveNavMeta(entry) {
+      const sync = entry.lastSyncedAt ? ' · 最近同步 ' + formatDateTime(entry.lastSyncedAt) : '';
+      if (!Number(entry.total || 0)) return '暂无本地索引' + sync;
+      return Number(entry.total || 0) + ' 项 · 可播 ' + Number(entry.playable || 0) + sync;
+    }
+
+    function createArchiveNavItem(entry, context) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'archive-nav-item';
+      button.dataset.archiveScope = context.scope;
+      button.dataset.archiveUserId = context.userId || '';
+      button.dataset.archiveMediaId = context.mediaId || '';
+      const preview = document.createElement('span');
+      preview.className = 'archive-nav-preview';
+      appendArchiveCover(preview, entry);
+      const copy = document.createElement('span');
+      copy.className = 'archive-nav-copy';
+      const title = document.createElement('span');
+      title.className = 'archive-nav-title';
+      title.textContent = safeText(context.title, '归档目录');
+      const meta = document.createElement('span');
+      meta.className = 'archive-nav-meta';
+      meta.textContent = archiveNavMeta(entry);
+      copy.appendChild(title);
+      copy.appendChild(meta);
+      const count = document.createElement('span');
+      count.className = 'archive-nav-count';
+      count.textContent = String(Number(entry.total || 0));
+      button.appendChild(preview);
+      button.appendChild(copy);
+      button.appendChild(count);
+      button.addEventListener('click', () => selectArchiveLibraryDirectory(context, button));
+      return button;
+    }
+
+    function renderArchiveLibraryNavigation() {
+      const host = document.getElementById('archiveLibraryNav');
+      host.replaceChildren();
+      const navigation = archiveLibraryState.navigation;
+      if (!navigation) {
+        const loading = document.createElement('div');
+        loading.className = 'archive-nav-empty';
+        loading.textContent = '加载中...';
+        host.appendChild(loading);
+        return;
+      }
+      const globalGroup = document.createElement('div');
+      globalGroup.className = 'archive-nav-account';
+      const globalList = document.createElement('div');
+      globalList.className = 'archive-nav-list';
+      globalList.appendChild(createArchiveNavItem(navigation.summary || {}, { scope:'global', title:'全部归档' }));
+      globalGroup.appendChild(globalList);
+      host.appendChild(globalGroup);
+
+      (navigation.accounts || []).forEach((account) => {
+        const group = document.createElement('section');
+        group.className = 'archive-nav-account';
+        const heading = document.createElement('div');
+        heading.className = 'archive-nav-heading';
+        const name = document.createElement('strong');
+        name.textContent = safeText(account.name, '未知账号');
+        const uid = document.createElement('span');
+        uid.textContent = 'UID ' + safeText(account.uid, '-');
+        heading.appendChild(name);
+        heading.appendChild(uid);
+        group.appendChild(heading);
+        const list = document.createElement('div');
+        list.className = 'archive-nav-list';
+        list.appendChild(createArchiveNavItem(account.summary || {}, {
+          scope:'account', userId:account.id, title:'该账号全部'
+        }));
+        (account.folders || []).forEach((folder) => list.appendChild(createArchiveNavItem(folder, {
+          scope:'folder', userId:account.id, mediaId:folder.mediaId, title:folder.title
+        })));
+        group.appendChild(list);
+        if (Array.isArray(account.inactiveFolders) && account.inactiveFolders.length) {
+          const inactive = document.createElement('details');
+          inactive.className = 'archive-nav-inactive';
+          const summary = document.createElement('summary');
+          summary.textContent = '已停用归档 · ' + account.inactiveFolders.length;
+          inactive.appendChild(summary);
+          const inactiveList = document.createElement('div');
+          inactiveList.className = 'archive-nav-list';
+          account.inactiveFolders.forEach((folder) => inactiveList.appendChild(createArchiveNavItem(folder, {
+            scope:'folder', userId:account.id, mediaId:folder.mediaId, title:folder.title + ' · 已停用'
+          })));
+          inactive.appendChild(inactiveList);
+          group.appendChild(inactive);
+        }
+        host.appendChild(group);
+      });
+      syncArchiveLibraryNavigationSelection();
+    }
+
+    function syncArchiveLibraryNavigationSelection() {
+      document.querySelectorAll('.archive-nav-item').forEach((button) => {
+        const active = button.dataset.archiveScope === archiveLibraryState.scope
+          && String(button.dataset.archiveUserId || '') === String(archiveLibraryState.userId || '')
+          && String(button.dataset.archiveMediaId || '') === String(archiveLibraryState.mediaId || '');
+        button.classList.toggle('active', active);
+        if (active) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+      });
+    }
+
+    function archiveDirectoryExists(navigation, scope, userId, mediaId) {
+      if (scope === 'global') return true;
+      const account = (navigation.accounts || []).find((entry) => entry.id === userId);
+      if (!account) return false;
+      if (scope === 'account') return true;
+      return [...(account.folders || []), ...(account.inactiveFolders || [])]
+        .some((folder) => Number(folder.mediaId) === Number(mediaId));
+    }
+
+    function setArchiveLibraryHeading() {
+      document.getElementById('archiveLibraryTitle').textContent = archiveLibraryState.title || '全部归档';
+      document.getElementById('archiveLibrarySummary').textContent = archiveSummaryText(archiveLibraryState.summary);
+      document.getElementById('archiveLibrarySort').value = archiveLibraryState.sort;
+      document.getElementById('archiveSearchCurrentBtn').classList.toggle('active', archiveLibraryState.searchScope === 'current');
+      document.getElementById('archiveSearchGlobalBtn').classList.toggle('active', archiveLibraryState.searchScope === 'global');
+      document.getElementById('archiveSearchCurrentBtn').setAttribute('aria-pressed', String(archiveLibraryState.searchScope === 'current'));
+      document.getElementById('archiveSearchGlobalBtn').setAttribute('aria-pressed', String(archiveLibraryState.searchScope === 'global'));
+      document.querySelectorAll('[data-archive-filter]').forEach((button) => {
+        button.classList.toggle('active', button.dataset.archiveFilter === archiveLibraryState.filter);
+        button.setAttribute('aria-pressed', String(button.dataset.archiveFilter === archiveLibraryState.filter));
+      });
+      setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.query);
+    }
+
+    async function selectArchiveLibraryDirectory(context, trigger) {
+      saveArchiveLibraryScroll();
+      archiveLibraryState.scope = context.scope;
+      archiveLibraryState.userId = context.userId || null;
+      archiveLibraryState.mediaId = Number(context.mediaId || 0) || null;
+      archiveLibraryState.title = context.title || '全部归档';
+      archiveLibraryState.query = '';
+      archiveLibraryState.searchScope = 'current';
+      document.getElementById('archiveLibrarySearchInput').value = '';
+      closeArchiveLibraryDetail();
+      persistArchiveLibraryPreference();
+      syncArchiveLibraryNavigationSelection();
+      setArchiveLibraryHeading();
+      document.querySelector('.archive-library-shell').classList.add('show-content');
+      await loadArchiveLibraryItems(true);
+      if (trigger && document.activeElement === trigger && isArchiveLibraryMobileLayout()) {
+        document.getElementById('archiveLibraryMobileBackBtn').focus({ preventScroll:true });
+      }
+    }
+
+    function archiveStatusLabel(item) {
+      if (item.playback && item.playback.available) {
+        if (item.unavailable) return '已归档且失效';
+        if (item.playback.partial) return '部分可播放';
+        return '可播放';
+      }
+      const labels = {
+        discovered:'待备份', queued:'已排队', downloading:'下载中', downloaded:'待上传', uploading:'上传中',
+        uploaded:'远端确认中', upload_failed:'待补传', charging_restricted:'充电限制', missing:'远端缺失',
+        lost:'已失效', failed:'失败', verified:'无兼容媒体', partial_verified:'无兼容媒体'
+      };
+      return labels[item.backupStatus] || (item.statusGroup === 'pending' ? '待处理' : '异常');
+    }
+
+    function archiveMembershipText(item) {
+      const labels = (item.memberships || []).map((membership) => safeText(membership.folderTitle, '收藏夹'));
+      const more = Math.max(0, Number(item.membershipCount || 0) - labels.length);
+      return labels.join(' · ') + (more ? ' · +' + more : '');
+    }
+
+    function appendArchiveCover(container, item, className) {
+      const local = localCoverUrl(item);
+      const remote = item && item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const sources = [...new Set([local, remote].filter(Boolean))];
+      const placeholder = document.createElement('span');
+      placeholder.className = 'archive-library-placeholder';
+      placeholder.textContent = 'B';
+      placeholder.setAttribute('aria-hidden', 'true');
+      container.appendChild(placeholder);
+      if (!sources.length) return;
+      const image = document.createElement('img');
+      if (className) image.className = className;
+      image.alt = '';
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.referrerPolicy = 'no-referrer';
+      let index = 0;
+      image.addEventListener('load', () => placeholder.classList.add('is-hidden'));
+      image.addEventListener('error', () => {
+        index += 1;
+        if (index < sources.length) image.src = sources[index];
+        else image.remove();
+      });
+      image.src = sources[0];
+      container.appendChild(image);
+    }
+
+    function createArchiveLibraryCard(item) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'archive-library-card';
+      card.dataset.archiveBvid = item.bvid;
+      card.setAttribute('aria-label', (item.playback?.available ? '播放 ' : '查看详情 ') + safeText(item.title || item.bvid, '归档视频'));
+      const cover = document.createElement('span');
+      cover.className = 'archive-library-cover';
+      appendArchiveCover(cover, item);
+      const coverBadges = document.createElement('span');
+      coverBadges.className = 'archive-library-cover-badges';
+      const status = document.createElement('span');
+      status.className = 'archive-library-status ' + item.statusGroup;
+      status.textContent = archiveStatusLabel(item);
+      coverBadges.appendChild(status);
+      if (item.playback?.partCount) {
+        const media = document.createElement('span');
+        media.className = 'archive-library-cover-badge';
+        media.textContent = [item.playback.actualQuality, item.playback.partCount > 1 ? item.playback.partCount + 'P' : ''].filter(Boolean).join(' · ');
+        if (media.textContent) coverBadges.appendChild(media);
+      }
+      cover.appendChild(coverBadges);
+      const copy = document.createElement('span');
+      copy.className = 'archive-library-card-copy';
+      const title = document.createElement('span');
+      title.className = 'archive-library-title';
+      title.textContent = safeText(item.title || item.bvid, '未知视频');
+      const meta = document.createElement('span');
+      meta.className = 'archive-library-meta';
+      meta.textContent = safeText(item.upperName, '未知UP') + ' · ' + safeText(item.bvid, '-');
+      const memberships = document.createElement('span');
+      memberships.className = 'archive-library-memberships';
+      memberships.textContent = archiveMembershipText(item);
+      copy.appendChild(title);
+      copy.appendChild(meta);
+      copy.appendChild(memberships);
+      card.appendChild(cover);
+      card.appendChild(copy);
+      card.addEventListener('click', () => {
+        if (item.playback?.available) openArchiveLibraryPlayback(item.bvid, card);
+        else openArchiveLibraryDetail(item.bvid, card);
+      });
+      return card;
+    }
+
+    function setArchiveLibraryFooter(text, retry) {
+      const footer = document.getElementById('archiveLibraryFooter');
+      footer.replaceChildren();
+      if (text) footer.appendChild(document.createTextNode(text));
+      if (retry) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '重试';
+        button.addEventListener('click', retry);
+        footer.appendChild(button);
+      }
+    }
+
+    async function loadArchiveLibraryItems(reset = false) {
+      if (archiveLibraryState.loading && !reset) return;
+      if (reset) {
+        archiveLibraryState.token += 1;
+        if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
+        archiveLibraryState.items = [];
+        archiveLibraryState.nodes.clear();
+        archiveLibraryState.nextCursor = null;
+        archiveLibraryState.hasMore = true;
+        archiveLibraryState.summary = null;
+        archiveLibraryState.error = null;
+        document.getElementById('archiveLibraryGrid').replaceChildren();
+        document.getElementById('archiveLibraryResults').scrollTop = 0;
+      }
+      if (!archiveLibraryState.hasMore) return;
+      const token = archiveLibraryState.token;
+      const controller = new AbortController();
+      archiveLibraryState.controller = controller;
+      archiveLibraryState.loading = true;
+      setArchiveLibraryFooter(reset ? '正在读取本地归档...' : '正在加载更多...', null);
+      try {
+        const params = archiveLibraryQueryParams({ cursor:archiveLibraryState.nextCursor });
+        const data = await fetchJson('/api/archive-library/items?' + params.toString(), { signal:controller.signal });
+        if (token !== archiveLibraryState.token) return;
+        const incoming = Array.isArray(data.items) ? data.items : [];
+        const known = new Set(archiveLibraryState.items.map((item) => item.bvid));
+        const fresh = incoming.filter((item) => item && item.bvid && !known.has(item.bvid));
+        archiveLibraryState.items.push(...fresh);
+        archiveLibraryState.nextCursor = data.nextCursor || null;
+        archiveLibraryState.hasMore = Boolean(data.hasMore);
+        if (data.summary) archiveLibraryState.summary = data.summary;
+        archiveLibraryState.error = null;
+        const grid = document.getElementById('archiveLibraryGrid');
+        const fragment = document.createDocumentFragment();
+        fresh.forEach((item) => {
+          const node = createArchiveLibraryCard(item);
+          archiveLibraryState.nodes.set(item.bvid, node);
+          fragment.appendChild(node);
+        });
+        grid.appendChild(fragment);
+        if (!archiveLibraryState.items.length) {
+          const empty = document.createElement('div');
+          empty.className = 'archive-library-empty';
+          empty.textContent = archiveLibraryState.query ? '没有匹配的本地归档' : '当前目录暂无本地归档';
+          grid.appendChild(empty);
+        }
+        setArchiveLibraryHeading();
+        setArchiveLibraryFooter(archiveLibraryState.hasMore ? '' : '已加载全部', null);
+        if (reset) {
+          const stored = Number(archiveLibraryState.scrollPositions[archiveContextKey()] || 0);
+          requestAnimationFrame(() => { document.getElementById('archiveLibraryResults').scrollTop = stored; });
+        }
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        if (token !== archiveLibraryState.token) return;
+        archiveLibraryState.error = error instanceof Error ? error.message : String(error);
+        setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(false));
+      } finally {
+        if (token === archiveLibraryState.token) {
+          archiveLibraryState.loading = false;
+          if (archiveLibraryState.controller === controller) archiveLibraryState.controller = null;
+        }
+      }
+    }
+
+    function closeArchiveLibraryDetail() {
+      const detail = document.getElementById('archiveLibraryDetail');
+      if (!detail) return;
+      archiveLibraryState.detailToken += 1;
+      if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
+      archiveLibraryState.detailController = null;
+      detail.classList.remove('open');
+      detail.setAttribute('aria-hidden', 'true');
+      document.getElementById('archiveLibraryDetailBody').replaceChildren();
+    }
+
+    async function openArchiveLibraryDetail(bvid, trigger) {
+      const detail = document.getElementById('archiveLibraryDetail');
+      const body = document.getElementById('archiveLibraryDetailBody');
+      if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
+      const controller = new AbortController();
+      archiveLibraryState.detailController = controller;
+      const token = ++archiveLibraryState.detailToken;
+      detail.classList.add('open');
+      detail.setAttribute('aria-hidden', 'false');
+      document.getElementById('archiveLibraryDetailTitle').textContent = '归档详情';
+      body.textContent = '正在读取...';
+      try {
+        const params = archiveLibraryQueryParams();
+        const data = await fetchJson('/api/archive-library/items/' + encodeURIComponent(bvid) + '?' + params.toString(), { signal:controller.signal });
+        if (token !== archiveLibraryState.detailToken || !detail.classList.contains('open')) return;
+        body.replaceChildren();
+        document.getElementById('archiveLibraryDetailTitle').textContent = safeText(data.title || data.bvid, '归档详情');
+        const cover = document.createElement('div');
+        cover.className = 'archive-library-cover';
+        appendArchiveCover(cover, data, 'archive-library-detail-cover');
+        body.appendChild(cover);
+        const meta = document.createElement('div');
+        meta.className = 'archive-library-detail-meta';
+        meta.textContent = safeText(data.upperName, '未知UP') + ' · ' + safeText(data.bvid, '-') + ' · ' + archiveStatusLabel(data);
+        body.appendChild(meta);
+        (data.memberships || []).forEach((membership) => {
+          const source = document.createElement('div');
+          source.className = 'archive-library-source';
+          const title = document.createElement('strong');
+          title.textContent = safeText(membership.userName, '未知账号') + ' · ' + safeText(membership.folderTitle, '收藏夹');
+          const state = document.createElement('span');
+          state.textContent = archiveStatusLabel({ backupStatus:membership.backupStatus, statusGroup:data.statusGroup, playback:{ available:false } }) +
+            (membership.activeInFavorite ? ' · 当前关系' : ' · 历史记录') +
+            (membership.selectedFolder ? '' : ' · 已停用') +
+            (membership.lastSeenAt ? ' · ' + formatDateTime(membership.lastSeenAt) : '');
+          source.appendChild(title);
+          source.appendChild(state);
+          if (membership.error) {
+            const error = document.createElement('span');
+            error.textContent = membership.error;
+            source.appendChild(error);
+          }
+          body.appendChild(source);
+        });
+        setTimeout(() => document.getElementById('archiveLibraryDetailCloseBtn').focus({ preventScroll:true }), 0);
+      } catch (error) {
+        if ((error && error.name === 'AbortError') || token !== archiveLibraryState.detailToken || !detail.classList.contains('open')) return;
+        body.replaceChildren();
+        const message = document.createElement('p');
+        message.textContent = '详情加载失败：' + (error instanceof Error ? error.message : String(error));
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'archive-library-detail-retry';
+        retry.textContent = '重试';
+        retry.addEventListener('click', () => openArchiveLibraryDetail(bvid, trigger));
+        body.appendChild(message);
+        body.appendChild(retry);
+      } finally {
+        if (archiveLibraryState.detailController === controller) archiveLibraryState.detailController = null;
+      }
+    }
+
+    function scheduleArchiveLibrarySearch() {
+      const input = document.getElementById('archiveLibrarySearchInput');
+      const nextQuery = String(input.value || '').trim().slice(0, 80);
+      if (!archiveLibraryState.query && nextQuery) saveArchiveLibraryScroll();
+      archiveLibraryState.query = nextQuery;
+      setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.query);
+      if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
+      if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
+      archiveLibraryState.searchTimer = setTimeout(() => {
+        archiveLibraryState.searchTimer = null;
+        loadArchiveLibraryItems(true);
+      }, 300);
+    }
+
+    async function openArchiveLibrary(trigger) {
+      archiveLibraryState.token += 1;
+      if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
+      const preference = loadArchiveLibraryPreference();
+      archiveLibraryState.scope = preference.scope;
+      archiveLibraryState.userId = preference.userId;
+      archiveLibraryState.mediaId = preference.mediaId;
+      archiveLibraryState.filter = preference.filter;
+      archiveLibraryState.sort = preference.sort;
+      archiveLibraryState.scrollPositions = preference.scrollPositions;
+      archiveLibraryState.query = '';
+      archiveLibraryState.searchScope = 'current';
+      archiveLibraryState.pageSize = 50;
+      archiveLibraryState.trigger = trigger || null;
+      archiveLibraryState.navigation = null;
+      archiveLibraryState.title = '全部归档';
+      document.getElementById('archiveLibrarySearchInput').value = '';
+      document.querySelector('.archive-library-shell').classList.remove('show-content');
+      renderArchiveLibraryNavigation();
+      setArchiveLibraryHeading();
+      document.body.classList.add('archive-library-open');
+      openModal('archiveLibraryModal', trigger);
+      const controller = new AbortController();
+      archiveLibraryState.controller = controller;
+      const token = archiveLibraryState.token;
+      try {
+        const navigation = await fetchJson('/api/archive-library/navigation', { signal:controller.signal });
+        if (token !== archiveLibraryState.token) return;
+        archiveLibraryState.controller = null;
+        archiveLibraryState.navigation = navigation;
+        if (!archiveDirectoryExists(navigation, archiveLibraryState.scope, archiveLibraryState.userId, archiveLibraryState.mediaId)) {
+          archiveLibraryState.scope = 'global';
+          archiveLibraryState.userId = null;
+          archiveLibraryState.mediaId = null;
+        }
+        if (archiveLibraryState.scope === 'account') {
+          const account = navigation.accounts.find((entry) => entry.id === archiveLibraryState.userId);
+          archiveLibraryState.title = account ? safeText(account.name, '账号') + ' · 全部归档' : '全部归档';
+        } else if (archiveLibraryState.scope === 'folder') {
+          const account = navigation.accounts.find((entry) => entry.id === archiveLibraryState.userId);
+          const folder = account && [...(account.folders || []), ...(account.inactiveFolders || [])]
+            .find((entry) => Number(entry.mediaId) === Number(archiveLibraryState.mediaId));
+          archiveLibraryState.title = folder ? folder.title + (folder.inactive ? ' · 已停用' : '') : '收藏夹归档';
+        }
+        renderArchiveLibraryNavigation();
+        setArchiveLibraryHeading();
+        await loadArchiveLibraryItems(true);
+      } catch (error) {
+        if ((error && error.name === 'AbortError') || token !== archiveLibraryState.token) return;
+        setArchiveLibraryFooter('归档目录加载失败', () => openArchiveLibrary(trigger));
+      } finally {
+        if (archiveLibraryState.controller === controller) archiveLibraryState.controller = null;
+      }
+    }
+
     // ---- Video Detail Modal ----
     function appendVideoDetailCover(container, item) {
       const wrap = document.createElement('div');
@@ -3257,6 +4033,11 @@ function getAppScript() {
         detailModal.inert = false;
         detailModal.setAttribute('aria-hidden', 'false');
       }
+      const archiveModal = document.getElementById('archiveLibraryModal');
+      if (archiveModal.classList.contains('active')) {
+        archiveModal.inert = false;
+        archiveModal.setAttribute('aria-hidden', 'false');
+      }
       playbackState.items = [];
       playbackState.pages.clear();
       playbackState.queueNodes.clear();
@@ -3276,6 +4057,7 @@ function getAppScript() {
       playbackState.mediaId = null;
       playbackState.trigger = null;
       playbackState.focusBvid = null;
+      playbackState.libraryContext = null;
       const queueHost = document.getElementById('playbackQueueList');
       queueHost.replaceChildren();
       queueHost.scrollTop = 0;
@@ -3331,9 +4113,9 @@ function getAppScript() {
       const item = currentPlaybackItem();
       const queuePosition = Number(item && item.queuePosition || 0);
       const hasPrevious = Boolean(item) && (playbackState.partIndex > 0
-        || (playbackState.mode === 'favorite' ? queuePosition > 1 : playbackState.itemIndex > 0));
+        || (playbackState.mode !== 'single' ? queuePosition > 1 : playbackState.itemIndex > 0));
       const hasNext = Boolean(item) && (playbackState.partIndex + 1 < item.parts.length
-        || (playbackState.mode === 'favorite' ? queuePosition < playbackState.total : playbackState.itemIndex + 1 < playbackState.items.length));
+        || (playbackState.mode !== 'single' ? queuePosition < playbackState.total : playbackState.itemIndex + 1 < playbackState.items.length));
       document.getElementById('playbackPreviousBtn').disabled = !hasPrevious;
       document.getElementById('playbackNextBtn').disabled = !hasNext;
       const continuous = document.getElementById('playbackContinuousBtn');
@@ -3369,6 +4151,7 @@ function getAppScript() {
         playbackState.userId || '',
         playbackState.mediaId || '',
         playbackState.mode,
+        playbackState.libraryContext ? JSON.stringify(playbackState.libraryContext) : '',
         ...Array.from(playbackState.pages.keys()).sort((left, right) => left - right)
       ].join(':');
     }
@@ -3533,7 +4316,7 @@ function getAppScript() {
     }
 
     function isPlaybackSearchView() {
-      return playbackState.mode === 'favorite' && Boolean(playbackState.search.shownQuery);
+      return playbackState.mode !== 'single' && Boolean(playbackState.search.shownQuery);
     }
 
     function playbackPageBounds() {
@@ -3863,6 +4646,13 @@ function getAppScript() {
 
     function renderPlaybackQueue(force = false) {
       const host = document.getElementById('playbackQueueList');
+      document.getElementById('playbackQueueHeading').textContent = playbackState.mode === 'library'
+        ? '归档库顺序'
+        : '收藏夹顺序';
+      document.querySelector('.playback-queue').setAttribute(
+        'aria-label',
+        playbackState.mode === 'library' ? '归档库播放队列' : '收藏夹播放队列'
+      );
       document.getElementById('playbackQueueCount').textContent = playbackState.mode === 'single'
         ? '历史记录 · 单独播放'
         : playbackState.total + ' 个视频';
@@ -3902,7 +4692,7 @@ function getAppScript() {
 
     function playbackOpenInAlistUrl(part) {
       if (!part || !playbackState.alistBrowserConfigured) return '';
-      return playbackQueueApiPath('/playback/files/' + Number(part.fileId) + '/open-in-alist');
+      return playbackFileApiPath(part, '/open-in-alist');
     }
 
     function renderPlaybackMetadata() {
@@ -3943,7 +4733,7 @@ function getAppScript() {
       document.getElementById('playbackNowTitle').textContent = item ? safeText(item.title || item.bvid, '未知视频') : '未选择视频';
       renderPlaybackMetadata();
       const queuePosition = Number(item && item.queuePosition || 0);
-      const position = playbackState.mode === 'favorite' && queuePosition
+      const position = playbackState.mode !== 'single' && queuePosition
         ? queuePosition + ' / ' + playbackState.total
         : '历史记录';
       const partPosition = item && item.parts && item.parts.length > 1
@@ -4031,7 +4821,7 @@ function getAppScript() {
             controller.signal.addEventListener('abort', onAbort, { once:true });
           });
           if (token !== playbackState.loadingToken || attemptId !== playbackState.deliveryAttemptId) return;
-          const data = await fetchJson(playbackQueueApiPath('/playback/delivery/' + attemptId), { signal:controller.signal });
+          const data = await fetchJson(playbackSourceApiPath('/playback/delivery/' + attemptId), { signal:controller.signal });
           if (token !== playbackState.loadingToken || attemptId !== playbackState.deliveryAttemptId) return;
           playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
             playbackState.deliveryStatus,
@@ -4085,7 +4875,7 @@ function getAppScript() {
       );
       renderPlaybackMetadata();
       try {
-        const data = await fetchJson(playbackQueueApiPath('/playback/delivery/' + attemptId), { signal:controller.signal });
+        const data = await fetchJson(playbackSourceApiPath('/playback/delivery/' + attemptId), { signal:controller.signal });
         if (token !== playbackState.loadingToken || attemptId !== playbackState.deliveryAttemptId) return;
         playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
           playbackState.deliveryStatus,
@@ -4131,7 +4921,7 @@ function getAppScript() {
       const controller = new AbortController();
       playbackState.metadataControllers.set(part.fingerprint, controller);
       try {
-        const data = await fetchJson(playbackQueueApiPath('/playback/files/' + Number(part.fileId) + '/media-metadata'), {
+        const data = await fetchJson(playbackFileApiPath(part, '/media-metadata'), {
           method:'PUT',
           headers:{ 'Content-Type':'application/json' },
           body:JSON.stringify({ fingerprint:part.fingerprint, width, height, duration }),
@@ -4319,9 +5109,46 @@ function getAppScript() {
       }
     }
 
+    function playbackLibraryContextParams() {
+      const context = playbackState.libraryContext || {};
+      const params = new URLSearchParams({
+        scope:String(context.scope || 'global'),
+        q:String(context.query || ''),
+        searchScope:String(context.searchScope || 'current'),
+        filter:String(context.filter || 'all'),
+        sort:String(context.sort || 'context')
+      });
+      if (context.userId) params.set('userId', String(context.userId));
+      if (context.mediaId) params.set('mediaId', String(context.mediaId));
+      return params;
+    }
+
     function playbackQueueApiPath(suffix) {
+      if (playbackState.mode === 'library') {
+        const separator = suffix.indexOf('?');
+        const pathname = separator >= 0 ? suffix.slice(0, separator) : suffix;
+        const suffixParams = new URLSearchParams(separator >= 0 ? suffix.slice(separator + 1) : '');
+        const params = playbackLibraryContextParams();
+        suffixParams.forEach((value, key) => params.set(key, value));
+        const query = params.toString();
+        return '/api/archive-library' + pathname + (query ? '?' + query : '');
+      }
       return '/api/users/' + encodeURIComponent(playbackState.userId) +
         '/favorites/' + playbackState.mediaId + suffix;
+    }
+
+    function playbackFileApiPath(part, suffix) {
+      if (!part) return '';
+      return playbackSourceApiPath('/playback/files/' + Number(part.fileId) + suffix);
+    }
+
+    function playbackSourceApiPath(suffix) {
+      const item = currentPlaybackItem();
+      const source = item && item.source;
+      const userId = source?.userId || playbackState.userId;
+      const mediaId = Number(source?.mediaId || playbackState.mediaId || 0);
+      if (!userId || !mediaId) return '';
+      return '/api/users/' + encodeURIComponent(userId) + '/favorites/' + mediaId + suffix;
     }
 
     async function loadPlaybackQueuePage(page, options = {}) {
@@ -4459,7 +5286,8 @@ function getAppScript() {
       updatePlaybackQueueFeedback();
       try {
         const data = await fetchJson(
-          playbackQueueApiPath('/playback-search?q=' + encodeURIComponent(normalizedQuery) + '&page=' + page + '&pageSize=' + playbackState.pageSize),
+          playbackQueueApiPath('/playback-search?' + (playbackState.mode === 'library' ? 'queueQ=' : 'q=') +
+            encodeURIComponent(normalizedQuery) + '&page=' + page + '&pageSize=' + playbackState.pageSize),
           { signal:controller.signal }
         );
         if (token !== search.token || search.query !== normalizedQuery) return;
@@ -4589,7 +5417,7 @@ function getAppScript() {
             return;
           }
           const nextPosition = Number(item.queuePosition || 0) + 1;
-          if (playbackState.mode === 'favorite' && nextPosition <= playbackState.total) {
+          if (playbackState.mode !== 'single' && nextPosition <= playbackState.total) {
             await selectPlaybackQueuePosition(nextPosition, 0, true);
             return;
           }
@@ -4602,7 +5430,7 @@ function getAppScript() {
           return;
         }
         const previousPosition = Number(item.queuePosition || 0) - 1;
-        if (playbackState.mode === 'favorite' && previousPosition >= 1) {
+        if (playbackState.mode !== 'single' && previousPosition >= 1) {
           await selectPlaybackQueuePosition(previousPosition, Number.MAX_SAFE_INTEGER, true);
         }
       } catch (error) {
@@ -4615,7 +5443,7 @@ function getAppScript() {
       if (!item) return;
       savePlaybackProgress();
       const nextPosition = Number(item.queuePosition || 0) + 1;
-      if (playbackState.mode === 'favorite' && nextPosition <= playbackState.total) {
+      if (playbackState.mode !== 'single' && nextPosition <= playbackState.total) {
         selectPlaybackQueuePosition(nextPosition, 0, true).catch((error) => {
           setPlaybackMessage('无法读取下一页队列', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
         });
@@ -4624,9 +5452,107 @@ function getAppScript() {
       setPlaybackMessage('已到收藏夹末尾', '当前没有下一条可播放归档。', { retry:false, skip:false });
     }
 
+    async function refreshLibraryPlaybackSelection(autoplay = true) {
+      const current = currentPlaybackItem();
+      const bvid = current?.bvid || playbackState.focusBvid;
+      if (playbackState.mode !== 'library' || !bvid) throw new Error('归档库播放上下文已经失效');
+      const previousFingerprint = currentPlaybackPart()?.fingerprint;
+      if (playbackState.queueController) playbackState.queueController.abort();
+      const controller = new AbortController();
+      playbackState.queueController = controller;
+      const token = ++playbackState.queueToken;
+      playbackState.queueLoading = true;
+      playbackState.queueLoadingDirection = null;
+      playbackState.queueError = null;
+      playbackState.queuePromise = null;
+      try {
+        const data = await fetchJson(
+          playbackQueueApiPath('/playback-queue?focusBvid=' + encodeURIComponent(bvid) + '&pageSize=' + playbackState.pageSize),
+          { signal:controller.signal }
+        );
+        if (token !== playbackState.queueToken) return;
+        applyPlaybackQueuePage(data, { reset:true, selectedBvid:bvid, render:false });
+        const selected = currentPlaybackItem();
+        const previousPartIndex = selected?.parts.findIndex((part) => part.fingerprint === previousFingerprint) ?? -1;
+        playbackState.partIndex = previousPartIndex >= 0 ? previousPartIndex : 0;
+        renderPlaybackQueue(true);
+        await playCurrentSelection(autoplay);
+      } finally {
+        if (token === playbackState.queueToken) {
+          playbackState.queueLoading = false;
+          playbackState.queueLoadingDirection = null;
+          if (playbackState.queueController === controller) playbackState.queueController = null;
+          updatePlaybackQueueFeedback();
+        }
+      }
+    }
+
+    async function retryCurrentPlayback() {
+      try {
+        if (playbackState.mode === 'library') {
+          await refreshLibraryPlaybackSelection(true);
+          return;
+        }
+        if (currentPlaybackPart()) {
+          await playCurrentSelection(true);
+          return;
+        }
+        if (playbackState.focusBvid) await openArchivePlayback(playbackState.focusBvid, playbackState.trigger);
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        setPlaybackMessage('无法重新读取播放来源', error instanceof Error ? error.message : String(error), { retry:true, skip:true });
+      }
+    }
+
+    async function openArchiveLibraryPlayback(bvid, trigger) {
+      if (!bvid) return;
+      const libraryContext = archiveLibraryContextSnapshot();
+      destroyPlaybackSession();
+      playbackState.mode = 'library';
+      playbackState.libraryContext = libraryContext;
+      playbackState.pageSize = 50;
+      playbackState.preferences = loadPlaybackPreferences();
+      playbackState.continuous = playbackState.preferences.continuous;
+      playbackState.trigger = trigger || null;
+      playbackState.focusBvid = bvid;
+      document.body.classList.add('playback-open');
+      const archiveModal = document.getElementById('archiveLibraryModal');
+      archiveModal.inert = true;
+      archiveModal.setAttribute('aria-hidden', 'true');
+      openModal('playbackModal', trigger);
+      setPlaybackQueueDrawer(false);
+      if (syncPlaybackImmersiveMode()) {
+        setTimeout(() => document.getElementById('closePlaybackImmersiveBtn').focus({ preventScroll:true }), 0);
+      }
+      document.getElementById('playbackQueueHeading').textContent = '归档库顺序';
+      setPlaybackMessage('正在准备归档库队列', '将按照当前目录、筛选、搜索和排序读取本地可播放归档。', { retry:false, skip:false });
+      const controller = new AbortController();
+      playbackState.queueController = controller;
+      const token = ++playbackState.queueToken;
+      try {
+        const data = await fetchJson(
+          playbackQueueApiPath('/playback-queue?focusBvid=' + encodeURIComponent(bvid) + '&pageSize=' + playbackState.pageSize),
+          { signal:controller.signal }
+        );
+        if (token !== playbackState.queueToken) return;
+        applyPlaybackQueuePage(data, { reset:true, selectedBvid:bvid, render:false });
+        playbackState.partIndex = 0;
+        playbackState.progressTimer = setInterval(savePlaybackProgress, 5000);
+        await playCurrentSelection(true);
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        if (token !== playbackState.queueToken) return;
+        setPlaybackMessage('无法打开归档库播放器', error instanceof Error ? error.message : String(error), { retry:true, skip:false });
+      } finally {
+        if (token === playbackState.queueToken) playbackState.queueController = null;
+      }
+    }
+
     async function openArchivePlayback(bvid, trigger) {
       if (!videoDetailState.userId || !videoDetailState.mediaId || !bvid) return;
       destroyPlaybackSession();
+      playbackState.mode = 'favorite';
+      playbackState.libraryContext = null;
       playbackState.userId = videoDetailState.userId;
       playbackState.mediaId = videoDetailState.mediaId;
       playbackState.pageSize = 50;
@@ -5334,6 +6260,64 @@ function getAppScript() {
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
     document.getElementById('closeVideoDetailBtn').addEventListener('click', () => closeModal('videoDetailModal'));
+    document.getElementById('archiveLibraryBtn').addEventListener('click', (event) => openArchiveLibrary(event.currentTarget));
+    document.getElementById('closeArchiveLibraryBtn').addEventListener('click', () => closeModal('archiveLibraryModal'));
+    document.getElementById('archiveLibraryMobileBackBtn').addEventListener('click', () => {
+      saveArchiveLibraryScroll();
+      closeArchiveLibraryDetail();
+      document.querySelector('.archive-library-shell').classList.remove('show-content');
+      const active = document.querySelector('.archive-nav-item.active');
+      if (active) setTimeout(() => active.focus({ preventScroll:true }), 0);
+    });
+    document.getElementById('archiveLibraryDetailCloseBtn').addEventListener('click', closeArchiveLibraryDetail);
+    document.getElementById('archiveLibrarySearchInput').addEventListener('input', scheduleArchiveLibrarySearch);
+    document.getElementById('archiveLibrarySearchClearBtn').addEventListener('click', () => {
+      archiveLibraryState.query = '';
+      const input = document.getElementById('archiveLibrarySearchInput');
+      input.value = '';
+      setHidden('archiveLibrarySearchClearBtn', true);
+      loadArchiveLibraryItems(true);
+      input.focus({ preventScroll:true });
+    });
+    document.getElementById('archiveSearchCurrentBtn').addEventListener('click', () => {
+      if (archiveLibraryState.searchScope === 'current') return;
+      archiveLibraryState.searchScope = 'current';
+      setArchiveLibraryHeading();
+      loadArchiveLibraryItems(true);
+    });
+    document.getElementById('archiveSearchGlobalBtn').addEventListener('click', () => {
+      if (archiveLibraryState.searchScope === 'global') return;
+      archiveLibraryState.searchScope = 'global';
+      setArchiveLibraryHeading();
+      loadArchiveLibraryItems(true);
+    });
+    document.getElementById('archiveLibrarySort').addEventListener('change', (event) => {
+      archiveLibraryState.sort = event.target.value;
+      persistArchiveLibraryPreference();
+      loadArchiveLibraryItems(true);
+    });
+    document.querySelectorAll('[data-archive-filter]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const filter = button.dataset.archiveFilter;
+        if (!filter || filter === archiveLibraryState.filter) return;
+        archiveLibraryState.filter = filter;
+        persistArchiveLibraryPreference();
+        setArchiveLibraryHeading();
+        loadArchiveLibraryItems(true);
+      });
+    });
+    document.getElementById('archiveLibraryResults').addEventListener('scroll', () => {
+      const results = document.getElementById('archiveLibraryResults');
+      if (!document.getElementById('archiveLibraryModal').classList.contains('active')
+        || results.scrollHeight - results.scrollTop - results.clientHeight >= 240
+        || archiveLibraryState.loading || !archiveLibraryState.hasMore || archiveLibraryState.scrollTimer) return;
+      archiveLibraryState.scrollTimer = setTimeout(() => {
+        archiveLibraryState.scrollTimer = null;
+        if (document.getElementById('archiveLibraryModal').classList.contains('active')) {
+          loadArchiveLibraryItems(false);
+        }
+      }, 180);
+    });
     document.getElementById('closePlaybackBtn').addEventListener('click', () => closeModal('playbackModal'));
     document.getElementById('closePlaybackImmersiveBtn').addEventListener('click', () => closeModal('playbackModal'));
     document.getElementById('playbackImmersiveQueueBtn').addEventListener('click', () => setPlaybackQueueDrawer(!playbackState.drawerOpen));
@@ -5369,10 +6353,7 @@ function getAppScript() {
       persistPlaybackPreferences();
       updatePlaybackNavigation();
     });
-    document.getElementById('playbackRetryBtn').addEventListener('click', () => {
-      if (currentPlaybackPart()) playCurrentSelection(true);
-      else if (playbackState.focusBvid) openArchivePlayback(playbackState.focusBvid, playbackState.trigger);
-    });
+    document.getElementById('playbackRetryBtn').addEventListener('click', retryCurrentPlayback);
     document.getElementById('playbackSkipBtn').addEventListener('click', skipCurrentPlaybackVideo);
     document.getElementById('closeUnavailableBtn').addEventListener('click', () => closeModal('unavailableModal'));
     document.getElementById('syncHelpBtn').addEventListener('click', openSyncHelp);
@@ -5435,6 +6416,11 @@ function getAppScript() {
         if (modal && modal.id === 'playbackModal' && playbackState.drawerOpen) {
           event.preventDefault();
           setPlaybackQueueDrawer(false);
+          return;
+        }
+        if (modal && modal.id === 'archiveLibraryModal' && document.getElementById('archiveLibraryDetail').classList.contains('open')) {
+          event.preventDefault();
+          closeArchiveLibraryDetail();
           return;
         }
         if (modal) closeModal(modal);

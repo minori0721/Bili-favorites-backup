@@ -23,6 +23,9 @@ features:
   - icon: ✅
     title: 远端最终确认
     details: 远端文件可见且大小一致后，才确认备份完成并安全清理本地成品。
+  - icon: 🎞️
+    title: 本地归档库
+    details: 不访问B站即可按账号、收藏夹、状态和标题浏览SQLite中的全部归档并连续播放。
 ---
 
 ## 项目简介
@@ -32,6 +35,7 @@ Bili-favorites-backup（BFB）是一个面向云盘归档的B站收藏夹持续�
 - 持续发现多个账号、多个收藏夹中的新增与状态变化。
 - 使用固定版本BBDown与aria2完成下载、分P识别和中断恢复。
 - 通过AList WebDAV上传，并在远端文件真正可见后确认备份完成。
+- 使用本地归档库统一浏览当前与已停用收藏夹中的历史归档。
 
 ## 适合什么场景
 
@@ -50,7 +54,7 @@ Bili-favorites-backup（BFB）是一个面向云盘归档的B站收藏夹持续�
 
 1. 第一次使用：[项目定位](/guide/introduction)与[5分钟Docker部署](/guide/docker)
 2. 准备上传：[连接AList](/alist/overview)
-3. 了解任务行为：[整体运行流程](/features/workflow)
+3. 浏览已保存内容：[本地归档库](/features/archive-library)与[归档播放器](/features/player)
 4. 日常维护：[更新镜像](/operations/update)与[迁移、备份和回滚](/operations/migration)
 5. 遇到异常：[问题排查](/troubleshooting/docker-hub)
 

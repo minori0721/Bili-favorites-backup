@@ -154,6 +154,71 @@ test("tracked favorite detail is served from SQLite with history and original me
     const cookie = login.headers.get("set-cookie")?.split(";", 1)[0];
     assert.ok(cookie);
 
+    const unauthorizedLibrary = await fetch(`${base}/api/archive-library/navigation`);
+    assert.equal(unauthorizedLibrary.status, 401);
+    const libraryNavigationResponse = await fetch(`${base}/api/archive-library/navigation`, { headers: { Cookie: cookie } });
+    assert.equal(libraryNavigationResponse.status, 200);
+    const libraryNavigation: any = await libraryNavigationResponse.json();
+    assert.equal(libraryNavigation.data.summary.total, 3);
+    assert.equal(libraryNavigation.data.summary.playable, 2);
+    assert.equal(libraryNavigation.data.accounts[0].folders[0].title, "详情测试");
+
+    const libraryItemsResponse = await fetch(
+      `${base}/api/archive-library/items?scope=folder&userId=detail-user&mediaId=1&pageSize=2`,
+      { headers: { Cookie: cookie } }
+    );
+    assert.equal(libraryItemsResponse.status, 200);
+    const libraryItems: any = await libraryItemsResponse.json();
+    assert.deepEqual(libraryItems.data.items.map((item: any) => item.bvid), ["BVDETAILLOST", "BVDETAILACTIVE"]);
+    assert.equal(libraryItems.data.hasMore, true);
+    assert.equal(JSON.stringify(libraryItems).includes("/archive/"), false);
+    const librarySecondResponse = await fetch(
+      `${base}/api/archive-library/items?scope=folder&userId=detail-user&mediaId=1&pageSize=2&cursor=${encodeURIComponent(libraryItems.data.nextCursor)}`,
+      { headers: { Cookie: cookie } }
+    );
+    const librarySecond: any = await librarySecondResponse.json();
+    assert.equal(librarySecondResponse.status, 200);
+    assert.deepEqual(librarySecond.data.items.map((item: any) => item.bvid), ["BVDETAILHISTORY"]);
+
+    const staleCursorResponse = await fetch(
+      `${base}/api/archive-library/items?scope=folder&userId=detail-user&mediaId=1&pageSize=2&filter=issue&cursor=${encodeURIComponent(libraryItems.data.nextCursor)}`,
+      { headers: { Cookie: cookie } }
+    );
+    assert.equal(staleCursorResponse.status, 400);
+    const invalidLibraryResponse = await fetch(`${base}/api/archive-library/items?scope=invalid`, { headers: { Cookie: cookie } });
+    assert.equal(invalidLibraryResponse.status, 400);
+
+    const libraryDetailResponse = await fetch(
+      `${base}/api/archive-library/items/BVDETAILLOST?scope=folder&userId=detail-user&mediaId=1`,
+      { headers: { Cookie: cookie } }
+    );
+    assert.equal(libraryDetailResponse.status, 200);
+    const libraryDetail: any = await libraryDetailResponse.json();
+    assert.equal(libraryDetail.data.title, "归档前标题");
+    assert.equal(libraryDetail.data.memberships.length, 1);
+    assert.equal(JSON.stringify(libraryDetail).includes("/archive/"), false);
+
+    const libraryQueueResponse = await fetch(
+      `${base}/api/archive-library/playback-queue?scope=folder&userId=detail-user&mediaId=1&focusBvid=BVDETAILLOST&pageSize=50`,
+      { headers: { Cookie: cookie } }
+    );
+    assert.equal(libraryQueueResponse.status, 200);
+    const libraryQueue: any = await libraryQueueResponse.json();
+    assert.equal(libraryQueue.data.mode, "library");
+    assert.deepEqual(libraryQueue.data.items.map((item: any) => item.bvid), ["BVDETAILLOST", "BVDETAILACTIVE"]);
+    assert.deepEqual(libraryQueue.data.items[0].source, {
+      userId: "detail-user", mediaId: 1, folderTitle: "详情测试",
+    });
+    assert.equal(JSON.stringify(libraryQueue).includes("/archive/"), false);
+
+    const librarySearchResponse = await fetch(
+      `${base}/api/archive-library/playback-search?scope=folder&userId=detail-user&mediaId=1&queueQ=${encodeURIComponent("归档 UP")}&pageSize=50`,
+      { headers: { Cookie: cookie } }
+    );
+    assert.equal(librarySearchResponse.status, 200);
+    const librarySearch: any = await librarySearchResponse.json();
+    assert.deepEqual(librarySearch.data.items.map((item: any) => item.bvid), ["BVDETAILLOST"]);
+
     const detailResponse = await fetch(`${base}/api/users/detail-user/favorites/1/detail-items?page=1&pageSize=20&filter=all`, {
       headers: { Cookie: cookie },
     });

@@ -107,27 +107,41 @@ export const logManager = new LogManager();
 
 function stripTimestampPrefix(line: string) {
   return line
-    .replace(/^\[\d{4}-\d{2}-\d{2} [^\]]+\]\s*-\s*/, "")
+    .replace(/^\s*\[\d{4}-\d{2}-\d{2} [^\]]+\]\s*-\s*/, "")
     .trim();
 }
 
-export interface BBDownSelectedVideoStream {
+export interface BBDownSelectedVideoSelection {
   pageIndex: number;
   bilibiliQuality: string;
-  resolution: string;
-  codec: string;
 }
 
-export function parseBBDownSelectedVideoLine(line: string) {
+export interface BBDownSelectedVideoDiagnostics {
+  bilibiliQuality: string;
+  legacyResolution?: string;
+  codec?: string;
+  bitrate?: string;
+  estimatedSize?: string;
+}
+
+export function parseBBDownSelectedVideoLine(line: string): BBDownSelectedVideoDiagnostics | null {
   const normalized = stripTimestampPrefix(String(line || ""));
-  const match = normalized.match(/\[视频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
-  if (!match) return null;
-  const bilibiliQuality = normalizeBilibiliQualityLabel(match[1]);
+  if (!/^\[视频\]\s*\[/.test(normalized)) return null;
+  const fields = [...normalized.matchAll(/\[([^\]]*)\]/g)].map((match) => match[1].trim());
+  if (fields[0] !== "视频") return null;
+  const bilibiliQuality = normalizeBilibiliQualityLabel(fields[1]);
   if (!bilibiliQuality) return null;
+  const details = fields.slice(2);
+  const legacyResolution = details.find((field) => /^\d{2,5}\s*[x×]\s*\d{2,5}$/i.test(field));
+  const codec = details.find((field) => /^(?:AVC1?|HEVC|H\.?26[456]|AV1|VP9|VVC)$/i.test(field));
+  const bitrate = details.find((field) => /^\d+(?:\.\d+)?\s*[KMG]?bps$/i.test(field));
+  const estimatedSize = details.find((field) => /^~?\s*\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB)$/i.test(field));
   return {
     bilibiliQuality,
-    resolution: match[2].trim(),
-    codec: match[3].trim(),
+    ...(legacyResolution ? { legacyResolution } : {}),
+    ...(codec ? { codec: codec.toUpperCase() } : {}),
+    ...(bitrate ? { bitrate } : {}),
+    ...(estimatedSize ? { estimatedSize } : {}),
   };
 }
 
@@ -136,13 +150,13 @@ export function createBBDownSelectionTracker(defaultPageIndex?: number) {
     ? Number(defaultPageIndex)
     : undefined;
   return {
-    consume(line: string): BBDownSelectedVideoStream | null {
+    consume(line: string): BBDownSelectedVideoSelection | null {
       const normalized = stripTimestampPrefix(String(line || ""));
       const pageMatch = /开始解析P0*(\d+)/i.exec(normalized);
       if (pageMatch) currentPageIndex = Number(pageMatch[1]);
       const selected = parseBBDownSelectedVideoLine(normalized);
       if (!selected || !currentPageIndex) return null;
-      return { pageIndex: currentPageIndex, ...selected };
+      return { pageIndex: currentPageIndex, bilibiliQuality: selected.bilibiliQuality };
     },
   };
 }
@@ -167,12 +181,18 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
       continue;
     }
 
-    // Selected stream line: [视频] [1080P 高清] [1080x1920] [HEVC] ...
+    // Selected stream line: [视频] [4K 超清] [HEVC] [3321 kbps] [~8.92 MB]
     const selectedStream = parseBBDownSelectedVideoLine(normalized);
     if (selectedStream) {
+      const details = [
+        selectedStream.bilibiliQuality,
+        selectedStream.legacyResolution,
+        selectedStream.codec,
+        selectedStream.bitrate,
+      ].filter(Boolean).join(" ");
       entries.push({
         timestamp: now(), type: "download", level: "info",
-        summary: `已选画质: ${selectedStream.bilibiliQuality} ${selectedStream.resolution} ${selectedStream.codec}`,
+        summary: `已选画质: ${details}`,
         raw: line, bvid,
       });
       continue;

@@ -13,6 +13,7 @@
 - 下架清单由SQLite按`missing/uploaded`服务端筛选，使用`last_seen_at + bvid + media_id`键集游标；前端两个标签各自缓存节点和游标，翻页不重建旧卡片。
 - `unavailable_cover_backfill_v2`只记录一次性封面回填数量摘要；v2会重试曾因旧HTTP封面地址失败的v1数据，完整状态或封面导入会删除当前标记并重新异步检查。
 - `qualityProfile`继续保存下载请求配置，但播放器不展示它。新下载从BBDown的`[视频]`选择行取得真实B站档位，按CID写入下载清单`selectedStreams`，上传时保存为`filenameMetadata.bilibiliQuality`；旧清单没有该字段时省略B站档位，不按尺寸猜测。
+- BBDown 2.0.0真实选择行是`[视频][画质][编码][码率][预估大小]`；解析器要求去除时间戳后的正文以`[视频]`开头，按字段内容识别可选编码、码率、大小和旧式分辨率。下载器持久化类型只包含分P序号与规范化B站档位，其余字段仅用于日志诊断。
 - `remote_files.actual_*`和`mediaMetadata`表示ffprobe或浏览器确认的实际媒体参数。播放信息固定按“P序号 · B站档位 · 实际画质 · 精确尺寸与方向 · 实际编码 · 传输方式”排列，例如`P1 · B站4K · 实际1772p · 1772×3840 竖屏 · HEVC · 网盘直连`。
 - 浏览器媒体上报只接受宽高和时长，使用当前fileId、大小、路径及更新时间组成的fingerprint；ffprobe结果优先且原位更新不改变fileId。
 - 播放传输attempt状态只在内存保留5分钟；AList入口只返回受保护的302，不进入播放队列JSON。
@@ -24,6 +25,10 @@
 - `actualQualityLabel()`不再把非标准短边向下归档；真实短边直接形成画质标签，`1772×3840`为`1772p`，不低于50fps时为`1772p60`。播放器同时显示精确尺寸和横屏、竖屏或方形方向。
 - 播放错误策略读取`HTMLMediaElement.error.code`：网络错误最多从直连回退代理一次，解码错误不回退；实际编码优先，旧记录缺少实际编码时仅在内部使用下载编码偏好做保守兼容判断，该偏好不显示为实际编码。
 - 播放delivery视图只把`direct/proxy`视为已确认传输方式；后端`failed`和状态查询异常均显示未知。同一attempt已确认直连后，失败状态不能覆盖它，真正进入代理后才升级为`proxy`。
+- “归档库”入口位于“全量扫描并对账”之后。`/api/archive-library/navigation|items|items/:bvid|playback-queue|playback-search`全部受管理员Session保护，只读取SQLite和`users.json`，不调用B站或AList列表接口，也不返回远端路径、Cookie、AList凭据或临时签名URL。
+- 聚合范围按BVID去重，收藏夹范围按当前关系、`favOrder`和历史`lastSeenAt`稳定排序；键集游标包含查询上下文摘要。播放器`library`模式保留基础目录查询，侧栏搜索通过`queueQ`继续AND过滤，并使用队列项`source`调用原有文件鉴权接口。
+- 同一BV的最佳来源只比较已验证可播放成品：全分P实际尺寸、实际帧率、完整备份、已验证分P数和确认时间依次降序；全部实际参数未知时不会根据下载目标冒充高画质。手动重试会重新查询当前库队列，允许切换到仍有效的其他来源。
+- 10000个唯一视频、50000条收藏关系的专项用例完整遍历200个键集页面，无重复或遗漏；`EXPLAIN QUERY PLAN`分别命中`idx_relations_library_recent`和`idx_relations_library_folder`。独立Playwright CLI使用系统Edge检查1280×720、390×844和844×390，未调用Codex浏览器插件。
 
 ## 验证命令
 
@@ -38,7 +43,7 @@ npm audit --omit=dev
 npm --prefix docs audit --omit=dev
 ```
 
-本轮完整逻辑套件共230项：229项通过，1项因本机未安装aria2跳过，0项失败。专项回归并行执行时，Windows删除收藏夹详情测试隔离目录曾出现`EBUSY`；单项复跑及后续串行完整回归均通过。浏览器插件按用户明确要求完全不调用，1280×720、390×844和844×390视觉验收记为未执行，不计为代码测试通过。
+本轮完整逻辑套件共238项：237项通过，1项因本机未安装aria2跳过，0项失败。首轮完整回归清理应用烟雾测试隔离目录时曾出现一次Windows `EBUSY`；该用例专项复跑及第二轮完整回归均通过。独立Playwright CLI使用系统Edge完成1280×720、390×844和844×390检查：无横向溢出或控制台错误，无限滚动由50项追加到100项，深页SQLite搜索和`归档库顺序`播放器均验证成功；全程未调用Codex浏览器插件。根生产依赖审计为10项（3项低危、3项中危、4项高危、0项严重），文档站为0项。
 
 阿里云现场只读验证的908条失效视频封面在升级为HTTPS后全部返回`200 image/jpeg`；29个分层样本均可完整下载并由ffprobe解码，12个HTTP/HTTPS对照样本的SHA256完全一致，7个无Cookie/Referer样本均可按BFB参数转换为WebP。验证未写入SQLite、AList或封面目录。
 

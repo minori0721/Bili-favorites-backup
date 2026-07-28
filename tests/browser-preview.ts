@@ -5,7 +5,7 @@ import { testConfig } from "./helpers.js";
 
 const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(process.cwd(), ".test-runtime", "browser-preview"));
 const requestedMode = process.env.BFB_PREVIEW_MODE;
-const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" || requestedMode === "detail" || requestedMode === "playback" ? requestedMode : "healthy";
+const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" || requestedMode === "detail" || requestedMode === "playback" || requestedMode === "archive" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -327,7 +327,7 @@ if (mode === "quality") {
   await fs.promises.writeFile(path.join(runtimeDir, "data", "state.json"), JSON.stringify(state, null, 2));
 }
 
-if (mode === "detail" || mode === "playback") {
+if (mode === "detail" || mode === "playback" || mode === "archive") {
   const now = "2026-07-22T08:30:00.000Z";
   const coverDir = path.join(runtimeDir, "data", "covers");
   await fs.promises.mkdir(coverDir, { recursive: true });
@@ -379,7 +379,7 @@ if (mode === "detail" || mode === "playback") {
     order: number;
     parts: Array<"horizontal" | "vertical">;
   };
-  const extendedPlaybackQueue: PreviewDefinition[] = mode === "playback"
+  const extendedPlaybackQueue: PreviewDefinition[] = mode === "playback" || mode === "archive"
     ? Array.from({ length: 104 }, (_, index) => ({
       bvid: `BVQUEUE${String(index + 1).padStart(3, "0")}`,
       title: index === 7
@@ -468,7 +468,7 @@ if (mode === "detail" || mode === "playback") {
       result: "other_restricted",
     } : undefined,
   }]));
-  const relations = Object.fromEntries(definitions.map((item) => [`preview-user:1:${item.bvid}`, {
+  const relations: Record<string, any> = Object.fromEntries(definitions.map((item) => [`preview-user:1:${item.bvid}`, {
     userId: "preview-user",
     mediaId: 1,
     bvid: item.bvid,
@@ -482,6 +482,26 @@ if (mode === "detail" || mode === "playback") {
     remotePath: item.parts.length ? `/archive/${item.bvid}` : undefined,
     remoteFiles: remoteFilesFor(item),
   }]));
+  if (mode === "archive") {
+    const shared = definitions.find((item) => item.bvid === "BVDETAILLOST")!;
+    relations["preview-user:99:BVDETAILFAILED"] = {
+      ...relations["preview-user:1:BVDETAILFAILED"],
+      mediaId: 99,
+      folderTitle: "已停用的旧归档",
+      activeInFavorite: false,
+      favOrder: undefined,
+      lastSeenAt: "2026-07-18T08:30:00.000Z",
+    };
+    relations["preview-user-2:20:BVDETAILLOST"] = {
+      ...relations["preview-user:1:BVDETAILLOST"],
+      userId: "preview-user-2",
+      mediaId: 20,
+      folderTitle: "第二账号收藏夹",
+      favOrder: 1,
+      activeInFavorite: true,
+      remoteFiles: remoteFilesFor(shared),
+    };
+  }
   const state = {
     schemaVersion: 13,
     processedByUser: {},
@@ -509,10 +529,21 @@ if (mode === "detail" || mode === "playback") {
     uid: 1,
     name: "预览账号",
     cookie: { SESSDATA: "preview", bili_jct: "preview", DedeUserID: "1" },
-    favorites: [{ mediaId: 1, title: "查看详情脱敏预览" }],
+    favorites: [
+      { mediaId: 1, title: "查看详情脱敏预览" },
+      ...(mode === "archive" ? [{ mediaId: 2, title: "尚未扫描的空收藏夹" }] : []),
+    ],
     enabled: false,
     lastLoginAt: now,
-  }];
+  }, ...(mode === "archive" ? [{
+    id: "preview-user-2",
+    uid: 2,
+    name: "第二个脱敏账号",
+    cookie: { SESSDATA: "preview-two", bili_jct: "preview-two", DedeUserID: "2" },
+    favorites: [{ mediaId: 20, title: "第二账号收藏夹" }],
+    enabled: false,
+    lastLoginAt: now,
+  }] : [])];
   await fs.promises.writeFile(path.join(runtimeDir, "data", "config.json"), JSON.stringify(testConfig({
     queuePrefetchLimit: 5,
     alistUrl: `http://127.0.0.1:${davAddress.port}`,
@@ -526,12 +557,12 @@ if (mode === "detail" || mode === "playback") {
 }
 
 process.chdir(runtimeDir);
-process.env.NODE_ENV = mode === "detail" || mode === "playback" ? "test" : "browser-preview";
+process.env.NODE_ENV = mode === "detail" || mode === "playback" || mode === "archive" ? "test" : "browser-preview";
 process.env.ADMIN_PASS = process.env.ADMIN_PASS || "preview-pass";
 process.env.PORT = String(port);
 const appModule = await import("../src/index.js");
 let previewServer: http.Server | undefined;
-if (mode === "detail" || mode === "playback") {
+if (mode === "detail" || mode === "playback" || mode === "archive") {
   previewServer = appModule.app.listen(port, "127.0.0.1");
   await new Promise<void>((resolve) => previewServer!.once("listening", resolve));
 }

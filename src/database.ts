@@ -571,6 +571,10 @@ export class StateDatabase {
             WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending','cleanup_running');
           CREATE INDEX IF NOT EXISTS idx_relations_folder_status ON favorite_relations(user_id, media_id, backup_status, last_seen_at DESC);
           CREATE INDEX IF NOT EXISTS idx_relations_folder_page ON favorite_relations(user_id, media_id, active_in_favorite, fav_order, last_seen_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_relations_library_folder
+            ON favorite_relations(user_id, media_id, active_in_favorite DESC, fav_order, last_seen_at DESC, bvid);
+          CREATE INDEX IF NOT EXISTS idx_relations_library_recent
+            ON favorite_relations(user_id, last_seen_at DESC, bvid, media_id);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_due ON favorite_relations(backup_status, next_remote_check_at);
           CREATE INDEX IF NOT EXISTS idx_relations_user_unavailable_page
             ON favorite_relations(user_id, self_visible, last_seen_at DESC, bvid, media_id);

@@ -77,6 +77,19 @@ import {
   AdminSessionStore,
   buildAdminAuthFingerprint,
 } from "./admin-session.js";
+import {
+  ArchiveLibraryQueryError,
+  getArchiveLibraryItemDetail,
+  getArchiveLibraryNavigation,
+  getArchiveLibraryPlaybackQueue,
+  getArchiveLibraryPlaybackSearch,
+  queryArchiveLibraryItems,
+  type ArchiveLibraryFilter,
+  type ArchiveLibraryQuery,
+  type ArchiveLibraryScope,
+  type ArchiveLibrarySearchScope,
+  type ArchiveLibrarySort,
+} from "./archive-library.js";
 
 ensureAppDirs();
 
@@ -426,6 +439,33 @@ function parsePositiveInteger(value: unknown, fallback: number) {
 
 function normalizePageSize(value: unknown) {
   return Math.min(parsePositiveInteger(value, 20), 50);
+}
+
+function parseArchiveLibraryQuery(query: Record<string, unknown>): Partial<ArchiveLibraryQuery> {
+  const pageSize = query.pageSize === undefined ? 50 : Number(query.pageSize);
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
+    throw new ArchiveLibraryQueryError("Invalid archive page size");
+  }
+  const mediaId = query.mediaId === undefined || query.mediaId === "" ? undefined : Number(query.mediaId);
+  return {
+    scope: String(query.scope || "global") as ArchiveLibraryScope,
+    userId: String(query.userId || "") || undefined,
+    mediaId,
+    query: String(query.q || ""),
+    searchScope: String(query.searchScope || "current") as ArchiveLibrarySearchScope,
+    filter: String(query.filter || "all") as ArchiveLibraryFilter,
+    sort: String(query.sort || "context") as ArchiveLibrarySort,
+    cursor: String(query.cursor || "") || undefined,
+    pageSize,
+  };
+}
+
+function sendArchiveLibraryError(res: express.Response, error: unknown) {
+  if (error instanceof ArchiveLibraryQueryError) {
+    res.status(error.statusCode).json({ success: false, message: error.message });
+    return;
+  }
+  throw error;
 }
 
 function parseFolderDetailFilter(value: unknown): FolderDetailFilter {
@@ -977,6 +1017,89 @@ app.get("/api/users/login/status", (req, res) => {
     return;
   }
   res.json({ success: true, data: { status: current.status, message: current.message } });
+});
+
+app.get("/api/archive-library/navigation", (req, res) => {
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    success: true,
+    data: getArchiveLibraryNavigation(stateManager.getDatabase(), userStore.list()),
+  });
+});
+
+app.get("/api/archive-library/items", (req, res) => {
+  try {
+    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
+    const data = queryArchiveLibraryItems(stateManager.getDatabase(), userStore.list(), input);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ success: true, data });
+  } catch (error) {
+    sendArchiveLibraryError(res, error);
+  }
+});
+
+app.get("/api/archive-library/items/:bvid", (req, res) => {
+  try {
+    const bvid = String(req.params.bvid || "").trim();
+    if (!bvid || bvid.length > 64 || /[\\/\0]/.test(bvid)) {
+      throw new ArchiveLibraryQueryError("Invalid archive BVID");
+    }
+    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
+    const data = getArchiveLibraryItemDetail(stateManager.getDatabase(), userStore.list(), input, bvid);
+    if (!data) {
+      res.status(404).json({ success: false, message: "Archive item not found" });
+      return;
+    }
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ success: true, data });
+  } catch (error) {
+    sendArchiveLibraryError(res, error);
+  }
+});
+
+app.get("/api/archive-library/playback-queue", (req, res) => {
+  try {
+    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
+    const focusBvid = String(req.query.focusBvid || "").trim();
+    const page = req.query.page === undefined ? undefined : Number(req.query.page);
+    if ((focusBvid && (focusBvid.length > 64 || /[\\/\0]/.test(focusBvid)))
+      || (page !== undefined && (!Number.isInteger(page) || page < 1))) {
+      throw new ArchiveLibraryQueryError("Invalid archive playback request");
+    }
+    const data = getArchiveLibraryPlaybackQueue(stateManager.getDatabase(), userStore.list(), input, {
+      focusBvid: focusBvid || undefined,
+      page,
+      pageSize: input.pageSize,
+    });
+    if (!data) {
+      res.status(404).json({ success: false, code: "PLAYBACK_NOT_AVAILABLE", message: "该归档当前不可播放" });
+      return;
+    }
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ success: true, data });
+  } catch (error) {
+    sendArchiveLibraryError(res, error);
+  }
+});
+
+app.get("/api/archive-library/playback-search", (req, res) => {
+  try {
+    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
+    const query = String(req.query.queueQ || "").trim();
+    const page = req.query.page === undefined ? 1 : Number(req.query.page);
+    if (!query || query.length > 80 || query.includes("\0") || !Number.isInteger(page) || page < 1) {
+      throw new ArchiveLibraryQueryError("Invalid archive playback search");
+    }
+    const data = getArchiveLibraryPlaybackSearch(stateManager.getDatabase(), userStore.list(), input, {
+      query,
+      page,
+      pageSize: input.pageSize,
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ success: true, data });
+  } catch (error) {
+    sendArchiveLibraryError(res, error);
+  }
 });
 
 app.get("/api/users/:id/favorites", asyncHandler(async (req, res) => {

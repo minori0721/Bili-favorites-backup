@@ -107,6 +107,12 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /visibilitychange/);
   assert.match(appHtml, /if \(document\.hidden\) stopQueueBoardPolling\(\)/);
   assert.match(appHtml, /id="playbackModal"/);
+  assert.match(appHtml, /id="archiveLibraryBtn"/);
+  assert.match(appHtml, /id="archiveLibraryModal"/);
+  assert.match(appHtml, /function openArchiveLibraryPlayback\(bvid, trigger\)/);
+  assert.match(appHtml, /\/api\/archive-library\/navigation/);
+  assert.match(appHtml, /playbackState\.libraryContext/);
+  assert.match(appHtml, /function playbackFileApiPath\(part, suffix\)/);
   assert.match(appHtml, /id="playbackDeliveryMode"/);
   assert.match(appHtml, /artplayer-5\.4\.0\.js/);
   assert.match(appHtml, /PLAYBACK_STORAGE_KEY = 'bfb-playback-v1'/);
@@ -114,7 +120,8 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /@media \(max-width:720px\), \(hover:none\), \(pointer:coarse\)/);
   assert.match(appHtml, /function syncPlaybackQueueSelection\(options = \{\}\)/);
   assert.match(appHtml, /pageSize: 50/);
-  assert.match(appHtml, /playback-search\?q=/);
+  assert.match(appHtml, /\/playback-search\?/);
+  assert.match(appHtml, /'queueQ=' : 'q='/);
   assert.match(appHtml, /new IntersectionObserver/);
   assert.match(appHtml, /image\.loading = 'lazy'/);
   assert.match(appHtml, /queuePosition/);
@@ -123,6 +130,9 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /referrerpolicy:'no-referrer'/);
   assert.match(appHtml, /let fallbackStarted = false/);
   assert.match(appHtml, /function decidePlaybackMediaError\(input\)/);
+  const appScript = appHtml.split("<script>")[1]?.split("</script>")[0] || "";
+  assert.ok(appScript.length > 0);
+  assert.doesNotThrow(() => new Function(appScript));
   assert.match(appHtml, /function resolvePlaybackDeliveryViewStatus\(current,reported,final\)/);
   assert.match(appHtml, /browserSupportsHevc:browserSupportsHevc\(art\.video\)/);
   assert.match(appHtml, /if \(part\.bilibiliQuality\) labels\.push\('B站'/);
