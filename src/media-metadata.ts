@@ -18,6 +18,23 @@ export function normalizeActualCodec(value: unknown) {
   return codec.toUpperCase();
 }
 
+export function normalizeBilibiliQualityLabel(value: unknown) {
+  const label = String(value || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!label) return undefined;
+  if (/杜比视界|dolby\s*vision/i.test(label)) return "杜比视界";
+  if (/\bHDR\b|HDR\s*真彩/i.test(label)) return "HDR";
+  if (/(?:^|\s)8K(?:\s|$)|4320P/i.test(label)) return "8K";
+  if (/(?:^|\s)4K(?:\s|$)|2160P/i.test(label)) return "4K";
+  if (/1080P.*(?:60|高帧率)|(?:60|高帧率).*1080P/i.test(label)) return "1080P60";
+  if (/1080P\+|1080P.*高码率/i.test(label)) return "1080P+";
+  if (/1080P/i.test(label)) return "1080P";
+  if (/720P.*(?:60|高帧率)|(?:60|高帧率).*720P/i.test(label)) return "720P60";
+  if (/720P/i.test(label)) return "720P";
+  if (/480P/i.test(label)) return "480P";
+  if (/360P/i.test(label)) return "360P";
+  return label.replace(/\s+/g, "").slice(0, 40) || undefined;
+}
+
 export function actualQualityLabel(metadata: Pick<RemoteFileMediaMetadata, "width" | "height" | "fps"> | undefined) {
   if (!metadata) return undefined;
   const width = Number(metadata.width || 0);
@@ -25,11 +42,7 @@ export function actualQualityLabel(metadata: Pick<RemoteFileMediaMetadata, "widt
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return undefined;
   const shortEdge = Math.min(width, height);
   const fps = Number(metadata.fps || 0);
-  if (shortEdge >= 4320) return "4320p";
-  if (shortEdge >= 2160) return "2160p";
-  if (shortEdge >= 1080) return fps >= 50 ? "1080p60" : "1080p";
-  if (shortEdge >= 720) return fps >= 50 ? "720p60" : "720p";
-  return `${Math.max(1, Math.round(shortEdge))}p`;
+  return `${Math.max(1, Math.round(shortEdge))}p${fps >= 50 ? "60" : ""}`;
 }
 
 export function validBrowserMediaMetadata(input: { width: unknown; height: unknown; duration: unknown }) {

@@ -5,7 +5,7 @@ import { tempDir } from "./paths.js";
 import { createBBDownCredentialDirectory } from "./credential-temp.js";
 import { buildCookieString, BiliCookie } from "./users.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
-import { logManager, parseBBDownOutput } from "./logger.js";
+import { createBBDownSelectionTracker, logManager, parseBBDownOutput, type BBDownSelectedVideoStream } from "./logger.js";
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
@@ -18,6 +18,7 @@ import {
   prepareDownloadSession,
   quarantineBrokenAria2Track,
   readDownloadSession,
+  recordDownloadSelectedStream,
   refreshDownloadSessionOutputs,
   type Aria2TrackRecoveryIssue,
   type DownloadSessionKind,
@@ -294,6 +295,19 @@ export async function downloadWithBBDown(
     const command = options.command || process.env.BBDOWN_PATH || "BBDown";
     const commandArgsPrefix = options.commandArgsPrefix || [];
     let appFallbackActive = false;
+    const selectedPageFallback = (commandArgs: string[]) => {
+      const optionIndex = commandArgs.lastIndexOf("--select-page");
+      const selected = optionIndex >= 0 ? String(commandArgs[optionIndex + 1] || "") : "";
+      if (/^\d+$/.test(selected)) return Number(selected);
+      return prepared.manifest.pages.length === 1 ? prepared.manifest.pages[0].index : undefined;
+    };
+    const persistSelectedStream = (stream: BBDownSelectedVideoStream) => {
+      try {
+        recordDownloadSelectedStream(downloadDir, stream);
+      } catch (error) {
+        console.warn(`[BBDown] Failed to persist selected stream ${bvid}: ${safeErrorSummary(error)}`);
+      }
+    };
     const runBBDown = async (commandArgs: string[]) => {
       const runMode: BBDownApiMode = appFallbackActive ? "web" : effectiveApiMode;
       const runArgs = runMode === "web" && effectiveApiMode === "app"
@@ -306,7 +320,13 @@ export async function downloadWithBBDown(
           downloadDir,
           bvid,
           credentialConfig.sensitiveValues,
-          { effectiveApiMode: runMode, onApiReady: options.onApiReady, accountUid: String(cookie.DedeUserID || "") }
+          {
+            effectiveApiMode: runMode,
+            onApiReady: options.onApiReady,
+            accountUid: String(cookie.DedeUserID || ""),
+            defaultPageIndex: selectedPageFallback(runArgs),
+            onSelectedStream: persistSelectedStream,
+          }
         );
       } catch (error: any) {
         if (runMode !== "app" || !error?.appNoVideoInfo) throw error;
@@ -327,7 +347,13 @@ export async function downloadWithBBDown(
           downloadDir,
           bvid,
           credentialConfig.sensitiveValues,
-          { effectiveApiMode: "web", onApiReady: options.onApiReady, accountUid: String(cookie.DedeUserID || "") }
+          {
+            effectiveApiMode: "web",
+            onApiReady: options.onApiReady,
+            accountUid: String(cookie.DedeUserID || ""),
+            defaultPageIndex: selectedPageFallback(commandArgs),
+            onSelectedStream: persistSelectedStream,
+          }
         );
       }
     };
@@ -733,7 +759,13 @@ function runCommand(
   cwd: string,
   bvid: string,
   sensitiveValues: string[],
-  options: { effectiveApiMode: BBDownApiMode; onApiReady?: (mode: BBDownApiMode) => void; accountUid?: string }
+  options: {
+    effectiveApiMode: BBDownApiMode;
+    onApiReady?: (mode: BBDownApiMode) => void;
+    accountUid?: string;
+    defaultPageIndex?: number;
+    onSelectedStream?: (stream: BBDownSelectedVideoStream) => void;
+  }
 ) {
   return new Promise<void>((resolve, reject) => {
     if (shutdownRequested) {
@@ -758,6 +790,7 @@ function runCommand(
     let riskSignalSeen = false;
     let appNoVideoInfoSeen = false;
     let readySignalSeen = false;
+    const selectionTracker = createBBDownSelectionTracker(options.defaultPageIndex);
 
     const rawSimpleHiddenPatterns = [
       /^BBDown version/i,
@@ -890,6 +923,10 @@ function runCommand(
 
       const visibleLines = lines.filter((line) => !consumeSignal(line));
       if (visibleLines.length === 0) return;
+      for (const line of visibleLines) {
+        const selected = selectionTracker.consume(line);
+        if (selected) options.onSelectedStream?.(selected);
+      }
       const visibleText = visibleLines.join("\n");
       stdoutAll += `${visibleText}\n`;
       process.stdout.write(`${visibleText}\n`);

@@ -177,6 +177,56 @@ test("stream upload sends exact length, MIME and ownCloud timestamps without chu
   }
 });
 
+test("upload result preserves selected Bilibili quality and actual media metadata", async () => {
+  const runtime = await createTestDir("upload-media-metadata");
+  const server = await startWebDavServer();
+  try {
+    await fs.promises.writeFile(path.join(runtime, "sample.mp4"), Buffer.from("media-metadata"));
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      verificationDelaysMs: [0],
+      log: noopLog,
+      filenameMetadataByPath: {
+        "sample.mp4": {
+          pageIndex: 1,
+          cid: 501,
+          bilibiliQuality: "1080P60",
+          dfn: "1080p60",
+          videoCodecs: "HEVC",
+          mediaMetadata: {
+            width: 1080,
+            height: 1920,
+            duration: 30,
+            fps: 60,
+            codec: "HEVC",
+            source: "ffprobe",
+            observedAt: "2026-07-28T00:00:00.000Z",
+          },
+        },
+      },
+    });
+    assert.deepEqual(result.files[0].filenameMetadata, {
+      pageIndex: 1,
+      cid: 501,
+      bilibiliQuality: "1080P60",
+      dfn: "1080p60",
+      videoCodecs: "HEVC",
+    });
+    assert.deepEqual(result.files[0].mediaMetadata, {
+      width: 1080,
+      height: 1920,
+      duration: 30,
+      fps: 60,
+      codec: "HEVC",
+      source: "ffprobe",
+      observedAt: "2026-07-28T00:00:00.000Z",
+    });
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("the global upload limiter spaces concurrent PUT starts", async () => {
   let now = 0;
   const sleeps: number[] = [];

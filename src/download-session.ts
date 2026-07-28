@@ -6,7 +6,7 @@ import { isBBDownCredentialDirectoryName } from "./credential-temp.js";
 import type { AppConfig } from "./config.js";
 import type { QualityArtifactProfile } from "./quality-artifact.js";
 import { writeJsonFile } from "./storage.js";
-import { parseFrameRate } from "./media-metadata.js";
+import { normalizeBilibiliQualityLabel, parseFrameRate } from "./media-metadata.js";
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
@@ -46,6 +46,13 @@ export interface HistoricalOutputRecord extends DownloadOutputRecord {
   uploadedTargets?: string[];
 }
 
+export interface DownloadSelectedStreamRecord {
+  pageIndex: number;
+  cid: number;
+  bilibiliQuality: string;
+  observedAt: string;
+}
+
 export interface DownloadSessionManifest {
   schemaVersion: 1;
   sessionId: string;
@@ -68,6 +75,7 @@ export interface DownloadSessionManifest {
   publishedAt?: number;
   status: DownloadSessionStatus;
   pages: DownloadPageSnapshot[];
+  selectedStreams?: DownloadSelectedStreamRecord[];
   outputs: DownloadOutputRecord[];
   history: HistoricalOutputRecord[];
   qualityUpgrade?: {
@@ -167,6 +175,7 @@ export function readDownloadSession(downloadDir: string): DownloadSessionManifes
     if (parsed?.schemaVersion !== 1 || !parsed.bvid || !Array.isArray(parsed.pages)) return null;
     parsed.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(parsed.outputs);
     parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
+    parsed.selectedStreams = normalizeSelectedStreams(parsed.selectedStreams);
     return parsed;
   } catch {
     return null;
@@ -191,6 +200,23 @@ function normalizeManifestOutputPaths<T extends { relativePath: string }>(value:
     outputs.push({ ...(output as T), relativePath });
   }
   return outputs;
+}
+
+function normalizeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const selected = new Map<number, DownloadSelectedStreamRecord>();
+  for (const item of value) {
+    const pageIndex = Number((item as any)?.pageIndex);
+    const cid = Number((item as any)?.cid);
+    const bilibiliQuality = normalizeBilibiliQualityLabel((item as any)?.bilibiliQuality);
+    if (!Number.isInteger(pageIndex) || pageIndex < 1 || !Number.isInteger(cid) || cid < 1 || !bilibiliQuality) continue;
+    const rawObservedAt = String((item as any)?.observedAt || "");
+    const observedAt = Number.isFinite(Date.parse(rawObservedAt)) ? new Date(rawObservedAt).toISOString() : nowIso();
+    selected.set(cid, { pageIndex, cid, bilibiliQuality, observedAt });
+  }
+  return selected.size > 0
+    ? [...selected.values()].sort((left, right) => left.pageIndex - right.pageIndex)
+    : undefined;
 }
 
 export function writeDownloadSession(downloadDir: string, manifest: DownloadSessionManifest) {
@@ -792,6 +818,27 @@ function listFilesSync(rootDir: string) {
   return files;
 }
 
+export function recordDownloadSelectedStream(
+  downloadDir: string,
+  input: { pageIndex: number; bilibiliQuality: string }
+) {
+  const manifest = readDownloadSession(downloadDir);
+  if (!manifest) return false;
+  const page = manifest.pages.find((candidate) => candidate.index === Number(input.pageIndex));
+  const bilibiliQuality = normalizeBilibiliQualityLabel(input.bilibiliQuality);
+  if (!page || !bilibiliQuality) return false;
+  const selected = new Map((manifest.selectedStreams || []).map((item) => [item.cid, item] as const));
+  selected.set(page.cid, {
+    pageIndex: page.index,
+    cid: page.cid,
+    bilibiliQuality,
+    observedAt: nowIso(),
+  });
+  manifest.selectedStreams = [...selected.values()].sort((left, right) => left.pageIndex - right.pageIndex);
+  writeDownloadSession(downloadDir, manifest);
+  return true;
+}
+
 function emptyDownloadRecoverySummary(): DownloadRecoverySummary {
   return {
     resumableSessions: 0,
@@ -928,6 +975,7 @@ export async function readDownloadSessionAsync(downloadDir: string) {
     if (parsed?.schemaVersion !== 1 || !parsed.bvid || !Array.isArray(parsed.pages)) return null;
     parsed.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(parsed.outputs);
     parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
+    parsed.selectedStreams = normalizeSelectedStreams(parsed.selectedStreams);
     return parsed;
   } catch (error: any) {
     if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;

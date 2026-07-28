@@ -70,6 +70,7 @@ export interface RemoteFileFilenameMetadata {
   videoDate?: number;
   cid?: number;
   pageIndex?: number;
+  bilibiliQuality?: string;
   dfn?: string;
   videoCodecs?: string;
 }

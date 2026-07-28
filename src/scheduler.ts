@@ -3007,6 +3007,7 @@ export class SyncScheduler {
       const relativePath = output.relativePath.replace(/\\/g, "/");
       if (!selected.has(relativePath)) continue;
       const page = manifest.pages.find((candidate) => candidate.cid === output.cid);
+      const selectedStream = manifest.selectedStreams?.find((candidate) => candidate.cid === output.cid);
       const codec = normalizeActualCodec(output.videoCodec);
       const mediaMetadata = output.width && output.height ? {
         width: output.width,
@@ -3022,6 +3023,7 @@ export class SyncScheduler {
         videoDate: page?.publishedAt || manifest.publishedAt,
         cid: output.cid,
         pageIndex: output.pageIndex,
+        bilibiliQuality: selectedStream?.bilibiliQuality,
         dfn: actualQualityLabel(mediaMetadata),
         videoCodecs: codec,
         mediaMetadata,

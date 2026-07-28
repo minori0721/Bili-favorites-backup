@@ -8,7 +8,7 @@ import type express from "express";
 import type { AppConfig } from "./config.js";
 import type { StateDatabase } from "./database.js";
 import type { FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
-import { actualQualityLabel, normalizeActualCodec } from "./media-metadata.js";
+import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
 
 export type PlaybackUnavailableReason = "not_verified" | "awaiting_verification" | "no_playable_media";
 
@@ -27,6 +27,7 @@ export interface PlaybackPart {
   size?: number;
   requestedQuality?: string;
   requestedCodec?: string;
+  bilibiliQuality?: string;
   actualQuality?: string;
   actualWidth?: number;
   actualHeight?: number;
@@ -133,6 +134,7 @@ function markPlaybackDelivery(
   const previous = playbackDeliveries.get(key);
   if (previous && previous.fileId !== input.fileId) return;
   if (previous?.status === "proxy" && status !== "proxy") return;
+  if (previous?.status === "direct" && status !== "proxy") return;
   playbackDeliveries.set(key, {
     ownerHash: playbackOwnerHash(input.ownerKey),
     userId: input.userId,
@@ -325,6 +327,7 @@ function buildQueueItem(
       size: row.expectedSize,
       requestedQuality: String(qualityProfile.quality || "") || undefined,
       requestedCodec: String(qualityProfile.encoding || "") || undefined,
+      bilibiliQuality: normalizeBilibiliQualityLabel(file.filenameMetadata?.bilibiliQuality),
       actualQuality,
       actualWidth: row.actualWidth,
       actualHeight: row.actualHeight,

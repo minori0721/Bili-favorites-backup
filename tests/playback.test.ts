@@ -67,7 +67,7 @@ function playbackState(): StateFile {
       width: 1920, height: 1080, duration: 120, fps: 60, codec: "h264",
       source: "ffprobe", observedAt: now,
     },
-    filenameMetadata: { pageIndex: 1, cid: 301, dfn: "1080P", videoCodecs: "AVC" },
+    filenameMetadata: { pageIndex: 1, cid: 301, bilibiliQuality: "1080P60", dfn: "1080P", videoCodecs: "AVC" },
   });
   const p2a = remoteFile("合集_P2-a.mp4", {
     path: "/archive/BVPLAY003/合集_P2-a.mp4",
@@ -276,6 +276,7 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
     assert.deepEqual({
       requestedQuality: page.items[0].parts[0].requestedQuality,
       requestedCodec: page.items[0].parts[0].requestedCodec,
+      bilibiliQuality: page.items[0].parts[0].bilibiliQuality,
       actualQuality: page.items[0].parts[0].actualQuality,
       actualWidth: page.items[0].parts[0].actualWidth,
       actualHeight: page.items[0].parts[0].actualHeight,
@@ -286,6 +287,7 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
     }, {
       requestedQuality: "4K",
       requestedCodec: "HEVC",
+      bilibiliQuality: "1080P60",
       actualQuality: "1080p60",
       actualWidth: 1920,
       actualHeight: 1080,
@@ -778,6 +780,10 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
     const attemptId = "0123456789abcdef0123456789abcdef";
     const directTracked = await fetch(`${proxyBase}/stream?attempt=${attemptId}`, { redirect: "manual" });
     assert.equal(directTracked.status, 302);
+    assert.equal(getPlaybackDeliveryStatus("test-owner", "u1", 10, attemptId).status, "direct");
+    mode = "error";
+    const failedProxyAfterDirect = await fetch(`${proxyBase}/stream?attempt=${attemptId}&forceProxy=1`);
+    assert.equal(failedProxyAfterDirect.status, 502);
     assert.equal(getPlaybackDeliveryStatus("test-owner", "u1", 10, attemptId).status, "direct");
     mode = "normal";
     const proxiedTracked = await fetch(`${proxyBase}/stream?attempt=${attemptId}&forceProxy=1`);

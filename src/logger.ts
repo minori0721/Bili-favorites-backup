@@ -4,6 +4,7 @@ import path from "node:path";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
+import { normalizeBilibiliQualityLabel } from "./media-metadata.js";
 
 export interface LogEntry {
   timestamp: string;
@@ -110,6 +111,42 @@ function stripTimestampPrefix(line: string) {
     .trim();
 }
 
+export interface BBDownSelectedVideoStream {
+  pageIndex: number;
+  bilibiliQuality: string;
+  resolution: string;
+  codec: string;
+}
+
+export function parseBBDownSelectedVideoLine(line: string) {
+  const normalized = stripTimestampPrefix(String(line || ""));
+  const match = normalized.match(/\[视频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
+  if (!match) return null;
+  const bilibiliQuality = normalizeBilibiliQualityLabel(match[1]);
+  if (!bilibiliQuality) return null;
+  return {
+    bilibiliQuality,
+    resolution: match[2].trim(),
+    codec: match[3].trim(),
+  };
+}
+
+export function createBBDownSelectionTracker(defaultPageIndex?: number) {
+  let currentPageIndex = Number.isInteger(defaultPageIndex) && Number(defaultPageIndex) > 0
+    ? Number(defaultPageIndex)
+    : undefined;
+  return {
+    consume(line: string): BBDownSelectedVideoStream | null {
+      const normalized = stripTimestampPrefix(String(line || ""));
+      const pageMatch = /开始解析P0*(\d+)/i.exec(normalized);
+      if (pageMatch) currentPageIndex = Number(pageMatch[1]);
+      const selected = parseBBDownSelectedVideoLine(normalized);
+      if (!selected || !currentPageIndex) return null;
+      return { pageIndex: currentPageIndex, ...selected };
+    },
+  };
+}
+
 /** Parse structured info from a chunk of BBDown stdout lines */
 export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: LogEntry[], unmatched: string[] } {
   const entries: LogEntry[] = [];
@@ -131,11 +168,11 @@ export function parseBBDownOutput(rawChunk: string, bvid: string): { entries: Lo
     }
 
     // Selected stream line: [视频] [1080P 高清] [1080x1920] [HEVC] ...
-    const streamMatch = normalized.match(/\[视频\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]/);
-    if (streamMatch) {
+    const selectedStream = parseBBDownSelectedVideoLine(normalized);
+    if (selectedStream) {
       entries.push({
         timestamp: now(), type: "download", level: "info",
-        summary: `已选画质: ${streamMatch[1]} ${streamMatch[2]} ${streamMatch[3]}`,
+        summary: `已选画质: ${selectedStream.bilibiliQuality} ${selectedStream.resolution} ${selectedStream.codec}`,
         raw: line, bvid,
       });
       continue;

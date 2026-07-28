@@ -199,6 +199,32 @@ test("tracked favorite detail is served from SQLite with history and original me
     assert.deepEqual(queueJson.data.items.map((item: any) => item.queuePosition), [1, 2]);
     assert.equal(JSON.stringify(queueJson).includes("/archive/"), false);
 
+    const metadataPart = queueJson.data.items[0].parts[0];
+    const metadataResponse = await fetch(`${base}/api/users/detail-user/favorites/1/playback/files/${metadataPart.fileId}/media-metadata`, {
+      method: "PUT",
+      headers: { Cookie: cookie, "Content-Type": "application/json", Origin: base },
+      body: JSON.stringify({ fingerprint: metadataPart.fingerprint, width: 1772, height: 3840, duration: 12.5 }),
+    });
+    assert.equal(metadataResponse.status, 200);
+    const metadataJson: any = await metadataResponse.json();
+    assert.equal(metadataJson.data.actualQuality, "1772p");
+    assert.deepEqual({
+      width: metadataJson.data.mediaMetadata.width,
+      height: metadataJson.data.mediaMetadata.height,
+      source: metadataJson.data.mediaMetadata.source,
+    }, { width: 1772, height: 3840, source: "browser" });
+
+    const refreshedQueueResponse = await fetch(`${base}/api/users/detail-user/favorites/1/playback-queue?focusBvid=BVDETAILLOST&pageSize=30`, {
+      headers: { Cookie: cookie },
+    });
+    const refreshedQueueJson: any = await refreshedQueueResponse.json();
+    const refreshedPart = refreshedQueueJson.data.items[0].parts[0];
+    assert.deepEqual({
+      actualQuality: refreshedPart.actualQuality,
+      actualWidth: refreshedPart.actualWidth,
+      actualHeight: refreshedPart.actualHeight,
+    }, { actualQuality: "1772p", actualWidth: 1772, actualHeight: 3840 });
+
     const invalidDelivery = await fetch(`${base}${queueJson.data.items[0].parts[0].streamUrl}?delivery=direct`, {
       headers: { Cookie: cookie },
     });

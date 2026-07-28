@@ -68,7 +68,7 @@ import {
   resolvePlaybackFile,
   streamPlaybackFile,
 } from "./playback.js";
-import { validBrowserMediaMetadata } from "./media-metadata.js";
+import { actualQualityLabel, validBrowserMediaMetadata } from "./media-metadata.js";
 import { UnavailableCoverBackfill, waitForCoverCacheIdle } from "./cover-cache.js";
 import {
   ADMIN_REMEMBER_TTL_MS,
@@ -1140,7 +1140,13 @@ app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata
       res.status(409).json({ success: false, code: "PLAYBACK_FILE_CHANGED", message: "播放文件记录已变化，请重新打开播放器" });
       return;
     }
-    res.json({ success: true, data: result });
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        actualQuality: actualQualityLabel(result.mediaMetadata),
+      },
+    });
   } catch (error) {
     if (error instanceof PlaybackHttpError) {
       res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });

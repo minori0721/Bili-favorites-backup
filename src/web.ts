@@ -1,4 +1,5 @@
 import { appInfo } from "./app-info.js";
+import { decidePlaybackMediaError, resolvePlaybackDeliveryViewStatus } from "./playback-policy.js";
 
 const appFaviconHref = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -1141,6 +1142,8 @@ function getModals() {
 
 function getAppScript() {
   return `
+    const decidePlaybackMediaError = ${decidePlaybackMediaError.toString()};
+    const resolvePlaybackDeliveryViewStatus = ${resolvePlaybackDeliveryViewStatus.toString()};
     const TEMPLATE_VARS = [
       { key: '<videoTitle>', label: '视频标题' },
       { key: '<ownerName>', label: 'UP主' },
@@ -3349,7 +3352,7 @@ function getAppScript() {
         button.className = 'playback-part-button' + (index === playbackState.partIndex ? ' active' : '');
         button.setAttribute('aria-pressed', String(index === playbackState.partIndex));
         button.textContent = part.label || ('P' + (index + 1));
-        const detail = [playbackQualityLabel(part), part.codec].filter(Boolean).join(' · ');
+        const detail = [playbackQualityLabel(part), playbackCodecLabel(part)].filter(Boolean).join(' · ');
         button.title = detail || button.textContent;
         button.addEventListener('click', () => {
           if (index === playbackState.partIndex) return;
@@ -3872,15 +3875,27 @@ function getAppScript() {
 
     function playbackQualityLabel(part) {
       if (!part) return '';
-      if (part.actualQuality || part.quality) return String(part.actualQuality || part.quality);
-      if (part.requestedQuality) return '目标' + part.requestedQuality + ' · 实际未知';
-      return '实际画质未知';
+      const labels = [];
+      if (part.bilibiliQuality) labels.push('B站' + String(part.bilibiliQuality));
+      const actualQuality = String(part.actualQuality || part.quality || '');
+      labels.push(actualQuality ? '实际' + actualQuality : '实际画质未知');
+      const width = Math.round(Number(part.actualWidth || 0));
+      const height = Math.round(Number(part.actualHeight || 0));
+      if (width > 0 && height > 0) {
+        const orientation = height > width ? '竖屏' : (width > height ? '横屏' : '方形');
+        labels.push(width + '×' + height + ' ' + orientation);
+      }
+      return labels.join(' · ');
+    }
+
+    function playbackCodecLabel(part) {
+      if (!part) return '';
+      return part.codec ? String(part.codec) : '';
     }
 
     function playbackDeliveryLabel() {
       if (playbackState.deliveryStatus === 'direct') return '网盘直连';
       if (playbackState.deliveryStatus === 'proxy') return 'BFB代理';
-      if (playbackState.deliveryStatus === 'failed') return '传输失败';
       if (playbackState.deliveryStatus === 'unknown') return '传输方式未知';
       return '检测传输中';
     }
@@ -3894,12 +3909,11 @@ function getAppScript() {
       const item = currentPlaybackItem();
       const part = currentPlaybackPart();
       const meta = [];
-      if (item) meta.push(safeText(item.upperName, '未知UP'));
       if (part) {
         meta.push(part.label || ('P' + (playbackState.partIndex + 1)));
         meta.push(playbackQualityLabel(part));
-        if (part.codec) meta.push(part.codec);
-        if (part.size) meta.push(formatBytes(Number(part.size)));
+        const codecLabel = playbackCodecLabel(part);
+        if (codecLabel) meta.push(codecLabel);
         meta.push(playbackDeliveryLabel());
       }
       if (item && item.partial) meta.push('部分备份');
@@ -4019,17 +4033,30 @@ function getAppScript() {
           if (token !== playbackState.loadingToken || attemptId !== playbackState.deliveryAttemptId) return;
           const data = await fetchJson(playbackQueueApiPath('/playback/delivery/' + attemptId), { signal:controller.signal });
           if (token !== playbackState.loadingToken || attemptId !== playbackState.deliveryAttemptId) return;
-          playbackState.deliveryStatus = data.status || 'pending';
+          playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+            playbackState.deliveryStatus,
+            data.status || 'pending',
+            false
+          );
           renderPlaybackMetadata();
           if (data.status && data.status !== 'pending') return;
         }
         if (token === playbackState.loadingToken && attemptId === playbackState.deliveryAttemptId) {
-          playbackState.deliveryStatus = 'unknown';
+          playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+            playbackState.deliveryStatus,
+            'unknown',
+            true
+          );
           renderPlaybackMetadata();
         }
       } catch (error) {
-        if (!error || error.name !== 'AbortError') {
-          playbackState.deliveryStatus = 'unknown';
+        if ((!error || error.name !== 'AbortError') && token === playbackState.loadingToken
+          && attemptId === playbackState.deliveryAttemptId) {
+          playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+            playbackState.deliveryStatus,
+            'unknown',
+            true
+          );
           renderPlaybackMetadata();
         }
       } finally {
@@ -4037,13 +4064,59 @@ function getAppScript() {
       }
     }
 
-    function browserActualQuality(width, height) {
-      const shortEdge = Math.min(Number(width || 0), Number(height || 0));
-      if (shortEdge >= 4320) return '4320p';
-      if (shortEdge >= 2160) return '2160p';
-      if (shortEdge >= 1080) return '1080p';
-      if (shortEdge >= 720) return '720p';
-      return shortEdge >= 16 ? Math.round(shortEdge) + 'p' : '';
+    function browserSupportsHevc(video) {
+      if (!video || typeof video.canPlayType !== 'function') return false;
+      try {
+        return Boolean(video.canPlayType('video/mp4; codecs="hvc1"')
+          || video.canPlayType('video/mp4; codecs="hev1"'));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function finalizePlaybackDelivery(attemptId, token) {
+      if (playbackState.deliveryController) playbackState.deliveryController.abort();
+      const controller = new AbortController();
+      playbackState.deliveryController = controller;
+      playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+        playbackState.deliveryStatus,
+        'unknown',
+        true
+      );
+      renderPlaybackMetadata();
+      try {
+        const data = await fetchJson(playbackQueueApiPath('/playback/delivery/' + attemptId), { signal:controller.signal });
+        if (token !== playbackState.loadingToken || attemptId !== playbackState.deliveryAttemptId) return;
+        playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+          playbackState.deliveryStatus,
+          data.status || 'pending',
+          true
+        );
+        renderPlaybackMetadata();
+      } catch (error) {
+        if ((!error || error.name !== 'AbortError') && token === playbackState.loadingToken
+          && attemptId === playbackState.deliveryAttemptId) {
+          playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+            playbackState.deliveryStatus,
+            'unknown',
+            true
+          );
+          renderPlaybackMetadata();
+        }
+      } finally {
+        if (playbackState.deliveryController === controller) playbackState.deliveryController = null;
+      }
+    }
+
+    function showFinalPlaybackError(title, detail, attemptId, token) {
+      playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(
+        playbackState.deliveryStatus,
+        'unknown',
+        true
+      );
+      renderPlaybackMetadata();
+      setPlaybackMessage(title, detail, { retry:true, skip:true });
+      void finalizePlaybackDelivery(attemptId, token);
     }
 
     async function reportPlaybackMediaMetadata(part, art, token, retryAttempt = 0) {
@@ -4068,7 +4141,7 @@ function getAppScript() {
         const metadata = data.mediaMetadata || { width, height, duration, source:'browser' };
         part.actualWidth = Number(metadata.width || width);
         part.actualHeight = Number(metadata.height || height);
-        part.actualQuality = browserActualQuality(part.actualWidth, part.actualHeight);
+        part.actualQuality = String(data.actualQuality || '');
         part.quality = part.actualQuality;
         part.mediaMetadataSource = metadata.source || 'browser';
         playbackState.metadataReported.add(part.fingerprint);
@@ -4110,8 +4183,11 @@ function getAppScript() {
       playbackState.metadataRetryTimers.clear();
       if (playbackState.deliveryController) playbackState.deliveryController.abort();
       playbackState.deliveryController = null;
+      const previousDeliveryStatus = attemptId === playbackState.deliveryAttemptId
+        ? playbackState.deliveryStatus
+        : 'pending';
       playbackState.deliveryAttemptId = attemptId;
-      playbackState.deliveryStatus = forceProxy ? 'proxy' : 'pending';
+      playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(previousDeliveryStatus, 'pending', false);
       destroyCurrentArt();
       updatePlaybackNow();
       void pollPlaybackDelivery(attemptId, token);
@@ -4186,8 +4262,17 @@ function getAppScript() {
         });
         art.on('video:error', () => {
           if (token !== playbackState.loadingToken) return;
-          const isHevc = /hevc|h\.265|h265/i.test(String(part.codec || ''));
-          if (!isHevc && !forceProxy && !fallbackStarted) {
+          const mediaErrorCode = Number(art.video && art.video.error && art.video.error.code || 0);
+          const action = decidePlaybackMediaError({
+            mediaErrorCode,
+            forceProxy,
+            fallbackStarted,
+            actualCodec:part.codec,
+            requestedCodec:part.requestedCodec,
+            browserSupportsHevc:browserSupportsHevc(art.video)
+          });
+          if (action === 'ignore') return;
+          if (action === 'proxy') {
             fallbackStarted = true;
             const failedAt = Number(art.currentTime || 0);
             setPlaybackMessage('网盘直连暂时不可用', '正在切换为 BFB 代理播放。', { retry:false, skip:false });
@@ -4197,12 +4282,34 @@ function getAppScript() {
             }, 0);
             return;
           }
-          setPlaybackMessage(
-            isHevc ? '当前浏览器无法解码HEVC' : '归档视频无法直接播放',
-            isHevc
-              ? '请使用支持HEVC的Edge、Safari、系统浏览器或AList客户端。本项目不会转码视频。'
-              : '文件可能暂时不可见、会话已过期，或当前浏览器不支持此媒体编码。',
-            { retry:true, skip:true }
+          if (action === 'hevc') {
+            const actualHevc = /hevc|h\.265|h265|hev1|hvc1/i.test(String(part.codec || ''));
+            showFinalPlaybackError(
+              actualHevc ? '当前浏览器无法解码HEVC' : '此旧归档可能使用HEVC',
+              actualHevc
+                ? '请使用支持HEVC的Edge、Safari、系统浏览器或AList客户端。本项目不会转码视频。'
+                : '该文件的下载目标为HEVC，但旧记录尚无实际编码。当前浏览器未报告HEVC支持，切换代理也不会改变编码。',
+              attemptId,
+              token
+            );
+            return;
+          }
+          if (action === 'decode') {
+            showFinalPlaybackError(
+              '归档视频解码失败',
+              '当前浏览器无法解码该媒体，或文件使用了尚未识别的编码。BFB代理不会转码视频。',
+              attemptId,
+              token
+            );
+            return;
+          }
+          showFinalPlaybackError(
+            forceProxy ? '归档视频传输失败' : '归档视频无法直接播放',
+            forceProxy
+              ? '网盘直连和BFB代理均未能提供浏览器可播放的媒体数据。'
+              : '文件可能暂时不可见、会话已过期，或当前浏览器不支持此媒体来源。',
+            attemptId,
+            token
           );
         });
         setupMediaSession(item, part);

@@ -122,7 +122,17 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /params\.set\('delivery', 'proxy'\)/);
   assert.match(appHtml, /referrerpolicy:'no-referrer'/);
   assert.match(appHtml, /let fallbackStarted = false/);
-  assert.match(appHtml, /if \(!isHevc && !forceProxy && !fallbackStarted\)/);
+  assert.match(appHtml, /function decidePlaybackMediaError\(input\)/);
+  assert.match(appHtml, /function resolvePlaybackDeliveryViewStatus\(current,reported,final\)/);
+  assert.match(appHtml, /browserSupportsHevc:browserSupportsHevc\(art\.video\)/);
+  assert.match(appHtml, /if \(part\.bilibiliQuality\) labels\.push\('B站'/);
+  assert.doesNotMatch(appHtml, /if \(part\.requestedQuality\) labels\.push/);
+  assert.match(appHtml, /return part\.codec \? String\(part\.codec\) : ''/);
+  assert.doesNotMatch(appHtml, /meta\.push\(safeText\(item\.upperName/);
+  assert.doesNotMatch(appHtml, /if \(part\.size\) meta\.push/);
+  assert.doesNotMatch(appHtml, /return '传输失败'/);
+  assert.match(appHtml, /async function pollPlaybackDelivery[\s\S]*?token === playbackState\.loadingToken[\s\S]*?attemptId === playbackState\.deliveryAttemptId/);
+  assert.match(appHtml, /function showFinalPlaybackError[\s\S]{0,700}resolvePlaybackDeliveryViewStatus/);
   assert.match(appHtml, /id="closePlaybackImmersiveBtn"/);
   assert.match(appHtml, /id="playbackImmersiveQueueBtn"/);
   assert.match(appHtml, /id="playbackMobilePortraitBtn"/);
