@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
+  buildUploadFileMetadataFromSession,
   buildSelectPageArgument,
   cleanupDownloadRecoveryArtifacts,
   cleanupUploadedSessionFiles,
@@ -14,6 +15,8 @@ import {
   quarantineBrokenAria2Track,
   readDownloadSession,
   refreshDownloadSessionOutputs,
+  writeDownloadSession,
+  type DownloadSessionManifest,
 } from "../src/download-session.js";
 import {
   detectAria2TrackRecoveryIssue,
@@ -56,6 +59,132 @@ async function createVideo(filePath: string, seconds = 2) {
     child.on("close", (code) => code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited ${code}`)));
   });
 }
+
+function uploadMetadataManifest(overrides: Partial<DownloadSessionManifest> = {}): DownloadSessionManifest {
+  return {
+    schemaVersion: 1,
+    sessionId: "metadata-session",
+    kind: "quality_upgrade",
+    bvid: "BVMETADATA",
+    accountUid: 1,
+    bbdownCommit: "test",
+    configFingerprint: "fingerprint",
+    configSnapshot: {
+      quality: "4K",
+      encoding: "HEVC",
+      apiMode: "web",
+      hiRes: false,
+      dolby: false,
+      filenameTemplate: "<videoTitle>-<bvid>",
+    },
+    createdAt: "2026-07-29T00:00:00.000Z",
+    updatedAt: "2026-07-29T00:00:00.000Z",
+    snapshotAt: "2026-07-29T00:00:00.000Z",
+    publishedAt: 1_700_000_000,
+    status: "complete",
+    pages: [{ index: 1, cid: 501, title: "P1", duration: 30, publishedAt: 1_700_000_100 }],
+    selectedStreams: [{
+      pageIndex: 1,
+      cid: 501,
+      bilibiliQuality: "4K",
+      observedAt: "2026-07-29T00:00:01.000Z",
+    }],
+    outputs: [{
+      pageIndex: 1,
+      cid: 501,
+      relativePath: "parts\\sample.mp4",
+      size: 1024,
+      duration: 30,
+      videoCodec: "hevc",
+      audioCodec: "aac",
+      width: 1772,
+      height: 3840,
+      frameRate: 60,
+      quickHash: "quick-hash",
+      verifiedAt: "2026-07-29T00:00:02.000Z",
+    }],
+    history: [],
+    ...overrides,
+  };
+}
+
+test("upload metadata is rebuilt from the persistent download session", async () => {
+  const runtime = await createTestDir("upload-metadata-builder");
+  try {
+    writeDownloadSession(runtime, uploadMetadataManifest());
+    const metadata = buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], {
+      requireVerifiedMediaMetadata: true,
+    });
+    assert.deepEqual(metadata?.["parts/sample.mp4"], {
+      publishDate: 1_700_000_000,
+      videoDate: 1_700_000_100,
+      cid: 501,
+      pageIndex: 1,
+      bilibiliQuality: "4K",
+      dfn: "1772p60",
+      videoCodecs: "HEVC",
+      mediaMetadata: {
+        width: 1772,
+        height: 3840,
+        duration: 30,
+        fps: 60,
+        codec: "HEVC",
+        source: "ffprobe",
+        observedAt: "2026-07-29T00:00:02.000Z",
+      },
+    });
+
+    const legacy = uploadMetadataManifest({ selectedStreams: undefined });
+    writeDownloadSession(runtime, legacy);
+    const legacyMetadata = buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], {
+      requireVerifiedMediaMetadata: true,
+    });
+    assert.equal(legacyMetadata?.["parts/sample.mp4"].bilibiliQuality, undefined);
+    assert.equal(legacyMetadata?.["parts/sample.mp4"].dfn, "1772p60");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict upload metadata preflight rejects incomplete quality-upgrade artifacts", async () => {
+  const runtime = await createTestDir("upload-metadata-preflight");
+  const missingRuntime = path.join(runtime, "missing");
+  try {
+    assert.throws(
+      () => buildUploadFileMetadataFromSession(missingRuntime, ["sample.mp4"], { requireVerifiedMediaMetadata: true }),
+      /download session manifest is missing/
+    );
+
+    writeDownloadSession(runtime, uploadMetadataManifest());
+    assert.throws(
+      () => buildUploadFileMetadataFromSession(runtime, ["other.mp4"], { requireVerifiedMediaMetadata: true }),
+      /absent from the download session/
+    );
+
+    const incomplete = uploadMetadataManifest({
+      outputs: [{ ...uploadMetadataManifest().outputs[0], width: undefined }],
+    });
+    writeDownloadSession(runtime, incomplete);
+    assert.throws(
+      () => buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], { requireVerifiedMediaMetadata: true }),
+      /lack verified ffprobe dimensions/
+    );
+    assert.equal(
+      buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"])?.["parts/sample.mp4"].mediaMetadata,
+      undefined
+    );
+
+    writeDownloadSession(runtime, uploadMetadataManifest({
+      outputs: [{ ...uploadMetadataManifest().outputs[0], verifiedAt: "invalid" }],
+    }));
+    assert.throws(
+      () => buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], { requireVerifiedMediaMetadata: true }),
+      /lack verified ffprobe dimensions/
+    );
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
 
 async function inspectRecovery(rootDir: string) {
   return (await inspectDownloadCache(rootDir)).recovery;

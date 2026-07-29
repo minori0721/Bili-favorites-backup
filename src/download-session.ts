@@ -5,8 +5,14 @@ import { spawn } from "node:child_process";
 import { isBBDownCredentialDirectoryName } from "./credential-temp.js";
 import type { AppConfig } from "./config.js";
 import type { QualityArtifactProfile } from "./quality-artifact.js";
+import type { UploadFileMetadata } from "./state.js";
 import { writeJsonFile } from "./storage.js";
-import { normalizeBilibiliQualityLabel, parseFrameRate } from "./media-metadata.js";
+import {
+  actualQualityLabel,
+  normalizeActualCodec,
+  normalizeBilibiliQualityLabel,
+  parseFrameRate,
+} from "./media-metadata.js";
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
@@ -222,6 +228,81 @@ function normalizeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[
 export function writeDownloadSession(downloadDir: string, manifest: DownloadSessionManifest) {
   manifest.updatedAt = nowIso();
   writeJsonFile(downloadSessionPath(downloadDir), manifest);
+}
+
+export function buildUploadFileMetadataFromSession(
+  downloadDir: string,
+  files: string[],
+  options: { requireVerifiedMediaMetadata?: boolean } = {}
+) {
+  const requireVerifiedMediaMetadata = Boolean(options.requireVerifiedMediaMetadata);
+  const manifest = readDownloadSession(downloadDir);
+  if (!manifest) {
+    if (requireVerifiedMediaMetadata) throw new Error("Upload metadata preflight failed: download session manifest is missing");
+    return undefined;
+  }
+
+  const selectedPaths = [...new Set(files.map((file) => file.replace(/\\/g, "/")).filter(Boolean))];
+  if (requireVerifiedMediaMetadata && selectedPaths.length === 0) {
+    throw new Error("Upload metadata preflight failed: output file list is empty");
+  }
+  const requested = new Set(selectedPaths);
+  const matched = new Set<string>();
+  const selectedStreams = new Map((manifest.selectedStreams || []).map((item) => [item.cid, item] as const));
+  const pages = new Map(manifest.pages.map((page) => [page.cid, page] as const));
+  const result: Record<string, UploadFileMetadata> = {};
+  let missingMediaMetadata = 0;
+
+  for (const output of manifest.outputs) {
+    const relativePath = output.relativePath.replace(/\\/g, "/");
+    if (!requested.has(relativePath)) continue;
+    matched.add(relativePath);
+    const width = Number(output.width);
+    const height = Number(output.height);
+    const observedAt = String(output.verifiedAt || "");
+    const hasVerifiedMediaMetadata = Number.isInteger(width)
+      && width > 0
+      && Number.isInteger(height)
+      && height > 0
+      && Number.isFinite(Date.parse(observedAt));
+    if (!hasVerifiedMediaMetadata) missingMediaMetadata += 1;
+
+    const page = pages.get(output.cid);
+    const selectedStream = selectedStreams.get(output.cid);
+    const codec = normalizeActualCodec(output.videoCodec);
+    const mediaMetadata = output.width && output.height ? {
+      width: output.width,
+      height: output.height,
+      duration: output.duration,
+      fps: output.frameRate,
+      codec,
+      source: "ffprobe" as const,
+      observedAt: output.verifiedAt,
+    } : undefined;
+    result[relativePath] = {
+      publishDate: manifest.publishedAt,
+      videoDate: page?.publishedAt || manifest.publishedAt,
+      cid: output.cid,
+      pageIndex: output.pageIndex,
+      bilibiliQuality: selectedStream?.bilibiliQuality,
+      dfn: actualQualityLabel(mediaMetadata),
+      videoCodecs: codec,
+      mediaMetadata,
+    };
+  }
+
+  if (requireVerifiedMediaMetadata) {
+    const missingOutputs = selectedPaths.length - matched.size;
+    if (missingOutputs > 0 || missingMediaMetadata > 0) {
+      const reasons = [
+        missingOutputs > 0 ? `${missingOutputs} output file(s) are absent from the download session` : "",
+        missingMediaMetadata > 0 ? `${missingMediaMetadata} output file(s) lack verified ffprobe dimensions` : "",
+      ].filter(Boolean);
+      throw new Error(`Upload metadata preflight failed: ${reasons.join("; ")}`);
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function ffprobePath() {

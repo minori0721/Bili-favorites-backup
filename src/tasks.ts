@@ -7,7 +7,11 @@ import { BiliCookie } from "./users.js";
 import type { RemoteFileRecord, UploadFileMetadata } from "./state.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath } from "./utils.js";
-import { cleanupUploadedSessionFiles, type DownloadSessionManifest } from "./download-session.js";
+import {
+  buildUploadFileMetadataFromSession,
+  cleanupUploadedSessionFiles,
+  type DownloadSessionManifest,
+} from "./download-session.js";
 import { sanitizeUploadText } from "./upload-health.js";
 import {
   applyQualityArtifactProfile,
@@ -111,6 +115,9 @@ export class QualityUpgradeTask extends Task {
   qualityProfile: QualityArtifactProfile;
   downloadUserId?: string;
   downloadRunner = downloadWithBBDown;
+  uploadRunner = uploadWithAList;
+  verifyRunner = verifyRemoteFiles;
+  moveRunner = moveRemoteFile;
   runId?: string;
   downloadDir?: string;
   outputFiles: string[] = [];
@@ -218,15 +225,19 @@ export class QualityUpgradeTask extends Task {
     console.log(`[Task] Starting quality-upgrade staged upload for ${this.bvid}`);
     this.qualityStage = "upload";
     this.qualityStageLabel = "上传新版到临时目录";
+    const filenameMetadataByPath = buildUploadFileMetadataFromSession(this.downloadDir, this.outputFiles, {
+      requireVerifiedMediaMetadata: true,
+    });
     const targetRemotePath = this.target.remotePath;
     const stageRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
     this.stageRemotePath = stageRemotePath;
-    this.uploadResult = await uploadWithAList(this.downloadDir, stageRemotePath, this.config, {
+    this.uploadResult = await this.uploadRunner(this.downloadDir, stageRemotePath, this.config, {
       cleanupLocal: false,
       files: this.outputFiles,
+      filenameMetadataByPath,
     });
     this.qualityStageLabel = "验证临时新版文件";
-    const stagedVerifyResult = await verifyRemoteFiles(this.config, this.uploadResult.files);
+    const stagedVerifyResult = await this.verifyRunner(this.config, this.uploadResult.files);
     if (!stagedVerifyResult.ok) {
       throw new Error(`New upgraded files missing after staged upload: ${stagedVerifyResult.missing.join(", ")}`);
     }
@@ -261,7 +272,7 @@ export class QualityUpgradeTask extends Task {
           ...oldFile,
           path: joinRemotePath(backupRemotePath, oldFile.name),
         };
-        await moveRemoteFile(this.config, oldFile.path, backupFile.path);
+        await this.moveRunner(this.config, oldFile.path, backupFile.path);
         this.backupFiles.push(backupFile);
         this.onBackupFileMoved?.(this, backupFile);
       }
@@ -269,12 +280,12 @@ export class QualityUpgradeTask extends Task {
       for (let i = 0; i < this.uploadResult.files.length; i += 1) {
         const stagedFile = this.uploadResult.files[i];
         const finalFile = plannedFinalFiles[i];
-        await moveRemoteFile(this.config, stagedFile.path, finalFile.path);
+        await this.moveRunner(this.config, stagedFile.path, finalFile.path);
         this.finalFiles.push(finalFile);
         this.onFinalFileMoved?.(this, finalFile);
       }
       this.qualityStageLabel = "验证正式目录新版文件";
-      const finalVerifyResult = await verifyRemoteFiles(this.config, this.finalFiles);
+      const finalVerifyResult = await this.verifyRunner(this.config, this.finalFiles);
       if (!finalVerifyResult.ok) {
         throw new Error(`Moved upgraded files missing after final rename: ${finalVerifyResult.missing.join(", ")}`);
       }
@@ -283,7 +294,7 @@ export class QualityUpgradeTask extends Task {
         const stagedFile = this.uploadResult.files.find((file) => file.name === finalFile.name);
         if (stagedFile) {
           try {
-            await moveRemoteFile(this.config, finalFile.path, stagedFile.path);
+            await this.moveRunner(this.config, finalFile.path, stagedFile.path);
           } catch (rollbackError) {
             console.warn(`[Task] Failed to roll back upgraded file ${finalFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
@@ -294,7 +305,7 @@ export class QualityUpgradeTask extends Task {
         const oldFile = this.target.oldFiles[i];
         if (oldFile) {
           try {
-            await moveRemoteFile(this.config, backupFile.path, oldFile.path);
+            await this.moveRunner(this.config, backupFile.path, oldFile.path);
           } catch (rollbackError) {
             console.warn(`[Task] Failed to restore backup file ${backupFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }

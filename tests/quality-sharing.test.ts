@@ -7,6 +7,7 @@ import {
   buildQualityArtifactKey,
   qualityArtifactProfileFromConfig,
 } from "../src/quality-artifact.js";
+import { writeDownloadSession, type DownloadOutputRecord, type DownloadSessionManifest } from "../src/download-session.js";
 import { SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
 import { QualityUpgradeDownloadTask, QualityUpgradeTask, type QualityUpgradeTarget } from "../src/tasks.js";
@@ -38,6 +39,58 @@ function user(id: string, uid: number) {
     favorites: [],
     lastLoginAt: "",
   };
+}
+
+function qualityMetadataOutput(overrides: Partial<DownloadOutputRecord> = {}): DownloadOutputRecord {
+  return {
+    pageIndex: 1,
+    cid: 501,
+    relativePath: "new.mp4",
+    size: 1024,
+    duration: 30,
+    videoCodec: "hevc",
+    width: 1080,
+    height: 1920,
+    frameRate: 60,
+    quickHash: "quick-hash",
+    verifiedAt: "2026-07-29T00:00:02.000Z",
+    ...overrides,
+  };
+}
+
+function writeQualityMetadataSession(downloadDir: string, overrides: Partial<DownloadSessionManifest> = {}) {
+  writeDownloadSession(downloadDir, {
+    schemaVersion: 1,
+    sessionId: "quality-metadata-session",
+    kind: "quality_upgrade",
+    bvid: "BVQUALITYMETADATA",
+    accountUid: 1,
+    bbdownCommit: "test",
+    configFingerprint: "fingerprint",
+    configSnapshot: {
+      quality: "4K",
+      encoding: "HEVC",
+      apiMode: "web",
+      hiRes: false,
+      dolby: false,
+      filenameTemplate: "<videoTitle>-<bvid>",
+    },
+    createdAt: "2026-07-29T00:00:00.000Z",
+    updatedAt: "2026-07-29T00:00:00.000Z",
+    snapshotAt: "2026-07-29T00:00:00.000Z",
+    publishedAt: 1_700_000_000,
+    status: "complete",
+    pages: [{ index: 1, cid: 501, title: "P1", duration: 30 }],
+    selectedStreams: [{
+      pageIndex: 1,
+      cid: 501,
+      bilibiliQuality: "1080P60",
+      observedAt: "2026-07-29T00:00:01.000Z",
+    }],
+    outputs: [qualityMetadataOutput()],
+    history: [],
+    ...overrides,
+  });
 }
 
 test("artifact identity ignores API mode but separates output-affecting profiles", () => {
@@ -468,6 +521,154 @@ test("account reassignment preserves every shared target and completed artifacts
   } finally {
     scheduler.stop();
     manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("quality-upgrade staged upload rebuilds metadata and writes actual media proof to SQLite", async () => {
+  const runtime = await createTestDir("quality-metadata-writeback");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const config = testConfig({ bbdownQuality: "4K", bbdownEncoding: "HEVC" });
+  const oldFile = {
+    name: "old.mp4",
+    path: "/backup/u1/1/old.mp4",
+    size: 512,
+    verificationStatus: "verified" as const,
+  };
+  try {
+    manager.recordFavoriteItem("u1", 1, "Favorites", {
+      bvid: "BVQUALITYMETADATA",
+      title: "Metadata video",
+      upperName: "Tester",
+    });
+    manager.markVerifiedUpload("BVQUALITYMETADATA", "/backup/u1/1", [oldFile], "u1", 1);
+    writeQualityMetadataSession(runtime);
+
+    const task = new QualityUpgradeTask("BVQUALITYMETADATA", {}, config, {
+      userId: "u1",
+      mediaId: 1,
+      folderTitle: "Favorites",
+      remotePath: "/backup/u1/1",
+      oldFiles: [oldFile],
+    });
+    task.downloadDir = runtime;
+    task.outputFiles = ["new.mp4"];
+    let receivedMetadata: any;
+    task.uploadRunner = async (_localDir, remotePath, frozenConfig, options) => {
+      receivedMetadata = options.filenameMetadataByPath?.["new.mp4"];
+      const { mediaMetadata, ...filenameMetadata } = receivedMetadata || {};
+      return {
+        remotePath,
+        allVerified: true,
+        files: [{
+          name: "new.mp4",
+          path: `${remotePath}/new.mp4`,
+          size: 1024,
+          qualityProfile: {
+            quality: frozenConfig.bbdownQuality,
+            encoding: frozenConfig.bbdownEncoding,
+            hiRes: frozenConfig.bbdownHiRes,
+            dolby: frozenConfig.bbdownDolby,
+          },
+          filenameMetadata,
+          mediaMetadata,
+          localRelativePath: "new.mp4",
+          verificationStatus: "verified",
+        }],
+      };
+    };
+    task.verifyRunner = async () => ({ ok: true, missing: [] });
+    task.moveRunner = async () => undefined;
+    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => manager.markQualityUpgradeReplacing(
+      task.bvid,
+      "u1",
+      1,
+      {
+        artifactKey: task.artifactKey,
+        stageRemotePath,
+        backupRemotePath,
+        oldRemotePath: "/backup/u1/1",
+        oldFiles: [oldFile],
+      }
+    );
+    task.onBackupFileMoved = (_task, file) => { manager.recordQualityUpgradeBackupFile(task.bvid, "u1", 1, file); };
+    task.onFinalFileMoved = (_task, file) => { manager.recordQualityUpgradeFinalFile(task.bvid, "u1", 1, file); };
+    task.onUploaded = (_task, result) => { manager.finalizeQualityUpgradeRemoteFiles(task.bvid, "u1", 1, result.remotePath, result.files); };
+
+    await task.runUploadStagePhase("run");
+    await task.runReplacePhase("run");
+    assert.equal(manager.completeQualityUpgrade(task.bvid, "u1", 1, "/backup/u1/1", task.finalFiles || []), true);
+
+    assert.deepEqual(receivedMetadata, {
+      publishDate: 1_700_000_000,
+      videoDate: 1_700_000_000,
+      cid: 501,
+      pageIndex: 1,
+      bilibiliQuality: "1080P60",
+      dfn: "1080p60",
+      videoCodecs: "HEVC",
+      mediaMetadata: {
+        width: 1080,
+        height: 1920,
+        duration: 30,
+        fps: 60,
+        codec: "HEVC",
+        source: "ffprobe",
+        observedAt: "2026-07-29T00:00:02.000Z",
+      },
+    });
+
+    const resumedTask = new QualityUpgradeTask("BVQUALITYMETADATA", {}, config, target("u2", 2));
+    resumedTask.downloadDir = runtime;
+    resumedTask.outputFiles = ["new.mp4"];
+    let resumedMetadata: any;
+    resumedTask.uploadRunner = async (_localDir, remotePath, _frozenConfig, options) => {
+      resumedMetadata = options.filenameMetadataByPath?.["new.mp4"];
+      return { remotePath, allVerified: true, files: [] };
+    };
+    resumedTask.verifyRunner = async () => ({ ok: true, missing: [] });
+    await resumedTask.runUploadStagePhase("resumed");
+    assert.deepEqual(resumedMetadata, receivedMetadata);
+
+    const relation = manager.getRelation("u1", 1, task.bvid);
+    assert.equal(relation?.remoteFiles?.[0].filenameMetadata?.bilibiliQuality, "1080P60");
+    assert.deepEqual(relation?.remoteFiles?.[0].mediaMetadata, receivedMetadata.mediaMetadata);
+    assert.equal(relation?.remoteFiles?.[0].qualityProfile?.quality, "4K");
+
+    const row = manager.getDatabase().db.prepare(`
+      SELECT actual_width, actual_height, actual_fps, actual_duration, actual_codec, actual_metadata_source
+      FROM remote_files WHERE user_id=? AND media_id=? AND bvid=?
+    `).get("u1", 1, task.bvid) as any;
+    assert.deepEqual(row, {
+      actual_width: 1080,
+      actual_height: 1920,
+      actual_fps: 60,
+      actual_duration: 30,
+      actual_codec: "HEVC",
+      actual_metadata_source: "ffprobe",
+    });
+  } finally {
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("quality-upgrade preflight stops before remote upload when ffprobe proof is incomplete", async () => {
+  const runtime = await createTestDir("quality-metadata-preflight");
+  try {
+    writeQualityMetadataSession(runtime, { outputs: [qualityMetadataOutput({ width: undefined })] });
+    const task = new QualityUpgradeTask("BVQUALITYMETADATA", {}, testConfig(), target("u1", 1));
+    task.downloadDir = runtime;
+    task.outputFiles = ["new.mp4"];
+    let uploadCalls = 0;
+    task.uploadRunner = async () => {
+      uploadCalls += 1;
+      throw new Error("remote upload must not start");
+    };
+    await assert.rejects(() => task.runUploadStagePhase("run"), /lack verified ffprobe dimensions/);
+    assert.equal(uploadCalls, 0);
+    assert.equal(task.stageRemotePath, undefined);
+  } finally {
     await removeTestDir(runtime);
   }
 });
