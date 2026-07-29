@@ -1,4 +1,5 @@
 import path from "node:path";
+import crypto from "node:crypto";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
 
@@ -36,16 +37,59 @@ export interface BiliUser {
   lastAuthRefreshAt?: string;
   /** Last TV auth refresh error, if any */
   lastAuthRefreshError?: string;
+  /** Stable non-secret device identity used by BBDown's APP playback API. */
+  appBuvid?: string;
 }
 
 const usersPath = path.join(dataDir, "users.json");
 const defaultUsers: BiliUser[] = [];
+const appBuvidPattern = /^XY[0-9a-fA-F]{35}$/;
+const nonCookieCredentialKeys = new Set(["accessToken", "refreshToken", "appBuvid"]);
+
+export function generateAppBuvid(randomBytes: (size: number) => Buffer = crypto.randomBytes) {
+  const digest = crypto.createHash("md5").update(randomBytes(16)).digest("hex");
+  return `XY${digest[1]}${digest[11]}${digest[21]}${digest}`;
+}
+
+export function ensureUserAppBuvid(user: BiliUser) {
+  if (appBuvidPattern.test(String(user.appBuvid || ""))) return false;
+  user.appBuvid = generateAppBuvid();
+  return true;
+}
+
+export function ensureUserAppBuvids(users: BiliUser[]) {
+  let changed = false;
+  for (const user of users) {
+    if (ensureUserAppBuvid(user)) changed = true;
+  }
+  return changed;
+}
+
+export function downloadCredentialsForUser(user: BiliUser): BiliCookie {
+  if (!appBuvidPattern.test(String(user.appBuvid || ""))) ensureUserAppBuvid(user);
+  return {
+    ...user.cookie,
+    accessToken: user.accessToken || "",
+    appBuvid: user.appBuvid || "",
+  };
+}
+
+export function biliWebCookieValues(cookie: BiliCookie) {
+  return Object.fromEntries(
+    Object.entries(cookie).filter(([key, value]) => (
+      !nonCookieCredentialKeys.has(key)
+      && value !== undefined
+      && value !== null
+    ))
+  ) as Record<string, string | number>;
+}
 
 export class UserStore {
   private users: BiliUser[];
 
   constructor() {
     this.users = readJsonFile<BiliUser[]>(usersPath, defaultUsers);
+    if (ensureUserAppBuvids(this.users)) this.save();
   }
 
   list() {
@@ -54,6 +98,7 @@ export class UserStore {
 
   reload() {
     this.users = readJsonFile<BiliUser[]>(usersPath, defaultUsers);
+    if (ensureUserAppBuvids(this.users)) this.save();
     return this.list();
   }
 
@@ -70,7 +115,9 @@ export class UserStore {
         ...user,
         favorites: existing.favorites,
       };
+      ensureUserAppBuvid(this.users[existingIndex]);
     } else {
+      ensureUserAppBuvid(user);
       this.users.push(user);
     }
     this.save();
@@ -111,6 +158,7 @@ export class UserStore {
 }
 
 export function buildCookieString(cookie: BiliCookie) {
+  const cookieValues = biliWebCookieValues(cookie);
   const preferred = ["SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "sid"];
   const seen = new Set<string>();
   const parts: string[] = [];
@@ -122,12 +170,9 @@ export function buildCookieString(cookie: BiliCookie) {
     parts.push(`${key}=${value}`);
   };
   for (const key of preferred) {
-    append(key, cookie[key]);
+    append(key, cookieValues[key]);
   }
-  for (const [key, value] of Object.entries(cookie)) {
-    if (key === "accessToken" || key === "refreshToken") {
-      continue;
-    }
+  for (const [key, value] of Object.entries(cookieValues)) {
     append(key, value);
   }
   return parts.join("; ");

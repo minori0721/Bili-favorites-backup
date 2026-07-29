@@ -1,5 +1,5 @@
 import { Client, Auth, TvQrcodeLogin } from "@renmu/bili-api";
-import { BiliCookie } from "./users.js";
+import { BiliCookie, biliWebCookieValues } from "./users.js";
 import { delay } from "./utils.js";
 import { safeErrorSummary } from "./diagnostics.js";
 
@@ -48,12 +48,7 @@ export class BiliRiskOrLoginError extends Error {
 /** build a biliAPI Client from stored cookies — same pattern as biliLive-tools */
 function createBiliClient(cookie: BiliCookie, uid: number, accessToken?: string) {
   const auth = new Auth();
-  const { accessToken: _accessToken, refreshToken: _refreshToken, ...rawCookieOnly } = cookie as BiliCookie & {
-    refreshToken?: string;
-  };
-  const cookieOnly = Object.fromEntries(
-    Object.entries(rawCookieOnly).filter(([, value]) => value !== undefined && value !== null)
-  ) as Record<string, string | number>;
+  const cookieOnly = biliWebCookieValues(cookie);
   auth.setAuth(
     {
       ...cookieOnly,

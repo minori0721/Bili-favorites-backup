@@ -571,7 +571,7 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
-test("BBDown 2.0.0 adopts 1.6.3 fork resume tracks when runtime settings are unchanged", async () => {
+test("BBDown 2.0.1 adopts 2.0.0 Web resume tracks when runtime settings are unchanged", async () => {
   const runtime = await createTestDir("download-session-compatible-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1BBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -580,11 +580,11 @@ test("BBDown 2.0.0 adopts 1.6.3 fork resume tracks when runtime settings are unc
       downloadDir,
       bvid: "BV1BBDOWNUPGRADE",
       accountUid: 1,
-      config: testConfig({ bbdownApiMode: "app" }),
+      config: testConfig({ bbdownApiMode: "web" }),
       pages,
     });
     const previous = readDownloadSession(downloadDir)!;
-    previous.bbdownCommit = "42815977dff36d2bab783ce125e209191dcca037";
+    previous.bbdownCommit = "fcb895f357df49c45010cefab773025d5d50cf7c";
     previous.configFingerprint = "previous-bbdown";
     writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
     await fs.promises.writeFile(path.join(downloadDir, "video-track.mp4.aria2"), "resume");
@@ -593,12 +593,49 @@ test("BBDown 2.0.0 adopts 1.6.3 fork resume tracks when runtime settings are unc
       downloadDir,
       bvid: "BV1BBDOWNUPGRADE",
       accountUid: 1,
-      config: testConfig({ bbdownApiMode: "app" }),
+      config: testConfig({ bbdownApiMode: "web" }),
       pages,
     });
     assert.equal(upgraded.incompatibleFragmentsMoved, 0);
     assert.equal(fs.existsSync(path.join(downloadDir, "video-track.mp4.aria2")), true);
-    assert.equal(upgraded.manifest.bbdownCommit, "fcb895f357df49c45010cefab773025d5d50cf7c");
+    assert.equal(upgraded.manifest.bbdownCommit, "fd926373dfe03d68bf84a1ad8a4ffbf402b00988");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("BBDown 2.0.1 isolates 2.0.0 APP resume tracks before PlayerUnite redownload", async () => {
+  const runtime = await createTestDir("download-session-app-bbdown-upgrade");
+  const downloadDir = path.join(runtime, "BV1APPBBDOWNUPGRADE");
+  const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
+  try {
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1APPBBDOWNUPGRADE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    const previous = readDownloadSession(downloadDir)!;
+    previous.bbdownCommit = "fcb895f357df49c45010cefab773025d5d50cf7c";
+    previous.configFingerprint = "previous-bbdown";
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
+    const rawTrackDir = path.join(downloadDir, "123456");
+    await fs.promises.mkdir(rawTrackDir, { recursive: true });
+    await fs.promises.writeFile(path.join(rawTrackDir, "123456.P1.101.mp4"), "old-app-video");
+    await fs.promises.writeFile(path.join(rawTrackDir, "123456.P1.101.mp4.aria2"), "old-app-resume");
+
+    const upgraded = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1APPBBDOWNUPGRADE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    assert.equal(upgraded.incompatibleFragmentsMoved, 2);
+    assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4")), false);
+    assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4.aria2")), false);
+    assert.equal(upgraded.manifest.bbdownCommit, "fd926373dfe03d68bf84a1ad8a4ffbf402b00988");
   } finally {
     await removeTestDir(runtime);
   }
@@ -737,6 +774,11 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
       import path from 'node:path';
       const args = process.argv.slice(2);
       fs.appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify(args) + '\\n');
+      if (args.includes('-app')) {
+        const configPath = args[args.indexOf('--config-file') + 1];
+        const config = fs.readFileSync(configPath, 'utf8');
+        if (!/^--app-buvid XY[0-9a-f]{35}$/im.test(config)) throw new Error('missing stable app buvid');
+      }
       const bvid = /video\\/(BV[0-9A-Za-z]+)/.exec(args[0])?.[1] || 'BV1FAKEBBDOWN';
       fs.copyFileSync(process.env.FAKE_MEDIA_SOURCE, path.join(process.cwd(), 'video-' + bvid + '.mp4'));
       console.log('[2026-07-11 00:00:00.000] - BFB_SIGNAL:PLAYURL_READY:' + (args.includes('-app') ? 'APP' : 'WEB'));
@@ -774,7 +816,7 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
       assert.equal(second.files.length, 1);
       const appResult = await downloadWithBBDown(
         "BV1FAKEAPP",
-        { ...cookie, accessToken: "app-token" },
+        { ...cookie, accessToken: "app-token", appBuvid: "XY0123456789abcdef0123456789abcdef012" },
         testConfig({ bbdownApiMode: "app" }),
         {
           ...options,

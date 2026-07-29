@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { ConfigStore, type AppConfig, type BBDownApiMode } from "./config.js";
 import { FavoriteRelation, StateManager, VideoArchiveEntry, type RemoteFileRecord } from "./state.js";
-import { BiliUser, UserStore } from "./users.js";
+import { BiliUser, downloadCredentialsForUser, UserStore } from "./users.js";
 import {
   BiliRiskOrLoginError,
   getVideoPageSnapshot,
@@ -750,10 +750,7 @@ export class SyncScheduler {
     }
     const targets = [...targetsByRelation.values()];
     if (targets.length === 0) return null;
-    const task = new DownloadTask(bvid, {
-      ...downloadUser.cookie,
-      accessToken: downloadUser.accessToken || "",
-    }, config);
+    const task = new DownloadTask(bvid, downloadCredentialsForUser(downloadUser), config);
     task.maxRetries = 0;
     task.persistentJobId = job.id;
     task.persistentJob = job;
@@ -855,10 +852,7 @@ export class SyncScheduler {
     const qualityProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
     const artifactKey = String(payload.artifactKey || buildQualityArtifactKey(String(payload.bvid || job.bvid || ""), qualityProfile));
     const taskConfig = applyQualityArtifactProfile(this.configStore.get(), qualityProfile);
-    const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), user ? {
-      ...user.cookie,
-      accessToken: user.accessToken || "",
-    } : {
+    const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), user ? downloadCredentialsForUser(user) : {
       SESSDATA: "",
       bili_jct: "",
       DedeUserID: "",

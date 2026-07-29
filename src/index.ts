@@ -9,7 +9,7 @@ import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
 import { authSessionDatabasePath, backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
 import { type AppConfig, ConfigStore, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
-import { type BiliUser, UserStore } from "./users.js";
+import { downloadCredentialsForUser, type BiliUser, UserStore } from "./users.js";
 import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import { mergeLiveFavoriteDetailItem, selectFavoriteDetailSource } from "./favorite-detail.js";
 import {
@@ -191,7 +191,7 @@ async function recoverInterruptedQualityDownloads() {
     const meta = stateManager.getVideoMeta(manifest.bvid);
     const task = new QualityUpgradeTask(
       manifest.bvid,
-      { ...user.cookie, accessToken: user.accessToken || "" },
+      downloadCredentialsForUser(user),
       applyQualityArtifactProfile(configStore.get(), qualityProfile),
       targets[0],
       { targets, artifactKey, qualityProfile }
@@ -2161,7 +2161,7 @@ app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
       skipped.push({ key, reason: "账号不存在或未启用" });
       continue;
     }
-    const task = new QualityUpgradeTask(candidate.bvid, { ...user.cookie, accessToken: user.accessToken || "" }, config, {
+    const task = new QualityUpgradeTask(candidate.bvid, downloadCredentialsForUser(user), config, {
       userId: candidate.userId,
       mediaId: candidate.mediaId,
       folderTitle: candidate.folderTitle,

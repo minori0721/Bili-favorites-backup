@@ -251,13 +251,14 @@ export async function downloadWithBBDown(
   const filePattern = config.filenameTemplate || "<videoTitle>-<bvid>";
   const needsAppToken = effectiveApiMode === "app";
   const appAccessToken = needsAppToken ? String(cookie.accessToken || "") : "";
+  const appBuvid = needsAppToken ? String(cookie.appBuvid || "") : "";
   if (needsAppToken && !appAccessToken) {
     const error: any = new Error("APP 接口需要 access token。请重新扫码登录后再启用该模式。");
     error.permanent = true;
     throw error;
   }
 
-  const credentialConfig = await createBBDownCredentialConfig(cookieString, appAccessToken);
+  const credentialConfig = await createBBDownCredentialConfig(cookieString, appAccessToken, appBuvid);
   try {
     const args = [
       url,
@@ -513,7 +514,7 @@ function replaceOptionValue(args: string[], option: string, value: string) {
   }
 }
 
-async function createBBDownCredentialConfig(cookieString: string, appAccessToken: string) {
+async function createBBDownCredentialConfig(cookieString: string, appAccessToken: string, appBuvid: string) {
   const configDir = await createBBDownCredentialDirectory();
   const configPath = path.join(configDir, "BBDown.config");
   const lines: string[] = [];
@@ -523,11 +524,14 @@ async function createBBDownCredentialConfig(cookieString: string, appAccessToken
   if (appAccessToken) {
     lines.push(`--access-token ${sanitizeCredentialLine(appAccessToken)}`);
   }
+  if (appBuvid) {
+    lines.push(`--app-buvid ${sanitizeCredentialLine(appBuvid)}`);
+  }
   await fs.promises.writeFile(configPath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
   await fs.promises.chmod(configPath, 0o600);
   return {
     configPath,
-    sensitiveValues: [cookieString, appAccessToken].filter((value) => value.length > 0),
+    sensitiveValues: [cookieString, appAccessToken, appBuvid].filter((value) => value.length > 0),
     cleanup: () => fs.promises.rm(configDir, { recursive: true, force: true }),
   };
 }

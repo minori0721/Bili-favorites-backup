@@ -16,8 +16,8 @@ import {
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
-const PREVIOUS_BBDOWN_SOURCE_COMMIT = "42815977dff36d2bab783ce125e209191dcca037";
+export const BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
+const PREVIOUS_BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
 const LEGACY_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
 
 export type DownloadSessionKind = "backup" | "quality_upgrade";
@@ -707,6 +707,7 @@ export async function prepareDownloadSession(options: {
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
       const compatibleBbdownUpgrade = manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
         && previousSnapshot.apiMode === nextSnapshot.apiMode
+        && nextSnapshot.apiMode !== "app"
         && sameRuntimeConfig;
       const legacyWebUpgrade = !previousSnapshot.apiMode
         && nextSnapshot.apiMode === "web"
