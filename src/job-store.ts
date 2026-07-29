@@ -11,7 +11,8 @@ export type PersistentJobKind =
   | "quality_upload"
   | "quality_replace"
   | "quality_cleanup"
-  | "path_migration";
+  | "path_migration"
+  | "archive_delete";
 
 export interface EnqueuePersistentJob {
   kind: PersistentJobKind;

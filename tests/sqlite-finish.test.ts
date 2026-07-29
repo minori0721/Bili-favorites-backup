@@ -109,6 +109,16 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /id="playbackModal"/);
   assert.match(appHtml, /id="archiveLibraryBtn"/);
   assert.match(appHtml, /id="archiveLibraryModal"/);
+  assert.match(appHtml, /data-archive-filter="deleted"/);
+  assert.match(appHtml, /more\.className = 'archive-library-card-more'/);
+  assert.match(appHtml, /archive-library-status\.deleted/);
+  assert.match(appHtml, /archive-library-source-reason/);
+  assert.match(appHtml, /id="accountRemovalModal"/);
+  assert.match(appHtml, /id="accountRemovalOnly"[^>]*checked/);
+  assert.match(appHtml, /id="accountRemovalRemote"/);
+  assert.match(appHtml, /function loadAccountRemovalPreview\(\)/);
+  assert.match(appHtml, /仅移除账号登录；远端归档、封面和本地索引都会保留/);
+  assert.match(appHtml, /DELETE REMOTE ARCHIVE/);
   assert.match(appHtml, /function openArchiveLibraryPlayback\(bvid, trigger\)/);
   assert.match(appHtml, /\/api\/archive-library\/navigation/);
   assert.match(appHtml, /playbackState\.libraryContext/);
@@ -144,6 +154,8 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /async function pollPlaybackDelivery[\s\S]*?token === playbackState\.loadingToken[\s\S]*?attemptId === playbackState\.deliveryAttemptId/);
   assert.match(appHtml, /function showFinalPlaybackError[\s\S]{0,700}resolvePlaybackDeliveryViewStatus/);
   assert.match(appHtml, /id="closePlaybackImmersiveBtn"/);
+  assert.match(appHtml, /\/api\/archive-deletions\/' \+ encodeURIComponent\(operationId\) \+ '\/repreview'/);
+  assert.match(appHtml, /重新预览并确认/);
   assert.match(appHtml, /id="playbackImmersiveQueueBtn"/);
   assert.match(appHtml, /id="playbackMobilePortraitBtn"/);
   assert.match(appHtml, /mobilePortraitMode: true/);

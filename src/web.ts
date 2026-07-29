@@ -394,6 +394,9 @@ function getAppStyles() {
     .archive-nav-empty { padding:18px 10px; color:#718581; font-size:12px; text-align:center; }
     .archive-nav-inactive { margin-top:7px; border-top:1px solid #DCE8E6; padding-top:7px; }
     .archive-nav-inactive summary { cursor:pointer; color:#718581; font-size:11px; font-weight:700; padding:7px 8px; }
+    .archive-nav-deletion { margin:7px 8px 3px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:8px 9px; color:#526B66; font-size:10px; line-height:1.55; }
+    .archive-nav-deletion button { margin-top:6px; border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:5px 8px; font:inherit; font-weight:700; cursor:pointer; }
+    .archive-nav-deletion button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
     .archive-library-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#F8FBFA; }
     .archive-library-topbar { flex:0 0 auto; min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); }
     .archive-library-heading { min-width:0; }
@@ -417,9 +420,12 @@ function getAppStyles() {
     .archive-library-filterbar button:focus-visible { outline:2px solid rgba(57,197,187,0.28); outline-offset:2px; }
     .archive-library-results { min-height:0; flex:1 1 auto; overflow:auto; overscroll-behavior:contain; padding:18px 20px 28px; scrollbar-gutter:stable; }
     .archive-library-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:18px 14px; align-items:start; }
-    .archive-library-card { min-width:0; overflow:hidden; border:1px solid transparent; border-radius:7px; background:transparent; color:inherit; padding:0; text-align:left; cursor:pointer; }
+    .archive-library-card { position:relative; min-width:0; overflow:hidden; border:1px solid transparent; border-radius:7px; background:transparent; color:inherit; }
     .archive-library-card:hover { background:#FFFFFF; border-color:#DCE7E5; box-shadow:0 8px 22px rgba(36,72,67,0.09); }
-    .archive-library-card:focus-visible { outline:3px solid rgba(57,197,187,0.28); outline-offset:2px; border-color:var(--accent); }
+    .archive-library-card-main { display:block; width:100%; border:0; background:transparent; color:inherit; padding:0; text-align:left; cursor:pointer; }
+    .archive-library-card-main:focus-visible { outline:3px solid rgba(57,197,187,0.28); outline-offset:-3px; }
+    .archive-library-card-more { position:absolute; z-index:2; top:7px; right:7px; width:32px; height:32px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.55); border-radius:50%; background:rgba(23,39,36,.78); color:#FFFFFF; padding:0; font-size:19px; line-height:1; cursor:pointer; }
+    .archive-library-card-more:hover,.archive-library-card-more:focus-visible { background:#176E66; outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
     .archive-library-cover { position:relative; width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:6px; background:#E3EBE9; }
     .archive-library-cover img { display:block; width:100%; height:100%; object-fit:cover; }
     .archive-library-placeholder { position:absolute; inset:0; display:grid; place-items:center; color:#82938F; font-size:22px; font-weight:800; background:#E5ECEA; }
@@ -433,6 +439,7 @@ function getAppStyles() {
     .archive-library-status.playable { background:#DDF4E7; color:#267047; }
     .archive-library-status.pending { background:#FFF0CF; color:#8A6111; }
     .archive-library-status.issue { background:#FDE4E2; color:#A0433C; }
+    .archive-library-status.deleted { background:#E8ECEB; color:#52615E; }
     .archive-library-footer { min-height:38px; display:flex; justify-content:center; align-items:center; padding:10px; color:#718581; font-size:11px; text-align:center; }
     .archive-library-footer button { margin-left:7px; border:0; background:transparent; color:#16877D; padding:4px; font:inherit; font-weight:700; cursor:pointer; }
     .archive-library-empty { grid-column:1/-1; min-height:220px; display:grid; place-items:center; color:#718581; font-size:13px; text-align:center; }
@@ -447,6 +454,13 @@ function getAppStyles() {
     .archive-library-source:first-child { border-top:0; }
     .archive-library-source strong { display:block; color:#2D4B46; font-size:13px; }
     .archive-library-source span { display:block; margin-top:4px; color:#718581; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+    .archive-library-source-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:9px; }
+    .archive-library-source-actions button { border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:6px 10px; font:inherit; font-size:11px; font-weight:700; cursor:pointer; }
+    .archive-library-source-actions button.danger-action { border-color:#E5AAA4; background:#FFF3F2; color:#A13D35; }
+    .archive-library-source-actions button:disabled { cursor:not-allowed; opacity:.58; }
+    .archive-library-source-actions button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
+    .archive-library-source-reason { color:#738783!important; font-size:10px!important; }
+    .archive-deletion-progress { margin-top:10px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:9px 10px; color:#526B66; font-size:11px; line-height:1.65; }
     .archive-library-detail-retry { margin-top:12px; border:1px solid #63BFB7; border-radius:5px; background:#EDF8F6; color:#176E66; padding:7px 12px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
     .archive-library-detail-retry:focus-visible { outline:2px solid rgba(57,197,187,0.30); outline-offset:2px; }
     @media (max-width:720px), (max-height:480px) and (pointer:coarse) {
@@ -489,6 +503,13 @@ function getAppStyles() {
     @media (prefers-reduced-motion:reduce) {
       .archive-library-card,.archive-library-detail,.archive-library-sidebar,.archive-library-main { transition:none!important; }
     }
+    .account-removal-options { display:grid; gap:9px; margin:14px 0; }
+    .account-removal-option { display:grid; grid-template-columns:auto minmax(0,1fr); gap:10px; align-items:start; border:1px solid #D8E3E0; border-radius:7px; background:#F8FBFA; padding:11px; cursor:pointer; }
+    .account-removal-option:focus-within { border-color:#39C5BB; box-shadow:0 0 0 3px rgba(57,197,187,.12); }
+    .account-removal-option input { width:17px; height:17px; margin:2px 0 0; }
+    .account-removal-option strong { display:block; color:#294943; font-size:13px; }
+    .account-removal-option span { display:block; margin-top:3px; color:#718581; font-size:11px; line-height:1.55; }
+    .account-removal-preview { border:1px solid #E2EAE8; border-radius:6px; background:#FFFFFF; padding:10px 12px; color:#526B66; font-size:12px; line-height:1.7; }
     body.playback-open { overflow:hidden; }
     .playback-modal { z-index:300; padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
     .playback-shell { width:min(1480px,100%); min-width:0; height:calc(100dvh - 36px); margin:auto; overflow:hidden; display:flex; flex-direction:column; color:#F4F7F6; background:#151B1A; border:1px solid #34413F; border-radius:8px; box-shadow:0 28px 80px rgba(0,0,0,0.38); animation:playbackEnter .18s ease-out; }
@@ -1007,6 +1028,7 @@ function getModals() {
           <button type="button" data-archive-filter="playable">可播放</button>
           <button type="button" data-archive-filter="pending">待处理</button>
           <button type="button" data-archive-filter="issue">异常</button>
+          <button type="button" data-archive-filter="deleted">已删除</button>
         </div>
         <div class="archive-library-results" id="archiveLibraryResults">
           <div class="archive-library-grid" id="archiveLibraryGrid"></div>
@@ -1313,6 +1335,34 @@ function getModals() {
         <button id="confirmActionCancelBtn" class="ghost" type="button">取消</button>
       </div>
     </div>
+  </div>
+
+  <div class="modal" id="accountRemovalModal">
+    <div class="panel panel-narrow">
+      <h2 id="accountRemovalTitle">删除账号</h2>
+      <p class="muted">请选择账号登录信息和远端归档的处理方式。</p>
+      <div class="account-removal-options" role="radiogroup" aria-label="账号删除方式">
+        <label class="account-removal-option">
+          <input id="accountRemovalOnly" type="radio" name="accountRemovalMode" value="account_only" checked>
+          <span><strong>仅移除账号登录（推荐）</strong><span>保留远端归档、封面和本地索引，之后用同一UID登录可恢复关联。</span></span>
+        </label>
+        <label class="account-removal-option">
+          <input id="accountRemovalRemote" type="radio" name="accountRemovalMode" value="account_and_remote">
+          <span><strong>删除账号并清理远端归档</strong><span>只删除SQLite已追踪且重新核验一致的文件；未知文件和共享文件会保留。</span></span>
+        </label>
+      </div>
+      <div id="accountRemovalPreview" class="account-removal-preview">正在计算账号影响范围...</div>
+      <div id="accountRemovalConfirmWrap" class="confirm-action-input-wrap is-hidden">
+        <label for="accountRemovalConfirmInput">确认文字</label>
+        <input id="accountRemovalConfirmInput" type="text" autocomplete="off" placeholder="DELETE REMOTE ARCHIVE">
+        <div class="muted confirm-action-input-hint">请输入 DELETE REMOTE ARCHIVE 后继续。</div>
+      </div>
+      <div id="accountRemovalProgress" class="archive-deletion-progress is-hidden" aria-live="polite"></div>
+      <div class="row modal-actions split-actions">
+        <button id="accountRemovalSubmitBtn" type="button" class="danger-action">删除账号</button>
+        <button id="accountRemovalCancelBtn" type="button" class="ghost">取消</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1393,9 +1443,12 @@ function getAppScript() {
       scrollTimer: null,
       detailController: null,
       detailToken: 0,
+      navigationTimer: null,
       scrollPositions: {},
       trigger: null
     };
+    let accountRemovalToken = 0;
+    let accountRemovalState = { userId:null, preview:null, pollTimer:null, trigger:null, controller:null, token:0, loading:false };
     const PLAYBACK_STORAGE_KEY = 'bfb-playback-v1';
     let artplayerLoader = null;
     let playbackState = {
@@ -1557,6 +1610,12 @@ function getAppScript() {
         Object.values(unavailableStates).forEach((state) => { state.loading = false; });
       }
       if (modal.id === 'pathMigrationModal') stopPathMigrationPolling();
+      if (modal.id === 'accountRemovalModal') {
+        if (accountRemovalState.pollTimer) clearTimeout(accountRemovalState.pollTimer);
+        if (accountRemovalState.controller) accountRemovalState.controller.abort();
+        accountRemovalToken += 1;
+        accountRemovalState = { userId:null, preview:null, pollTimer:null, trigger:null, controller:null, token:accountRemovalToken, loading:false };
+      }
       if (modal.id === 'confirmActionModal' && pendingConfirmAction) {
         pendingConfirmAction(false);
         return;
@@ -2823,6 +2882,7 @@ function getAppScript() {
         removeBtn.className = 'ghost danger-ghost';
         removeBtn.dataset.action = 'remove';
         removeBtn.dataset.id = String(user.id || '');
+        removeBtn.dataset.name = String(user.name || '');
         removeBtn.textContent = '删除账号';
 
         actions.appendChild(favoritesBtn);
@@ -2966,7 +3026,7 @@ function getAppScript() {
           scope:['global','account','folder'].includes(parsed.scope) ? parsed.scope : 'global',
           userId:parsed.userId || null,
           mediaId:Number(parsed.mediaId || 0) || null,
-          filter:['all','playable','pending','issue'].includes(parsed.filter) ? parsed.filter : 'all',
+          filter:['all','playable','pending','issue','deleted'].includes(parsed.filter) ? parsed.filter : 'all',
           sort:['context','title_asc','title_desc'].includes(parsed.sort) ? parsed.sort : 'context',
           scrollPositions:parsed.scrollPositions && typeof parsed.scrollPositions === 'object' ? parsed.scrollPositions : {}
         };
@@ -3009,11 +3069,13 @@ function getAppScript() {
       if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
       if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
       if (archiveLibraryState.scrollTimer) clearTimeout(archiveLibraryState.scrollTimer);
+      if (archiveLibraryState.navigationTimer) clearTimeout(archiveLibraryState.navigationTimer);
       archiveLibraryState.controller = null;
       archiveLibraryState.detailController = null;
       archiveLibraryState.detailToken += 1;
       archiveLibraryState.searchTimer = null;
       archiveLibraryState.scrollTimer = null;
+      archiveLibraryState.navigationTimer = null;
       archiveLibraryState.loading = false;
       closeArchiveLibraryDetail();
       document.body.classList.remove('archive-library-open');
@@ -3052,6 +3114,7 @@ function getAppScript() {
 
     function archiveSummaryText(summary) {
       if (!summary) return '正在读取本地归档';
+      if (archiveLibraryState.filter === 'deleted') return Number(summary.total || 0) + ' 个删除记录';
       return Number(summary.total || 0) + ' 个视频 · 可播放 ' + Number(summary.playable || 0) +
         ' · 待处理 ' + Number(summary.pending || 0) + ' · 异常 ' + Number(summary.issue || 0);
     }
@@ -3093,6 +3156,8 @@ function getAppScript() {
     }
 
     function renderArchiveLibraryNavigation() {
+      if (archiveLibraryState.navigationTimer) clearTimeout(archiveLibraryState.navigationTimer);
+      archiveLibraryState.navigationTimer = null;
       const host = document.getElementById('archiveLibraryNav');
       host.replaceChildren();
       const navigation = archiveLibraryState.navigation;
@@ -3111,18 +3176,60 @@ function getAppScript() {
       globalGroup.appendChild(globalList);
       host.appendChild(globalGroup);
 
+      let needsDeletionRefresh = false;
       (navigation.accounts || []).forEach((account) => {
-        const group = document.createElement('section');
-        group.className = 'archive-nav-account';
-        const heading = document.createElement('div');
+        const group = document.createElement(account.removed ? 'details' : 'section');
+        group.className = 'archive-nav-account' + (account.removed ? ' archive-nav-inactive' : '');
+        const heading = document.createElement(account.removed ? 'summary' : 'div');
         heading.className = 'archive-nav-heading';
         const name = document.createElement('strong');
         name.textContent = safeText(account.name, '未知账号');
         const uid = document.createElement('span');
-        uid.textContent = 'UID ' + safeText(account.uid, '-');
+        uid.textContent = (account.removed ? '已移除 · ' : '') + 'UID ' + safeText(account.uid, '-');
         heading.appendChild(name);
         heading.appendChild(uid);
         group.appendChild(heading);
+        if (account.deletion) {
+          const deletion = document.createElement('div');
+          deletion.className = 'archive-nav-deletion';
+          deletion.appendChild(document.createTextNode(archiveDeletionProgressText(account.deletion)));
+          if (account.deletion.status === 'failed') {
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.textContent = '重试账号归档清理';
+            retry.addEventListener('click', async () => {
+              retry.disabled = true;
+              try {
+                await fetchJson('/api/archive-deletions/' + encodeURIComponent(account.deletion.id) + '/retry', { method:'POST' });
+                archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+                renderArchiveLibraryNavigation();
+              } catch (error) {
+                retry.disabled = false;
+                showToast(error instanceof Error ? error.message : String(error));
+              }
+            });
+            deletion.appendChild(retry);
+            const repreview = document.createElement('button');
+            repreview.type = 'button';
+            repreview.textContent = '重新预览并确认';
+            repreview.addEventListener('click', async () => {
+              repreview.disabled = true;
+              try {
+                const replacement = await repreviewAndStartArchiveDeletion(account.deletion.id, repreview);
+                if (!replacement) repreview.disabled = false;
+                archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+                renderArchiveLibraryNavigation();
+              } catch (error) {
+                repreview.disabled = false;
+                showToast(error instanceof Error ? error.message : String(error));
+              }
+            });
+            deletion.appendChild(repreview);
+          } else if (['pending','running','retry_wait'].includes(account.deletion.status)) {
+            needsDeletionRefresh = true;
+          }
+          group.appendChild(deletion);
+        }
         const list = document.createElement('div');
         list.className = 'archive-nav-list';
         list.appendChild(createArchiveNavItem(account.summary || {}, {
@@ -3149,6 +3256,17 @@ function getAppScript() {
         host.appendChild(group);
       });
       syncArchiveLibraryNavigationSelection();
+      if (needsDeletionRefresh && document.getElementById('archiveLibraryModal').classList.contains('active')) {
+        archiveLibraryState.navigationTimer = setTimeout(async () => {
+          archiveLibraryState.navigationTimer = null;
+          try {
+            archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+            renderArchiveLibraryNavigation();
+          } catch (_) {
+            archiveLibraryState.navigationTimer = setTimeout(renderArchiveLibraryNavigation, 3000);
+          }
+        }, 1500);
+      }
     }
 
     function syncArchiveLibraryNavigationSelection() {
@@ -3207,6 +3325,11 @@ function getAppScript() {
     }
 
     function archiveStatusLabel(item) {
+      const deletionStatuses = item?.memberships?.map((membership) => membership.deletionStatus).filter(Boolean) || [];
+      if (item?.deletionStatus) deletionStatuses.push(item.deletionStatus);
+      if (deletionStatuses.includes('completed')) return '已手动删除';
+      if (deletionStatuses.includes('failed')) return '清理失败';
+      if (deletionStatuses.some((status) => ['pending','running','retry_wait'].includes(status))) return '清理中';
       if (item.playback && item.playback.available) {
         if (item.unavailable) return '已归档且失效';
         if (item.playback.partial) return '部分可播放';
@@ -3254,11 +3377,13 @@ function getAppScript() {
     }
 
     function createArchiveLibraryCard(item) {
-      const card = document.createElement('button');
-      card.type = 'button';
+      const card = document.createElement('div');
       card.className = 'archive-library-card';
       card.dataset.archiveBvid = item.bvid;
-      card.setAttribute('aria-label', (item.playback?.available ? '播放 ' : '查看详情 ') + safeText(item.title || item.bvid, '归档视频'));
+      const main = document.createElement('button');
+      main.type = 'button';
+      main.className = 'archive-library-card-main';
+      main.setAttribute('aria-label', (item.playback?.available ? '播放 ' : '查看详情 ') + safeText(item.title || item.bvid, '归档视频'));
       const cover = document.createElement('span');
       cover.className = 'archive-library-cover';
       appendArchiveCover(cover, item);
@@ -3289,11 +3414,20 @@ function getAppScript() {
       copy.appendChild(title);
       copy.appendChild(meta);
       copy.appendChild(memberships);
-      card.appendChild(cover);
-      card.appendChild(copy);
-      card.addEventListener('click', () => {
-        if (item.playback?.available) openArchiveLibraryPlayback(item.bvid, card);
-        else openArchiveLibraryDetail(item.bvid, card);
+      main.appendChild(cover);
+      main.appendChild(copy);
+      card.appendChild(main);
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'archive-library-card-more';
+      more.textContent = '⋯';
+      more.setAttribute('aria-label', '查看归档来源与操作');
+      more.title = '来源与操作';
+      more.addEventListener('click', () => openArchiveLibraryDetail(item.bvid, more));
+      card.appendChild(more);
+      main.addEventListener('click', () => {
+        if (item.playback?.available) openArchiveLibraryPlayback(item.bvid, main);
+        else openArchiveLibraryDetail(item.bvid, main);
       });
       return card;
     }
@@ -3387,6 +3521,116 @@ function getAppScript() {
       document.getElementById('archiveLibraryDetailBody').replaceChildren();
     }
 
+    function archiveDeletionProgressText(operation) {
+      const labels = { preview:'等待确认', pending:'等待清理', running:'正在清理', retry_wait:'等待自动重试', failed:'清理失败', completed:'清理完成', expired:'预览已过期', superseded:'来源已重新加入，旧任务结束' };
+      return (labels[operation.status] || operation.status) + ' · ' + Number(operation.completedCount || 0) + '/' + Number(operation.fileCount || 0) +
+        (operation.retainedCount ? ' · 共享保留 ' + Number(operation.retainedCount) : '') +
+        (operation.lastError ? ' · ' + operation.lastError : '');
+    }
+
+    async function refreshArchiveLibraryAfterDeletion() {
+      try {
+        archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+        renderArchiveLibraryNavigation();
+      } catch (_) {}
+      await loadArchiveLibraryItems(true);
+    }
+
+    async function repreviewAndStartArchiveDeletion(operationId, trigger) {
+      const preview = await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId) + '/repreview', { method:'POST' });
+      const account = preview.scope === 'account';
+      const requiredText = account ? 'DELETE REMOTE ARCHIVE' : 'DELETE ARCHIVE';
+      const confirmed = await confirmAction({
+        title:account ? '重新确认账号归档清理' : '重新确认来源归档清理',
+        message:'新的预览包含 ' + Number(preview.fileCount || 0) + ' 个已追踪文件，共 ' + formatBytes(Number(preview.totalBytes || 0)) + '。',
+        detail:(preview.sharedCount ? Number(preview.sharedCount) + ' 个共享文件只解除目标来源，不删除物理文件。' : '删除前会重新核验全部文件，未知文件不会被删除。'),
+        requiredText, confirmText:'开始清理', trigger
+      });
+      if (!confirmed) return null;
+      return fetchJson('/api/archive-deletions/' + encodeURIComponent(preview.previewId) + '/start', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ confirmation:requiredText })
+      });
+    }
+
+    async function watchArchiveSourceDeletion(operationId, host, token) {
+      if (!host || token !== archiveLibraryState.detailToken) return;
+      try {
+        const operation = await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId));
+        if (token !== archiveLibraryState.detailToken || !document.contains(host)) return;
+        host.replaceChildren(document.createTextNode(archiveDeletionProgressText(operation)));
+        if (operation.status === 'completed') {
+          await refreshArchiveLibraryAfterDeletion();
+          closeArchiveLibraryDetail();
+          showToast('远端归档已安全清理', 'success');
+          return;
+        }
+        if (operation.status === 'failed') {
+          const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'ghost';
+          retry.textContent = '重试清理';
+          retry.addEventListener('click', async () => {
+            retry.disabled = true;
+            try {
+              await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId) + '/retry', { method:'POST' });
+              watchArchiveSourceDeletion(operationId, host, token);
+            } catch (error) {
+              retry.disabled = false;
+              showToast(error instanceof Error ? error.message : String(error));
+            }
+          });
+          host.appendChild(document.createTextNode(' '));
+          host.appendChild(retry);
+          const repreview = document.createElement('button');
+          repreview.type = 'button';
+          repreview.className = 'ghost';
+          repreview.textContent = '重新预览';
+          repreview.addEventListener('click', async () => {
+            repreview.disabled = true;
+            try {
+              const replacement = await repreviewAndStartArchiveDeletion(operationId, repreview);
+              if (replacement) watchArchiveSourceDeletion(replacement.id, host, token);
+              else repreview.disabled = false;
+            } catch (error) {
+              repreview.disabled = false;
+              showToast(error instanceof Error ? error.message : String(error));
+            }
+          });
+          host.appendChild(document.createTextNode(' '));
+          host.appendChild(repreview);
+          return;
+        }
+        setTimeout(() => watchArchiveSourceDeletion(operationId, host, token), 1000);
+      } catch (error) {
+        if (token !== archiveLibraryState.detailToken || !document.contains(host)) return;
+        host.textContent = '清理状态暂时无法读取：' + (error instanceof Error ? error.message : String(error));
+        setTimeout(() => watchArchiveSourceDeletion(operationId, host, token), 3000);
+      }
+    }
+
+    async function deleteArchiveLibrarySource(bvid, membership, trigger, host, token) {
+      try {
+        const preview = await fetchJson('/api/archive-library/items/' + encodeURIComponent(bvid) + '/deletion-preview', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ userId:membership.userId, mediaId:membership.mediaId })
+        });
+        const confirmed = await confirmAction({
+          title:'删除此来源的远端归档',
+          message:'将删除 ' + Number(preview.fileCount || 0) + ' 个已追踪文件，共 ' + formatBytes(Number(preview.totalBytes || 0)) + '。',
+          detail:(preview.sharedCount ? Number(preview.sharedCount) + ' 个共享文件只解除当前来源，不删除物理文件。' : '删除前会重新核验全部文件，未知文件不会被删除。'),
+          requiredText:'DELETE ARCHIVE', confirmText:'开始清理', trigger
+        });
+        if (!confirmed) return;
+        const operation = await fetchJson('/api/archive-deletions/' + encodeURIComponent(preview.previewId) + '/start', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ confirmation:'DELETE ARCHIVE' })
+        });
+        host.classList.remove('is-hidden');
+        watchArchiveSourceDeletion(operation.id, host, token);
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
+    }
+
     async function openArchiveLibraryDetail(bvid, trigger) {
       const detail = document.getElementById('archiveLibraryDetail');
       const body = document.getElementById('archiveLibraryDetailBody');
@@ -3421,6 +3665,7 @@ function getAppScript() {
           state.textContent = archiveStatusLabel({ backupStatus:membership.backupStatus, statusGroup:data.statusGroup, playback:{ available:false } }) +
             (membership.activeInFavorite ? ' · 当前关系' : ' · 历史记录') +
             (membership.selectedFolder ? '' : ' · 已停用') +
+            (membership.ownerRemoved ? ' · 已移除账号' : '') +
             (membership.lastSeenAt ? ' · ' + formatDateTime(membership.lastSeenAt) : '');
           source.appendChild(title);
           source.appendChild(state);
@@ -3429,7 +3674,76 @@ function getAppScript() {
             error.textContent = membership.error;
             source.appendChild(error);
           }
+          const size = document.createElement('span');
+          size.textContent = Number(membership.fileCount || 0) + ' 个文件 · ' + formatBytes(Number(membership.totalBytes || 0));
+          source.appendChild(size);
+          const actions = document.createElement('div');
+          actions.className = 'archive-library-source-actions';
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'danger-action';
+          const retryExisting = membership.deletionStatus === 'failed' && membership.deletionId;
+          const deletionRunning = ['pending','running','retry_wait'].includes(membership.deletionStatus);
+          remove.textContent = membership.deletionStatus === 'completed'
+            ? '已删除'
+            : retryExisting
+              ? '重试清理'
+              : deletionRunning
+                ? '清理中'
+                : '删除此来源归档';
+          remove.disabled = !(membership.deletable || retryExisting);
+          if (membership.deletionReason) remove.title = membership.deletionReason;
+          const progress = document.createElement('div');
+          progress.className = 'archive-deletion-progress is-hidden';
+          if (retryExisting) {
+            remove.addEventListener('click', async () => {
+              remove.disabled = true;
+              try {
+                await fetchJson('/api/archive-deletions/' + encodeURIComponent(membership.deletionId) + '/retry', { method:'POST' });
+                progress.classList.remove('is-hidden');
+                watchArchiveSourceDeletion(membership.deletionId, progress, token);
+              } catch (error) {
+                remove.disabled = false;
+                showToast(error instanceof Error ? error.message : String(error));
+              }
+            });
+            const repreview = document.createElement('button');
+            repreview.type = 'button';
+            repreview.className = 'ghost';
+            repreview.textContent = '重新预览';
+            repreview.addEventListener('click', async () => {
+              repreview.disabled = true;
+              try {
+                const replacement = await repreviewAndStartArchiveDeletion(membership.deletionId, repreview);
+                if (replacement) {
+                  progress.classList.remove('is-hidden');
+                  watchArchiveSourceDeletion(replacement.id, progress, token);
+                } else {
+                  repreview.disabled = false;
+                }
+              } catch (error) {
+                repreview.disabled = false;
+                showToast(error instanceof Error ? error.message : String(error));
+              }
+            });
+            actions.appendChild(repreview);
+          } else if (membership.deletable) {
+            remove.addEventListener('click', () => deleteArchiveLibrarySource(data.bvid, membership, remove, progress, token));
+          }
+          actions.appendChild(remove);
+          source.appendChild(actions);
+          if (membership.deletionReason) {
+            const reason = document.createElement('span');
+            reason.className = 'archive-library-source-reason';
+            reason.textContent = membership.deletionReason;
+            source.appendChild(reason);
+          }
+          source.appendChild(progress);
           body.appendChild(source);
+          if (deletionRunning && membership.deletionId) {
+            progress.classList.remove('is-hidden');
+            watchArchiveSourceDeletion(membership.deletionId, progress, token);
+          }
         });
         setTimeout(() => document.getElementById('archiveLibraryDetailCloseBtn').focus({ preventScroll:true }), 0);
       } catch (error) {
@@ -6008,7 +6322,7 @@ function getAppScript() {
       grid.className = 'scheduler-status-grid';
       const rows = [
         ['任务状态', status.status || 'idle'],
-        ...(status.maintenance ? [['维护锁', '归档路径迁移：' + (status.maintenance.status || '进行中')]] : []),
+        ...(status.maintenance ? [['维护锁', (status.maintenance.kind === 'archive_delete' ? '归档清理：' : '归档路径迁移：') + (status.maintenance.status || '进行中')]] : []),
         ['账号', status.userName || '无'],
         ['收藏夹', status.folderTitle || '无'],
         ['页码', status.page ? String(status.page) : '无'],
@@ -6459,6 +6773,169 @@ function getAppScript() {
       }
     });
 
+    function syncAccountRemovalControls() {
+      const remote = document.getElementById('accountRemovalRemote').checked;
+      const input = document.getElementById('accountRemovalConfirmInput');
+      const submit = document.getElementById('accountRemovalSubmitBtn');
+      setHidden('accountRemovalConfirmWrap', !remote);
+      submit.textContent = remote ? '删除账号并开始清理' : '仅删除账号登录';
+      submit.disabled = !accountRemovalState.userId || (remote && (accountRemovalState.loading || !accountRemovalState.preview || input.value.trim() !== 'DELETE REMOTE ARCHIVE'));
+    }
+
+    async function loadAccountRemovalPreview() {
+      const userId = accountRemovalState.userId;
+      if (!userId || accountRemovalState.loading || accountRemovalState.preview) return;
+      if (accountRemovalState.controller) accountRemovalState.controller.abort();
+      const controller = new AbortController();
+      const token = accountRemovalState.token;
+      accountRemovalState.controller = controller;
+      accountRemovalState.loading = true;
+      document.getElementById('accountRemovalPreview').textContent = '正在计算远端归档影响范围...';
+      syncAccountRemovalControls();
+      try {
+        const preview = await fetchJson('/api/users/' + encodeURIComponent(userId) + '/removal-preview', { method:'POST', signal:controller.signal });
+        if (accountRemovalState.token !== token || accountRemovalState.userId !== userId) return;
+        accountRemovalState.preview = preview;
+        document.getElementById('accountRemovalPreview').textContent =
+          Number(preview.relationCount || 0) + ' 条收藏关系 · ' + Number(preview.sourceCount || 0) + ' 个归档来源 · ' +
+          Number(preview.fileCount || 0) + ' 个已追踪文件 · ' + formatBytes(Number(preview.totalBytes || 0)) +
+          (preview.sharedCount ? ' · 共享保留 ' + Number(preview.sharedCount) : '') +
+          (preview.activeTasks ? ' · 将暂停或改派关联任务 ' + Number(preview.activeTasks) : '');
+      } catch (error) {
+        if ((error && error.name === 'AbortError') || accountRemovalState.token !== token || accountRemovalState.userId !== userId) return;
+        document.getElementById('accountRemovalPreview').textContent = '影响范围读取失败：' + (error instanceof Error ? error.message : String(error));
+      } finally {
+        if (accountRemovalState.token === token) {
+          accountRemovalState.loading = false;
+          if (accountRemovalState.controller === controller) accountRemovalState.controller = null;
+          syncAccountRemovalControls();
+        }
+      }
+    }
+
+    function handleAccountRemovalModeChange() {
+      const remote = document.getElementById('accountRemovalRemote').checked;
+      if (remote) {
+        void loadAccountRemovalPreview();
+      } else {
+        if (accountRemovalState.controller) accountRemovalState.controller.abort();
+        accountRemovalState.controller = null;
+        accountRemovalState.loading = false;
+        document.getElementById('accountRemovalPreview').textContent = '仅移除账号登录；远端归档、封面和本地索引都会保留。';
+      }
+      syncAccountRemovalControls();
+    }
+
+    function openAccountRemoval(userId, userName, trigger) {
+      if (accountRemovalState.pollTimer) clearTimeout(accountRemovalState.pollTimer);
+      if (accountRemovalState.controller) accountRemovalState.controller.abort();
+      const token = ++accountRemovalToken;
+      accountRemovalState = { userId, preview:null, pollTimer:null, trigger, controller:null, token, loading:false };
+      document.getElementById('accountRemovalTitle').textContent = '删除账号 · ' + safeText(userName, userId);
+      document.getElementById('accountRemovalOnly').checked = true;
+      document.getElementById('accountRemovalRemote').checked = false;
+      document.getElementById('accountRemovalConfirmInput').value = '';
+      document.getElementById('accountRemovalPreview').textContent = '仅移除账号登录；远端归档、封面和本地索引都会保留。';
+      document.querySelectorAll('.account-removal-option').forEach((option) => option.classList.remove('is-hidden'));
+      setHidden('accountRemovalProgress', true);
+      setHidden('accountRemovalSubmitBtn', false);
+      document.getElementById('accountRemovalCancelBtn').textContent = '取消';
+      syncAccountRemovalControls();
+      openModal('accountRemovalModal', trigger);
+    }
+
+    async function watchAccountArchiveDeletion(operationId) {
+      if (!accountRemovalState.userId || !document.getElementById('accountRemovalModal').classList.contains('active')) return;
+      const host = document.getElementById('accountRemovalProgress');
+      try {
+        const operation = await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId));
+        host.textContent = archiveDeletionProgressText(operation);
+        if (operation.status === 'completed') {
+          document.getElementById('accountRemovalCancelBtn').textContent = '关闭';
+          showToast('账号归档清理完成', 'success');
+          return;
+        }
+        if (operation.status === 'failed') {
+          const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'ghost';
+          retry.textContent = '重试清理';
+          retry.addEventListener('click', async () => {
+            retry.disabled = true;
+            try {
+              await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId) + '/retry', { method:'POST' });
+              watchAccountArchiveDeletion(operationId);
+            } catch (error) {
+              retry.disabled = false;
+              showToast(error instanceof Error ? error.message : String(error));
+            }
+          });
+          host.appendChild(document.createTextNode(' '));
+          host.appendChild(retry);
+          const repreview = document.createElement('button');
+          repreview.type = 'button';
+          repreview.className = 'ghost';
+          repreview.textContent = '重新预览并确认';
+          repreview.addEventListener('click', async () => {
+            repreview.disabled = true;
+            try {
+              const replacement = await repreviewAndStartArchiveDeletion(operationId, repreview);
+              if (replacement) watchAccountArchiveDeletion(replacement.id);
+              else repreview.disabled = false;
+            } catch (error) {
+              repreview.disabled = false;
+              showToast(error instanceof Error ? error.message : String(error));
+            }
+          });
+          host.appendChild(document.createTextNode(' '));
+          host.appendChild(repreview);
+          return;
+        }
+        accountRemovalState.pollTimer = setTimeout(() => watchAccountArchiveDeletion(operationId), 1000);
+      } catch (error) {
+        host.textContent = '清理状态暂时无法读取：' + (error instanceof Error ? error.message : String(error));
+        accountRemovalState.pollTimer = setTimeout(() => watchAccountArchiveDeletion(operationId), 3000);
+      }
+    }
+
+    async function submitAccountRemoval() {
+      const preview = accountRemovalState.preview;
+      const remote = document.getElementById('accountRemovalRemote').checked;
+      if (!accountRemovalState.userId || (remote && !preview)) return;
+      const submit = document.getElementById('accountRemovalSubmitBtn');
+      submit.disabled = true;
+      try {
+        const data = await fetchJson('/api/users/' + encodeURIComponent(accountRemovalState.userId), {
+          method:'DELETE', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(remote ? {
+            mode:'account_and_remote', previewId:preview.previewId, confirmation:'DELETE REMOTE ARCHIVE'
+          } : { mode:'account_only' })
+        });
+        await loadUsers();
+        if (!remote) {
+          closeModal('accountRemovalModal');
+          showToast('账号登录已移除，远端归档已保留', 'success');
+          return;
+        }
+        setHidden('accountRemovalSubmitBtn', true);
+        setHidden('accountRemovalConfirmWrap', true);
+        document.querySelectorAll('.account-removal-option').forEach((option) => option.classList.add('is-hidden'));
+        const progress = document.getElementById('accountRemovalProgress');
+        setHidden(progress, false);
+        document.getElementById('accountRemovalCancelBtn').textContent = '关闭';
+        watchAccountArchiveDeletion(data.operation.id);
+      } catch (error) {
+        submit.disabled = false;
+        showToast(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    document.getElementById('accountRemovalOnly').addEventListener('change', handleAccountRemovalModeChange);
+    document.getElementById('accountRemovalRemote').addEventListener('change', handleAccountRemovalModeChange);
+    document.getElementById('accountRemovalConfirmInput').addEventListener('input', syncAccountRemovalControls);
+    document.getElementById('accountRemovalSubmitBtn').addEventListener('click', submitAccountRemoval);
+    document.getElementById('accountRemovalCancelBtn').addEventListener('click', () => closeModal('accountRemovalModal'));
+
     document.getElementById('userList').addEventListener('click', async (event) => {
       const t = event.target;
       if (!(t instanceof HTMLElement)) return;
@@ -6469,14 +6946,7 @@ function getAppScript() {
       }
       if (action === 'unavailable') await openUnavailable(userId);
       if (action === 'remove') {
-        const confirmed = await confirmAction({
-          title: '删除账号',
-          message: '确定要删除这个账号吗？',
-          detail: '账号登录信息会从本项目中移除，后续需要重新扫码登录。',
-          confirmText: '删除账号',
-          trigger: t
-        });
-        if (confirmed) { await fetchJson('/api/users/'+userId,{method:'DELETE'}); await loadUsers(); }
+        await openAccountRemoval(userId, t.dataset.name || userId, t);
       }
       if (action === 'toggle') { await fetchJson('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})}); await loadUsers(); }
       if (action === 'refresh_info') {

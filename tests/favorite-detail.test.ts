@@ -322,6 +322,36 @@ test("tracked favorite detail is served from SQLite with history and original me
     const unavailableJson: any = await unavailableResponse.json();
     assert.equal(unavailableResponse.status, 200);
     assert.deepEqual(unavailableJson.data.items.map((item: any) => item.bvid), ["BVDETAILLOST"]);
+
+    const removalPreviewResponse = await fetch(`${base}/api/users/detail-user/removal-preview`, {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: base },
+    });
+    assert.equal(removalPreviewResponse.status, 200);
+    const removalPreview: any = await removalPreviewResponse.json();
+    assert.equal(removalPreview.data.scope, "account");
+    assert.equal(removalPreview.data.userId, "detail-user");
+    assert.equal(removalPreview.data.sourceCount, 2);
+
+    const legacyAccountRemoval = await fetch(`${base}/api/users/detail-user`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, Origin: base },
+    });
+    assert.equal(legacyAccountRemoval.status, 200);
+    const usersAfterRemoval = await fetch(`${base}/api/users`, { headers: { Cookie: cookie } });
+    assert.deepEqual((await usersAfterRemoval.json() as any).data, []);
+
+    const archivedNavigationResponse = await fetch(`${base}/api/archive-library/navigation`, { headers: { Cookie: cookie } });
+    const archivedNavigation: any = await archivedNavigationResponse.json();
+    assert.equal(archivedNavigationResponse.status, 200);
+    assert.equal(archivedNavigation.data.accounts[0].id, "detail-user");
+    assert.equal(archivedNavigation.data.accounts[0].removed, true);
+    const archivedQueueResponse = await fetch(
+      `${base}/api/archive-library/playback-queue?scope=account&userId=detail-user&focusBvid=BVDETAILLOST&pageSize=50`,
+      { headers: { Cookie: cookie } }
+    );
+    assert.equal(archivedQueueResponse.status, 200);
+    assert.equal((await archivedQueueResponse.json() as any).data.items[0].source.userId, "detail-user");
   } finally {
     if (server) {
       server.closeAllConnections?.();

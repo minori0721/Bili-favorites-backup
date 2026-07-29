@@ -144,8 +144,9 @@ export class UserStore {
   }
 
   remove(id: string) {
-    this.users = this.users.filter((user) => user.id !== id);
-    this.save();
+    const next = this.users.filter((user) => user.id !== id);
+    writeJsonFile(usersPath, next);
+    this.users = next;
   }
 
   clear() {

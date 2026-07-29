@@ -13,7 +13,7 @@ import type {
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 6;
+export const DATABASE_SCHEMA_VERSION = 7;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 export const LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
@@ -264,6 +264,81 @@ CREATE INDEX IF NOT EXISTS idx_path_migration_items_status
   ON path_migration_items(migration_id, status, next_attempt_at, relative_path);
 CREATE INDEX IF NOT EXISTS idx_path_migration_items_path
   ON path_migration_items(migration_id, relative_path);
+
+CREATE TABLE IF NOT EXISTS archive_accounts (
+  user_id TEXT PRIMARY KEY,
+  uid INTEGER,
+  name TEXT NOT NULL,
+  avatar TEXT,
+  removed_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_archive_accounts_removed
+  ON archive_accounts(removed_at, user_id);
+
+CREATE TABLE IF NOT EXISTS archive_deletions (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  media_id INTEGER,
+  bvid TEXT,
+  status TEXT NOT NULL,
+  alist_identity_hash TEXT NOT NULL,
+  archive_root TEXT NOT NULL,
+  relation_count INTEGER NOT NULL DEFAULT 0,
+  source_count INTEGER NOT NULL DEFAULT 0,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER NOT NULL DEFAULT 0,
+  shared_count INTEGER NOT NULL DEFAULT 0,
+  completed_count INTEGER NOT NULL DEFAULT 0,
+  retained_count INTEGER NOT NULL DEFAULT 0,
+  conflict_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  expires_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  started_at INTEGER,
+  completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_archive_deletions_target
+  ON archive_deletions(user_id, media_id, bvid, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_deletions_active
+  ON archive_deletions((1))
+  WHERE status IN ('pending','running','retry_wait');
+
+CREATE TABLE IF NOT EXISTS archive_deletion_items (
+  deletion_id TEXT NOT NULL REFERENCES archive_deletions(id) ON DELETE CASCADE,
+  remote_path TEXT NOT NULL,
+  expected_size INTEGER,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(deletion_id, remote_path)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_deletion_items_status
+  ON archive_deletion_items(deletion_id, status, next_attempt_at, remote_path);
+
+CREATE TABLE IF NOT EXISTS archive_deleted_sources (
+  user_id TEXT NOT NULL,
+  media_id INTEGER NOT NULL,
+  bvid TEXT NOT NULL REFERENCES videos(bvid) ON DELETE CASCADE,
+  deletion_id TEXT NOT NULL REFERENCES archive_deletions(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  deleted_at INTEGER,
+  restored_at INTEGER,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER NOT NULL DEFAULT 0,
+  retained_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(deletion_id, user_id, media_id, bvid)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_deleted_sources_time
+  ON archive_deleted_sources(deleted_at DESC, bvid);
+CREATE INDEX IF NOT EXISTS idx_archive_deleted_sources_lookup
+  ON archive_deleted_sources(user_id, media_id, bvid, status, deleted_at DESC);
 `;
 
 function parseJson<T>(value: string, fallback: T): T {
@@ -641,6 +716,74 @@ export class StateDatabase {
         AS present
     `).get() as any;
     return Boolean(row?.present);
+  }
+
+  hasActiveArchiveDeletion() {
+    const row = this.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM archive_deletions
+        WHERE status IN ('pending','running','retry_wait')
+      ) AS present
+    `).get() as any;
+    return Boolean(row?.present);
+  }
+
+  hasUnfinishedArchiveDeletion() {
+    const row = this.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM archive_deletions
+        WHERE status IN ('pending','running','retry_wait','failed')
+      ) AS present
+    `).get() as any;
+    return Boolean(row?.present);
+  }
+
+  hasUnfinishedArchiveAccountDeletion(userId: string) {
+    const row = this.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM archive_deletions
+        WHERE scope='account' AND user_id=?
+          AND status IN ('pending','running','retry_wait','failed')
+      ) AS present
+    `).get(userId) as any;
+    return Boolean(row?.present);
+  }
+
+  isArchiveAccount(userId: string) {
+    const row = this.db.prepare("SELECT removed_at FROM archive_accounts WHERE user_id=?").get(userId) as any;
+    return Number(row?.removed_at || 0) > 0;
+  }
+
+  isArchiveSourceDeletionBlocked(userId: string, mediaId: number, bvid: string) {
+    const row = this.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM archive_deleted_sources
+        WHERE user_id=? AND media_id=? AND bvid=?
+          AND status IN ('pending','running','retry_wait','failed','completed')
+      ) AS blocked
+    `).get(userId, mediaId, bvid) as any;
+    return Boolean(row?.blocked);
+  }
+
+  restoreCompletedArchiveSource(userId: string, mediaId: number, bvid: string, restoredAt = Date.now()) {
+    return this.db.transaction(() => {
+      const restored = this.db.prepare(`
+        UPDATE archive_deleted_sources
+        SET status='restored', restored_at=?
+        WHERE user_id=? AND media_id=? AND bvid=? AND status IN ('completed','failed')
+      `).run(restoredAt, userId, mediaId, bvid).changes;
+      if (restored > 0) {
+        this.db.prepare(`
+          UPDATE archive_deletions
+          SET status='superseded', last_error='归档来源已重新加入活动收藏，旧清理任务已结束', updated_at=?
+          WHERE scope='source' AND status='failed' AND id IN (
+            SELECT deletion_id FROM archive_deleted_sources
+            WHERE user_id=? AND media_id=? AND bvid=? AND status='restored'
+          )
+        `).run(restoredAt, userId, mediaId, bvid);
+      }
+      return restored;
+    })();
   }
 
   getActivePathMigration() {
@@ -1520,6 +1663,10 @@ export class StateDatabase {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
         DELETE FROM jobs;
+        DELETE FROM archive_deletion_items;
+        DELETE FROM archive_deleted_sources;
+        DELETE FROM archive_deletions;
+        DELETE FROM archive_accounts;
         DELETE FROM path_migration_items;
         DELETE FROM path_migrations;
         DELETE FROM quality_upgrades;
@@ -1846,6 +1993,10 @@ export class StateDatabase {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
         DELETE FROM jobs;
+        DELETE FROM archive_deletion_items;
+        DELETE FROM archive_deleted_sources;
+        DELETE FROM archive_deletions;
+        DELETE FROM archive_accounts;
         DELETE FROM path_migration_items;
         DELETE FROM path_migrations;
         DELETE FROM quality_upgrades;

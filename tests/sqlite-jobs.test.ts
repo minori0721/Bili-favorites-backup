@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import {
+  DATABASE_SCHEMA_VERSION,
   LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
   LEGACY_TEMP_CACHE_MARKER,
   StateDatabase,
@@ -309,7 +310,7 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
     try {
       const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
       assert.match(String(row?.sql || ""), /charging_restricted/);
-      assert.equal(migrated.db.pragma("user_version", { simple: true }), 6);
+      assert.equal(migrated.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
       const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as any[]).map((item) => item.name));
       assert.equal(columns.has("fav_order"), true);
       assert.equal(columns.has("account_detached_at"), true);
@@ -357,7 +358,7 @@ test("schema 4 upgrade aborts before mutation when its consistent backup cannot 
 
     await fs.promises.rm(path.join(runtime, "backups"), { force: true });
     const upgraded = new StateDatabase(dbPath);
-    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 6);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
     upgraded.close();
   } finally {
     await removeTestDir(runtime);
@@ -408,7 +409,7 @@ test("schema 6 adds actual media columns without treating requested quality as m
 
     const upgraded = new StateDatabase(dbPath);
     try {
-      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 6);
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
       const columns = new Set((upgraded.db.pragma("table_info(remote_files)") as any[]).map((row) => String(row.name)));
       for (const column of [
         "actual_width", "actual_height", "actual_fps", "actual_duration", "actual_codec",
@@ -427,8 +428,60 @@ test("schema 6 adds actual media columns without treating requested quality as m
       upgraded.close();
     }
     const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
-      .filter((name) => name.includes("before-schema-6-v5") && name.endsWith(".sqlite"));
+      .filter((name) => name.includes(`before-schema-${DATABASE_SCHEMA_VERSION}-v5`) && name.endsWith(".sqlite"));
     assert.equal(backups.length, 1);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 7 creates persistent archive deletion tables with a verified v6 backup", async () => {
+  const runtime = await createTestDir("sqlite-schema-7-archive-delete");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  try {
+    const current = new StateDatabase(dbPath);
+    current.close();
+
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      DROP TABLE archive_deleted_sources;
+      DROP TABLE archive_deletion_items;
+      DROP TABLE archive_deletions;
+      DROP TABLE archive_accounts;
+    `);
+    legacy.pragma("user_version = 6");
+    legacy.close();
+
+    const upgraded = new StateDatabase(dbPath);
+    try {
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 7);
+      const tables = new Set((upgraded.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[]).map((row) => row.name));
+      for (const table of ["archive_accounts", "archive_deletions", "archive_deletion_items", "archive_deleted_sources"]) {
+        assert.equal(tables.has(table), true, table);
+      }
+      const foreignKeys = upgraded.db.pragma("foreign_key_list(archive_deleted_sources)") as any[];
+      assert.deepEqual(new Set(foreignKeys.map((row) => row.table)), new Set(["archive_deletions", "videos"]));
+      upgraded.db.prepare(`
+        INSERT INTO archive_deletions(
+          id,scope,user_id,status,alist_identity_hash,archive_root,created_at,updated_at
+        ) VALUES('failed-delete','source','u1','failed','identity','/backup',1,1)
+      `).run();
+      assert.equal(upgraded.hasActiveArchiveDeletion(), false);
+      assert.equal(upgraded.hasUnfinishedArchiveDeletion(), true);
+      assert.equal(upgraded.db.pragma("integrity_check", { simple: true }), "ok");
+      assert.deepEqual(upgraded.db.pragma("foreign_key_check"), []);
+    } finally {
+      upgraded.close();
+    }
+
+    const reopened = new StateDatabase(dbPath);
+    reopened.close();
+    const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
+      .filter((name) => name.includes("before-schema-7-v6") && name.endsWith(".sqlite"));
+    assert.equal(backups.length, 1);
+    const checksum = (await fs.promises.readFile(path.join(runtime, "backups", `${backups[0]}.sha256`), "utf8")).split(/\s+/, 1)[0];
+    const actual = crypto.createHash("sha256").update(await fs.promises.readFile(path.join(runtime, "backups", backups[0]))).digest("hex");
+    assert.equal(checksum, actual);
   } finally {
     await removeTestDir(runtime);
   }

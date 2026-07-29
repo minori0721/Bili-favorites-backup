@@ -947,6 +947,7 @@ export class StateManager {
     },
     seenAt = nowIso()
   ) {
+    this.database.restoreCompletedArchiveSource(userId, mediaId, item.bvid, Date.parse(seenAt) || Date.now());
     const existing = this.state.videos![item.bvid];
     const wasKnown = Boolean(existing);
     const favoriteUnavailable = Boolean(item.favoriteUnavailable || item.unavailable);
@@ -1036,7 +1037,7 @@ export class StateManager {
       }
       if (!relation.backupStatus) {
         this.setRelationStatus(relation, this.initialRelationStatus(item.bvid, relation), seenAt);
-      } else if (item.selfVisible && relation.backupStatus === "lost") {
+      } else if ((!favoriteUnavailable || item.selfVisible) && relation.backupStatus === "lost") {
         this.setRelationStatus(relation, "discovered", seenAt);
         relation.lastError = undefined;
       } else if (favoriteUnavailable && !item.selfVisible && !BACKED_UP_STATUSES.has(relation.backupStatus)) {

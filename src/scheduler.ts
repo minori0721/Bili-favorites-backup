@@ -173,6 +173,8 @@ export class SyncScheduler {
   private cleanupLocked = false;
   private pathMigrationLocked = false;
   private pathMigrationMaintenance: { id: string; status: string; sourceRoot: string; destinationRoot: string } | null = null;
+  private archiveDeletionLocked = false;
+  private archiveDeletionMaintenance: { id: string; status: string; scope: string } | null = null;
   private uploadProbeTimer: NodeJS.Timeout | null = null;
   private readonly uploadCircuit = new UploadCircuitBreaker();
   private readonly downloadApiHealth = new DownloadApiHealth();
@@ -237,8 +239,8 @@ export class SyncScheduler {
       if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
       return this.canStartDownloadTask(task);
     });
-    this.uploadQueue.setStartGate((task) => !this.pathMigrationLocked && this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
-    this.verificationQueue.setStartGate((task) => !this.pathMigrationLocked && this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
+    this.uploadQueue.setStartGate((task) => !this.pathMigrationLocked && !this.archiveDeletionLocked && this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
+    this.verificationQueue.setStartGate((task) => !this.pathMigrationLocked && !this.archiveDeletionLocked && this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
     this.refreshLocalCacheAndWake(true);
 
     const logTaskError = (task: any, error: any) => {
@@ -848,7 +850,7 @@ export class SyncScheduler {
     const target = targets[0];
     const user = this.userStore.getById(String(payload.downloadUserId || payload.userId || job.userId || target?.userId || ""));
     const needsDownloadCredentials = job.kind === "quality_download";
-    if (!target || (needsDownloadCredentials && (!user || !user.enabled))) return null;
+    if (!target || (needsDownloadCredentials && !this.isUserSyncEligible(user))) return null;
     const qualityProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
     const artifactKey = String(payload.artifactKey || buildQualityArtifactKey(String(payload.bvid || job.bvid || ""), qualityProfile));
     const taskConfig = applyQualityArtifactProfile(this.configStore.get(), qualityProfile);
@@ -990,7 +992,7 @@ export class SyncScheduler {
 
   private orderedEnabledUsers(preferredUserId: string, skipped: Set<string>) {
     return this.userStore.list()
-      .filter((user) => user.enabled && !skipped.has(user.id))
+      .filter((user) => this.isUserSyncEligible(user) && !skipped.has(user.id))
       .sort((left, right) => {
         if (left.id === preferredUserId) return -1;
         if (right.id === preferredUserId) return 1;
@@ -1198,7 +1200,7 @@ export class SyncScheduler {
   }
 
   private dispatchPersistentJobs() {
-    if (!this.acceptingJobs || this.cleanupLocked || this.pathMigrationLocked) return;
+    if (!this.acceptingJobs || this.cleanupLocked || this.pathMigrationLocked || this.archiveDeletionLocked) return;
     this.dispatchChargingAccessProbe();
     const config = this.configStore.get();
     const downloadCapacity = Math.max(0, this.queueHighWater(
@@ -1857,7 +1859,7 @@ export class SyncScheduler {
       Boolean(task.persistentJobId && jobIds.has(task.persistentJobId))
     ).length;
     const canceledProcesses = await cancelActiveDownloadsForAccount(String(user.uid || user.cookie.DedeUserID || ""));
-    const alternateUser = this.userStore.list().find((candidate) => candidate.id !== user.id && candidate.enabled);
+    const alternateUser = this.userStore.list().find((candidate) => candidate.id !== user.id && this.isUserSyncEligible(candidate));
     let reassignedJobs = 0;
     let pausedJobs = 0;
     let directUploadTargets = 0;
@@ -1966,6 +1968,25 @@ export class SyncScheduler {
 
   isPathMigrationLocked() {
     return this.pathMigrationLocked;
+  }
+
+  setArchiveDeletionMaintenance(locked: boolean, summary?: { id: string; status: string; scope: string }) {
+    this.archiveDeletionLocked = locked;
+    this.archiveDeletionMaintenance = locked && summary ? { ...summary } : null;
+    if (!locked) {
+      this.downloadQueue.poke();
+      this.uploadQueue.poke();
+      this.verificationQueue.poke();
+      this.dispatchPersistentJobs();
+    }
+  }
+
+  isArchiveDeletionLocked() {
+    return this.archiveDeletionLocked;
+  }
+
+  private isUserSyncEligible(user: BiliUser | null | undefined): user is BiliUser {
+    return Boolean(user?.enabled && !this.stateManager.getDatabase().hasUnfinishedArchiveAccountDeletion(user.id));
   }
 
   applyConfigUpdate(previous: AppConfig, next: AppConfig) {
@@ -2110,7 +2131,7 @@ export class SyncScheduler {
   }
 
   hasActiveOrQueuedSchedulerWork() {
-    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || this.pathMigrationLocked || Boolean(this.legacyTempRecoveryPromise);
+    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || this.pathMigrationLocked || this.archiveDeletionLocked || Boolean(this.legacyTempRecoveryPromise);
   }
 
   refreshLocalCacheState() {
@@ -2359,7 +2380,7 @@ export class SyncScheduler {
   }
 
   private canStartDownloadTask(task?: DownloadTask | QualityUpgradeDownloadTask) {
-    if (this.legacyTempRecoveryPending || this.pathMigrationLocked) return false;
+    if (this.legacyTempRecoveryPending || this.pathMigrationLocked || this.archiveDeletionLocked) return false;
     if (task instanceof QualityUpgradeDownloadTask && this.qualityArtifactCleanupLocks.has(task.control.artifactKey)) {
       return false;
     }
@@ -2392,6 +2413,7 @@ export class SyncScheduler {
   private canCreateDownloadTask() {
     const snapshot = this.getLocalCacheSnapshot();
     return !this.pathMigrationLocked
+      && !this.archiveDeletionLocked
       && !snapshot.paused
       && !this.uploadCircuit.isDownloadPaused()
       && this.uploadQueue.getSize() === 0
@@ -2546,12 +2568,16 @@ export class SyncScheduler {
         retryJobs,
         prefetchLimit: this.configStore.get().queuePrefetchLimit || 25,
       },
-      maintenance: this.pathMigrationMaintenance ? { ...this.pathMigrationMaintenance } : undefined,
+      maintenance: this.archiveDeletionMaintenance
+        ? { kind: "archive_delete", ...this.archiveDeletionMaintenance }
+        : this.pathMigrationMaintenance
+          ? { kind: "path_migration", ...this.pathMigrationMaintenance }
+          : undefined,
     };
   }
 
   async tick(manual = false, options: TickOptions = {}) {
-    if (this.cleanupLocked || this.pathMigrationLocked || this.running) {
+    if (this.cleanupLocked || this.pathMigrationLocked || this.archiveDeletionLocked || this.running) {
       return false;
     }
     const trigger: SyncTrigger = options.trigger || (manual ? "manual" : "auto");
@@ -2599,7 +2625,7 @@ export class SyncScheduler {
   }
 
   private async runOnce(manual: boolean, forceFullFavoriteScan: boolean) {
-    const users = this.userStore.list().filter((user) => user.enabled);
+    const users = this.userStore.list().filter((user) => this.isUserSyncEligible(user));
     this.updateSchedulerProgress({ detail: `正在检查 ${users.length} 个启用账号。` });
     for (const user of users) {
       const cooldown = this.stateManager.getUserCooldown(user.id);
@@ -3022,7 +3048,10 @@ export class SyncScheduler {
     bvid: string,
     options: { persisted?: boolean; notBefore?: number; downloadUserId?: string } = {}
   ) {
-    if (!user.enabled) {
+    if (!this.isUserSyncEligible(user)) {
+      return false;
+    }
+    if (this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(user.id, mediaId, bvid)) {
       return false;
     }
     const local = this.stateManager.getCompletedLocalDownload(bvid);
@@ -3112,7 +3141,7 @@ export class SyncScheduler {
   }
 
   private requeueRetryPendingBeforeScan() {
-    const users = this.userStore.list().filter((user) => user.enabled);
+    const users = this.userStore.list().filter((user) => this.isUserSyncEligible(user));
     let remaining = Math.max(1, this.configStore.get().remoteRequeueLimitPerCycle || 20);
     this.stateManager.runBatch(() => {
       for (const user of users) {
@@ -3133,7 +3162,7 @@ export class SyncScheduler {
   }
 
   private triggerOrQueueTick(options: TickOptions) {
-    if (this.cleanupLocked || this.pathMigrationLocked) {
+    if (this.cleanupLocked || this.pathMigrationLocked || this.archiveDeletionLocked) {
       return { started: false, queued: false };
     }
     if (this.running) {
@@ -3822,7 +3851,7 @@ export class SyncScheduler {
 
   private resolveRelation(relation: FavoriteRelation) {
     const user = this.userStore.getById(relation.userId);
-    if (!user || !user.enabled) return null;
+    if (!this.isUserSyncEligible(user)) return null;
     const folder = user.favorites.find((item) => item.mediaId === relation.mediaId);
     return {
       user,
@@ -3835,7 +3864,7 @@ export class SyncScheduler {
     const relations = this.stateManager.listRelationsForBvid(bvid);
     for (const relation of relations) {
       const user = this.userStore.getById(relation.userId);
-      if (!user || !user.enabled) continue;
+      if (!this.isUserSyncEligible(user)) continue;
       const folder = user.favorites.find((item) => item.mediaId === relation.mediaId);
       return {
         user,

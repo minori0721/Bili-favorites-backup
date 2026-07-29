@@ -191,6 +191,11 @@ const playableRelationSql = `
         OR lower(rf.name) LIKE '%.webm'
       )
   )
+  AND NOT EXISTS (
+    SELECT 1 FROM archive_deleted_sources ads
+    WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
+      AND ads.status IN ('pending','running','retry_wait','failed','completed')
+  )
 `;
 
 function parseJson<T>(value: unknown, fallback: T): T {
@@ -326,6 +331,11 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
       OR lower(rf.name) LIKE '%.m4v'
       OR lower(rf.name) LIKE '%.webm'
     )
+    AND NOT EXISTS (
+      SELECT 1 FROM archive_deleted_sources ads
+      WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid
+        AND ads.status IN ('pending','running','retry_wait','failed','completed')
+    )
     ORDER BY rf.user_id, rf.media_id, rf.bvid, rf.id
   `).all(...params) as any[];
   const result = new Map<string, PlaybackFileRow[]>();
@@ -447,6 +457,11 @@ function exactRelation(database: StateDatabase, userId: string, mediaId: number,
     SELECT r.payload_json AS relation_json, v.payload_json AS video_json
     FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
     WHERE r.user_id=? AND r.media_id=? AND r.bvid=?
+      AND NOT EXISTS (
+        SELECT 1 FROM archive_deleted_sources ads
+        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
+          AND ads.status IN ('pending','running','retry_wait','failed','completed')
+      )
   `).get(userId, mediaId, bvid) as any;
   if (!row) return null;
   return {
@@ -637,6 +652,11 @@ export function resolvePlaybackFile(database: StateDatabase, userId: string, med
       ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
     WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified'
       AND r.backup_status IN ('verified','partial_verified')
+      AND NOT EXISTS(
+        SELECT 1 FROM archive_deleted_sources ads
+        WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid
+          AND ads.status IN ('pending','running','retry_wait','failed','completed')
+      )
   `).get(fileId, userId, mediaId) as any;
   if (!row) throw new PlaybackHttpError(404, "PLAYBACK_FILE_NOT_FOUND", "播放文件不存在或尚未完成远端确认");
   const relation = parseJson<FavoriteRelation>(row.relation_json, undefined as any);

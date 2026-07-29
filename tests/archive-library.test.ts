@@ -191,7 +191,7 @@ function fixture() {
   insertArchive(database, {
     userId: "u1", mediaId: 12, folderTitle: "已经停用", bvid: "BVISSUE", title: "失效异常",
     upperName: "UP丙", status: "failed", unavailable: true, seenOffset: -2000,
-    error: "failed path=/secret/archive/BVISSUE token=do-not-return",
+    error: "failed path=/secret.mp4 token=do-not-return",
   });
   return database;
 }
@@ -281,7 +281,7 @@ test("archive details redact source errors and library playback preserves the fi
   try {
     const detail = getArchiveLibraryItemDetail(database, users(), { scope: "global" }, "BVISSUE")!;
     assert.equal(detail.memberships.length, 1);
-    assert.doesNotMatch(detail.memberships[0].error || "", /do-not-return|\/secret\/archive/);
+    assert.doesNotMatch(detail.memberships[0].error || "", /do-not-return|\/secret\.mp4/);
     assert.equal(getArchiveLibraryItemDetail(database, users(), { scope: "global", filter: "playable" }, "BVISSUE"), null);
 
     const queue = getArchiveLibraryPlaybackQueue(database, users(), {

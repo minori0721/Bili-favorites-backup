@@ -90,6 +90,8 @@ import {
   type ArchiveLibrarySearchScope,
   type ArchiveLibrarySort,
 } from "./archive-library.js";
+import { ArchiveDeletionService } from "./archive-deletion.js";
+import { executeAccountRemoval } from "./account-removal.js";
 
 ensureAppDirs();
 
@@ -104,6 +106,16 @@ const pathMigration = new PathMigrationService(stateManager.getDatabase(), confi
     && !scheduler.hasActiveOrQueuedSchedulerWork(),
   setMaintenance: (locked, summary) => scheduler.setPathMigrationMaintenance(locked, summary),
   onConfigSwitched: (previous, next) => scheduler.applyConfigUpdate(previous, next),
+});
+const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, userStore, {
+  isSchedulerIdle: () => !scheduler.hasRunningTransferTasks()
+    && !scheduler.hasPersistentTransferWork()
+    && !scheduler.hasActiveOrQueuedSchedulerWork(),
+  setMaintenance: (locked, summary) => scheduler.setArchiveDeletionMaintenance(locked, summary),
+  onAccountDeletionCompleted: (userId) => {
+    scheduler.restoreUserAfterLogin(userId);
+    scheduler.wakeChargingAccessProbes();
+  },
 });
 
 const favoriteItemsCache = new Map<
@@ -797,6 +809,7 @@ app.put("/api/config", (req, res) => {
   }
   const previous = configStore.get();
   const activePathMigration = stateManager.getDatabase().getActivePathMigration();
+  const activeArchiveDeletion = stateManager.getDatabase().hasActiveArchiveDeletion();
   const protectedAlistKeys = ["alistUrl", "alistUsername", "alistPassword", "alistDest", "uploadLayout"] as const;
   const protectedChanged = activePathMigration && protectedAlistKeys.some((key) => {
     if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
@@ -807,6 +820,17 @@ app.put("/api/config", (req, res) => {
   });
   if (protectedChanged) {
     res.status(409).json({ success: false, code: "PATH_MIGRATION_ACTIVE", message: "归档路径迁移期间不能修改 AList 连接、路径或目录结构" });
+    return;
+  }
+  const archiveDeletionProtectedChanged = activeArchiveDeletion && protectedAlistKeys.some((key) => {
+    if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
+    if (key === "alistDest") {
+      return normalizeRemotePath(String(req.body[key] || "")) !== normalizeRemotePath(String(previous[key] || ""));
+    }
+    return req.body[key] !== previous[key];
+  });
+  if (archiveDeletionProtectedChanged) {
+    res.status(409).json({ success: false, code: "ARCHIVE_DELETION_ACTIVE", message: "归档清理期间不能修改 AList 连接、路径或目录结构" });
     return;
   }
   if (Object.prototype.hasOwnProperty.call(req.body, "alistDest")
@@ -827,6 +851,10 @@ app.put("/api/config", (req, res) => {
 });
 
 app.post("/api/path-migration/preview", asyncHandler(async (req, res) => {
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能预览归档路径迁移" });
+    return;
+  }
   const destinationRoot = String(req.body?.destinationRoot || "").trim();
   if (!destinationRoot) {
     res.status(400).json({ success: false, message: "destinationRoot is required" });
@@ -849,6 +877,10 @@ app.get("/api/path-migration/items", (req, res) => {
 });
 
 app.post("/api/path-migration/start", asyncHandler(async (req, res) => {
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能开始归档路径迁移" });
+    return;
+  }
   res.json({ success: true, data: await pathMigration.start(req.body?.id) });
 }));
 
@@ -925,8 +957,10 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
           lastAuthRefreshAt: new Date().toISOString(),
           lastAuthRefreshError: "",
         });
-        scheduler.restoreUserAfterLogin(userId);
-        scheduler.wakeChargingAccessProbes();
+        if (archiveDeletion.restoreAccount(userId)) {
+          scheduler.restoreUserAfterLogin(userId);
+          scheduler.wakeChargingAccessProbes();
+        }
         setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
         setLoginSession(loginId, { status: "error", qrDataUrl, message: safeErrorSummary(error, "Failed to save user") });
@@ -1056,6 +1090,46 @@ app.get("/api/archive-library/items/:bvid", (req, res) => {
     sendArchiveLibraryError(res, error);
   }
 });
+
+app.post("/api/archive-library/items/:bvid/deletion-preview", asyncHandler(async (req, res) => {
+  const bvid = String(req.params.bvid || "").trim();
+  const userId = String(req.body?.userId || "").trim();
+  const mediaId = Number(req.body?.mediaId);
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid) || !userId || !Number.isInteger(mediaId) || mediaId < 1) {
+    res.status(400).json({ success: false, message: "归档来源参数无效" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: archiveDeletion.previewSource(userId, mediaId, bvid) });
+}));
+
+app.get("/api/archive-deletions/:id", (req, res) => {
+  const data = archiveDeletion.get(String(req.params.id || ""));
+  if (!data) {
+    res.status(404).json({ success: false, message: "归档清理任务不存在" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data });
+});
+
+app.post("/api/archive-deletions/:id/start", asyncHandler(async (req, res) => {
+  const data = archiveDeletion.start(String(req.params.id || ""), String(req.body?.confirmation || ""));
+  res.status(202).setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data });
+}));
+
+app.post("/api/archive-deletions/:id/retry", asyncHandler(async (req, res) => {
+  const data = archiveDeletion.retry(String(req.params.id || ""));
+  res.status(202).setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data });
+}));
+
+app.post("/api/archive-deletions/:id/repreview", asyncHandler(async (req, res) => {
+  const data = archiveDeletion.repreview(String(req.params.id || ""));
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data });
+}));
 
 app.get("/api/archive-library/playback-queue", (req, res) => {
   try {
@@ -1241,13 +1315,17 @@ app.get("/api/users/:id/favorites/:mediaId/playback-search", (req, res) => {
   res.json({ success: true, data });
 });
 
+function playbackOwnerExists(userId: string) {
+  return Boolean(userStore.getById(userId) || archiveDeletion.isKnownOwner(userId));
+}
+
 app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata", (req, res) => {
-  const user = userStore.getById(req.params.id);
+  const userId = String(req.params.id || "");
   const mediaId = Number(req.params.mediaId);
   const fileId = Number(req.params.fileId);
   const fingerprint = String(req.body?.fingerprint || "");
   const metadata = validBrowserMediaMetadata(req.body || {});
-  if (!user) {
+  if (!playbackOwnerExists(userId)) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
@@ -1257,8 +1335,8 @@ app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata
     return;
   }
   try {
-    resolvePlaybackFile(stateManager.getDatabase(), user.id, mediaId, fileId);
-    const result = stateManager.updatePlaybackMediaMetadata(user.id, mediaId, fileId, { fingerprint, ...metadata });
+    resolvePlaybackFile(stateManager.getDatabase(), userId, mediaId, fileId);
+    const result = stateManager.updatePlaybackMediaMetadata(userId, mediaId, fileId, { fingerprint, ...metadata });
     if (!result) {
       res.status(409).json({ success: false, code: "PLAYBACK_FILE_CHANGED", message: "播放文件记录已变化，请重新打开播放器" });
       return;
@@ -1280,10 +1358,10 @@ app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata
 });
 
 app.get("/api/users/:id/favorites/:mediaId/playback/delivery/:attemptId", (req, res) => {
-  const user = userStore.getById(req.params.id);
+  const userId = String(req.params.id || "");
   const mediaId = Number(req.params.mediaId);
   const attemptId = String(req.params.attemptId || "");
-  if (!user) {
+  if (!playbackOwnerExists(userId)) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
@@ -1292,14 +1370,14 @@ app.get("/api/users/:id/favorites/:mediaId/playback/delivery/:attemptId", (req, 
     return;
   }
   res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: getPlaybackDeliveryStatus(req.sessionID, user.id, mediaId, attemptId) });
+  res.json({ success: true, data: getPlaybackDeliveryStatus(req.sessionID, userId, mediaId, attemptId) });
 });
 
 app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId/open-in-alist", (req, res) => {
-  const user = userStore.getById(req.params.id);
+  const userId = String(req.params.id || "");
   const mediaId = Number(req.params.mediaId);
   const fileId = Number(req.params.fileId);
-  if (!user) {
+  if (!playbackOwnerExists(userId)) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
@@ -1308,7 +1386,7 @@ app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId/open-in-alist"
     return;
   }
   try {
-    const location = playbackFileAlistLocation(stateManager.getDatabase(), configStore.get(), user.id, mediaId, fileId);
+    const location = playbackFileAlistLocation(stateManager.getDatabase(), configStore.get(), userId, mediaId, fileId);
     res.status(302);
     res.setHeader("Location", location);
     res.setHeader("Cache-Control", "private, no-store");
@@ -1325,8 +1403,8 @@ app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId/open-in-alist"
 });
 
 const playbackFileHandler = asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
+  const userId = String(req.params.id || "");
+  if (!playbackOwnerExists(userId)) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
@@ -1348,7 +1426,7 @@ const playbackFileHandler = asyncHandler(async (req, res) => {
   }
   try {
     await streamPlaybackFile(stateManager.getDatabase(), configStore.get(), req, res, {
-      userId: user.id,
+      userId,
       mediaId,
       fileId,
       ownerKey: req.sessionID,
@@ -1424,15 +1502,33 @@ app.patch("/api/users/:id", (req, res) => {
   res.json({ success: true, data: user });
 });
 
+app.post("/api/users/:id/removal-preview", (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: archiveDeletion.previewAccount(user) });
+});
+
 app.delete("/api/users/:id", asyncHandler(async (req, res) => {
   const user = userStore.getById(req.params.id);
   if (!user) {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  const retired = await scheduler.retireUser(user);
-  userStore.remove(user.id);
-  res.json({ success: true, data: retired });
+  const result = await executeAccountRemoval({
+    archiveDeletion,
+    scheduler,
+    userStore,
+    onRollbackError: (error) => console.error(`[Account] Failed to roll back account removal: ${safeErrorSummary(error)}`),
+  }, user, req.body || {});
+  if (result.operation) {
+    res.status(202).json({ success: true, data: { ...result.retired, operation: result.operation } });
+    return;
+  }
+  res.json({ success: true, data: result.retired });
 }));
 
 app.post("/api/sync/now", asyncHandler(async (req, res) => {
@@ -1632,6 +1728,10 @@ app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
     res.status(409).json({ success: false, message: "归档路径迁移期间不能清理业务状态" });
     return;
   }
+  if (items.some((item) => item === "state" || item === "users" || item === "config") && archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能清理业务状态、账号或配置" });
+    return;
+  }
   const requiresIdle = cleanupRequiresIdle(items);
   if (requiresIdle && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
     res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
@@ -1734,6 +1834,7 @@ function reloadStoresAfterImport() {
   userStore.reload();
   stateManager.reload();
   pathMigration.rebind(stateManager.getDatabase());
+  archiveDeletion.rebind(stateManager.getDatabase());
   scheduler.reloadStateDatabase();
   logManager.reload();
   scheduler.updateInterval();
@@ -1743,6 +1844,10 @@ app.post("/api/migration/export", asyncHandler(async (req, res) => {
   const activePathMigration = stateManager.getDatabase().getActivePathMigration();
   if (activePathMigration && activePathMigration.status !== "cleanup_pending") {
     res.status(409).json({ success: false, message: "归档路径迁移期间禁止导出迁移包" });
+    return;
+  }
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导出迁移包" });
     return;
   }
   const options = parseMigrationOptions(req.body);
@@ -1767,12 +1872,20 @@ app.post("/api/migration/estimate", asyncHandler(async (req, res) => {
     res.status(409).json({ success: false, message: "归档路径迁移期间禁止估算迁移包" });
     return;
   }
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止估算迁移包" });
+    return;
+  }
   res.json({ success: true, data: await estimateMigrationExport(parseMigrationOptions(req.body), stateManager) });
 }));
 
 app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
   if (stateManager.getDatabase().getActivePathMigration()) {
     res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
+    return;
+  }
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导入迁移包" });
     return;
   }
   const upload = await receiveMigrationArchive(req);
@@ -1791,6 +1904,10 @@ app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
 app.post("/api/migration/import", asyncHandler(async (req, res) => {
   if (stateManager.getDatabase().getActivePathMigration()) {
     res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
+    return;
+  }
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导入迁移包" });
     return;
   }
   if (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork()) {
@@ -2189,6 +2306,10 @@ app.get("/api/quality-upgrade/state", (_req, res) => {
 });
 
 app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能扫描远端重命名候选" });
+    return;
+  }
   const config = configStore.get();
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
   const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
@@ -2276,6 +2397,10 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/rename", asyncHandler(async (req, res) => {
+  if (archiveDeletion.hasUnfinishedOperation()) {
+    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能重命名远端文件" });
+    return;
+  }
   const { items } = req.body as {
     items?: Array<{ bvid?: string; oldPath: string; newPath: string }>;
   };
@@ -2358,9 +2483,11 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 export async function closeAppResources() {
   scheduler.beginShutdown();
   const pathMigrationStopped = pathMigration.stop(5_000);
+  const archiveDeletionStopped = archiveDeletion.stop(5_000);
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
   if (!await pathMigrationStopped) throw new Error("Path migration did not stop before closing the state database");
+  if (!await archiveDeletionStopped) throw new Error("Archive deletion did not stop before closing the state database");
   const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000);
   const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
   if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
@@ -2394,6 +2521,7 @@ if (process.env.NODE_ENV !== "test") {
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
     scheduler.beginShutdown();
     const pathMigrationStopped = pathMigration.stop(20_000);
+    const archiveDeletionStopped = archiveDeletion.stop(20_000);
     server.close();
     await shutdownActiveDownloads(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
@@ -2403,6 +2531,10 @@ if (process.env.NODE_ENV !== "test") {
     });
     if (!await pathMigrationStopped) {
       console.warn("[Shutdown] Path migration preview or worker did not stop before the shutdown deadline");
+    }
+    const archiveDeletionQuiesced = await archiveDeletionStopped;
+    if (!archiveDeletionQuiesced) {
+      console.warn("[Shutdown] Archive deletion worker did not stop before the shutdown deadline");
     }
     await cleanupBBDownCredentialResidue().catch((error) => {
       console.warn(`[Shutdown] Failed to clean BBDown credential directories: ${safeErrorSummary(error)}`);
@@ -2414,7 +2546,7 @@ if (process.env.NODE_ENV !== "test") {
     const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
     closePlaybackDeliveryTracker();
     adminSessionStore.close();
-    if (await pathMigrationStopped && coverBackfillStopped && coverQueueIdle) {
+    if (await pathMigrationStopped && archiveDeletionQuiesced && coverBackfillStopped && coverQueueIdle) {
       stateManager.close();
     } else {
       console.warn("[Shutdown] Skipped explicit state database close because background work did not quiesce");

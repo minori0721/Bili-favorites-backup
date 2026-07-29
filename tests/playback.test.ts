@@ -11,6 +11,7 @@ import {
   fetchPlaybackUpstream,
   playbackAvailability,
   PlaybackHttpError,
+  resolvePlaybackFile,
   safePlaybackRedirectLocation,
   streamPlaybackFile,
 } from "../src/playback.js";
@@ -306,6 +307,36 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
     assert.equal(history.items[0].queuePosition, 1);
     assert.equal(history.items[0].activeInFavorite, false);
     assert.equal(getPlaybackQueue(database, "u1", 10, { focusBvid: "BVPENDING" }), null);
+  } finally {
+    database.close();
+  }
+});
+
+test("playback excludes sources as soon as archive deletion is pending or failed", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    database.replaceState(playbackState());
+    const file = database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001' LIMIT 1").get() as any;
+    database.db.prepare(`
+      INSERT INTO archive_deletions(
+        id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
+        relation_count,source_count,file_count,total_bytes,shared_count,completed_count,
+        retained_count,conflict_count,failed_count,created_at,updated_at
+      ) VALUES('delete-playback','source','u1',10,'BVPLAY001','pending','hash','/archive',
+        1,1,1,128,0,0,0,0,0,1,1)
+    `).run();
+    database.db.prepare(`
+      INSERT INTO archive_deleted_sources(
+        user_id,media_id,bvid,deletion_id,status,file_count,total_bytes,retained_count
+      ) VALUES('u1',10,'BVPLAY001','delete-playback','pending',1,128,0)
+    `).run();
+    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
+    const queue = getPlaybackQueue(database, "u1", 10, { pageSize: 50 });
+    assert.equal(queue?.items.some((item) => item.bvid === "BVPLAY001"), false);
+
+    database.db.prepare("UPDATE archive_deletions SET status='failed' WHERE id='delete-playback'").run();
+    database.db.prepare("UPDATE archive_deleted_sources SET status='failed' WHERE deletion_id='delete-playback'").run();
+    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
   } finally {
     database.close();
   }
