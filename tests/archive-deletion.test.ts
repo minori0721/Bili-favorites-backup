@@ -142,16 +142,32 @@ function createService(
   manager: StateManager,
   users: ReturnType<typeof fakeUserStore>,
   dav: FakeDav,
-  options: { schedulerIdle?: () => boolean; maintenance?: Array<boolean>; now?: () => number } = {}
+  options: {
+    schedulerIdle?: () => boolean;
+    maintenance?: Array<boolean>;
+    now?: () => number;
+    config?: AppConfig;
+    previewCleanupIntervalMs?: number;
+  } = {}
 ) {
-  const config = testConfig({ alistDest: "/backup", alistUrl: "http://alist:5244", alistUsername: "admin", alistPassword: "secret" });
+  const config = options.config || testConfig({
+    alistDest: "/backup",
+    alistUrl: "http://alist:5244",
+    alistUsername: "admin",
+    alistPassword: "secret",
+  });
   return new ArchiveDeletionService(manager, fakeConfigStore(config) as any, users as any, {
     clientFactory: () => dav,
     sleep: async () => undefined,
     now: options.now,
+    previewCleanupIntervalMs: options.previewCleanupIntervalMs,
     isSchedulerIdle: options.schedulerIdle || (() => true),
     setMaintenance: (locked) => options.maintenance?.push(locked),
   });
+}
+
+function deletionRowCount(manager: StateManager, table: "archive_deletion_items" | "archive_deleted_sources", deletionId: string) {
+  return Number((manager.getDatabase().db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE deletion_id=?`).get(deletionId) as any)?.count || 0);
 }
 
 async function waitForOperation(service: ArchiveDeletionService, id: string, statuses: string[]) {
@@ -476,9 +492,191 @@ test("account previews report active tasks, expire after thirty minutes, and sou
     service = createService(manager, users, dav, { schedulerIdle: () => false, now: () => currentTime });
     const accountPreview = service.previewAccount(live);
     assert.equal(accountPreview.activeTasks, 1);
+    currentTime += 10 * 60_000;
+    const reused = service.previewAccount(live);
+    assert.equal(reused.id, accountPreview.id);
+    assert.equal(reused.expiresAt, accountPreview.expiresAt);
+    assert.equal(deletionRowCount(manager, "archive_deletion_items", accountPreview.id), 1);
+    assert.equal(deletionRowCount(manager, "archive_deleted_sources", accountPreview.id), 1);
     assert.throws(() => service!.previewSource("u1", 10, "BVPREVIEWTTL"), /任务空闲/);
-    currentTime += 30 * 60_000 + 1;
-    assert.throws(() => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"), /预览已过期/);
+    currentTime = accountPreview.expiresAt! + 1;
+    assert.throws(
+      () => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"),
+      (error: any) => error?.statusCode === 409 && error?.message === "预览已过期，请重新预览"
+    );
+    const replacement = service.previewAccount(live);
+    assert.notEqual(replacement.id, accountPreview.id);
+    assert.equal(service.get(accountPreview.id)?.status, "expired");
+    assert.equal(deletionRowCount(manager, "archive_deletion_items", accountPreview.id), 0);
+    assert.equal(deletionRowCount(manager, "archive_deleted_sources", accountPreview.id), 0);
+    assert.throws(
+      () => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"),
+      (error: any) => error?.statusCode === 409 && error?.message === "预览已过期，请重新预览"
+    );
+    currentTime = accountPreview.expiresAt! + 24 * 60 * 60_000 + 1;
+    (service as any).pruneExpiredPreviews();
+    assert.equal(service.get(accountPreview.id), undefined);
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("preview reuse expires stale snapshots when config, proofs, or source membership changes", async () => {
+  const runtime = await createTestDir("archive-delete-preview-reuse-drift");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const live = user("u1", []);
+  const users = fakeUserStore([live]);
+  const dav = new FakeDav();
+  const config = testConfig({ alistDest: "/backup", alistUrl: "http://alist:5244", alistUsername: "admin", alistPassword: "secret" });
+  let currentTime = now;
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVPREVIEWDRIFT", active: false,
+      paths: [{ path: "/backup/drift.mp4", size: 10, globalProof: true }],
+    });
+    service = createService(manager, users, dav, { config, now: () => currentTime });
+    const assertReplaced = (previousId: string, nextId: string) => {
+      assert.notEqual(nextId, previousId);
+      assert.equal(service!.get(previousId)?.status, "expired");
+      assert.equal(service!.get(previousId)?.expiresAt, currentTime);
+      assert.equal(deletionRowCount(manager, "archive_deletion_items", previousId), 0);
+      assert.equal(deletionRowCount(manager, "archive_deleted_sources", previousId), 0);
+    };
+
+    const first = service.previewSource("u1", 10, "BVPREVIEWDRIFT");
+    currentTime += 1;
+    config.alistPassword = "changed";
+    const identityChanged = service.previewSource("u1", 10, "BVPREVIEWDRIFT");
+    assertReplaced(first.id, identityChanged.id);
+
+    currentTime += 1;
+    config.alistDest = "/another-root";
+    const rootChanged = service.previewSource("u1", 10, "BVPREVIEWDRIFT");
+    assertReplaced(identityChanged.id, rootChanged.id);
+
+    currentTime += 1;
+    config.alistDest = "/backup";
+    const rootRestored = service.previewSource("u1", 10, "BVPREVIEWDRIFT");
+    assertReplaced(rootChanged.id, rootRestored.id);
+
+    currentTime += 1;
+    manager.getDatabase().db.prepare(`
+      UPDATE remote_files SET name='moved.mp4', remote_path='/backup/moved.mp4', updated_at=?
+      WHERE bvid='BVPREVIEWDRIFT'
+    `).run(currentTime);
+    const pathChanged = service.previewSource("u1", 10, "BVPREVIEWDRIFT");
+    assertReplaced(rootRestored.id, pathChanged.id);
+
+    currentTime += 1;
+    manager.getDatabase().db.prepare(`
+      UPDATE remote_files SET expected_size=11, updated_at=? WHERE bvid='BVPREVIEWDRIFT'
+    `).run(currentTime);
+    const sizeChanged = service.previewSource("u1", 10, "BVPREVIEWDRIFT");
+    assertReplaced(pathChanged.id, sizeChanged.id);
+
+    const accountPreview = service.previewAccount(live);
+    currentTime += 1;
+    insertSource(manager, {
+      userId: "u1", mediaId: 11, bvid: "BVPREVIEWSOURCE", active: false,
+      paths: [{ path: "/backup/source.mp4", size: 12 }],
+    });
+    const sourceChanged = service.previewAccount(live);
+    assertReplaced(accountPreview.id, sourceChanged.id);
+    assert.equal(sourceChanged.sourceCount, 2);
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("preview cleanup runs on construction, rebind, interval, and releases its timer on stop", async () => {
+  const runtime = await createTestDir("archive-delete-preview-cleanup-lifecycle");
+  const firstManager = new StateManager({ dbPath: path.join(runtime, "first.sqlite"), statePath: path.join(runtime, "first.json") });
+  const secondManager = new StateManager({ dbPath: path.join(runtime, "second.sqlite"), statePath: path.join(runtime, "second.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  let currentTime = now;
+  let seedFirst: ArchiveDeletionService | undefined;
+  let seedSecond: ArchiveDeletionService | undefined;
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(firstManager, { userId: "u1", mediaId: 10, bvid: "BVSTARTCLEAN", active: false, paths: [{ path: "/backup/start.mp4", size: 10 }] });
+    seedFirst = createService(firstManager, users, dav, { now: () => currentTime });
+    const startupPreview = seedFirst.previewSource("u1", 10, "BVSTARTCLEAN");
+    await seedFirst.stop();
+    seedFirst = undefined;
+
+    currentTime = startupPreview.expiresAt! + 1;
+    service = createService(firstManager, users, dav, { now: () => currentTime, previewCleanupIntervalMs: 5 });
+    assert.equal(service.get(startupPreview.id)?.status, "expired");
+    assert.equal(deletionRowCount(firstManager, "archive_deletion_items", startupPreview.id), 0);
+    assert.equal((service as any).previewCleanupTimer.hasRef(), false);
+
+    insertSource(secondManager, { userId: "u1", mediaId: 11, bvid: "BVREBINDCLEAN", active: false, paths: [{ path: "/backup/rebind.mp4", size: 11 }] });
+    seedSecond = createService(secondManager, users, dav, { now: () => currentTime });
+    const rebindPreview = seedSecond.previewSource("u1", 11, "BVREBINDCLEAN");
+    await seedSecond.stop();
+    seedSecond = undefined;
+
+    currentTime = rebindPreview.expiresAt! + 1;
+    service.rebind(secondManager.getDatabase());
+    assert.equal(service.get(rebindPreview.id)?.status, "expired");
+    assert.equal(deletionRowCount(secondManager, "archive_deletion_items", rebindPreview.id), 0);
+
+    const intervalPreview = service.previewSource("u1", 11, "BVREBINDCLEAN");
+    currentTime = intervalPreview.expiresAt! + 1;
+    for (let attempt = 0; attempt < 50 && service.get(intervalPreview.id)?.status !== "expired"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(service.get(intervalPreview.id)?.status, "expired");
+    assert.equal(deletionRowCount(secondManager, "archive_deletion_items", intervalPreview.id), 0);
+    assert.equal(await service.stop(), true);
+    assert.equal((service as any).previewCleanupTimer, null);
+    service = undefined;
+  } finally {
+    if (seedFirst) await seedFirst.stop();
+    if (seedSecond) await seedSecond.stop();
+    if (service) await service.stop();
+    firstManager.close();
+    secondManager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("preview cleanup never removes operational deletion records or their details", async () => {
+  const runtime = await createTestDir("archive-delete-preview-cleanup-statuses");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  let currentTime = now;
+  let service: ArchiveDeletionService | undefined;
+  try {
+    const statuses = ["pending", "running", "retry_wait", "failed", "completed", "superseded"];
+    service = createService(manager, users, dav, { now: () => currentTime });
+    for (const [index, status] of statuses.entries()) {
+      const bvid = `BVKEEP${String(index).padStart(3, "0")}`;
+      insertSource(manager, {
+        userId: "u1", mediaId: 100 + index, bvid, active: false,
+        paths: [{ path: `/backup/keep-${index}.mp4`, size: index + 1 }],
+      });
+      const preview = service.previewSource("u1", 100 + index, bvid);
+      const database = manager.getDatabase().db;
+      database.prepare("UPDATE archive_deletions SET status=? WHERE id=?").run(status, preview.id);
+      database.prepare("UPDATE archive_deletion_items SET status=? WHERE deletion_id=?").run(status, preview.id);
+      database.prepare("UPDATE archive_deleted_sources SET status=? WHERE deletion_id=?").run(status, preview.id);
+      currentTime = preview.expiresAt! + 48 * 60 * 60_000;
+      (service as any).pruneExpiredPreviews();
+      assert.equal(service.get(preview.id)?.status, status);
+      assert.equal(deletionRowCount(manager, "archive_deletion_items", preview.id), 1);
+      assert.equal(deletionRowCount(manager, "archive_deleted_sources", preview.id), 1);
+      if (["pending", "running", "retry_wait"].includes(status)) {
+        database.prepare("UPDATE archive_deletions SET status='completed' WHERE id=?").run(preview.id);
+      }
+    }
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -598,6 +796,7 @@ test("archive account preview folds 9065 proof rows into 4533 physical paths", a
   const live = user("u1", []);
   const users = fakeUserStore([live]);
   const dav = new FakeDav();
+  let currentTime = now;
   let service: ArchiveDeletionService | undefined;
   try {
     const database = manager.getDatabase();
@@ -614,11 +813,19 @@ test("archive account preview folds 9065 proof rows into 4533 physical paths", a
       }
     })();
     assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM remote_files").get() as any).count), 9065);
-    service = createService(manager, users, dav);
+    service = createService(manager, users, dav, { now: () => currentTime });
     const preview = service.previewAccount(live);
     assert.equal(preview.sourceCount, 1);
     assert.equal(preview.fileCount, 4533);
     assert.equal(preview.conflictCount, 0);
+    currentTime += 10 * 60_000;
+    const repeated = await Promise.all(Array.from({ length: 6 }, async () => service!.previewAccount(live)));
+    assert.deepEqual(new Set(repeated.map((entry) => entry.id)), new Set([preview.id]));
+    assert.equal(repeated.every((entry) => entry.expiresAt === preview.expiresAt), true);
+    assert.equal(deletionRowCount(manager, "archive_deletion_items", preview.id), 4533);
+    assert.equal(deletionRowCount(manager, "archive_deleted_sources", preview.id), 1);
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM archive_deletions WHERE status='preview'").get() as any).count), 1);
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM remote_files").get() as any).count), 9065);
   } finally {
     if (service) await service.stop();
     manager.close();

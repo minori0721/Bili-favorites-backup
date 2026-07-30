@@ -21,12 +21,15 @@ export interface ArchiveDeletionOptions {
   clientFactory?: (config: AppConfig) => ArchiveDeletionDavClient;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
+  previewCleanupIntervalMs?: number;
   setMaintenance?: (locked: boolean, summary?: { id: string; status: string; scope: string }) => void;
   isSchedulerIdle?: () => boolean;
   onAccountDeletionCompleted?: (userId: string) => void;
 }
 
 const PREVIEW_TTL_MS = 30 * 60_000;
+const EXPIRED_PREVIEW_RETENTION_MS = 24 * 60 * 60_000;
+const PREVIEW_CLEANUP_INTERVAL_MS = 30 * 60_000;
 const RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000];
 const TERMINAL_ITEM_STATUSES = new Set(["deleted", "missing", "retained"]);
 
@@ -105,6 +108,7 @@ export class ArchiveDeletionService {
   private readonly clientFactory: (config: AppConfig) => ArchiveDeletionDavClient;
   private readonly now: () => number;
   private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly previewCleanupIntervalMs: number;
   private readonly setMaintenance: NonNullable<ArchiveDeletionOptions["setMaintenance"]>;
   private readonly isSchedulerIdle: () => boolean;
   private readonly onAccountDeletionCompleted: NonNullable<ArchiveDeletionOptions["onAccountDeletionCompleted"]>;
@@ -112,6 +116,7 @@ export class ArchiveDeletionService {
   private worker: Promise<void> | null = null;
   private wakeTimer: NodeJS.Timeout | null = null;
   private leaseTimer: NodeJS.Timeout | null = null;
+  private previewCleanupTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
   constructor(
@@ -128,10 +133,13 @@ export class ArchiveDeletionService {
     this.clientFactory = options.clientFactory || ((config) => buildDavClient(config) as unknown as ArchiveDeletionDavClient);
     this.now = options.now || Date.now;
     this.sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+    this.previewCleanupIntervalMs = Math.max(1, options.previewCleanupIntervalMs ?? PREVIEW_CLEANUP_INTERVAL_MS);
     this.setMaintenance = options.setMaintenance || (() => undefined);
     this.isSchedulerIdle = options.isSchedulerIdle || (() => true);
     this.onAccountDeletionCompleted = options.onAccountDeletionCompleted || (() => undefined);
     this.jobStore.recoverExpiredLeases(this.now());
+    this.pruneExpiredPreviews();
+    this.startPreviewCleanupTimer();
     this.reconcileArchiveAccounts();
     this.syncMaintenanceState();
     this.schedule();
@@ -141,6 +149,7 @@ export class ArchiveDeletionService {
     this.db = database;
     this.jobStore.rebind(database);
     this.jobStore.recoverExpiredLeases(this.now());
+    this.pruneExpiredPreviews();
     this.reconcileArchiveAccounts();
     this.syncMaintenanceState();
     this.schedule();
@@ -208,7 +217,47 @@ export class ArchiveDeletionService {
 
   private pruneExpiredPreviews() {
     const now = this.now();
-    this.db.db.prepare("UPDATE archive_deletions SET status='expired', updated_at=? WHERE status='preview' AND expires_at<=?").run(now, now);
+    this.db.db.transaction(() => {
+      this.db.db.prepare(`
+        UPDATE archive_deletions SET status='expired', expires_at=COALESCE(expires_at,?), updated_at=?
+        WHERE status='preview' AND (expires_at IS NULL OR expires_at<=?)
+      `).run(now, now, now);
+      this.db.db.prepare(`
+        DELETE FROM archive_deletion_items
+        WHERE deletion_id IN (SELECT id FROM archive_deletions WHERE status='expired')
+      `).run();
+      this.db.db.prepare(`
+        DELETE FROM archive_deleted_sources
+        WHERE deletion_id IN (SELECT id FROM archive_deletions WHERE status='expired')
+      `).run();
+      this.db.db.prepare(`
+        DELETE FROM archive_deletions
+        WHERE status='expired' AND expires_at IS NOT NULL AND expires_at<=?
+      `).run(now - EXPIRED_PREVIEW_RETENTION_MS);
+    })();
+  }
+
+  private startPreviewCleanupTimer() {
+    if (this.previewCleanupTimer) clearInterval(this.previewCleanupTimer);
+    this.previewCleanupTimer = setInterval(() => {
+      if (this.stopped) return;
+      try {
+        this.pruneExpiredPreviews();
+      } catch {
+        // The next interval or an explicit preview request will retry cleanup.
+      }
+    }, this.previewCleanupIntervalMs);
+    this.previewCleanupTimer.unref?.();
+  }
+
+  private expirePreview(id: string, now: number) {
+    const expired = this.db.db.prepare(`
+      UPDATE archive_deletions SET status='expired', expires_at=?, updated_at=?
+      WHERE id=? AND status='preview'
+    `).run(now, now, id).changes;
+    if (expired === 0) return;
+    this.db.db.prepare("DELETE FROM archive_deletion_items WHERE deletion_id=?").run(id);
+    this.db.db.prepare("DELETE FROM archive_deleted_sources WHERE deletion_id=?").run(id);
   }
 
   previewAccount(user: BiliUser) {
@@ -274,14 +323,44 @@ export class ArchiveDeletionService {
     const relationCount = scope === "account"
       ? Number((this.db.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE user_id=?").get(userId) as any)?.count || 0)
       : 1;
-    this.db.db.transaction(() => {
+    const resolvedId = this.db.db.transaction(() => {
+      const candidates = scope === "account"
+        ? this.db.db.prepare(`
+            SELECT * FROM archive_deletions
+            WHERE scope='account' AND user_id=? AND media_id IS NULL AND bvid IS NULL
+              AND status='preview'
+            ORDER BY created_at DESC, id DESC
+          `).all(userId) as any[]
+        : this.db.db.prepare(`
+            SELECT * FROM archive_deletions
+            WHERE scope='source' AND user_id=? AND media_id=? AND bvid=?
+              AND status='preview'
+            ORDER BY created_at DESC, id DESC
+          `).all(userId, mediaId, bvid) as any[];
+      const identityHash = alistIdentityHash(config);
+      let reusableId: string | undefined;
+      for (const candidate of candidates) {
+        if (!reusableId && Number(candidate.expires_at || 0) > now && this.previewMatchesCurrent(
+          candidate,
+          identityHash,
+          archiveRoot,
+          relationCount,
+          relationRows
+        )) {
+          reusableId = String(candidate.id);
+          continue;
+        }
+        this.expirePreview(String(candidate.id), now);
+      }
+      if (reusableId) return reusableId;
+
       this.db.db.prepare(`
         INSERT INTO archive_deletions(
           id, scope, user_id, media_id, bvid, status, alist_identity_hash, archive_root,
           relation_count, source_count, expires_at, created_at, updated_at
         ) VALUES(?,?,?,?,?,'preview',?,?,?,?,?,?,?)
       `).run(
-        id, scope, userId, mediaId ?? null, bvid || null, alistIdentityHash(config), archiveRoot,
+        id, scope, userId, mediaId ?? null, bvid || null, identityHash, archiveRoot,
         relationCount, relationRows.length, expiresAt, now, now
       );
       const insertSource = this.db.db.prepare(`
@@ -361,8 +440,45 @@ export class ArchiveDeletionService {
       this.db.db.prepare(`
         UPDATE archive_deletions SET file_count=?, total_bytes=?, shared_count=?, conflict_count=?, updated_at=? WHERE id=?
       `).run(Number(totals?.files || 0), Number(totals?.bytes || 0), Number(shared?.count || 0), conflicts, now, id);
+      return id;
     })();
-    return this.get(id)!;
+    return this.get(resolvedId)!;
+  }
+
+  private previewMatchesCurrent(
+    candidate: any,
+    identityHash: string,
+    archiveRoot: string,
+    relationCount: number,
+    relationRows: any[]
+  ) {
+    let candidateRoot: string;
+    try {
+      candidateRoot = normalizeRemotePath(candidate.archive_root);
+    } catch {
+      return false;
+    }
+    if (String(candidate.alist_identity_hash) !== identityHash
+      || candidateRoot !== archiveRoot
+      || Number(candidate.relation_count) !== relationCount
+      || Number(candidate.source_count) !== relationRows.length) {
+      return false;
+    }
+    const expectedSources = new Set(relationRows.map((row) => `${row.user_id}\0${row.media_id}\0${row.bvid}`));
+    const storedSources = this.db.db.prepare(`
+      SELECT user_id, media_id, bvid FROM archive_deleted_sources
+      WHERE deletion_id=? ORDER BY user_id, media_id, bvid
+    `).all(candidate.id) as any[];
+    if (storedSources.length !== expectedSources.size
+      || storedSources.some((row) => !expectedSources.has(`${row.user_id}\0${row.media_id}\0${row.bvid}`))) {
+      return false;
+    }
+    try {
+      return this.previewProofsMatch(String(candidate.id));
+    } catch (error) {
+      if (Number((error as any)?.statusCode || 0) === 409) return false;
+      throw error;
+    }
   }
 
   get(id: string) {
@@ -456,8 +572,11 @@ export class ArchiveDeletionService {
   validateStart(id: string, confirmation: string) {
     const operation = this.get(id);
     if (!operation) throw archiveDeletionError("归档清理预览不存在", 404);
+    if (operation.status === "expired"
+      || (operation.status === "preview" && Number(operation.expiresAt || 0) <= this.now())) {
+      throw archiveDeletionError("预览已过期，请重新预览", 409);
+    }
     if (operation.status !== "preview") throw archiveDeletionError("归档清理已开始或预览已失效", 409);
-    if (Number(operation.expiresAt || 0) <= this.now()) throw archiveDeletionError("归档清理预览已过期，请重新预览", 409);
     const required = operation.scope === "account" ? "DELETE REMOTE ARCHIVE" : "DELETE ARCHIVE";
     if (confirmation !== required) throw archiveDeletionError(`请输入 ${required} 确认删除`, 400);
     if (this.db.getActivePathMigration()) throw archiveDeletionError("归档路径迁移期间不能开始删除", 409);
@@ -556,16 +675,23 @@ export class ArchiveDeletionService {
   }
 
   private assertPreviewStillCurrent(id: string) {
+    if (!this.previewProofsMatch(id)) {
+      throw archiveDeletionError("本地归档证明已变化，请重新预览", 409);
+    }
+  }
+
+  private previewProofsMatch(id: string) {
     const expected = new Map((this.db.db.prepare(`
       SELECT remote_path, expected_size FROM archive_deletion_items WHERE deletion_id=? ORDER BY remote_path
     `).all(id) as any[]).map((row) => [normalizeRemotePath(row.remote_path), finiteSize(row.expected_size)]));
     const current = this.currentProofs(id);
-    if (expected.size !== current.size) throw archiveDeletionError("本地归档证明已变化，请重新预览", 409);
+    if (expected.size !== current.size) return false;
     for (const [remotePath, expectedSize] of expected) {
       if (expectedSize === undefined || current.get(remotePath) !== expectedSize) {
-        throw archiveDeletionError("本地归档证明已变化，请重新预览", 409);
+        return false;
       }
     }
+    return true;
   }
 
   private markSourcesDeleting(deletionId: string, now: number) {
@@ -909,6 +1035,8 @@ export class ArchiveDeletionService {
 
   async stop(timeoutMs = 20_000) {
     this.stopped = true;
+    if (this.previewCleanupTimer) clearInterval(this.previewCleanupTimer);
+    this.previewCleanupTimer = null;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = null;
     if (!this.worker) {
