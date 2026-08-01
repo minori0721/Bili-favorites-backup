@@ -1915,6 +1915,177 @@ export class SyncScheduler {
     };
   }
 
+  private archiveTaskReferencesUser(task: any, userId: string) {
+    if (String(task?.userId || "") === userId || String(task?.downloadUserId || "") === userId) return true;
+    const control = task?.control;
+    if (String(control?.userId || "") === userId || String(control?.downloadUserId || "") === userId) return true;
+    const payload = task?.persistentJob?.payload || {};
+    if ([payload.primaryUserId, payload.downloadUserId, payload.pausedForUserId].some((value) => String(value || "") === userId)) {
+      return true;
+    }
+    const targets = [
+      ...(Array.isArray(task?.targets) ? task.targets : []),
+      ...(Array.isArray(control?.targets) ? control.targets : []),
+      ...(Array.isArray(payload.targets) ? payload.targets : []),
+      ...(Array.isArray(payload.detachedTargets) ? payload.detachedTargets : []),
+      ...(payload.target ? [payload.target] : []),
+    ];
+    return targets.some((target) => String(target?.userId || "") === userId);
+  }
+
+  async quiesceUserRemoteDeletion(user: BiliUser, timeoutMs = 30_000) {
+    if (!this.archiveDeletionLocked) {
+      throw Object.assign(new Error("账号归档清理尚未取得维护锁"), { statusCode: 409 });
+    }
+    for (const task of this.downloadQueue.getTasks()) {
+      if (task.status !== "running") continue;
+      const downloadUserId = String((task as any).downloadUserId || task.userId || (task as any).control?.downloadUserId || "");
+      if (downloadUserId === user.id && task.persistentJobId) this.retirementAbortedJobIds.add(task.persistentJobId);
+    }
+    const canceledProcesses = await cancelActiveDownloadsForAccount(String(user.uid || user.cookie.DedeUserID || ""));
+    const deadline = Date.now() + Math.max(1, timeoutMs);
+    while (true) {
+      const runningTransfer = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
+        .some((queue) => queue.getTasks().some((task) => task.status === "running" && this.archiveTaskReferencesUser(task, user.id)));
+      if (!this.running && !runningTransfer) break;
+      if (Date.now() >= deadline) {
+        throw Object.assign(new Error("账号仍有正在执行的同步或传输任务，请稍后重新确认清理"), { statusCode: 409 });
+      }
+      await delay(50);
+    }
+    return { canceledProcesses };
+  }
+
+  finalizeUserRemoteDeletion(userId: string, commit: () => void = () => undefined) {
+    if (!this.archiveDeletionLocked) {
+      throw Object.assign(new Error("账号归档清理尚未取得维护锁"), { statusCode: 409 });
+    }
+    const runningTransfer = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
+      .some((queue) => queue.getTasks().some((task) => task.status === "running" && this.archiveTaskReferencesUser(task, userId)));
+    if (this.running || runningTransfer) {
+      throw Object.assign(new Error("账号仍有正在执行的同步或传输任务"), { statusCode: 409 });
+    }
+
+    const database = this.stateManager.getDatabase();
+    try {
+      return database.db.transaction(() => {
+        const removedQueuedTasks = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
+          .reduce((count, queue) => count + queue.removePendingTasks((task) => this.archiveTaskReferencesUser(task, userId)).length, 0);
+        const relationBvids = new Set(database.listRelationsForUser(userId).map((relation) => relation.bvid));
+        const downloadJobs = this.jobStore.list(["download", "quality_download"], 100_000);
+        let reassignedJobs = 0;
+        let canceledJobs = 0;
+        let directUploadTargets = 0;
+
+        for (const job of downloadJobs) {
+          const payload = { ...(job.payload as any) };
+          const payloadTargets = [
+            ...(Array.isArray(payload.targets) ? payload.targets : []),
+            ...(payload.target ? [payload.target] : []),
+          ];
+          const affected = relationBvids.has(String(job.bvid || ""))
+            || [job.userId, payload.primaryUserId, payload.downloadUserId, payload.pausedForUserId]
+              .some((value) => String(value || "") === userId)
+            || payloadTargets.some((target) => String(target?.userId || "") === userId);
+          if (!affected) continue;
+
+          if (job.kind === "quality_download") {
+            const targets = this.qualityTargetsFromPayload(payload).filter((target) => target.userId !== userId);
+            if (targets.length === 0) {
+              if (this.jobStore.complete(job.id)) canceledJobs += 1;
+              continue;
+            }
+            const alternateUser = targets
+              .map((target) => this.userStore.getById(target.userId))
+              .find((candidate) => this.isUserSyncEligible(candidate))
+              || this.userStore.list().find((candidate) => candidate.id !== userId && this.isUserSyncEligible(candidate));
+            if (!alternateUser) {
+              if (this.jobStore.complete(job.id)) canceledJobs += 1;
+              continue;
+            }
+            const target = targets[0];
+            const nextPayload = {
+              ...payload,
+              userId: target.userId,
+              mediaId: target.mediaId,
+              folderTitle: target.folderTitle,
+              downloadUserId: alternateUser.id,
+              target,
+              targets,
+              targetCount: targets.length,
+            };
+            delete nextPayload.pausedForUserId;
+            if (this.jobStore.reassignDownloadJob(job.id, alternateUser.id, nextPayload)) reassignedJobs += 1;
+            continue;
+          }
+
+          const targetMap = new Map<string, UploadTarget>();
+          for (const target of Array.isArray(payload.detachedTargets) ? payload.detachedTargets : []) {
+            if (String(target?.userId || "") === userId || !target?.userId || !Number.isInteger(Number(target.mediaId))) continue;
+            targetMap.set(`${target.userId}:${Number(target.mediaId)}`, {
+              userId: String(target.userId),
+              mediaId: Number(target.mediaId),
+              folderTitle: String(target.folderTitle || ""),
+              remotePath: String(target.remotePath || ""),
+            });
+          }
+          for (const target of this.snapshotRetirementTargets(String(job.bvid || ""))) {
+            if (target.userId !== userId) targetMap.set(`${target.userId}:${target.mediaId}`, target);
+          }
+          const targets = [...targetMap.values()].filter((target) => target.remotePath);
+          const local = job.bvid ? this.stateManager.getCompletedLocalDownload(job.bvid) : null;
+          if (local) {
+            this.jobStore.complete(job.id);
+            canceledJobs += 1;
+            directUploadTargets += this.queueCompletedRetirementUpload(String(job.bvid), local, targets);
+            continue;
+          }
+          if (targets.length === 0) {
+            if (this.jobStore.complete(job.id)) canceledJobs += 1;
+            continue;
+          }
+          const alternateUser = targets
+            .map((target) => this.userStore.getById(target.userId))
+            .find((candidate) => this.isUserSyncEligible(candidate))
+            || this.userStore.list().find((candidate) => candidate.id !== userId && this.isUserSyncEligible(candidate));
+          if (!alternateUser) {
+            if (this.jobStore.complete(job.id)) canceledJobs += 1;
+            continue;
+          }
+          const primary = targets[0];
+          const nextPayload = {
+            ...payload,
+            primaryUserId: primary.userId,
+            primaryMediaId: primary.mediaId,
+            primaryFolderTitle: primary.folderTitle,
+            downloadUserId: alternateUser.id,
+            detachedTargets: targets,
+          };
+          delete nextPayload.pausedForUserId;
+          if (this.jobStore.reassignDownloadJob(job.id, alternateUser.id, nextPayload)) reassignedJobs += 1;
+        }
+
+        const targetKinds: PersistentJobKind[] = [
+          "upload", "verify_upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup",
+        ];
+        for (const job of this.jobStore.list(targetKinds, 100_000)) {
+          if (String(job.userId || "") === userId && this.jobStore.complete(job.id)) canceledJobs += 1;
+        }
+        for (const job of this.jobStore.list(["access_probe"], 100_000)) {
+          if (String((job.payload as any)?.preferredUserId || "") !== userId) continue;
+          this.jobStore.updatePayload(job.id, { ...job.payload, preferredUserId: "" });
+          this.jobStore.wakeByBvid(String(job.bvid || ""), ["access_probe"], this.now());
+        }
+        const detachedRelations = this.stateManager.detachUserRelations(userId);
+        commit();
+        return { canceledJobs, removedQueuedTasks, reassignedJobs, directUploadTargets, detachedRelations };
+      })();
+    } catch (error) {
+      this.stateManager.reload();
+      throw error;
+    }
+  }
+
   restoreUserAfterLogin(userId: string) {
     const user = this.userStore.getById(userId);
     if (!user?.enabled) return { reattachedRelations: 0, resumedJobs: 0, queuedRelations: 0 };

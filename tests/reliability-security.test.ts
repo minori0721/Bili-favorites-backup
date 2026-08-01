@@ -543,3 +543,128 @@ test("account retirement turns a complete local download into upload work withou
     await removeTestDir(runtime);
   }
 });
+
+test("remote account deletion prunes only that account from shared persistent work", async () => {
+  const runtime = await createTestDir("account-remote-prune");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users: any[] = [
+    { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
+    { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [{ mediaId: 20, title: "two-fav" }], enabled: true, lastLoginAt: "" },
+  ];
+  const userStore = {
+    list: () => [...users],
+    getById: (id: string) => users.find((user) => user.id === id) || null,
+  } as any;
+  const scheduler = new SyncScheduler({ get: () => testConfig() } as any, userStore, manager);
+  try {
+    scheduler.beginShutdown();
+    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVREMOTEPRUNE", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u2", 20, "two-fav", { bvid: "BVREMOTEPRUNE", title: "video", upperName: "up" } as any);
+    manager.markQueued("BVREMOTEPRUNE", "/backup/one/one-fav", "u1", 10);
+    manager.markQueued("BVREMOTEPRUNE", "/backup/two/two-fav", "u2", 20);
+    const jobs = (scheduler as any).jobStore as PersistentJobStore;
+    jobs.enqueue({
+      kind: "download",
+      dedupeKey: "download:BVREMOTEPRUNE",
+      bvid: "BVREMOTEPRUNE",
+      userId: "u1",
+      payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "one-fav", downloadUserId: "u1" },
+    });
+    jobs.enqueue({
+      kind: "quality_download",
+      dedupeKey: "quality-download:BVREMOTEPRUNE:shared",
+      bvid: "BVREMOTEPRUNE",
+      userId: "u1",
+      payload: {
+        downloadUserId: "u1",
+        target: { userId: "u1", mediaId: 10, folderTitle: "one-fav", remotePath: "/backup/one/one-fav", oldFiles: [] },
+        targets: [
+          { userId: "u1", mediaId: 10, folderTitle: "one-fav", remotePath: "/backup/one/one-fav", oldFiles: [] },
+          { userId: "u2", mediaId: 20, folderTitle: "two-fav", remotePath: "/backup/two/two-fav", oldFiles: [] },
+        ],
+      },
+    });
+    jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:10:BVREMOTEPRUNE",
+      bvid: "BVREMOTEPRUNE",
+      userId: "u1",
+      mediaId: 10,
+      payload: { localDir: runtime, remotePath: "/backup/one/one-fav" },
+    });
+
+    scheduler.setArchiveDeletionMaintenance(true, { id: "delete-u1", status: "preparing", scope: "account" });
+    const result = scheduler.finalizeUserRemoteDeletion("u1");
+    assert.equal(result.reassignedJobs, 2);
+    assert.equal(result.canceledJobs, 1);
+
+    const download = jobs.findByDedupeKey("download:BVREMOTEPRUNE")!;
+    assert.equal(download.userId, "u2");
+    assert.equal(download.payload.downloadUserId, "u2");
+    assert.deepEqual((download.payload.detachedTargets as any[]).map((target) => target.userId), ["u2"]);
+    const quality = jobs.findByDedupeKey("quality-download:BVREMOTEPRUNE:shared")!;
+    assert.equal(quality.userId, "u2");
+    assert.deepEqual((quality.payload.targets as any[]).map((target) => target.userId), ["u2"]);
+    assert.equal(jobs.findByDedupeKey("upload:u1:10:BVREMOTEPRUNE"), null);
+    assert.ok(manager.getRelationStatus("u1", 10, "BVREMOTEPRUNE")?.accountDetachedAt);
+    assert.equal(manager.getRelationStatus("u2", 20, "BVREMOTEPRUNE")?.accountDetachedAt, undefined);
+  } finally {
+    scheduler.setArchiveDeletionMaintenance(false);
+    await scheduler.shutdown(100);
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("remote account deletion rolls back task pruning when account persistence fails", async () => {
+  const runtime = await createTestDir("account-remote-prune-rollback");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users: any[] = [
+    { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
+    { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [{ mediaId: 20, title: "two-fav" }], enabled: true, lastLoginAt: "" },
+  ];
+  const userStore = {
+    list: () => [...users],
+    getById: (id: string) => users.find((user) => user.id === id) || null,
+  } as any;
+  const scheduler = new SyncScheduler({ get: () => testConfig() } as any, userStore, manager);
+  try {
+    scheduler.beginShutdown();
+    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVREMOTEROLLBACK", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u2", 20, "two-fav", { bvid: "BVREMOTEROLLBACK", title: "video", upperName: "up" } as any);
+    manager.markQueued("BVREMOTEROLLBACK", "/backup/one/one-fav", "u1", 10);
+    manager.markQueued("BVREMOTEROLLBACK", "/backup/two/two-fav", "u2", 20);
+    const jobs = (scheduler as any).jobStore as PersistentJobStore;
+    jobs.enqueue({
+      kind: "download",
+      dedupeKey: "download:BVREMOTEROLLBACK",
+      bvid: "BVREMOTEROLLBACK",
+      userId: "u1",
+      payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "one-fav", downloadUserId: "u1" },
+    });
+    jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:10:BVREMOTEROLLBACK",
+      bvid: "BVREMOTEROLLBACK",
+      userId: "u1",
+      mediaId: 10,
+      payload: { localDir: runtime, remotePath: "/backup/one/one-fav" },
+    });
+
+    scheduler.setArchiveDeletionMaintenance(true, { id: "delete-u1", status: "preparing", scope: "account" });
+    assert.throws(() => scheduler.finalizeUserRemoteDeletion("u1", () => {
+      throw new Error("users.json write failed");
+    }), /write failed/);
+
+    const download = jobs.findByDedupeKey("download:BVREMOTEROLLBACK")!;
+    assert.equal(download.userId, "u1");
+    assert.equal(download.payload.downloadUserId, "u1");
+    assert.ok(jobs.findByDedupeKey("upload:u1:10:BVREMOTEROLLBACK"));
+    assert.equal(manager.getRelationStatus("u1", 10, "BVREMOTEROLLBACK")?.accountDetachedAt, undefined);
+  } finally {
+    scheduler.setArchiveDeletionMaintenance(false);
+    await scheduler.shutdown(100);
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});

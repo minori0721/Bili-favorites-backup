@@ -14,6 +14,47 @@ import {
 import { PersistentJobStore } from "../src/job-store.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
+test("archive source restoration skips write transactions when no deletion record exists", () => {
+  const database = new StateDatabase(":memory:");
+  const sqlite = database.db as any;
+  const originalTransaction = sqlite.transaction.bind(sqlite);
+  let transactionCalls = 0;
+  sqlite.transaction = (action: (...args: any[]) => any) => {
+    transactionCalls += 1;
+    return originalTransaction(action);
+  };
+  try {
+    for (let index = 0; index < 10_000; index += 1) {
+      assert.equal(database.restoreCompletedArchiveSource("u1", 1, `BVEMPTY${index}`), 0);
+    }
+    assert.equal(transactionCalls, 0);
+
+    const now = Date.now();
+    database.db.prepare(`
+      INSERT INTO videos(bvid,backup_status,bili_status,payload_json,updated_at)
+      VALUES('BVRESTORETX','lost','available','{}',?)
+    `).run(now);
+    database.db.prepare(`
+      INSERT INTO archive_deletions(
+        id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,created_at,updated_at
+      ) VALUES('restore-tx','source','u1',1,'BVRESTORETX','completed','hash','/backup',?,?)
+    `).run(now, now);
+    database.db.prepare(`
+      INSERT INTO archive_deleted_sources(user_id,media_id,bvid,deletion_id,status)
+      VALUES('u1',1,'BVRESTORETX','restore-tx','completed')
+    `).run();
+    assert.equal(database.restoreCompletedArchiveSource("u1", 1, "BVRESTORETX", now + 1), 1);
+    assert.equal(transactionCalls, 1);
+    assert.equal((database.db.prepare("SELECT status FROM archive_deleted_sources WHERE deletion_id='restore-tx'").get() as any).status, "restored");
+
+    const indexSql = String((database.db.prepare("SELECT sql FROM sqlite_master WHERE name='idx_archive_deletions_active'").get() as any)?.sql || "");
+    assert.match(indexSql, /preparing/);
+  } finally {
+    sqlite.transaction = originalTransaction;
+    database.close();
+  }
+});
+
 test("video status reads use relation priority with the video row as fallback", () => {
   const database = new StateDatabase(":memory:");
   try {

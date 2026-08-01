@@ -138,7 +138,7 @@ const playableFileSql = (alias: string) => `
 const deletionExistsSql = (alias: string) => `EXISTS(
   SELECT 1 FROM archive_deleted_sources ads
   WHERE ads.user_id=${alias}.user_id AND ads.media_id=${alias}.media_id AND ads.bvid=${alias}.bvid
-    AND ads.status IN ('pending','running','retry_wait','failed','completed')
+    AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
 )`;
 
 function archiveLibraryUsers(database: StateDatabase, users: BiliUser[]) {
@@ -419,6 +419,24 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
   const scope = addScopeSql(context, "r", params);
   const search = searchSql(context, params, extraQuery);
   const deletion = context.filter === "deleted" ? deletionExistsSql("r") : `NOT (${deletionExistsSql("r")})`;
+  if (context.effectiveScope === "folder") {
+    return `
+      WITH candidates AS (
+        SELECT r.bvid,
+          r.last_seen_at AS recent_key,
+          ${displayTitleSql} AS title_key,
+          r.active_in_favorite AS active_key,
+          CASE WHEN r.active_in_favorite=1 THEN COALESCE(r.fav_order, 9223372036854775807) ELSE 9223372036854775807 END AS order_key,
+          CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END AS playable,
+          CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS pending
+        FROM favorite_relations r
+        JOIN videos v ON v.bvid=r.bvid
+        WHERE ${scope} AND ${search} AND ${deletion}
+      ), filtered AS (
+        SELECT * FROM candidates WHERE ${filterSql(context.filter)}
+      )
+    `;
+  }
   return `
     WITH candidates AS (
       SELECT r.bvid,
@@ -450,32 +468,46 @@ function queryCandidatePage(
   const cursor = decodeCursor(context, cursorValue, extraQuery);
   const { cursorSql, orderSql } = orderAndCursorSql(context, cursor, params);
   params.limit = context.pageSize + 1;
-  const rows = database.db.prepare(`
-    ${cte}
-    SELECT * FROM filtered WHERE ${cursorSql}
-    ORDER BY ${orderSql}
-    LIMIT @limit
-  `).all(params) as CandidateKeyRow[];
+  let rows: CandidateKeyRow[];
+  let summary: any = null;
+  if (includeSummary && !cursor) {
+    const combined = database.db.prepare(`
+      ${cte}, page_rows AS (
+        SELECT * FROM filtered WHERE ${cursorSql}
+        ORDER BY ${orderSql}
+        LIMIT @limit
+      ), summary AS (
+        SELECT COUNT(*) AS summary_total,
+          COALESCE(SUM(CASE WHEN playable=1 THEN 1 ELSE 0 END),0) AS summary_playable,
+          COALESCE(SUM(CASE WHEN playable=0 AND pending=1 THEN 1 ELSE 0 END),0) AS summary_pending,
+          COALESCE(SUM(CASE WHEN playable=0 AND pending=0 THEN 1 ELSE 0 END),0) AS summary_issue
+        FROM filtered
+      )
+      SELECT page_rows.*, summary.* FROM page_rows CROSS JOIN summary
+    `).all(params) as Array<CandidateKeyRow & Record<string, number>>;
+    rows = combined;
+    const first = combined[0];
+    summary = first ? {
+      total: Number(first.summary_total || 0),
+      playable: Number(first.summary_playable || 0),
+      pending: Number(first.summary_pending || 0),
+      issue: Number(first.summary_issue || 0),
+    } : { total: 0, playable: 0, pending: 0, issue: 0 };
+  } else {
+    rows = database.db.prepare(`
+      ${cte}
+      SELECT * FROM filtered WHERE ${cursorSql}
+      ORDER BY ${orderSql}
+      LIMIT @limit
+    `).all(params) as CandidateKeyRow[];
+  }
   const hasMore = rows.length > context.pageSize;
   const pageRows = rows.slice(0, context.pageSize);
-  const summary = includeSummary && !cursor ? database.db.prepare(`
-    ${cte}
-    SELECT COUNT(*) AS total,
-      COALESCE(SUM(CASE WHEN playable=1 THEN 1 ELSE 0 END),0) AS playable,
-      COALESCE(SUM(CASE WHEN playable=0 AND pending=1 THEN 1 ELSE 0 END),0) AS pending,
-      COALESCE(SUM(CASE WHEN playable=0 AND pending=0 THEN 1 ELSE 0 END),0) AS issue
-    FROM filtered
-  `).get(params) as any : null;
   return {
     rows: pageRows,
     hasMore,
     nextCursor: hasMore && pageRows.length ? encodeCursor(context, pageRows[pageRows.length - 1], extraQuery) : null,
-    summary: summary ? {
-      total: Number(summary.total || 0),
-      playable: Number(summary.playable || 0),
-      pending: Number(summary.pending || 0),
-      issue: Number(summary.issue || 0),
-    } : null,
+    summary,
   };
 }
 
@@ -493,11 +525,11 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
     SELECT page.ord, r.payload_json AS relation_json, v.payload_json AS video_json,
       (SELECT ads.deletion_id FROM archive_deleted_sources ads
        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-         AND ads.status IN ('pending','running','retry_wait','failed','completed')
+         AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
        ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1) AS deletion_id,
       (SELECT ads.status FROM archive_deleted_sources ads
        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-         AND ads.status IN ('pending','running','retry_wait','failed','completed')
+         AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
        ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1) AS deletion_status,
       (SELECT ads.deleted_at FROM archive_deleted_sources ads
        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
@@ -506,13 +538,13 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
       CASE WHEN ${deletionExistsSql("r")} THEN COALESCE((
         SELECT ads.file_count FROM archive_deleted_sources ads
         WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-          AND ads.status IN ('pending','running','retry_wait','failed','completed')
+          AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
         ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1
       ),0) ELSE (SELECT COUNT(*) FROM remote_files rf WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified') END AS file_count,
       CASE WHEN ${deletionExistsSql("r")} THEN COALESCE((
         SELECT ads.total_bytes FROM archive_deleted_sources ads
         WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-          AND ads.status IN ('pending','running','retry_wait','failed','completed')
+          AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
         ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1
       ),0) ELSE COALESCE((SELECT SUM(rf.expected_size) FROM remote_files rf WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified'),0) END AS total_bytes
     FROM page
@@ -855,45 +887,91 @@ export function getArchiveLibraryPlaybackSearch(
   };
 }
 
-function navigationSummarySql(userIds: string[], userId?: string) {
-  if (userIds.length === 0) return null;
+const emptyNavigationSummary = () => ({ total: 0, playable: 0, pending: 0, issue: 0, deleted: 0 });
+
+function readNavigationRows(database: StateDatabase, userIds: string[]) {
+  if (userIds.length === 0) return [] as any[];
   const placeholders = userIds.map(() => "?").join(",");
-  const where = userId ? `r.user_id=? AND r.user_id IN (${placeholders})` : `r.user_id IN (${placeholders})`;
-  const params = userId ? [userId, ...userIds] : userIds;
-  return { sql: `
-    WITH classified AS (
-      SELECT r.bvid,
-        MAX(CASE WHEN NOT (${deletionExistsSql("r")}) THEN 1 ELSE 0 END) AS visible,
-        MAX(CASE WHEN NOT (${deletionExistsSql("r")}) AND ${playableFileSql("r")} THEN 1 ELSE 0 END) AS playable,
-        MAX(CASE WHEN NOT (${deletionExistsSql("r")}) AND r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END) AS pending,
-        MAX(CASE WHEN ${deletionExistsSql("r")} THEN 1 ELSE 0 END) AS deleted
+  return database.db.prepare(`
+    WITH relation_base AS MATERIALIZED (
+      SELECT r.user_id, r.media_id, r.bvid, r.last_seen_at,
+        CASE WHEN ${deletionExistsSql("r")} THEN 1 ELSE 0 END AS deleted,
+        CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END AS raw_playable,
+        CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS raw_pending
       FROM favorite_relations r
-      WHERE ${where}
-      GROUP BY r.bvid
+      WHERE r.user_id IN (${placeholders})
+    ), relation_flags AS MATERIALIZED (
+      SELECT *,
+        CASE WHEN deleted=0 THEN 1 ELSE 0 END AS visible,
+        CASE WHEN deleted=0 AND raw_playable=1 THEN 1 ELSE 0 END AS playable,
+        CASE WHEN deleted=0 AND raw_pending=1 THEN 1 ELSE 0 END AS pending
+      FROM relation_base
+    ), folder_summary AS (
+      SELECT user_id, media_id, MAX(last_seen_at) AS last_seen_at,
+        SUM(visible) AS total,
+        SUM(playable) AS playable,
+        SUM(CASE WHEN visible=1 AND playable=0 AND pending=1 THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN visible=1 AND playable=0 AND pending=0 THEN 1 ELSE 0 END) AS issue,
+        SUM(deleted) AS deleted
+      FROM relation_flags GROUP BY user_id, media_id
+    ), account_bvid AS (
+      SELECT user_id, bvid, MAX(visible) AS visible, MAX(playable) AS playable,
+        MAX(pending) AS pending, MAX(deleted) AS deleted
+      FROM relation_flags GROUP BY user_id, bvid
+    ), account_summary AS (
+      SELECT user_id, SUM(visible) AS total, SUM(playable) AS playable,
+        SUM(CASE WHEN visible=1 AND playable=0 AND pending=1 THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN visible=1 AND playable=0 AND pending=0 THEN 1 ELSE 0 END) AS issue,
+        SUM(deleted) AS deleted
+      FROM account_bvid GROUP BY user_id
+    ), global_bvid AS (
+      SELECT bvid, MAX(visible) AS visible, MAX(playable) AS playable,
+        MAX(pending) AS pending, MAX(deleted) AS deleted
+      FROM account_bvid GROUP BY bvid
+    ), global_summary AS (
+      SELECT SUM(visible) AS total, SUM(playable) AS playable,
+        SUM(CASE WHEN visible=1 AND playable=0 AND pending=1 THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN visible=1 AND playable=0 AND pending=0 THEN 1 ELSE 0 END) AS issue,
+        SUM(deleted) AS deleted
+      FROM global_bvid
     )
-    SELECT COALESCE(SUM(visible),0) AS total,
-      COALESCE(SUM(CASE WHEN playable=1 THEN 1 ELSE 0 END),0) AS playable,
-      COALESCE(SUM(CASE WHEN visible=1 AND playable=0 AND pending=1 THEN 1 ELSE 0 END),0) AS pending,
-      COALESCE(SUM(CASE WHEN visible=1 AND playable=0 AND pending=0 THEN 1 ELSE 0 END),0) AS issue,
-      COALESCE(SUM(deleted),0) AS deleted
-    FROM classified
-  `, params };
+    SELECT 'folder' AS row_kind, fs.user_id, fs.media_id, fs.last_seen_at,
+      fs.total, fs.playable, fs.pending, fs.issue, fs.deleted,
+      (SELECT rr.folder_title FROM favorite_relations rr
+       WHERE rr.user_id=fs.user_id AND rr.media_id=fs.media_id
+       ORDER BY rr.last_seen_at DESC, rr.bvid LIMIT 1) AS folder_title,
+      (SELECT scans.updated_at FROM folder_scans scans
+       WHERE scans.user_id=fs.user_id AND scans.media_id=fs.media_id) AS last_synced_at,
+      (SELECT json_extract(vv.payload_json, '$.originalMeta.coverLocalPath')
+       FROM favorite_relations rc JOIN videos vv ON vv.bvid=rc.bvid
+       WHERE rc.user_id=fs.user_id AND rc.media_id=fs.media_id
+         AND json_extract(vv.payload_json, '$.originalMeta.coverLocalPath') IS NOT NULL
+       ORDER BY rc.last_seen_at DESC LIMIT 1) AS cover_local_path,
+      (SELECT COALESCE(json_extract(vv.payload_json, '$.originalMeta.cover'), json_extract(vv.payload_json, '$.cover'))
+       FROM favorite_relations rc JOIN videos vv ON vv.bvid=rc.bvid
+       WHERE rc.user_id=fs.user_id AND rc.media_id=fs.media_id
+       ORDER BY rc.last_seen_at DESC LIMIT 1) AS cover
+    FROM folder_summary fs
+    UNION ALL
+    SELECT 'account', user_id, NULL, NULL, total, playable, pending, issue, deleted,
+      NULL, NULL, NULL, NULL FROM account_summary
+    UNION ALL
+    SELECT 'global', NULL, NULL, NULL, total, playable, pending, issue, deleted,
+      NULL, NULL, NULL, NULL FROM global_summary
+  `).all(...userIds) as any[];
 }
 
-function readNavigationSummary(database: StateDatabase, userIds: string[], userId?: string) {
-  const statement = navigationSummarySql(userIds, userId);
-  if (!statement) return { total: 0, playable: 0, pending: 0, issue: 0, deleted: 0 };
-  const row = database.db.prepare(statement.sql).get(...statement.params) as any;
-  return {
-    total: Number(row?.total || 0),
-    playable: Number(row?.playable || 0),
-    pending: Number(row?.pending || 0),
-    issue: Number(row?.issue || 0),
-    deleted: Number(row?.deleted || 0),
-  };
+function navigationSummaryFromRow(row: any) {
+  return row ? {
+    total: Number(row.total || 0),
+    playable: Number(row.playable || 0),
+    pending: Number(row.pending || 0),
+    issue: Number(row.issue || 0),
+    deleted: Number(row.deleted || 0),
+  } : emptyNavigationSummary();
 }
 
-function decorateNavigationSummary(summary: ReturnType<typeof readNavigationSummary>, rows: any[]) {
+function decorateNavigationSummary(summary: ReturnType<typeof navigationSummaryFromRow>, rows: any[]) {
   const latestSync = Math.max(0, ...rows.map((row) => Number(row.last_synced_at || 0)));
   const coverRow = [...rows]
     .filter((row) => row.cover_local_path || row.cover)
@@ -910,39 +988,23 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
   const libraryUsers = archiveLibraryUsers(database, users);
   const userIds = libraryUsers.map((user) => user.id);
   const selected = selectionSet(libraryUsers);
-  const folderRows = userIds.length ? database.db.prepare(`
-    SELECT r.user_id, r.media_id,
-      MAX(r.last_seen_at) AS last_seen_at,
-      COALESCE(SUM(CASE WHEN NOT (${deletionExistsSql("r")}) THEN 1 ELSE 0 END),0) AS total,
-      COALESCE(SUM(CASE WHEN NOT (${deletionExistsSql("r")}) AND ${playableFileSql("r")} THEN 1 ELSE 0 END),0) AS playable,
-      COALESCE(SUM(CASE WHEN NOT (${deletionExistsSql("r")}) AND NOT (${playableFileSql("r")}) AND r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END),0) AS pending,
-      COALESCE(SUM(CASE WHEN NOT (${deletionExistsSql("r")}) AND NOT (${playableFileSql("r")}) AND r.backup_status NOT IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END),0) AS issue,
-      COALESCE(SUM(CASE WHEN ${deletionExistsSql("r")} THEN 1 ELSE 0 END),0) AS deleted,
-      (SELECT rr.folder_title FROM favorite_relations rr
-       WHERE rr.user_id=r.user_id AND rr.media_id=r.media_id
-       ORDER BY rr.last_seen_at DESC, rr.bvid LIMIT 1) AS folder_title,
-      (SELECT fs.updated_at FROM folder_scans fs WHERE fs.user_id=r.user_id AND fs.media_id=r.media_id) AS last_synced_at,
-      (SELECT json_extract(vv.payload_json, '$.originalMeta.coverLocalPath')
-       FROM favorite_relations rc JOIN videos vv ON vv.bvid=rc.bvid
-       WHERE rc.user_id=r.user_id AND rc.media_id=r.media_id
-         AND json_extract(vv.payload_json, '$.originalMeta.coverLocalPath') IS NOT NULL
-       ORDER BY rc.last_seen_at DESC LIMIT 1) AS cover_local_path,
-      (SELECT COALESCE(json_extract(vv.payload_json, '$.originalMeta.cover'), json_extract(vv.payload_json, '$.cover'))
-       FROM favorite_relations rc JOIN videos vv ON vv.bvid=rc.bvid
-       WHERE rc.user_id=r.user_id AND rc.media_id=r.media_id
-       ORDER BY rc.last_seen_at DESC LIMIT 1) AS cover
-    FROM favorite_relations r
-    WHERE r.user_id IN (${userIds.map(() => "?").join(",")})
-    GROUP BY r.user_id, r.media_id
-    ORDER BY r.user_id, MAX(r.last_seen_at) DESC, r.media_id
-  `).all(...userIds) as any[] : [];
+  const navigationRows = readNavigationRows(database, userIds);
+  const folderRows = navigationRows
+    .filter((row) => row.row_kind === "folder")
+    .sort((left, right) => String(left.user_id).localeCompare(String(right.user_id))
+      || Number(right.last_seen_at || 0) - Number(left.last_seen_at || 0)
+      || Number(left.media_id || 0) - Number(right.media_id || 0));
+  const accountSummaries = new Map(navigationRows
+    .filter((row) => row.row_kind === "account")
+    .map((row) => [String(row.user_id), navigationSummaryFromRow(row)]));
+  const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"));
   const indexedFolders = new Map(folderRows.map((row) => [`${row.user_id}:${row.media_id}`, row]));
   const accountDeletionRows = userIds.length ? database.db.prepare(`
     SELECT id, user_id, status, file_count, total_bytes, completed_count, retained_count,
       conflict_count, failed_count, last_error, updated_at, completed_at
     FROM archive_deletions
     WHERE scope='account' AND user_id IN (${userIds.map(() => "?").join(",")})
-      AND status IN ('pending','running','retry_wait','failed','completed')
+      AND status IN ('preparing','pending','running','retry_wait','failed','completed')
     ORDER BY user_id, COALESCE(started_at, created_at) DESC, created_at DESC
   `).all(...userIds) as any[] : [];
   const accountDeletions = new Map<string, any>();
@@ -1006,13 +1068,13 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       removed: Boolean(user.archiveRemoved),
       removedAt: user.removedAt,
       deletion: accountDeletions.get(user.id),
-      summary: decorateNavigationSummary(readNavigationSummary(database, userIds, user.id), accountRows),
+      summary: decorateNavigationSummary(accountSummaries.get(user.id) || emptyNavigationSummary(), accountRows),
       folders: activeFolders,
       inactiveFolders,
     };
   });
   return {
-    summary: decorateNavigationSummary(readNavigationSummary(database, userIds), folderRows),
+    summary: decorateNavigationSummary(globalSummary, folderRows),
     accounts: accountData,
   };
 }

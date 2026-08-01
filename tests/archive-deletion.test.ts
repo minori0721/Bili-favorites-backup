@@ -15,6 +15,7 @@ class FakeDav implements ArchiveDeletionDavClient {
   readonly files = new Map<string, { type: "file" | "directory"; size?: number }>();
   readonly deleteCalls: string[] = [];
   readonly statCalls: string[] = [];
+  readonly directoryCalls: string[] = [];
   statFailures = new Map<string, any>();
   deleteFailures = new Map<string, any>();
 
@@ -40,6 +41,7 @@ class FakeDav implements ArchiveDeletionDavClient {
   }
 
   async getDirectoryContents(remotePath: string) {
+    this.directoryCalls.push(remotePath);
     const prefix = `${remotePath.replace(/\/$/, "")}/`;
     return [...this.files.entries()]
       .filter(([candidate]) => candidate.startsWith(prefix) && !candidate.slice(prefix.length).includes("/"))
@@ -148,6 +150,7 @@ function createService(
     now?: () => number;
     config?: AppConfig;
     previewCleanupIntervalMs?: number;
+    preparationRecovery?: (userId: string, accountRemoved: boolean) => void;
   } = {}
 ) {
   const config = options.config || testConfig({
@@ -163,6 +166,7 @@ function createService(
     previewCleanupIntervalMs: options.previewCleanupIntervalMs,
     isSchedulerIdle: options.schedulerIdle || (() => true),
     setMaintenance: (locked) => options.maintenance?.push(locked),
+    onAccountPreparationRecovery: options.preparationRecovery,
   });
 }
 
@@ -210,9 +214,25 @@ test("archive deletion rejects active sources and keeps all remote files when an
     assert.equal(dav.files.has("/backup/history/a.mp4"), true);
 
     dav.files.set("/backup/history/b.mp4", { type: "file", size: 20 });
-    service.retry(preview.id);
-    const completed = await waitForOperation(service, preview.id, ["completed"]);
+    const database = manager.getDatabase();
+    const db = database.db as any;
+    const originalPrepare = db.prepare;
+    let fullProgressScans = 0;
+    db.prepare = function instrumentDeletionProgress(sql: string) {
+      if (/SELECT\s+status,\s*COUNT\(\*\)\s+AS\s+count\s+FROM\s+archive_deletion_items/i.test(sql)) {
+        fullProgressScans += 1;
+      }
+      return originalPrepare.call(this, sql);
+    };
+    let completed;
+    try {
+      service.retry(preview.id);
+      completed = await waitForOperation(service, preview.id, ["completed"]);
+    } finally {
+      db.prepare = originalPrepare;
+    }
     assert.equal(completed.completedCount, 2);
+    assert.equal(fullProgressScans, 2);
     assert.equal(dav.files.has("/backup/history/a.mp4"), false);
     assert.equal(dav.files.has("/backup/history/b.mp4"), false);
   } finally {
@@ -315,6 +335,7 @@ test("archive deletion does not retry authorization failures and never removes u
     await waitForOperation(service, deletePreview.id, ["completed"]);
     assert.equal(dav.files.has("/backup/folder/unknown.txt"), true);
     assert.equal(dav.deleteCalls.includes("/backup/folder"), false);
+    assert.equal(dav.directoryCalls.length, 0);
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -509,6 +530,22 @@ test("account previews report active tasks, expire after thirty minutes, and sou
     assert.equal(service.get(accountPreview.id)?.status, "expired");
     assert.equal(deletionRowCount(manager, "archive_deletion_items", accountPreview.id), 0);
     assert.equal(deletionRowCount(manager, "archive_deleted_sources", accountPreview.id), 0);
+    const database = manager.getDatabase();
+    database.db.prepare("UPDATE archive_deletions SET status='pending' WHERE id=?").run(replacement.id);
+    const db = database.db as any;
+    const originalPrepare = db.prepare;
+    let jobScans = 0;
+    db.prepare = function instrumentStatusRead(sql: string) {
+      if (/FROM\s+jobs\s+j/i.test(sql)) jobScans += 1;
+      return originalPrepare.call(this, sql);
+    };
+    try {
+      assert.equal(service.get(replacement.id)?.activeTasks, 0);
+    } finally {
+      db.prepare = originalPrepare;
+      database.db.prepare("UPDATE archive_deletions SET status='preview' WHERE id=?").run(replacement.id);
+    }
+    assert.equal(jobScans, 0);
     assert.throws(
       () => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"),
       (error: any) => error?.statusCode === 409 && error?.message === "预览已过期，请重新预览"
@@ -655,7 +692,7 @@ test("preview cleanup never removes operational deletion records or their detail
   let currentTime = now;
   let service: ArchiveDeletionService | undefined;
   try {
-    const statuses = ["pending", "running", "retry_wait", "failed", "completed", "superseded"];
+    const statuses = ["preparing", "pending", "running", "retry_wait", "failed", "completed", "superseded"];
     service = createService(manager, users, dav, { now: () => currentTime });
     for (const [index, status] of statuses.entries()) {
       const bvid = `BVKEEP${String(index).padStart(3, "0")}`;
@@ -673,7 +710,7 @@ test("preview cleanup never removes operational deletion records or their detail
       assert.equal(service.get(preview.id)?.status, status);
       assert.equal(deletionRowCount(manager, "archive_deletion_items", preview.id), 1);
       assert.equal(deletionRowCount(manager, "archive_deleted_sources", preview.id), 1);
-      if (["pending", "running", "retry_wait"].includes(status)) {
+      if (["preparing", "pending", "running", "retry_wait"].includes(status)) {
         database.prepare("UPDATE archive_deletions SET status='completed' WHERE id=?").run(preview.id);
       }
     }
@@ -790,6 +827,137 @@ test("archive account snapshots preserve local browsing and defer same-UID resto
   }
 });
 
+test("account deletion preparation is atomic, reversible, and blocks playback before pending", async () => {
+  const runtime = await createTestDir("archive-delete-account-preparing");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const live = user("u1", [{ mediaId: 10, title: "账号归档" }]);
+  const users = fakeUserStore([live]);
+  const dav = new FakeDav();
+  const maintenance: boolean[] = [];
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, { userId: "u1", mediaId: 10, bvid: "BVPREPARING", active: true, paths: [{ path: "/backup/preparing.mp4", size: 17 }] });
+    service = createService(manager, users, dav, { maintenance });
+    const preview = service.previewAccount(live);
+    await service.stop();
+
+    const first = service.beginAccountPreparation(preview.id, "DELETE REMOTE ARCHIVE");
+    assert.equal(first.claimed, true);
+    assert.equal(first.operation.status, "preparing");
+    assert.equal(manager.getDatabase().hasActiveArchiveDeletion(), true);
+    assert.equal(manager.getDatabase().isArchiveSourceDeletionBlocked("u1", 10, "BVPREPARING"), true);
+    assert.equal(maintenance.at(-1), true);
+
+    assert.equal(service.abortAccountPreparation(preview.id), true);
+    assert.equal(service.get(preview.id)?.status, "preview");
+    assert.equal(manager.getDatabase().isArchiveSourceDeletionBlocked("u1", 10, "BVPREPARING"), false);
+    assert.equal(maintenance.at(-1), false);
+
+    service.beginAccountPreparation(preview.id, "DELETE REMOTE ARCHIVE");
+    service.validateAccountPreparation(preview.id);
+    service.rememberAccount(live);
+    service.markAccountRemoved(live.id);
+    users.set([]);
+    const pending = service.completeAccountPreparation(preview.id);
+    assert.equal(pending.status, "pending");
+    assert.equal(new PersistentJobStore(manager.getDatabase()).findByDedupeKey(`archive-delete:${preview.id}`)?.kind, "archive_delete");
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("startup recovers interrupted account preparation according to account presence", async () => {
+  const runtime = await createTestDir("archive-delete-account-preparing-recovery");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const live = user("u1", [{ mediaId: 10, title: "账号归档" }]);
+  const users = fakeUserStore([live]);
+  const dav = new FakeDav();
+  let first: ArchiveDeletionService | undefined;
+  let recovered: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, { userId: "u1", mediaId: 10, bvid: "BVRECOVERPREP", active: true, paths: [{ path: "/backup/recover-prep.mp4", size: 18 }] });
+    first = createService(manager, users, dav);
+    const preview = first.previewAccount(live);
+    await first.stop();
+    first.rememberAccount(live);
+    first.beginAccountPreparation(preview.id, "DELETE REMOTE ARCHIVE");
+
+    const callbacks: Array<[string, boolean]> = [];
+    recovered = createService(manager, users, dav, { preparationRecovery: (userId, removed) => callbacks.push([userId, removed]) });
+    assert.deepEqual(callbacks, [["u1", false]]);
+    assert.equal(recovered.get(preview.id)?.status, "preview");
+    assert.equal(manager.getDatabase().db.prepare("SELECT 1 FROM archive_accounts WHERE user_id='u1'").get(), undefined);
+  } finally {
+    if (first) await first.stop();
+    if (recovered) await recovered.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("startup continues a prepared account deletion after the login was already removed", async () => {
+  const runtime = await createTestDir("archive-delete-account-preparing-removed");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const live = user("u1", [{ mediaId: 10, title: "账号归档" }]);
+  const users = fakeUserStore([live]);
+  const dav = new FakeDav();
+  let first: ArchiveDeletionService | undefined;
+  let recovered: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, { userId: "u1", mediaId: 10, bvid: "BVRECOVERREMOVED", active: true, paths: [{ path: "/backup/recover-removed.mp4", size: 18 }] });
+    first = createService(manager, users, dav);
+    const preview = first.previewAccount(live);
+    await first.stop();
+    first.rememberAccount(live);
+    first.beginAccountPreparation(preview.id, "DELETE REMOTE ARCHIVE");
+    manager.detachUserRelations(live.id);
+    users.set([]);
+
+    const callbacks: Array<[string, boolean]> = [];
+    recovered = createService(manager, users, dav, { preparationRecovery: (userId, removed) => callbacks.push([userId, removed]) });
+    assert.deepEqual(callbacks, [["u1", true]]);
+    const completed = await waitForOperation(recovered, preview.id, ["completed"]);
+    assert.equal(completed.completedCount, 1);
+    assert.equal(manager.getDatabase().isArchiveAccount("u1"), true);
+  } finally {
+    if (first) await first.stop();
+    if (recovered) await recovered.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("legacy detached relations create a redacted archive account without overwriting snapshots", async () => {
+  const runtime = await createTestDir("archive-delete-account-backfill");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([]);
+  const dav = new FakeDav();
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, { userId: "12345", mediaId: 10, bvid: "BVLEGACYACCOUNT", active: false, paths: [{ path: "/backup/legacy-account.mp4", size: 19 }] });
+    manager.getDatabase().db.prepare(`
+      UPDATE favorite_relations SET account_detached_at=? WHERE user_id='12345'
+    `).run(now - 5_000);
+    service = createService(manager, users, dav);
+    const snapshot = manager.getDatabase().db.prepare("SELECT * FROM archive_accounts WHERE user_id='12345'").get() as any;
+    assert.equal(snapshot.uid, 12345);
+    assert.equal(snapshot.name, "已移除账号 12345");
+    assert.equal(snapshot.avatar, null);
+    assert.equal(snapshot.removed_at, now - 5_000);
+    assert.equal(getArchiveLibraryNavigation(manager.getDatabase(), users.list()).accounts.some((account) => account.id === "12345" && account.removed), true);
+
+    manager.getDatabase().db.prepare("UPDATE archive_accounts SET name='保留名称' WHERE user_id='12345'").run();
+    service.reconcileArchiveAccounts();
+    assert.equal((manager.getDatabase().db.prepare("SELECT name FROM archive_accounts WHERE user_id='12345'").get() as any).name, "保留名称");
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("archive account preview folds 9065 proof rows into 4533 physical paths", async () => {
   const runtime = await createTestDir("archive-delete-dedup-large");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
@@ -826,6 +994,17 @@ test("archive account preview folds 9065 proof rows into 4533 physical paths", a
     assert.equal(deletionRowCount(manager, "archive_deleted_sources", preview.id), 1);
     assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM archive_deletions WHERE status='preview'").get() as any).count), 1);
     assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM remote_files").get() as any).count), 9065);
+    const sharedPathPlan = database.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT DISTINCT rf.remote_path
+      FROM archive_deletion_items i
+      JOIN remote_files rf ON rf.remote_path=i.remote_path AND rf.user_id<>''
+      WHERE i.deletion_id=? AND NOT EXISTS(
+        SELECT 1 FROM archive_deleted_sources s
+        WHERE s.deletion_id=? AND s.user_id=rf.user_id AND s.media_id=rf.media_id AND s.bvid=rf.bvid
+      )
+    `).all(preview.id, preview.id) as any[];
+    assert.match(sharedPathPlan.map((row) => row.detail).join("\n"), /idx_remote_files_path \(remote_path=\?\)/);
   } finally {
     if (service) await service.stop();
     manager.close();

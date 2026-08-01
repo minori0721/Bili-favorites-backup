@@ -116,6 +116,10 @@ const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, us
     scheduler.restoreUserAfterLogin(userId);
     scheduler.wakeChargingAccessProbes();
   },
+  onAccountPreparationRecovery: (userId, accountRemoved) => {
+    if (accountRemoved) scheduler.finalizeUserRemoteDeletion(userId);
+    else scheduler.restoreUserAfterLogin(userId);
+  },
 });
 
 const favoriteItemsCache = new Map<
@@ -1513,17 +1517,12 @@ app.post("/api/users/:id/removal-preview", (req, res) => {
 });
 
 app.delete("/api/users/:id", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
   const result = await executeAccountRemoval({
     archiveDeletion,
     scheduler,
     userStore,
     onRollbackError: (error) => console.error(`[Account] Failed to roll back account removal: ${safeErrorSummary(error)}`),
-  }, user, req.body || {});
+  }, String(req.params.id || ""), req.body || {});
   if (result.operation) {
     res.status(202).json({ success: true, data: { ...result.retired, operation: result.operation } });
     return;
@@ -1833,9 +1832,9 @@ function reloadStoresAfterImport() {
   configStore.reload();
   userStore.reload();
   stateManager.reload();
+  scheduler.reloadStateDatabase();
   pathMigration.rebind(stateManager.getDatabase());
   archiveDeletion.rebind(stateManager.getDatabase());
-  scheduler.reloadStateDatabase();
   logManager.reload();
   scheduler.updateInterval();
 }

@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS remote_files (
   UNIQUE(user_id, media_id, bvid, remote_path)
 );
 CREATE INDEX IF NOT EXISTS idx_remote_files_verify ON remote_files(status, next_verify_at);
+CREATE INDEX IF NOT EXISTS idx_remote_files_path
+  ON remote_files(remote_path, user_id, media_id, bvid, status);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -305,7 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_archive_deletions_target
   ON archive_deletions(user_id, media_id, bvid, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_deletions_active
   ON archive_deletions((1))
-  WHERE status IN ('pending','running','retry_wait');
+  WHERE status IN ('preparing','pending','running','retry_wait');
 
 CREATE TABLE IF NOT EXISTS archive_deletion_items (
   deletion_id TEXT NOT NULL REFERENCES archive_deletions(id) ON DELETE CASCADE,
@@ -640,6 +642,7 @@ export class StateDatabase {
         }
         this.db.exec("DROP INDEX IF EXISTS idx_relations_user_unavailable");
         this.db.exec("DROP INDEX IF EXISTS idx_path_migrations_active");
+        this.db.exec("DROP INDEX IF EXISTS idx_archive_deletions_active");
         this.db.exec(`
           CREATE UNIQUE INDEX idx_path_migrations_active
             ON path_migrations((1))
@@ -658,6 +661,9 @@ export class StateDatabase {
           CREATE INDEX IF NOT EXISTS idx_videos_access_restriction ON videos(access_restriction_type, access_last_checked_at DESC, bvid);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_schedule
             ON favorite_relations(backup_status, COALESCE(next_remote_check_at, last_remote_check_at, 0), bvid);
+          CREATE UNIQUE INDEX idx_archive_deletions_active
+            ON archive_deletions((1))
+            WHERE status IN ('preparing','pending','running','retry_wait');
         `);
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
@@ -722,7 +728,7 @@ export class StateDatabase {
     const row = this.db.prepare(`
       SELECT EXISTS(
         SELECT 1 FROM archive_deletions
-        WHERE status IN ('pending','running','retry_wait')
+        WHERE status IN ('preparing','pending','running','retry_wait')
       ) AS present
     `).get() as any;
     return Boolean(row?.present);
@@ -732,7 +738,7 @@ export class StateDatabase {
     const row = this.db.prepare(`
       SELECT EXISTS(
         SELECT 1 FROM archive_deletions
-        WHERE status IN ('pending','running','retry_wait','failed')
+        WHERE status IN ('preparing','pending','running','retry_wait','failed')
       ) AS present
     `).get() as any;
     return Boolean(row?.present);
@@ -743,7 +749,7 @@ export class StateDatabase {
       SELECT EXISTS(
         SELECT 1 FROM archive_deletions
         WHERE scope='account' AND user_id=?
-          AND status IN ('pending','running','retry_wait','failed')
+          AND status IN ('preparing','pending','running','retry_wait','failed')
       ) AS present
     `).get(userId) as any;
     return Boolean(row?.present);
@@ -759,13 +765,19 @@ export class StateDatabase {
       SELECT EXISTS(
         SELECT 1 FROM archive_deleted_sources
         WHERE user_id=? AND media_id=? AND bvid=?
-          AND status IN ('pending','running','retry_wait','failed','completed')
+          AND status IN ('preparing','pending','running','retry_wait','failed','completed')
       ) AS blocked
     `).get(userId, mediaId, bvid) as any;
     return Boolean(row?.blocked);
   }
 
   restoreCompletedArchiveSource(userId: string, mediaId: number, bvid: string, restoredAt = Date.now()) {
+    const candidate = this.db.prepare(`
+      SELECT 1 FROM archive_deleted_sources
+      WHERE user_id=? AND media_id=? AND bvid=? AND status IN ('completed','failed')
+      LIMIT 1
+    `).get(userId, mediaId, bvid);
+    if (!candidate) return 0;
     return this.db.transaction(() => {
       const restored = this.db.prepare(`
         UPDATE archive_deleted_sources

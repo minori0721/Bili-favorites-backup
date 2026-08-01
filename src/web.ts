@@ -3176,7 +3176,7 @@ function getAppScript() {
       globalGroup.appendChild(globalList);
       host.appendChild(globalGroup);
 
-      let needsDeletionRefresh = false;
+      const activeDeletions = [];
       (navigation.accounts || []).forEach((account) => {
         const group = document.createElement(account.removed ? 'details' : 'section');
         group.className = 'archive-nav-account' + (account.removed ? ' archive-nav-inactive' : '');
@@ -3225,8 +3225,8 @@ function getAppScript() {
               }
             });
             deletion.appendChild(repreview);
-          } else if (['pending','running','retry_wait'].includes(account.deletion.status)) {
-            needsDeletionRefresh = true;
+          } else if (['preparing','pending','running','retry_wait'].includes(account.deletion.status)) {
+            activeDeletions.push({ id:account.deletion.id, userId:account.id });
           }
           group.appendChild(deletion);
         }
@@ -3256,16 +3256,51 @@ function getAppScript() {
         host.appendChild(group);
       });
       syncArchiveLibraryNavigationSelection();
-      if (needsDeletionRefresh && document.getElementById('archiveLibraryModal').classList.contains('active')) {
-        archiveLibraryState.navigationTimer = setTimeout(async () => {
-          archiveLibraryState.navigationTimer = null;
-          try {
-            archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
-            renderArchiveLibraryNavigation();
-          } catch (_) {
-            archiveLibraryState.navigationTimer = setTimeout(renderArchiveLibraryNavigation, 3000);
-          }
-        }, 1500);
+      if (activeDeletions.length && document.getElementById('archiveLibraryModal').classList.contains('active')) {
+        archiveLibraryState.navigationTimer = setTimeout(
+          () => pollArchiveLibraryNavigationDeletions(activeDeletions),
+          1500
+        );
+      }
+    }
+
+    async function pollArchiveLibraryNavigationDeletions(activeDeletions) {
+      archiveLibraryState.navigationTimer = null;
+      if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+      try {
+        const operations = await Promise.all(activeDeletions.map((entry) =>
+          fetchJson('/api/archive-deletions/' + encodeURIComponent(entry.id))
+        ));
+        if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+        let reachedTerminal = false;
+        let completed = false;
+        activeDeletions.forEach((entry, index) => {
+          const operation = operations[index];
+          const account = (archiveLibraryState.navigation?.accounts || []).find((candidate) => candidate.id === entry.userId);
+          if (!account || account.deletion?.id !== entry.id) return;
+          account.deletion = operation;
+          if (['completed','failed'].includes(operation.status)) reachedTerminal = true;
+          if (operation.status === 'completed') completed = true;
+        });
+        if (reachedTerminal) {
+          saveArchiveLibraryScroll();
+          archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+          renderArchiveLibraryNavigation();
+          if (completed) await loadArchiveLibraryItems(true);
+          return;
+        }
+        renderArchiveLibraryNavigation();
+      } catch (_) {
+        if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+        try {
+          archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+          renderArchiveLibraryNavigation();
+        } catch (_) {
+          archiveLibraryState.navigationTimer = setTimeout(
+            () => pollArchiveLibraryNavigationDeletions(activeDeletions),
+            3000
+          );
+        }
       }
     }
 
@@ -3329,7 +3364,7 @@ function getAppScript() {
       if (item?.deletionStatus) deletionStatuses.push(item.deletionStatus);
       if (deletionStatuses.includes('completed')) return '已手动删除';
       if (deletionStatuses.includes('failed')) return '清理失败';
-      if (deletionStatuses.some((status) => ['pending','running','retry_wait'].includes(status))) return '清理中';
+      if (deletionStatuses.some((status) => ['preparing','pending','running','retry_wait'].includes(status))) return '清理中';
       if (item.playback && item.playback.available) {
         if (item.unavailable) return '已归档且失效';
         if (item.playback.partial) return '部分可播放';
@@ -3522,7 +3557,7 @@ function getAppScript() {
     }
 
     function archiveDeletionProgressText(operation) {
-      const labels = { preview:'等待确认', pending:'等待清理', running:'正在清理', retry_wait:'等待自动重试', failed:'清理失败', completed:'清理完成', expired:'预览已过期', superseded:'来源已重新加入，旧任务结束' };
+      const labels = { preview:'等待确认', preparing:'正在停止账号任务', pending:'等待清理', running:'正在清理', retry_wait:'等待自动重试', failed:'清理失败', completed:'清理完成', expired:'预览已过期', superseded:'来源已重新加入，旧任务结束' };
       return (labels[operation.status] || operation.status) + ' · ' + Number(operation.completedCount || 0) + '/' + Number(operation.fileCount || 0) +
         (operation.retainedCount ? ' · 共享保留 ' + Number(operation.retainedCount) : '') +
         (operation.lastError ? ' · ' + operation.lastError : '');
@@ -3683,7 +3718,7 @@ function getAppScript() {
           remove.type = 'button';
           remove.className = 'danger-action';
           const retryExisting = membership.deletionStatus === 'failed' && membership.deletionId;
-          const deletionRunning = ['pending','running','retry_wait'].includes(membership.deletionStatus);
+          const deletionRunning = ['preparing','pending','running','retry_wait'].includes(membership.deletionStatus);
           remove.textContent = membership.deletionStatus === 'completed'
             ? '已删除'
             : retryExisting

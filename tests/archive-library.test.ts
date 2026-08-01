@@ -206,6 +206,21 @@ test("archive navigation keeps selected empty folders and exposes inactive archi
     assert.equal(navigation.accounts[0].folders[1].title, "空收藏夹");
     assert.equal(navigation.accounts[0].folders[1].total, 0);
     assert.deepEqual(navigation.accounts[0].inactiveFolders.map((folder) => folder.title), ["已经停用"]);
+    assert.deepEqual(navigation.accounts.map((account) => account.summary.total), [4, 1]);
+
+    const emptyFolder = queryArchiveLibraryItems(database, users(), {
+      scope: "folder", userId: "u1", mediaId: 11, pageSize: 50,
+    });
+    assert.deepEqual(emptyFolder.items, []);
+    assert.deepEqual(emptyFolder.summary, { total: 0, playable: 0, pending: 0, issue: 0 });
+    assert.equal(emptyFolder.hasMore, false);
+    assert.equal(emptyFolder.nextCursor, null);
+
+    const emptySearch = queryArchiveLibraryItems(database, users(), {
+      scope: "folder", userId: "u1", mediaId: 10, query: "完全不存在的标题", pageSize: 50,
+    });
+    assert.deepEqual(emptySearch.items, []);
+    assert.deepEqual(emptySearch.summary, { total: 0, playable: 0, pending: 0, issue: 0 });
   } finally {
     database.close();
   }

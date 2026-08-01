@@ -536,7 +536,7 @@ export class PersistentJobStore {
   reassignDownloadJob(id: string, downloadUserId: string, payload: Record<string, unknown>) {
     const now = Date.now();
     return this.stateDatabase.db.prepare(`
-      UPDATE jobs SET user_id=CASE WHEN kind='quality_download' THEN ? ELSE user_id END,
+      UPDATE jobs SET user_id=?,
         payload_json=?, status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
         last_error=NULL, updated_at=? WHERE id=? AND kind IN ('download','quality_download')
     `).run(downloadUserId, JSON.stringify({ ...payload, downloadUserId, pausedForUserId: undefined }), now, now, id).changes === 1;

@@ -121,6 +121,9 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /DELETE REMOTE ARCHIVE/);
   assert.match(appHtml, /function openArchiveLibraryPlayback\(bvid, trigger\)/);
   assert.match(appHtml, /\/api\/archive-library\/navigation/);
+  assert.match(appHtml, /function pollArchiveLibraryNavigationDeletions\(activeDeletions\)/);
+  assert.match(appHtml, /Promise\.all\(activeDeletions\.map/);
+  assert.match(appHtml, /fetchJson\('\/api\/archive-deletions\/' \+ encodeURIComponent\(entry\.id\)\)/);
   assert.match(appHtml, /playbackState\.libraryContext/);
   assert.match(appHtml, /function playbackFileApiPath\(part, suffix\)/);
   assert.match(appHtml, /id="playbackDeliveryMode"/);

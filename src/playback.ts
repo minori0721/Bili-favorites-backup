@@ -194,7 +194,7 @@ const playableRelationSql = `
   AND NOT EXISTS (
     SELECT 1 FROM archive_deleted_sources ads
     WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-      AND ads.status IN ('pending','running','retry_wait','failed','completed')
+      AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
   )
 `;
 
@@ -334,7 +334,7 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
     AND NOT EXISTS (
       SELECT 1 FROM archive_deleted_sources ads
       WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid
-        AND ads.status IN ('pending','running','retry_wait','failed','completed')
+        AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
     )
     ORDER BY rf.user_id, rf.media_id, rf.bvid, rf.id
   `).all(...params) as any[];
@@ -460,7 +460,7 @@ function exactRelation(database: StateDatabase, userId: string, mediaId: number,
       AND NOT EXISTS (
         SELECT 1 FROM archive_deleted_sources ads
         WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-          AND ads.status IN ('pending','running','retry_wait','failed','completed')
+          AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
       )
   `).get(userId, mediaId, bvid) as any;
   if (!row) return null;
@@ -655,7 +655,7 @@ export function resolvePlaybackFile(database: StateDatabase, userId: string, med
       AND NOT EXISTS(
         SELECT 1 FROM archive_deleted_sources ads
         WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid
-          AND ads.status IN ('pending','running','retry_wait','failed','completed')
+          AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
       )
   `).get(fileId, userId, mediaId) as any;
   if (!row) throw new PlaybackHttpError(404, "PLAYBACK_FILE_NOT_FOUND", "播放文件不存在或尚未完成远端确认");

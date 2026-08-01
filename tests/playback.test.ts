@@ -312,7 +312,7 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
   }
 });
 
-test("playback excludes sources as soon as archive deletion is pending or failed", () => {
+test("playback excludes sources throughout archive deletion preparation and execution", () => {
   const database = new StateDatabase(":memory:");
   try {
     database.replaceState(playbackState());
@@ -322,17 +322,21 @@ test("playback excludes sources as soon as archive deletion is pending or failed
         id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
         relation_count,source_count,file_count,total_bytes,shared_count,completed_count,
         retained_count,conflict_count,failed_count,created_at,updated_at
-      ) VALUES('delete-playback','source','u1',10,'BVPLAY001','pending','hash','/archive',
+      ) VALUES('delete-playback','source','u1',10,'BVPLAY001','preparing','hash','/archive',
         1,1,1,128,0,0,0,0,0,1,1)
     `).run();
     database.db.prepare(`
       INSERT INTO archive_deleted_sources(
         user_id,media_id,bvid,deletion_id,status,file_count,total_bytes,retained_count
-      ) VALUES('u1',10,'BVPLAY001','delete-playback','pending',1,128,0)
+      ) VALUES('u1',10,'BVPLAY001','delete-playback','preparing',1,128,0)
     `).run();
     assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
     const queue = getPlaybackQueue(database, "u1", 10, { pageSize: 50 });
     assert.equal(queue?.items.some((item) => item.bvid === "BVPLAY001"), false);
+
+    database.db.prepare("UPDATE archive_deletions SET status='pending' WHERE id='delete-playback'").run();
+    database.db.prepare("UPDATE archive_deleted_sources SET status='pending' WHERE deletion_id='delete-playback'").run();
+    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
 
     database.db.prepare("UPDATE archive_deletions SET status='failed' WHERE id='delete-playback'").run();
     database.db.prepare("UPDATE archive_deleted_sources SET status='failed' WHERE deletion_id='delete-playback'").run();
