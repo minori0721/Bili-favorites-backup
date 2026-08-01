@@ -83,6 +83,7 @@ interface CandidateKeyRow {
   recent_key: number;
   title_key: string;
   active_key: number;
+  order_known_key: number;
   order_key: number;
   playable: number;
   pending: number;
@@ -185,10 +186,12 @@ const displayUpperSql = `lower(trim(COALESCE(
 
 export class ArchiveLibraryQueryError extends Error {
   readonly statusCode = 400;
+  readonly code: string;
 
-  constructor(message: string) {
+  constructor(message: string, code = "ARCHIVE_QUERY_INVALID") {
     super(message);
     this.name = "ArchiveLibraryQueryError";
+    this.code = code;
   }
 }
 
@@ -329,6 +332,20 @@ function searchSql(context: NormalizedContext, params: Record<string, unknown>, 
   }).join(" AND ");
 }
 
+function projectionSearchSql(context: NormalizedContext, params: Record<string, unknown>, extraQuery = "") {
+  const query = [context.query, extraQuery].filter(Boolean).join(" ").trim();
+  if (!query) return "1=1";
+  const terms = query.split(/\s+/).filter(Boolean);
+  return terms.map((term, index) => {
+    params[`term${index}`] = `%${term.toLowerCase().replace(/[\\%_]/g, "\\$&")}%`;
+    return `(
+      lower(p.bvid) LIKE @term${index} ESCAPE '\\'
+      OR p.title_key LIKE @term${index} ESCAPE '\\'
+      OR p.upper_key LIKE @term${index} ESCAPE '\\'
+    )`;
+  }).join(" AND ");
+}
+
 function filterSql(filter: ArchiveLibraryFilter) {
   if (filter === "playable") return "playable=1";
   if (filter === "pending") return "playable=0 AND pending=1";
@@ -351,12 +368,13 @@ function contextHash(context: NormalizedContext, extraQuery = "") {
 
 function encodeCursor(context: NormalizedContext, row: CandidateKeyRow, extraQuery = "") {
   return Buffer.from(JSON.stringify({
-    v: 1,
+    v: 2,
     h: contextHash(context, extraQuery),
     b: row.bvid,
     r: Number(row.recent_key || 0),
     t: String(row.title_key || ""),
     a: Number(row.active_key || 0),
+    k: Number(row.order_known_key || 0),
     o: Number(row.order_key || 0),
   })).toString("base64url");
 }
@@ -365,68 +383,121 @@ function decodeCursor(context: NormalizedContext, cursor: string | undefined, ex
   if (!cursor) return null;
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (parsed?.v !== 1 || parsed?.h !== contextHash(context, extraQuery) || !parsed?.b) throw new Error("mismatch");
-    return parsed as { b: string; r: number; t: string; a: number; o: number };
-  } catch {
+    if (![1, 2].includes(Number(parsed?.v)) || parsed?.h !== contextHash(context, extraQuery) || !parsed?.b) {
+      throw new Error("mismatch");
+    }
+    const order = Number(parsed.o || 0);
+    if (Number(parsed.v) === 1 && context.effectiveScope === "folder"
+      && (!Number.isSafeInteger(order) || order < 0)) {
+      throw new ArchiveLibraryQueryError("Archive cursor is stale", "ARCHIVE_CURSOR_STALE");
+    }
+    return {
+      b: String(parsed.b),
+      r: Number(parsed.r || 0),
+      t: String(parsed.t || ""),
+      a: Number(parsed.a || 0),
+      k: Number(parsed.v) === 2 ? Number(parsed.k || 0) : 0,
+      o: order,
+    };
+  } catch (error) {
+    if (error instanceof ArchiveLibraryQueryError) throw error;
     throw new ArchiveLibraryQueryError("Invalid or stale archive cursor");
   }
 }
 
-function orderAndCursorSql(context: NormalizedContext, cursor: ReturnType<typeof decodeCursor>, params: Record<string, unknown>) {
-  if (!cursor) {
-    if (context.sort === "title_asc") return { cursorSql: "1=1", orderSql: "title_key ASC, bvid ASC" };
-    if (context.sort === "title_desc") return { cursorSql: "1=1", orderSql: "title_key DESC, bvid ASC" };
-    if (context.effectiveScope === "folder") {
-      return { cursorSql: "1=1", orderSql: "active_key DESC, order_key ASC, recent_key DESC, bvid ASC" };
-    }
-    return { cursorSql: "1=1", orderSql: "recent_key DESC, bvid ASC" };
+function archiveOrderSql(context: NormalizedContext, reverse = false) {
+  if (context.sort === "title_asc") return reverse ? "title_key DESC, bvid DESC" : "title_key ASC, bvid ASC";
+  if (context.sort === "title_desc") return reverse ? "title_key ASC, bvid DESC" : "title_key DESC, bvid ASC";
+  if (context.effectiveScope === "folder") {
+    return reverse
+      ? "active_key ASC, order_known_key DESC, order_key DESC, recent_key ASC, bvid DESC"
+      : "active_key DESC, order_known_key ASC, order_key ASC, recent_key DESC, bvid ASC";
   }
+  return reverse ? "recent_key ASC, bvid DESC" : "recent_key DESC, bvid ASC";
+}
+
+function rowCursor(row: CandidateKeyRow) {
+  return {
+    b: String(row.bvid),
+    r: Number(row.recent_key || 0),
+    t: String(row.title_key || ""),
+    a: Number(row.active_key || 0),
+    k: Number(row.order_known_key || 0),
+    o: Number(row.order_key || 0),
+  };
+}
+
+function orderAndCursorSql(
+  context: NormalizedContext,
+  cursor: ReturnType<typeof decodeCursor>,
+  params: Record<string, unknown>,
+  direction: "after" | "before" = "after"
+) {
+  if (!cursor) return { cursorSql: "1=1", orderSql: archiveOrderSql(context) };
   params.cursorBvid = cursor.b;
   params.cursorRecent = Number(cursor.r || 0);
   params.cursorTitle = String(cursor.t || "");
   params.cursorActive = Number(cursor.a || 0);
+  params.cursorOrderKnown = Number(cursor.k || 0);
   params.cursorOrder = Number(cursor.o || 0);
+  const before = direction === "before";
   if (context.sort === "title_asc") {
     return {
-      cursorSql: "(title_key>@cursorTitle OR (title_key=@cursorTitle AND bvid>@cursorBvid))",
-      orderSql: "title_key ASC, bvid ASC",
+      cursorSql: before
+        ? "(title_key<@cursorTitle OR (title_key=@cursorTitle AND bvid<@cursorBvid))"
+        : "(title_key>@cursorTitle OR (title_key=@cursorTitle AND bvid>@cursorBvid))",
+      orderSql: archiveOrderSql(context, before),
     };
   }
   if (context.sort === "title_desc") {
     return {
-      cursorSql: "(title_key<@cursorTitle OR (title_key=@cursorTitle AND bvid>@cursorBvid))",
-      orderSql: "title_key DESC, bvid ASC",
+      cursorSql: before
+        ? "(title_key>@cursorTitle OR (title_key=@cursorTitle AND bvid<@cursorBvid))"
+        : "(title_key<@cursorTitle OR (title_key=@cursorTitle AND bvid>@cursorBvid))",
+      orderSql: archiveOrderSql(context, before),
     };
   }
   if (context.effectiveScope === "folder") {
     return {
-      cursorSql: `(
-        active_key<@cursorActive
-        OR (active_key=@cursorActive AND order_key>@cursorOrder)
-        OR (active_key=@cursorActive AND order_key=@cursorOrder AND recent_key<@cursorRecent)
-        OR (active_key=@cursorActive AND order_key=@cursorOrder AND recent_key=@cursorRecent AND bvid>@cursorBvid)
-      )`,
-      orderSql: "active_key DESC, order_key ASC, recent_key DESC, bvid ASC",
+      cursorSql: before ? `(
+          active_key>@cursorActive
+          OR (active_key=@cursorActive AND order_known_key<@cursorOrderKnown)
+          OR (active_key=@cursorActive AND order_known_key=@cursorOrderKnown AND order_key<@cursorOrder)
+          OR (active_key=@cursorActive AND order_known_key=@cursorOrderKnown AND order_key=@cursorOrder AND recent_key>@cursorRecent)
+          OR (active_key=@cursorActive AND order_known_key=@cursorOrderKnown AND order_key=@cursorOrder AND recent_key=@cursorRecent AND bvid<@cursorBvid)
+        )` : `(
+          active_key<@cursorActive
+          OR (active_key=@cursorActive AND order_known_key>@cursorOrderKnown)
+          OR (active_key=@cursorActive AND order_known_key=@cursorOrderKnown AND order_key>@cursorOrder)
+          OR (active_key=@cursorActive AND order_known_key=@cursorOrderKnown AND order_key=@cursorOrder AND recent_key<@cursorRecent)
+          OR (active_key=@cursorActive AND order_known_key=@cursorOrderKnown AND order_key=@cursorOrder AND recent_key=@cursorRecent AND bvid>@cursorBvid)
+        )`,
+      orderSql: archiveOrderSql(context, before),
     };
   }
   return {
-    cursorSql: "(recent_key<@cursorRecent OR (recent_key=@cursorRecent AND bvid>@cursorBvid))",
-    orderSql: "recent_key DESC, bvid ASC",
+    cursorSql: before
+      ? "(recent_key>@cursorRecent OR (recent_key=@cursorRecent AND bvid<@cursorBvid))"
+      : "(recent_key<@cursorRecent OR (recent_key=@cursorRecent AND bvid>@cursorBvid))",
+    orderSql: archiveOrderSql(context, before),
   };
 }
 
 function candidateCte(context: NormalizedContext, params: Record<string, unknown>, extraQuery = "") {
-  const scope = addScopeSql(context, "r", params);
-  const search = searchSql(context, params, extraQuery);
-  const deletion = context.filter === "deleted" ? deletionExistsSql("r") : `NOT (${deletionExistsSql("r")})`;
   if (context.effectiveScope === "folder") {
+    const scope = addScopeSql(context, "r", params);
+    const search = searchSql(context, params, extraQuery);
+    const deletion = context.filter === "deleted" ? deletionExistsSql("r") : `NOT (${deletionExistsSql("r")})`;
     return `
       WITH candidates AS (
         SELECT r.bvid,
           r.last_seen_at AS recent_key,
           ${displayTitleSql} AS title_key,
           r.active_in_favorite AS active_key,
-          CASE WHEN r.active_in_favorite=1 THEN COALESCE(r.fav_order, 9223372036854775807) ELSE 9223372036854775807 END AS order_key,
+          CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer'
+            AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN 0 ELSE 1 END AS order_known_key,
+          CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer'
+            AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN r.fav_order ELSE 0 END AS order_key,
           CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END AS playable,
           CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS pending
         FROM favorite_relations r
@@ -437,19 +508,19 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
       )
     `;
   }
+  const projectionSearch = projectionSearchSql(context, params, extraQuery);
+  params.projectionScopeType = context.effectiveScope === "account" ? "account" : "global";
+  params.projectionScopeId = context.effectiveScope === "account" ? context.effectiveUserId : "";
+  params.projectionVisibility = context.filter === "deleted" ? "deleted" : "normal";
   return `
     WITH candidates AS (
-      SELECT r.bvid,
-        MAX(r.last_seen_at) AS recent_key,
-        MIN(${displayTitleSql}) AS title_key,
-        MAX(r.active_in_favorite) AS active_key,
-        MIN(CASE WHEN r.active_in_favorite=1 THEN COALESCE(r.fav_order, 9223372036854775807) ELSE 9223372036854775807 END) AS order_key,
-        MAX(CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END) AS playable,
-        MAX(CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END) AS pending
-      FROM favorite_relations r
-      JOIN videos v ON v.bvid=r.bvid
-      WHERE ${scope} AND ${search} AND ${deletion}
-      GROUP BY r.bvid
+      SELECT p.bvid, p.recent_key, p.title_key,
+        0 AS active_key, 0 AS order_known_key, 0 AS order_key,
+        CASE WHEN p.status_group='playable' THEN 1 ELSE 0 END AS playable,
+        CASE WHEN p.status_group='pending' THEN 1 ELSE 0 END AS pending
+      FROM archive_library_projection p
+      WHERE p.scope_type=@projectionScopeType AND p.scope_id=@projectionScopeId
+        AND p.visibility=@projectionVisibility AND ${projectionSearch}
     ), filtered AS (
       SELECT * FROM candidates WHERE ${filterSql(context.filter)}
     )
@@ -521,43 +592,66 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
     return `(${index},@pageBvid${index})`;
   }).join(",");
   const rows = database.db.prepare(`
-    WITH page(ord,bvid) AS (VALUES ${values})
-    SELECT page.ord, r.payload_json AS relation_json, v.payload_json AS video_json,
-      (SELECT ads.deletion_id FROM archive_deleted_sources ads
-       WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-         AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
-       ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1) AS deletion_id,
-      (SELECT ads.status FROM archive_deleted_sources ads
-       WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-         AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
-       ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1) AS deletion_status,
-      (SELECT ads.deleted_at FROM archive_deleted_sources ads
-       WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-         AND ads.status='completed'
-       ORDER BY ads.deleted_at DESC LIMIT 1) AS deleted_at,
-      CASE WHEN ${deletionExistsSql("r")} THEN COALESCE((
-        SELECT ads.file_count FROM archive_deleted_sources ads
-        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-          AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
-        ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1
-      ),0) ELSE (SELECT COUNT(*) FROM remote_files rf WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified') END AS file_count,
-      CASE WHEN ${deletionExistsSql("r")} THEN COALESCE((
-        SELECT ads.total_bytes FROM archive_deleted_sources ads
-        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-          AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
-        ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC LIMIT 1
-      ),0) ELSE COALESCE((SELECT SUM(rf.expected_size) FROM remote_files rf WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified'),0) END AS total_bytes
-    FROM page
-    JOIN favorite_relations r ON r.bvid=page.bvid
-    JOIN videos v ON v.bvid=page.bvid
-    WHERE ${scope} AND ${deletion}
-    ORDER BY page.ord,
-      r.active_in_favorite DESC,
-      CASE WHEN r.fav_order IS NULL THEN 1 ELSE 0 END,
-      r.fav_order ASC,
-      r.last_seen_at DESC,
-      r.user_id,
-      r.media_id
+    WITH page(ord,bvid) AS (VALUES ${values}),
+    page_sources AS (
+      SELECT page.ord, r.user_id, r.media_id, r.bvid,
+        r.active_in_favorite, r.fav_order, r.last_seen_at,
+        r.payload_json AS relation_json, v.payload_json AS video_json
+      FROM page
+      JOIN favorite_relations r ON r.bvid=page.bvid
+      JOIN videos v ON v.bvid=page.bvid
+      WHERE ${scope} AND ${deletion}
+    ), source_keys AS (
+      SELECT DISTINCT user_id, media_id, bvid FROM page_sources
+    ), ranked_deletions AS (
+      SELECT ads.deletion_id, ads.user_id, ads.media_id, ads.bvid, ads.status,
+        ads.file_count, ads.total_bytes,
+        ROW_NUMBER() OVER (
+          PARTITION BY ads.user_id, ads.media_id, ads.bvid
+          ORDER BY COALESCE(ads.deleted_at,0) DESC, ads.rowid DESC
+        ) AS rank
+      FROM archive_deleted_sources ads
+      JOIN source_keys keys
+        ON keys.user_id=ads.user_id AND keys.media_id=ads.media_id AND keys.bvid=ads.bvid
+      WHERE ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
+    ), latest_deletion AS (
+      SELECT * FROM ranked_deletions WHERE rank=1
+    ), completed_deletions AS (
+      SELECT ads.user_id, ads.media_id, ads.bvid, MAX(ads.deleted_at) AS deleted_at
+      FROM archive_deleted_sources ads
+      JOIN source_keys keys
+        ON keys.user_id=ads.user_id AND keys.media_id=ads.media_id AND keys.bvid=ads.bvid
+      WHERE ads.status='completed'
+      GROUP BY ads.user_id, ads.media_id, ads.bvid
+    ), remote_stats AS (
+      SELECT rf.user_id, rf.media_id, rf.bvid, COUNT(*) AS file_count,
+        COALESCE(SUM(rf.expected_size),0) AS total_bytes
+      FROM remote_files rf
+      JOIN source_keys keys
+        ON keys.user_id=rf.user_id AND keys.media_id=rf.media_id AND keys.bvid=rf.bvid
+      WHERE rf.status='verified'
+      GROUP BY rf.user_id, rf.media_id, rf.bvid
+    )
+    SELECT source.ord, source.relation_json, source.video_json,
+      deletion.deletion_id, deletion.status AS deletion_status, completed.deleted_at,
+      CASE WHEN deletion.deletion_id IS NOT NULL THEN COALESCE(deletion.file_count,0)
+        ELSE COALESCE(remote.file_count,0) END AS file_count,
+      CASE WHEN deletion.deletion_id IS NOT NULL THEN COALESCE(deletion.total_bytes,0)
+        ELSE COALESCE(remote.total_bytes,0) END AS total_bytes
+    FROM page_sources source
+    LEFT JOIN latest_deletion deletion
+      ON deletion.user_id=source.user_id AND deletion.media_id=source.media_id AND deletion.bvid=source.bvid
+    LEFT JOIN completed_deletions completed
+      ON completed.user_id=source.user_id AND completed.media_id=source.media_id AND completed.bvid=source.bvid
+    LEFT JOIN remote_stats remote
+      ON remote.user_id=source.user_id AND remote.media_id=source.media_id AND remote.bvid=source.bvid
+    ORDER BY source.ord,
+      source.active_in_favorite DESC,
+      CASE WHEN source.fav_order IS NULL THEN 1 ELSE 0 END,
+      source.fav_order ASC,
+      source.last_seen_at DESC,
+      source.user_id,
+      source.media_id
   `).all(params) as any[];
   const records = new Map<string, HydratedRecord[]>();
   for (const row of rows) {
@@ -808,39 +902,99 @@ function playbackPageFromItems(
   database: StateDatabase,
   users: BiliUser[],
   input: Partial<ArchiveLibraryQuery>,
-  options: { focusBvid?: string; page?: number; pageSize?: number; extraQuery?: string }
+  options: {
+    focusBvid?: string;
+    page?: number;
+    pageSize?: number;
+    extraQuery?: string;
+    cursor?: string;
+    direction?: "after" | "before";
+  }
 ): PlaybackQueuePage | null {
   const libraryUsers = archiveLibraryUsers(database, users);
   const context = normalizeQuery(libraryUsers, { ...input, filter: "playable", pageSize: options.pageSize || 50 });
   const focusBvid = String(options.focusBvid || "").trim();
+  const extraQuery = options.extraQuery || "";
   const pageSize = context.pageSize;
-  const params: Record<string, unknown> = {};
-  const cte = candidateCte(context, params, options.extraQuery || "");
-  const order = orderAndCursorSql(context, null, params).orderSql;
-  const total = Number((database.db.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(params) as any)?.count || 0);
-  if (total === 0) return { mode: "library", page: 1, pageSize, total: 0, focusIndex: -1, hasMore: false, items: [] };
-  let focusIndex = -1;
-  if (focusBvid) {
-    params.focusBvid = focusBvid;
-    const focus = database.db.prepare(`
-      ${cte}, positioned AS (
-        SELECT bvid, ROW_NUMBER() OVER (ORDER BY ${order}) - 1 AS position FROM filtered
-      )
-      SELECT position FROM positioned WHERE bvid=@focusBvid
-    `).get(params) as any;
-    if (!focus) return null;
-    focusIndex = Number(focus.position);
+  const baseParams: Record<string, unknown> = {};
+  const cte = candidateCte(context, baseParams, extraQuery);
+  const total = Number((database.db.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(baseParams) as any)?.count || 0);
+  if (total === 0) {
+    return {
+      mode: "library", page: 1, pageSize, total: 0, focusIndex: -1,
+      hasPrevious: false, hasMore: false, previousCursor: null, nextCursor: null, items: [],
+    };
   }
-  const requestedPage = Math.max(0, Math.floor(Number(options.page || 0)));
-  const page = requestedPage || (focusIndex >= 0 ? Math.floor(focusIndex / pageSize) + 1 : 1);
-  params.limit = pageSize;
-  params.offset = (page - 1) * pageSize;
-  const keys = database.db.prepare(`
-    ${cte}
-    SELECT * FROM filtered ORDER BY ${order} LIMIT @limit OFFSET @offset
-  `).all(params) as CandidateKeyRow[];
+
+  const relativeRows = (
+    cursor: ReturnType<typeof decodeCursor>,
+    direction: "after" | "before",
+    limit: number
+  ) => {
+    const queryParams = { ...baseParams, relativeLimit: limit };
+    const relative = orderAndCursorSql(context, cursor, queryParams, direction);
+    return database.db.prepare(`
+      ${cte}
+      SELECT * FROM filtered WHERE ${relative.cursorSql}
+      ORDER BY ${relative.orderSql} LIMIT @relativeLimit
+    `).all(queryParams) as CandidateKeyRow[];
+  };
+
+  let focusIndex = -1;
+  let page = Math.max(1, Math.floor(Number(options.page || 1)));
+  let keys: CandidateKeyRow[] = [];
+  let hasPrevious = false;
+  let hasMore = false;
+
+  if (focusBvid) {
+    const focus = database.db.prepare(`${cte} SELECT * FROM filtered WHERE bvid=@focusBvid`)
+      .get({ ...baseParams, focusBvid }) as CandidateKeyRow | undefined;
+    if (!focus) return null;
+    const focusCursor = rowCursor(focus);
+    const countParams = { ...baseParams };
+    const before = orderAndCursorSql(context, focusCursor, countParams, "before");
+    focusIndex = Number((database.db.prepare(`
+      ${cte} SELECT COUNT(*) AS count FROM filtered WHERE ${before.cursorSql}
+    `).get(countParams) as any)?.count || 0);
+    page = Math.floor(focusIndex / pageSize) + 1;
+    const beforeInPage = focusIndex % pageSize;
+    const previousRows = beforeInPage > 0
+      ? relativeRows(focusCursor, "before", beforeInPage).reverse()
+      : [];
+    const followingRows = relativeRows(focusCursor, "after", pageSize - previousRows.length - 1);
+    keys = [...previousRows, focus, ...followingRows];
+    hasPrevious = focusIndex - previousRows.length > 0;
+    hasMore = page * pageSize < total;
+  } else if (options.cursor) {
+    const direction = options.direction === "before" ? "before" : "after";
+    const cursor = decodeCursor(context, options.cursor, extraQuery);
+    const rows = relativeRows(cursor, direction, pageSize + 1);
+    if (direction === "before") {
+      hasPrevious = rows.length > pageSize;
+      keys = rows.slice(0, pageSize).reverse();
+      hasMore = keys.length > 0;
+    } else {
+      hasMore = rows.length > pageSize;
+      keys = rows.slice(0, pageSize);
+      hasPrevious = page > 1;
+    }
+  } else if (page > 1) {
+    const queryParams = { ...baseParams, limit: pageSize, offset: (page - 1) * pageSize };
+    keys = database.db.prepare(`
+      ${cte}
+      SELECT * FROM filtered ORDER BY ${archiveOrderSql(context)} LIMIT @limit OFFSET @offset
+    `).all(queryParams) as CandidateKeyRow[];
+    hasPrevious = keys.length > 0;
+    hasMore = page * pageSize < total;
+  } else {
+    const firstRows = relativeRows(null, "after", pageSize + 1);
+    keys = firstRows.slice(0, pageSize);
+    hasMore = firstRows.length > pageSize;
+  }
+
+  const offset = (page - 1) * pageSize;
   const records = hydrateRecords(database, context, keys.map((row) => row.bvid));
-  const selected = choosePagePlaybackSources(database, records, keys.map((row) => row.bvid), Number(params.offset));
+  const selected = choosePagePlaybackSources(database, records, keys.map((row) => row.bvid), offset);
   const items = keys.map((row) => selected.get(row.bvid) || null)
     .filter((item): item is PlaybackQueueItem => Boolean(item));
   return {
@@ -849,7 +1003,10 @@ function playbackPageFromItems(
     pageSize,
     total,
     focusIndex,
-    hasMore: Number(params.offset) + pageSize < total,
+    hasPrevious,
+    hasMore,
+    previousCursor: hasPrevious && keys.length ? encodeCursor(context, keys[0], extraQuery) : null,
+    nextCursor: hasMore && keys.length ? encodeCursor(context, keys[keys.length - 1], extraQuery) : null,
     items,
   };
 }
@@ -858,7 +1015,13 @@ export function getArchiveLibraryPlaybackQueue(
   database: StateDatabase,
   users: BiliUser[],
   input: Partial<ArchiveLibraryQuery>,
-  options: { focusBvid?: string; page?: number; pageSize?: number }
+  options: {
+    focusBvid?: string;
+    page?: number;
+    pageSize?: number;
+    cursor?: string;
+    direction?: "after" | "before";
+  }
 ) {
   return playbackPageFromItems(database, users, input, options);
 }

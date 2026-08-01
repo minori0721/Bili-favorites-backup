@@ -476,7 +476,7 @@ test("schema 6 adds actual media columns without treating requested quality as m
   }
 });
 
-test("schema 7 creates persistent archive deletion tables with a verified v6 backup", async () => {
+test("schema 7 archive deletion tables survive a direct upgrade through the current schema", async () => {
   const runtime = await createTestDir("sqlite-schema-7-archive-delete");
   const dbPath = path.join(runtime, "bfb.sqlite");
   try {
@@ -495,7 +495,7 @@ test("schema 7 creates persistent archive deletion tables with a verified v6 bac
 
     const upgraded = new StateDatabase(dbPath);
     try {
-      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 7);
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
       const tables = new Set((upgraded.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[]).map((row) => row.name));
       for (const table of ["archive_accounts", "archive_deletions", "archive_deletion_items", "archive_deleted_sources"]) {
         assert.equal(tables.has(table), true, table);
@@ -518,11 +518,116 @@ test("schema 7 creates persistent archive deletion tables with a verified v6 bac
     const reopened = new StateDatabase(dbPath);
     reopened.close();
     const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
-      .filter((name) => name.includes("before-schema-7-v6") && name.endsWith(".sqlite"));
+      .filter((name) => name.includes(`before-schema-${DATABASE_SCHEMA_VERSION}-v6`) && name.endsWith(".sqlite"));
     assert.equal(backups.length, 1);
     const checksum = (await fs.promises.readFile(path.join(runtime, "backups", `${backups[0]}.sha256`), "utf8")).split(/\s+/, 1)[0];
     const actual = crypto.createHash("sha256").update(await fs.promises.readFile(path.join(runtime, "backups", backups[0]))).digest("hex");
     assert.equal(checksum, actual);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 8 atomically builds and preserves the archive library projection from schema 7", async () => {
+  const runtime = await createTestDir("sqlite-schema-8-archive-library");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  const at = "2026-08-01T00:00:00.000Z";
+  try {
+    const current = new StateDatabase(dbPath);
+    current.replaceState({
+      schemaVersion: 13,
+      processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
+      videos: {
+        BVSCHEMA8: {
+          bvid: "BVSCHEMA8", title: "Schema 8", upperName: "Tester",
+          firstSeenAt: at, lastSeenAt: at, biliStatus: "available", backupStatus: "queued",
+        },
+      },
+      relations: {
+        "u1:8:BVSCHEMA8": {
+          userId: "u1", mediaId: 8, bvid: "BVSCHEMA8", folderTitle: "Schema 8",
+          firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: "queued",
+        },
+      },
+    });
+    current.close();
+
+    const legacy = new Database(dbPath);
+    legacy.exec("DROP TABLE archive_library_projection");
+    legacy.pragma("user_version = 7");
+    legacy.close();
+
+    const upgraded = new StateDatabase(dbPath);
+    try {
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 8);
+      const rows = upgraded.db.prepare(`
+        SELECT scope_type, scope_id, visibility, bvid, status_group
+        FROM archive_library_projection ORDER BY scope_type, scope_id
+      `).all() as any[];
+      assert.deepEqual(rows, [
+        { scope_type: "account", scope_id: "u1", visibility: "normal", bvid: "BVSCHEMA8", status_group: "pending" },
+        { scope_type: "global", scope_id: "", visibility: "normal", bvid: "BVSCHEMA8", status_group: "pending" },
+      ]);
+      assert.equal(upgraded.db.pragma("integrity_check", { simple: true }), "ok");
+    } finally {
+      upgraded.close();
+    }
+
+    const reopened = new StateDatabase(dbPath);
+    try {
+      assert.equal(Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM archive_library_projection").get() as any).count), 2);
+    } finally {
+      reopened.close();
+    }
+    const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
+      .filter((name) => name.includes("before-schema-8-v7") && name.endsWith(".sqlite"));
+    assert.equal(backups.length, 1);
+    const backupPath = path.join(runtime, "backups", backups[0]);
+    const checksum = (await fs.promises.readFile(`${backupPath}.sha256`, "utf8")).split(/\s+/, 1)[0];
+    const actual = crypto.createHash("sha256").update(await fs.promises.readFile(backupPath)).digest("hex");
+    assert.equal(checksum, actual);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 8 projection rebuild rolls back the whole upgrade when projection insertion fails", async () => {
+  const runtime = await createTestDir("sqlite-schema-8-rollback");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  try {
+    const current = new StateDatabase(dbPath);
+    current.db.prepare(`
+      INSERT INTO videos(bvid,backup_status,bili_status,payload_json,updated_at)
+      VALUES('BVROLLBACK8','failed','available','{"bvid":"BVROLLBACK8","title":"Rollback"}',1)
+    `).run();
+    current.db.prepare(`
+      INSERT INTO favorite_relations(
+        user_id,media_id,bvid,backup_status,active_in_favorite,folder_title,
+        last_seen_at,favorite_unavailable,self_visible,payload_json,updated_at
+      ) VALUES('u1',8,'BVROLLBACK8','failed',1,'Rollback',1,0,0,
+        '{"userId":"u1","mediaId":8,"bvid":"BVROLLBACK8","folderTitle":"Rollback","firstSeenAt":"2026-08-01T00:00:00.000Z","lastSeenAt":"2026-08-01T00:00:00.000Z","activeInFavorite":true,"backupStatus":"failed"}',1)
+    `).run();
+    current.rebuildArchiveLibraryProjection();
+    current.db.exec(`
+      CREATE TRIGGER reject_schema8_projection
+      BEFORE INSERT ON archive_library_projection
+      BEGIN SELECT RAISE(ABORT, 'projection blocked'); END;
+    `);
+    current.db.pragma("user_version = 7");
+    current.close();
+
+    assert.throws(() => new StateDatabase(dbPath), /projection blocked/);
+    const raw = new Database(dbPath);
+    try {
+      assert.equal(raw.pragma("user_version", { simple: true }), 7);
+      assert.equal(Number((raw.prepare("SELECT COUNT(*) AS count FROM archive_library_projection").get() as any).count), 2);
+      raw.exec("DROP TRIGGER reject_schema8_projection");
+    } finally {
+      raw.close();
+    }
+    const upgraded = new StateDatabase(dbPath);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 8);
+    upgraded.close();
   } finally {
     await removeTestDir(runtime);
   }

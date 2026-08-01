@@ -806,6 +806,7 @@ test("archive account snapshots preserve local browsing and defer same-UID resto
     service.rememberAccount(live);
     service.markAccountRemoved(live.id);
     users.set([]);
+    manager.getDatabase().refreshArchiveLibraryProjection(["BVACCOUNT"]);
     assert.equal(service.isKnownOwner("u1"), true);
     const navigation = getArchiveLibraryNavigation(manager.getDatabase(), users.list());
     assert.equal(navigation.accounts[0].removed, true);
@@ -892,6 +893,42 @@ test("startup recovers interrupted account preparation according to account pres
   } finally {
     if (first) await first.stop();
     if (recovered) await recovered.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("database rebind restores a live same-UID account left detached after login persistence", async () => {
+  const runtime = await createTestDir("archive-delete-live-account-rebind");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const live = user("u1", [{ mediaId: 10, title: "账号归档" }]);
+  const users = fakeUserStore([live]);
+  const dav = new FakeDav();
+  const callbacks: Array<[string, boolean]> = [];
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVLIVERESTORE", active: true,
+      paths: [{ path: "/backup/live-restore.mp4", size: 18 }],
+    });
+    service = createService(manager, users, dav, {
+      preparationRecovery: (userId, removed) => {
+        callbacks.push([userId, removed]);
+        if (!removed) manager.reattachUserRelations(userId);
+      },
+    });
+    service.rememberAccount(live);
+    service.markAccountRemoved(live.id);
+    assert.equal(manager.detachUserRelations(live.id), 1);
+    assert.ok(manager.getRelation("u1", 10, "BVLIVERESTORE")?.accountDetachedAt);
+
+    service.rebind(manager.getDatabase());
+    assert.deepEqual(callbacks, [["u1", false]]);
+    assert.equal(manager.getRelation("u1", 10, "BVLIVERESTORE")?.accountDetachedAt, undefined);
+    assert.equal(manager.getDatabase().db.prepare("SELECT 1 FROM archive_accounts WHERE user_id='u1'").get(), undefined);
+    assert.deepEqual(service.restoreLiveAccountsAfterStartup(), []);
+  } finally {
+    if (service) await service.stop();
     manager.close();
     await removeTestDir(runtime);
   }

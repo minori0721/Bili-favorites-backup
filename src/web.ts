@@ -1440,6 +1440,7 @@ function getAppScript() {
       loading: false,
       error: null,
       token: 0,
+      sessionToken: 0,
       controller: null,
       searchTimer: null,
       scrollTimer: null,
@@ -1448,11 +1449,13 @@ function getAppScript() {
       detailTrigger: null,
       detailBvid: null,
       navigationTimer: null,
+      navigationToken: 0,
+      navigationController: null,
       scrollPositions: {},
       trigger: null
     };
     let accountRemovalToken = 0;
-    let accountRemovalState = { userId:null, preview:null, pollTimer:null, trigger:null, controller:null, token:0, loading:false };
+    let accountRemovalState = { userId:null, preview:null, operationId:null, pollTimer:null, trigger:null, controller:null, token:0, loading:false };
     const PLAYBACK_STORAGE_KEY = 'bfb-playback-v1';
     let artplayerLoader = null;
     let playbackState = {
@@ -1466,6 +1469,7 @@ function getAppScript() {
       focusIndex: -1,
       items: [],
       pages: new Map(),
+      pageCursors: new Map(),
       queueNodes: new Map(),
       queueObserver: null,
       queueController: null,
@@ -1683,7 +1687,7 @@ function getAppScript() {
         if (accountRemovalState.pollTimer) clearTimeout(accountRemovalState.pollTimer);
         if (accountRemovalState.controller) accountRemovalState.controller.abort();
         accountRemovalToken += 1;
-        accountRemovalState = { userId:null, preview:null, pollTimer:null, trigger:null, controller:null, token:accountRemovalToken, loading:false };
+        accountRemovalState = { userId:null, preview:null, operationId:null, pollTimer:null, trigger:null, controller:null, token:accountRemovalToken, loading:false };
       }
       const [entry] = modalStack.splice(index, 1);
       modal.classList.remove('active');
@@ -1801,7 +1805,7 @@ function getAppScript() {
         }
         return data.data;
       } catch (e) {
-        if (e && e.name !== 'AbortError') showToast(e.message || String(e), 'error');
+        if (e && e.name !== 'AbortError' && e.code !== 'ARCHIVE_CURSOR_STALE') showToast(e.message || String(e), 'error');
         throw e;
       }
     }
@@ -3131,20 +3135,44 @@ function getAppScript() {
     function cleanupArchiveLibrary() {
       saveArchiveLibraryScroll();
       archiveLibraryState.token += 1;
+      archiveLibraryState.sessionToken += 1;
       if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
       if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
       if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
       if (archiveLibraryState.scrollTimer) clearTimeout(archiveLibraryState.scrollTimer);
       if (archiveLibraryState.navigationTimer) clearTimeout(archiveLibraryState.navigationTimer);
+      archiveLibraryState.navigationToken += 1;
+      if (archiveLibraryState.navigationController) archiveLibraryState.navigationController.abort();
       archiveLibraryState.controller = null;
       archiveLibraryState.detailController = null;
       archiveLibraryState.detailToken += 1;
       archiveLibraryState.searchTimer = null;
       archiveLibraryState.scrollTimer = null;
       archiveLibraryState.navigationTimer = null;
+      archiveLibraryState.navigationController = null;
       archiveLibraryState.loading = false;
       closeArchiveLibraryDetail({ restoreFocus:false });
       document.body.classList.remove('archive-library-open');
+    }
+
+    function archiveLibrarySessionCurrent(token) {
+      return token === archiveLibraryState.sessionToken && document.getElementById('archiveLibraryModal').classList.contains('active');
+    }
+
+    async function requestArchiveLibraryNavigation(sessionToken = archiveLibraryState.sessionToken) {
+      if (!archiveLibrarySessionCurrent(sessionToken)) return null;
+      if (archiveLibraryState.navigationController) archiveLibraryState.navigationController.abort();
+      const controller = new AbortController();
+      const requestToken = ++archiveLibraryState.navigationToken;
+      archiveLibraryState.navigationController = controller;
+      try {
+        const navigation = await fetchJson('/api/archive-library/navigation', { signal:controller.signal });
+        if (!archiveLibrarySessionCurrent(sessionToken) || requestToken !== archiveLibraryState.navigationToken) return null;
+        archiveLibraryState.navigation = navigation;
+        return navigation;
+      } finally {
+        if (archiveLibraryState.navigationController === controller) archiveLibraryState.navigationController = null;
+      }
     }
 
     function archiveLibraryQueryParams(options = {}) {
@@ -3264,12 +3292,16 @@ function getAppScript() {
             retry.type = 'button';
             retry.textContent = '重试账号归档清理';
             retry.addEventListener('click', async () => {
+              const sessionToken = archiveLibraryState.sessionToken;
               retry.disabled = true;
               try {
                 await fetchJson('/api/archive-deletions/' + encodeURIComponent(account.deletion.id) + '/retry', { method:'POST' });
-                archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+                if (!archiveLibrarySessionCurrent(sessionToken)) return;
+                const navigation = await requestArchiveLibraryNavigation(sessionToken);
+                if (!navigation) return;
                 renderArchiveLibraryNavigation();
               } catch (error) {
+                if (!archiveLibrarySessionCurrent(sessionToken)) return;
                 retry.disabled = false;
                 showToast(error instanceof Error ? error.message : String(error));
               }
@@ -3279,13 +3311,17 @@ function getAppScript() {
             repreview.type = 'button';
             repreview.textContent = '重新预览并确认';
             repreview.addEventListener('click', async () => {
+              const sessionToken = archiveLibraryState.sessionToken;
               repreview.disabled = true;
               try {
                 const replacement = await repreviewAndStartArchiveDeletion(account.deletion.id, repreview);
+                if (!archiveLibrarySessionCurrent(sessionToken)) return;
                 if (!replacement) repreview.disabled = false;
-                archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+                const navigation = await requestArchiveLibraryNavigation(sessionToken);
+                if (!navigation) return;
                 renderArchiveLibraryNavigation();
               } catch (error) {
+                if (!archiveLibrarySessionCurrent(sessionToken)) return;
                 repreview.disabled = false;
                 showToast(error instanceof Error ? error.message : String(error));
               }
@@ -3332,12 +3368,18 @@ function getAppScript() {
 
     async function pollArchiveLibraryNavigationDeletions(activeDeletions) {
       archiveLibraryState.navigationTimer = null;
-      if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+      const sessionToken = archiveLibraryState.sessionToken;
+      if (!archiveLibrarySessionCurrent(sessionToken)) return;
+      if (archiveLibraryState.navigationController) archiveLibraryState.navigationController.abort();
+      const controller = new AbortController();
+      const requestToken = ++archiveLibraryState.navigationToken;
+      archiveLibraryState.navigationController = controller;
+      const current = () => archiveLibrarySessionCurrent(sessionToken) && requestToken === archiveLibraryState.navigationToken;
       try {
         const operations = await Promise.all(activeDeletions.map((entry) =>
-          fetchJson('/api/archive-deletions/' + encodeURIComponent(entry.id))
+          fetchJson('/api/archive-deletions/' + encodeURIComponent(entry.id), { signal:controller.signal })
         ));
-        if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+        if (!current()) return;
         let reachedTerminal = false;
         let completed = false;
         activeDeletions.forEach((entry, index) => {
@@ -3350,23 +3392,28 @@ function getAppScript() {
         });
         if (reachedTerminal) {
           saveArchiveLibraryScroll();
-          archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+          const navigation = await requestArchiveLibraryNavigation(sessionToken);
+          if (!navigation || !archiveLibrarySessionCurrent(sessionToken)) return;
           renderArchiveLibraryNavigation();
           if (completed) await loadArchiveLibraryItems(true);
           return;
         }
         renderArchiveLibraryNavigation();
-      } catch (_) {
-        if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+      } catch (error) {
+        if ((error && error.name === 'AbortError') || !current()) return;
         try {
-          archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+          const navigation = await requestArchiveLibraryNavigation(sessionToken);
+          if (!navigation || !archiveLibrarySessionCurrent(sessionToken)) return;
           renderArchiveLibraryNavigation();
         } catch (_) {
+          if (!archiveLibrarySessionCurrent(sessionToken)) return;
           archiveLibraryState.navigationTimer = setTimeout(
             () => pollArchiveLibraryNavigationDeletions(activeDeletions),
             3000
           );
         }
+      } finally {
+        if (archiveLibraryState.navigationController === controller) archiveLibraryState.navigationController = null;
       }
     }
 
@@ -3604,6 +3651,9 @@ function getAppScript() {
       } catch (error) {
         if (error && error.name === 'AbortError') return;
         if (token !== archiveLibraryState.token) return;
+        if (error && error.code === 'ARCHIVE_CURSOR_STALE' && archiveLibraryState.nextCursor) {
+          return loadArchiveLibraryItems(true);
+        }
         archiveLibraryState.error = error instanceof Error ? error.message : String(error);
         setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(false));
       } finally {
@@ -3657,12 +3707,17 @@ function getAppScript() {
         (operation.lastError ? ' · ' + operation.lastError : '');
     }
 
-    async function refreshArchiveLibraryAfterDeletion() {
+    async function refreshArchiveLibraryAfterDeletion(detailToken) {
+      const sessionToken = archiveLibraryState.sessionToken;
+      if (!archiveLibrarySessionCurrent(sessionToken) || detailToken !== archiveLibraryState.detailToken) return false;
       try {
-        archiveLibraryState.navigation = await fetchJson('/api/archive-library/navigation');
+        const navigation = await requestArchiveLibraryNavigation(sessionToken);
+        if (!navigation || detailToken !== archiveLibraryState.detailToken) return false;
         renderArchiveLibraryNavigation();
       } catch (_) {}
+      if (!archiveLibrarySessionCurrent(sessionToken) || detailToken !== archiveLibraryState.detailToken) return false;
       await loadArchiveLibraryItems(true);
+      return archiveLibrarySessionCurrent(sessionToken) && detailToken === archiveLibraryState.detailToken;
     }
 
     async function repreviewAndStartArchiveDeletion(operationId, trigger) {
@@ -3688,7 +3743,7 @@ function getAppScript() {
         if (token !== archiveLibraryState.detailToken || !document.contains(host)) return;
         host.replaceChildren(document.createTextNode(archiveDeletionProgressText(operation)));
         if (operation.status === 'completed') {
-          await refreshArchiveLibraryAfterDeletion();
+          if (!await refreshArchiveLibraryAfterDeletion(token)) return;
           closeArchiveLibraryDetail();
           showToast('远端归档已安全清理', 'success');
           return;
@@ -3760,9 +3815,11 @@ function getAppScript() {
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ confirmation:'DELETE ARCHIVE' })
         });
         started = true;
+        if (token !== archiveLibraryState.detailToken || !host.isConnected) return;
         host.classList.remove('is-hidden');
         watchArchiveSourceDeletion(operation.id, host, token);
       } catch (error) {
+        if (token !== archiveLibraryState.detailToken || !host.isConnected) return;
         showToast(error instanceof Error ? error.message : String(error));
       } finally {
         delete trigger.dataset.deleteBusy;
@@ -3938,8 +3995,10 @@ function getAppScript() {
     }
 
     async function openArchiveLibrary(trigger) {
+      archiveLibraryState.sessionToken += 1;
       archiveLibraryState.token += 1;
       if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
+      if (archiveLibraryState.navigationController) archiveLibraryState.navigationController.abort();
       const preference = loadArchiveLibraryPreference();
       archiveLibraryState.scope = preference.scope;
       archiveLibraryState.userId = preference.userId;
@@ -3960,14 +4019,10 @@ function getAppScript() {
       setArchiveLibraryHeading();
       document.body.classList.add('archive-library-open');
       openModal('archiveLibraryModal', trigger);
-      const controller = new AbortController();
-      archiveLibraryState.controller = controller;
-      const token = archiveLibraryState.token;
+      const token = archiveLibraryState.sessionToken;
       try {
-        const navigation = await fetchJson('/api/archive-library/navigation', { signal:controller.signal });
-        if (token !== archiveLibraryState.token) return;
-        archiveLibraryState.controller = null;
-        archiveLibraryState.navigation = navigation;
+        const navigation = await requestArchiveLibraryNavigation(token);
+        if (!navigation || !archiveLibrarySessionCurrent(token)) return;
         if (!archiveDirectoryExists(navigation, archiveLibraryState.scope, archiveLibraryState.userId, archiveLibraryState.mediaId)) {
           archiveLibraryState.scope = 'global';
           archiveLibraryState.userId = null;
@@ -3986,10 +4041,8 @@ function getAppScript() {
         setArchiveLibraryHeading();
         await loadArchiveLibraryItems(true);
       } catch (error) {
-        if ((error && error.name === 'AbortError') || token !== archiveLibraryState.token) return;
+        if ((error && error.name === 'AbortError') || !archiveLibrarySessionCurrent(token)) return;
         setArchiveLibraryFooter('归档目录加载失败', () => openArchiveLibrary(trigger));
-      } finally {
-        if (archiveLibraryState.controller === controller) archiveLibraryState.controller = null;
       }
     }
 
@@ -4505,6 +4558,7 @@ function getAppScript() {
       playbackState.swipe.deltaY = 0;
       playbackState.items = [];
       playbackState.pages.clear();
+      playbackState.pageCursors.clear();
       playbackState.queueNodes.clear();
       playbackState.search.items = [];
       playbackState.search.nodes.clear();
@@ -4792,6 +4846,10 @@ function getAppScript() {
       };
     }
 
+    function playbackPageCursor(page) {
+      return playbackState.pageCursors.get(Number(page || 0)) || null;
+    }
+
     function createPlaybackThumbnail(item) {
       const thumb = document.createElement('span');
       thumb.className = 'playback-queue-thumb';
@@ -5020,9 +5078,17 @@ function getAppScript() {
           }
           if (playbackState.queueLoading) continue;
           const bounds = playbackPageBounds();
-          if (direction === 'top' && bounds.first > 1) {
+          const firstCursor = playbackPageCursor(bounds.first);
+          const lastCursor = playbackPageCursor(bounds.last);
+          const canLoadPrevious = playbackState.mode === 'library'
+            ? Boolean(firstCursor?.hasPrevious && firstCursor.previousCursor)
+            : bounds.first > 1;
+          const canLoadMore = playbackState.mode === 'library'
+            ? Boolean(lastCursor?.hasMore && lastCursor.nextCursor)
+            : bounds.last * playbackState.pageSize < playbackState.total;
+          if (direction === 'top' && canLoadPrevious) {
             loadPlaybackQueuePage(bounds.first - 1, { direction:'prepend' }).catch(() => undefined);
-          } else if (direction === 'bottom' && bounds.last * playbackState.pageSize < playbackState.total) {
+          } else if (direction === 'bottom' && canLoadMore) {
             loadPlaybackQueuePage(bounds.last + 1, { direction:'append' }).catch(() => undefined);
           }
         }
@@ -5085,6 +5151,7 @@ function getAppScript() {
       const selectedBvid = options.selectedBvid || currentPlaybackItem()?.bvid;
       if (options.reset) {
         playbackState.pages.clear();
+        playbackState.pageCursors.clear();
         playbackState.queueNodes.clear();
         playbackState.items = [];
       }
@@ -5093,6 +5160,12 @@ function getAppScript() {
       playbackState.total = Number(data.total || 0);
       playbackState.focusIndex = Number(data.focusIndex ?? -1);
       playbackState.pages.set(page, pageItems);
+      playbackState.pageCursors.set(page, {
+        hasPrevious:Boolean(data.hasPrevious ?? page > 1),
+        previousCursor:data.previousCursor || null,
+        hasMore:Boolean(data.hasMore),
+        nextCursor:data.nextCursor || null
+      });
       rebuildPlaybackItems(selectedBvid);
       if (options.selectedBvid) {
         const selectedIndex = playbackState.items.findIndex((item) => item.bvid === options.selectedBvid);
@@ -5637,8 +5710,25 @@ function getAppScript() {
       updatePlaybackQueueFeedback();
       const operation = (async () => {
         try {
+          const params = new URLSearchParams({ page:String(normalizedPage), pageSize:String(playbackState.pageSize) });
+          if (playbackState.mode === 'library' && !options.reset) {
+            const bounds = playbackPageBounds();
+            if (normalizedPage === bounds.first - 1) {
+              const boundary = playbackPageCursor(bounds.first);
+              if (boundary?.previousCursor) {
+                params.set('cursor', boundary.previousCursor);
+                params.set('direction', 'before');
+              }
+            } else if (normalizedPage === bounds.last + 1) {
+              const boundary = playbackPageCursor(bounds.last);
+              if (boundary?.nextCursor) {
+                params.set('cursor', boundary.nextCursor);
+                params.set('direction', 'after');
+              }
+            }
+          }
           const data = await fetchJson(
-            playbackQueueApiPath('/playback-queue?page=' + normalizedPage + '&pageSize=' + playbackState.pageSize),
+            playbackQueueApiPath('/playback-queue?' + params.toString()),
             { signal:controller.signal }
           );
           if (token !== playbackState.queueToken) return null;
@@ -7011,7 +7101,7 @@ function getAppScript() {
       if (accountRemovalState.pollTimer) clearTimeout(accountRemovalState.pollTimer);
       if (accountRemovalState.controller) accountRemovalState.controller.abort();
       const token = ++accountRemovalToken;
-      accountRemovalState = { userId, preview:null, pollTimer:null, trigger, controller:null, token, loading:false };
+      accountRemovalState = { userId, preview:null, operationId:null, pollTimer:null, trigger, controller:null, token, loading:false };
       document.getElementById('accountRemovalTitle').textContent = '删除账号 · ' + safeText(userName, userId);
       document.getElementById('accountRemovalOnly').checked = true;
       document.getElementById('accountRemovalRemote').checked = false;
@@ -7025,11 +7115,19 @@ function getAppScript() {
       openModal('accountRemovalModal', trigger);
     }
 
-    async function watchAccountArchiveDeletion(operationId) {
-      if (!accountRemovalState.userId || !document.getElementById('accountRemovalModal').classList.contains('active')) return;
+    function accountRemovalContextCurrent(token, userId, operationId) {
+      return token === accountRemovalState.token
+        && userId === accountRemovalState.userId
+        && (!operationId || operationId === accountRemovalState.operationId)
+        && document.getElementById('accountRemovalModal').classList.contains('active');
+    }
+
+    async function watchAccountArchiveDeletion(operationId, token = accountRemovalState.token, userId = accountRemovalState.userId) {
+      if (!userId || !accountRemovalContextCurrent(token, userId, operationId)) return;
       const host = document.getElementById('accountRemovalProgress');
       try {
         const operation = await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId));
+        if (!accountRemovalContextCurrent(token, userId, operationId)) return;
         host.textContent = archiveDeletionProgressText(operation);
         if (operation.status === 'completed') {
           document.getElementById('accountRemovalCancelBtn').textContent = '关闭';
@@ -7045,8 +7143,10 @@ function getAppScript() {
             retry.disabled = true;
             try {
               await fetchJson('/api/archive-deletions/' + encodeURIComponent(operationId) + '/retry', { method:'POST' });
-              watchAccountArchiveDeletion(operationId);
+              if (!accountRemovalContextCurrent(token, userId, operationId)) return;
+              watchAccountArchiveDeletion(operationId, token, userId);
             } catch (error) {
+              if (!accountRemovalContextCurrent(token, userId, operationId)) return;
               retry.disabled = false;
               showToast(error instanceof Error ? error.message : String(error));
             }
@@ -7061,9 +7161,14 @@ function getAppScript() {
             repreview.disabled = true;
             try {
               const replacement = await repreviewAndStartArchiveDeletion(operationId, repreview);
-              if (replacement) watchAccountArchiveDeletion(replacement.id);
+              if (!accountRemovalContextCurrent(token, userId, operationId)) return;
+              if (replacement) {
+                accountRemovalState.operationId = replacement.id;
+                watchAccountArchiveDeletion(replacement.id, token, userId);
+              }
               else repreview.disabled = false;
             } catch (error) {
+              if (!accountRemovalContextCurrent(token, userId, operationId)) return;
               repreview.disabled = false;
               showToast(error instanceof Error ? error.message : String(error));
             }
@@ -7072,27 +7177,31 @@ function getAppScript() {
           host.appendChild(repreview);
           return;
         }
-        accountRemovalState.pollTimer = setTimeout(() => watchAccountArchiveDeletion(operationId), 1000);
+        accountRemovalState.pollTimer = setTimeout(() => watchAccountArchiveDeletion(operationId, token, userId), 1000);
       } catch (error) {
+        if (!accountRemovalContextCurrent(token, userId, operationId)) return;
         host.textContent = '清理状态暂时无法读取：' + (error instanceof Error ? error.message : String(error));
-        accountRemovalState.pollTimer = setTimeout(() => watchAccountArchiveDeletion(operationId), 3000);
+        accountRemovalState.pollTimer = setTimeout(() => watchAccountArchiveDeletion(operationId, token, userId), 3000);
       }
     }
 
     async function submitAccountRemoval() {
       const preview = accountRemovalState.preview;
       const remote = document.getElementById('accountRemovalRemote').checked;
-      if (!accountRemovalState.userId || (remote && !preview)) return;
+      const userId = accountRemovalState.userId;
+      const token = accountRemovalState.token;
+      if (!userId || (remote && !preview)) return;
       const submit = document.getElementById('accountRemovalSubmitBtn');
       submit.disabled = true;
       try {
-        const data = await fetchJson('/api/users/' + encodeURIComponent(accountRemovalState.userId), {
+        const data = await fetchJson('/api/users/' + encodeURIComponent(userId), {
           method:'DELETE', headers:{'Content-Type':'application/json'},
           body:JSON.stringify(remote ? {
             mode:'account_and_remote', previewId:preview.previewId, confirmation:'DELETE REMOTE ARCHIVE'
           } : { mode:'account_only' })
         });
         await loadUsers();
+        if (!accountRemovalContextCurrent(token, userId)) return;
         if (!remote) {
           closeModal('accountRemovalModal');
           showToast('账号登录已移除，远端归档已保留', 'success');
@@ -7104,8 +7213,10 @@ function getAppScript() {
         const progress = document.getElementById('accountRemovalProgress');
         setHidden(progress, false);
         document.getElementById('accountRemovalCancelBtn').textContent = '关闭';
-        watchAccountArchiveDeletion(data.operation.id);
+        accountRemovalState.operationId = data.operation.id;
+        watchAccountArchiveDeletion(data.operation.id, token, userId);
       } catch (error) {
+        if (!accountRemovalContextCurrent(token, userId)) return;
         submit.disabled = false;
         showToast(error instanceof Error ? error.message : String(error));
       }

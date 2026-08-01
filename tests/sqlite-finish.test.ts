@@ -123,7 +123,9 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /\/api\/archive-library\/navigation/);
   assert.match(appHtml, /function pollArchiveLibraryNavigationDeletions\(activeDeletions\)/);
   assert.match(appHtml, /Promise\.all\(activeDeletions\.map/);
-  assert.match(appHtml, /fetchJson\('\/api\/archive-deletions\/' \+ encodeURIComponent\(entry\.id\)\)/);
+  assert.match(appHtml, /fetchJson\('\/api\/archive-deletions\/' \+ encodeURIComponent\(entry\.id\), \{ signal:controller\.signal \}\)/);
+  assert.match(appHtml, /archiveLibraryState\.sessionToken/);
+  assert.match(appHtml, /params\.set\('direction', 'before'\)/);
   assert.match(appHtml, /playbackState\.libraryContext/);
   assert.match(appHtml, /function playbackFileApiPath\(part, suffix\)/);
   assert.match(appHtml, /id="playbackDeliveryMode"/);

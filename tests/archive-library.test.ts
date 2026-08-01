@@ -193,6 +193,7 @@ function fixture() {
     upperName: "UP丙", status: "failed", unavailable: true, seenOffset: -2000,
     error: "failed path=/secret.mp4 token=do-not-return",
   });
+  database.rebuildArchiveLibraryProjection();
   return database;
 }
 
@@ -315,10 +316,147 @@ test("archive details redact source errors and library playback preserves the fi
       UPDATE remote_files SET status='missing'
       WHERE user_id='u2' AND media_id=20 AND bvid='BVSHARED'
     `).run();
+    database.refreshArchiveLibraryProjection(["BVSHARED"]);
     const replacement = getArchiveLibraryPlaybackQueue(database, users(), {
       scope: "global", sort: "title_asc", filter: "all",
     }, { focusBvid: "BVSHARED", pageSize: 50 })!;
     assert.equal(replacement.items.find((item) => item.bvid === "BVSHARED")?.source.userId, "u1");
+  } finally {
+    database.close();
+  }
+});
+
+test("projection keeps normal and deleted visibility independent across shared sources", () => {
+  const database = fixture();
+  try {
+    database.db.prepare(`
+      INSERT INTO archive_deletions(
+        id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
+        file_count,total_bytes,created_at,updated_at,completed_at
+      ) VALUES('projection-delete','source','u1',10,'BVSHARED','completed','test','/archive',1,1001,?,?,?)
+    `).run(now, now, now);
+    database.db.prepare(`
+      INSERT INTO archive_deleted_sources(
+        user_id,media_id,bvid,deletion_id,status,file_count,total_bytes,deleted_at
+      ) VALUES('u1',10,'BVSHARED','projection-delete','completed',1,1001,?)
+    `).run(now);
+    database.refreshArchiveLibraryProjection(["BVSHARED"]);
+
+    const normal = queryArchiveLibraryItems(database, users(), { scope: "global" });
+    assert.equal(normal.items.find((item) => item.bvid === "BVSHARED")?.membershipCount, 1);
+    assert.equal(normal.items.find((item) => item.bvid === "BVSHARED")?.memberships[0].userId, "u2");
+    const deleted = queryArchiveLibraryItems(database, users(), { scope: "global", filter: "deleted" });
+    assert.equal(deleted.items.find((item) => item.bvid === "BVSHARED")?.memberships[0].userId, "u1");
+    assert.equal(queryArchiveLibraryItems(database, users(), {
+      scope: "account", userId: "u1", filter: "all",
+    }).items.some((item) => item.bvid === "BVSHARED"), false);
+
+    database.db.prepare(`
+      UPDATE archive_deleted_sources SET status='restored', restored_at=?
+      WHERE deletion_id='projection-delete'
+    `).run(now + 1);
+    database.refreshArchiveLibraryProjection(["BVSHARED"]);
+    assert.equal(queryArchiveLibraryItems(database, users(), {
+      scope: "account", userId: "u1", filter: "all",
+    }).items.some((item) => item.bvid === "BVSHARED"), true);
+  } finally {
+    database.close();
+  }
+});
+
+test("historical folder pagination preserves every row without unsafe integer cursor loss", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    for (let index = 0; index < 121; index += 1) {
+      insertArchive(database, {
+        userId: "u1",
+        mediaId: 10,
+        folderTitle: "正在同步",
+        bvid: `BVHIST${String(index).padStart(4, "0")}`,
+        title: `历史视频 ${index}`,
+        status: "failed",
+        active: false,
+        seenOffset: index,
+      });
+    }
+    database.db.prepare(`
+      UPDATE favorite_relations SET fav_order=9223372036854775807
+      WHERE bvid='BVHIST0000'
+    `).run();
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = queryArchiveLibraryItems(database, users(), {
+        scope: "folder", userId: "u1", mediaId: 10, pageSize: 17, cursor,
+      });
+      seen.push(...page.items.map((item) => item.bvid));
+      cursor = page.nextCursor || undefined;
+      if (!page.hasMore) break;
+    } while (seen.length < 200);
+    assert.equal(seen.length, 121);
+    assert.equal(new Set(seen).size, 121);
+    assert.deepEqual(seen.slice(0, 3), ["BVHIST0120", "BVHIST0119", "BVHIST0118"]);
+
+    const first = queryArchiveLibraryItems(database, users(), {
+      scope: "folder", userId: "u1", mediaId: 10, pageSize: 17,
+    });
+    const stale = JSON.parse(Buffer.from(first.nextCursor!, "base64url").toString("utf8"));
+    stale.v = 1;
+    delete stale.k;
+    stale.o = 9223372036854776000;
+    assert.throws(() => queryArchiveLibraryItems(database, users(), {
+      scope: "folder", userId: "u1", mediaId: 10, pageSize: 17,
+      cursor: Buffer.from(JSON.stringify(stale)).toString("base64url"),
+    }), (error: any) => error?.code === "ARCHIVE_CURSOR_STALE");
+  } finally {
+    database.close();
+  }
+});
+
+test("library playback locates focus without a window scan and pages in both directions with cursors", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    for (let index = 0; index < 125; index += 1) {
+      insertArchive(database, {
+        userId: "u1",
+        mediaId: 10,
+        folderTitle: "正在同步",
+        bvid: `BVQUEUE${String(index).padStart(4, "0")}`,
+        title: `队列视频 ${String(index).padStart(4, "0")}`,
+        status: "verified",
+        order: index,
+        seenOffset: index,
+        playable: { width: 1920, height: 1080, fps: 30 },
+      });
+    }
+    database.rebuildArchiveLibraryProjection();
+    const context = { scope: "global" as const, sort: "context" as const };
+    const focused = getArchiveLibraryPlaybackQueue(database, users(), context, {
+      focusBvid: "BVQUEUE0062", pageSize: 25,
+    })!;
+    assert.equal(focused.page, 3);
+    assert.equal(focused.focusIndex, 62);
+    assert.equal(focused.items[0].queuePosition, 51);
+    assert.equal(focused.items.at(-1)?.queuePosition, 75);
+    assert.equal(focused.hasPrevious, true);
+    assert.equal(focused.hasMore, true);
+    assert.ok(focused.previousCursor);
+    assert.ok(focused.nextCursor);
+
+    const previous = getArchiveLibraryPlaybackQueue(database, users(), context, {
+      page: 2, pageSize: 25, cursor: focused.previousCursor!, direction: "before",
+    })!;
+    const next = getArchiveLibraryPlaybackQueue(database, users(), context, {
+      page: 4, pageSize: 25, cursor: focused.nextCursor!, direction: "after",
+    })!;
+    assert.deepEqual([previous.items[0].queuePosition, previous.items.at(-1)?.queuePosition], [26, 50]);
+    assert.deepEqual([next.items[0].queuePosition, next.items.at(-1)?.queuePosition], [76, 100]);
+    assert.equal(new Set([...previous.items, ...focused.items, ...next.items].map((item) => item.bvid)).size, 75);
+
+    const legacy = getArchiveLibraryPlaybackQueue(database, users(), context, { page: 5, pageSize: 25 })!;
+    assert.deepEqual([legacy.items[0].queuePosition, legacy.items.at(-1)?.queuePosition], [101, 125]);
+    assert.equal(legacy.hasMore, false);
   } finally {
     database.close();
   }
@@ -381,6 +519,7 @@ test("large archive pagination stays bounded and library indexes serve both orde
         }
       }
     })();
+    database.rebuildArchiveLibraryProjection();
 
     const seenBvids = new Set<string>();
     let cursor: string | undefined;
@@ -404,12 +543,22 @@ test("large archive pagination stays bounded and library indexes serve both orde
 
     const recentPlan = database.db.prepare(`
       EXPLAIN QUERY PLAN
-      SELECT bvid FROM favorite_relations
-      WHERE user_id=?
-      ORDER BY last_seen_at DESC,bvid,media_id
+      SELECT bvid FROM archive_library_projection
+      WHERE scope_type='global' AND scope_id='' AND visibility='normal' AND status_group='issue'
+      ORDER BY recent_key DESC,bvid
       LIMIT 51
-    `).all("stress-1") as any[];
-    assert.match(recentPlan.map((row) => row.detail).join("\n"), /idx_relations_library_recent/);
+    `).all() as any[];
+    const recentDetails = recentPlan.map((row) => row.detail).join("\n");
+    assert.match(recentDetails, /idx_archive_library_projection_status_recent/);
+    assert.doesNotMatch(recentDetails, /USE TEMP B-TREE|MATERIALIZE/i);
+    const titlePlan = database.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT bvid FROM archive_library_projection
+      WHERE scope_type='account' AND scope_id='stress-1' AND visibility='normal' AND status_group='issue'
+      ORDER BY title_key ASC,bvid
+      LIMIT 51
+    `).all() as any[];
+    assert.match(titlePlan.map((row) => row.detail).join("\n"), /idx_archive_library_projection_status_title_asc/);
     const folderPlan = database.db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT bvid FROM favorite_relations

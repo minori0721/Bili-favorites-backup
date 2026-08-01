@@ -63,7 +63,10 @@ export interface PlaybackQueuePage {
   pageSize: number;
   total: number;
   focusIndex: number;
+  hasPrevious?: boolean;
   hasMore: boolean;
+  previousCursor?: string | null;
+  nextCursor?: string | null;
   items: PlaybackQueueItem[];
 }
 

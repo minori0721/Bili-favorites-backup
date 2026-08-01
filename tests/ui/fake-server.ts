@@ -9,6 +9,9 @@ type TestState = {
   previewCount: number;
   startCount: number;
   accountStartCount: number;
+  accountDeleteCount: number;
+  accountDeleteDelayMs: number;
+  sourceStartDelayMs: number;
   sourceStatusPolls: number;
   sourceCompletionMode: "pending" | "complete";
   sourceDeleted: boolean;
@@ -21,6 +24,9 @@ function initialState(): TestState {
     previewCount: 0,
     startCount: 0,
     accountStartCount: 0,
+    accountDeleteCount: 0,
+    accountDeleteDelayMs: 0,
+    sourceStartDelayMs: 0,
     sourceStatusPolls: 0,
     sourceCompletionMode: "pending",
     sourceDeleted: false,
@@ -118,6 +124,8 @@ app.get("/__test/ready", (_request, response) => response.json({ ready: true }))
 app.post("/__test/reset", (request, response) => {
   state = initialState();
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
+  state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
+  state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
@@ -206,7 +214,11 @@ app.post("/api/users/:id/removal-preview", (_request, response) => response.json
   previewId: "account-preview", relationCount: 2, sourceCount: 1, fileCount: 2,
   totalBytes: 15 * 1024 * 1024, sharedCount: 0, activeTasks: 0,
 })));
-app.delete("/api/users/:id", (_request, response) => response.status(202).json(ok({ operation: { id: "account-operation" } })));
+app.delete("/api/users/:id", async (_request, response) => {
+  state.accountDeleteCount += 1;
+  if (state.accountDeleteDelayMs) await wait(state.accountDeleteDelayMs);
+  response.status(202).json(ok({ operation: { id: "account-operation" } }));
+});
 app.post("/api/archive-deletions/:id/repreview", (request, response) => response.json(ok({
   scope: request.params.id === "account-operation" ? "account" : "source",
   previewId: request.params.id === "account-operation" ? "account-preview-2" : "source-preview-2",
@@ -214,9 +226,10 @@ app.post("/api/archive-deletions/:id/repreview", (request, response) => response
   totalBytes: 15 * 1024 * 1024,
   sharedCount: 0,
 })));
-app.post("/api/archive-deletions/:id/start", (request, response) => {
+app.post("/api/archive-deletions/:id/start", async (request, response) => {
   if (request.params.id.startsWith("account")) state.accountStartCount += 1;
   else state.startCount += 1;
+  if (!request.params.id.startsWith("account") && state.sourceStartDelayMs) await wait(state.sourceStartDelayMs);
   const id = request.params.id.startsWith("account") ? "account-operation-2" : "source-operation";
   response.status(202).json(ok({ id, status: "pending", fileCount: 2, completedCount: 0 }));
 });

@@ -170,6 +170,7 @@ async function startAfterRecovery() {
   await pathMigration.resumePersisted();
   await recoverInterruptedQualityUpgrades();
   await recoverInterruptedQualityDownloads();
+  archiveDeletion.restoreLiveAccountsAfterStartup();
   scheduler.resumePersistedWorkOnStartup();
   scheduler.start();
 }
@@ -478,7 +479,7 @@ function parseArchiveLibraryQuery(query: Record<string, unknown>): Partial<Archi
 
 function sendArchiveLibraryError(res: express.Response, error: unknown) {
   if (error instanceof ArchiveLibraryQueryError) {
-    res.status(error.statusCode).json({ success: false, message: error.message });
+    res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
     return;
   }
   throw error;
@@ -1140,14 +1141,21 @@ app.get("/api/archive-library/playback-queue", (req, res) => {
     const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
     const focusBvid = String(req.query.focusBvid || "").trim();
     const page = req.query.page === undefined ? undefined : Number(req.query.page);
+    const cursor = String(req.query.cursor || "").trim();
+    const direction = String(req.query.direction || "after");
     if ((focusBvid && (focusBvid.length > 64 || /[\\/\0]/.test(focusBvid)))
-      || (page !== undefined && (!Number.isInteger(page) || page < 1))) {
+      || (page !== undefined && (!Number.isInteger(page) || page < 1))
+      || (cursor.length > 4096)
+      || !["after", "before"].includes(direction)
+      || (cursor && page === undefined)) {
       throw new ArchiveLibraryQueryError("Invalid archive playback request");
     }
     const data = getArchiveLibraryPlaybackQueue(stateManager.getDatabase(), userStore.list(), input, {
       focusBvid: focusBvid || undefined,
       page,
       pageSize: input.pageSize,
+      cursor: cursor || undefined,
+      direction: direction as "after" | "before",
     });
     if (!data) {
       res.status(404).json({ success: false, code: "PLAYBACK_NOT_AVAILABLE", message: "该归档当前不可播放" });

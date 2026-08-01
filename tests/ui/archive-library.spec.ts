@@ -15,8 +15,12 @@ const test = base.extend<{ browserProblems: string[] }>({
   },
 });
 
-async function resetFixture(page: Page, sourceCompletionMode: "pending" | "complete" = "pending") {
-  await page.request.post("/__test/reset", { data: { sourceCompletionMode } });
+async function resetFixture(
+  page: Page,
+  sourceCompletionMode: "pending" | "complete" = "pending",
+  delays: { accountDeleteDelayMs?: number; sourceStartDelayMs?: number } = {}
+) {
+  await page.request.post("/__test/reset", { data: { sourceCompletionMode, ...delays } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({
     status: 200,
     contentType: "text/css",
@@ -162,6 +166,49 @@ test("failed account cleanup reconfirmation stays above its parent modal", async
   await page.keyboard.press("Escape");
   await expect(reconfirm).toBeEnabled();
   await expect(reconfirm).toBeFocused();
+});
+
+test("a delayed account deletion response cannot overwrite a reopened dialog", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop account request isolation coverage");
+  await resetFixture(page, "pending", { accountDeleteDelayMs: 650 });
+  const removeAccount = page.getByRole("button", { name: "删除账号" });
+  await removeAccount.click();
+  await page.locator("#accountRemovalRemote").check();
+  await expect(page.locator("#accountRemovalPreview")).toContainText("2 个已追踪文件");
+  await page.locator("#accountRemovalConfirmInput").fill("DELETE REMOTE ARCHIVE");
+  await page.locator("#accountRemovalSubmitBtn").click();
+  await page.locator("#accountRemovalCancelBtn").click();
+  await removeAccount.click();
+  await expect(page.locator("#accountRemovalOnly")).toBeChecked();
+  await expect(page.locator("#accountRemovalPreview")).toContainText("仅移除账号登录");
+  await page.waitForTimeout(850);
+  await expect(page.locator("#accountRemovalModal")).toHaveClass(/active/);
+  await expect(page.locator("#accountRemovalOnly")).toBeChecked();
+  await expect(page.locator("#accountRemovalSubmitBtn")).toBeVisible();
+  await expect(page.locator("#accountRemovalProgress")).toBeHidden();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.accountDeleteCount).toBe(1);
+});
+
+test("a delayed source start response cannot write progress into a new detail", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop source request isolation coverage");
+  await resetFixture(page, "pending", { sourceStartDelayMs: 650 });
+  await openLibrary(page, testInfo);
+  await openAlphaDetail(page);
+  await openSourceConfirmation(page);
+  await page.locator("#confirmActionInput").fill("DELETE ARCHIVE");
+  await page.locator("#confirmActionOkBtn").click();
+  await page.keyboard.press("Escape");
+  await page.locator('[data-archive-bvid="BV1BETA0002"] .archive-library-card-more').click();
+  await expect(page.locator("#archiveLibraryDetailTitle")).toContainText("Beta");
+  await page.waitForTimeout(850);
+  await expect(page.locator("#archiveLibraryDetailTitle")).toContainText("Beta");
+  await expect(page.locator("#archiveLibraryDetail .archive-deletion-progress:not(.is-hidden)")).toHaveCount(0);
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.previewCount).toBe(1);
+  expect(state.startCount).toBe(1);
 });
 
 test("archive search applies atomically and ignores slow obsolete responses", async ({ page, browserProblems }, testInfo) => {

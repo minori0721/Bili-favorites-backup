@@ -13,7 +13,7 @@ import type {
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 7;
+export const DATABASE_SCHEMA_VERSION = 8;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 export const LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
@@ -341,6 +341,31 @@ CREATE INDEX IF NOT EXISTS idx_archive_deleted_sources_time
   ON archive_deleted_sources(deleted_at DESC, bvid);
 CREATE INDEX IF NOT EXISTS idx_archive_deleted_sources_lookup
   ON archive_deleted_sources(user_id, media_id, bvid, status, deleted_at DESC);
+
+CREATE TABLE IF NOT EXISTS archive_library_projection (
+  scope_type TEXT NOT NULL CHECK(scope_type IN ('global','account')),
+  scope_id TEXT NOT NULL,
+  visibility TEXT NOT NULL CHECK(visibility IN ('normal','deleted')),
+  bvid TEXT NOT NULL REFERENCES videos(bvid) ON DELETE CASCADE,
+  recent_key INTEGER NOT NULL,
+  title_key TEXT NOT NULL,
+  upper_key TEXT NOT NULL,
+  status_group TEXT NOT NULL CHECK(status_group IN ('playable','pending','issue')),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(scope_type, scope_id, visibility, bvid)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_library_projection_recent
+  ON archive_library_projection(scope_type, scope_id, visibility, recent_key DESC, bvid ASC);
+CREATE INDEX IF NOT EXISTS idx_archive_library_projection_title_asc
+  ON archive_library_projection(scope_type, scope_id, visibility, title_key ASC, bvid ASC);
+CREATE INDEX IF NOT EXISTS idx_archive_library_projection_title_desc
+  ON archive_library_projection(scope_type, scope_id, visibility, title_key DESC, bvid ASC);
+CREATE INDEX IF NOT EXISTS idx_archive_library_projection_status_recent
+  ON archive_library_projection(scope_type, scope_id, visibility, status_group, recent_key DESC, bvid ASC);
+CREATE INDEX IF NOT EXISTS idx_archive_library_projection_status_title_asc
+  ON archive_library_projection(scope_type, scope_id, visibility, status_group, title_key ASC, bvid ASC);
+CREATE INDEX IF NOT EXISTS idx_archive_library_projection_status_title_desc
+  ON archive_library_projection(scope_type, scope_id, visibility, status_group, title_key DESC, bvid ASC);
 `;
 
 function parseJson<T>(value: string, fallback: T): T {
@@ -533,6 +558,77 @@ function relationParts(key: string, relation: FavoriteRelation) {
   };
 }
 
+const ARCHIVE_PROJECTION_CHUNK_SIZE = 400;
+
+function refreshArchiveLibraryProjectionUnsafe(db: Database.Database, bvids?: string[]) {
+  const targets = bvids ? [...new Set(bvids.map((value) => String(value || "").trim()).filter(Boolean))] : null;
+  if (targets && targets.length === 0) return;
+  const placeholders = targets ? targets.map(() => "?").join(",") : "";
+  const targetSql = targets ? ` AND r.bvid IN (${placeholders})` : "";
+  const projectionTargetSql = targets ? ` AND bvid IN (${placeholders})` : "";
+  if (targets) {
+    db.prepare(`DELETE FROM archive_library_projection WHERE bvid IN (${placeholders})`).run(...targets);
+  } else {
+    db.exec("DELETE FROM archive_library_projection");
+  }
+  const now = Date.now();
+  db.prepare(`
+    WITH source_rows AS (
+      SELECT r.user_id, r.bvid,
+        CASE WHEN EXISTS(
+          SELECT 1 FROM archive_deleted_sources ads
+          WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
+            AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
+        ) THEN 'deleted' ELSE 'normal' END AS visibility,
+        r.last_seen_at AS recent_key,
+        lower(trim(COALESCE(
+          NULLIF(json_extract(v.payload_json, '$.originalMeta.title'), ''),
+          NULLIF(json_extract(v.payload_json, '$.title'), ''),
+          r.bvid
+        ))) AS title_key,
+        lower(trim(COALESCE(
+          NULLIF(json_extract(v.payload_json, '$.originalMeta.upperName'), ''),
+          NULLIF(json_extract(v.payload_json, '$.upperName'), ''),
+          ''
+        ))) AS upper_key,
+        CASE WHEN r.backup_status IN ('verified','partial_verified') AND EXISTS(
+          SELECT 1 FROM remote_files rf
+          WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid
+            AND rf.status='verified'
+            AND (lower(rf.name) LIKE '%.mp4' OR lower(rf.name) LIKE '%.m4v' OR lower(rf.name) LIKE '%.webm')
+        ) THEN 1 ELSE 0 END AS playable,
+        CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded')
+          THEN 1 ELSE 0 END AS pending
+      FROM favorite_relations r
+      JOIN videos v ON v.bvid=r.bvid
+      WHERE 1=1${targetSql}
+    )
+    INSERT INTO archive_library_projection(
+      scope_type, scope_id, visibility, bvid, recent_key, title_key, upper_key, status_group, updated_at
+    )
+    SELECT 'account', user_id, visibility, bvid, MAX(recent_key), MIN(title_key), MIN(upper_key),
+      CASE WHEN MAX(playable)=1 THEN 'playable'
+        WHEN MAX(pending)=1 THEN 'pending'
+        ELSE 'issue' END,
+      ?
+    FROM source_rows
+    GROUP BY user_id, visibility, bvid
+  `).run(...(targets || []), now);
+  db.prepare(`
+    INSERT INTO archive_library_projection(
+      scope_type, scope_id, visibility, bvid, recent_key, title_key, upper_key, status_group, updated_at
+    )
+    SELECT 'global', '', visibility, bvid, MAX(recent_key), MIN(title_key), MIN(upper_key),
+      CASE WHEN MAX(status_group='playable')=1 THEN 'playable'
+        WHEN MAX(status_group='pending')=1 THEN 'pending'
+        ELSE 'issue' END,
+      ?
+    FROM archive_library_projection
+    WHERE scope_type='account'${projectionTargetSql}
+    GROUP BY visibility, bvid
+  `).run(now, ...(targets || []));
+}
+
 export class StateDatabase {
   readonly db: Database.Database;
   readonly filePath: string;
@@ -665,6 +761,7 @@ export class StateDatabase {
             ON archive_deletions((1))
             WHERE status IN ('preparing','pending','running','retry_wait');
         `);
+        if (currentVersion < 8) refreshArchiveLibraryProjectionUnsafe(this.db);
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
       })();
@@ -710,6 +807,21 @@ export class StateDatabase {
 
   deleteMeta(key: string) {
     this.db.prepare("DELETE FROM schema_meta WHERE key=?").run(key);
+  }
+
+  rebuildArchiveLibraryProjection() {
+    return this.db.transaction(() => refreshArchiveLibraryProjectionUnsafe(this.db))();
+  }
+
+  refreshArchiveLibraryProjection(bvids: Iterable<string>) {
+    const unique = [...new Set([...bvids].map((value) => String(value || "").trim()).filter(Boolean))];
+    if (unique.length === 0) return 0;
+    return this.db.transaction(() => {
+      for (let index = 0; index < unique.length; index += ARCHIVE_PROJECTION_CHUNK_SIZE) {
+        refreshArchiveLibraryProjectionUnsafe(this.db, unique.slice(index, index + ARCHIVE_PROJECTION_CHUNK_SIZE));
+      }
+      return unique.length;
+    })();
   }
 
   hasRemoteArchivePathData() {
@@ -793,6 +905,7 @@ export class StateDatabase {
             WHERE user_id=? AND media_id=? AND bvid=? AND status='restored'
           )
         `).run(restoredAt, userId, mediaId, bvid);
+        refreshArchiveLibraryProjectionUnsafe(this.db, [bvid]);
       }
       return restored;
     })();
@@ -1712,6 +1825,12 @@ export class StateDatabase {
 
   flushState(state: StateFile, dirty: StateDirtySet) {
     const now = Date.now();
+    const projectionBvids = new Set<string>(dirty.videos);
+    for (const key of dirty.relations) {
+      const relation = state.relations?.[key];
+      projectionBvids.add(relation?.bvid || key.split(":").slice(2).join(":"));
+    }
+    const projectionTargets = [...projectionBvids].filter(Boolean);
     const upsertVideo = this.db.prepare(`
       INSERT INTO videos(bvid, backup_status, bili_status, local_dir, access_restriction_type,
         access_last_checked_at, payload_json, updated_at)
@@ -1807,6 +1926,9 @@ export class StateDatabase {
       if (dirty.metadata) {
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('legacy_state_schema', ?)")
           .run(String(state.schemaVersion || 13));
+      }
+      for (let index = 0; index < projectionTargets.length; index += ARCHIVE_PROJECTION_CHUNK_SIZE) {
+        refreshArchiveLibraryProjectionUnsafe(this.db, projectionTargets.slice(index, index + ARCHIVE_PROJECTION_CHUNK_SIZE));
       }
     });
     transaction();

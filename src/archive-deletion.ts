@@ -152,6 +152,7 @@ export class ArchiveDeletionService {
     this.reconcileArchiveAccounts();
     this.syncMaintenanceState();
     this.recoverAccountPreparations();
+    this.restoreLiveAccountsAfterStartup();
     this.syncMaintenanceState();
     this.schedule();
   }
@@ -175,6 +176,27 @@ export class ArchiveDeletionService {
     if (this.db.hasUnfinishedArchiveAccountDeletion(userId)) return false;
     this.db.db.prepare("DELETE FROM archive_accounts WHERE user_id=?").run(userId);
     return true;
+  }
+
+  restoreLiveAccountsAfterStartup() {
+    const restored: string[] = [];
+    const hasEvidence = this.db.db.prepare(`
+      SELECT EXISTS(SELECT 1 FROM archive_accounts WHERE user_id=@userId)
+        OR EXISTS(SELECT 1 FROM favorite_relations WHERE user_id=@userId AND account_detached_at IS NOT NULL)
+        OR EXISTS(
+          SELECT 1 FROM jobs
+          WHERE kind IN ('download','quality_download') AND json_valid(payload_json)=1
+            AND json_extract(payload_json, '$.pausedForUserId')=@userId
+        ) AS present
+    `);
+    for (const user of this.userStore.list()) {
+      if (!user.enabled || this.db.hasUnfinishedArchiveAccountDeletion(user.id)) continue;
+      if (!Boolean((hasEvidence.get({ userId: user.id }) as any)?.present)) continue;
+      if (!this.restoreAccount(user.id)) continue;
+      this.onAccountPreparationRecovery(user.id, false);
+      restored.push(user.id);
+    }
+    return restored;
   }
 
   forgetPendingAccount(userId: string) {
@@ -566,6 +588,16 @@ export class ArchiveDeletionService {
     return row ? this.get(String(row.id)) : undefined;
   }
 
+  private refreshProjectionForDeletionIds(ids: string[]) {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db.db.prepare(`
+      SELECT DISTINCT bvid FROM archive_deleted_sources
+      WHERE deletion_id IN (${placeholders})
+    `).all(...ids) as Array<{ bvid: string }>;
+    this.db.refreshArchiveLibraryProjection(rows.map((row) => row.bvid));
+  }
+
   beginAccountPreparation(id: string, confirmation: string) {
     const operation = this.validateStart(id, confirmation);
     if (operation.scope !== "account") throw archiveDeletionError("该预览不是账号归档清理", 409);
@@ -591,6 +623,7 @@ export class ArchiveDeletionService {
       `).run(now, now, id, now).changes;
       if (changed === 1) {
         this.db.db.prepare("UPDATE archive_deleted_sources SET status='preparing' WHERE deletion_id=? AND status='preview'").run(id);
+        this.refreshProjectionForDeletionIds([id, ...failedPredecessors.map((item) => item.id)]);
       }
       return changed === 1;
     })();
@@ -631,6 +664,7 @@ export class ArchiveDeletionService {
         maxAttempts: 4,
         notBefore: now,
       });
+      this.refreshProjectionForDeletionIds([id]);
     })();
     this.stateManager.reload();
     this.syncMaintenanceState();
@@ -664,6 +698,7 @@ export class ArchiveDeletionService {
       `).run(now + PREVIEW_TTL_MS, now, safeDeletionError(reason), id).changes;
       if (updated === 1) {
         this.db.db.prepare("UPDATE archive_deleted_sources SET status='preview' WHERE deletion_id=? AND status='preparing'").run(id);
+        this.refreshProjectionForDeletionIds([id]);
       }
       return updated === 1;
     })();
@@ -738,6 +773,7 @@ export class ArchiveDeletionService {
         maxAttempts: 4,
         notBefore: now,
       });
+      this.refreshProjectionForDeletionIds([id, ...failedPredecessors.map((item) => item.id)]);
     })();
     this.stateManager.reload();
     this.syncMaintenanceState();
@@ -803,6 +839,7 @@ export class ArchiveDeletionService {
       this.db.db.prepare("UPDATE archive_deletions SET status='pending', last_error=NULL, conflict_count=0, failed_count=0, updated_at=? WHERE id=?").run(now, id);
       this.db.db.prepare("UPDATE archive_deleted_sources SET status='pending' WHERE deletion_id=? AND status<>'completed'").run(id);
       this.jobStore.enqueue({ kind: "archive_delete", dedupeKey: `archive-delete:${id}`, userId: operation.userId, mediaId: operation.mediaId, bvid: operation.bvid, priority: 5, payload: { deletionId: id }, maxAttempts: 4, notBefore: now });
+      this.refreshProjectionForDeletionIds([id]);
     })();
     this.syncMaintenanceState();
     this.schedule();
@@ -1192,6 +1229,7 @@ export class ArchiveDeletionService {
         UPDATE archive_deletions SET status='completed', completed_count=?, retained_count=?,
           conflict_count=0, failed_count=0, last_error=NULL, updated_at=?, completed_at=? WHERE id=?
       `).run(counts.completed, counts.retained, now, now, id);
+      this.db.refreshArchiveLibraryProjection(bvids);
       const operation = this.db.db.prepare("SELECT scope, user_id FROM archive_deletions WHERE id=?").get(id) as any;
       if (operation?.scope === "account" && this.userStore.getById(String(operation.user_id))) {
         this.db.db.prepare("DELETE FROM archive_accounts WHERE user_id=?").run(operation.user_id);
