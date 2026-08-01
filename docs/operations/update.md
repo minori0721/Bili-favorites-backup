@@ -17,7 +17,7 @@ docker compose logs --tail=100 app
 - 阅读[版本与升级记录](../reference/releases)中的迁移说明。
 - 涉及AList版本变化时，先备份`alist/`并阅读[AList升级](../alist/upgrade)。
 - 大版本回滚前先导出旧镜像可读取的JSON快照。
-- `v2.4.5`稳定版会把数据库升级到schema 6；当前未发布dev会继续升级到schema 7。回滚到只支持schema 6或更早的镜像时，先恢复`data/backups`中的对应升级前SQLite备份，不能让旧镜像直接打开新版数据库。
+- `v2.4.6`会把数据库升级到schema 7；回滚到`v2.4.5`或其他只支持schema 6及更早版本的镜像时，先恢复`data/backups`中的对应升级前SQLite备份，不能让旧镜像直接打开新版数据库。
 - 更新前确认没有等待执行、执行中、自动重试或失败待处理的归档删除任务；这些任务会阻止迁移导出和业务状态清理，且开始后不能取消。
 
 ## 更新后检查

@@ -45,7 +45,7 @@ BFB提供轻量迁移包和完整迁移包。两者都使用schema 3清单、逐
 
 ## 回滚旧镜像
 
-当前未发布dev运行数据库使用SQLite schema 7，`v2.4.5`稳定版使用schema 6，但迁移包格式仍是schema 3，三者是独立版本。schema 1至6数据库首次升级到schema 7前会在`data/backups`生成一致性SQLite备份和SHA256摘要；回滚到schema 6或更早镜像时，应优先恢复这份升级前备份，不能让旧镜像直接打开schema 7数据库。
+`v2.4.6`运行数据库使用SQLite schema 7，`v2.4.5`使用schema 6，但迁移包格式仍是schema 3，三者是独立版本。schema 1至6数据库首次升级到schema 7前会在`data/backups`生成一致性SQLite备份和SHA256摘要；回滚到schema 6或更早镜像时，应优先恢复这份升级前备份，不能让旧镜像直接打开schema 7数据库。
 
 旧版若仍读取`state.json`，应在当前程序停止后导出兼容快照：
 

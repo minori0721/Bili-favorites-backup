@@ -81,9 +81,9 @@ docker compose up -d
 
 必须持久化`data:/app/data`和`temp:/app/temp`。前者保存SQLite、配置与账号，后者保存下载会话、aria2断点和待补传成品；使用内置AList时还必须持久化`alist:/opt/alist/data`。
 
-当前未发布dev使用SQLite `user_version 7`；`v2.4.5`稳定版使用schema 6。schema 1至6首次升级到schema 7前会在`data/backups`生成一致性数据库备份和SHA256摘要；旧镜像不能直接打开schema 7数据库，回滚时应恢复该备份。JSON兼容状态仍为schema 13，迁移包仍为schema 3。
+`v2.4.6`使用SQLite `user_version 7`；`v2.4.5`使用schema 6。schema 1至6首次升级到schema 7前会在`data/backups`生成一致性数据库备份和SHA256摘要；旧镜像不能直接打开schema 7数据库，回滚时应恢复该备份。JSON兼容状态仍为schema 13，迁移包仍为schema 3。
 
-从`v2.4.3`及更早版本直接更新到`v2.4.5`后需要重新登录一次；之后可在登录页选择固定保持30天。从`v2.4.4`更新不会因本次升级主动撤销现有管理员会话。
+从`v2.4.3`及更早版本直接更新到`v2.4.6`后需要重新登录一次；之后可在登录页选择固定保持30天。从`v2.4.4`或`v2.4.5`更新不会因本次升级主动撤销现有管理员会话。
 
 已有远端归档时，设置页不能直接改`alistDest`。请使用“迁移归档路径”：它只支持同一AList挂载存储，先扫描预览，再用WebDAV COPY复制并确认整个旧目录，最后切换配置。新旧目录不会混用，旧目录默认保留，确认无误后还需手动输入`DELETE OLD ARCHIVE`才能清理。
 
@@ -120,7 +120,7 @@ npm run build
 
 项目当前使用固定BBDown fork Release、固定FFmpeg构建和aria2续传，不在构建时跟随上游`master`。
 
-当前dev已固定BBDown fork Release `bfb-2.0.1`：普通UGC改用PlayerUnite并合并AVC、HEVC和AV1流；APP结果仅480P或低于明确请求档位时，只在WEB视频档位确实更高时合并WEB视频，APP取得的普通、杜比和Hi-Res音频继续保留。每个账号使用独立、稳定且不进入WEB Cookie的APP设备标识。`v2.4.5`稳定镜像仍固定`bfb-2.0.0`，这里描述的是未发布dev行为。
+`v2.4.6`固定BBDown fork Release `bfb-2.0.1`：普通UGC改用PlayerUnite并合并AVC、HEVC和AV1流；APP结果仅480P或低于明确请求档位时，只在WEB视频档位确实更高时合并WEB视频，APP取得的普通、杜比和Hi-Res音频继续保留。每个账号使用独立、稳定且不进入WEB Cookie的APP设备标识。`v2.4.5`镜像继续固定`bfb-2.0.0`。
 
 “全量扫描并对账”右侧的“归档库”只读取当前`data/bfb.sqlite`和账号配置。全局与账号目录会按BV号合并重复关系，具体收藏夹保留当前收藏顺序和历史关系；每批读取50项，搜索覆盖归档前标题、UP主和BV号。可播放卡片进入现有播放器，并按当前目录、筛选、排序和基础搜索形成连续队列；同一BV有多份已验证成品时优先选择实际媒体参数更高且更完整的来源。不可播放卡片只展示本地保存的来源与脱敏状态，不会为了补信息临时访问B站。
 
