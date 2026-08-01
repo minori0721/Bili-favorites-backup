@@ -9,9 +9,9 @@ import { ADMIN_REMEMBER_TTL_MS, ADMIN_SESSION_TTL_MS } from "../src/admin-sessio
 
 test("real app supports login, queue state, config update and migration preview in isolation", { timeout: 60_000 }, async () => {
   const runtime = await createTestDir("app-smoke");
-  const originalCwd = process.cwd();
   const previousNodeEnv = process.env.NODE_ENV;
   const previousAdminPass = process.env.ADMIN_PASS;
+  const previousTestAppRoot = process.env.BFB_TEST_APP_ROOT;
   let server: import("node:http").Server | undefined;
   let closeAppResources: (() => Promise<void>) | undefined;
   try {
@@ -19,8 +19,8 @@ test("real app supports login, queue state, config update and migration preview 
     await fs.promises.mkdir(retainedDir, { recursive: true });
     await fs.promises.writeFile(path.join(retainedDir, ".bfb-retained.json"), JSON.stringify({ schemaVersion: 1 }));
     await fs.promises.writeFile(path.join(retainedDir, "unknown.bin"), Buffer.alloc(64));
-    process.chdir(runtime);
     process.env.NODE_ENV = "test";
+    process.env.BFB_TEST_APP_ROOT = runtime;
     process.env.ADMIN_PASS = "smoke-pass";
     const appModule = await import("../src/index.js");
     const { app } = appModule;
@@ -301,11 +301,12 @@ test("real app supports login, queue state, config update and migration preview 
       await new Promise<void>((resolve) => server!.close(() => resolve()));
     }
     if (closeAppResources) await closeAppResources();
-    process.chdir(originalCwd);
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousAdminPass === undefined) delete process.env.ADMIN_PASS;
     else process.env.ADMIN_PASS = previousAdminPass;
+    if (previousTestAppRoot === undefined) delete process.env.BFB_TEST_APP_ROOT;
+    else process.env.BFB_TEST_APP_ROOT = previousTestAppRoot;
     await removeTestDir(runtime);
   }
 });

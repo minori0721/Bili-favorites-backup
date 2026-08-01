@@ -1,7 +1,8 @@
 import path from "node:path";
 import fs from "node:fs";
 
-export const appRoot = process.cwd();
+const isolatedTestRoot = process.env.NODE_ENV === "test" ? process.env.BFB_TEST_APP_ROOT : "";
+export const appRoot = isolatedTestRoot ? path.resolve(isolatedTestRoot) : process.cwd();
 export const dataDir = path.join(appRoot, "data");
 export const databasePath = path.join(dataDir, "bfb.sqlite");
 export const authSessionDatabasePath = path.join(dataDir, "auth-sessions.sqlite");

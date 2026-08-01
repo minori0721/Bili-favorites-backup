@@ -368,7 +368,7 @@ function getAppStyles() {
     }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
     body.archive-library-open { overflow:hidden; }
-    .archive-library-modal { z-index:180; padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
+    .archive-library-modal { padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
     .archive-library-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:#F5F9F8; color:var(--ink); }
     .archive-library-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:#EEF5F3; }
     .archive-library-brand { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid #DCE8E6; }
@@ -426,7 +426,7 @@ function getAppStyles() {
     .archive-library-card-main:focus-visible { outline:3px solid rgba(57,197,187,0.28); outline-offset:-3px; }
     .archive-library-card-more { position:absolute; z-index:2; top:7px; right:7px; width:32px; height:32px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.55); border-radius:50%; background:rgba(23,39,36,.78); color:#FFFFFF; padding:0; font-size:19px; line-height:1; cursor:pointer; }
     .archive-library-card-more:hover,.archive-library-card-more:focus-visible { background:#176E66; outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
-    .archive-library-cover { position:relative; width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:6px; background:#E3EBE9; }
+    .archive-library-cover { position:relative; display:block; width:100%; aspect-ratio:16/9; overflow:hidden; border-radius:6px; background:#E3EBE9; }
     .archive-library-cover img { display:block; width:100%; height:100%; object-fit:cover; }
     .archive-library-placeholder { position:absolute; inset:0; display:grid; place-items:center; color:#82938F; font-size:22px; font-weight:800; background:#E5ECEA; }
     .archive-library-cover-badges { position:absolute; left:7px; right:7px; bottom:7px; display:flex; justify-content:space-between; gap:6px; align-items:flex-end; pointer-events:none; }
@@ -511,7 +511,7 @@ function getAppStyles() {
     .account-removal-option span { display:block; margin-top:3px; color:#718581; font-size:11px; line-height:1.55; }
     .account-removal-preview { border:1px solid #E2EAE8; border-radius:6px; background:#FFFFFF; padding:10px 12px; color:#526B66; font-size:12px; line-height:1.7; }
     body.playback-open { overflow:hidden; }
-    .playback-modal { z-index:300; padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
+    .playback-modal { padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
     .playback-shell { width:min(1480px,100%); min-width:0; height:calc(100dvh - 36px); margin:auto; overflow:hidden; display:flex; flex-direction:column; color:#F4F7F6; background:#151B1A; border:1px solid #34413F; border-radius:8px; box-shadow:0 28px 80px rgba(0,0,0,0.38); animation:playbackEnter .18s ease-out; }
     .playback-header { flex:0 0 auto; min-width:0; display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:68px; padding:13px 16px 13px 20px; border-bottom:1px solid #2D3836; background:#19201F; }
     .playback-heading { min-width:0; }
@@ -737,6 +737,7 @@ function getAppStyles() {
       .account-actions button,.settings-actions button,.modal-actions button,.preview-actions button { min-height:40px; }
       .modal-actions .full-width { grid-column:1/-1; }
       .modal { padding:10px; align-items:flex-start; }
+      .archive-library-modal { padding:0; align-items:stretch; }
       .modal .panel { padding:20px; border-radius:20px; max-height:calc(100vh - 20px); }
       .video-item { align-items:flex-start; flex-wrap:wrap; }
       .video-cover { width:96px; height:60px; }
@@ -1030,12 +1031,12 @@ function getModals() {
           <button type="button" data-archive-filter="issue">异常</button>
           <button type="button" data-archive-filter="deleted">已删除</button>
         </div>
-        <div class="archive-library-results" id="archiveLibraryResults">
+        <div class="archive-library-results" id="archiveLibraryResults" tabindex="-1">
           <div class="archive-library-grid" id="archiveLibraryGrid"></div>
           <div class="archive-library-footer" id="archiveLibraryFooter" aria-live="polite"></div>
         </div>
       </section>
-      <aside class="archive-library-detail" id="archiveLibraryDetail" aria-hidden="true">
+      <aside class="archive-library-detail" id="archiveLibraryDetail" role="dialog" aria-modal="true" aria-labelledby="archiveLibraryDetailTitle" aria-hidden="true">
         <div class="archive-library-detail-head">
           <h3 id="archiveLibraryDetailTitle">归档详情</h3>
           <button id="archiveLibraryDetailCloseBtn" class="archive-library-detail-close" type="button" aria-label="关闭详情" title="关闭">×</button>
@@ -1426,6 +1427,7 @@ function getAppScript() {
       userId: null,
       mediaId: null,
       title: '全部归档',
+      draftQuery: '',
       query: '',
       searchScope: 'current',
       filter: 'all',
@@ -1443,6 +1445,8 @@ function getAppScript() {
       scrollTimer: null,
       detailController: null,
       detailToken: 0,
+      detailTrigger: null,
+      detailBvid: null,
       navigationTimer: null,
       scrollPositions: {},
       trigger: null
@@ -1519,7 +1523,8 @@ function getAppScript() {
     let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
     let migrationSelectedFile = null;
     let migrationImportBlocked = false;
-    let lastModalTrigger = null;
+    const modalStack = [];
+    const modalBackgroundState = new Map();
     let pendingConfirmAction = null;
 
     function safeText(value, fallback = '未知') {
@@ -1566,19 +1571,88 @@ function getAppScript() {
       return copied;
     }
 
-    function closeModal(modalOrId) {
+    const FOCUSABLE_SELECTOR = 'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])';
+
+    function focusableElements(root) {
+      if (!root) return [];
+      return Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)).filter((element) => {
+        if (!(element instanceof HTMLElement) || element.closest('[inert]')) return false;
+        if (element.getAttribute('aria-hidden') === 'true' || element.closest('[aria-hidden="true"]')) return false;
+        const style = window.getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
+      });
+    }
+
+    function restoreFocusAfterModal(entry) {
+      setTimeout(() => {
+        const candidates = [entry?.trigger, entry?.previousFocus];
+        for (const candidate of candidates) {
+          if (!(candidate instanceof HTMLElement) || !candidate.isConnected || candidate.closest('[inert]') || candidate.disabled) continue;
+          candidate.focus({ preventScroll:true });
+          return;
+        }
+        const parent = activeModal();
+        const fallback = focusableElements(parent)[0] || parent;
+        if (fallback && typeof fallback.focus === 'function') fallback.focus({ preventScroll:true });
+      }, 0);
+    }
+
+    function syncModalBackground(hidden) {
+      const roots = [document.querySelector('header'), document.querySelector('main')].filter(Boolean);
+      roots.forEach((root) => {
+        if (hidden) {
+          if (!modalBackgroundState.has(root)) {
+            modalBackgroundState.set(root, {
+              inert:Boolean(root.inert),
+              ariaHidden:root.hasAttribute('aria-hidden') ? root.getAttribute('aria-hidden') : null
+            });
+          }
+          root.inert = true;
+          root.setAttribute('aria-hidden', 'true');
+          return;
+        }
+        const previous = modalBackgroundState.get(root);
+        if (!previous) return;
+        root.inert = previous.inert;
+        if (previous.ariaHidden === null) root.removeAttribute('aria-hidden');
+        else root.setAttribute('aria-hidden', previous.ariaHidden);
+        modalBackgroundState.delete(root);
+      });
+    }
+
+    function syncModalStack() {
+      const top = modalStack[modalStack.length - 1] || null;
+      syncModalBackground(Boolean(top));
+      document.querySelectorAll('.modal').forEach((modal) => {
+        const index = modalStack.findIndex((entry) => entry.modal === modal);
+        if (index < 0) {
+          modal.style.removeProperty('z-index');
+          modal.inert = false;
+          modal.setAttribute('aria-hidden', 'true');
+          modal.setAttribute('aria-modal', 'false');
+          return;
+        }
+        const isTop = modalStack[index] === top;
+        modal.style.zIndex = String(100 + index * 20);
+        modal.inert = !isTop;
+        modal.setAttribute('aria-hidden', String(!isTop));
+        modal.setAttribute('aria-modal', String(isTop));
+      });
+    }
+
+    function closeModal(modalOrId, options = {}) {
       const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
-      if (!modal) return;
-      const closeTrigger = modal.id === 'archiveLibraryModal' ? archiveLibraryState.trigger : lastModalTrigger;
+      if (!modal) return false;
+      const index = modalStack.findIndex((entry) => entry.modal === modal);
+      if (index < 0 || index !== modalStack.length - 1) return false;
+      if (modal.id === 'confirmActionModal' && pendingConfirmAction && !options.skipConfirm) {
+        finishConfirmAction(false);
+        return true;
+      }
       if (modal.id === 'loginModal') {
         currentLoginId = null;
       }
       if (modal.id === 'videoDetailModal') {
-        if (document.getElementById('playbackModal').classList.contains('active')) {
-          destroyPlaybackSession();
-          document.getElementById('playbackModal').classList.remove('active');
-          document.getElementById('playbackModal').setAttribute('aria-hidden', 'true');
-        }
         if (videoDetailState.controller) videoDetailState.controller.abort();
         videoDetailState.controller = null;
         videoDetailState.token += 1;
@@ -1591,11 +1665,6 @@ function getAppScript() {
       }
       if (modal.id === 'playbackModal') destroyPlaybackSession();
       if (modal.id === 'archiveLibraryModal') {
-        if (document.getElementById('playbackModal').classList.contains('active')) {
-          destroyPlaybackSession();
-          document.getElementById('playbackModal').classList.remove('active');
-          document.getElementById('playbackModal').setAttribute('aria-hidden', 'true');
-        }
         cleanupArchiveLibrary();
       }
       if (modal.id === 'unavailableModal') {
@@ -1616,39 +1685,47 @@ function getAppScript() {
         accountRemovalToken += 1;
         accountRemovalState = { userId:null, preview:null, pollTimer:null, trigger:null, controller:null, token:accountRemovalToken, loading:false };
       }
-      if (modal.id === 'confirmActionModal' && pendingConfirmAction) {
-        pendingConfirmAction(false);
-        return;
-      }
+      const [entry] = modalStack.splice(index, 1);
       modal.classList.remove('active');
       modal.setAttribute('aria-hidden', 'true');
-      if (closeTrigger && typeof closeTrigger.focus === 'function' && document.contains(closeTrigger)) {
-        closeTrigger.focus();
-      }
+      modal.inert = false;
+      modal.style.removeProperty('z-index');
+      syncModalStack();
+      if (options.restoreFocus !== false) restoreFocusAfterModal(entry);
+      return true;
     }
 
     function openModal(modalId, trigger) {
       const modal = document.getElementById(modalId);
-      if (!modal) return;
-      lastModalTrigger = trigger || document.activeElement;
+      if (!modal) return false;
+      const existingIndex = modalStack.findIndex((entry) => entry.modal === modal);
+      if (existingIndex >= 0) return existingIndex === modalStack.length - 1;
+      const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      modalStack.push({ modal, trigger:trigger instanceof HTMLElement ? trigger : previousFocus, previousFocus });
       modal.classList.add('active');
       modal.setAttribute('role', 'dialog');
-      modal.setAttribute('aria-modal', 'true');
-      modal.setAttribute('aria-hidden', 'false');
-      const firstButton = modal.querySelector('button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
-      if (firstButton && typeof firstButton.focus === 'function') {
-        setTimeout(() => firstButton.focus(), 0);
-      }
+      if (!modal.hasAttribute('tabindex')) modal.tabIndex = -1;
+      syncModalStack();
+      setTimeout(() => {
+        if (activeModal() !== modal) return;
+        const firstControl = focusableElements(modal)[0] || modal;
+        if (typeof firstControl.focus === 'function') firstControl.focus({ preventScroll:true });
+      }, 0);
+      return true;
     }
 
     function activeModal() {
-      const modals = Array.from(document.querySelectorAll('.modal.active'));
-      return modals[modals.length - 1] || null;
+      return modalStack[modalStack.length - 1]?.modal || null;
     }
 
     function confirmAction(options) {
-      return new Promise((resolve) => {
+      if (pendingConfirmAction) {
         const modal = document.getElementById('confirmActionModal');
+        const focusTarget = focusableElements(modal)[0] || modal;
+        if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus({ preventScroll:true });
+        return Promise.resolve(false);
+      }
+      return new Promise((resolve) => {
         const okBtn = document.getElementById('confirmActionOkBtn');
         const cancelBtn = document.getElementById('confirmActionCancelBtn');
         const input = document.getElementById('confirmActionInput');
@@ -1656,7 +1733,6 @@ function getAppScript() {
         const detail = document.getElementById('confirmActionDetail');
         const requiredText = String(options.requiredText || '');
         const danger = options.danger !== false;
-        const previousModalTrigger = lastModalTrigger;
         document.getElementById('confirmActionTitle').textContent = options.title || '确认操作';
         document.getElementById('confirmActionMessage').textContent = options.message || '确认继续吗？';
         detail.textContent = options.detail || '';
@@ -1670,35 +1746,25 @@ function getAppScript() {
         cancelBtn.textContent = options.cancelText || '取消';
         okBtn.classList.toggle('danger-action', danger);
         okBtn.disabled = Boolean(requiredText);
-
-        const cleanup = (result) => {
-          input.removeEventListener('input', onInput);
-          okBtn.removeEventListener('click', onOk);
-          cancelBtn.removeEventListener('click', onCancel);
-          pendingConfirmAction = null;
-          modal.classList.remove('active');
-          modal.setAttribute('aria-hidden', 'true');
-          if (options.trigger && typeof options.trigger.focus === 'function' && document.contains(options.trigger)) {
-            options.trigger.focus();
-          }
-          lastModalTrigger = previousModalTrigger;
-          resolve(result);
-        };
-        const onInput = () => {
-          okBtn.disabled = requiredText ? input.value.trim() !== requiredText : false;
-        };
-        const onOk = () => {
-          if (requiredText && input.value.trim() !== requiredText) return;
-          cleanup(true);
-        };
-        const onCancel = () => cleanup(false);
-        input.addEventListener('input', onInput);
-        okBtn.addEventListener('click', onOk);
-        cancelBtn.addEventListener('click', onCancel);
-        pendingConfirmAction = cleanup;
+        pendingConfirmAction = { resolve, requiredText };
         openModal('confirmActionModal', options.trigger);
-        setTimeout(() => (requiredText ? input : okBtn).focus(), 0);
+        setTimeout(() => (requiredText ? input : okBtn).focus({ preventScroll:true }), 0);
       });
+    }
+
+    function finishConfirmAction(result) {
+      const pending = pendingConfirmAction;
+      if (!pending) return;
+      if (result && pending.requiredText && document.getElementById('confirmActionInput').value.trim() !== pending.requiredText) return;
+      pendingConfirmAction = null;
+      closeModal('confirmActionModal', { skipConfirm:true });
+      pending.resolve(Boolean(result));
+    }
+
+    function syncConfirmActionInput() {
+      const pending = pendingConfirmAction;
+      const okBtn = document.getElementById('confirmActionOkBtn');
+      okBtn.disabled = Boolean(pending?.requiredText) && document.getElementById('confirmActionInput').value.trim() !== pending.requiredText;
     }
 
     function showToast(message, type = 'error') {
@@ -3077,7 +3143,7 @@ function getAppScript() {
       archiveLibraryState.scrollTimer = null;
       archiveLibraryState.navigationTimer = null;
       archiveLibraryState.loading = false;
-      closeArchiveLibraryDetail();
+      closeArchiveLibraryDetail({ restoreFocus:false });
       document.body.classList.remove('archive-library-open');
     }
 
@@ -3336,19 +3402,22 @@ function getAppScript() {
         button.classList.toggle('active', button.dataset.archiveFilter === archiveLibraryState.filter);
         button.setAttribute('aria-pressed', String(button.dataset.archiveFilter === archiveLibraryState.filter));
       });
-      setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.query);
+      setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.draftQuery);
     }
 
     async function selectArchiveLibraryDirectory(context, trigger) {
       saveArchiveLibraryScroll();
+      if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
+      archiveLibraryState.searchTimer = null;
       archiveLibraryState.scope = context.scope;
       archiveLibraryState.userId = context.userId || null;
       archiveLibraryState.mediaId = Number(context.mediaId || 0) || null;
       archiveLibraryState.title = context.title || '全部归档';
+      archiveLibraryState.draftQuery = '';
       archiveLibraryState.query = '';
       archiveLibraryState.searchScope = 'current';
       document.getElementById('archiveLibrarySearchInput').value = '';
-      closeArchiveLibraryDetail();
+      closeArchiveLibraryDetail({ restoreFocus:false });
       persistArchiveLibraryPreference();
       syncArchiveLibraryNavigationSelection();
       setArchiveLibraryHeading();
@@ -3545,15 +3614,40 @@ function getAppScript() {
       }
     }
 
-    function closeArchiveLibraryDetail() {
+    function syncArchiveLibraryDetailLayer(open) {
+      const sidebar = document.querySelector('.archive-library-sidebar');
+      const main = document.querySelector('.archive-library-main');
+      [sidebar, main].filter(Boolean).forEach((element) => {
+        element.inert = Boolean(open);
+        if (open) element.setAttribute('aria-hidden', 'true');
+        else element.removeAttribute('aria-hidden');
+      });
+    }
+
+    function closeArchiveLibraryDetail(options = {}) {
       const detail = document.getElementById('archiveLibraryDetail');
       if (!detail) return;
+      const wasOpen = detail.classList.contains('open');
+      const trigger = archiveLibraryState.detailTrigger;
       archiveLibraryState.detailToken += 1;
       if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
       archiveLibraryState.detailController = null;
       detail.classList.remove('open');
       detail.setAttribute('aria-hidden', 'true');
       document.getElementById('archiveLibraryDetailBody').replaceChildren();
+      syncArchiveLibraryDetailLayer(false);
+      archiveLibraryState.detailTrigger = null;
+      archiveLibraryState.detailBvid = null;
+      if (wasOpen && options.restoreFocus !== false) {
+        setTimeout(() => {
+          if (trigger instanceof HTMLElement && trigger.isConnected && !trigger.closest('[inert]') && !trigger.disabled) {
+            trigger.focus({ preventScroll:true });
+            return;
+          }
+          const results = document.getElementById('archiveLibraryResults');
+          if (results && results.isConnected && !results.closest('[inert]')) results.focus({ preventScroll:true });
+        }, 0);
+      }
     }
 
     function archiveDeletionProgressText(operation) {
@@ -3644,11 +3738,16 @@ function getAppScript() {
     }
 
     async function deleteArchiveLibrarySource(bvid, membership, trigger, host, token) {
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled || trigger.dataset.deleteBusy === 'true') return;
+      trigger.dataset.deleteBusy = 'true';
+      trigger.disabled = true;
+      let started = false;
       try {
         const preview = await fetchJson('/api/archive-library/items/' + encodeURIComponent(bvid) + '/deletion-preview', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ userId:membership.userId, mediaId:membership.mediaId })
         });
+        if (token !== archiveLibraryState.detailToken || !host.isConnected) return;
         const confirmed = await confirmAction({
           title:'删除此来源的远端归档',
           message:'将删除 ' + Number(preview.fileCount || 0) + ' 个已追踪文件，共 ' + formatBytes(Number(preview.totalBytes || 0)) + '。',
@@ -3656,13 +3755,18 @@ function getAppScript() {
           requiredText:'DELETE ARCHIVE', confirmText:'开始清理', trigger
         });
         if (!confirmed) return;
+        if (token !== archiveLibraryState.detailToken || !host.isConnected) return;
         const operation = await fetchJson('/api/archive-deletions/' + encodeURIComponent(preview.previewId) + '/start', {
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ confirmation:'DELETE ARCHIVE' })
         });
+        started = true;
         host.classList.remove('is-hidden');
         watchArchiveSourceDeletion(operation.id, host, token);
       } catch (error) {
         showToast(error instanceof Error ? error.message : String(error));
+      } finally {
+        delete trigger.dataset.deleteBusy;
+        if (!started && trigger.isConnected) trigger.disabled = false;
       }
     }
 
@@ -3673,10 +3777,18 @@ function getAppScript() {
       const controller = new AbortController();
       archiveLibraryState.detailController = controller;
       const token = ++archiveLibraryState.detailToken;
+      archiveLibraryState.detailTrigger = trigger instanceof HTMLElement ? trigger : null;
+      archiveLibraryState.detailBvid = bvid;
       detail.classList.add('open');
       detail.setAttribute('aria-hidden', 'false');
+      syncArchiveLibraryDetailLayer(true);
       document.getElementById('archiveLibraryDetailTitle').textContent = '归档详情';
       body.textContent = '正在读取...';
+      setTimeout(() => {
+        if (token === archiveLibraryState.detailToken && detail.classList.contains('open')) {
+          document.getElementById('archiveLibraryDetailCloseBtn').focus({ preventScroll:true });
+        }
+      }, 0);
       try {
         const params = archiveLibraryQueryParams();
         const data = await fetchJson('/api/archive-library/items/' + encodeURIComponent(bvid) + '?' + params.toString(), { signal:controller.signal });
@@ -3780,7 +3892,6 @@ function getAppScript() {
             watchArchiveSourceDeletion(membership.deletionId, progress, token);
           }
         });
-        setTimeout(() => document.getElementById('archiveLibraryDetailCloseBtn').focus({ preventScroll:true }), 0);
       } catch (error) {
         if ((error && error.name === 'AbortError') || token !== archiveLibraryState.detailToken || !detail.classList.contains('open')) return;
         body.replaceChildren();
@@ -3801,15 +3912,29 @@ function getAppScript() {
     function scheduleArchiveLibrarySearch() {
       const input = document.getElementById('archiveLibrarySearchInput');
       const nextQuery = String(input.value || '').trim().slice(0, 80);
-      if (!archiveLibraryState.query && nextQuery) saveArchiveLibraryScroll();
-      archiveLibraryState.query = nextQuery;
-      setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.query);
+      archiveLibraryState.draftQuery = nextQuery;
+      setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.draftQuery);
       if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
-      if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
       archiveLibraryState.searchTimer = setTimeout(() => {
         archiveLibraryState.searchTimer = null;
-        loadArchiveLibraryItems(true);
+        if (!document.getElementById('archiveLibraryModal').classList.contains('active')) return;
+        if (applyArchiveLibraryDraftQuery()) loadArchiveLibraryItems(true);
       }, 300);
+    }
+
+    function applyArchiveLibraryDraftQuery() {
+      if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
+      archiveLibraryState.searchTimer = null;
+      const nextQuery = String(archiveLibraryState.draftQuery || '').trim().slice(0, 80);
+      if (nextQuery === archiveLibraryState.query) {
+        setArchiveLibraryHeading();
+        return false;
+      }
+      if (!archiveLibraryState.query && nextQuery) saveArchiveLibraryScroll();
+      archiveLibraryState.query = nextQuery;
+      closeArchiveLibraryDetail({ restoreFocus:false });
+      setArchiveLibraryHeading();
+      return true;
     }
 
     async function openArchiveLibrary(trigger) {
@@ -3822,6 +3947,7 @@ function getAppScript() {
       archiveLibraryState.filter = preference.filter;
       archiveLibraryState.sort = preference.sort;
       archiveLibraryState.scrollPositions = preference.scrollPositions;
+      archiveLibraryState.draftQuery = '';
       archiveLibraryState.query = '';
       archiveLibraryState.searchScope = 'current';
       archiveLibraryState.pageSize = 50;
@@ -4377,16 +4503,6 @@ function getAppScript() {
       playbackState.swipe.tracking = false;
       playbackState.swipe.deltaX = 0;
       playbackState.swipe.deltaY = 0;
-      const detailModal = document.getElementById('videoDetailModal');
-      if (detailModal.classList.contains('active')) {
-        detailModal.inert = false;
-        detailModal.setAttribute('aria-hidden', 'false');
-      }
-      const archiveModal = document.getElementById('archiveLibraryModal');
-      if (archiveModal.classList.contains('active')) {
-        archiveModal.inert = false;
-        archiveModal.setAttribute('aria-hidden', 'false');
-      }
       playbackState.items = [];
       playbackState.pages.clear();
       playbackState.queueNodes.clear();
@@ -5865,9 +5981,6 @@ function getAppScript() {
       playbackState.trigger = trigger || null;
       playbackState.focusBvid = bvid;
       document.body.classList.add('playback-open');
-      const archiveModal = document.getElementById('archiveLibraryModal');
-      archiveModal.inert = true;
-      archiveModal.setAttribute('aria-hidden', 'true');
       openModal('playbackModal', trigger);
       setPlaybackQueueDrawer(false);
       if (syncPlaybackImmersiveMode()) {
@@ -5910,9 +6023,6 @@ function getAppScript() {
       playbackState.trigger = trigger || null;
       playbackState.focusBvid = bvid;
       document.body.classList.add('playback-open');
-      const detailModal = document.getElementById('videoDetailModal');
-      detailModal.inert = true;
-      detailModal.setAttribute('aria-hidden', 'true');
       openModal('playbackModal', trigger);
       setPlaybackQueueDrawer(false);
       if (syncPlaybackImmersiveMode()) {
@@ -6613,35 +6723,46 @@ function getAppScript() {
     document.getElementById('closeArchiveLibraryBtn').addEventListener('click', () => closeModal('archiveLibraryModal'));
     document.getElementById('archiveLibraryMobileBackBtn').addEventListener('click', () => {
       saveArchiveLibraryScroll();
-      closeArchiveLibraryDetail();
-      document.querySelector('.archive-library-shell').classList.remove('show-content');
+      closeArchiveLibraryDetail({ restoreFocus:false });
+      const shell = document.querySelector('.archive-library-shell');
+      shell.classList.remove('show-content');
+      shell.scrollLeft = 0;
       const active = document.querySelector('.archive-nav-item.active');
-      if (active) setTimeout(() => active.focus({ preventScroll:true }), 0);
+      if (active) setTimeout(() => {
+        active.focus({ preventScroll:true });
+        shell.scrollLeft = 0;
+      }, 0);
     });
     document.getElementById('archiveLibraryDetailCloseBtn').addEventListener('click', closeArchiveLibraryDetail);
     document.getElementById('archiveLibrarySearchInput').addEventListener('input', scheduleArchiveLibrarySearch);
     document.getElementById('archiveLibrarySearchClearBtn').addEventListener('click', () => {
-      archiveLibraryState.query = '';
       const input = document.getElementById('archiveLibrarySearchInput');
       input.value = '';
-      setHidden('archiveLibrarySearchClearBtn', true);
-      loadArchiveLibraryItems(true);
+      archiveLibraryState.draftQuery = '';
+      const changed = applyArchiveLibraryDraftQuery();
+      if (changed) loadArchiveLibraryItems(true);
       input.focus({ preventScroll:true });
     });
     document.getElementById('archiveSearchCurrentBtn').addEventListener('click', () => {
       if (archiveLibraryState.searchScope === 'current') return;
+      applyArchiveLibraryDraftQuery();
       archiveLibraryState.searchScope = 'current';
+      closeArchiveLibraryDetail({ restoreFocus:false });
       setArchiveLibraryHeading();
       loadArchiveLibraryItems(true);
     });
     document.getElementById('archiveSearchGlobalBtn').addEventListener('click', () => {
       if (archiveLibraryState.searchScope === 'global') return;
+      applyArchiveLibraryDraftQuery();
       archiveLibraryState.searchScope = 'global';
+      closeArchiveLibraryDetail({ restoreFocus:false });
       setArchiveLibraryHeading();
       loadArchiveLibraryItems(true);
     });
     document.getElementById('archiveLibrarySort').addEventListener('change', (event) => {
+      applyArchiveLibraryDraftQuery();
       archiveLibraryState.sort = event.target.value;
+      closeArchiveLibraryDetail({ restoreFocus:false });
       persistArchiveLibraryPreference();
       loadArchiveLibraryItems(true);
     });
@@ -6649,7 +6770,9 @@ function getAppScript() {
       button.addEventListener('click', () => {
         const filter = button.dataset.archiveFilter;
         if (!filter || filter === archiveLibraryState.filter) return;
+        applyArchiveLibraryDraftQuery();
         archiveLibraryState.filter = filter;
+        closeArchiveLibraryDetail({ restoreFocus:false });
         persistArchiveLibraryPreference();
         setArchiveLibraryHeading();
         loadArchiveLibraryItems(true);
@@ -6760,6 +6883,25 @@ function getAppScript() {
       });
     });
     document.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab') {
+        const modal = activeModal();
+        if (!modal) return;
+        const controls = focusableElements(modal);
+        if (!controls.length) {
+          event.preventDefault();
+          modal.focus({ preventScroll:true });
+          return;
+        }
+        const activeIndex = controls.indexOf(document.activeElement);
+        if (event.shiftKey && activeIndex <= 0) {
+          event.preventDefault();
+          controls[controls.length - 1].focus({ preventScroll:true });
+        } else if (!event.shiftKey && (activeIndex < 0 || activeIndex === controls.length - 1)) {
+          event.preventDefault();
+          controls[0].focus({ preventScroll:true });
+        }
+        return;
+      }
       if (event.key === 'Escape') {
         const modal = activeModal();
         if (modal && modal.id === 'playbackModal' && playbackState.drawerOpen) {
@@ -6775,6 +6917,10 @@ function getAppScript() {
         if (modal) closeModal(modal);
       }
     });
+
+    document.getElementById('confirmActionInput').addEventListener('input', syncConfirmActionInput);
+    document.getElementById('confirmActionOkBtn').addEventListener('click', () => finishConfirmAction(true));
+    document.getElementById('confirmActionCancelBtn').addEventListener('click', () => finishConfirmAction(false));
     document.getElementById('videoGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('videoGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {

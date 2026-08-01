@@ -40,9 +40,9 @@ test("live favorite metadata falls back to the stored archive snapshot", () => {
 });
 test("tracked favorite detail is served from SQLite with history and original metadata", { timeout: 60_000 }, async () => {
   const runtime = await createTestDir("favorite-detail");
-  const originalCwd = process.cwd();
   const previousNodeEnv = process.env.NODE_ENV;
   const previousAdminPass = process.env.ADMIN_PASS;
+  const previousTestAppRoot = process.env.BFB_TEST_APP_ROOT;
   let server: import("node:http").Server | undefined;
   let closeAppResources: (() => Promise<void>) | undefined;
   try {
@@ -134,8 +134,8 @@ test("tracked favorite detail is served from SQLite with history and original me
       },
     }), "utf8");
 
-    process.chdir(runtime);
     process.env.NODE_ENV = "test";
+    process.env.BFB_TEST_APP_ROOT = runtime;
     process.env.ADMIN_PASS = "detail-pass";
     const appModule = await import("../src/index.js");
     closeAppResources = appModule.closeAppResources;
@@ -358,11 +358,12 @@ test("tracked favorite detail is served from SQLite with history and original me
       await new Promise<void>((resolve) => server!.close(() => resolve()));
     }
     if (closeAppResources) await closeAppResources();
-    process.chdir(originalCwd);
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousAdminPass === undefined) delete process.env.ADMIN_PASS;
     else process.env.ADMIN_PASS = previousAdminPass;
+    if (previousTestAppRoot === undefined) delete process.env.BFB_TEST_APP_ROOT;
+    else process.env.BFB_TEST_APP_ROOT = previousTestAppRoot;
     await removeTestDir(runtime);
   }
 });

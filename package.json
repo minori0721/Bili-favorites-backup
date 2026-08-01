@@ -17,6 +17,7 @@
     "state:export-json": "tsx src/scripts/sqlite-to-json.ts",
     "benchmark:state": "tsx src/scripts/benchmark-state.ts",
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test:ui": "playwright test",
     "start": "node dist/index.js",
     "login": "tsx src/scripts/login.ts"
   },
@@ -34,6 +35,7 @@
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/archiver": "^8.0.0",
     "@types/better-sqlite3": "7.6.13",
     "@types/express": "^4.17.21",
