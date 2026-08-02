@@ -637,6 +637,8 @@ export class StateDatabase {
     this.filePath = filePath;
     if (filePath !== ":memory:") fs.mkdirSync(path.dirname(filePath), { recursive: true });
     this.db = new Database(filePath);
+    let schemaMigrationFrom: number | null = null;
+    let schemaMigrationStartedAt = 0;
     try {
       this.db.pragma("foreign_keys = ON");
       this.db.pragma("busy_timeout = 5000");
@@ -645,6 +647,14 @@ export class StateDatabase {
       const currentVersion = Number(this.db.pragma("user_version", { simple: true }) || 0);
       if (currentVersion > DATABASE_SCHEMA_VERSION) {
         throw new Error(`SQLite schema ${currentVersion} is newer than supported schema ${DATABASE_SCHEMA_VERSION}`);
+      }
+      if (currentVersion > 0 && currentVersion < DATABASE_SCHEMA_VERSION) {
+        schemaMigrationFrom = currentVersion;
+        schemaMigrationStartedAt = Date.now();
+        console.log(
+          `[Database] Starting SQLite schema migration ${currentVersion} -> ${DATABASE_SCHEMA_VERSION}; `
+          + "creating and verifying a backup before changes.",
+        );
       }
       createSchemaUpgradeBackup(this.db, this.filePath, currentVersion);
       this.db.transaction(() => {
@@ -765,6 +775,12 @@ export class StateDatabase {
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
       })();
+      if (schemaMigrationFrom !== null) {
+        console.log(
+          `[Database] Completed SQLite schema migration ${schemaMigrationFrom} -> ${DATABASE_SCHEMA_VERSION} `
+          + `in ${Math.max(0, Date.now() - schemaMigrationStartedAt)} ms.`,
+        );
+      }
     } catch (error) {
       try {
         if (this.db.open) {
@@ -774,6 +790,12 @@ export class StateDatabase {
           this.db.close();
         }
       } catch {}
+      if (schemaMigrationFrom !== null) {
+        console.error(
+          `[Database] SQLite schema migration ${schemaMigrationFrom} -> ${DATABASE_SCHEMA_VERSION} failed `
+          + `after ${Math.max(0, Date.now() - schemaMigrationStartedAt)} ms; no database changes were committed.`,
+        );
+      }
       throw error;
     }
   }

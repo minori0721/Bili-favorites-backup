@@ -557,7 +557,16 @@ test("schema 8 atomically builds and preserves the archive library projection fr
     legacy.pragma("user_version = 7");
     legacy.close();
 
-    const upgraded = new StateDatabase(dbPath);
+    const migrationLogs: string[] = [];
+    const originalLog = console.log;
+    let upgraded: StateDatabase | null = null;
+    try {
+      console.log = (...args: unknown[]) => migrationLogs.push(args.map(String).join(" "));
+      upgraded = new StateDatabase(dbPath);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(upgraded);
     try {
       assert.equal(upgraded.db.pragma("user_version", { simple: true }), 8);
       const rows = upgraded.db.prepare(`
@@ -572,6 +581,16 @@ test("schema 8 atomically builds and preserves the archive library projection fr
     } finally {
       upgraded.close();
     }
+    assert.equal(migrationLogs.length, 2);
+    assert.match(
+      migrationLogs[0],
+      /^\[Database\] Starting SQLite schema migration 7 -> 8; creating and verifying a backup before changes\.$/,
+    );
+    assert.match(
+      migrationLogs[1],
+      /^\[Database\] Completed SQLite schema migration 7 -> 8 in \d+ ms\.$/,
+    );
+    assert.equal(migrationLogs.some((message) => message.includes(dbPath)), false);
 
     const reopened = new StateDatabase(dbPath);
     try {
@@ -616,7 +635,31 @@ test("schema 8 projection rebuild rolls back the whole upgrade when projection i
     current.db.pragma("user_version = 7");
     current.close();
 
-    assert.throws(() => new StateDatabase(dbPath), /projection blocked/);
+    const migrationLogs: string[] = [];
+    const migrationErrors: string[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    try {
+      console.log = (...args: unknown[]) => migrationLogs.push(args.map(String).join(" "));
+      console.error = (...args: unknown[]) => migrationErrors.push(args.map(String).join(" "));
+      assert.throws(() => new StateDatabase(dbPath), /projection blocked/);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+    assert.equal(migrationLogs.length, 1);
+    assert.match(
+      migrationLogs[0],
+      /^\[Database\] Starting SQLite schema migration 7 -> 8; creating and verifying a backup before changes\.$/,
+    );
+    assert.equal(migrationErrors.length, 1);
+    assert.match(
+      migrationErrors[0],
+      /^\[Database\] SQLite schema migration 7 -> 8 failed after \d+ ms; no database changes were committed\.$/,
+    );
+    assert.equal([...migrationLogs, ...migrationErrors].some((message) => (
+      message.includes(dbPath) || message.includes("projection blocked")
+    )), false);
     const raw = new Database(dbPath);
     try {
       assert.equal(raw.pragma("user_version", { simple: true }), 7);
