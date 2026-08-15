@@ -31,4 +31,4 @@ docker compose logs --since=30m app
 docker compose logs --tail=200 alist
 ```
 
-先区分错误来自B站、BBDown/aria2、BFB调度器还是AList/WebDAV，再决定处理方向。
+先区分错误来自B站、BBDown/aria2、BFB调度器还是 AList / OpenList WebDAV，再决定处理方向。

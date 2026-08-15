@@ -2467,7 +2467,7 @@ export class SyncScheduler {
       case "reconcile":
         return "全量扫描并对账";
       case "remote_reconcile":
-        return "状态对账（仅AList）";
+        return "状态对账（仅远端存储）";
       case "auto":
       default:
         return "自动同步";
@@ -3379,7 +3379,7 @@ export class SyncScheduler {
     this.updateSchedulerProgress({
       mode: forceFullRemoteVerify ? (manual ? "remote_reconcile" : this.cycleContext.trigger) : this.cycleContext.trigger,
       title: forceFullRemoteVerify ? "状态对账" : this.triggerLabel(this.cycleContext.trigger),
-      detail: forceFullRemoteVerify ? "正在准备 AList 远端状态对账。" : "正在抽样验证 AList 远端文件。",
+      detail: forceFullRemoteVerify ? "正在准备远端存储状态对账。" : "正在抽样验证远端存储文件。",
       userName: undefined,
       folderTitle: undefined,
       mediaId: undefined,
@@ -3496,7 +3496,7 @@ export class SyncScheduler {
         this.updateSchedulerProgress({
           checked: index,
           total: candidates.length,
-          detail: `正在对账 AList 远端文件 ${index}/${candidates.length}。`,
+          detail: `正在对账远端存储文件 ${index}/${candidates.length}。`,
         });
         await executeOne(current);
       }

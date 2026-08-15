@@ -686,17 +686,17 @@ export function playbackFileAlistLocation(
 ) {
   const file = resolvePlaybackFile(database, userId, mediaId, fileId);
   if (!config.alistBrowserUrl) {
-    throw new PlaybackHttpError(404, "PLAYBACK_ALIST_BROWSER_NOT_CONFIGURED", "尚未配置AList网页访问地址");
+    throw new PlaybackHttpError(404, "PLAYBACK_ALIST_BROWSER_NOT_CONFIGURED", "尚未配置远端存储网页访问地址");
   }
   let base: URL;
   try {
     base = new URL(config.alistBrowserUrl);
   } catch {
-    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_BROWSER_CONFIG", "AList网页访问地址无效");
+    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_BROWSER_CONFIG", "远端存储网页访问地址无效");
   }
   if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash
     || base.toString().length > 4_096) {
-    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_BROWSER_CONFIG", "AList网页访问地址无效");
+    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_BROWSER_CONFIG", "远端存储网页访问地址无效");
   }
   const basePath = base.pathname.replace(/\/+$/, "");
   base.pathname = `${basePath}${encodeDavPath(file.remotePath)}`;
@@ -821,7 +821,7 @@ export async function fetchPlaybackUpstream(
   for (let redirects = 0; redirects <= 5; redirects += 1) {
     const key = current.toString();
     if (seen.has(key)) {
-      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LOOP", "AList播放地址出现循环跳转");
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LOOP", "远端存储播放地址出现循环跳转");
     }
     seen.add(key);
     const sameAlistOrigin = current.origin === alistBase.origin;
@@ -839,16 +839,16 @@ export async function fetchPlaybackUpstream(
     const location = response.headers.get("location");
     await response.body?.cancel();
     if (!location) {
-      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_INVALID", "AList返回了缺少目标的播放跳转");
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_INVALID", "远端存储返回了缺少目标的播放跳转");
     }
     if (redirects === 5) {
-      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "AList播放地址跳转次数过多");
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "远端存储播放地址跳转次数过多");
     }
     let next: URL;
     try {
       next = new URL(location, current);
     } catch {
-      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_INVALID", "AList返回了无效的播放跳转");
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_INVALID", "远端存储返回了无效的播放跳转");
     }
     if (next.origin !== current.origin) crossedOrigin = true;
     if (next.origin === alistBase.origin) {
@@ -857,12 +857,12 @@ export async function fetchPlaybackUpstream(
     }
     const external = await validatedExternalPlaybackLocation(next.toString(), alistBase, lookup);
     if (!external) {
-      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_UNSAFE", "AList返回了不安全的外部播放地址");
+      throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_UNSAFE", "远端存储返回了不安全的外部播放地址");
     }
     if (preferDirect) return { directLocation: external };
     current = new URL(external);
   }
-  throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "AList播放地址跳转次数过多");
+  throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "远端存储播放地址跳转次数过多");
 }
 
 export async function streamPlaybackFile(
@@ -894,7 +894,7 @@ export async function streamPlaybackFile(
     base = new URL(String(config.alistUrl || ""));
   } catch {
     markPlaybackDelivery(input, "failed");
-    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_CONFIG", "AList连接配置无效");
+    throw new PlaybackHttpError(502, "PLAYBACK_ALIST_CONFIG", "远端存储连接配置无效");
   }
   const basePath = base.pathname.replace(/\/+$/, "");
   const target = new URL(`${basePath}/dav${encodeDavPath(file.remotePath)}`, `${base.protocol}//${base.host}`);
@@ -937,7 +937,7 @@ export async function streamPlaybackFile(
     clearTimeout(timeout);
     if (upstream.status === 401 || upstream.status === 403) {
       await upstream.body?.cancel();
-      throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_AUTH", "AList拒绝了播放请求，请检查WebDAV账号");
+      throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_AUTH", "远端存储拒绝了播放请求，请检查WebDAV账号");
     }
     if (upstream.status === 404) {
       await upstream.body?.cancel();
@@ -945,11 +945,11 @@ export async function streamPlaybackFile(
     }
     if (upstream.status >= 500) {
       await upstream.body?.cancel();
-      throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_ERROR", "AList或网盘暂时无法提供播放文件");
+      throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_ERROR", "远端存储或网盘暂时无法提供播放文件");
     }
     if (![200, 206, 416].includes(upstream.status)) {
       await upstream.body?.cancel();
-      throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_RESPONSE", `AList返回了无法播放的状态 ${upstream.status}`);
+      throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_RESPONSE", `远端存储返回了无法播放的状态 ${upstream.status}`);
     }
 
     res.status(upstream.status);
@@ -971,7 +971,7 @@ export async function streamPlaybackFile(
       res.destroy();
       return;
     }
-    const detail = error?.name === "AbortError" ? "播放连接超时或已中断" : "无法连接AList播放文件";
+    const detail = error?.name === "AbortError" ? "播放连接超时或已中断" : "无法连接远端存储播放文件";
     const safeId = crypto.createHash("sha256").update(String(file.id)).digest("hex").slice(0, 8);
     throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_UNAVAILABLE", `${detail}（文件 ${safeId}）`);
   } finally {

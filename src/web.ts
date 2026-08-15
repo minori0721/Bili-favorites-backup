@@ -838,7 +838,7 @@ function getAccountSection() {
       <div class="row account-actions">
         <button id="addUserBtn">添加 B站账号</button>
         <button class="ghost" id="syncNowBtn">立即同步</button>
-        <button class="ghost" id="reconcileRemoteBtn">状态对账（仅AList）</button>
+        <button class="ghost" id="reconcileRemoteBtn">状态对账（仅远端存储）</button>
         <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
         <button class="ghost" id="archiveLibraryBtn">归档库</button>
         <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明" aria-label="查看同步按钮说明">?</button>
@@ -857,12 +857,12 @@ function getSettingsSection() {
         <div><label>轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
         <div><label>BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" /><p class="muted field-hint">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
 
-        <div class="settings-group"><div class="settings-group-title">AList 云盘设置</div></div>
-        <div class="field-full"><label>AList 内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244" autocomplete="off" /></div>
-        <div class="field-full"><label>AList 网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://example.com/alist" autocomplete="off" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在 AList 中查看”入口；留空则不显示。</p></div>
-        <div><label>AList 账号 (WebDAV 用户名)</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
-        <div><label>AList 密码 (WebDAV 密码)</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
-        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted field-hint">已有归档时请使用“迁移归档路径”，系统会先复制并确认新目录，旧目录不会自动删除。</p></div>
+        <div class="settings-group"><div class="settings-group-title">远端存储（AList / OpenList WebDAV）</div></div>
+        <div class="field-full"><label>远端内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244 或 http://openlist:5244" autocomplete="off" /><p class="muted field-hint">兼容字段名保持为 alistUrl；这里可以填写 AList 或 OpenList 的 WebDAV 服务地址。</p></div>
+        <div class="field-full"><label>远端网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://openlist.example.com" autocomplete="off" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在网盘中查看”入口；留空则不显示。支持 AList 和 OpenList 的网页地址。</p></div>
+        <div><label>远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
+        <div><label>远端密码（WebDAV 密码）</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
+        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted field-hint">已有归档时请使用“迁移归档路径”，系统会先探测 COPY/MOVE 能力、复制并确认新目录，旧目录不会自动删除。</p></div>
         <div class="field-full"><label>上传目录结构</label>
           <select id="uploadLayout">
             <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
@@ -930,11 +930,11 @@ function getSettingsSection() {
         <div><label>重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
-        <div class="field-full"><label>AList 文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" /><p class="muted field-hint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
+        <div class="field-full"><label>远端文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" /><p class="muted field-hint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
         <div class="field-full"><label>本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
         <div class="field-full"><label>任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
-        <div><label>AList 对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
-        <div><label>AList 对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
+        <div><label>远端对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
+        <div><label>远端对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
         <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
       </div>
       <div class="row settings-actions">
@@ -1067,7 +1067,7 @@ function getModals() {
     <section class="playback-shell" aria-labelledby="playbackDialogTitle">
       <div class="playback-header">
         <div class="playback-heading">
-          <div class="playback-eyebrow">AList 已验证归档</div>
+          <div class="playback-eyebrow">远端存储已验证归档</div>
           <h2 id="playbackDialogTitle">收藏夹播放器</h2>
         </div>
         <button id="closePlaybackBtn" class="playback-close" type="button" aria-label="关闭播放器" title="关闭播放器">×</button>
@@ -1087,7 +1087,7 @@ function getModals() {
             <div class="playback-immersive-meta">
               <h3 class="playback-immersive-title" id="playbackImmersiveTitle">未选择视频</h3>
               <div class="playback-immersive-detail" id="playbackImmersiveDetail"></div>
-              <a class="playback-immersive-alist is-hidden" id="playbackImmersiveAlistLink" target="_blank" rel="noopener noreferrer">在 AList 中查看 ↗</a>
+              <a class="playback-immersive-alist is-hidden" id="playbackImmersiveAlistLink" target="_blank" rel="noopener noreferrer">在网盘中查看 ↗</a>
             </div>
             <div class="playback-stage-message is-hidden" id="playbackStageMessage">
               <div class="playback-message-inner">
@@ -1180,7 +1180,7 @@ function getModals() {
   <div class="modal" id="renamePreviewModal">
     <div class="panel panel-max">
       <h2>检查旧命名文件</h2>
-      <p class="muted">先预览会改哪些远端文件。只有勾选并二次确认后，才会真正修改 AList 网盘文件名。</p>
+      <p class="muted">先预览会改哪些远端文件。只有勾选并二次确认后，才会真正修改 AList / OpenList 网盘文件名。</p>
       <div id="renamePreviewSummary" class="muted"></div>
       <div class="row preview-actions">
         <button id="renameSelectAllBtn" class="ghost" type="button">全选</button>
@@ -1259,7 +1259,7 @@ function getModals() {
       </div>
       <p class="muted" id="migrationEstimate">正在估算迁移包内容...</p>
       <div class="cleanup-list">
-        <label class="cleanup-item"><input id="migConfig" type="checkbox" checked /><div><div class="cleanup-item-title">全局配置</div><div class="cleanup-item-desc">AList 地址、画质、并发、命名模板等设置。</div></div></label>
+        <label class="cleanup-item"><input id="migConfig" type="checkbox" checked /><div><div class="cleanup-item-title">全局配置</div><div class="cleanup-item-desc">远端存储地址、画质、并发、命名模板等设置。</div></div></label>
         <label class="cleanup-item important"><input id="migUsers" type="checkbox" checked /><div><div class="cleanup-item-title">账号登录信息</div><div class="cleanup-item-desc">包含 B 站 Cookie / token，请勿分享导出包。</div></div></label>
         <label class="cleanup-item important"><input id="migState" type="checkbox" checked /><div><div class="cleanup-item-title">备份状态与下架记录</div><div class="cleanup-item-desc">包含已备份、远端文件、失效视频标题与封面快照。</div></div></label>
         <label class="cleanup-item"><input id="migCovers" type="checkbox" checked /><div><div class="cleanup-item-title">本地封面缓存</div><div class="cleanup-item-desc">半尺寸 WebP q70 封面，用于下架后继续显示。</div></div></label>
@@ -1288,7 +1288,7 @@ function getModals() {
   <div class="modal" id="pathMigrationModal">
     <div class="panel panel-large">
       <h2>迁移归档路径</h2>
-      <p class="muted">系统会在同一 AList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
+      <p class="muted">系统会在同一 AList / OpenList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。开始前会用隔离临时文件探测 COPY 和 MOVE；复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
       <div class="settings-grid">
         <div><label>当前归档路径</label><input id="pathMigrationSource" type="text" readonly /></div>
         <div><label>新归档路径</label><input id="pathMigrationDestination" type="text" placeholder="例如: /阿里云盘/bili-backup-2" /></div>
@@ -1314,7 +1314,7 @@ function getModals() {
       <h2>清理小贴士</h2>
       <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
       <div id="cleanupHelpContent" class="cleanup-help-list"></div>
-      <p class="muted help-note">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。</p>
+      <p class="muted help-note">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连内置 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。外接 OpenList 的数据目录由 OpenList 自己管理。</p>
       <div class="row modal-actions">
         <button id="closeCleanupHelpBtn" class="ghost full-width" type="button">知道啦</button>
       </div>
@@ -1856,7 +1856,7 @@ function getAppScript() {
         const insecure = /^http:\/\//i.test(String(d.alistBrowserUrl || '').trim());
         browserUrlHint.textContent = insecure
           ? '当前使用 HTTP，登录信息和访问路径可能被同网络中的设备看到，建议改为 HTTPS。'
-          : '用于播放器中的“在 AList 中查看”入口；留空则不显示。';
+          : '用于播放器中的“在网盘中查看”入口；留空则不显示。';
         browserUrlHint.classList.toggle('status-error', insecure);
       }
       document.getElementById('bbdownEncoding').value = d.bbdownEncoding || '';
@@ -1915,7 +1915,7 @@ function getAppScript() {
         await fetchJson('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
         playbackState.deliveryMode = payload.playbackDeliveryMode;
         playbackState.alistBrowserConfigured = Boolean(payload.alistBrowserUrl);
-        setStatus(st, '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、AList 路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
+        setStatus(st, '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、远端路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
       } catch(e) {
         setStatus(st, '保存失败: '+e.message, 'error');
         if (e.code === 'PATH_MIGRATION_REQUIRED') {
@@ -2066,14 +2066,14 @@ function getAppScript() {
       if (syncHelpMode === 'simple') {
         content.innerHTML = '<div class="help-card-grid">' +
           '<div class="help-card"><strong>\u7acb\u5373\u540c\u6b65</strong><div>\u73b0\u5728\u5c31\u770b\u4e00\u773c\u4f60\u9009\u4e2d\u7684\u6536\u85cf\u5939\uff0c\u6709\u65b0\u89c6\u9891\u5c31\u653e\u8fdb\u4e0b\u8f7d\u548c\u4e0a\u4f20\u961f\u5217\u3002\u9002\u5408\u5e73\u65f6\u65e5\u5e38\u66f4\u65b0\u3002</div></div>' +
-          '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5 AList\uff09</strong><div>\u4e0d\u91cd\u65b0\u7ffb B \u7ad9\u6536\u85cf\u5939\uff0c\u4e3b\u8981\u68c0\u67e5\u7a0b\u5e8f\u8bb0\u5f55\u8fc7\u7684\u7f51\u76d8\u6587\u4ef6\u8fd8\u5728\u4e0d\u5728\u3002\u9002\u5408\u6000\u7591\u7f51\u76d8\u6587\u4ef6\u88ab\u79fb\u52a8\u6216\u5220\u9664\u65f6\u4f7f\u7528\u3002</div></div>' +
-          '<div class="help-card"><strong>\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26</strong><div>\u4ece\u5934\u66f4\u5b8c\u6574\u5730\u626b\u63cf\u6536\u85cf\u5939\uff0c\u5e76\u68c0\u67e5 AList \u8fdc\u7aef\u72b6\u6001\u3002\u6700\u5168\u9762\u4f46\u66f4\u6162\uff0c\u8bf7\u6c42\u4e5f\u66f4\u591a\u3002</div></div>' +
+          '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5\u8fdc\u7aef\u5b58\u50a8\uff09</strong><div>\u4e0d\u91cd\u65b0\u7ffb B \u7ad9\u6536\u85cf\u5939\uff0c\u4e3b\u8981\u68c0\u67e5\u7a0b\u5e8f\u8bb0\u5f55\u8fc7\u7684\u7f51\u76d8\u6587\u4ef6\u8fd8\u5728\u4e0d\u5728\u3002\u9002\u5408\u6000\u7591\u7f51\u76d8\u6587\u4ef6\u88ab\u79fb\u52a8\u6216\u5220\u9664\u65f6\u4f7f\u7528\u3002</div></div>' +
+          '<div class="help-card"><strong>\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26</strong><div>\u4ece\u5934\u66f4\u5b8c\u6574\u5730\u626b\u63cf\u6536\u85cf\u5939\uff0c\u5e76\u68c0\u67e5 AList / OpenList \u8fdc\u7aef\u72b6\u6001\u3002\u6700\u5168\u9762\u4f46\u66f4\u6162\uff0c\u8bf7\u6c42\u4e5f\u66f4\u591a\u3002</div></div>' +
           '</div>';
         return;
       }
       content.innerHTML = '<div class="help-card-grid">' +
         '<div class="help-card"><strong>\u7acb\u5373\u540c\u6b65</strong><ul><li>\u6309\u5f53\u524d\u8c03\u5ea6\u7b56\u7565\u626b\u63cf\u70ed\u95e8\u9875\u548c\u90e8\u5206\u5386\u53f2\u9875\u3002</li><li>\u53d1\u73b0\u672a\u5907\u4efd\u89c6\u9891\u540e\u8fdb\u5165\u4e0b\u8f7d\u961f\u5217\u3002</li><li>\u9002\u5408\u65e5\u5e38\u589e\u91cf\u540c\u6b65\uff0c\u6210\u672c\u6700\u4f4e\u3002</li></ul></div>' +
-        '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5 AList\uff09</strong><ul><li>\u8df3\u8fc7 B \u7ad9\u6536\u85cf\u5939\u5168\u91cf\u626b\u63cf\u3002</li><li>\u6839\u636e\u672c\u5730 SQLite \u4e2d\u7684\u8fdc\u7aef\u6587\u4ef6\u8bb0\u5f55\u68c0\u67e5\u5b9e\u9645\u6587\u4ef6\u3002</li><li>\u53d1\u73b0\u7f3a\u5931\u540e\u6309\u8865\u4f20\u4e0a\u9650\u91cd\u65b0\u6392\u961f\u3002</li></ul></div>' +
+         '<div class="help-card"><strong>\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5\u8fdc\u7aef\u5b58\u50a8\uff09</strong><ul><li>\u8df3\u8fc7 B \u7ad9\u6536\u85cf\u5939\u5168\u91cf\u626b\u63cf\u3002</li><li>\u6839\u636e\u672c\u5730 SQLite \u4e2d\u7684\u8fdc\u7aef\u6587\u4ef6\u8bb0\u5f55\u68c0\u67e5\u5b9e\u9645\u6587\u4ef6\u3002</li><li>\u53d1\u73b0\u7f3a\u5931\u540e\u6309\u8865\u4f20\u4e0a\u9650\u91cd\u65b0\u6392\u961f\u3002</li></ul></div>' +
         '<div class="help-card"><strong>\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26</strong><ul><li>\u5c3d\u53ef\u80fd\u91cd\u65b0\u626b\u63cf\u6536\u85cf\u5939\u6240\u6709\u9875\u9762\u3002</li><li>\u540c\u65f6\u6267\u884c\u8fdc\u7aef\u6587\u4ef6\u6821\u9a8c\uff0c\u9002\u5408\u9996\u6b21\u8865\u9f50\u6216\u8fc1\u79fb\u76ee\u5f55\u540e\u4f7f\u7528\u3002</li><li>\u8bf7\u6c42\u91cf\u66f4\u5927\uff0c\u53ef\u80fd\u89e6\u53d1 412\u3001\u767b\u5f55\u6821\u9a8c\u6216\u98ce\u63a7\u3002</li></ul></div>' +
         '</div>';
     }
@@ -2094,15 +2094,15 @@ function getAppScript() {
           '<div class="flow-step"><div class="badge">\u626b\u63cf\u6536\u85cf\u5939</div><div class="desc">\u53d1\u73b0\u65b0\u89c6\u9891\u540e\u6309\u5f53\u524d\u547d\u540d\u6a21\u677f\u51c6\u5907\u4efb\u52a1\uff1a<code>' + escapeHtml(c.filenameTemplate) + '</code></div></div>' +
           '<div class="flow-step"><div class="badge">\u4e0b\u8f7d\u961f\u5217</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0b\u8f7d <strong>' + escapeHtml(c.concurrentDownloads) + '</strong> \u4e2a\uff1b\u672c\u5730 temp \u8fbe\u5230 <strong>' + escapeHtml(c.localCacheLimitGB || 0) + 'GB</strong> \u8f6f\u4e0a\u9650\u65f6\u4e0d\u518d\u542f\u52a8\u65b0\u4e0b\u8f7d\uff1b\u753b\u8d28\u4e3a <strong>' + escapeHtml(c.bbdownQuality) + '</strong>\uff0c\u7f16\u7801\u4e3a <strong>' + escapeHtml(c.bbdownEncoding) + '</strong>\uff0c\u97f3\u9891\u9009\u9879\u4e3a <strong>' + escapeHtml(audioText) + '</strong>\uff1b\u5206P\u4e4b\u95f4\u5ef6\u8fdf <strong>' + escapeHtml(c.perVideoDelaySeconds) + ' \u79d2</strong>\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u5931\u8d25\u91cd\u8bd5</div><div class="desc">\u4e0b\u8f7d\u6216\u4e0a\u4f20\u5931\u8d25\u540e\u6700\u591a\u91cd\u8bd5 <strong>' + escapeHtml(c.maxRetries) + '</strong> \u6b21\uff0c\u6bcf\u6b21\u95f4\u9694 <strong>' + escapeHtml(c.retryDelaySeconds) + ' \u79d2</strong>\uff1b\u4e0b\u8f7d\u5361\u4f4f\u8d85\u8fc7 30 \u5206\u949f\u4e14\u6700\u8fd1 10 \u5206\u949f\u4f4e\u4e8e 10KB/s \u4f1a\u81ea\u52a8\u8fdb\u5165\u91cd\u8bd5\u3002</div></div>' +
-          '<div class="flow-step"><div class="badge">\u4e0a\u4f20 AList</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0a\u4f20 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> \u4e2a\uff1b\u5b9e\u9645 PUT \u5168\u5c40\u95f4\u9694 <strong>' + escapeHtml(c.uploadFileIntervalSeconds || 0) + ' \u79d2</strong>\uff1b\u76ee\u6807\u8def\u5f84\u662f <code>' + escapeHtml(c.alistDest) + '</code>\uff0c\u76ee\u5f55\u7ed3\u6784\u662f <strong>' + escapeHtml(layoutText) + '</strong>\u3002</div></div>' +
-          '<div class="flow-step"><div class="badge">\u72b6\u6001\u5bf9\u8d26</div><div class="desc">AList \u5bf9\u8d26\u5e76\u53d1 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>\uff0c\u9650\u901f <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' \u6b21/\u79d2</strong>\uff0c\u6bcf\u8f6e\u6700\u591a\u8865\u4f20 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> \u4e2a\u7f3a\u5931\u89c6\u9891\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u4e0a\u4f20\u8fdc\u7aef\u5b58\u50a8</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0a\u4f20 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> \u4e2a\uff1b\u5b9e\u9645 PUT \u5168\u5c40\u95f4\u9694 <strong>' + escapeHtml(c.uploadFileIntervalSeconds || 0) + ' \u79d2</strong>\uff1b\u76ee\u6807\u8def\u5f84\u662f <code>' + escapeHtml(c.alistDest) + '</code>\uff0c\u76ee\u5f55\u7ed3\u6784\u662f <strong>' + escapeHtml(layoutText) + '</strong>\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u72b6\u6001\u5bf9\u8d26</div><div class="desc">\u8fdc\u7aef\u5b58\u50a8\u5bf9\u8d26\u5e76\u53d1 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>\uff0c\u9650\u901f <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' \u6b21/\u79d2</strong>\uff0c\u6bcf\u8f6e\u6700\u591a\u8865\u4f20 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> \u4e2a\u7f3a\u5931\u89c6\u9891\u3002</div></div>' +
         '</div>' +
         '<div class="effect-groups">' +
-          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\u3001AList \u6587\u4ef6\u4e0a\u4f20\u95f4\u9694\u3001\u672c\u5730\u7f13\u5b58\u8f6f\u4e0a\u9650\uff1b\u753b\u8d28\u91cd\u8c03\u7684\u4e0b\u8f7d\u9636\u6bb5\u5171\u4eab\u4e0b\u8f7d\u961f\u5217\uff0c\u4e0a\u4f20\u66ff\u6362\u9636\u6bb5\u5171\u4eab\u4e0a\u4f20\u961f\u5217\u3002</div></div>' +
-          '<div class="effect-group"><strong>\u65b0\u4efb\u52a1\u751f\u6548</strong><div>\u753b\u8d28\u3001\u7f16\u7801\u3001Hi-Res / Dolby\u3001\u547d\u540d\u6a21\u677f\u3001AList \u8def\u5f84\u3001\u4e0a\u4f20\u76ee\u5f55\u7ed3\u6784\u3001\u5931\u8d25\u91cd\u8bd5\u6b21\u6570\u3001\u91cd\u8bd5\u95f4\u9694\u3002</div></div>' +
-          '<div class="effect-group"><strong>\u5bf9\u8d26\u65f6\u751f\u6548</strong><div>AList \u5bf9\u8d26\u5e76\u53d1\u6570\u3001AList \u5bf9\u8d26\u9650\u901f\u3001\u6bcf\u8f6e\u6700\u591a\u8865\u4f20\u6570\u91cf\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u7acb\u5373\u751f\u6548</strong><div>\u8f6e\u8be2\u95f4\u9694\u3001\u540c\u65f6\u4e0b\u8f7d\u5e76\u53d1\u6570\u3001\u540c\u65f6\u4e0a\u4f20\u5e76\u53d1\u6570\u3001\u8fdc\u7aef\u6587\u4ef6\u4e0a\u4f20\u95f4\u9694\u3001\u672c\u5730\u7f13\u5b58\u8f6f\u4e0a\u9650\uff1b\u753b\u8d28\u91cd\u8c03\u7684\u4e0b\u8f7d\u9636\u6bb5\u5171\u4eab\u4e0b\u8f7d\u961f\u5217\uff0c\u4e0a\u4f20\u66ff\u6362\u9636\u6bb5\u5171\u4eab\u4e0a\u4f20\u961f\u5217\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u65b0\u4efb\u52a1\u751f\u6548</strong><div>\u753b\u8d28\u3001\u7f16\u7801\u3001Hi-Res / Dolby\u3001\u547d\u540d\u6a21\u677f\u3001\u8fdc\u7aef\u8def\u5f84\u3001\u4e0a\u4f20\u76ee\u5f55\u7ed3\u6784\u3001\u5931\u8d25\u91cd\u8bd5\u6b21\u6570\u3001\u91cd\u8bd5\u95f4\u9694\u3002</div></div>' +
+          '<div class="effect-group"><strong>\u5bf9\u8d26\u65f6\u751f\u6548</strong><div>\u8fdc\u7aef\u5b58\u50a8\u5bf9\u8d26\u5e76\u53d1\u6570\u3001\u5bf9\u8d26\u9650\u901f\u3001\u6bcf\u8f6e\u6700\u591a\u8865\u4f20\u6570\u91cf\u3002</div></div>' +
         '</div>' +
-        '<p class="muted help-note">\u4fee\u6539 AList \u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002AList \u5bf9\u8d26\u9ad8\u5e76\u53d1/\u9ad8\u9650\u901f\u4f1a\u589e\u52a0 AList \u4e0e\u7f51\u76d8\u540e\u7aef\u538b\u529b\uff0c\u5efa\u8bae\u9010\u6b65\u8c03\u9ad8\u3002</p>';
+        '<p class="muted help-note">\u4fee\u6539\u8fdc\u7aef\u8def\u5f84\u6216\u76ee\u5f55\u7ed3\u6784\u4e0d\u4f1a\u642c\u52a8\u65e7\u6587\u4ef6\uff1b\u547d\u540d\u6a21\u677f\u53ea\u5f71\u54cd\u65b0\u4e0b\u8f7d\uff0c\u65e7\u6587\u4ef6\u8bf7\u901a\u8fc7\u201c\u68c0\u67e5\u65e7\u547d\u540d\u6587\u4ef6\u201d\u9884\u89c8\u540e\u518d\u786e\u8ba4\u91cd\u547d\u540d\u3002\u8fdc\u7aef\u5bf9\u8d26\u9ad8\u5e76\u53d1/\u9ad8\u9650\u901f\u4f1a\u589e\u52a0\u540e\u7aef\u538b\u529b\uff0c\u5efa\u8bae\u9010\u6b65\u8c03\u9ad8\u3002</p>';
     }
 
     function openSettingsHelp() {
@@ -2121,7 +2121,7 @@ function getAppScript() {
       backups: '清掉导入前自动保存的本地备份包。导入回滚余地会少一点。',
       state: '清掉备份状态、收藏夹索引、远端文件记录和重试记录。项目会忘记自己备份过什么。',
       users: '清掉 B 站账号登录信息。下次需要重新扫码登录。',
-      config: '清掉全局配置。AList 地址、画质、并发等会回到默认值。',
+      config: '清掉全局配置。远端存储地址、画质、并发等会回到默认值。',
     };
 
     function cleanupRequiredConfirmation(selected) {
@@ -2552,7 +2552,7 @@ function getAppScript() {
       const resultBlock = document.getElementById('renameResultBlock');
       btn.textContent = '检查中...';
       st.textContent = '';
-      summary.textContent = '正在扫描 AList 远端文件...';
+      summary.textContent = '正在扫描 AList / OpenList 远端文件...';
       list.innerHTML = '';
       setHidden(resultBlock, true);
       try {
@@ -2646,7 +2646,7 @@ function getAppScript() {
       const confirmed = await confirmAction({
         title: '确认远端重命名',
         message: '将重命名 ' + selected.length + ' 个远端文件。',
-        detail: '此操作会修改 AList 网盘文件名。建议确认预览列表无误后再继续。',
+        detail: '此操作会修改 AList / OpenList 网盘文件名。建议确认预览列表无误后再继续。',
         confirmText: '确认重命名',
         trigger: document.getElementById('executeRenameBtn')
       });
@@ -5254,7 +5254,7 @@ function getAppScript() {
         link.href = alistUrl;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = '在 AList 中查看 ↗';
+        link.textContent = '在网盘中查看 ↗';
         nowMeta.appendChild(link);
       }
       const immersiveAlist = document.getElementById('playbackImmersiveAlistLink');
@@ -5615,7 +5615,7 @@ function getAppScript() {
             showFinalPlaybackError(
               actualHevc ? '当前浏览器无法解码HEVC' : '此旧归档可能使用HEVC',
               actualHevc
-                ? '请使用支持HEVC的Edge、Safari、系统浏览器或AList客户端。本项目不会转码视频。'
+                ? '请使用支持HEVC的Edge、Safari、系统浏览器或远端存储客户端。本项目不会转码视频。'
                 : '该文件的下载目标为HEVC，但旧记录尚无实际编码。当前浏览器未报告HEVC支持，切换代理也不会改变编码。',
               attemptId,
               token
@@ -6629,7 +6629,7 @@ function getAppScript() {
       }
       const retryText = uploadHealth.retryAt ? formatDateTime(uploadHealth.retryAt) : '等待调度';
       const modeText = uploadHealth.state === 'half_open' ? '正在进行单任务探测' : '将在 ' + retryText + ' 探测恢复';
-      el.textContent = '上传后端异常，下载已暂停：' + (uploadHealth.reason || 'AList 上传暂不可用') + '；' + modeText + '。本地文件已保留为“待补传”。';
+      el.textContent = '上传后端异常，下载已暂停：' + (uploadHealth.reason || 'AList / OpenList 上传暂不可用') + '；' + modeText + '。本地文件已保留为“待补传”。';
     }
 
     function renderDownloadApiHealthStatus(parent, downloadApiHealth) {
@@ -7290,7 +7290,7 @@ function getAppScript() {
     });
 
     document.getElementById('syncNowBtn').textContent = '\u7acb\u5373\u540c\u6b65';
-    document.getElementById('reconcileRemoteBtn').textContent = '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5AList\uff09';
+    document.getElementById('reconcileRemoteBtn').textContent = '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5\u8fdc\u7aef\u5b58\u50a8\uff09';
     document.getElementById('reconcileBtn').textContent = '\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26';
 
     document.getElementById('syncNowBtn').addEventListener('click', async () => {
@@ -7308,7 +7308,7 @@ function getAppScript() {
     });
     document.getElementById('reconcileRemoteBtn').addEventListener('click', async () => {
       const btn = document.getElementById('reconcileRemoteBtn');
-      const defaultText = btn.dataset.defaultText || btn.textContent || '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5AList\uff09';
+      const defaultText = btn.dataset.defaultText || btn.textContent || '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5\u8fdc\u7aef\u5b58\u50a8\uff09';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u5bf9\u8d26\u4e2d...';
       try {

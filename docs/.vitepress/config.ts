@@ -10,7 +10,7 @@ export default defineConfig({
   lang: "zh-CN",
   title: "Bili-favorites-backup",
   titleTemplate: ":title | BFB 文档",
-  description: "把B站收藏夹持续归档到AList云盘，并确认远端文件真的存在。",
+  description: "把B站收藏夹持续归档到AList或OpenList云盘，并确认远端文件真的存在。",
   base: siteBase,
   cleanUrls: true,
   lastUpdated: true,
@@ -23,7 +23,7 @@ export default defineConfig({
     ["meta", { name: "theme-color", content: "#3451b2" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:title", content: "Bili-favorites-backup 文档" }],
-    ["meta", { property: "og:description", content: "面向AList云盘的B站收藏夹持续备份系统" }],
+    ["meta", { property: "og:description", content: "面向AList或OpenList云盘的B站收藏夹持续备份系统" }],
   ],
   vite: {
     plugins: [
@@ -49,7 +49,7 @@ export default defineConfig({
     nav: [
       { text: "首页", link: "/" },
       { text: "快速开始", link: "/guide/introduction" },
-      { text: "连接AList", link: "/alist/overview" },
+      { text: "连接 AList / OpenList", link: "/alist/overview" },
       { text: "功能演示", link: "/features/workflow" },
       { text: "日常维护", link: "/operations/update" },
       { text: "问题排查", link: "/troubleshooting/docker-hub" },
@@ -68,11 +68,12 @@ export default defineConfig({
           ],
         },
         {
-          text: "02 连接 AList",
+          text: "02 连接 AList / OpenList",
           items: [
             { text: "选择接入方式", link: "/alist/overview" },
             { text: "使用内置 AList", link: "/alist/built-in" },
             { text: "接入已有 AList", link: "/alist/existing" },
+            { text: "接入 OpenList", link: "/alist/openlist" },
             { text: "添加网盘与 WebDAV 路径", link: "/alist/storage" },
             { text: "升级与备份 AList", link: "/alist/upgrade" },
           ],

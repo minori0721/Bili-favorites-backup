@@ -1,9 +1,9 @@
 # 用户视角架构
 
-BFB把B站、下载器、本地恢复区和AList连接成一条可观察、可中断恢复的链路。
+BFB把B站、下载器、本地恢复区和 AList / OpenList WebDAV 连接成一条可观察、可中断恢复的链路。
 
 <div class="workflow-line">
-  <span>B站账号与收藏夹</span><i>→</i><span>BFB调度器</span><i>→</i><span>BBDown / aria2 / FFmpeg</span><i>→</i><span>本地会话</span><i>→</i><span>AList WebDAV</span><i>→</i><span>网盘</span>
+  <span>B站账号与收藏夹</span><i>→</i><span>BFB调度器</span><i>→</i><span>BBDown / aria2 / FFmpeg</span><i>→</i><span>本地会话</span><i>→</i><span>AList / OpenList WebDAV</span><i>→</i><span>网盘</span>
 </div>
 
 ## 持久化边界
@@ -17,13 +17,13 @@ BFB把B站、下载器、本地恢复区和AList连接成一条可观察、可�
 
 SQLite回答“下一项工作是什么”，会话文件回答“这个BV在磁盘上已经完成了什么”。把两者分开后，调度任务可以用事务和租约恢复，媒体文件也能在BBDown进程中断后按CID重新核对。
 
-归档库同样直接查询SQLite，但不把全库装进运行时缓存：先按查询上下文和BVID选出最多50个分页键，再批量加载本页关系、视频与远端证明。浏览、搜索和翻页不会触发B站请求或AList目录扫描。
+归档库同样直接查询SQLite，但不把全库装进运行时缓存：先按查询上下文和BVID选出最多50个分页键，再批量加载本页关系、视频与远端证明。浏览、搜索和翻页不会触发B站请求或 AList / OpenList 目录扫描。
 
 归档删除复用持久任务、租约和心跳，但逐文件清单单独存入SQLite，不塞进任务JSON或进程内存。预览按规范远端路径折叠全局证明和收藏来源证明；执行前先完成全部HEAD预检，再逐文件DELETE并确认不可见。共享路径只清除目标来源证明，只有最后一个来源删除后才清理全局兼容证明。
 
 ## 上传为什么分两步
 
-AList接受PUT不代表网盘立即能列出文件。`remote_files`逐目标、逐文件保存预期路径、大小与确认状态；只有远端同名同大小文件可见，才允许清理本地成品。
+AList / OpenList 接受 PUT 不代表网盘立即能列出文件。`remote_files`逐目标、逐文件保存预期路径、大小与确认状态；只有远端同名同大小文件可见，才允许清理本地成品。部分驱动可能在实际写入后返回405，BFB会再次读取精确路径，只有大小一致才确认上传。
 
 ## 关闭与崩溃
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { StateDatabase } from "../src/database.js";
-import { PathMigrationService, validateArchiveMigrationRoots, type PathMigrationDavClient } from "../src/path-migration.js";
+import { PathMigrationService, probePathMigrationDavCapabilities, validateArchiveMigrationRoots, type PathMigrationDavClient } from "../src/path-migration.js";
 
 function fakeConfig(overrides: Record<string, unknown> = {}) {
   return {
@@ -16,6 +16,10 @@ function fakeConfig(overrides: Record<string, unknown> = {}) {
 class FakeDav implements PathMigrationDavClient {
   files = new Map<string, { type: "file" | "directory"; size?: number }>();
   copies: Array<[string, string]> = [];
+  moves: Array<[string, string]> = [];
+  copySupported = true;
+  moveSupported = true;
+  put405AfterWrite = false;
   constructor() {
     this.files.set("/drive", { type: "directory" });
     this.files.set("/drive/old", { type: "directory" });
@@ -37,14 +41,31 @@ class FakeDav implements PathMigrationDavClient {
     if (parent !== "/" && !this.files.has(parent)) throw Object.assign(new Error("parent missing"), { status: 409 });
     this.files.set(directory, { type: "directory" });
   }
+  async putFileContents(target: string, data: string | Buffer) {
+    const parent = target.slice(0, target.lastIndexOf("/")) || "/";
+    if (parent !== "/" && !this.files.has(parent)) throw Object.assign(new Error("parent missing"), { status: 409 });
+    const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    this.files.set(target, { type: "file", size: body.length });
+    if (this.put405AfterWrite) throw Object.assign(new Error("Method Not Allowed"), { status: 405 });
+  }
   async copyFile(source: string, destination: string) {
+    if (!this.copySupported) throw Object.assign(new Error("COPY not supported"), { status: 500 });
     const sourceStat = this.files.get(source);
     if (!sourceStat) throw Object.assign(new Error("not found"), { status: 404 });
     if (this.files.has(destination)) throw Object.assign(new Error("conflict"), { status: 409 });
     const parent = destination.slice(0, destination.lastIndexOf("/")) || "/";
     if (parent !== "/" && !this.files.has(parent)) throw Object.assign(new Error("parent missing"), { status: 409 });
     this.files.set(destination, { ...sourceStat });
-    this.copies.push([source, destination]);
+    if (!source.includes("._bfb-webdav-probe-")) this.copies.push([source, destination]);
+  }
+  async moveFile(source: string, destination: string) {
+    if (!this.moveSupported) throw Object.assign(new Error("MOVE not supported"), { status: 500 });
+    const sourceStat = this.files.get(source);
+    if (!sourceStat) throw Object.assign(new Error("not found"), { status: 404 });
+    if (this.files.has(destination)) throw Object.assign(new Error("conflict"), { status: 409 });
+    this.files.set(destination, { ...sourceStat });
+    this.files.delete(source);
+    if (!source.includes("._bfb-webdav-probe-")) this.moves.push([source, destination]);
   }
   async stat(target: string) {
     const stat = this.files.get(target);
@@ -75,8 +96,46 @@ async function waitFor(service: PathMigrationService, predicate: (state: any) =>
 test("path migration validates mount boundaries and nesting", () => {
   assert.deepEqual(validateArchiveMigrationRoots("/drive/old", "/drive/new"), { source: "/drive/old", destination: "/drive/new" });
   assert.throws(() => validateArchiveMigrationRoots("/drive/old", "/drive/old/sub"), /嵌套/);
-  assert.throws(() => validateArchiveMigrationRoots("/drive/old", "/other/new"), /同一AList挂载/);
+  assert.throws(() => validateArchiveMigrationRoots("/drive/old", "/other/new"), /同一 .*挂载/);
   assert.throws(() => validateArchiveMigrationRoots("relative", "/drive/new"), /绝对路径/);
+});
+
+test("path migration capability probe tests COPY and MOVE independently", async () => {
+  const dav = new FakeDav();
+  const capabilities = await probePathMigrationDavCapabilities(dav, "/drive/old");
+  assert.deepEqual(capabilities, { copy: true, move: true });
+  assert.equal([...dav.files.keys()].some((name) => name.includes("._bfb-webdav-probe-")), false);
+
+  dav.put405AfterWrite = true;
+  assert.deepEqual(await probePathMigrationDavCapabilities(dav, "/drive/old"), { copy: true, move: true });
+  assert.equal([...dav.files.keys()].some((name) => name.includes("._bfb-webdav-probe-")), false);
+
+  dav.copySupported = false;
+  dav.moveSupported = true;
+  assert.deepEqual(await probePathMigrationDavCapabilities(dav, "/drive/old"), { copy: false, move: true });
+  assert.equal([...dav.files.keys()].some((name) => name.includes("._bfb-webdav-probe-")), false);
+});
+
+test("path migration blocks before copying when COPY is unavailable", async () => {
+  const db = new StateDatabase(":memory:");
+  const config = fakeConfig();
+  const dav = new FakeDav();
+  dav.copySupported = false;
+  const service = new PathMigrationService(db, fakeStore(config), {
+    clientFactory: () => dav,
+    isSchedulerIdle: () => true,
+    sleep: async () => undefined,
+  });
+  const preview = await service.preview("/drive/new");
+  await waitFor(service, (state) => state.status === "ready");
+  await assert.rejects(() => service.start(preview.id), (error: any) => {
+    assert.equal(error.statusCode, 409);
+    assert.match(error.message, /不支持 WebDAV COPY/);
+    return true;
+  });
+  assert.equal(dav.copies.length, 0);
+  assert.equal(config.alistDest, "/drive/old");
+  db.close();
 });
 
 test("path migration copies the complete tree, switches state, and keeps the old root", async () => {

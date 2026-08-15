@@ -15,7 +15,7 @@ docker compose logs --tail=100 app
 
 - `data/`、`temp/`和内置AList的`alist/`确实挂载到宿主机。
 - 阅读[版本与升级记录](../reference/releases)中的迁移说明。
-- 涉及AList版本变化时，先备份`alist/`并阅读[AList升级](../alist/upgrade)。
+- 涉及 AList / OpenList 版本变化时，先备份对应数据目录并阅读[AList / OpenList升级](../alist/upgrade)。
 - 大版本回滚前先导出旧镜像可读取的JSON快照。
 - 当前dev代码会把schema 7数据库升级到schema 8，并在同一事务中构建全局与账号归档投影。1万个唯一BV、5万条关系的测试库本地约需21秒；实际时间取决于存储和库规模，启动期间服务尚不可用。回滚到已发布`v2.4.6`或其他只支持schema 7及更早版本的镜像时，先恢复`data/backups`中的对应升级前SQLite备份，不能让旧镜像直接打开schema 8数据库。
 - 真实升级时，容器日志会显示源schema、目标schema、开始、完成或失败以及总耗时；普通启动不会重复输出迁移日志。失败日志只说明没有提交数据库变更，不包含数据库路径、备份文件名、SQL正文或业务数据。
@@ -28,6 +28,6 @@ docker compose logs --tail=100 app
 3. SQLite完整启动，持久任务和冷却恢复。
 4. schema 8升级日志显示归档投影构建完成，归档库全局、账号和收藏夹目录均可正常翻页。
 5. 队列没有同一BV的立即失败循环。
-6. AList上传与远端确认正常。
+6. AList / OpenList 上传与远端确认正常。
 
 拉取失败不会替换当前运行容器；看到旧容器仍在运行并不代表更新成功。

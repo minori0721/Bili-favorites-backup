@@ -1,6 +1,6 @@
 # 5分钟 Docker 部署
 
-下面的Compose同时运行BFB和固定版本AList。先创建空目录，在其中保存`docker-compose.yml`：
+下面的 Compose 同时运行 BFB 和固定版本 AList。先创建空目录，在其中保存`docker-compose.yml`。这份内置示例仍使用 AList；如果你已经运行 OpenList，请只部署 `app` 服务，再按[接入 OpenList](../alist/openlist)填写 WebDAV 地址和权限。
 
 ```yaml
 services:

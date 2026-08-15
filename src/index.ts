@@ -824,7 +824,7 @@ app.put("/api/config", (req, res) => {
     return req.body[key] !== previous[key];
   });
   if (protectedChanged) {
-    res.status(409).json({ success: false, code: "PATH_MIGRATION_ACTIVE", message: "归档路径迁移期间不能修改 AList 连接、路径或目录结构" });
+    res.status(409).json({ success: false, code: "PATH_MIGRATION_ACTIVE", message: "归档路径迁移期间不能修改 AList / OpenList 连接、路径或目录结构" });
     return;
   }
   const archiveDeletionProtectedChanged = activeArchiveDeletion && protectedAlistKeys.some((key) => {
@@ -835,7 +835,7 @@ app.put("/api/config", (req, res) => {
     return req.body[key] !== previous[key];
   });
   if (archiveDeletionProtectedChanged) {
-    res.status(409).json({ success: false, code: "ARCHIVE_DELETION_ACTIVE", message: "归档清理期间不能修改 AList 连接、路径或目录结构" });
+    res.status(409).json({ success: false, code: "ARCHIVE_DELETION_ACTIVE", message: "归档清理期间不能修改 AList / OpenList 连接、路径或目录结构" });
     return;
   }
   if (Object.prototype.hasOwnProperty.call(req.body, "alistDest")
@@ -2338,7 +2338,7 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
 
   for (const file of scanned.files) {
     if (!isRemotePathUnder(root, file.path)) {
-      skipped.push({ path: file.path, reason: "路径不在当前 AList 目标路径下" });
+        skipped.push({ path: file.path, reason: "路径不在当前 AList / OpenList 目标路径下" });
       continue;
     }
     const bvid = extractBvid(file.name);

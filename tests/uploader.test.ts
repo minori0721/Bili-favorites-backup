@@ -38,6 +38,7 @@ async function startWebDavServer(options: {
   rejectFourByteNames?: boolean;
   remoteSizeOffset?: number;
   putStatus?: 201 | 204;
+  writeBeforePutFailure?: boolean;
   visibilityDelayPropfinds?: number;
   existingFiles?: Record<string, Buffer>;
 } = {}) {
@@ -94,6 +95,7 @@ async function startWebDavServer(options: {
         return;
       }
       if (options.failPutName && requestPath.endsWith(`/${options.failPutName}`)) {
+        if (options.writeBeforePutFailure) files.set(requestPath, body);
         res.statusCode = options.failPutStatus || 405;
         res.end("Method Not Allowed");
         return;
@@ -349,6 +351,85 @@ test("a 405 on the first upload file remains deterministic", async () => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure.category, "deterministic");
         assert.equal(error.uploadSessionTransient, undefined);
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 after the remote driver writes the file is accepted after exact verification", async () => {
+  const runtime = await createTestDir("upload-405-written");
+  const server = await startWebDavServer({
+    failPutName: "p01.mp4",
+    failPutStatus: 405,
+    writeBeforePutFailure: true,
+  });
+  try {
+    const body = "written-before-405";
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), body);
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: ["p01.mp4"],
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, true);
+    assert.equal(result.files[0].verificationStatus, "verified");
+    assert.equal(server.files.get("/dav/target/p01.mp4")?.toString(), body);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 with a missing remote file remains a failure", async () => {
+  const runtime = await createTestDir("upload-405-missing");
+  const server = await startWebDavServer({ failPutName: "p01.mp4", failPutStatus: 405 });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "missing-after-405");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure.status, 405);
+        assert.equal(error.uploadFailure.category, "deterministic");
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 with a different remote size is reported as a conflict", async () => {
+  const runtime = await createTestDir("upload-405-mismatch");
+  const server = await startWebDavServer({
+    failPutName: "p01.mp4",
+    failPutStatus: 405,
+    writeBeforePutFailure: true,
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "remote-size-conflict");
+    server.files.set("/dav/target/p01.mp4", Buffer.from("different"));
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure.status, 409);
         return true;
       }
     );

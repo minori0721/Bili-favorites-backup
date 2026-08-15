@@ -9,8 +9,8 @@
 ## 登录后先检查
 
 1. 顶部版本应显示类似`v2.4.6 · main@abcdef0`，点击可打开对应GitHub提交。
-2. 打开“全局设置”，确认AList内部通信地址为`http://alist:5244`。
-3. 修改AList用户名、密码和目标目录，使其与AList实际配置一致。
+2. 打开“全局设置”，确认远端内部通信地址为 `http://alist:5244` 或 `http://openlist:5244`。
+3. 修改远端 WebDAV 用户名、密码和目标目录，使其与 AList / OpenList 实际配置一致。
 4. 下载并发建议先保持`1`，上传并发默认`2`。
 
 ## HTTPS与Secure Cookie

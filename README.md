@@ -1,21 +1,21 @@
 # Bili-favorites-backup
 
-> 把B站收藏夹持续归档到AList云盘，并确认远端文件真的存在。
+> 把B站收藏夹持续归档到AList或OpenList云盘，并确认远端文件真的存在。
 
 [完整文档](https://minori0721.github.io/Bili-favorites-backup/) · [5分钟部署](https://minori0721.github.io/Bili-favorites-backup/guide/docker) · [问题排查](https://minori0721.github.io/Bili-favorites-backup/troubleshooting/docker-hub) · [版本记录](CHANGELOG.md)
 
 ![Bili-favorites-backup主界面](docs/public/screenshots/dashboard-desktop.png)
 
-BFB是一个面向云盘归档的B站收藏夹持续备份系统：定时扫描多个账号的收藏夹，使用固定版本BBDown与aria2下载，通过AList WebDAV上传到国内网盘，并在远端文件同名同大小可见后才确认备份完成。
+BFB是一个面向云盘归档的B站收藏夹持续备份系统：定时扫描多个账号的收藏夹，使用固定版本BBDown与aria2下载，通过 AList 或 OpenList WebDAV 上传到国内网盘，并在远端文件同名同大小可见后才确认备份完成。
 
 ## 核心能力
 
-- **云盘归档**：支持多B站账号、多收藏夹和多个AList目标，按关系分别保存远端备份证明。
+- **云盘归档**：支持多B站账号、多收藏夹和多个 AList / OpenList WebDAV 目标，按关系分别保存远端备份证明。
 - **持久恢复**：SQLite任务队列、任务租约、aria2控制文件和分P CID会话共同支持容器重启恢复。
 - **可靠上传**：PUT成功后进入“已上传·确认中”，远端最终确认前保留本地成品；同名异大小旧版归档到`_history`。
-- **本地归档库**：从账号与同步区域打开全屏媒体库，按全部账号、单账号、当前收藏夹、已停用收藏夹或已移除账号浏览SQLite索引；支持状态筛选、标题排序、跨账号搜索、连续播放和按来源安全清理归档，浏览过程不请求B站或扫描AList目录。
-- **归档播放**：在收藏夹详情中直接播放远端已验证的MP4、M4V和WebM；优先使用网盘临时直链并自动回退BFB代理，显示本次真实传输方式和实际媒体画质，并可跳转到对应AList文件。
-- **风险控制**：Web/APP播放接口可选，B站`v_voucher`触发固定3分钟冷却与单任务探测，AList异常会暂停新下载。
+- **本地归档库**：从账号与同步区域打开全屏媒体库，按全部账号、单账号、当前收藏夹、已停用收藏夹或已移除账号浏览SQLite索引；支持状态筛选、标题排序、跨账号搜索、连续播放和按来源安全清理归档，浏览过程不请求B站或扫描 AList / OpenList 目录。
+- **归档播放**：在收藏夹详情中直接播放远端已验证的MP4、M4V和WebM；优先使用网盘临时直链并自动回退BFB代理，显示本次真实传输方式和实际媒体画质，并可跳转到对应 AList / OpenList 文件。
+- **风险控制**：Web/APP播放接口可选，B站`v_voucher`触发固定3分钟冷却与单任务探测，远端 WebDAV 异常会暂停新下载。
 - **长期维护**：充电视频七日权限复查、下架与部分备份、分P历史归档、画质共享下载、迁移包和远端对账。
 
 ## Docker部署
@@ -75,7 +75,9 @@ docker compose up -d
 - BFB面板：`http://localhost:3000`
 - 内置AList：`http://localhost:5244`
 
-已有AList时可只部署`app`服务，并在BFB设置中填写AList可达地址、WebDAV账号和目标目录。详细步骤见[连接AList](https://minori0721.github.io/Bili-favorites-backup/alist/overview)。
+已有 AList 或 OpenList 时可只部署 `app` 服务，并在 BFB 设置中填写对应 WebDAV 可达地址、账号和目标目录。详细步骤见[连接 AList / OpenList](https://minori0721.github.io/Bili-favorites-backup/alist/overview)；OpenList 专项说明见[接入 OpenList](https://minori0721.github.io/Bili-favorites-backup/alist/openlist)。
+
+外接 OpenList 时，内部通信地址填写 WebDAV 基础地址，例如 `http://openlist:5244`；BFB 会自动访问其 `/dav`，不要重复填写 `/dav/dav`。播放器网页访问地址单独填写，可使用反向代理基础路径。
 
 ## 数据与升级
 
@@ -85,7 +87,7 @@ docker compose up -d
 
 从`v2.4.3`及更早版本直接更新到`v2.4.6`后需要重新登录一次；之后可在登录页选择固定保持30天。从`v2.4.4`或`v2.4.5`更新不会因本次升级主动撤销现有管理员会话。
 
-已有远端归档时，设置页不能直接改`alistDest`。请使用“迁移归档路径”：它只支持同一AList挂载存储，先扫描预览，再用WebDAV COPY复制并确认整个旧目录，最后切换配置。新旧目录不会混用，旧目录默认保留，确认无误后还需手动输入`DELETE OLD ARCHIVE`才能清理。
+已有远端归档时，设置页不能直接改`alistDest`。请使用“迁移归档路径”：它支持同一 AList / OpenList 挂载存储，开始前会探测 WebDAV COPY/MOVE，随后扫描预览，再用 COPY 复制并确认整个旧目录，最后切换配置。COPY 不支持时会在实际复制前阻止迁移；新旧目录不会混用，旧目录默认保留，确认无误后还需手动输入`DELETE OLD ARCHIVE`才能清理。
 
 ```bash
 docker compose pull
@@ -97,7 +99,7 @@ docker compose logs --tail=100 app
 
 ## 安全提示
 
-- 立即修改`ADMIN_PASS`、`SESSION_SECRET`和AList管理员密码。
+- 立即修改`ADMIN_PASS`、`SESSION_SECRET`和内置 AList 管理员密码；外接 OpenList 的管理员密码由 OpenList 自己管理。
 - 不需要网页导出B站Cookie时保持`ALLOW_COOKIE_EXPORT=false`。
 - 仅在HTTPS反向代理下设置`COOKIE_SECURE=true`；纯HTTP开启后浏览器不会发送会话Cookie。
 - 管理员会话保存在`data/auth-sessions.sqlite`：普通登录使用浏览器会话Cookie且服务端最长保留24小时，登录页可主动选择固定保持30天；修改管理员账号、密码或`SESSION_SECRET`会使旧会话失效。
@@ -126,16 +128,18 @@ npm run build
 
 删除账号默认只移除登录信息，远端文件、SQLite证明、封面和播放能力都会保留，并在归档库的“已移除账号”目录继续可见；同一UID重新登录会恢复关联。危险选项“删除账号并清理远端归档”需要先预览并输入`DELETE REMOTE ARCHIVE`。归档库也可以在来源详情中删除历史关系、停用收藏夹或已移除账号的单个来源；当前仍同步的关系禁止删除。
 
-远端清理只处理SQLite已追踪、位于当前`alistDest`边界内且经HEAD重新确认类型和大小一致的文件。共享物理路径仍被其他来源引用时只解除目标证明；BFB永不对远端目录发送集合`DELETE`，因此未知文件不会被目录删除连带移除，清理后可能留下空目录供用户在AList中人工确认。任务开始后不可取消，重启会从最后确认项继续；失败后可直接重试，AList连接、路径或本地证明变化时应重新预览并再次确认。“已删除”筛选保留最小审计记录，普通列表、搜索和播放队列不会包含已删除来源。
+远端清理只处理SQLite已追踪、位于当前`alistDest`边界内且经HEAD重新确认类型和大小一致的文件。共享物理路径仍被其他来源引用时只解除目标证明；BFB永不对远端目录发送集合`DELETE`，因此未知文件不会被目录删除连带移除，清理后可能留下空目录供用户在 AList / OpenList 中人工确认。任务开始后不可取消，重启会从最后确认项继续；失败后可直接重试，远端连接、路径或本地证明变化时应重新预览并再次确认。“已删除”筛选保留最小审计记录，普通列表、搜索和播放队列不会包含已删除来源。
 
-归档播放器先由BFB校验登录和文件归属；AList提供合格的外部HTTPS临时直链时使用302让浏览器直连网盘，否则自动回退BFB流式代理。播放器会显示本次实际采用的传输方式。新下载会保存BBDown实际选中的B站档位，宽高、帧率和编码则来自ffprobe，例如`P1 · B站4K · 实际1772p · 1772×3840 竖屏 · HEVC · 网盘直连`。实际画质按真实短边显示，不会把`1772×3840`向下归入1440p或1080p；旧归档没有可靠的B站档位时直接省略该段，不根据尺寸猜测。
+归档播放器先由BFB校验登录和文件归属；AList / OpenList 提供合格的外部HTTPS临时直链时使用302让浏览器直连网盘，否则自动回退BFB流式代理。播放器会显示本次实际采用的传输方式。新下载会保存BBDown实际选中的B站档位，宽高、帧率和编码则来自ffprobe，例如`P1 · B站4K · 实际1772p · 1772×3840 竖屏 · HEVC · 网盘直连`。实际画质按真实短边显示，不会把`1772×3840`向下归入1440p或1080p；旧归档没有可靠的B站档位时直接省略该段，不根据尺寸猜测。
 
-如需“在 AList 中查看”，请在设置中单独填写AList网页访问地址；它与容器内部WebDAV通信地址分离，支持反向代理基础路径。直连能减少BFB服务器流量，但临时签名地址会在浏览器网络面板中可见。播放器不执行转码：网络错误最多自动切换BFB代理一次，解码错误不会切代理；实际或高度疑似HEVC且浏览器不支持时会直接给出兼容性提示。
+如需“在网盘中查看”，请在设置中单独填写 AList / OpenList 网页访问地址；它与容器内部 WebDAV 通信地址分离，支持反向代理基础路径。直连能减少BFB服务器流量，但临时签名地址会在浏览器网络面板中可见。播放器不执行转码：网络错误最多自动切换BFB代理一次，解码错误不会切代理；实际或高度疑似HEVC且浏览器不支持时会直接给出兼容性提示。
 
 ## 鸣谢
 
 - [BBDown](https://github.com/nilaoda/BBDown)
 - [AList](https://alist.nn.ci/)
+- [OpenList 文档](https://doc.oplist.org/)
+- [OpenList 项目](https://github.com/OpenListTeam/OpenList)
 - [Artplayer](https://artplayer.org/)
 - [biliAPI](https://github.com/renmu123/biliAPI)
 - [FFmpeg](https://ffmpeg.org/)

@@ -15,9 +15,16 @@ import { isRemoteNotFoundError } from "./uploader.js";
 export interface PathMigrationDavClient {
   getDirectoryContents(path: string): Promise<any>;
   createDirectory(path: string): Promise<any>;
+  putFileContents(path: string, data: string | Buffer, options?: Record<string, unknown>): Promise<any>;
   copyFile(source: string, destination: string, options?: Record<string, unknown>): Promise<any>;
+  moveFile(source: string, destination: string, options?: Record<string, unknown>): Promise<any>;
   stat(path: string): Promise<any>;
   deleteFile(path: string): Promise<any>;
+}
+
+export interface PathMigrationDavCapabilities {
+  copy: boolean;
+  move: boolean;
 }
 
 export interface PathMigrationOptions {
@@ -109,6 +116,73 @@ function pathSummary(record: PathMigrationRecord) {
   };
 }
 
+function isUnsupportedDavMethod(error: any) {
+  const status = statusCode(error);
+  return [405, 500, 501].includes(status)
+    || /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
+}
+
+async function deleteProbePath(client: PathMigrationDavClient, target: string) {
+  try {
+    await client.deleteFile(target);
+  } catch (error) {
+    if (!isRemoteNotFoundError(error)) throw error;
+  }
+}
+
+async function putProbeFile(client: PathMigrationDavClient, target: string, body: Buffer) {
+  try {
+    await client.putFileContents(target, body, {
+      contentLength: body.length,
+      overwrite: false,
+      headers: { "Content-Length": String(body.length), "Content-Type": "application/octet-stream" },
+    });
+  } catch (error) {
+    if (statusCode(error) !== 405) throw error;
+    const stat = await client.stat(target);
+    if (Number(stat?.size) !== body.length) throw error;
+  }
+}
+
+export async function probePathMigrationDavCapabilities(
+  client: PathMigrationDavClient,
+  rootValue: string
+): Promise<PathMigrationDavCapabilities> {
+  const root = normalizeRoot(rootValue);
+  const probeRoot = joinRemote(root, `._bfb-webdav-probe-${crypto.randomUUID()}`);
+  const probeBody = Buffer.from("bfb-webdav-capability\n", "utf8");
+  const source = joinRemote(probeRoot, "source.bin");
+  const copyTarget = joinRemote(probeRoot, "copy.bin");
+  const moveSource = joinRemote(probeRoot, "move-source.bin");
+  const moveTarget = joinRemote(probeRoot, "move-target.bin");
+  let copy = false;
+  let move = false;
+  try {
+    await client.createDirectory(probeRoot);
+    await putProbeFile(client, source, probeBody);
+    try {
+      await client.copyFile(source, copyTarget, { overwrite: false });
+      copy = true;
+    } catch (error) {
+      if (!isUnsupportedDavMethod(error)) throw error;
+    }
+
+    await putProbeFile(client, moveSource, probeBody);
+    try {
+      await client.moveFile(moveSource, moveTarget, { overwrite: false });
+      move = true;
+    } catch (error) {
+      if (!isUnsupportedDavMethod(error)) throw error;
+    }
+    return { copy, move };
+  } finally {
+    for (const target of [source, copyTarget, moveSource, moveTarget]) {
+      await deleteProbePath(client, target);
+    }
+    await deleteProbePath(client, probeRoot);
+  }
+}
+
 export function validateArchiveMigrationRoots(sourceValue: string, destinationValue: string) {
   const source = normalizeRoot(sourceValue);
   const destination = normalizeRoot(destinationValue);
@@ -119,7 +193,7 @@ export function validateArchiveMigrationRoots(sourceValue: string, destinationVa
   const sourceMount = source.split("/").filter(Boolean)[0] || "";
   const destinationMount = destination.split("/").filter(Boolean)[0] || "";
   if (sourceMount !== destinationMount) {
-    throw new Error("只能在同一AList挂载存储内迁移归档路径");
+    throw new Error("只能在同一 AList / OpenList 挂载存储内迁移归档路径");
   }
   return { source, destination };
 }
@@ -255,7 +329,7 @@ export class PathMigrationService {
         if (allowMissing && isRemoteNotFoundError(error) && depth === 0) return;
         throw error;
       }
-      if (!Array.isArray(entries)) throw new Error("AList 返回了无效的目录清单");
+      if (!Array.isArray(entries)) throw new Error("远端存储返回了无效的目录清单");
       if (entries.length > MAX_ENTRIES) throw new Error(`远端目录条目超过安全上限 ${MAX_ENTRIES}`);
       entries.sort((left, right) => String(left?.filename || left?.path || left?.basename || "").localeCompare(String(right?.filename || right?.path || right?.basename || "")));
       for (const entry of entries) {
@@ -362,12 +436,19 @@ export class PathMigrationService {
     if (record.conflictCount > 0 || !this.isSchedulerIdle()) throw new Error("开始迁移前必须没有同步、下载、上传或远端确认任务");
     const config = this.configStore.get();
     if (identityHash(config) !== record.alistIdentityHash || normalizeRoot(config.alistDest) !== record.sourceRoot) {
-      throw new Error("AList身份或当前归档路径已变化，请重新预览");
+      throw new Error("AList / OpenList 身份或当前归档路径已变化，请重新预览");
     }
     this.starting = true;
     this.setMaintenance(true, pathSummary(record));
     try {
-      const manifest = await this.computeManifest(this.clientFactory(config), record.sourceRoot);
+      const client = this.clientFactory(config);
+      const capabilities = await probePathMigrationDavCapabilities(client, record.sourceRoot);
+      if (!capabilities.copy) {
+        throw migrationConflictError(
+          `当前远端存储不支持 WebDAV COPY，无法安全迁移归档路径${capabilities.move ? "（MOVE 可用）" : "（COPY 和 MOVE 均不可用）"}`
+        );
+      }
+      const manifest = await this.computeManifest(client, record.sourceRoot);
       const current = this.db.getPathMigration(record.id);
       if (!current || current.status !== "ready") {
         throw new Error("归档路径迁移已在开始前复核期间取消或改变状态");

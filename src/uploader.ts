@@ -252,6 +252,48 @@ async function inspectRemoteFile(client: WebDAVClient, remoteFile: string) {
   }
 }
 
+function uploadStatus(error: any) {
+  return Number(error?.status || error?.statusCode || error?.response?.status || 0);
+}
+
+async function verify405WrittenFile(
+  client: WebDAVClient,
+  remoteFile: string,
+  expectedSize: number,
+  delaysMs: number[]
+) {
+  let lastError: unknown;
+  for (const delayMs of delaysMs.length > 0 ? delaysMs : [0]) {
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      const remoteStat = await client.stat(remoteFile) as any;
+      const remoteSize = Number(remoteStat?.size);
+      const isDirectory = remoteStat?.type === "directory" || remoteStat?.isDirectory === true;
+      if (!isDirectory && Number.isFinite(remoteSize) && remoteSize === expectedSize) {
+        return "verified" as const;
+      }
+      const mismatch: any = new Error(
+        isDirectory
+          ? "Remote upload target is a directory"
+          : `Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(remoteSize) ? remoteSize : "unknown"}`
+      );
+      mismatch.status = 409;
+      throw mismatch;
+    } catch (error) {
+      if (isRemoteNotFoundError(error)) {
+        lastError = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+  const notVisible: any = new Error(
+    `Remote upload verification failed after 405 response: ${(lastError as Error)?.message || "file not visible"}`
+  );
+  notVisible.status = 405;
+  throw notVisible;
+}
+
 interface PreparedUploadEntry {
   relativePath: string;
   name: string;
@@ -317,11 +359,19 @@ async function putAndVerifyLocalFile(
   await beforePut?.();
   const fileStream = fs.createReadStream(localFile);
   try {
-    await client.putFileContents(remoteFile, fileStream as any, {
-      contentLength: false,
-      overwrite: true,
-      headers: buildUploadHeaders(localFile, stat),
-    });
+    try {
+      await client.putFileContents(remoteFile, fileStream as any, {
+        contentLength: false,
+        overwrite: true,
+        headers: buildUploadHeaders(localFile, stat),
+      });
+    } catch (error) {
+      // Some WebDAV drivers persist the PUT body and then incorrectly answer 405.
+      // Only accept that response after the exact target is independently verified.
+      if (uploadStatus(error) !== 405) throw error;
+      await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0]);
+      return { verificationStatus: "verified" as const, skippedUpload: false };
+    }
     try {
       await verifyUploadedFile(client, remoteFile, stat.size, verificationDelaysMs || [0]);
       return { verificationStatus: "verified" as const, skippedUpload: false };
@@ -347,7 +397,7 @@ function promoteProgressive405ToSessionFailure(error: UploadOperationError, comp
   info.category = "transient";
   info.retryable = true;
   info.code = "ALIST_UPLOAD_SESSION_AFTER_PROGRESS";
-  info.summary = `AList upload session failed after ${completedFiles}/${totalFiles} completed files: ${info.summary}`;
+  info.summary = `WebDAV upload session failed after ${completedFiles}/${totalFiles} completed files: ${info.summary}`;
   info.fingerprint = "transient|405|alist-upload-session-after-progress";
   error.message = info.summary;
   error.permanent = false;
@@ -430,7 +480,7 @@ export async function uploadWithAList(
           type: "upload",
           level: "warn",
           summary: `远端旧版已归档，共 ${archived.files.length} 个文件`,
-          raw: `[AList] Archived remote conflict set ${remotePath} -> ${archived.archivePath} files=${archived.files.length}`,
+          raw: `[WebDAV] Archived remote conflict set ${remotePath} -> ${archived.archivePath} files=${archived.files.length}`,
           simpleVisible: true,
         });
         await options.onConflictArchived?.(archived);
@@ -447,14 +497,14 @@ export async function uploadWithAList(
       const originalRemoteFile = entry.remoteFile;
       const stat = entry.stat;
       const sizeKB = (stat.size / 1024).toFixed(1);
-      console.log(`[AList] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`);
+      console.log(`[WebDAV] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`);
       
       logger.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "info",
         summary: `正在上传: ${entry.name} (${sizeKB} KB) → ${remotePath}`,
-        raw: `[AList] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`,
+        raw: `[WebDAV] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`,
         simpleVisible: true,
       });
 
@@ -471,13 +521,13 @@ export async function uploadWithAList(
         if (!compatibilityName) {
           promoteProgressive405ToSessionFailure(uploadError, uploadedFiles.length, preparedEntries.length);
           const info = uploadError.uploadFailure;
-          console.error(`[AList] Upload failed status=${info.status || "unknown"} category=${info.category} path=${originalRemoteFile}: ${info.summary}`);
+          console.error(`[WebDAV] Upload failed status=${info.status || "unknown"} category=${info.category} path=${originalRemoteFile}: ${info.summary}`);
           logger.push({
             timestamp: new Date().toISOString(),
             type: "upload",
             level: "error",
             summary: `上传失败: ${entry.name} - ${info.summary}`,
-            raw: `[AList] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${originalRemoteFile}: ${info.summary}`,
+            raw: `[WebDAV] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${originalRemoteFile}: ${info.summary}`,
             simpleVisible: true,
           });
           throw uploadError;
@@ -485,13 +535,13 @@ export async function uploadWithAList(
 
         uploadedName = compatibilityName;
         uploadedRemoteFile = remotePath.replace(/\/$/, "") + "/" + compatibilityName;
-        console.warn(`[AList] Retrying with compatible remote name ${entry.name} -> ${compatibilityName}`);
+        console.warn(`[WebDAV] Retrying with compatible remote name ${entry.name} -> ${compatibilityName}`);
         logger.push({
           timestamp: new Date().toISOString(),
           type: "upload",
           level: "warn",
           summary: `文件名兼容重试: ${entry.name} → ${compatibilityName}`,
-          raw: `[AList] Retrying with compatible remote name ${entry.name} -> ${compatibilityName}`,
+          raw: `[WebDAV] Retrying with compatible remote name ${entry.name} -> ${compatibilityName}`,
           simpleVisible: true,
         });
         try {
@@ -500,13 +550,13 @@ export async function uploadWithAList(
           const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
           promoteProgressive405ToSessionFailure(finalError, uploadedFiles.length, preparedEntries.length);
           const info = finalError.uploadFailure;
-          console.error(`[AList] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} path=${uploadedRemoteFile}: ${info.summary}`);
+          console.error(`[WebDAV] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} path=${uploadedRemoteFile}: ${info.summary}`);
           logger.push({
             timestamp: new Date().toISOString(),
             type: "upload",
             level: "error",
             summary: `兼容文件名上传失败: ${compatibilityName} - ${info.summary}`,
-            raw: `[AList] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${uploadedRemoteFile}: ${info.summary}`,
+            raw: `[WebDAV] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${uploadedRemoteFile}: ${info.summary}`,
             simpleVisible: true,
           });
           throw finalError;
@@ -525,8 +575,8 @@ export async function uploadWithAList(
             ? `远端文件已存在，跳过重复上传: ${entry.name}`
             : (uploadedName === entry.name ? `上传完成: ${entry.name}` : `上传完成: ${entry.name}（远端 ${uploadedName}）`)),
         raw: awaitingVerification
-          ? `[AList] PUT accepted; awaiting remote visibility for ${uploadedName}`
-          : `[AList] Upload verified for ${entry.name} as ${uploadedName}${transferResult.skippedUpload ? " (preflight)" : ""}`,
+          ? `[WebDAV] PUT accepted; awaiting remote visibility for ${uploadedName}`
+          : `[WebDAV] Upload verified for ${entry.name} as ${uploadedName}${transferResult.skippedUpload ? " (preflight)" : ""}`,
         simpleVisible: true,
       });
 
@@ -787,7 +837,7 @@ export async function batchRenameRemotePaths(
     if (!isRemotePathWithin(root, item.oldPath)
       || !isRemotePathWithin(root, item.newPath)
       || remoteDirname(item.oldPath) !== remoteDirname(item.newPath)) {
-      preflight.set(item, { status: "conflict", error: "重命名路径超出当前AList目标或跨目录" });
+      preflight.set(item, { status: "conflict", error: "重命名路径超出当前远端存储目标或跨目录" });
       continue;
     }
     if (duplicateTargets.has(item.newPath)) {
