@@ -42,6 +42,8 @@ export interface QueueBoardItem {
   startedAt?: number;
   retryAt?: number;
   sequence?: number;
+  awaitingManualRecovery?: boolean;
+  recoveryJobId?: string;
   stage: QueueBoardStage;
 }
 

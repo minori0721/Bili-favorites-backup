@@ -105,7 +105,7 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /class="header-actions"/);
   assert.match(appHtml, /setInterval\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, 1000\)/);
   assert.match(appHtml, /visibilitychange/);
-  assert.match(appHtml, /if \(document\.hidden\) stopQueueBoardPolling\(\)/);
+  assert.match(appHtml, /if \(document\.hidden\) \{[\s\S]*?stopQueueBoardPolling\(\);[\s\S]*?stopRecoveryIssuePolling\(\);[\s\S]*?\}/);
   assert.match(appHtml, /id="playbackModal"/);
   assert.match(appHtml, /id="archiveLibraryBtn"/);
   assert.match(appHtml, /id="archiveLibraryModal"/);
@@ -174,7 +174,12 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /window\.matchMedia\('\(orientation: portrait\)'\)/);
   assert.match(appHtml, /delete queueHost\.dataset\.queueView/);
   assert.doesNotMatch(appHtml, /screen\.orientation\.lock/);
-  assert.doesNotMatch(appHtml, /scrollIntoView/);
+  const immersivePlaybackScript = appHtml.slice(
+    appHtml.indexOf("function syncPlaybackImmersiveMode()"),
+    appHtml.indexOf("function resetPlaybackSwipe()"),
+  );
+  assert.doesNotMatch(immersivePlaybackScript, /scrollIntoView/);
+  assert.match(appHtml, /field\?\.scrollIntoView\(\{ behavior:'smooth', block:'center' \}\)/);
   const inlineScripts = [...appHtml.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];
   assert.equal(inlineScripts.length, 1);
   assert.doesNotThrow(() => new Function(inlineScripts[0][1]));

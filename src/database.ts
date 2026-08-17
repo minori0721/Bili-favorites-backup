@@ -13,7 +13,7 @@ import type {
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 8;
+export const DATABASE_SCHEMA_VERSION = 10;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 export const LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
@@ -35,7 +35,7 @@ export interface PersistentJobRecord {
   bvid?: string;
   userId?: string;
   mediaId?: number;
-  status: "pending" | "leased" | "running" | "retry_wait" | "failed";
+  status: "pending" | "leased" | "running" | "retry_wait" | "failed" | "manual_wait";
   priority: number;
   payload: Record<string, unknown>;
   attempts: number;
@@ -178,6 +178,56 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(status, not_before, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(status, lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS transfer_sessions (
+  id TEXT PRIMARY KEY,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'upload',
+  bvid TEXT NOT NULL,
+  user_id TEXT,
+  media_id INTEGER,
+  local_dir TEXT NOT NULL,
+  remote_path TEXT NOT NULL,
+  staging_path TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 1,
+  history_only INTEGER NOT NULL DEFAULT 0,
+  history_snapshot_at TEXT,
+  allow_reupload INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_transfer_sessions_status
+  ON transfer_sessions(phase, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transfer_sessions_target
+  ON transfer_sessions(user_id, media_id, bvid, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS transfer_session_files (
+  session_id TEXT NOT NULL REFERENCES transfer_sessions(id) ON DELETE CASCADE,
+  generation INTEGER NOT NULL DEFAULT 1,
+  relative_path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  staging_path TEXT NOT NULL,
+  final_path TEXT NOT NULL,
+  expected_size INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  put_accepted_at INTEGER,
+  stage_verified_at INTEGER,
+  moved_at INTEGER,
+  verified_at INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_check_at INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(session_id, generation, relative_path)
+);
+CREATE INDEX IF NOT EXISTS idx_transfer_session_files_due
+  ON transfer_session_files(status, next_check_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_transfer_session_files_path
+  ON transfer_session_files(session_id, staging_path, final_path);
 
 CREATE TABLE IF NOT EXISTS folder_scans (
   user_id TEXT NOT NULL,
@@ -742,6 +792,53 @@ export class StateDatabase {
             if (!remoteFileColumns.has(name)) this.db.exec(`ALTER TABLE remote_files ADD COLUMN ${name} ${definition}`);
           }
         }
+        if (currentVersion < 10) {
+          const transferSessionColumns = new Set((this.db.pragma("table_info(transfer_sessions)") as any[]).map((row) => String(row.name)));
+          if (!transferSessionColumns.has("generation")) {
+            this.db.exec("ALTER TABLE transfer_sessions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1");
+          }
+
+          const transferFileColumns = new Set((this.db.pragma("table_info(transfer_session_files)") as any[]).map((row) => String(row.name)));
+          if (transferFileColumns.size > 0 && !transferFileColumns.has("generation")) {
+            this.db.exec("DROP INDEX IF EXISTS idx_transfer_session_files_due");
+            this.db.exec("DROP INDEX IF EXISTS idx_transfer_session_files_path");
+            this.db.exec("ALTER TABLE transfer_session_files RENAME TO transfer_session_files_v9");
+            this.db.exec(`
+              CREATE TABLE transfer_session_files (
+                session_id TEXT NOT NULL REFERENCES transfer_sessions(id) ON DELETE CASCADE,
+                generation INTEGER NOT NULL DEFAULT 1,
+                relative_path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                staging_path TEXT NOT NULL,
+                final_path TEXT NOT NULL,
+                expected_size INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                put_accepted_at INTEGER,
+                stage_verified_at INTEGER,
+                moved_at INTEGER,
+                verified_at INTEGER,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_check_at INTEGER,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(session_id, generation, relative_path)
+              )
+            `);
+            this.db.exec(`
+              INSERT INTO transfer_session_files(
+                session_id, generation, relative_path, name, staging_path, final_path,
+                expected_size, status, put_accepted_at, stage_verified_at, moved_at,
+                verified_at, attempts, next_check_at, last_error, created_at, updated_at
+              )
+              SELECT session_id, 1, relative_path, name, staging_path, final_path,
+                expected_size, status, put_accepted_at, stage_verified_at, moved_at,
+                verified_at, attempts, next_check_at, last_error, created_at, updated_at
+              FROM transfer_session_files_v9
+            `);
+            this.db.exec("DROP TABLE transfer_session_files_v9");
+          }
+        }
         const remoteScheduleIndex = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_relations_remote_schedule'").get() as any;
         if (remoteScheduleIndex && !/ON favorite_relations\s*\(backup_status,/i.test(String(remoteScheduleIndex.sql || ""))) {
           this.db.exec("DROP INDEX idx_relations_remote_schedule");
@@ -772,6 +869,20 @@ export class StateDatabase {
             WHERE status IN ('preparing','pending','running','retry_wait');
         `);
         if (currentVersion < 8) refreshArchiveLibraryProjectionUnsafe(this.db);
+        this.db.exec("DROP INDEX IF EXISTS idx_transfer_sessions_status");
+        this.db.exec("DROP INDEX IF EXISTS idx_transfer_sessions_target");
+        this.db.exec("DROP INDEX IF EXISTS idx_transfer_session_files_due");
+        this.db.exec("DROP INDEX IF EXISTS idx_transfer_session_files_path");
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_transfer_sessions_status
+            ON transfer_sessions(phase, updated_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_transfer_sessions_target
+            ON transfer_sessions(user_id, media_id, bvid, updated_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_transfer_session_files_due
+            ON transfer_session_files(status, next_check_at, updated_at, session_id, generation);
+          CREATE INDEX IF NOT EXISTS idx_transfer_session_files_path
+            ON transfer_session_files(session_id, generation, staging_path, final_path);
+        `);
         this.db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
         this.db.prepare("INSERT OR REPLACE INTO schema_meta(key, value) VALUES('database_schema', ?)").run(String(DATABASE_SCHEMA_VERSION));
       })();
@@ -1810,6 +1921,8 @@ export class StateDatabase {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
         DELETE FROM jobs;
+        DELETE FROM transfer_session_files;
+        DELETE FROM transfer_sessions;
         DELETE FROM archive_deletion_items;
         DELETE FROM archive_deleted_sources;
         DELETE FROM archive_deletions;
@@ -2149,6 +2262,8 @@ export class StateDatabase {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
         DELETE FROM jobs;
+        DELETE FROM transfer_session_files;
+        DELETE FROM transfer_sessions;
         DELETE FROM archive_deletion_items;
         DELETE FROM archive_deleted_sources;
         DELETE FROM archive_deletions;

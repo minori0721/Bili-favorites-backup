@@ -643,6 +643,53 @@ function getAppStyles() {
     .queue-meta { font-size:11px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
     .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
+    .queue-recovery-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }
+    .queue-recovery-actions button { border:1px solid var(--accent); border-radius:8px; padding:4px 8px; background:rgba(57,197,187,0.08); color:var(--accent); cursor:pointer; font-size:11px; font-weight:700; }
+    .queue-recovery-actions button:hover,.queue-recovery-actions button:focus-visible { background:rgba(57,197,187,0.18); outline:2px solid rgba(57,197,187,0.24); outline-offset:1px; }
+    .queue-recovery-actions button.danger-action { border-color:#D65A5A; color:#A83232; background:rgba(214,90,90,0.08); }
+    .queue-recovery-actions button:disabled { cursor:wait; opacity:.58; }
+    .recovery-issues-entry { position:relative; }
+    .recovery-issues-entry.has-issues { border-color:#D98B36; color:#8D4D08; background:#FFF7EA; }
+    .recovery-issues-entry.has-danger { border-color:#C94F4F; color:#9B2C2C; background:#FFF0F0; }
+    .recovery-issues-modal { padding:0; align-items:stretch; }
+    .recovery-issues-shell { width:min(1180px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; box-shadow:0 24px 80px rgba(18,38,35,.22); }
+    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid #D8E3E0; background:#FFF; }
+    .recovery-issues-heading { min-width:0; }
+    .recovery-issues-heading h2 { margin:0; font-size:18px; }
+    .recovery-issues-heading p { margin:3px 0 0; color:#60736F; font-size:12px; }
+    .recovery-issues-close,.recovery-issues-back { width:44px; height:44px; border:1px solid #C9D8D5; border-radius:50%; background:#FFF; color:#28443F; font-size:21px; cursor:pointer; flex:0 0 auto; }
+    .recovery-issues-back { display:none; font-size:18px; }
+    .recovery-issues-layout { min-height:0; display:grid; grid-template-columns:minmax(280px,350px) minmax(0,1fr); }
+    .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:#EEF4F2; padding:12px; }
+    .recovery-issues-list { display:grid; gap:8px; }
+    .recovery-issue-row { width:100%; min-height:76px; display:grid; grid-template-columns:10px minmax(0,1fr); gap:10px; align-items:start; padding:12px; border:1px solid #D7E2DF; border-radius:8px; background:#FFF; color:#233E39; text-align:left; cursor:pointer; }
+    .recovery-issue-row:hover,.recovery-issue-row:focus-visible,.recovery-issue-row.active { border-color:#39AFA5; outline:none; box-shadow:0 0 0 3px rgba(57,197,187,.12); }
+    .recovery-issue-marker { width:8px; height:8px; margin-top:5px; border-radius:50%; background:#5C8F88; }
+    .recovery-issue-row.warning .recovery-issue-marker { background:#D98B36; }
+    .recovery-issue-row.danger .recovery-issue-marker { background:#C94F4F; }
+    .recovery-issue-row-title { display:block; font-size:13px; font-weight:800; line-height:1.35; }
+    .recovery-issue-row-meta { display:block; margin-top:5px; color:#677A76; font-size:11px; line-height:1.45; word-break:break-word; }
+    .recovery-issues-detail { min-width:0; min-height:0; overflow:auto; background:#FFF; padding:24px clamp(18px,3vw,38px) 36px; }
+    .recovery-issues-detail:focus { outline:none; }
+    .recovery-detail-kicker { color:#4B6762; font-size:12px; font-weight:700; }
+    .recovery-detail-title { margin:6px 0 6px; font-size:22px; line-height:1.3; color:#183A34; }
+    .recovery-detail-meta { color:#687B77; font-size:12px; overflow-wrap:anywhere; }
+    .recovery-detail-section { padding:18px 0; border-bottom:1px solid #E4ECEA; }
+    .recovery-detail-section h3 { margin:0 0 8px; font-size:13px; color:#3D5D57; }
+    .recovery-detail-section p { margin:0; color:#263E3A; line-height:1.7; }
+    .recovery-protected-list { margin:0; padding:0; display:grid; gap:8px; list-style:none; }
+    .recovery-protected-list li { position:relative; padding-left:22px; color:#3E5D57; line-height:1.55; }
+    .recovery-protected-list li::before { content:'✓'; position:absolute; left:0; color:#17877C; font-weight:900; }
+    .recovery-primary-action { min-height:44px; padding:10px 16px; border:1px solid #198E84; border-radius:8px; background:#198E84; color:#FFF; font-weight:800; cursor:pointer; }
+    .recovery-primary-action.danger-action { border-color:#B94747; background:#B94747; }
+    .recovery-secondary-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .recovery-secondary-actions button,.recovery-copy-diagnostic { min-height:44px; padding:9px 13px; border:1px solid #BFD2CE; border-radius:8px; background:#FFF; color:#2B5D56; font-weight:700; cursor:pointer; }
+    .recovery-technical { margin-top:14px; color:#5B716C; }
+    .recovery-technical summary { min-height:44px; display:flex; align-items:center; cursor:pointer; font-weight:700; }
+    .recovery-technical-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 18px; padding:8px 0 12px; font-size:12px; }
+    .recovery-technical-grid div { overflow-wrap:anywhere; }
+    .recovery-issues-empty { min-height:260px; display:grid; place-items:center; text-align:center; color:#60736F; padding:30px; }
+    .recovery-issues-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
     .help-icon-btn { width:32px; height:32px; border-radius:50%; border:1px solid rgba(57,197,187,0.55); background:linear-gradient(180deg,rgba(255,255,255,0.86),rgba(244,253,251,0.72)); color:var(--accent); font-size:15px; font-weight:900; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; box-shadow:inset 0 1px 0 rgba(255,255,255,0.9),0 5px 14px rgba(57,197,187,0.10); }
     .help-icon-btn:hover,.help-icon-btn:focus-visible { background:rgba(57,197,187,0.1); border-color:var(--accent); transform:translateY(-1px); box-shadow:0 8px 18px rgba(57,197,187,0.18); outline:none; }
@@ -751,6 +798,17 @@ function getAppStyles() {
       .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
+      .recovery-issues-shell { width:100%; height:100dvh; border:0; }
+      .recovery-issues-header { min-height:58px; padding:8px 10px; }
+      .recovery-issues-layout { position:relative; display:block; overflow:hidden; }
+      .recovery-issues-list-pane,.recovery-issues-detail { position:absolute; inset:0; width:100%; height:100%; border:0; transition:transform .16s ease; }
+      .recovery-issues-list-pane { transform:translateX(0); padding:10px; }
+      .recovery-issues-detail { transform:translateX(100%); padding:18px 16px 28px; }
+      .recovery-issues-shell.show-detail .recovery-issues-list-pane { transform:translateX(-24%); }
+      .recovery-issues-shell.show-detail .recovery-issues-detail { transform:translateX(0); }
+      .recovery-issues-shell.show-detail .recovery-issues-back { display:block; }
+      .recovery-issues-shell.show-detail .recovery-issues-heading { display:none; }
+      .recovery-technical-grid { grid-template-columns:1fr; }
     }
     @media (max-width: 720px) {
       .playback-modal { padding:0; background:#0F1413; }
@@ -955,6 +1013,7 @@ function getLogSection() {
   return `<section class="card">
       <h2>任务日志</h2>
       <div class="log-toggle">
+        <button id="recoveryIssuesBtn" class="recovery-issues-entry" type="button" aria-haspopup="dialog">待处理 0</button>
         <button id="logSimpleBtn" class="active">精简模式</button>
         <button id="logRawBtn">原始输出</button>
         <button id="logDebugBtn">调试模式</button>
@@ -1321,6 +1380,26 @@ function getModals() {
     </div>
   </div>
 
+  <div class="modal recovery-issues-modal" id="recoveryIssuesModal" aria-hidden="true">
+    <section class="recovery-issues-shell" aria-labelledby="recoveryIssuesTitle">
+      <header class="recovery-issues-header">
+        <button id="recoveryIssuesBackBtn" class="recovery-issues-back" type="button" aria-label="返回待处理列表" title="返回">←</button>
+        <div class="recovery-issues-heading">
+          <h2 id="recoveryIssuesTitle">待处理问题</h2>
+          <p>系统会先自动复核和恢复；这里只保留需要确认或暂时无法自动解决的事项。</p>
+        </div>
+        <button id="closeRecoveryIssuesBtn" class="recovery-issues-close" type="button" aria-label="关闭待处理问题" title="关闭">×</button>
+      </header>
+      <div class="recovery-issues-layout">
+        <aside class="recovery-issues-list-pane" aria-label="待处理问题列表">
+          <div id="recoveryIssuesList" class="recovery-issues-list"></div>
+        </aside>
+        <main id="recoveryIssuesDetail" class="recovery-issues-detail" tabindex="-1"></main>
+      </div>
+      <div id="recoveryIssuesLive" class="recovery-issues-live" aria-live="polite"></div>
+    </section>
+  </div>
+
   <div class="modal" id="confirmActionModal">
     <div class="panel panel-narrow">
       <h2 id="confirmActionTitle">确认操作</h2>
@@ -1388,6 +1467,14 @@ function getAppScript() {
     let logEntries = [];
     let queueBoardPollTimer = null;
     let queueBoardRequestInFlight = false;
+    let recoveryIssuePollTimer = null;
+    let recoveryIssueRequestInFlight = false;
+    const recoveryIssueState = {
+      items: [],
+      selectedId: null,
+      controller: null,
+      token: 0,
+    };
     let pathMigrationPollTimer = null;
     const queueBoardState = {
       columns: {},
@@ -1670,6 +1757,12 @@ function getAppScript() {
       if (modal.id === 'playbackModal') destroyPlaybackSession();
       if (modal.id === 'archiveLibraryModal') {
         cleanupArchiveLibrary();
+      }
+      if (modal.id === 'recoveryIssuesModal') {
+        if (recoveryIssueState.controller) recoveryIssueState.controller.abort();
+        recoveryIssueState.controller = null;
+        recoveryIssueState.token += 1;
+        document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');
       }
       if (modal.id === 'unavailableModal') {
         if (unavailableThrottleTimer) {
@@ -6364,6 +6457,302 @@ function getAppScript() {
       return btn;
     }
 
+    function recoveryIssueCounts(items) {
+      const list = Array.isArray(items) ? items : [];
+      return {
+        total:list.length,
+        danger:list.filter((item) => item.severity === 'danger').length,
+        warning:list.filter((item) => item.severity === 'warning').length,
+        info:list.filter((item) => item.severity === 'info').length,
+      };
+    }
+
+    function updateRecoveryIssuesEntry(summary) {
+      const button = document.getElementById('recoveryIssuesBtn');
+      if (!button) return;
+      const total = Number(summary?.total || 0);
+      const danger = Number(summary?.danger || 0);
+      button.textContent = '待处理 ' + total;
+      button.classList.toggle('has-issues', total > 0);
+      button.classList.toggle('has-danger', danger > 0);
+      button.setAttribute('aria-label', total > 0 ? '打开待处理问题，共 ' + total + ' 项' : '打开待处理问题，当前没有待处理项');
+    }
+
+    function setRecoveryIssueItems(items, summary) {
+      recoveryIssueState.items = Array.isArray(items) ? items : [];
+      if (!recoveryIssueState.items.some((item) => item.id === recoveryIssueState.selectedId)) {
+        recoveryIssueState.selectedId = recoveryIssueState.items[0]?.id || null;
+      }
+      updateRecoveryIssuesEntry(summary || recoveryIssueCounts(recoveryIssueState.items));
+      if (document.getElementById('recoveryIssuesModal')?.classList.contains('active')) {
+        renderRecoveryIssueCenter();
+      }
+    }
+
+    function recoveryIssueMeta(issue) {
+      return [issue.bvid, issue.folderTitle, issue.fileName].filter(Boolean).join(' · ') || '系统级问题';
+    }
+
+    function renderRecoveryIssueList() {
+      const host = document.getElementById('recoveryIssuesList');
+      host.innerHTML = '';
+      if (recoveryIssueState.items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'recovery-issues-empty';
+        empty.textContent = '当前没有需要你处理的问题。系统仍会在后台继续复核临时异常。';
+        host.appendChild(empty);
+        return;
+      }
+      recoveryIssueState.items.forEach((issue) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'recovery-issue-row ' + (issue.severity || 'info');
+        row.dataset.issueId = issue.id;
+        row.classList.toggle('active', issue.id === recoveryIssueState.selectedId);
+        row.setAttribute('aria-pressed', String(issue.id === recoveryIssueState.selectedId));
+        const marker = document.createElement('span');
+        marker.className = 'recovery-issue-marker';
+        marker.setAttribute('aria-hidden', 'true');
+        const text = document.createElement('span');
+        const title = document.createElement('span');
+        title.className = 'recovery-issue-row-title';
+        title.textContent = issue.title || '待处理问题';
+        const meta = document.createElement('span');
+        meta.className = 'recovery-issue-row-meta';
+        meta.textContent = recoveryIssueMeta(issue);
+        text.append(title, meta);
+        row.append(marker, text);
+        row.addEventListener('click', () => {
+          recoveryIssueState.selectedId = issue.id;
+          renderRecoveryIssueCenter();
+          document.querySelector('.recovery-issues-shell')?.classList.add('show-detail');
+          document.getElementById('recoveryIssuesDetail')?.focus({ preventScroll:true });
+        });
+        host.appendChild(row);
+      });
+    }
+
+    function appendRecoveryDetailSection(host, titleText, content) {
+      const section = document.createElement('section');
+      section.className = 'recovery-detail-section';
+      const title = document.createElement('h3');
+      title.textContent = titleText;
+      section.appendChild(title);
+      if (content instanceof Node) section.appendChild(content);
+      else {
+        const text = document.createElement('p');
+        text.textContent = String(content || '');
+        section.appendChild(text);
+      }
+      host.appendChild(section);
+    }
+
+    async function runRecoveryIssueAction(issue, action, trigger) {
+      if (!issue || !action) return;
+      if (action.id === 'open_settings') {
+        closeModal('recoveryIssuesModal');
+        const field = document.getElementById('alistUrl');
+        field?.scrollIntoView({ behavior:'smooth', block:'center' });
+        setTimeout(() => field?.focus({ preventScroll:true }), 260);
+        return;
+      }
+      if (action.id === 'reupload' || action.id === 'redownload') {
+        const reupload = action.id === 'reupload';
+        const confirmed = await confirmAction({
+          title:reupload ? '确认继续上传' : '确认重新下载',
+          message:reupload
+            ? '系统会重新检查远端，只为当前任务授权一次上传。'
+            : '系统会废弃失效的补传尝试并重新下载这个来源。',
+          detail:reupload
+            ? '发现同名异大小文件时仍会停止，不会直接覆盖。'
+            : '不会删除远端文件；其他已验证来源和归档证明不受影响。',
+          confirmText:reupload ? '继续上传' : '重新下载',
+          danger:reupload,
+          trigger,
+        });
+        if (!confirmed) return;
+      }
+      if (action.id === 'keep_existing' || action.id === 'use_candidate') {
+        const useCandidate = action.id === 'use_candidate';
+        const confirmed = await confirmAction({
+          title:useCandidate ? '采用新候选' : '保留现有归档',
+          message:useCandidate
+            ? '将已验证的新候选设为这个收藏来源的当前可播放归档。'
+            : '继续使用SQLite中记录的现有归档证明。',
+          detail:useCandidate
+            ? '正式旧路径不会移动或删除，候选文件也不会依赖MOVE。'
+            : '独立候选目录仍会保留，系统不会自动删除其中的文件。',
+          confirmText:useCandidate ? '采用候选' : '保留现有',
+          danger:false,
+          trigger,
+        });
+        if (!confirmed) return;
+      }
+      const buttons = Array.from(document.querySelectorAll('.recovery-issues-detail button'));
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        const data = await fetchJson('/api/recovery-issues/' + encodeURIComponent(issue.id) + '/actions/' + encodeURIComponent(action.id), {
+          method:'POST',
+        });
+        setRecoveryIssueItems(data?.issues || []);
+        document.getElementById('recoveryIssuesLive').textContent = action.label + '已执行，待处理列表已更新。';
+        showToast(action.label + '已执行', 'success');
+      } catch (error) {
+        buttons.forEach((button) => { button.disabled = false; });
+        if (error?.name !== 'AbortError') showToast(error?.message || '处理失败', 'error');
+      }
+    }
+
+    function renderRecoveryIssueDetail() {
+      const host = document.getElementById('recoveryIssuesDetail');
+      host.innerHTML = '';
+      const issue = recoveryIssueState.items.find((item) => item.id === recoveryIssueState.selectedId);
+      if (!issue) {
+        const empty = document.createElement('div');
+        empty.className = 'recovery-issues-empty';
+        empty.textContent = recoveryIssueState.items.length === 0
+          ? '没有需要处理的问题。'
+          : '从左侧选择一项查看详情。';
+        host.appendChild(empty);
+        return;
+      }
+      const kicker = document.createElement('div');
+      kicker.className = 'recovery-detail-kicker';
+      kicker.textContent = issue.severity === 'danger' ? '需要确认' : (issue.severity === 'warning' ? '建议处理' : '系统持续复核中');
+      const heading = document.createElement('h2');
+      heading.className = 'recovery-detail-title';
+      heading.textContent = issue.title || '待处理问题';
+      const meta = document.createElement('div');
+      meta.className = 'recovery-detail-meta';
+      meta.textContent = recoveryIssueMeta(issue) + (issue.occurredAt ? ' · ' + formatDateTime(issue.occurredAt) : '');
+      host.append(kicker, heading, meta);
+
+      const summary = document.createElement('p');
+      summary.textContent = issue.summary || '任务已安全暂停。';
+      if (issue.severity === 'danger') summary.setAttribute('role', 'alert');
+      appendRecoveryDetailSection(host, '发生了什么', summary);
+
+      const protectedList = document.createElement('ul');
+      protectedList.className = 'recovery-protected-list';
+      (issue.protectedFacts || []).forEach((fact) => {
+        const item = document.createElement('li');
+        item.textContent = String(fact);
+        protectedList.appendChild(item);
+      });
+      appendRecoveryDetailSection(host, '系统保护了什么', protectedList);
+
+      if (issue.recommendedAction) {
+        const actions = document.createElement('div');
+        const primary = document.createElement('button');
+        primary.type = 'button';
+        primary.className = 'recovery-primary-action' + (issue.recommendedAction.danger ? ' danger-action' : '');
+        primary.textContent = issue.recommendedAction.label;
+        primary.title = issue.recommendedAction.description || '';
+        primary.addEventListener('click', () => void runRecoveryIssueAction(issue, issue.recommendedAction, primary));
+        actions.appendChild(primary);
+        const secondaryActions = (issue.availableActions || []).filter((action) => action.id !== issue.recommendedAction.id);
+        if (secondaryActions.length > 0) {
+          const secondary = document.createElement('div');
+          secondary.className = 'recovery-secondary-actions';
+          secondaryActions.forEach((action) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = action.label;
+            button.title = action.description || '';
+            button.addEventListener('click', () => void runRecoveryIssueAction(issue, action, button));
+            secondary.appendChild(button);
+          });
+          actions.appendChild(secondary);
+        }
+        const description = document.createElement('p');
+        description.className = 'muted status-line';
+        description.textContent = issue.recommendedAction.description || '';
+        actions.appendChild(description);
+        appendRecoveryDetailSection(host, '推荐处理', actions);
+      }
+
+      const technical = document.createElement('details');
+      technical.className = 'recovery-technical';
+      const technicalSummary = document.createElement('summary');
+      technicalSummary.textContent = '技术详情';
+      const grid = document.createElement('div');
+      grid.className = 'recovery-technical-grid';
+      const technicalRows = [
+        ['问题类型', issue.kind || 'unknown'],
+        ['最近复核', issue.checkedAt ? formatDateTime(issue.checkedAt) : '尚未复核'],
+        ['下次自动复核', issue.nextAutomaticCheckAt ? formatDateTime(issue.nextAutomaticCheckAt) : '按需复核'],
+        ['文件', issue.fileName || '未指定'],
+        ['期望大小', Number.isFinite(Number(issue.expectedSize)) ? formatBytes(Number(issue.expectedSize)) : '未知'],
+        ['远端大小', Number.isFinite(Number(issue.observedSize)) ? formatBytes(Number(issue.observedSize)) : '未知'],
+      ];
+      technicalRows.forEach(([label, value]) => {
+        const row = document.createElement('div');
+        const strong = document.createElement('strong');
+        strong.textContent = label + '：';
+        row.append(strong, document.createTextNode(String(value)));
+        grid.appendChild(row);
+      });
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'recovery-copy-diagnostic';
+      copy.textContent = '复制诊断摘要';
+      copy.addEventListener('click', async () => {
+        const copied = await copyTextToClipboard(issue.safeDiagnostic || '');
+        showToast(copied ? '诊断摘要已复制' : '复制失败', copied ? 'success' : 'error');
+      });
+      technical.append(technicalSummary, grid, copy);
+      host.appendChild(technical);
+    }
+
+    function renderRecoveryIssueCenter() {
+      renderRecoveryIssueList();
+      renderRecoveryIssueDetail();
+    }
+
+    async function refreshRecoveryIssues() {
+      if (recoveryIssueRequestInFlight) return;
+      recoveryIssueRequestInFlight = true;
+      if (recoveryIssueState.controller) recoveryIssueState.controller.abort();
+      const controller = new AbortController();
+      const token = ++recoveryIssueState.token;
+      recoveryIssueState.controller = controller;
+      try {
+        const snapshot = await fetchJsonSilent('/api/queue/state', { signal:controller.signal });
+        if (token !== recoveryIssueState.token) return;
+        setRecoveryIssueItems(snapshot?.issues || [], snapshot?.issueSummary);
+      } catch (error) {
+        if (error?.name !== 'AbortError' && document.getElementById('recoveryIssuesModal')?.classList.contains('active')) {
+          document.getElementById('recoveryIssuesLive').textContent = '待处理问题加载失败，请稍后重试。';
+        }
+      } finally {
+        if (token === recoveryIssueState.token) recoveryIssueState.controller = null;
+        recoveryIssueRequestInFlight = false;
+      }
+    }
+
+    function openRecoveryIssues(trigger) {
+      document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');
+      openModal('recoveryIssuesModal', trigger);
+      renderRecoveryIssueCenter();
+      void refreshRecoveryIssues();
+    }
+
+    function startRecoveryIssuePolling() {
+      if (recoveryIssuePollTimer) clearInterval(recoveryIssuePollTimer);
+      if (document.hidden) return;
+      if (logMode !== 'queue') void refreshRecoveryIssues();
+      recoveryIssuePollTimer = setInterval(() => {
+        if (logMode !== 'queue') void refreshRecoveryIssues();
+      }, 10_000);
+    }
+
+    function stopRecoveryIssuePolling() {
+      if (recoveryIssuePollTimer) {
+        clearInterval(recoveryIssuePollTimer);
+        recoveryIssuePollTimer = null;
+      }
+    }
+
     function formatElapsed(ms) {
       if (!Number.isFinite(ms) || ms < 0) return '0s';
       const sec = Math.floor(ms / 1000);
@@ -6386,6 +6775,62 @@ function getAppScript() {
       const bvid = item.bvid || item.id || '';
       const remotePath = item.remotePath || '';
       return [userId, mediaId, bvid, remotePath].join(':');
+    }
+
+    async function recoverQueueUpload(jobId, allowReupload, trigger) {
+      if (allowReupload) {
+        const confirmed = await confirmAction({
+          title: '确认继续上传',
+          message: '会重新检查正式远端路径；只有目标不存在时才再次PUT。',
+          detail: '如果远端已经存在不同大小的文件，系统仍会停在冲突状态，不会覆盖它。',
+          confirmText: '继续上传',
+          trigger,
+        });
+        if (!confirmed) return;
+      }
+      const card = trigger instanceof HTMLElement ? trigger.closest('.queue-card') : null;
+      const buttons = card ? Array.from(card.querySelectorAll('.queue-recovery-actions button')) : [];
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        await fetchJson('/api/queue/recover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId, allowReupload }),
+        });
+        showToast(allowReupload ? '已开始重新确认并允许一次重传' : '已开始重新确认远端文件', 'success');
+        await refreshQueueBoard();
+      } catch (error) {
+        buttons.forEach((button) => { button.disabled = false; });
+        if (error?.name !== 'AbortError') showToast(error?.message || '恢复上传失败', 'error');
+      }
+    }
+
+    function updateQueueRecoveryActions(card, item) {
+      const info = card.querySelector('.queue-info');
+      if (!info) return;
+      let actions = info.querySelector('.queue-recovery-actions');
+      const shouldShow = Boolean(item.awaitingManualRecovery && item.recoveryJobId);
+      if (!shouldShow) {
+        if (actions) actions.remove();
+        return;
+      }
+      if (!actions) {
+        actions = document.createElement('div');
+        actions.className = 'queue-recovery-actions';
+        const confirmButton = document.createElement('button');
+        confirmButton.type = 'button';
+        confirmButton.textContent = '重新确认';
+        confirmButton.title = '只检查正式远端文件，不重复上传';
+        const uploadButton = document.createElement('button');
+        uploadButton.type = 'button';
+        uploadButton.className = 'danger-action';
+        uploadButton.textContent = '继续上传';
+        uploadButton.title = '允许本次缺失文件重新PUT一次';
+        confirmButton.addEventListener('click', () => void recoverQueueUpload(String(item.recoveryJobId), false, confirmButton));
+        uploadButton.addEventListener('click', () => void recoverQueueUpload(String(item.recoveryJobId), true, uploadButton));
+        actions.append(confirmButton, uploadButton);
+        info.appendChild(actions);
+      }
     }
 
     function updateQueueCard(card, item, nowMs) {
@@ -6435,6 +6880,7 @@ function getAppScript() {
         extraEl.appendChild(retry);
         extraEl.appendChild(time);
       }
+      updateQueueRecoveryActions(card, item);
     }
 
     function renderQueueCard(item, nowMs) {
@@ -6710,6 +7156,7 @@ function getAppScript() {
         const data = await fetchJsonSilent('/api/queue/state');
         if (logMode !== 'queue') return;
         const snapshot = data || {};
+        setRecoveryIssueItems(snapshot.issues || [], snapshot.issueSummary);
         const nowMs = Date.now();
         let grid = board.querySelector('.queue-board');
         if (!grid) {
@@ -6808,6 +7255,13 @@ function getAppScript() {
     document.getElementById('closeLoginBtn').addEventListener('click', () => closeModal('loginModal'));
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
+    document.getElementById('recoveryIssuesBtn').addEventListener('click', (event) => openRecoveryIssues(event.currentTarget));
+    document.getElementById('closeRecoveryIssuesBtn').addEventListener('click', () => closeModal('recoveryIssuesModal'));
+    document.getElementById('recoveryIssuesBackBtn').addEventListener('click', () => {
+      document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');
+      const selected = document.querySelector('.recovery-issue-row.active');
+      if (selected instanceof HTMLElement) setTimeout(() => selected.focus({ preventScroll:true }), 0);
+    });
     document.getElementById('closeVideoDetailBtn').addEventListener('click', () => closeModal('videoDetailModal'));
     document.getElementById('archiveLibraryBtn').addEventListener('click', (event) => openArchiveLibrary(event.currentTarget));
     document.getElementById('closeArchiveLibraryBtn').addEventListener('click', () => closeModal('archiveLibraryModal'));
@@ -7002,6 +7456,13 @@ function getAppScript() {
         if (modal && modal.id === 'archiveLibraryModal' && document.getElementById('archiveLibraryDetail').classList.contains('open')) {
           event.preventDefault();
           closeArchiveLibraryDetail();
+          return;
+        }
+        if (modal && modal.id === 'recoveryIssuesModal' && document.querySelector('.recovery-issues-shell')?.classList.contains('show-detail')) {
+          event.preventDefault();
+          document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');
+          const selected = document.querySelector('.recovery-issue-row.active');
+          if (selected instanceof HTMLElement) selected.focus({ preventScroll:true });
           return;
         }
         if (modal) closeModal(modal);
@@ -7361,9 +7822,13 @@ function getAppScript() {
       queueBtn.addEventListener('click', () => setLogMode('queue'));
     }
     document.addEventListener('visibilitychange', () => {
-      if (logMode !== 'queue') return;
-      if (document.hidden) stopQueueBoardPolling();
-      else startQueueBoardPolling();
+      if (document.hidden) {
+        stopQueueBoardPolling();
+        stopRecoveryIssuePolling();
+        return;
+      }
+      startRecoveryIssuePolling();
+      if (logMode === 'queue') startQueueBoardPolling();
     });
     document.getElementById('logSimpleBtn').addEventListener('click', () => setLogMode('simple'));
     document.getElementById('logRawBtn').addEventListener('click', () => setLogMode('raw'));
@@ -7391,5 +7856,6 @@ function getAppScript() {
     initTemplateEditor();
     initLogStream();
     loadQualityUpgradeState();
+    startRecoveryIssuePolling();
   `;
 }

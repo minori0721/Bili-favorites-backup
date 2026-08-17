@@ -17,6 +17,9 @@ type TestState = {
   sourceDeleted: boolean;
   itemQueries: string[];
   detailQueries: string[];
+  recoveryActionCount: number;
+  recoveryIssueResolved: boolean;
+  recoveryIssueKind: "visibility" | "candidate";
 };
 
 function initialState(): TestState {
@@ -32,6 +35,9 @@ function initialState(): TestState {
     sourceDeleted: false,
     itemQueries: [],
     detailQueries: [],
+    recoveryActionCount: 0,
+    recoveryIssueResolved: false,
+    recoveryIssueKind: "visibility",
   };
 }
 
@@ -126,6 +132,7 @@ app.post("/__test/reset", (request, response) => {
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
   state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
   state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
+  if (request.body?.recoveryIssueKind === "candidate") state.recoveryIssueKind = "candidate";
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
@@ -170,6 +177,49 @@ app.get("/api/users", (_request, response) => response.json(ok([{
   authHealth: { level: "ok", summary: "测试授权正常", detail: "隔离测试数据" },
 }])));
 app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({ running: [], completed: [] })));
+app.get("/api/queue/state", (_request, response) => {
+  const candidateIssue = state.recoveryIssueKind === "candidate";
+  const issues = state.recoveryIssueResolved ? [] : [{
+    id: "upload.test-recovery",
+    kind: candidateIssue ? "conflict_candidate_ready" : "remote_visibility_timeout",
+    severity: "info",
+    title: candidateIssue ? "远端冲突候选等待选择" : "远端文件仍在等待可见",
+    summary: candidateIssue
+      ? "正式旧路径保持不变，新文件候选已完整验证；请选择保留现有归档或采用候选。"
+      : "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
+    protectedFacts: ["没有自动覆盖或删除远端文件", "没有把未确认文件标记为归档成功", "本地文件仍保留"],
+    recommendedAction: candidateIssue
+      ? { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" }
+      : { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
+    availableActions: candidateIssue ? [
+      { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" },
+      { id: "use_candidate", label: "采用新候选", description: "将候选设为当前归档，正式旧路径仍保留。" },
+      { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
+    ] : [
+      { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
+      { id: "reupload", label: "继续上传", description: "仅为当前文件授权一次重新上传。", danger: true },
+    ],
+    bvid: "BV1RECOVERY1",
+    folderTitle: "当前收藏夹",
+    fileName: "P1.mp4",
+    occurredAt: Date.parse("2026-08-17T12:00:00.000Z"),
+    checkedAt: Date.parse("2026-08-17T12:05:00.000Z"),
+    nextAutomaticCheckAt: Date.parse("2026-08-17T12:10:00.000Z"),
+    safeDiagnostic: "{\n  \"issue\": \"remote_visibility_timeout\",\n  \"bvid\": \"BV1RECOVERY1\"\n}",
+  }];
+  response.json(ok({
+    downloadPending: [], downloadRunning: [], uploadPending: [], uploadRunning: [],
+    scheduler: { status: "idle", title: "当前调度空闲", detail: "没有运行中的任务", queuedActions: [] },
+    issues,
+    issueSummary: { total: issues.length, danger: 0, warning: 0, info: issues.length },
+    recovery: {}, chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
+  }));
+});
+app.post("/api/recovery-issues/:id/actions/:action", (_request, response) => {
+  state.recoveryActionCount += 1;
+  state.recoveryIssueResolved = true;
+  response.json(ok({ issues: [] }));
+});
 app.get("/api/logs/stream", (request, response) => {
   response.setHeader("Content-Type", "text/event-stream");
   response.setHeader("Cache-Control", "no-cache");

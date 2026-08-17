@@ -12,6 +12,7 @@ import {
   UNAVAILABLE_COVER_BACKFILL_MARKER,
 } from "../src/database.js";
 import { PersistentJobStore } from "../src/job-store.js";
+import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
 test("archive source restoration skips write transactions when no deletion record exists", () => {
@@ -380,6 +381,106 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
   }
 });
 
+test("state replacement and clearing remove transfer sessions with their child files", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const sessions = new TransferSessionStore(database);
+    const session = sessions.ensure({
+      dedupeKey: "upload:session-clear",
+      bvid: "BVSESSIONCLEAR",
+      localDir: "/tmp/BVSESSIONCLEAR",
+      remotePath: "/backup/BVSESSIONCLEAR",
+    });
+    sessions.ensureFile(session.id, { relativePath: "video.mp4", name: "video.mp4", expectedSize: 12 }, session.generation);
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_sessions").get() as any).count), 1);
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_session_files").get() as any).count), 1);
+
+    database.clearStateAndJobs();
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_sessions").get() as any).count), 0);
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_session_files").get() as any).count), 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("legacy transfer session phases can be superseded by a fresh download", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const sessions = new TransferSessionStore(database);
+    const session = sessions.ensure({
+      dedupeKey: "upload:legacy-supersede",
+      bvid: "BVLEGACYSUPERSEDE",
+      localDir: "/tmp/BVLEGACYSUPERSEDE",
+      remotePath: "/backup/BVLEGACYSUPERSEDE",
+    });
+    database.db.prepare("UPDATE transfer_sessions SET phase='awaiting_final' WHERE id=?").run(session.id);
+    assert.equal(sessions.get(session.id)?.phase, "awaiting_remote");
+    assert.equal(sessions.supersede(session.id, session.generation), true);
+    assert.equal(sessions.get(session.id)?.phase, "superseded");
+    assert.equal(sessions.listRecoverable().some((item) => item.id === session.id), false);
+  } finally {
+    database.close();
+  }
+});
+
+test("history upload exhaustion remains a manual recovery item and normal enqueue cannot hide it", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const jobs = new PersistentJobStore(database);
+    const job = jobs.enqueue({
+      kind: "history_upload",
+      dedupeKey: "upload:history-recovery",
+      bvid: "BVHISTORYRECOVERY",
+      maxAttempts: 1,
+      payload: { localDir: "/tmp/history", historyOnly: true },
+    });
+    const claimed = jobs.claimDue(["history_upload"], 1, "history-worker", 60_000)[0];
+    assert.equal(claimed.id, job.id);
+    const retried = jobs.retry(job.id, "history-worker", "temporary WebDAV failure", Date.now() + 60_000);
+    assert.equal(retried.exhausted, true);
+    const failed = jobs.findById(job.id)!;
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.payload.awaitingManualRecovery, true);
+    assert.equal(failed.payload.resumeOnly, true);
+    assert.equal(failed.payload.allowReupload, false);
+
+    const duplicate = jobs.enqueue({
+      kind: "history_upload",
+      dedupeKey: "upload:history-recovery",
+      bvid: "BVHISTORYRECOVERY",
+      payload: { localDir: "/tmp/new-history" },
+    });
+    assert.equal(duplicate.status, "failed");
+    assert.equal(duplicate.payload.awaitingManualRecovery, true);
+    assert.equal(duplicate.payload.localDir, "/tmp/history");
+  } finally {
+    database.close();
+  }
+});
+
+test("manual upload permission is atomically consumed from a claimed job", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const jobs = new PersistentJobStore(database);
+    const job = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:consume-permission",
+      bvid: "BVCONSUMEPERMISSION",
+      payload: { allowReupload: true, files: ["p01.mp4", "p02.mp4"] },
+    });
+    const claimed = jobs.claimDue(["upload"], 1, "permission-worker", 60_000)[0];
+    assert.equal(claimed.id, job.id);
+    assert.equal(jobs.markRunning(job.id, "permission-worker"), true);
+    assert.equal(jobs.consumeUploadReuploadPermission(job.id, "permission-worker", "p01.mp4"), true);
+    assert.equal(jobs.consumeUploadReuploadPermission(job.id, "permission-worker", "p01.mp4"), false);
+    assert.equal(jobs.consumeUploadReuploadPermission(job.id, "permission-worker", "p02.mp4"), true);
+    assert.equal(jobs.findById(job.id)?.payload.allowReupload, false);
+    assert.deepEqual(jobs.findById(job.id)?.payload.reuploadAuthorizedFiles, []);
+  } finally {
+    database.close();
+  }
+});
+
 test("schema 4 upgrade aborts before mutation when its consistent backup cannot be created", async () => {
   const runtime = await createTestDir("sqlite-schema-backup-failure");
   const dbPath = path.join(runtime, "bfb.sqlite");
@@ -528,8 +629,87 @@ test("schema 7 archive deletion tables survive a direct upgrade through the curr
   }
 });
 
-test("schema 8 atomically builds and preserves the archive library projection from schema 7", async () => {
-  const runtime = await createTestDir("sqlite-schema-8-archive-library");
+test("schema 9 to 10 adds upload generations and preserves the previous attempt", async () => {
+  const runtime = await createTestDir("sqlite-schema-10-upload-generations");
+  const dbPath = path.join(runtime, "bfb.sqlite");
+  try {
+    const current = new StateDatabase(dbPath);
+    current.db.prepare(`
+      INSERT INTO transfer_sessions(
+        id, dedupe_key, kind, bvid, user_id, media_id, local_dir, remote_path,
+        staging_path, phase, generation, history_only, allow_reupload, created_at, updated_at
+      ) VALUES('session-schema10','upload:schema10','upload','BVSCHEMA10','u1',1,'/tmp/BVSCHEMA10','/target','/target','completed',1,0,0,1,1)
+    `).run();
+    current.db.prepare(`
+      INSERT INTO transfer_session_files(
+        session_id, generation, relative_path, name, staging_path, final_path, expected_size,
+        status, verified_at, created_at, updated_at
+      ) VALUES('session-schema10',1,'video.mp4','video.mp4','/target/video.mp4','/target/video.mp4',12,'verified',1,1,1)
+    `).run();
+    current.close();
+
+    const legacy = new Database(dbPath);
+    legacy.exec("DROP INDEX IF EXISTS idx_transfer_session_files_due");
+    legacy.exec("DROP INDEX IF EXISTS idx_transfer_session_files_path");
+    legacy.exec("ALTER TABLE transfer_session_files RENAME TO transfer_session_files_v10");
+    legacy.exec(`
+      CREATE TABLE transfer_session_files (
+        session_id TEXT NOT NULL REFERENCES transfer_sessions(id) ON DELETE CASCADE,
+        relative_path TEXT NOT NULL,
+        name TEXT NOT NULL,
+        staging_path TEXT NOT NULL,
+        final_path TEXT NOT NULL,
+        expected_size INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        put_accepted_at INTEGER,
+        stage_verified_at INTEGER,
+        moved_at INTEGER,
+        verified_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_check_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(session_id, relative_path)
+      )
+    `);
+    legacy.exec(`
+      INSERT INTO transfer_session_files(
+        session_id, relative_path, name, staging_path, final_path, expected_size, status,
+        put_accepted_at, stage_verified_at, moved_at, verified_at, attempts, next_check_at,
+        last_error, created_at, updated_at
+      )
+      SELECT session_id, relative_path, name, staging_path, final_path, expected_size, status,
+        put_accepted_at, stage_verified_at, moved_at, verified_at, attempts, next_check_at,
+        last_error, created_at, updated_at
+      FROM transfer_session_files_v10
+    `);
+    legacy.exec("DROP TABLE transfer_session_files_v10");
+    legacy.exec("ALTER TABLE transfer_sessions DROP COLUMN generation");
+    legacy.pragma("user_version = 9");
+    legacy.close();
+
+    const upgraded = new StateDatabase(dbPath);
+    try {
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 10);
+      const session = upgraded.db.prepare("SELECT generation, phase FROM transfer_sessions WHERE id='session-schema10'").get() as any;
+      assert.deepEqual(session, { generation: 1, phase: "completed" });
+      const file = upgraded.db.prepare("SELECT generation, relative_path FROM transfer_session_files WHERE session_id='session-schema10'").get() as any;
+      assert.deepEqual(file, { generation: 1, relative_path: "video.mp4" });
+      assert.equal(upgraded.db.pragma("integrity_check", { simple: true }), "ok");
+    } finally {
+      upgraded.close();
+    }
+    const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
+      .filter((name) => name.includes("before-schema-10-v9") && name.endsWith(".sqlite"));
+    assert.equal(backups.length, 1);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 9 atomically builds and preserves the archive library projection from schema 7", async () => {
+  const runtime = await createTestDir("sqlite-schema-9-archive-library");
   const dbPath = path.join(runtime, "bfb.sqlite");
   const at = "2026-08-01T00:00:00.000Z";
   try {
@@ -568,7 +748,7 @@ test("schema 8 atomically builds and preserves the archive library projection fr
     }
     assert.ok(upgraded);
     try {
-      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 8);
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 10);
       const rows = upgraded.db.prepare(`
         SELECT scope_type, scope_id, visibility, bvid, status_group
         FROM archive_library_projection ORDER BY scope_type, scope_id
@@ -584,11 +764,11 @@ test("schema 8 atomically builds and preserves the archive library projection fr
     assert.equal(migrationLogs.length, 2);
     assert.match(
       migrationLogs[0],
-      /^\[Database\] Starting SQLite schema migration 7 -> 8; creating and verifying a backup before changes\.$/,
+      /^\[Database\] Starting SQLite schema migration 7 -> 10; creating and verifying a backup before changes\.$/,
     );
     assert.match(
       migrationLogs[1],
-      /^\[Database\] Completed SQLite schema migration 7 -> 8 in \d+ ms\.$/,
+      /^\[Database\] Completed SQLite schema migration 7 -> 10 in \d+ ms\.$/,
     );
     assert.equal(migrationLogs.some((message) => message.includes(dbPath)), false);
 
@@ -599,7 +779,7 @@ test("schema 8 atomically builds and preserves the archive library projection fr
       reopened.close();
     }
     const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
-      .filter((name) => name.includes("before-schema-8-v7") && name.endsWith(".sqlite"));
+      .filter((name) => name.includes("before-schema-10-v7") && name.endsWith(".sqlite"));
     assert.equal(backups.length, 1);
     const backupPath = path.join(runtime, "backups", backups[0]);
     const checksum = (await fs.promises.readFile(`${backupPath}.sha256`, "utf8")).split(/\s+/, 1)[0];
@@ -610,8 +790,8 @@ test("schema 8 atomically builds and preserves the archive library projection fr
   }
 });
 
-test("schema 8 projection rebuild rolls back the whole upgrade when projection insertion fails", async () => {
-  const runtime = await createTestDir("sqlite-schema-8-rollback");
+test("schema 9 projection rebuild rolls back the whole upgrade when projection insertion fails", async () => {
+  const runtime = await createTestDir("sqlite-schema-9-rollback");
   const dbPath = path.join(runtime, "bfb.sqlite");
   try {
     const current = new StateDatabase(dbPath);
@@ -628,7 +808,7 @@ test("schema 8 projection rebuild rolls back the whole upgrade when projection i
     `).run();
     current.rebuildArchiveLibraryProjection();
     current.db.exec(`
-      CREATE TRIGGER reject_schema8_projection
+      CREATE TRIGGER reject_schema9_projection
       BEFORE INSERT ON archive_library_projection
       BEGIN SELECT RAISE(ABORT, 'projection blocked'); END;
     `);
@@ -650,12 +830,12 @@ test("schema 8 projection rebuild rolls back the whole upgrade when projection i
     assert.equal(migrationLogs.length, 1);
     assert.match(
       migrationLogs[0],
-      /^\[Database\] Starting SQLite schema migration 7 -> 8; creating and verifying a backup before changes\.$/,
+      /^\[Database\] Starting SQLite schema migration 7 -> 10; creating and verifying a backup before changes\.$/,
     );
     assert.equal(migrationErrors.length, 1);
     assert.match(
       migrationErrors[0],
-      /^\[Database\] SQLite schema migration 7 -> 8 failed after \d+ ms; no database changes were committed\.$/,
+      /^\[Database\] SQLite schema migration 7 -> 10 failed after \d+ ms; no database changes were committed\.$/,
     );
     assert.equal([...migrationLogs, ...migrationErrors].some((message) => (
       message.includes(dbPath) || message.includes("projection blocked")
@@ -664,12 +844,12 @@ test("schema 8 projection rebuild rolls back the whole upgrade when projection i
     try {
       assert.equal(raw.pragma("user_version", { simple: true }), 7);
       assert.equal(Number((raw.prepare("SELECT COUNT(*) AS count FROM archive_library_projection").get() as any).count), 2);
-      raw.exec("DROP TRIGGER reject_schema8_projection");
+      raw.exec("DROP TRIGGER reject_schema9_projection");
     } finally {
       raw.close();
     }
     const upgraded = new StateDatabase(dbPath);
-    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 8);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 10);
     upgraded.close();
   } finally {
     await removeTestDir(runtime);

@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { createTestDir, removeTestDir } from "./helpers.js";
-import { createZipFromDirectory } from "../src/zip.js";
+import { createZipFromDirectory, extractZipFile } from "../src/zip.js";
 import { ADMIN_REMEMBER_TTL_MS, ADMIN_SESSION_TTL_MS } from "../src/admin-session.js";
 
 test("real app supports login, queue state, config update and migration preview in isolation", { timeout: 60_000 }, async () => {
@@ -153,6 +153,35 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(fs.existsSync(tempRoot), true);
     assert.deepEqual(await fs.promises.readdir(tempRoot), []);
 
+    const migrationRuntimeDb = new Database(path.join(runtime, "data", "bfb.sqlite"));
+    const runtimeNow = Date.now();
+    migrationRuntimeDb.prepare(`
+      INSERT INTO videos(bvid, backup_status, bili_status, local_dir, payload_json, updated_at)
+      VALUES('BVLIGHTWEIGHT', 'queued', 'available', '/old/app/temp/BVLIGHTWEIGHT', ?, ?)
+    `).run(JSON.stringify({
+      bvid: "BVLIGHTWEIGHT", title: "Lightweight runtime", upperName: "Tester",
+      firstSeenAt: new Date(runtimeNow).toISOString(), lastSeenAt: new Date(runtimeNow).toISOString(),
+      biliStatus: "available", backupStatus: "queued", localDir: "/old/app/temp/BVLIGHTWEIGHT",
+      downloadSession: { id: "download-session-old", localDir: "/old/app/temp/BVLIGHTWEIGHT", kind: "main", status: "partial", completedPages: 1, totalPages: 2, updatedAt: new Date(runtimeNow).toISOString() },
+    }), runtimeNow);
+    migrationRuntimeDb.prepare(`
+      INSERT INTO download_sessions(bvid, session_id, local_dir, kind, status, completed_pages, total_pages, updated_at, payload_json)
+      VALUES('BVLIGHTWEIGHT', 'download-session-old', '/old/app/temp/BVLIGHTWEIGHT', 'main', 'partial', 1, 2, ?, '{}')
+    `).run(runtimeNow);
+    migrationRuntimeDb.prepare(`
+      INSERT INTO jobs(id, kind, dedupe_key, bvid, status, priority, payload_json, not_before, created_at, updated_at)
+      VALUES('job-lightweight', 'upload', 'upload:lightweight-runtime', 'BVLIGHTWEIGHT', 'retry_wait', 20, ?, ?, ?, ?)
+    `).run(JSON.stringify({ localDir: "/old/app/temp/BVLIGHTWEIGHT", allowReupload: true }), runtimeNow + 86_400_000, runtimeNow, runtimeNow);
+    migrationRuntimeDb.prepare(`
+      INSERT INTO transfer_sessions(id, dedupe_key, kind, bvid, local_dir, remote_path, staging_path, phase, generation, created_at, updated_at)
+      VALUES('session-lightweight', 'upload:session-lightweight', 'upload', 'BVLIGHTWEIGHT', '/old/app/temp/BVLIGHTWEIGHT', '/backup/BVLIGHTWEIGHT', '/backup/BVLIGHTWEIGHT', 'awaiting_remote', 1, ?, ?)
+    `).run(runtimeNow, runtimeNow);
+    migrationRuntimeDb.prepare(`
+      INSERT INTO transfer_session_files(session_id, generation, relative_path, name, staging_path, final_path, expected_size, status, created_at, updated_at)
+      VALUES('session-lightweight', 1, 'video.mp4', 'video.mp4', '/backup/BVLIGHTWEIGHT/video.mp4', '/backup/BVLIGHTWEIGHT/video.mp4', 12, 'awaiting_remote', ?, ?)
+    `).run(runtimeNow, runtimeNow);
+    migrationRuntimeDb.close();
+
     const exported = await fetch(`${base}/api/migration/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
@@ -161,6 +190,22 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(exported.status, 200);
     const archive = Buffer.from(await exported.arrayBuffer());
     assert.ok(archive.length > 100);
+
+    const lightweightArchivePath = path.join(runtime, "lightweight-runtime.zip");
+    await fs.promises.writeFile(lightweightArchivePath, archive);
+    const lightweightExtractDir = path.join(runtime, "lightweight-runtime-extract");
+    await extractZipFile(lightweightArchivePath, lightweightExtractDir);
+    const lightweightDb = new Database(path.join(lightweightExtractDir, "data", "bfb.sqlite"), { readonly: true });
+    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM jobs").get() as any).count), 0);
+    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM transfer_sessions").get() as any).count), 0);
+    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM transfer_session_files").get() as any).count), 0);
+    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM download_sessions").get() as any).count), 0);
+    const lightweightVideo = lightweightDb.prepare("SELECT local_dir, payload_json, backup_status FROM videos WHERE bvid='BVLIGHTWEIGHT'").get() as any;
+    assert.equal(lightweightVideo.local_dir, null);
+    assert.equal(lightweightVideo.backup_status, "queued");
+    assert.doesNotMatch(String(lightweightVideo.payload_json), /old\/app\/temp|downloadSession/);
+    lightweightDb.close();
+    await fs.promises.rm(lightweightExtractDir, { recursive: true, force: true });
 
     const preview = await fetch(`${base}/api/migration/import-preview`, {
       method: "POST",
@@ -181,7 +226,16 @@ test("real app supports login, queue state, config update and migration preview 
       headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
       body: archive,
     });
-    assert.equal(importSchema2.status, 200);
+    assert.equal(importSchema2.status, 409);
+    const clearMigrationRuntimeJob = new Database(path.join(runtime, "data", "bfb.sqlite"));
+    clearMigrationRuntimeJob.prepare("DELETE FROM jobs WHERE id='job-lightweight'").run();
+    clearMigrationRuntimeJob.close();
+    const importAfterQueueIdle = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreCovers=false`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
+      body: archive,
+    });
+    assert.equal(importAfterQueueIdle.status, 200);
 
     const resumableDir = path.join(tempRoot, "BVCOMPLETE");
     await fs.promises.mkdir(resumableDir, { recursive: true });

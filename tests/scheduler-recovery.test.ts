@@ -302,10 +302,10 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
     const job = scheduler.jobStore.findByDedupeKey("upload:u2:2:BVORPHAN:/backup/orphan-b:main");
     assert.ok(job);
     assert.notEqual(job.status, "failed");
-    assert.match(String(job.payload.conflictArchiveSegment), /^\d{8}T\d{9}Z$/);
+    assert.equal(job.payload.conflictArchiveSegment, undefined);
     const existingJob = scheduler.jobStore.findByDedupeKey("upload:u1:1:BVORPHAN:/backup/orphan-a:main");
     assert.equal(existingJob?.id !== job.id, true);
-    assert.match(String(existingJob?.payload.conflictArchiveSegment), /^\d{8}T\d{9}Z$/);
+    assert.equal(existingJob?.payload.conflictArchiveSegment, undefined);
     assert.equal(scheduler.getQueueSnapshot().uploadPending.filter((item: any) => item.bvid === "BVORPHAN").length, 2);
   } finally {
     scheduler.stop();

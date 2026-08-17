@@ -1,7 +1,8 @@
 import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
-import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, verifyRemoteFiles, type RemoteConflictArchiveResult } from "./uploader.js";
+import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, resumeUploadSession, verifyRemoteFiles } from "./uploader.js";
+import type { ExistingArchiveProof, UploadIntent } from "./upload-preflight.js";
 import { AppConfig, type BBDownApiMode } from "./config.js";
 import { BiliCookie } from "./users.js";
 import type { RemoteFileRecord, UploadFileMetadata } from "./state.js";
@@ -13,6 +14,8 @@ import {
   type DownloadSessionManifest,
 } from "./download-session.js";
 import { sanitizeUploadText } from "./upload-health.js";
+import { TransferSessionStore } from "./transfer-session.js";
+import { createRemoteReplacementRunner, type RemoteReplacementRunner } from "./remote-operations.js";
 import {
   applyQualityArtifactProfile,
   buildQualityArtifactKey,
@@ -118,6 +121,7 @@ export class QualityUpgradeTask extends Task {
   uploadRunner = uploadWithAList;
   verifyRunner = verifyRemoteFiles;
   moveRunner = moveRemoteFile;
+  replacementRunner?: RemoteReplacementRunner;
   runId?: string;
   downloadDir?: string;
   outputFiles: string[] = [];
@@ -235,6 +239,7 @@ export class QualityUpgradeTask extends Task {
       cleanupLocal: false,
       files: this.outputFiles,
       filenameMetadataByPath,
+      uploadIntent: "quality_upgrade",
     });
     this.qualityStageLabel = "验证临时新版文件";
     const stagedVerifyResult = await this.verifyRunner(this.config, this.uploadResult.files);
@@ -262,9 +267,12 @@ export class QualityUpgradeTask extends Task {
     }
     const backupRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-backup-${runId}`);
     this.backupRemotePath = backupRemotePath;
-    this.backupFiles = [];
-    this.finalFiles = [];
+    const backupFiles = this.backupFiles ||= [];
+    const finalFiles = this.finalFiles ||= [];
     this.onReplacing?.(this, this.stageRemotePath || joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`), backupRemotePath);
+    const replace = this.replacementRunner || (this.moveRunner === moveRemoteFile
+      ? await createRemoteReplacementRunner(this.config)
+      : this.moveRunner);
     try {
       this.qualityStageLabel = "备份旧远端文件";
       for (const oldFile of this.target.oldFiles) {
@@ -272,17 +280,33 @@ export class QualityUpgradeTask extends Task {
           ...oldFile,
           path: joinRemotePath(backupRemotePath, oldFile.name),
         };
-        await this.moveRunner(this.config, oldFile.path, backupFile.path);
-        this.backupFiles.push(backupFile);
-        this.onBackupFileMoved?.(this, backupFile);
+        const recordBackupProof = () => {
+          if (!backupFiles.some((file) => file.path === backupFile.path)) {
+            backupFiles.push(backupFile);
+            this.onBackupFileMoved?.(this, backupFile);
+          }
+        };
+        await replace(this.config, oldFile.path, backupFile.path, oldFile.size, {
+          targetPreviouslyVerified: backupFiles.some((file) => file.path === backupFile.path),
+          onTargetVerified: recordBackupProof,
+        });
+        recordBackupProof();
       }
       this.qualityStageLabel = "移动新版到正式目录";
       for (let i = 0; i < this.uploadResult.files.length; i += 1) {
         const stagedFile = this.uploadResult.files[i];
         const finalFile = plannedFinalFiles[i];
-        await this.moveRunner(this.config, stagedFile.path, finalFile.path);
-        this.finalFiles.push(finalFile);
-        this.onFinalFileMoved?.(this, finalFile);
+        const recordFinalProof = () => {
+          if (!finalFiles.some((file) => file.path === finalFile.path)) {
+            finalFiles.push(finalFile);
+            this.onFinalFileMoved?.(this, finalFile);
+          }
+        };
+        await replace(this.config, stagedFile.path, finalFile.path, stagedFile.size, {
+          targetPreviouslyVerified: finalFiles.some((file) => file.path === finalFile.path),
+          onTargetVerified: recordFinalProof,
+        });
+        recordFinalProof();
       }
       this.qualityStageLabel = "验证正式目录新版文件";
       const finalVerifyResult = await this.verifyRunner(this.config, this.finalFiles);
@@ -294,7 +318,7 @@ export class QualityUpgradeTask extends Task {
         const stagedFile = this.uploadResult.files.find((file) => file.name === finalFile.name);
         if (stagedFile) {
           try {
-            await this.moveRunner(this.config, finalFile.path, stagedFile.path);
+            await replace(this.config, finalFile.path, stagedFile.path, finalFile.size);
           } catch (rollbackError) {
             console.warn(`[Task] Failed to roll back upgraded file ${finalFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
@@ -305,7 +329,7 @@ export class QualityUpgradeTask extends Task {
         const oldFile = this.target.oldFiles[i];
         if (oldFile) {
           try {
-            await this.moveRunner(this.config, backupFile.path, oldFile.path);
+              await replace(this.config, backupFile.path, oldFile.path, backupFile.size);
           } catch (rollbackError) {
             console.warn(`[Task] Failed to restore backup file ${backupFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
@@ -443,15 +467,64 @@ export class UploadTask extends Task {
   partialBackup = false;
   historyOnly = false;
   historySnapshotAt?: string;
+  uploadIntent: UploadIntent;
+  existingArchiveProof?: ExistingArchiveProof;
+  legacyConflictSideEffectsStarted = false;
+  conflictCandidateId?: string;
+  conflictCandidateRemotePath?: string;
+  transferSessionStore?: TransferSessionStore;
+  sessionId?: string;
+  sessionGeneration?: number;
+  sessionDedupeKey?: string;
   conflictArchiveSegment?: string;
-  onRemoteConflictArchived?: (task: UploadTask, result: RemoteConflictArchiveResult) => void | Promise<void>;
+  conflictArchiveRoot?: string;
+  conflictArchiveOldFiles?: RemoteFileRecord[];
+  conflictArchiveVerifiedPaths?: string[];
+  onConflictArchived?: (archive: {
+    archivePath: string;
+    files: Array<{ name: string; oldPath: string; archivedPath: string; size?: number }>;
+  }) => void | Promise<void>;
+  onConflictArchiveTargetVerified?: (file: { name: string; oldPath: string; archivedPath: string; size?: number }) => void | Promise<void>;
+  allowReupload = false;
+  reuploadAuthorizedFiles: string[] = [];
+  consumeReuploadPermission?: (relativePath: string) => boolean;
+  reuploadPermissionUsed = false;
+  resumeOnly = false;
+  onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
 
   constructor(
     bvid: string,
     downloadDir: string,
     remotePath: string,
     config: AppConfig,
-    options: { cleanupLocal?: boolean; files?: string[]; filenameMetadataByPath?: Record<string, UploadFileMetadata>; partialBackup?: boolean; historyOnly?: boolean; historySnapshotAt?: string; conflictArchiveSegment?: string } = {}
+    options: {
+      cleanupLocal?: boolean;
+      files?: string[];
+      filenameMetadataByPath?: Record<string, UploadFileMetadata>;
+      partialBackup?: boolean;
+      historyOnly?: boolean;
+      historySnapshotAt?: string;
+      uploadIntent?: UploadIntent;
+      existingArchiveProof?: ExistingArchiveProof;
+      legacyConflictSideEffectsStarted?: boolean;
+      conflictCandidateId?: string;
+      conflictCandidateRemotePath?: string;
+      transferSessionStore?: TransferSessionStore;
+      sessionId?: string;
+      sessionGeneration?: number;
+      sessionDedupeKey?: string;
+      conflictArchiveSegment?: string;
+      conflictArchiveRoot?: string;
+      conflictArchiveOldFiles?: RemoteFileRecord[];
+      conflictArchiveVerifiedPaths?: string[];
+      onConflictArchived?: UploadTask["onConflictArchived"];
+      onConflictArchiveTargetVerified?: UploadTask["onConflictArchiveTargetVerified"];
+      allowReupload?: boolean;
+      reuploadAuthorizedFiles?: string[];
+      consumeReuploadPermission?: (relativePath: string) => boolean;
+      resumeOnly?: boolean;
+      onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
+    } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.bvid = bvid;
@@ -464,7 +537,26 @@ export class UploadTask extends Task {
     this.partialBackup = Boolean(options.partialBackup);
     this.historyOnly = Boolean(options.historyOnly);
     this.historySnapshotAt = options.historySnapshotAt;
+    this.uploadIntent = options.uploadIntent || (this.historyOnly ? "history_upload" : "normal_backup");
+    this.existingArchiveProof = options.existingArchiveProof;
+    this.legacyConflictSideEffectsStarted = Boolean(options.legacyConflictSideEffectsStarted);
+    this.conflictCandidateId = options.conflictCandidateId;
+    this.conflictCandidateRemotePath = options.conflictCandidateRemotePath;
+    this.transferSessionStore = options.transferSessionStore;
+    this.sessionId = options.sessionId;
+    this.sessionGeneration = options.sessionGeneration;
+    this.sessionDedupeKey = options.sessionDedupeKey;
     this.conflictArchiveSegment = options.conflictArchiveSegment;
+    this.conflictArchiveRoot = options.conflictArchiveRoot;
+    this.conflictArchiveOldFiles = options.conflictArchiveOldFiles;
+    this.conflictArchiveVerifiedPaths = options.conflictArchiveVerifiedPaths;
+    this.onConflictArchived = options.onConflictArchived;
+    this.onConflictArchiveTargetVerified = options.onConflictArchiveTargetVerified;
+    this.allowReupload = Boolean(options.allowReupload);
+    this.reuploadAuthorizedFiles = [...new Set((options.reuploadAuthorizedFiles || []).map((value) => String(value || "").replace(/\\/g, "/")).filter(Boolean))];
+    this.consumeReuploadPermission = options.consumeReuploadPermission;
+    this.resumeOnly = Boolean(options.resumeOnly);
+    this.onTransferSession = options.onTransferSession;
   }
 
   async run() {
@@ -473,19 +565,100 @@ export class UploadTask extends Task {
       throw new Error("Upload file whitelist is missing; local cache must be adopted before upload");
     }
     this.onUploading?.(this);
-    this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
-      cleanupLocal: this.cleanupLocal,
-      files: this.files,
-      filenameMetadataByPath: this.filenameMetadataByPath,
-      conflictArchiveSegment: this.conflictArchiveSegment,
-      onConflictArchived: (result) => this.onRemoteConflictArchived?.(this, result),
-    });
+    this.allowReupload = false;
+    try {
+      this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
+        cleanupLocal: this.cleanupLocal,
+        files: this.files,
+        filenameMetadataByPath: this.filenameMetadataByPath,
+        transferSessionStore: this.transferSessionStore,
+        sessionId: this.sessionId,
+        sessionGeneration: this.sessionGeneration,
+        sessionDedupeKey: this.sessionDedupeKey,
+        allowReupload: false,
+        reuploadAuthorizedFiles: this.reuploadAuthorizedFiles,
+        consumeReuploadPermission: (relativePath) => {
+          const consumed = this.consumeReuploadPermission?.(relativePath) ?? false;
+          if (consumed) this.reuploadPermissionUsed = true;
+          return consumed;
+        },
+        resumeOnly: this.resumeOnly,
+        bvid: this.bvid,
+        userId: this.userId,
+        mediaId: this.mediaId,
+        historyOnly: this.historyOnly,
+        historySnapshotAt: this.historySnapshotAt,
+        uploadIntent: this.uploadIntent,
+        existingArchiveProof: this.existingArchiveProof,
+        legacyConflictSideEffectsStarted: this.legacyConflictSideEffectsStarted,
+        conflictArchiveSegment: this.conflictArchiveSegment,
+        conflictArchiveRoot: this.conflictArchiveRoot,
+        conflictArchiveOldFiles: this.conflictArchiveOldFiles,
+        conflictArchiveVerifiedPaths: this.conflictArchiveVerifiedPaths,
+        onConflictArchiveTargetVerified: this.onConflictArchiveTargetVerified,
+        onConflictArchived: this.onConflictArchived,
+      });
+    } catch (error: any) {
+      const status = Number(error?.uploadFailure?.status || error?.status || 0);
+      const reasonCode = String(error?.uploadFailure?.code || error?.code || "UPLOAD_REMOTE_CONFLICT");
+      const reasonSummary = sanitizeUploadText(error?.uploadFailure?.summary || error?.message || error, 500);
+      const candidateEligible = this.uploadIntent === "normal_backup"
+        && status === 409
+        && !this.legacyConflictSideEffectsStarted
+        && reasonCode !== "UPLOAD_LEGACY_CONFLICT_ARCHIVE_INTERRUPTED"
+        && Boolean(this.conflictCandidateId && this.conflictCandidateRemotePath);
+      if (!candidateEligible) throw error;
+      const candidateResult = await uploadWithAList(
+        this.downloadDir,
+        this.conflictCandidateRemotePath!,
+        this.config,
+        {
+          cleanupLocal: false,
+          files: this.files,
+          filenameMetadataByPath: this.filenameMetadataByPath,
+          uploadIntent: "conflict_candidate",
+          bvid: this.bvid,
+          userId: this.userId,
+          mediaId: this.mediaId,
+        },
+      );
+      if (!candidateResult.allVerified) {
+        const pendingError: any = new Error("冲突候选已上传，正在等待远端完整可见");
+        pendingError.status = 503;
+        pendingError.code = "UPLOAD_CONFLICT_CANDIDATE_AWAITING_REMOTE";
+        throw pendingError;
+      }
+      this.result = {
+        ...candidateResult,
+        disposition: "conflict_candidate",
+        conflictCandidate: {
+          id: this.conflictCandidateId!,
+          originalRemotePath: this.remotePath,
+          candidateRemotePath: this.conflictCandidateRemotePath!,
+          reasonCode,
+          reasonSummary,
+          existingArchiveProof: this.existingArchiveProof,
+        },
+      };
+    }
+    if (this.result.sessionId && this.result.sessionId !== this.sessionId) {
+      this.sessionId = this.result.sessionId;
+      this.sessionGeneration = this.result.sessionGeneration;
+      this.onTransferSession?.(this, this.result.sessionId, this.result.sessionGeneration || 1);
+    }
     console.log(`[Task] Completed upload for ${this.bvid}`);
   }
 }
 
 export class UploadVerificationTask extends Task {
   result?: Awaited<ReturnType<typeof inspectRemoteFileSize>>;
+  transferResult?: UploadResult;
+  transferSessionStore?: TransferSessionStore;
+  sessionId?: string;
+  sessionGeneration?: number;
+  allowReupload = false;
+  sessionVerification = false;
+  filenameMetadataByPath?: Record<string, UploadFileMetadata>;
 
   constructor(
     public readonly bvid: string,
@@ -493,12 +666,34 @@ export class UploadVerificationTask extends Task {
     public readonly mediaId: number,
     public readonly remoteFile: string,
     public readonly expectedSize: number,
-    public readonly config: AppConfig
+    public readonly config: AppConfig,
+    options: { transferSessionStore?: TransferSessionStore; sessionId?: string; sessionGeneration?: number; allowReupload?: boolean; sessionVerification?: boolean; filenameMetadataByPath?: Record<string, UploadFileMetadata> } = {}
   ) {
     super(`Verify upload ${bvid}`, { maxRetries: 0, retryDelaySeconds: 1 });
+    this.transferSessionStore = options.transferSessionStore;
+    this.sessionId = options.sessionId;
+    this.sessionGeneration = options.sessionGeneration;
+    this.allowReupload = Boolean(options.allowReupload);
+    this.sessionVerification = Boolean(options.sessionVerification || options.sessionId);
+    this.filenameMetadataByPath = options.filenameMetadataByPath;
   }
 
   async run() {
+    if (this.transferSessionStore && this.sessionId) {
+      this.transferResult = await resumeUploadSession(this.config, this.transferSessionStore, this.sessionId, {
+        // Verification is always read-only. A manual recovery upload carries
+        // its one-time permission in the upload job, never in this task.
+        allowReupload: this.sessionVerification ? false : this.allowReupload,
+        sessionGeneration: this.sessionGeneration,
+        filenameMetadataByPath: this.filenameMetadataByPath,
+        cleanupLocal: false,
+        verificationDelaysMs: [0],
+      });
+      this.result = this.transferResult.allVerified
+        ? { status: "verified", remoteSize: this.transferResult.files.reduce((sum, file) => sum + Number(file.size || 0), 0) }
+        : { status: "missing" };
+      return;
+    }
     this.result = await inspectRemoteFileSize(this.config, this.remoteFile, this.expectedSize);
   }
 }

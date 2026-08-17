@@ -58,6 +58,92 @@ export interface MigrationManifest {
   archive?: { files: number; expandedBytes: number };
 }
 
+const lightweightRuntimeStatuses = new Set([
+  "queued", "downloading", "downloaded", "uploading", "upload_failed", "missing",
+]);
+
+function cloneJsonValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? null)) as T;
+}
+
+function parseMigrationJson(value: unknown) {
+  try {
+    return JSON.parse(String(value || "{}"));
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeLightweightStateSnapshot(input: any) {
+  const state = cloneJsonValue(input || { videos: {}, relations: {} });
+  for (const video of Object.values<any>(state.videos || {})) {
+    delete video.localDir;
+    delete video.downloadSession;
+    if (lightweightRuntimeStatuses.has(String(video.backupStatus || ""))) video.backupStatus = "queued";
+  }
+  for (const relation of Object.values<any>(state.relations || {})) {
+    delete relation.qualityUpgrade;
+    delete relation.localDir;
+    delete relation.downloadDir;
+    delete relation.sessionId;
+    delete relation.sessionGeneration;
+    if (lightweightRuntimeStatuses.has(String(relation.backupStatus || ""))) {
+      relation.backupStatus = relation.favoriteUnavailable && !relation.selfVisible ? "lost" : "queued";
+    }
+  }
+  return state;
+}
+
+async function sanitizeLightweightDatabase(filePath: string) {
+  const database = new StateDatabase(filePath);
+  try {
+    const now = Date.now();
+    const transaction = database.db.transaction(() => {
+      // These tables describe runtime work or local files. Lightweight
+      // packages intentionally carry metadata only; complete packages keep
+      // them together with temp/.
+      database.db.exec(`
+        DELETE FROM transfer_session_files;
+        DELETE FROM transfer_sessions;
+        DELETE FROM jobs;
+        DELETE FROM download_sessions;
+        DELETE FROM quality_upgrades;
+      `);
+
+      const videoRows = database.db.prepare("SELECT bvid, backup_status, payload_json FROM videos").all() as any[];
+      const updateVideo = database.db.prepare(
+        "UPDATE videos SET backup_status=?, local_dir=NULL, payload_json=?, updated_at=? WHERE bvid=?"
+      );
+      for (const row of videoRows) {
+        const video = sanitizeLightweightStateSnapshot({ videos: { [String(row.bvid)]: parseMigrationJson(row.payload_json) }, relations: {} }).videos[String(row.bvid)];
+        const status = lightweightRuntimeStatuses.has(String(row.backup_status || "")) ? "queued" : String(row.backup_status || "discovered");
+        updateVideo.run(status, JSON.stringify(video), now, String(row.bvid));
+      }
+
+      const relationRows = database.db.prepare("SELECT user_id, media_id, bvid, backup_status, payload_json FROM favorite_relations").all() as any[];
+      const updateRelation = database.db.prepare(`
+        UPDATE favorite_relations
+        SET backup_status=?, payload_json=?, updated_at=?
+        WHERE user_id=? AND media_id=? AND bvid=?
+      `);
+      for (const row of relationRows) {
+        const relation = sanitizeLightweightStateSnapshot({ videos: {}, relations: {
+          [`${row.user_id}:${row.media_id}:${row.bvid}`]: parseMigrationJson(row.payload_json),
+        } }).relations[`${row.user_id}:${row.media_id}:${row.bvid}`];
+        const status = lightweightRuntimeStatuses.has(String(row.backup_status || ""))
+          ? (relation.favoriteUnavailable && !relation.selfVisible ? "lost" : "queued")
+          : String(row.backup_status || "discovered");
+        updateRelation.run(status, JSON.stringify(relation), now, String(row.user_id), Number(row.media_id), String(row.bvid));
+      }
+      database.rebuildArchiveLibraryProjection();
+    });
+    transaction();
+    database.integrityCheck();
+  } finally {
+    database.close();
+  }
+}
+
 export interface UnavailableVideoIndex {
   schema: number;
   generatedAt: string;
@@ -250,6 +336,7 @@ export async function createMigrationExport(options: MigrationExportOptions = {}
   try {
     const usersPath = path.join(dataDir, "users.json");
     const state = stateAccess?.getStateSnapshot() || { videos: {}, relations: {} };
+    let stateForExport = includes.mode === "lightweight" ? sanitizeLightweightStateSnapshot(state) : state;
     const users = readJsonFile<any[]>(usersPath, []);
 
     if (includes.includeConfig) await copyIfExists(path.join(dataDir, "config.json"), path.join(staging, "data", "config.json"));
@@ -261,15 +348,24 @@ export async function createMigrationExport(options: MigrationExportOptions = {}
       } else {
         await copyIfExists(databasePath, path.join(staging, "data", "bfb.sqlite"));
       }
+      if (includes.mode === "lightweight" && await pathExists(path.join(staging, "data", "bfb.sqlite"))) {
+        await sanitizeLightweightDatabase(path.join(staging, "data", "bfb.sqlite"));
+        const sanitizedDatabase = new StateDatabase(path.join(staging, "data", "bfb.sqlite"));
+        try {
+          stateForExport = sanitizedDatabase.loadState();
+        } finally {
+          sanitizedDatabase.close();
+        }
+      }
       await fs.promises.rm(path.join(staging, "data", "bfb.sqlite-wal"), { force: true });
       await fs.promises.rm(path.join(staging, "data", "bfb.sqlite-shm"), { force: true });
-      await fs.promises.writeFile(path.join(staging, "data", "state.json"), JSON.stringify(state, null, 2), "utf8");
+      await fs.promises.writeFile(path.join(staging, "data", "state.json"), JSON.stringify(stateForExport, null, 2), "utf8");
     }
     if (includes.includeLogs) await copyIfExists(logsPath, path.join(staging, "data", "logs.json"));
     if (includes.includeDebug) await copyDirIfExists(path.join(dataDir, "debug"), path.join(staging, "data", "debug"));
     if (includes.includeCovers) await copyDirIfExists(coversDir, path.join(staging, "data", "covers"));
 
-    const unavailableIndex = buildUnavailableIndex(state);
+    const unavailableIndex = buildUnavailableIndex(stateForExport);
     await fs.promises.mkdir(path.join(staging, "indexes"), { recursive: true });
     await fs.promises.writeFile(
       path.join(staging, "indexes", "unavailable-videos.json"),
@@ -291,7 +387,7 @@ export async function createMigrationExport(options: MigrationExportOptions = {}
       exportedAt: new Date().toISOString(),
       mode: includes.mode,
       includes,
-      counts: buildCounts(state, users),
+      counts: buildCounts(stateForExport, users),
       warning: "users.json contains Bilibili login cookies if included. Do not share this package.",
     }, tempFiles.map((relative) => ({
       archivePath: `temp/${relative.replace(/\\/g, "/")}`,
@@ -579,16 +675,26 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
     await copyIfExists(path.join(dataDir, "config.json"), path.join(staging, "data", "config.json"));
     await copyIfExists(path.join(dataDir, "users.json"), path.join(staging, "data", "users.json"));
     const state = stateAccess?.getStateSnapshot() || { videos: {}, relations: {} };
+    let stateForBackup = sanitizeLightweightStateSnapshot(state);
     await fs.promises.mkdir(path.join(staging, "data"), { recursive: true });
     if (stateAccess) await stateAccess.backupDatabase(path.join(staging, "data", "bfb.sqlite"));
     else await copyIfExists(databasePath, path.join(staging, "data", "bfb.sqlite"));
+    if (await pathExists(path.join(staging, "data", "bfb.sqlite"))) {
+      await sanitizeLightweightDatabase(path.join(staging, "data", "bfb.sqlite"));
+      const sanitizedDatabase = new StateDatabase(path.join(staging, "data", "bfb.sqlite"));
+      try {
+        stateForBackup = sanitizedDatabase.loadState();
+      } finally {
+        sanitizedDatabase.close();
+      }
+    }
     await fs.promises.rm(path.join(staging, "data", "bfb.sqlite-wal"), { force: true });
     await fs.promises.rm(path.join(staging, "data", "bfb.sqlite-shm"), { force: true });
-    await fs.promises.writeFile(path.join(staging, "data", "state.json"), JSON.stringify(state, null, 2), "utf8");
+    await fs.promises.writeFile(path.join(staging, "data", "state.json"), JSON.stringify(stateForBackup, null, 2), "utf8");
     await copyIfExists(logsPath, path.join(staging, "data", "logs.json"));
     await copyDirIfExists(coversDir, path.join(staging, "data", "covers"));
     await copyDirIfExists(path.join(dataDir, "debug"), path.join(staging, "data", "debug"));
-    const unavailableIndex = buildUnavailableIndex(state);
+    const unavailableIndex = buildUnavailableIndex(stateForBackup);
     await fs.promises.mkdir(path.join(staging, "indexes"), { recursive: true });
     await fs.promises.writeFile(
       path.join(staging, "indexes", "unavailable-videos.json"),
@@ -611,7 +717,7 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
         includeCovers: await pathExists(coversDir),
       },
       counts: buildCounts(
-        state,
+        stateForBackup,
         readJsonFile<any[]>(path.join(dataDir, "users.json"), [])
       ),
       warning: "Automatic backup created before importing a migration package.",
@@ -650,6 +756,13 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
     }
     const backupPath = await backupCurrentData(stateAccess);
     const operationId = crypto.randomUUID().replace(/-/g, "");
+    const originalSqliteSource = path.join(extracted.extractDir, "data", "bfb.sqlite");
+    let sqliteSource = originalSqliteSource;
+    if (!complete && await pathExists(originalSqliteSource)) {
+      sqliteSource = path.join(extracted.extractDir, "data", `bfb.sqlite.lightweight-${operationId}`);
+      await fs.promises.copyFile(originalSqliteSource, sqliteSource, fs.constants.COPYFILE_EXCL);
+      await sanitizeLightweightDatabase(sqliteSource);
+    }
     const prepared: Array<{ name: string; target: string; staged: string; backup: string }> = [];
     const switched: typeof prepared = [];
     const prepare = async (name: string, source: string, target: string) => {
@@ -676,7 +789,7 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       if (options.restoreDebug) await prepare("debug", path.join(extracted.extractDir, "data", "debug"), path.join(dataDir, "debug"));
       if (complete) await prepare("temp", path.join(extracted.extractDir, "temp"), tempDir);
       if (options.restoreState !== false && !stateAccess) {
-        await prepare("state", path.join(extracted.extractDir, "data", "bfb.sqlite"), databasePath);
+        await prepare("state", sqliteSource, databasePath);
       }
 
       for (const item of prepared) {
@@ -692,7 +805,6 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       }
 
       if (options.restoreState !== false) {
-        const sqliteSource = path.join(extracted.extractDir, "data", "bfb.sqlite");
         const jsonSource = path.join(extracted.extractDir, "data", "state.json");
         if (stateAccess && await pathExists(sqliteSource)) {
           if (stateAccess.beginDatabaseReplacement) {
@@ -703,7 +815,8 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
           restored.push("state");
         } else if (stateAccess && await pathExists(jsonSource)) {
           const previousState = stateAccess.getStateSnapshot();
-          stateAccess.replaceStateSnapshot(await readStrictJson(jsonSource));
+          const importedState = await readStrictJson(jsonSource);
+          stateAccess.replaceStateSnapshot(complete ? importedState : sanitizeLightweightStateSnapshot(importedState));
           let settled = false;
           stateReplacement = {
             commit: async () => { settled = true; },

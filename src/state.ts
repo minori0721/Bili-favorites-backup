@@ -15,6 +15,7 @@ import {
   type UploadFailureRecoveryCursor,
 } from "./database.js";
 import { playbackAvailability, type PlaybackAvailability } from "./playback.js";
+import type { ExistingArchiveProof } from "./upload-preflight.js";
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -98,6 +99,19 @@ export interface RemoteConflictArchiveRecord {
   archivePath: string;
   archivedAt: string;
   files: Array<{ name: string; oldPath: string; archivedPath: string; size?: number }>;
+}
+
+export interface RemoteConflictCandidateRecord {
+  id: string;
+  createdAt: string;
+  resolvedAt?: string;
+  resolution?: "kept_existing" | "selected_candidate";
+  originalRemotePath: string;
+  candidateRemotePath: string;
+  reasonCode: string;
+  reasonSummary: string;
+  files: RemoteFileRecord[];
+  existingArchiveProof?: ExistingArchiveProof;
 }
 
 export interface VideoMetadataSnapshot {
@@ -195,6 +209,7 @@ export interface FavoriteRelation {
   remotePath?: string;
   remoteFiles?: RemoteFileRecord[];
   remoteConflictArchives?: RemoteConflictArchiveRecord[];
+  remoteConflictCandidates?: RemoteConflictCandidateRecord[];
   pendingPartialBackup?: boolean;
   qualityUpgrade?: QualityUpgradeOperation;
   uploadedAt?: string;
@@ -1519,6 +1534,97 @@ export class StateManager {
     this.save();
   }
 
+  restoreExistingArchiveProof(
+    bvid: string,
+    userId: string | undefined,
+    mediaId: number | undefined,
+    proof: ExistingArchiveProof,
+  ) {
+    const entry = this.state.videos?.[bvid];
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!entry || !relation || !["verified", "partial_verified"].includes(proof.status) || proof.files.length === 0) return false;
+    const checkedAt = nowIso();
+    const remoteFiles = proof.files.map((file) => ({
+      ...file,
+      qualityProfile: file.qualityProfile ? { ...file.qualityProfile } : undefined,
+      mediaMetadata: file.mediaMetadata ? { ...file.mediaMetadata } : undefined,
+      filenameMetadata: file.filenameMetadata ? { ...file.filenameMetadata } : undefined,
+      verificationStatus: "verified" as const,
+      nextVerifyAt: undefined,
+      lastError: undefined,
+    }));
+    this.setRelationStatus(relation, proof.status, checkedAt);
+    relation.remotePath = proof.remotePath;
+    relation.remoteFiles = remoteFiles;
+    relation.uploadedAt = proof.uploadedAt || relation.uploadedAt || checkedAt;
+    relation.verifiedAt = proof.verifiedAt || relation.verifiedAt || checkedAt;
+    relation.lastRemoteCheckAt = checkedAt;
+    relation.nextRemoteCheckAt = undefined;
+    relation.remoteMissingCount = 0;
+    relation.pendingPartialBackup = proof.status === "partial_verified" || undefined;
+    relation.lastError = undefined;
+    entry.remotePath = proof.remotePath;
+    entry.remoteFiles = remoteFiles;
+    entry.uploadedAt = proof.uploadedAt || entry.uploadedAt || relation.uploadedAt;
+    entry.verifiedAt = proof.verifiedAt || entry.verifiedAt || relation.verifiedAt;
+    entry.lastRemoteCheckAt = checkedAt;
+    entry.nextRemoteCheckAt = undefined;
+    entry.remoteMissingCount = 0;
+    entry.lastError = undefined;
+    this.clearFailedEntry(relation.userId, relation.mediaId, relation.bvid);
+    this.refreshVideoAggregateStatus(bvid);
+    this.save();
+    return true;
+  }
+
+  recordRemoteConflictCandidate(
+    bvid: string,
+    userId: string | undefined,
+    mediaId: number | undefined,
+    candidate: Omit<RemoteConflictCandidateRecord, "createdAt"> & { createdAt?: string },
+  ) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!relation || !candidate.id || candidate.files.length === 0) return false;
+    const record: RemoteConflictCandidateRecord = {
+      ...candidate,
+      createdAt: candidate.createdAt || nowIso(),
+      files: candidate.files.map((file) => ({ ...file })),
+      existingArchiveProof: candidate.existingArchiveProof ? {
+        ...candidate.existingArchiveProof,
+        files: candidate.existingArchiveProof.files.map((file) => ({
+          ...file,
+          qualityProfile: file.qualityProfile ? { ...file.qualityProfile } : undefined,
+          mediaMetadata: file.mediaMetadata ? { ...file.mediaMetadata } : undefined,
+          filenameMetadata: file.filenameMetadata ? { ...file.filenameMetadata } : undefined,
+        })),
+      } : undefined,
+    };
+    const existing = relation.remoteConflictCandidates || [];
+    relation.remoteConflictCandidates = [
+      ...existing.filter((item) => item.id !== record.id),
+      record,
+    ].slice(-20);
+    this.save();
+    return true;
+  }
+
+  resolveRemoteConflictCandidate(
+    bvid: string,
+    userId: string | undefined,
+    mediaId: number | undefined,
+    candidateId: string,
+    resolution: "kept_existing" | "selected_candidate",
+  ) {
+    const relation = this.getRelation(userId, mediaId, bvid);
+    if (!relation?.remoteConflictCandidates?.some((item) => item.id === candidateId)) return false;
+    const resolvedAt = nowIso();
+    relation.remoteConflictCandidates = relation.remoteConflictCandidates.map((item) => item.id === candidateId
+      ? { ...item, resolution, resolvedAt }
+      : item);
+    this.save();
+    return true;
+  }
+
   markUploadedPendingVerification(
     bvid: string,
     remotePath: string,
@@ -1694,10 +1800,16 @@ export class StateManager {
     if (!entry || !relation || archive.files.length === 0) return false;
     const at = nowIso();
     const previousPaths = new Set((relation.remoteFiles || []).map((file) => file.path));
-    relation.remoteConflictArchives = [
-      ...(relation.remoteConflictArchives || []),
-      { archivePath: archive.archivePath, archivedAt: at, files: archive.files.map((file) => ({ ...file })) },
-    ].slice(-20);
+    const existingArchive = (relation.remoteConflictArchives || [])
+      .find((item) => item.archivePath === archive.archivePath);
+    relation.remoteConflictArchives = existingArchive
+      ? (relation.remoteConflictArchives || []).map((item) => item.archivePath === archive.archivePath
+        ? { ...item, files: archive.files.map((file) => ({ ...file })) }
+        : item)
+      : [
+        ...(relation.remoteConflictArchives || []),
+        { archivePath: archive.archivePath, archivedAt: at, files: archive.files.map((file) => ({ ...file })) },
+      ].slice(-20);
     relation.remoteFiles = undefined;
     relation.uploadedAt = undefined;
     relation.verifiedAt = undefined;

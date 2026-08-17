@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { SyncScheduler } from "../src/scheduler.js";
+import { computeUploadVerificationTiming, SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
-import { UploadVerificationTask } from "../src/tasks.js";
+import { UploadTask, UploadVerificationTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 function verificationState(localDir: string): any {
@@ -28,7 +28,319 @@ function verificationState(localDir: string): any {
   };
 }
 
-test("upload confirmation survives restart and times out into a delayed reupload", async () => {
+test("staggered multipart PUTs each receive the full confirmation window", () => {
+  const firstPut = Date.parse("2026-08-17T00:00:00.000Z");
+  const secondPut = firstPut + 8 * 60_000;
+  const beforeSecondDeadline = secondPut + 9 * 60_000;
+  const stillWaiting = computeUploadVerificationTiming([firstPut, secondPut], beforeSecondDeadline);
+  assert.equal(stillWaiting.timedOut, false);
+  assert.ok((stillWaiting.nextAt || 0) > beforeSecondDeadline);
+  assert.equal(computeUploadVerificationTiming([firstPut, secondPut], secondPut + 10 * 60_000).timedOut, true);
+});
+
+test("manual recovery uploads keep scheduler maintenance locked", async () => {
+  const runtime = await createTestDir("manual-wait-maintenance-lock");
+  const manager = new StateManager({
+    statePath: path.join(runtime, "data", "state.json"),
+    dbPath: path.join(runtime, "data", "bfb.sqlite"),
+  });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+  ) as any;
+  try {
+    assert.equal(scheduler.hasPersistentTransferWork(), false);
+    scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:manual-maintenance-lock",
+      bvid: "BVMANUALLOCK",
+      initialStatus: "manual_wait",
+      payload: { awaitingManualRecovery: true, files: ["video.mp4"] },
+    });
+    assert.equal(scheduler.hasPersistentTransferWork(), true);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+async function createStructuredRecoveryFixture(
+  name: string,
+  remoteResult: { status: "verified" | "missing" | "mismatch"; remoteSize?: number },
+  options: { local?: "available" | "missing" | "changed"; automaticRecoveryAttempts?: number } = {},
+) {
+  const runtime = await createTestDir(name);
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "video.mp4"), Buffer.alloc(options.local === "changed" ? 8 : 12, 1));
+  if (options.local === "missing") await fs.promises.rm(path.join(localDir, "video.mp4"));
+  const manager = new StateManager({
+    statePath: path.join(runtime, "data", "state.json"),
+    dbPath: path.join(runtime, "data", "bfb.sqlite"),
+  });
+  manager.replaceStateSnapshot(verificationState(localDir));
+  const user = {
+    id: "u1", uid: 1, name: "Tester",
+    cookie: { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+    favorites: [{ mediaId: 1, title: "Favorites" }],
+    enabled: true, lastLoginAt: new Date().toISOString(),
+  };
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
+    manager,
+    { remoteFileInspector: async () => remoteResult },
+  ) as any;
+  scheduler.downloadQueue.setStartGate(() => false);
+  scheduler.uploadQueue.setStartGate(() => false);
+  scheduler.verificationQueue.setStartGate(() => false);
+  const session = scheduler.transferSessions.ensure({
+    dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+    bvid: "BVVERIFY",
+    userId: "u1",
+    mediaId: 1,
+    localDir,
+    remotePath: "/target",
+  });
+  scheduler.transferSessions.ensureFile(session.id, { relativePath: "video.mp4", name: "video.mp4", expectedSize: 12 }, session.generation);
+  scheduler.transferSessions.updateFile(session.id, "video.mp4", {
+    status: "awaiting_remote",
+    putAcceptedAt: Date.now() - 11 * 60_000,
+  }, session.generation);
+  scheduler.transferSessions.updateSession(session.id, { phase: "failed", lastError: "visibility timeout" }, session.generation);
+  const job = scheduler.jobStore.enqueue({
+    kind: "upload",
+    dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+    bvid: "BVVERIFY",
+    userId: "u1",
+    mediaId: 1,
+    initialStatus: "manual_wait",
+    payload: {
+      awaitingManualRecovery: true,
+      resumeOnly: true,
+      localDir,
+      remotePath: "/target",
+      files: ["video.mp4"],
+      folderTitle: "Favorites",
+      videoTitle: "Verify",
+      sessionId: session.id,
+      sessionGeneration: session.generation,
+      automaticRecoveryAttempts: options.automaticRecoveryAttempts || 0,
+      filenameMetadataByPath: {
+        "video.mp4": { cid: 100, pageIndex: 1, mediaMetadata: { width: 1920, height: 1080, source: "ffprobe", observedAt: new Date().toISOString() } },
+      },
+    },
+  });
+  return { runtime, localDir, manager, scheduler, session, job };
+}
+
+test("recovery automation finalizes a remotely visible file without reading the missing local body", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-auto-verified", { status: "verified", remoteSize: 12 }, { local: "missing" });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "completed");
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(relation?.backupStatus, "verified");
+    assert.equal(relation?.remoteFiles?.[0]?.path, "/target/video.mp4");
+    assert.equal(relation?.remoteFiles?.[0]?.mediaMetadata?.width, 1920);
+    assert.equal(scheduler.jobStore.findByDedupeKey("download:BVVERIFY"), null);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("same-size recovery without a PUT proof remains manual and never writes new media metadata", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-unknown-same-size", { status: "verified", remoteSize: 12 });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    scheduler.transferSessions.updateFile(session.id, "video.mp4", {
+      status: "awaiting_remote",
+      putAcceptedAt: null,
+      verifiedAt: null,
+    }, session.generation);
+    await scheduler.runRecoveryAutomationNow();
+    assert.equal(scheduler.jobStore.findById(job.id)?.status, "manual_wait");
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "unknown_same_size");
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["recheck"]);
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.notEqual(relation?.backupStatus, "verified");
+    assert.equal(relation?.remoteFiles?.[0]?.mediaMetadata, undefined);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("recovery automation queues one fresh download when both local and remote files are missing", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-auto-redownload", { status: "missing" }, { local: "missing" });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "superseded");
+    const download = scheduler.jobStore.findByDedupeKey("download:BVVERIFY");
+    assert.ok(download);
+    assert.equal(download.payload.automaticRecoveryAttempts, 1);
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "queued");
+    assert.equal(scheduler.getRecoveryIssues().length, 0);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("manual recheck stays read-only when both local and remote files are missing", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-manual-recheck-readonly", { status: "missing" }, { local: "missing" });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    const result = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "recheck");
+    assert.equal(result.ok, true);
+    assert.ok(scheduler.jobStore.findById(job.id));
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "failed");
+    assert.equal(scheduler.jobStore.findByDedupeKey("download:BVVERIFY"), null);
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "local_file_missing");
+    assert.equal(issue?.recommendedAction?.id, "redownload");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("manual redownload shares an in-flight automatic recheck before deciding", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-shared-recheck", { status: "missing" }, { local: "missing" });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  let releaseRemoteCheck!: () => void;
+  let signalRemoteCheckStarted!: () => void;
+  const remoteCheckStarted = new Promise<void>((resolve) => { signalRemoteCheckStarted = resolve; });
+  let inspections = 0;
+  scheduler.remoteFileInspector = async () => {
+    inspections += 1;
+    signalRemoteCheckStarted();
+    await new Promise<void>((resolve) => { releaseRemoteCheck = resolve; });
+    return { status: "verified", remoteSize: 12 };
+  };
+  scheduler.jobStore.updatePayload(job.id, {
+    ...job.payload,
+    recoveryAssessment: {
+      kind: "remote_visibility_timeout",
+      checkedAt: Date.now() - 10_000,
+      nextCheckAt: Date.now() - 1,
+      localStatus: "missing",
+      remoteStatus: "missing",
+      summary: "waiting",
+    },
+  });
+  try {
+    const automatic = scheduler.runRecoveryAutomationNow();
+    await remoteCheckStarted;
+    const manual = scheduler.resolveRecoveryIssue(`upload.${job.id}`, "redownload");
+    releaseRemoteCheck();
+    const [, result] = await Promise.all([automatic, manual]);
+    assert.equal(result.ok, true);
+    assert.equal(inspections, 1);
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "completed");
+    assert.equal(scheduler.jobStore.findByDedupeKey("download:BVVERIFY"), null);
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "verified");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("recovery automation selects due work beyond a thousand deferred issues", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-due-selection", { status: "verified", remoteSize: 12 });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    manager.getDatabase().db.prepare("UPDATE jobs SET priority=100 WHERE id=?").run(job.id);
+    const future = Date.now() + 60 * 60_000;
+    for (let index = 0; index < 1_000; index += 1) {
+      scheduler.jobStore.enqueue({
+        kind: "upload",
+        dedupeKey: `upload:deferred:${index}`,
+        bvid: `BVDEFERRED${index}`,
+        priority: 1,
+        initialStatus: "manual_wait",
+        payload: {
+          awaitingManualRecovery: true,
+          recoveryAssessment: {
+            kind: "remote_connection",
+            checkedAt: Date.now(),
+            nextCheckAt: future,
+            localStatus: "available",
+            remoteStatus: "error",
+            summary: "deferred",
+          },
+        },
+      });
+    }
+    await scheduler.runRecoveryAutomationNow();
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "completed");
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "verified");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("recovery automation stops after one automatic redownload and reports the stale local file", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-auto-loop-guard", { status: "missing" }, {
+    local: "missing",
+    automaticRecoveryAttempts: 1,
+  });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    assert.ok(scheduler.jobStore.findById(job.id));
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "failed");
+    assert.equal(scheduler.jobStore.findByDedupeKey("download:BVVERIFY"), null);
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "local_file_missing");
+    assert.equal(issue?.recommendedAction?.id, "redownload");
+    assert.match(issue?.summary || "", /自动重新下载过一次/);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("recovery automation exposes remote size conflicts and never queues replacement work", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-remote-conflict", { status: "mismatch", remoteSize: 99 }, { local: "available" });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    assert.ok(scheduler.jobStore.findById(job.id));
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "failed");
+    assert.equal(scheduler.jobStore.findByDedupeKey("download:BVVERIFY"), null);
+    const issue = scheduler.getQueueSnapshot().issues.find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "remote_size_conflict");
+    assert.equal(issue?.severity, "danger");
+    assert.equal(issue?.expectedSize, 12);
+    assert.equal(issue?.observedSize, 99);
+    assert.equal(issue?.safeDiagnostic.includes("/target"), false);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("upload confirmation survives restart and times out into manual recovery", async () => {
   const runtime = await createTestDir("upload-confirm-restart");
   const localDir = path.join(runtime, "temp", "BVVERIFY");
   const statePath = path.join(runtime, "data", "state.json");
@@ -77,12 +389,353 @@ test("upload confirmation survives restart and times out into a delayed reupload
   scheduler.handleUploadVerificationCompleted(timedOut);
   const reupload = scheduler.jobStore.findByDedupeKey("upload:u1:1:BVVERIFY:/target:main");
   assert.ok(reupload);
-  assert.ok(reupload!.notBefore >= beforeTimeout + 29 * 60_000);
+  assert.equal(reupload!.status, "manual_wait");
+  assert.equal(reupload!.payload.awaitingManualRecovery, true);
+  assert.equal(reupload!.notBefore, 0);
+  assert.equal(reupload!.notBefore >= beforeTimeout + 29 * 60_000, false);
+  const recovery = scheduler.recoverUploadJob(reupload!.id, false);
+  assert.equal(recovery.ok, true);
+  assert.equal(scheduler.jobStore.findById(reupload!.id)?.payload.awaitingManualRecovery, false);
+  assert.equal(
+    scheduler.uploadQueue.getTasks().some((task: any) => task.resumeOnly === true),
+    true,
+  );
+  const duplicateRecovery = scheduler.recoverUploadJob(reupload!.id, false);
+  assert.equal(duplicateRecovery.ok, true);
+  assert.equal(duplicateRecovery.idempotent, true);
   assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "upload_failed");
   assert.equal(fs.existsSync(path.join(localDir, "video.mp4")), true);
   scheduler.stop();
   manager.close();
   await removeTestDir(runtime);
+});
+
+test("transfer-session verification uses the same timeout and manual recovery path", async () => {
+  const runtime = await createTestDir("upload-transfer-confirm-timeout");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "video.mp4"), Buffer.alloc(12, 1));
+  const manager = new StateManager({ statePath, dbPath });
+  manager.replaceStateSnapshot(verificationState(localDir));
+  const config = testConfig();
+  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [], getById: () => undefined } as any, manager) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  const putCompletedAt = new Date(Date.now() - 11 * 60_000).toISOString();
+  scheduler.jobStore.enqueue({
+    kind: "verify_upload",
+    dedupeKey: "verify:session-timeout",
+    bvid: "BVVERIFY",
+    userId: "u1",
+    mediaId: 1,
+    maxAttempts: 8,
+    payload: {
+      remoteFile: "/target/video.mp4",
+      expectedSize: 12,
+      localDir,
+      remotePath: "/target",
+      files: ["video.mp4"],
+      putCompletedAt,
+      sessionId: "transfer-session-timeout",
+      folderTitle: "Favorites",
+      videoTitle: "Verify",
+    },
+  });
+  const job = scheduler.jobStore.claimDue(["verify_upload"], 1, scheduler.leaseOwner, 60_000)[0];
+  const task = new UploadVerificationTask("BVVERIFY", "u1", 1, "/target/video.mp4", 12, config) as any;
+  task.persistentJobId = job.id;
+  task.persistentJob = { ...job, attempts: 5, payload: { ...job.payload, putCompletedAt } };
+  task.result = { status: "missing" };
+  task.transferResult = {
+    remotePath: "/target",
+    files: [{ name: "video.mp4", path: "/target/video.mp4", size: 12, verificationStatus: "awaiting_verification" }],
+    allVerified: false,
+    pendingChecks: [{ remoteFile: "/target/video.mp4", expectedSize: 12, finalFile: "/target/video.mp4", localRelativePath: "video.mp4" }],
+  };
+  scheduler.handleUploadVerificationCompleted(task);
+  const recovery = scheduler.jobStore.findByDedupeKey("upload:u1:1:BVVERIFY:/target:main");
+  assert.ok(recovery);
+  assert.equal(recovery!.status, "manual_wait");
+  assert.equal(recovery!.payload.awaitingManualRecovery, true);
+  assert.equal(recovery!.payload.resumeOnly, true);
+  assert.equal(recovery!.payload.sessionId, "transfer-session-timeout");
+  scheduler.stop();
+  manager.close();
+  await removeTestDir(runtime);
+});
+
+test("one transfer session creates one session-level verification job for multiple parts", async () => {
+  const runtime = await createTestDir("upload-session-single-verify");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  const manager = new StateManager({ statePath, dbPath });
+  manager.replaceStateSnapshot(verificationState(localDir));
+  const config = testConfig();
+  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [], getById: () => undefined } as any, manager) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  scheduler.verificationQueue.setStartGate(() => false);
+  try {
+    scheduler.enqueueUploadVerificationJobs({
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      downloadDir: localDir,
+      remotePath: "/target",
+      files: ["p01.mp4", "p02.mp4"],
+      sessionId: "session-multi",
+      historyOnly: false,
+      partialBackup: false,
+      folderTitle: "Favorites",
+      videoTitle: "Verify",
+    }, [
+      { path: "/target/p01.mp4", size: 12, verificationStatus: "awaiting_verification", localRelativePath: "p01.mp4" },
+      { path: "/target/p02.mp4", size: 13, verificationStatus: "awaiting_verification", localRelativePath: "p02.mp4" },
+    ], [
+      { remoteFile: "/target/p01.mp4", expectedSize: 12, finalFile: "/target/p01.mp4", localRelativePath: "p01.mp4" },
+      { remoteFile: "/target/p02.mp4", expectedSize: 13, finalFile: "/target/p02.mp4", localRelativePath: "p02.mp4" },
+    ]);
+    const jobs = scheduler.jobStore.listForBoard(["verify_upload"], 10);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].dedupeKey, "verify-session:u1:1:BVVERIFY:main:session-multi:g1");
+    assert.equal(jobs[0].payload.sessionVerification, true);
+    assert.equal(jobs[0].payload.sessionId, "session-multi");
+    assert.equal(jobs[0].payload.sessionGeneration, undefined);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("deterministic remote size conflicts enter manual recovery instead of retrying indefinitely", async () => {
+  const runtime = await createTestDir("upload-conflict-manual-recovery");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  const manager = new StateManager({ statePath, dbPath });
+  manager.replaceStateSnapshot(verificationState(path.join(runtime, "temp", "BVVERIFY")));
+  const config = testConfig();
+  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [], getById: () => undefined } as any, manager) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      payload: { localDir: path.join(runtime, "temp", "BVVERIFY"), remotePath: "/target" },
+    });
+    const claimed = scheduler.jobStore.claimDue(["upload"], 1, scheduler.leaseOwner, 60_000)!;
+    assert.ok(claimed[0]);
+    scheduler.jobStore.markRunning(claimed[0].id, scheduler.leaseOwner, 60_000);
+    const task: any = {
+      name: "Upload BVVERIFY",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      historyOnly: false,
+      downloadDir: path.join(runtime, "temp", "BVVERIFY"),
+      remotePath: "/target",
+      retries: 0,
+      maxRetries: 3,
+      persistentJobId: claimed[0].id,
+      persistentJob: scheduler.jobStore.findById(claimed[0].id),
+    };
+    const error: any = new Error("Remote size conflict");
+    error.uploadFailure = {
+      category: "deterministic",
+      status: 409,
+      summary: "Remote size conflict",
+      remotePath: "/target/video.mp4",
+      retryable: false,
+      fingerprint: "deterministic|409|conflict",
+    };
+    scheduler.uploadQueue.emit("taskError", task, error);
+    const parked = scheduler.jobStore.findById(claimed[0].id);
+    assert.equal(parked?.status, "manual_wait");
+    assert.equal(parked?.payload.awaitingManualRecovery, true);
+    assert.equal(parked?.payload.resumeOnly, true);
+    assert.equal(parked?.payload.allowReupload, false);
+    scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      payload: { localDir: "new-sync-payload", remotePath: "/target" },
+    });
+    const preserved = scheduler.jobStore.findById(claimed[0].id);
+    assert.equal(preserved?.status, "manual_wait");
+    assert.equal(preserved?.payload.awaitingManualRecovery, true);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("confirmation-stage 409 parks one generation-aware upload recovery item", async () => {
+  const runtime = await createTestDir("upload-confirm-conflict-manual-recovery");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "video.mp4"), Buffer.alloc(12, 1));
+  const manager = new StateManager({ statePath, dbPath });
+  manager.replaceStateSnapshot(verificationState(localDir));
+  const config = testConfig();
+  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [], getById: () => undefined } as any, manager) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const session = scheduler.transferSessions.ensure({
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      localDir,
+      remotePath: "/target",
+    });
+    scheduler.transferSessions.ensureFile(session.id, { relativePath: "video.mp4", name: "video.mp4", expectedSize: 12 }, session.generation);
+    const verifyJob = scheduler.jobStore.enqueue({
+      kind: "verify_upload",
+      dedupeKey: "verify-session:u1:1:BVVERIFY:main:confirm:g1",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      payload: {
+        remoteFile: "/target/video.mp4",
+        expectedSize: 12,
+        localDir,
+        remotePath: "/target",
+        files: ["video.mp4"],
+        sessionId: session.id,
+        sessionGeneration: session.generation,
+        sessionVerification: true,
+        folderTitle: "Favorites",
+        videoTitle: "Verify",
+      },
+    });
+    const claimed = scheduler.jobStore.claimDue(["verify_upload"], 1, scheduler.leaseOwner, 60_000)[0];
+    assert.equal(claimed.id, verifyJob.id);
+    const task = new UploadVerificationTask("BVVERIFY", "u1", 1, "/target/video.mp4", 12, config, {
+      transferSessionStore: scheduler.transferSessions,
+      sessionId: session.id,
+      sessionGeneration: session.generation,
+      sessionVerification: true,
+    }) as any;
+    task.persistentJobId = claimed.id;
+    task.persistentJob = claimed;
+    const error: any = new Error("Remote size conflict");
+    error.uploadFailure = {
+      category: "deterministic",
+      status: 409,
+      summary: "Remote size conflict",
+      remotePath: "/target/video.mp4",
+      retryable: false,
+      fingerprint: "deterministic|409|confirm-conflict",
+    };
+    scheduler.verificationQueue.emit("taskError", task, error);
+
+    assert.equal(scheduler.jobStore.findById(verifyJob.id), null);
+    const recovery = scheduler.jobStore.findByDedupeKey("upload:u1:1:BVVERIFY:/target:main");
+    assert.equal(recovery?.status, "manual_wait");
+    assert.equal(recovery?.payload.awaitingManualRecovery, true);
+    assert.equal(recovery?.payload.resumeOnly, true);
+    assert.equal(recovery?.payload.allowReupload, false);
+    assert.equal(recovery?.payload.sessionId, session.id);
+    assert.equal(recovery?.payload.sessionGeneration, 1);
+    assert.equal(recovery?.payload.conflictRemotePath, "/target/video.mp4");
+    assert.equal(scheduler.transferSessions.listFiles(session.id, 1).length, 1);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a one-time re-upload authorization failure parks the upload for manual recovery", async () => {
+  const runtime = await createTestDir("upload-authorized-recovery-failure");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "video.mp4"), Buffer.alloc(12, 1));
+  const manager = new StateManager({ statePath, dbPath });
+  manager.replaceStateSnapshot(verificationState(localDir));
+  const config = testConfig();
+  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [], getById: () => undefined } as any, manager) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const job = scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      maxAttempts: 4,
+      payload: {
+        localDir,
+        remotePath: "/target",
+        files: ["video.mp4"],
+        bvid: "BVVERIFY",
+        userId: "u1",
+        mediaId: 1,
+        allowReupload: false,
+        reuploadAuthorizedFiles: ["video.mp4"],
+        resumeOnly: true,
+      },
+    });
+    const claimed = scheduler.jobStore.claimDue(["upload"], 1, scheduler.leaseOwner, 60_000)[0];
+    assert.equal(claimed.id, job.id);
+
+    const task = new UploadTask("BVVERIFY", localDir, "/target", config, {
+      files: ["video.mp4"],
+      reuploadAuthorizedFiles: ["video.mp4"],
+      resumeOnly: true,
+    }) as any;
+    task.persistentJobId = claimed.id;
+    task.persistentJob = claimed;
+    task.userId = "u1";
+    task.mediaId = 1;
+    task.consumeReuploadPermission = (relativePath: string) => scheduler.jobStore.consumeUploadReuploadPermission(
+      claimed.id,
+      scheduler.leaseOwner,
+      relativePath,
+    );
+
+    scheduler.uploadQueue.emit("taskStart", task);
+    assert.equal(task.reuploadPermissionUsed, false);
+    assert.deepEqual(scheduler.jobStore.findById(job.id)?.payload.reuploadAuthorizedFiles, ["video.mp4"]);
+    task.reuploadPermissionUsed = task.consumeReuploadPermission("video.mp4");
+    assert.equal(task.reuploadPermissionUsed, true);
+    assert.equal(scheduler.jobStore.findById(job.id)?.payload.allowReupload, false);
+
+    const error: any = new Error("temporary upload failure after authorized retry");
+    error.uploadFailure = {
+      category: "server",
+      status: 503,
+      summary: "temporary upload failure after authorized retry",
+      remotePath: "/target/video.mp4",
+      retryable: true,
+      fingerprint: "server|503|authorized-retry",
+    };
+    scheduler.uploadQueue.emit("taskError", task, error);
+
+    const parked = scheduler.jobStore.findById(job.id);
+    assert.equal(parked?.status, "manual_wait");
+    assert.equal(parked?.payload.awaitingManualRecovery, true);
+    assert.equal(parked?.payload.allowReupload, false);
+    assert.equal(parked?.payload.resumeOnly, true);
+    assert.equal(scheduler.jobStore.claimDue(["upload"], 1, scheduler.leaseOwner, 60_000).length, 0);
+    assert.equal(fs.existsSync(path.join(localDir, "video.mp4")), true);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
 });
 
 test("a successful confirmation promotes uploaded to verified without another PUT", async () => {
@@ -109,6 +762,235 @@ test("a successful confirmation promotes uploaded to verified without another PU
     manager.close();
   } finally {
     await removeTestDir(runtime);
+  }
+});
+
+async function createConflictCandidateFixture(name: string) {
+  const runtime = await createTestDir(name);
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "video.mp4"), Buffer.alloc(12, 2));
+  const observedAt = "2026-08-17T12:00:00.000Z";
+  const oldProof = {
+    remotePath: "/target",
+    status: "verified" as const,
+    uploadedAt: observedAt,
+    verifiedAt: observedAt,
+    files: [{
+      name: "video.mp4",
+      path: "/target/video.mp4",
+      size: 10,
+      localRelativePath: "video.mp4",
+      verificationStatus: "verified" as const,
+      mediaMetadata: { width: 640, height: 360, source: "ffprobe" as const, observedAt },
+    }],
+  };
+  const candidateFiles = [{
+    name: "video.mp4",
+    path: "/target/_conflicts/upload-candidate/video.mp4",
+    size: 12,
+    localRelativePath: "video.mp4",
+    verificationStatus: "verified" as const,
+    mediaMetadata: { width: 1920, height: 1080, source: "ffprobe" as const, observedAt },
+  }];
+  const snapshot = verificationState(localDir);
+  Object.assign(snapshot.videos.BVVERIFY, {
+    backupStatus: "verified",
+    remotePath: oldProof.remotePath,
+    remoteFiles: oldProof.files,
+    uploadedAt: oldProof.uploadedAt,
+    verifiedAt: oldProof.verifiedAt,
+  });
+  Object.assign(snapshot.relations["u1:1:BVVERIFY"], {
+    backupStatus: "verified",
+    remotePath: oldProof.remotePath,
+    remoteFiles: oldProof.files,
+    uploadedAt: oldProof.uploadedAt,
+    verifiedAt: oldProof.verifiedAt,
+  });
+  const manager = new StateManager({
+    statePath: path.join(runtime, "data", "state.json"),
+    dbPath: path.join(runtime, "data", "bfb.sqlite"),
+  });
+  manager.replaceStateSnapshot(snapshot);
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+    {
+      remoteFileInspector: async (_config, remotePath) => ({
+        status: "verified" as const,
+        remoteSize: remotePath.includes("/_conflicts/") ? 12 : 10,
+      }),
+    },
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  const job = scheduler.jobStore.enqueue({
+    kind: "upload",
+    dedupeKey: "upload:u1:1:BVVERIFY:/target:main",
+    bvid: "BVVERIFY",
+    userId: "u1",
+    mediaId: 1,
+    payload: {
+      localDir,
+      remotePath: "/target",
+      files: ["video.mp4"],
+      existingArchiveProof: oldProof,
+    },
+  });
+  const claimed = scheduler.jobStore.claimDue(["upload"], 1, scheduler.leaseOwner, 60_000)[0];
+  scheduler.jobStore.markRunning(claimed.id, scheduler.leaseOwner, 60_000);
+  const task = new UploadTask("BVVERIFY", localDir, "/target", testConfig(), {
+    cleanupLocal: false,
+    files: ["video.mp4"],
+    existingArchiveProof: oldProof,
+    conflictCandidateId: "upload-candidate",
+    conflictCandidateRemotePath: "/target/_conflicts/upload-candidate",
+  }) as any;
+  task.userId = "u1";
+  task.mediaId = 1;
+  task.persistentJobId = job.id;
+  task.persistentJob = scheduler.jobStore.findById(job.id);
+  task.result = {
+    remotePath: "/target/_conflicts/upload-candidate",
+    files: candidateFiles,
+    allVerified: true,
+    disposition: "conflict_candidate",
+    conflictCandidate: {
+      id: "upload-candidate",
+      originalRemotePath: "/target",
+      candidateRemotePath: "/target/_conflicts/upload-candidate",
+      reasonCode: "UPLOAD_REMOTE_SIZE_CONFLICT",
+      reasonSummary: "remote conflict",
+      existingArchiveProof: oldProof,
+    },
+  };
+  scheduler.uploadQueue.emit("taskCompleted", task);
+  return { runtime, localDir, manager, scheduler, job, oldProof, candidateFiles };
+}
+
+test("conflict candidate selection preserves the old archive proof in the audit record", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-select");
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    const parked = scheduler.jobStore.findById(job.id);
+    assert.equal(parked?.status, "manual_wait");
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "conflict_candidate_ready");
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["keep_existing", "use_candidate", "recheck"]);
+
+    const result = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "use_candidate");
+    assert.equal(result.ok, true);
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(relation?.backupStatus, "verified");
+    assert.equal(relation?.remotePath, "/target/_conflicts/upload-candidate");
+    assert.equal(relation?.remoteFiles?.[0]?.mediaMetadata?.width, 1920);
+    const audit = relation?.remoteConflictCandidates?.find((item) => item.id === "upload-candidate");
+    assert.equal(audit?.resolution, "selected_candidate");
+    assert.equal(audit?.existingArchiveProof?.remotePath, "/target");
+    assert.equal(audit?.existingArchiveProof?.files[0]?.mediaMetadata?.width, 640);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("conflict candidate and its old proof survive a SQLite reopen", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-reopen");
+  const { runtime, manager, scheduler } = fixture;
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  let closed = false;
+  try {
+    scheduler.stop();
+    manager.close();
+    closed = true;
+    const reopened = new StateManager({ statePath, dbPath });
+    try {
+      const candidate = reopened.getRelationStatus("u1", 1, "BVVERIFY")?.remoteConflictCandidates?.[0];
+      assert.equal(candidate?.id, "upload-candidate");
+      assert.equal(candidate?.existingArchiveProof?.remotePath, "/target");
+      assert.equal(candidate?.existingArchiveProof?.files[0]?.mediaMetadata?.width, 640);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    if (!closed) {
+      scheduler.stop();
+      manager.close();
+    }
+    await removeTestDir(runtime);
+  }
+});
+
+test("keeping the existing archive restores its exact metadata and leaves the candidate audited", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-keep-existing");
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    const result = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "keep_existing");
+    assert.equal(result.ok, true);
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(relation?.backupStatus, "verified");
+    assert.equal(relation?.remotePath, "/target");
+    assert.equal(relation?.remoteFiles?.[0]?.mediaMetadata?.width, 640);
+    assert.equal(relation?.remoteConflictCandidates?.[0]?.resolution, "kept_existing");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("conflict candidate decisions are serialized and reject a changed candidate", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-lock");
+  const { runtime, manager, scheduler, job } = fixture;
+  let release!: () => void;
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+  const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+  scheduler.remoteFileInspector = async (_config: any, remotePath: string) => {
+    if (remotePath.includes("/_conflicts/")) {
+      started();
+      await releasePromise;
+      return { status: "verified", remoteSize: 12 };
+    }
+    return { status: "verified", remoteSize: 10 };
+  };
+  try {
+    const first = scheduler.resolveRecoveryIssue(`upload.${job.id}`, "use_candidate");
+    await startedPromise;
+    const concurrent = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "keep_existing");
+    assert.equal(concurrent.ok, false);
+    assert.equal(concurrent.status, 409);
+    release();
+    assert.equal((await first).ok, true);
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.remotePath, "/target/_conflicts/upload-candidate");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    release();
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+
+  const changed = await createConflictCandidateFixture("upload-candidate-changed");
+  try {
+    changed.scheduler.remoteFileInspector = async (_config: any, remotePath: string) => remotePath.includes("/_conflicts/")
+      ? { status: "mismatch", remoteSize: 99 }
+      : { status: "verified", remoteSize: 10 };
+    const result = await changed.scheduler.resolveRecoveryIssue(`upload.${changed.job.id}`, "use_candidate");
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 409);
+    assert.equal(changed.scheduler.jobStore.findById(changed.job.id)?.status, "manual_wait");
+    assert.equal(changed.manager.getRelationStatus("u1", 1, "BVVERIFY")?.remoteConflictCandidates?.[0]?.resolution, undefined);
+  } finally {
+    changed.scheduler.stop();
+    changed.manager.close();
+    await removeTestDir(changed.runtime);
   }
 });
 

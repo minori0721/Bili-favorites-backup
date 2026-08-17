@@ -41,7 +41,6 @@ import {
   deleteRemoteFiles,
   listRemoteFilesRecursive,
   isRemoteNotFoundError,
-  moveRemoteFile,
   remotePathExists,
 } from "./uploader.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
@@ -58,6 +57,7 @@ import {
 import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
+import { createRemoteReplacementRunner } from "./remote-operations.js";
 import {
   closePlaybackDeliveryTracker,
   getPlaybackDeliveryStatus,
@@ -1619,6 +1619,37 @@ app.get("/api/queue/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
+app.post("/api/queue/recover", (req, res) => {
+  const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
+  if (!jobId || jobId.length > 128) {
+    res.status(400).json({ success: false, message: "Invalid recovery job id" });
+    return;
+  }
+  const result = scheduler.recoverUploadJob(jobId, req.body?.allowReupload === true);
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, message: result.message });
+    return;
+  }
+  res.json({ success: true, data: { jobId: result.job.id, idempotent: result.idempotent } });
+});
+
+app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, res) => {
+  const issueId = String(req.params.id || "").trim();
+  const action = String(req.params.action || "").trim();
+  const allowedActions = new Set(["recheck", "reupload", "redownload", "retry_quality", "keep_existing", "use_candidate"]);
+  if (!issueId || issueId.length > 160 || !allowedActions.has(action)) {
+    res.status(400).json({ success: false, message: "Invalid recovery issue action" });
+    return;
+  }
+  const result = await scheduler.resolveRecoveryIssue(issueId, action as any);
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, message: result.message });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: { issues: result.issues } });
+}));
+
 async function pathSize(targetPath: string): Promise<number> {
   try {
     const stat = await fs.promises.stat(targetPath);
@@ -1917,7 +1948,7 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
     res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导入迁移包" });
     return;
   }
-  if (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork()) {
+  if (scheduler.hasRunningTransferTasks() || scheduler.hasPersistentTransferWork() || scheduler.hasActiveOrQueuedSchedulerWork()) {
     res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再导入。" });
     return;
   }
@@ -1997,19 +2028,31 @@ async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManage
     stateManager.completeQualityUpgrade(relation.bvid, relation.userId, relation.mediaId, operation.oldRemotePath, operation.newFiles);
     return;
   }
+  const replace = await createRemoteReplacementRunner(config);
   for (const newFile of operation.newFiles || []) {
-    await moveRemoteFile(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name));
+      await replace(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name), newFile.size);
   }
-  for (let i = (operation.backupFiles || []).length - 1; i >= 0; i -= 1) {
-    const backupFile = operation.backupFiles![i];
+  const backupFiles = operation.oldFiles.map((oldFile) => {
+    const recorded = (operation.backupFiles || []).find((file) => file.name === oldFile.name);
+    return recorded || {
+      ...oldFile,
+      path: joinRemotePath(operation.backupRemotePath, oldFile.name),
+    };
+  });
+  for (let i = backupFiles.length - 1; i >= 0; i -= 1) {
+    const backupFile = backupFiles[i];
     const oldFile = operation.oldFiles.find((file) => file.name === backupFile.name);
     if (oldFile) {
-      await moveRemoteFile(config, backupFile.path, oldFile.path);
+      await replace(config, backupFile.path, oldFile.path, oldFile.size);
     }
   }
-  const cleanup = await deleteRemoteFiles(config, operation.oldFiles.map((file) => ({
-    ...file,
-    path: joinRemotePath(operation.stageRemotePath, file.name),
+  const stageNames = new Set([
+    ...operation.oldFiles.map((file) => file.name),
+    ...(operation.newFiles || []).map((file) => file.name),
+  ]);
+  const cleanup = await deleteRemoteFiles(config, [...stageNames].map((name) => ({
+    name,
+    path: joinRemotePath(operation.stageRemotePath, name),
   })));
   if (cleanup.failed > 0) {
     throw new Error(`Failed to clean interrupted quality-upgrade stage files for ${relation.bvid}`);

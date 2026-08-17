@@ -508,7 +508,7 @@ test("account previews report active tasks, expire after thirty minutes, and sou
     insertSource(manager, { userId: "u1", mediaId: 10, bvid: "BVPREVIEWTTL", active: false, paths: [{ path: "/backup/preview-ttl.mp4", size: 14 }] });
     new PersistentJobStore(manager.getDatabase()).enqueue({
       kind: "download", dedupeKey: "download:BVPREVIEWTTL", userId: "u1", mediaId: 10,
-      bvid: "BVPREVIEWTTL", payload: {}, notBefore: now,
+      bvid: "BVPREVIEWTTL", payload: {}, notBefore: now, initialStatus: "manual_wait",
     });
     service = createService(manager, users, dav, { schedulerIdle: () => false, now: () => currentTime });
     const accountPreview = service.previewAccount(live);

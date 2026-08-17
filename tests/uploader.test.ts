@@ -7,12 +7,16 @@ import {
   buildCompatibilityUploadName,
   ensureRemoteDir,
   uploadWithAList,
+  resumeUploadSession,
   verifyUploadedFile,
   inspectRemoteFileSize,
   detectUploadMimeType,
   UploadStartLimiter,
 } from "../src/uploader.js";
+import { StateDatabase } from "../src/database.js";
+import { TransferSessionStore } from "../src/transfer-session.js";
 import { UploadOperationError } from "../src/upload-health.js";
+import { UploadTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 const noopLog = { push() {} };
@@ -249,7 +253,7 @@ test("the global upload limiter spaces concurrent PUT starts", async () => {
   assert.deepEqual(sleeps, [10_000, 10_000]);
 });
 
-test("remote preflight skips do not consume an upload start slot", async () => {
+test("history upload preflight skips do not consume an upload start slot", async () => {
   const runtime = await createTestDir("upload-limit-preflight");
   const existing = Buffer.from("already-there");
   const server = await startWebDavServer({ existingFiles: { "/dav/target/p01.mp4": existing } });
@@ -263,6 +267,7 @@ test("remote preflight skips do not consume an upload start slot", async () => {
       verificationDelaysMs: [0],
       log: noopLog,
       uploadStartLimiter: { wait: async (intervalMs: number) => { waits.push(intervalMs); } } as UploadStartLimiter,
+      uploadIntent: "history_upload",
     });
     assert.equal(server.puts.length, 1);
     assert.deepEqual(waits, [10_000]);
@@ -282,6 +287,7 @@ test("a 405 after completed files is treated as a temporary upload session failu
       uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
         cleanupLocal: false,
         files: ["p01.mp4", "p02.mp4"],
+        uploadIntent: "history_upload",
         verificationDelaysMs: [0],
         log: noopLog,
       }),
@@ -302,7 +308,7 @@ test("a 405 after completed files is treated as a temporary upload session failu
   }
 });
 
-test("preflight-verified files count as progress before a later 405", async () => {
+test("history preflight-verified files count as progress before a later 405", async () => {
   const runtime = await createTestDir("upload-resumed-progressive-405");
   const first = Buffer.from("already-uploaded");
   const server = await startWebDavServer({
@@ -317,6 +323,7 @@ test("preflight-verified files count as progress before a later 405", async () =
       uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
         cleanupLocal: false,
         files: ["p01.mp4", "p02.mp4"],
+        uploadIntent: "history_upload",
         verificationDelaysMs: [0],
         log: noopLog,
       }),
@@ -396,6 +403,7 @@ test("a 405 with a missing remote file remains a failure", async () => {
         files: ["p01.mp4"],
         verificationDelaysMs: [0],
         log: noopLog,
+        uploadIntent: "history_upload",
       }),
       (error: any) => {
         assert.ok(error instanceof UploadOperationError);
@@ -439,7 +447,7 @@ test("a 405 with a different remote size is reported as a conflict", async () =>
   }
 });
 
-test("one size conflict archives the complete remote set before uploading the current set", async () => {
+test("one size conflict stops the complete direct-upload batch before any PUT", async () => {
   const runtime = await createTestDir("upload-conflict-archive");
   const oldSameSize = Buffer.from("OLD-SAME");
   const newSameSize = Buffer.from("NEW-SAME");
@@ -454,35 +462,28 @@ test("one size conflict archives the complete remote set before uploading the cu
   try {
     await fs.promises.writeFile(path.join(runtime, "p01.mp4"), newSameSize);
     await fs.promises.writeFile(path.join(runtime, "p02.mp4"), newDifferentSize);
-    let archive: any;
-    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+    await assert.rejects(uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
       cleanupLocal: false,
       files: ["p01.mp4", "p02.mp4"],
       conflictArchiveSegment: "20260712T120000000Z",
       verificationDelaysMs: [0],
       log: noopLog,
-      onConflictArchived: (value) => { archive = value; },
-    });
-
-    assert.equal(result.allVerified, true);
-    assert.equal(archive.archivePath, "/target/_history/20260712T120000000Z");
-    assert.equal(archive.files.length, 2);
-    assert.equal(server.moves.length, 2);
-    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120000000Z/p01.mp4"), oldSameSize);
-    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120000000Z/p02.mp4"), oldDifferentSize);
-    assert.deepEqual(server.files.get("/dav/target/p01.mp4"), newSameSize);
-    assert.deepEqual(server.files.get("/dav/target/p02.mp4"), newDifferentSize);
+    }), UploadOperationError);
+    assert.equal(server.moves.length, 0);
+    assert.equal(server.puts.length, 0);
+    assert.deepEqual(server.files.get("/dav/target/p01.mp4"), oldSameSize);
+    assert.deepEqual(server.files.get("/dav/target/p02.mp4"), oldDifferentSize);
     assert.equal(fs.existsSync(path.join(runtime, "p01.mp4")), true);
+    assert.equal(fs.existsSync(path.join(runtime, "p02.mp4")), true);
   } finally {
     await server.close();
     await removeTestDir(runtime);
   }
 });
 
-test("a retry after conflict archival does not archive the same remote set twice", async () => {
+test("a direct-upload conflict can retry after the old target is resolved without MOVE", async () => {
   const runtime = await createTestDir("upload-conflict-retry");
   const server = await startWebDavServer({
-    failFirstPut: true,
     existingFiles: {
       "/dav/target/p01.mp4": Buffer.from("old-one"),
       "/dav/target/p02.mp4": Buffer.from("old-two"),
@@ -499,40 +500,28 @@ test("a retry after conflict archival does not archive the same remote set twice
       log: noopLog,
     };
     await assert.rejects(uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), options), UploadOperationError);
+    server.files.delete("/dav/target/p01.mp4");
+    server.files.delete("/dav/target/p02.mp4");
     const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), options);
     assert.equal(result.allVerified, true);
-    assert.equal(server.moves.length, 2);
-    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120100000Z/p01.mp4"), Buffer.from("old-one"));
-    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120100000Z/p02.mp4"), Buffer.from("old-two"));
+    assert.equal(server.moves.length, 0);
+    assert.deepEqual(server.files.get("/dav/target/p01.mp4"), Buffer.from("new-one-longer"));
+    assert.deepEqual(server.files.get("/dav/target/p02.mp4"), Buffer.from("new-two-longer"));
   } finally {
     await server.close();
     await removeTestDir(runtime);
   }
 });
 
-test("a conflict archive MOVE failure aborts before PUT and preserves local files", async () => {
+test("direct upload succeeds on a backend whose MOVE operation is unavailable", async () => {
   const runtime = await createTestDir("upload-conflict-move-failure");
   const server = await startWebDavServer({
     failMoveName: "p02.mp4",
-    existingFiles: {
-      "/dav/target/p01.mp4": Buffer.from("old-one"),
-      "/dav/target/p02.mp4": Buffer.from("old-two"),
-    },
+    existingFiles: {},
   });
   try {
     await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "new-one-longer");
     await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "new-two-longer");
-    await assert.rejects(uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
-      cleanupLocal: false,
-      files: ["p01.mp4", "p02.mp4"],
-      conflictArchiveSegment: "20260712T120200000Z",
-      verificationDelaysMs: [0],
-      log: noopLog,
-    }), UploadOperationError);
-    assert.equal(server.puts.length, 0);
-    assert.equal(fs.existsSync(path.join(runtime, "p01.mp4")), true);
-    assert.equal(fs.existsSync(path.join(runtime, "p02.mp4")), true);
-    server.setFailMoveName();
     const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
       cleanupLocal: false,
       files: ["p01.mp4", "p02.mp4"],
@@ -541,31 +530,202 @@ test("a conflict archive MOVE failure aborts before PUT and preserves local file
       log: noopLog,
     });
     assert.equal(result.allVerified, true);
-    assert.equal(server.moves.length, 2);
-    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120200000Z/p01.mp4"), Buffer.from("old-one"));
-    assert.deepEqual(server.files.get("/dav/target/_history/20260712T120200000Z/p02.mp4"), Buffer.from("old-two"));
+    assert.equal(server.moves.length, 0);
+    assert.equal(server.puts.length, 2);
+    assert.equal(fs.existsSync(path.join(runtime, "p01.mp4")), true);
+    assert.equal(fs.existsSync(path.join(runtime, "p02.mp4")), true);
   } finally {
     await server.close();
     await removeTestDir(runtime);
   }
 });
 
-test("same-name same-size preflight verifies without sending PUT", async () => {
+test("same-name same-size normal upload is rejected without proof", async () => {
   const runtime = await createTestDir("upload-preflight");
   const body = Buffer.from("already-remote");
   const server = await startWebDavServer({ existingFiles: { "/dav/target/existing.mp4": body } });
   try {
     await fs.promises.writeFile(path.join(runtime, "existing.mp4"), body);
-    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
-      cleanupLocal: false,
-      files: ["existing.mp4"],
-      log: noopLog,
-    });
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["existing.mp4"],
+        log: noopLog,
+      }),
+      (error: any) => error instanceof UploadOperationError
+        && error.uploadFailure.code === "UPLOAD_UNKNOWN_SAME_SIZE_TARGET",
+    );
     assert.equal(server.puts.length, 0);
-    assert.equal(result.allVerified, true);
-    assert.equal(result.files[0].verificationStatus, "verified");
   } finally {
     await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("ordinary multipart conflict uploads one complete stable candidate without changing official paths", async () => {
+  const runtime = await createTestDir("upload-conflict-candidate-group");
+  const oldFirst = Buffer.from("OLD-SAME");
+  const newFirst = Buffer.from("NEW-SAME");
+  const oldSecond = Buffer.from("old-second");
+  const newSecond = Buffer.from("new-second-longer");
+  const server = await startWebDavServer({
+    existingFiles: {
+      "/dav/target/p01.mp4": oldFirst,
+      "/dav/target/p02.mp4": oldSecond,
+    },
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), newFirst);
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), newSecond);
+    const buildTask = () => {
+      const task = new UploadTask("BVCANDIDATE", runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4", "p02.mp4"],
+        conflictCandidateId: "upload-job-1",
+        conflictCandidateRemotePath: "/target/_conflicts/upload-job-1",
+      });
+      task.userId = "u1";
+      task.mediaId = 1;
+      return task;
+    };
+
+    const first = buildTask();
+    await first.run();
+    assert.equal(first.result?.disposition, "conflict_candidate");
+    assert.equal(first.result?.files.length, 2);
+    assert.deepEqual(server.files.get("/dav/target/p01.mp4"), oldFirst);
+    assert.deepEqual(server.files.get("/dav/target/p02.mp4"), oldSecond);
+    assert.deepEqual(server.files.get("/dav/target/_conflicts/upload-job-1/p01.mp4"), newFirst);
+    assert.deepEqual(server.files.get("/dav/target/_conflicts/upload-job-1/p02.mp4"), newSecond);
+    assert.equal(server.moves.length, 0);
+    assert.deepEqual(server.puts.map((entry) => entry.path), [
+      "/dav/target/_conflicts/upload-job-1/p01.mp4",
+      "/dav/target/_conflicts/upload-job-1/p02.mp4",
+    ]);
+
+    const retry = buildTask();
+    await retry.run();
+    assert.equal(retry.result?.disposition, "conflict_candidate");
+    assert.equal(server.puts.length, 2);
+    assert.equal(server.moves.length, 0);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("direct PUT rejects an unproven same-size target that appears after preflight", async () => {
+  const runtime = await createTestDir("upload-conditional-put");
+  try {
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), "same-size");
+    let statCalls = 0;
+    let putOptions: any;
+    const client = {
+      exists: async () => true,
+      createDirectory: async () => undefined,
+      stat: async () => {
+        statCalls += 1;
+        if (statCalls <= 2) {
+          const error: any = new Error("not found");
+          error.status = 404;
+          throw error;
+        }
+        return { size: Buffer.byteLength("same-size") };
+      },
+      putFileContents: async (_remote: string, _stream: any, options: any) => {
+        putOptions = options;
+        return false;
+      },
+    } as any;
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig(), {
+        cleanupLocal: false,
+        client,
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => error instanceof UploadOperationError
+        && error.uploadFailure.code === "UPLOAD_CONDITIONAL_TARGET_APPEARED",
+    );
+    assert.equal(putOptions.overwrite, false);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("manual re-upload never bypasses a pre-existing size conflict and sends no batch PUT", async () => {
+  const runtime = await createTestDir("upload-preexisting-conflict");
+  const server = await startWebDavServer({
+    existingFiles: { "/dav/target/first.mp4": Buffer.from("old-remote-content") },
+  });
+  const database = new StateDatabase(":memory:");
+  try {
+    await fs.promises.writeFile(path.join(runtime, "first.mp4"), "new-content");
+    await fs.promises.writeFile(path.join(runtime, "second.mp4"), "second-content");
+    const sessions = new TransferSessionStore(database);
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["first.mp4", "second.mp4"],
+        bvid: "BVPREEXISTINGCONFLICT",
+        userId: "u1",
+        mediaId: 1,
+        transferSessionStore: sessions,
+        allowReupload: true,
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => error?.uploadFailure?.status === 409,
+    );
+    assert.equal(server.puts.length, 0);
+    const session = sessions.getByDedupeKey("upload:u1:1:BVPREEXISTINGCONFLICT:/target:main");
+    assert.ok(session);
+    assert.equal(session.allowReupload, false);
+  } finally {
+    database.close();
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("conditional PUT does not overwrite a different-size target that appears after preflight", async () => {
+  const runtime = await createTestDir("upload-conditional-conflict");
+  try {
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), "new-content");
+    let statCalls = 0;
+    let putCalls = 0;
+    const client = {
+      exists: async () => true,
+      createDirectory: async () => undefined,
+      stat: async () => {
+        statCalls += 1;
+        if (statCalls <= 2) {
+          const error: any = new Error("not found");
+          error.status = 404;
+          throw error;
+        }
+        return { size: 3 };
+      },
+      putFileContents: async () => {
+        putCalls += 1;
+        return false;
+      },
+    } as any;
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig(), {
+        cleanupLocal: false,
+        client,
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.equal(error.uploadFailure.status, 409);
+        return true;
+      },
+    );
+    assert.equal(putCalls, 1);
+    assert.equal(fs.existsSync(path.join(runtime, "video.mp4")), true);
+  } finally {
     await removeTestDir(runtime);
   }
 });
@@ -588,6 +748,185 @@ test("accepted PUT can remain awaiting verification until the remote file become
     const verified = await inspectRemoteFileSize(config, result.files[0].path, body.length);
     assert.equal(verified.status, "verified");
   } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("persistent upload sessions PUT only to the final path and never require MOVE", async () => {
+  const runtime = await createTestDir("upload-transfer-direct");
+  const server = await startWebDavServer({ failMoveName: "video.mp4" });
+  const database = new StateDatabase(":memory:");
+  try {
+    const body = Buffer.from("direct-session");
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), body);
+    const sessions = new TransferSessionStore(database);
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: ["video.mp4"],
+      bvid: "BVDIRECT",
+      userId: "u1",
+      mediaId: 1,
+      transferSessionStore: sessions,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, true);
+    assert.equal(server.moves.length, 0);
+    assert.deepEqual(server.puts.map((put) => put.path), ["/dav/target/video.mp4"]);
+    assert.equal(server.puts.some((put) => put.path.includes(".bfb-staging")), false);
+    const session = sessions.get(result.sessionId!);
+    assert.equal(session?.phase, "completed");
+    assert.equal(session?.stagingPath, "/target");
+    assert.equal(sessions.listFiles(result.sessionId!)[0].stagingPath, "/target/video.mp4");
+  } finally {
+    database.close();
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("persistent direct upload keeps the compatible filename fallback without MOVE", async () => {
+  const runtime = await createTestDir("upload-transfer-compatible-name");
+  const server = await startWebDavServer({ rejectFourByteNames: true, failMoveName: "video.mp4" });
+  const database = new StateDatabase(":memory:");
+  try {
+    const originalName = "video-🍷.mp4";
+    await fs.promises.writeFile(path.join(runtime, originalName), Buffer.from("compatible"));
+    const sessions = new TransferSessionStore(database);
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      files: [originalName],
+      bvid: "BVCOMPATSESSION",
+      transferSessionStore: sessions,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, true);
+    assert.equal(server.moves.length, 0);
+    assert.equal(server.puts.length, 2);
+    assert.equal(result.files[0].name.includes("🍷"), false);
+    assert.equal(sessions.listFiles(result.sessionId!)[0].finalPath, result.files[0].path);
+  } finally {
+    database.close();
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("direct upload confirmation does not repeat PUT, while explicit recovery permits one retry", async () => {
+  const runtime = await createTestDir("upload-transfer-recovery");
+  const server = await startWebDavServer();
+  const database = new StateDatabase(":memory:");
+  try {
+    const body = Buffer.from("recoverable-session");
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), body);
+    const sessions = new TransferSessionStore(database);
+    const config = testConfig({ alistUrl: server.url });
+    const first = await uploadWithAList(runtime, "/target", config, {
+      cleanupLocal: false,
+      files: ["video.mp4"],
+      bvid: "BVRECOVER",
+      userId: "u1",
+      mediaId: 1,
+      transferSessionStore: sessions,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(first.allVerified, true);
+    server.files.delete("/dav/target/video.mp4");
+    const session = sessions.get(first.sessionId!)!;
+    sessions.updateFile(session.id, "video.mp4", {
+      status: "awaiting_remote",
+      putAcceptedAt: Date.now(),
+      verifiedAt: null,
+      lastError: "test visibility loss",
+    });
+    sessions.allowReupload(session.id);
+    const confirmation = await resumeUploadSession(config, sessions, session.id, { verificationDelaysMs: [0], log: noopLog });
+    assert.equal(confirmation.allVerified, false);
+    assert.equal(server.puts.length, 1);
+    assert.equal(sessions.get(session.id)?.allowReupload, false);
+    let permissionConsumes = 0;
+    const retried = await resumeUploadSession(config, sessions, session.id, {
+      reuploadAuthorizedFiles: ["video.mp4"],
+      consumeReuploadPermission: (relativePath) => {
+        assert.equal(relativePath, "video.mp4");
+        permissionConsumes += 1;
+        return permissionConsumes === 1;
+      },
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(retried.allVerified, true);
+    assert.equal(server.puts.length, 2);
+    assert.equal(permissionConsumes, 1);
+    assert.equal(sessions.get(session.id)?.allowReupload, false);
+    assert.equal(sessions.get(session.id)?.lastError, undefined);
+    assert.ok(sessions.get(session.id)?.completedAt);
+    const verifiedFile = sessions.getFile(session.id, "video.mp4");
+    assert.equal(verifiedFile?.lastError, undefined);
+    assert.equal(verifiedFile?.nextCheckAt, undefined);
+    assert.ok(verifiedFile?.verifiedAt);
+  } finally {
+    database.close();
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a completed transfer session reopens in place when a later upload uses the same dedupe key", async () => {
+  const runtime = await createTestDir("upload-transfer-reopen");
+  const server = await startWebDavServer();
+  const database = new StateDatabase(":memory:");
+  try {
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), Buffer.from("reopen-session"));
+    const sessions = new TransferSessionStore(database);
+    const config = testConfig({ alistUrl: server.url });
+    const first = await uploadWithAList(runtime, "/target", config, {
+      cleanupLocal: false,
+      files: ["video.mp4"],
+      bvid: "BVREOPEN",
+      userId: "u1",
+      mediaId: 1,
+      transferSessionStore: sessions,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(first.allVerified, true);
+    const sessionId = first.sessionId;
+    const firstGeneration = first.sessionGeneration;
+    assert.equal(firstGeneration, 1);
+    server.files.delete("/dav/target/video.mp4");
+
+    const second = await uploadWithAList(runtime, "/target", config, {
+      cleanupLocal: false,
+      files: ["video.mp4"],
+      bvid: "BVREOPEN",
+      userId: "u1",
+      mediaId: 1,
+      transferSessionStore: sessions,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(second.sessionId, sessionId);
+    assert.equal(second.sessionGeneration, 2);
+    assert.equal(second.allVerified, true);
+    assert.equal(server.puts.length, 2);
+    assert.equal(sessions.get(sessionId!)?.phase, "completed");
+    assert.equal(sessions.listFiles(sessionId!, firstGeneration).length, 1);
+    assert.equal(sessions.listFiles(sessionId!, 2).length, 1);
+    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_session_files WHERE session_id=?").get(sessionId) as any).count), 2);
+    await assert.rejects(
+      () => resumeUploadSession(config, sessions, sessionId!, { sessionGeneration: firstGeneration, verificationDelaysMs: [0], log: noopLog }),
+      (error: any) => error?.uploadSessionStale === true,
+    );
+    assert.throws(
+      () => sessions.updateFile(sessionId!, "video.mp4", { lastError: "stale" }, firstGeneration),
+      (error: any) => error?.uploadSessionStale === true,
+    );
+  } finally {
+    database.close();
     await server.close();
     await removeTestDir(runtime);
   }
@@ -772,6 +1111,11 @@ test("directory errors are classified before queue retry decisions", async () =>
     for (const status of [401, 403, 405, 429] as const) {
       const client = {
         exists: async () => false,
+        stat: async () => {
+          const error: any = new Error("missing");
+          error.status = 404;
+          throw error;
+        },
         createDirectory: async () => {
           const error: any = new Error(`directory failure ${status}`);
           error.status = status;

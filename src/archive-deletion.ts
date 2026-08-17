@@ -3,7 +3,7 @@ import path from "node:path";
 import type { AppConfig, ConfigStore } from "./config.js";
 import type { StateDatabase } from "./database.js";
 import { safeErrorSummary } from "./diagnostics.js";
-import { PersistentJobStore } from "./job-store.js";
+import { PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, PersistentJobStore } from "./job-store.js";
 import type { StateManager } from "./state.js";
 import type { BiliUser, UserStore } from "./users.js";
 import { buildDavClient, isRemoteNotFoundError } from "./uploader.js";
@@ -542,9 +542,9 @@ export class ArchiveDeletionService {
     const activeTasks = ["preview", "preparing"].includes(String(row.status))
       ? Number((this.db.db.prepare(`
           SELECT COUNT(*) AS count FROM jobs j
-          WHERE j.kind<>'archive_delete' AND j.status IN ('pending','retry_wait','leased','running')
+          WHERE j.kind<>'archive_delete' AND j.status IN (${PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES.map(() => "?").join(",")})
             AND (j.user_id=? OR (? IS NOT NULL AND j.user_id=? AND j.media_id=? AND j.bvid=?))
-        `).get(row.user_id, row.media_id, row.user_id, row.media_id, row.bvid) as any)?.count || 0)
+        `).get(...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, row.user_id, row.media_id, row.user_id, row.media_id, row.bvid) as any)?.count || 0)
       : 0;
     return {
       id: String(row.id),
