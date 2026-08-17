@@ -48,6 +48,11 @@ import {
   type UploadGroupPreflightDecision,
   type UploadIntent,
 } from "./upload-preflight.js";
+import {
+  createRemoteFileResolver,
+  RemoteFileResolutionConflictError,
+  type RemoteFileResolver,
+} from "./remote-file-resolver.js";
 
 export function buildDavClient(config: AppConfig): WebDAVClient {
   const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
@@ -217,7 +222,8 @@ export async function verifyUploadedFile(
   client: WebDAVClient,
   remoteFile: string,
   expectedSize: number,
-  delaysMs: number[] = [0, 500, 1500]
+  delaysMs: number[] = [0, 500, 1500],
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
 ) {
   let lastSize: number | undefined;
   let lastError: unknown;
@@ -226,12 +232,18 @@ export async function verifyUploadedFile(
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     try {
-      const remoteStat = await client.stat(remoteFile) as any;
-      lastSize = Number(remoteStat?.size);
-      if (Number.isFinite(lastSize) && lastSize === expectedSize) {
+      const observed = await resolver.inspect(remoteFile, { fallback: "always" });
+      lastSize = observed.size;
+      if (observed.status === "exists" && !observed.directory && Number.isFinite(lastSize) && lastSize === expectedSize) {
         return;
       }
-      lastError = new Error(`Remote size mismatch: expected ${expectedSize}, received ${Number.isFinite(lastSize) ? lastSize : "unknown"}`);
+      const mismatch: any = new Error(
+        observed.directory
+          ? "Remote upload target is a directory"
+          : `Remote size mismatch: expected ${expectedSize}, received ${Number.isFinite(lastSize) ? lastSize : "unknown"}`
+      );
+      mismatch.status = observed.status === "missing" ? 404 : 409;
+      lastError = mismatch;
     } catch (error) {
       lastError = error;
     }
@@ -239,41 +251,45 @@ export async function verifyUploadedFile(
   const verificationError: any = new Error(
     `Remote upload verification failed for ${remoteFile}: ${(lastError as Error)?.message || "file not visible"}`
   );
-  verificationError.status = 409;
+  verificationError.status = isRemoteNotFoundError(lastError) ? 404 : 409;
+  verificationError.cause = lastError;
   throw new UploadOperationError(classifyUploadError(verificationError, remoteFile));
 }
 
 async function inspectExpectedRemoteFile(
   client: WebDAVClient,
   remoteFile: string,
-  expectedSize: number
+  expectedSize: number,
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
+  fallback: "risk_only" | "always" = "risk_only",
 ) {
-  try {
-    const remoteStat = await client.stat(remoteFile) as any;
-    const remoteSize = Number(remoteStat?.size);
-    if (Number.isFinite(remoteSize) && remoteSize === expectedSize) return "verified" as const;
-    const mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(remoteSize) ? remoteSize : "unknown"}`);
-    mismatch.status = 409;
-    throw mismatch;
-  } catch (error) {
-    if (isRemoteNotFoundError(error)) return "missing" as const;
-    throw error;
+  const observed = await resolver.inspect(remoteFile, { fallback });
+  if (observed.status === "missing") return "missing" as const;
+  if (observed.directory) {
+    const directoryConflict: any = new Error("Remote upload target is a directory");
+    directoryConflict.status = 409;
+    throw directoryConflict;
   }
+  if (Number.isFinite(observed.size) && observed.size === expectedSize) return "verified" as const;
+  const mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(observed.size) ? observed.size : "unknown"}`);
+  mismatch.status = 409;
+  throw mismatch;
 }
 
-async function inspectRemoteFile(client: WebDAVClient, remoteFile: string) {
-  try {
-    const remoteStat = await client.stat(remoteFile) as any;
-    const size = Number(remoteStat?.size);
-    return {
-      status: "exists" as const,
-      size: Number.isFinite(size) ? size : undefined,
-      directory: remoteStat?.type === "directory" || remoteStat?.isDirectory === true,
-    };
-  } catch (error) {
-    if (isRemoteNotFoundError(error)) return { status: "missing" as const, directory: false };
-    throw error;
-  }
+async function inspectRemoteFile(
+  client: WebDAVClient,
+  remoteFile: string,
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
+  fallback: "risk_only" | "always" = "risk_only",
+) {
+  const observed = await resolver.inspect(remoteFile, { fallback });
+  if (observed.status === "missing") return { status: "missing" as const, directory: false, path: observed.path };
+  return {
+    status: "exists" as const,
+    size: observed.size,
+    directory: observed.directory,
+    path: observed.path,
+  };
 }
 
 function uploadStatus(error: any) {
@@ -284,24 +300,24 @@ async function verify405WrittenFile(
   client: WebDAVClient,
   remoteFile: string,
   expectedSize: number,
-  delaysMs: number[]
+  delaysMs: number[],
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
 ) {
   let lastError: unknown;
   for (const delayMs of delaysMs.length > 0 ? delaysMs : [0]) {
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     try {
-      const remoteStat = await client.stat(remoteFile) as any;
-      const remoteSize = Number(remoteStat?.size);
-      const isDirectory = remoteStat?.type === "directory" || remoteStat?.isDirectory === true;
-      if (!isDirectory && Number.isFinite(remoteSize) && remoteSize === expectedSize) {
+      const observed = await resolver.inspect(remoteFile, { fallback: "always" });
+      const remoteSize = observed.size;
+      if (observed.status === "exists" && !observed.directory && Number.isFinite(remoteSize) && remoteSize === expectedSize) {
         return "verified" as const;
       }
       const mismatch: any = new Error(
-        isDirectory
+        observed.directory
           ? "Remote upload target is a directory"
           : `Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(remoteSize) ? remoteSize : "unknown"}`
       );
-      mismatch.status = 409;
+      mismatch.status = observed.status === "missing" ? 404 : 409;
       throw mismatch;
     } catch (error) {
       if (isRemoteNotFoundError(error)) {
@@ -322,12 +338,16 @@ async function verifyOrAwaitRemoteVisibility(
   client: WebDAVClient,
   remoteFile: string,
   expectedSize: number,
-  delaysMs: number[]
+  delaysMs: number[],
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
 ) {
   try {
-    await verifyUploadedFile(client, remoteFile, expectedSize, delaysMs);
+    await verifyUploadedFile(client, remoteFile, expectedSize, delaysMs, resolver);
     return "verified" as const;
   } catch (error) {
+    if (Number((error as any)?.uploadFailure?.status || (error as any)?.status || 0) === 404) {
+      return "awaiting_verification" as const;
+    }
     if (isRemoteNotFoundError((error as any)?.cause || error)
       || isRemoteNotFoundError((error as any)?.uploadFailure?.summary || error)) {
       return "awaiting_verification" as const;
@@ -356,8 +376,9 @@ async function putAndVerifyLocalFile(
   verificationDelaysMs?: number[],
   beforePut?: () => Promise<void>,
   allowExistingMatch = false,
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
 ) {
-  const preflight = await inspectExpectedRemoteFile(client, remoteFile, stat.size);
+  const preflight = await inspectExpectedRemoteFile(client, remoteFile, stat.size, resolver, "risk_only");
   if (preflight === "verified") {
     if (!allowExistingMatch) {
       throw new UploadPreflightConflictError(
@@ -390,6 +411,7 @@ async function putAndVerifyLocalFile(
           remoteFile,
           stat.size,
           verificationDelaysMs || [0],
+          resolver,
         );
         return {
           verificationStatus,
@@ -401,7 +423,7 @@ async function putAndVerifyLocalFile(
       // Some WebDAV drivers persist the PUT body and then incorrectly answer 405.
       // Only accept that response after the exact target is independently verified.
       if (uploadStatus(error) !== 405) throw error;
-      await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0]);
+      await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0], resolver);
       return { verificationStatus: "verified" as const, skippedUpload: false, putAccepted: true };
     }
     const verificationStatus = await verifyOrAwaitRemoteVisibility(
@@ -409,6 +431,7 @@ async function putAndVerifyLocalFile(
       remoteFile,
       stat.size,
       verificationDelaysMs || [0],
+      resolver,
     );
     return { verificationStatus, skippedUpload: false, putAccepted: true };
   } finally {
@@ -483,6 +506,7 @@ async function uploadWithAListDirect(
   options: UploadOptions = {}
 ): Promise<UploadResult> {
   const client = options.client || buildDavClient(config);
+  const resolver = createRemoteFileResolver(client);
   const logger = options.log || logManager;
   const uploadedFiles: RemoteFileRecord[] = [];
   const qualityProfile = buildRemoteFileQualityProfile(config);
@@ -523,6 +547,7 @@ async function uploadWithAListDirect(
         currentSessionPutAccepted: false,
       })),
       options,
+      resolver,
     );
     if (groupDecision.kind === "retain_existing") {
       logger.push({
@@ -579,6 +604,7 @@ async function uploadWithAListDirect(
           options.verificationDelaysMs,
           beforePut,
           uploadIntent !== "normal_backup" || acceptedExistingPaths.has(originalRemoteFile.replace(/\\/g, "/")),
+          resolver,
         );
       } catch (error) {
         const uploadError = await toUploadOperationError(error, originalRemoteFile);
@@ -620,6 +646,7 @@ async function uploadWithAListDirect(
             options.verificationDelaysMs,
             beforePut,
             uploadIntent !== "normal_backup",
+            resolver,
           );
         } catch (compatibilityError) {
           const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
@@ -724,8 +751,13 @@ function transferFileRecord(
   };
 }
 
-async function inspectPathForExpectedSize(client: WebDAVClient, remotePath: string, expectedSize: number) {
-  const result = await inspectRemoteFile(client, remotePath);
+async function inspectPathForExpectedSize(
+  client: WebDAVClient,
+  remotePath: string,
+  expectedSize: number,
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
+) {
+  const result = await inspectRemoteFile(client, remotePath, resolver, "always");
   if (result.status === "missing") return result;
   if (result.directory) {
     const directoryConflict: any = new Error("Remote upload target is a directory");
@@ -744,23 +776,25 @@ async function preflightUploadGroup(
   client: WebDAVClient,
   entries: Array<{ remoteFile: string; expectedSize: number; currentSessionPutAccepted: boolean }>,
   options: UploadOptions,
+  resolver: RemoteFileResolver = createRemoteFileResolver(client),
 ) {
   const intent = options.uploadIntent || (options.historyOnly ? "history_upload" : "normal_backup");
   const existingArchiveObservations = [];
   if (intent === "normal_backup" && options.existingArchiveProof) {
     for (const file of options.existingArchiveProof.files) {
-      const observed = await inspectRemoteFile(client, file.path);
-      existingArchiveObservations.push({ path: file.path, ...observed });
+      const observed = await inspectRemoteFile(client, file.path, resolver, "always");
+      const { path: _observedPath, ...observation } = observed;
+      existingArchiveObservations.push({ path: file.path, ...observation });
     }
   }
   const targets = [];
   for (const entry of entries) {
-    const observed = await inspectRemoteFile(client, entry.remoteFile);
+    const observed = await inspectRemoteFile(client, entry.remoteFile, resolver, "risk_only");
     targets.push({
       path: entry.remoteFile,
       expectedSize: entry.expectedSize,
       currentSessionPutAccepted: entry.currentSessionPutAccepted,
-      observed: { path: entry.remoteFile, ...observed },
+      observed: { ...observed, path: entry.remoteFile },
     });
   }
   return decideUploadGroupPreflight({
@@ -780,6 +814,7 @@ async function uploadWithTransferSession(
 ): Promise<UploadResult> {
   const store = options.transferSessionStore!;
   const client = options.client || buildDavClient(config);
+  const resolver = createRemoteFileResolver(client);
   const bvid = String(options.bvid || "");
   if (!bvid && !options.sessionId) throw new Error("Transactional upload requires a BVID or session id");
   const session = store.ensure({
@@ -854,6 +889,7 @@ async function uploadWithTransferSession(
         currentSessionPutAccepted: Boolean(entry.sessionFile.putAcceptedAt),
       })),
       options,
+      resolver,
     );
     if (groupDecision.kind === "retain_existing") {
       store.supersede(session.id, sessionGeneration);
@@ -890,7 +926,7 @@ async function uploadWithTransferSession(
     const metadata = options.filenameMetadataByPath?.[entry.relativePath.replace(/\\/g, "/")];
     try {
       let finalResult: Awaited<ReturnType<typeof inspectRemoteFile>>;
-      finalResult = await inspectPathForExpectedSize(client, sessionFile.finalPath, entry.stat.size);
+      finalResult = await inspectPathForExpectedSize(client, sessionFile.finalPath, entry.stat.size, resolver);
       if (finalResult.status === "exists") {
         const normalizedFinalPath = sessionFile.finalPath.replace(/\\/g, "/");
         if (uploadIntent === "normal_backup"
@@ -962,6 +998,7 @@ async function uploadWithTransferSession(
           uploadIntent !== "normal_backup"
             || Boolean(sessionFile.putAcceptedAt)
             || acceptedExistingPaths.has(sessionFile.finalPath.replace(/\\/g, "/")),
+          resolver,
         );
       } catch (error) {
         const uploadError = await toUploadOperationError(error, sessionFile.finalPath);
@@ -970,7 +1007,7 @@ async function uploadWithTransferSession(
           : undefined;
         if (!compatibilityName) throw uploadError;
         const compatibilityPath = joinRemotePath(session.remotePath, compatibilityName);
-        await inspectPathForExpectedSize(client, compatibilityPath, entry.stat.size);
+        await inspectPathForExpectedSize(client, compatibilityPath, entry.stat.size, resolver);
         store.updateFile(session.id, entry.relativePath, {
           name: compatibilityName,
           stagingPath: compatibilityPath,
@@ -988,6 +1025,7 @@ async function uploadWithTransferSession(
             verificationDelays,
             beforeAuthorizedPut,
             uploadIntent !== "normal_backup",
+            resolver,
           );
         } catch (compatibilityError) {
           throw await toUploadOperationError(compatibilityError, compatibilityPath);
@@ -1083,15 +1121,18 @@ export async function verifyRemoteFiles(
     return { ok: false, missing: ["<no uploaded files recorded>"] };
   }
   const client = buildDavClient(config);
+  const resolver = createRemoteFileResolver(client);
   const missing: string[] = [];
   for (const file of files) {
     try {
-      const remoteStat = await client.stat(file.path) as any;
-      const remoteSize = Number(remoteStat?.size);
-      if (typeof file.size === "number" && (!Number.isFinite(remoteSize) || remoteSize !== file.size)) {
+      const observed = await resolver.inspect(file.path, { fallback: "always" });
+      if (observed.status !== "exists"
+        || observed.directory
+        || (typeof file.size === "number" && (!Number.isFinite(observed.size) || observed.size !== file.size))) {
         missing.push(file.path);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof RemoteFileResolutionConflictError) throw error;
       missing.push(file.path);
     }
   }
@@ -1104,17 +1145,13 @@ export async function inspectRemoteFileSize(
   expectedSize: number
 ): Promise<{ status: "verified" | "missing" | "mismatch"; remoteSize?: number }> {
   const client = buildDavClient(config);
-  try {
-    const remoteStat = await client.stat(remotePath) as any;
-    const remoteSize = Number(remoteStat?.size);
-    if (Number.isFinite(remoteSize) && remoteSize === expectedSize) {
-      return { status: "verified", remoteSize };
-    }
-    return { status: "mismatch", remoteSize: Number.isFinite(remoteSize) ? remoteSize : undefined };
-  } catch (error) {
-    if (isRemoteNotFoundError(error)) return { status: "missing" };
-    throw error;
+  const resolver = createRemoteFileResolver(client);
+  const observed = await resolver.inspect(remotePath, { fallback: "always" });
+  if (observed.status === "missing") return { status: "missing" };
+  if (!observed.directory && Number.isFinite(observed.size) && observed.size === expectedSize) {
+    return { status: "verified", remoteSize: observed.size };
   }
+  return { status: "mismatch", remoteSize: Number.isFinite(observed.size) ? observed.size : undefined };
 }
 
 /** Batch rename files on remote storage via WebDAV MOVE */

@@ -9,6 +9,13 @@ import type { AppConfig } from "./config.js";
 import type { StateDatabase } from "./database.js";
 import type { FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
 import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
+import { buildDavClient } from "./uploader.js";
+import {
+  createRemoteFileResolver,
+  isLikelyEncodedFilename,
+  RemoteFileResolutionConflictError,
+  remoteLookupBasename,
+} from "./remote-file-resolver.js";
 
 export type PlaybackUnavailableReason = "not_verified" | "awaiting_verification" | "no_playable_media";
 
@@ -780,6 +787,7 @@ type PlaybackFetch = typeof fetch;
 export interface PlaybackTransportOptions {
   lookup?: PlaybackLookup;
   fetch?: PlaybackFetch;
+  resolveRemotePath?: (remotePath: string) => Promise<string | undefined>;
 }
 
 async function validatedExternalPlaybackLocation(
@@ -897,7 +905,8 @@ export async function streamPlaybackFile(
     throw new PlaybackHttpError(502, "PLAYBACK_ALIST_CONFIG", "远端存储连接配置无效");
   }
   const basePath = base.pathname.replace(/\/+$/, "");
-  const target = new URL(`${basePath}/dav${encodeDavPath(file.remotePath)}`, `${base.protocol}//${base.host}`);
+  const buildTarget = (remotePath: string) => new URL(`${basePath}/dav${encodeDavPath(remotePath)}`, `${base.protocol}//${base.host}`);
+  let target = buildTarget(file.remotePath);
   const controller = new AbortController();
   const abort = () => controller.abort();
   req.once("aborted", abort);
@@ -913,7 +922,7 @@ export async function streamPlaybackFile(
 
   try {
     const preferRedirect = config.playbackDeliveryMode !== "proxy" && !input.forceProxy;
-    const result = await fetchPlaybackUpstream(
+    let result = await fetchPlaybackUpstream(
       target,
       base,
       req.method === "HEAD" ? "HEAD" : "GET",
@@ -922,6 +931,33 @@ export async function streamPlaybackFile(
       preferRedirect,
       input.transport || {}
     );
+    if (result.response?.status === 404 && isLikelyEncodedFilename(remoteLookupBasename(file.remotePath))) {
+      await result.response.body?.cancel();
+      const resolvePath = input.transport?.resolveRemotePath || (async (remotePath: string) => {
+        const client = buildDavClient(config);
+        const observed = await createRemoteFileResolver(client).inspect(remotePath, { fallback: "always" });
+        return observed.status === "exists" && !observed.directory ? observed.path : undefined;
+      });
+      try {
+        const resolvedPath = await resolvePath(file.remotePath);
+        if (resolvedPath && resolvedPath !== file.remotePath) {
+          target = buildTarget(resolvedPath);
+          result = await fetchPlaybackUpstream(
+            target,
+            base,
+            req.method === "HEAD" ? "HEAD" : "GET",
+            headers,
+            controller.signal,
+            preferRedirect,
+            input.transport || {}
+          );
+        }
+      } catch (error) {
+        if (error instanceof RemoteFileResolutionConflictError) {
+          throw new PlaybackHttpError(502, "PLAYBACK_REMOTE_PATH_AMBIGUOUS", "远端播放文件无法唯一确认");
+        }
+      }
+    }
     if (result.directLocation) {
       markPlaybackDelivery(input, "direct");
       clearTimeout(timeout);

@@ -752,6 +752,37 @@ test("archive deletion treats missing files as idempotent success and rejects lo
   }
 });
 
+test("archive deletion uses the directory-resolved path for OpenList-escaped filenames", async () => {
+  const runtime = await createTestDir("archive-delete-openlist-escaped");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  const logicalPath = "/backup/旅谣'米砂'.mp4";
+  const accessPath = "/backup/旅谣\\'米砂'.mp4";
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, {
+      userId: "u1",
+      mediaId: 12,
+      bvid: "BVOPENLISTDELETE",
+      active: false,
+      paths: [{ path: logicalPath, size: 17 }],
+    });
+    dav.files.set(accessPath, { type: "file", size: 17 });
+    service = createService(manager, users, dav);
+    const preview = service.previewSource("u1", 12, "BVOPENLISTDELETE");
+    service.start(preview.id, "DELETE ARCHIVE");
+    const completed = await waitForOperation(service, preview.id, ["completed"]);
+    assert.equal(completed.completedCount, 1);
+    assert.deepEqual(dav.deleteCalls, [accessPath]);
+    assert.equal(dav.files.has(accessPath), false);
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("archive deletion recovers a persisted pending job and holds maintenance through completion", async () => {
   const runtime = await createTestDir("archive-delete-recovery");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });

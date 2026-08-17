@@ -1034,6 +1034,52 @@ test("a WebDAV backend that accepts four-byte filenames keeps the original name"
   }
 });
 
+test("history upload confirms an OpenList-escaped existing file without re-uploading it", async () => {
+  const runtime = await createTestDir("upload-openlist-escaped-existing");
+  const name = "旅谣'米砂'.mp4";
+  const body = Buffer.from("already-on-remote");
+  let putCalls = 0;
+  let listCalls = 0;
+  try {
+    await fs.promises.writeFile(path.join(runtime, name), body);
+    const client = {
+      exists: async () => true,
+      createDirectory: async () => undefined,
+      stat: async () => {
+        const error: any = new Error("not found");
+        error.status = 404;
+        throw error;
+      },
+      getDirectoryContents: async () => {
+        listCalls += 1;
+        return [{
+          filename: `/target/旅谣\\'米砂'.mp4`,
+          basename: `旅谣\\'米砂'.mp4`,
+          type: "file",
+          size: body.length,
+        }];
+      },
+      putFileContents: async () => {
+        putCalls += 1;
+        return true;
+      },
+    } as any;
+    const result = await uploadWithAList(runtime, "/target", testConfig(), {
+      uploadIntent: "history_upload",
+      cleanupLocal: false,
+      verificationDelaysMs: [0],
+      client,
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, true);
+    assert.equal(result.files.length, 1);
+    assert.equal(putCalls, 0);
+    assert.equal(listCalls, 1);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("compatible filename generation avoids collisions with existing local names", () => {
   const reserved = new Set(["title-BV1TEST.mp4", "title-BV1TEST-compat-2.mp4"]);
   assert.equal(

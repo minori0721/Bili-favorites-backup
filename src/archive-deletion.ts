@@ -7,6 +7,7 @@ import { PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, PersistentJobStore } from
 import type { StateManager } from "./state.js";
 import type { BiliUser, UserStore } from "./users.js";
 import { buildDavClient, isRemoteNotFoundError } from "./uploader.js";
+import { createRemoteFileResolver } from "./remote-file-resolver.js";
 
 export type ArchiveDeletionScope = "account" | "source";
 export type ArchiveDeletionStatus = "preview" | "preparing" | "pending" | "running" | "retry_wait" | "failed" | "completed" | "expired" | "superseded";
@@ -1027,8 +1028,10 @@ export class ArchiveDeletionService {
     this.db.db.prepare("UPDATE archive_deletions SET status='running', updated_at=?, last_error=NULL WHERE id=?").run(now, id);
     this.db.db.prepare("UPDATE archive_deleted_sources SET status='running' WHERE deletion_id=? AND status<>'completed'").run(id);
     const client = this.clientFactory(config);
+    const resolver = createRemoteFileResolver(client);
     const items = this.db.db.prepare("SELECT * FROM archive_deletion_items WHERE deletion_id=? ORDER BY remote_path").all(id) as any[];
     const sharedPaths = this.externalReferencePaths(id);
+    const resolvedRemotePaths = new Map<string, string>();
     let preflightConflict = false;
     for (const item of items) {
       if (TERMINAL_ITEM_STATUSES.has(String(item.status))) continue;
@@ -1046,13 +1049,15 @@ export class ArchiveDeletionService {
         continue;
       }
       try {
-        const stat = await client.stat(remotePath);
-        const remoteSize = finiteSize(stat?.size);
-        const type = String(stat?.type || "").toLowerCase();
-        if (type !== "file" || remoteSize !== expectedSize) {
+        const observed = await resolver.inspect(remotePath, { fallback: "always" });
+        const remoteSize = finiteSize(observed.size);
+        if (observed.status === "missing") {
+          this.updateItem(id, remotePath, "missing", undefined);
+        } else if (observed.directory || remoteSize !== expectedSize) {
           this.updateItem(id, remotePath, "conflict", "远端文件类型或大小与归档证明不一致");
           preflightConflict = true;
         } else {
+          resolvedRemotePaths.set(remotePath, observed.path);
           this.updateItem(id, remotePath, shared ? "shared_verified" : "verified", undefined);
         }
       } catch (error: any) {
@@ -1074,16 +1079,18 @@ export class ArchiveDeletionService {
     const verified = this.db.db.prepare("SELECT * FROM archive_deletion_items WHERE deletion_id=? AND status='verified' ORDER BY remote_path").all(id) as any[];
     for (const item of verified) {
       const remotePath = normalizeRemotePath(item.remote_path);
+      const accessPath = resolvedRemotePaths.get(remotePath) || remotePath;
       this.updateItem(id, remotePath, "deleting", undefined, true);
       try {
-        await client.deleteFile(remotePath);
+        await client.deleteFile(accessPath);
       } catch (error: any) {
         if (!isRemoteNotFoundError(error)) {
           this.updateItem(id, remotePath, "failed", safeDeletionError(error), true);
           throw archiveDeletionError("远端文件删除暂时失败", statusCode(error) || 503, isTransientError(error));
         }
       }
-      const missing = await this.confirmMissing(client, remotePath);
+      resolver.clear();
+      const missing = await this.confirmMissing(client, remotePath, resolver);
       if (!missing) {
         this.updateItem(id, remotePath, "failed", "删除后远端文件仍然可见", true);
         throw archiveDeletionError("删除后远端文件仍然可见", 503, true);
@@ -1135,11 +1142,21 @@ export class ArchiveDeletionService {
     `).run(status, incrementAttempt ? 1 : 0, error ? safeDeletionError(error) : null, this.now(), id, remotePath);
   }
 
-  private async confirmMissing(client: ArchiveDeletionDavClient, remotePath: string) {
+  private async confirmMissing(
+    client: ArchiveDeletionDavClient,
+    remotePath: string,
+    resolver?: ReturnType<typeof createRemoteFileResolver>,
+  ) {
     for (const delay of [0, 250, 750, 1500]) {
       if (delay) await this.sleep(delay);
       try {
-        await client.stat(remotePath);
+        if (resolver) {
+          resolver.clear();
+          const observed = await resolver.inspect(remotePath, { fallback: "risk_only" });
+          if (observed.status === "missing") return true;
+        } else {
+          await client.stat(remotePath);
+        }
       } catch (error) {
         if (isRemoteNotFoundError(error)) return true;
         if (!isTransientError(error)) throw error;

@@ -649,6 +649,64 @@ async function closeServer(server: http.Server) {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
+test("playback retries an OpenList-escaped path only after the original path returns 404", { timeout: 20_000 }, async () => {
+  const database = new StateDatabase(":memory:");
+  const state = playbackState();
+  const relation = state.relations!["u1:10:BVPLAY001"];
+  const video = state.videos!.BVPLAY001;
+  const specialName = "旅谣'米砂'.mp4";
+  const logicalPath = "/archive/BVPLAY001/旅谣'米砂'.mp4";
+  const accessPath = "/archive/BVPLAY001/旅谣\\'米砂'.mp4";
+  relation.remoteFiles = [remoteFile(specialName, { path: logicalPath, size: 2 })];
+  video.remoteFiles = [...relation.remoteFiles];
+  database.replaceState(state);
+  const fileId = Number((database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'").get() as any).id);
+  const requestedPaths: string[] = [];
+  const app = express();
+  app.get("/stream", async (req, res) => {
+    try {
+      await streamPlaybackFile(database, {
+        alistUrl: "http://openlist.invalid:5244",
+        alistUsername: "user",
+        alistPassword: "pass",
+        playbackDeliveryMode: "proxy",
+      } as any, req, res, {
+        userId: "u1",
+        mediaId: 10,
+        fileId,
+        ownerKey: "openlist-test",
+        transport: {
+          fetch: (async (input: URL | RequestInfo) => {
+            const url = new URL(String(input));
+            requestedPaths.push(url.pathname);
+            if (url.pathname.includes("%5C")) return new Response("ok", { status: 200, headers: { "Content-Length": "2" } });
+            return new Response(null, { status: 404 });
+          }) as any,
+          resolveRemotePath: async (remotePath) => remotePath === logicalPath ? accessPath : undefined,
+        },
+      });
+    } catch (error) {
+      if (error instanceof PlaybackHttpError && !res.headersSent) res.status(error.statusCode).json({ code: error.code });
+      else throw error;
+    }
+  });
+  const server = http.createServer(app);
+  const base = await listen(server);
+  try {
+    const response = await fetch(`${base}/stream`);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "ok");
+    assert.equal(requestedPaths.length, 2);
+    assert.match(requestedPaths[0], /%E6%97%85%E8%B0%A3'%E7%B1%B3%E7%A0%82'/);
+    assert.doesNotMatch(requestedPaths[0], /%5C/);
+    assert.match(requestedPaths[1], /%E6%97%85%E8%B0%A3%5C?'%E7%B1%B3%E7%A0%82'/);
+    assert.match(requestedPaths[1], /%5C/);
+  } finally {
+    await closeServer(server);
+    database.close();
+  }
+});
+
 test("playback proxy forwards safe byte ranges, streams early, and aborts upstream", { timeout: 20_000 }, async () => {
   const content = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
   let upstreamRequests = 0;
