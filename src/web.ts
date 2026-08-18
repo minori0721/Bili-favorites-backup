@@ -652,13 +652,19 @@ function getAppStyles() {
     .recovery-issues-entry.has-issues { border-color:#D98B36; color:#8D4D08; background:#FFF7EA; }
     .recovery-issues-entry.has-danger { border-color:#C94F4F; color:#9B2C2C; background:#FFF0F0; }
     .recovery-issues-modal { padding:0; align-items:stretch; }
-    .recovery-issues-shell { width:min(1180px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; box-shadow:0 24px 80px rgba(18,38,35,.22); }
+    .recovery-issues-shell { width:min(1180px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; box-shadow:0 24px 80px rgba(18,38,35,.22); }
     .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid #D8E3E0; background:#FFF; }
     .recovery-issues-heading { min-width:0; }
     .recovery-issues-heading h2 { margin:0; font-size:18px; }
     .recovery-issues-heading p { margin:3px 0 0; color:#60736F; font-size:12px; }
     .recovery-issues-close,.recovery-issues-back { width:44px; height:44px; border:1px solid #C9D8D5; border-radius:50%; background:#FFF; color:#28443F; font-size:21px; cursor:pointer; flex:0 0 auto; }
     .recovery-issues-back { display:none; font-size:18px; }
+    .recovery-issues-status { display:flex; align-items:center; gap:12px; min-height:48px; padding:9px 18px; border-bottom:1px solid #E8D6B8; background:#FFF7EA; color:#8D4D08; font-size:13px; line-height:1.45; }
+    .recovery-issues-status[hidden] { display:none; }
+    .recovery-issues-status-message { min-width:0; flex:1; overflow-wrap:anywhere; }
+    .recovery-issues-status button { min-height:34px; padding:6px 12px; border:1px solid #B86F1B; border-radius:7px; background:#FFF; color:#8D4D08; font-weight:800; cursor:pointer; flex:0 0 auto; }
+    .recovery-issues-status button:hover,.recovery-issues-status button:focus-visible { background:#FFF0D8; outline:2px solid rgba(184,111,27,.22); outline-offset:1px; }
+    .recovery-issues-status button:disabled { cursor:wait; opacity:.58; }
     .recovery-issues-layout { min-height:0; display:grid; grid-template-columns:minmax(280px,350px) minmax(0,1fr); }
     .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:#EEF4F2; padding:12px; }
     .recovery-issues-list { display:grid; gap:8px; }
@@ -798,9 +804,10 @@ function getAppStyles() {
       .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
-      .recovery-issues-shell { width:100%; height:100dvh; border:0; }
+      .recovery-issues-shell { width:100%; height:100dvh; border:0; display:flex; flex-direction:column; }
       .recovery-issues-header { min-height:58px; padding:8px 10px; }
-      .recovery-issues-layout { position:relative; display:block; overflow:hidden; }
+      .recovery-issues-status { flex:0 0 auto; padding:9px 10px; }
+      .recovery-issues-layout { position:relative; display:block; flex:1 1 auto; min-height:0; height:auto; overflow:hidden; }
       .recovery-issues-list-pane,.recovery-issues-detail { position:absolute; inset:0; width:100%; height:100%; border:0; transition:transform .16s ease; }
       .recovery-issues-list-pane { transform:translateX(0); padding:10px; }
       .recovery-issues-detail { transform:translateX(100%); padding:18px 16px 28px; }
@@ -1390,6 +1397,10 @@ function getModals() {
         </div>
         <button id="closeRecoveryIssuesBtn" class="recovery-issues-close" type="button" aria-label="关闭待处理问题" title="关闭">×</button>
       </header>
+      <div id="recoveryIssuesStatus" class="recovery-issues-status" role="alert" hidden>
+        <span id="recoveryIssuesStatusMessage" class="recovery-issues-status-message"></span>
+        <button id="recoveryIssuesRetryBtn" type="button">重试</button>
+      </div>
       <div class="recovery-issues-layout">
         <aside class="recovery-issues-list-pane" aria-label="待处理问题列表">
           <div id="recoveryIssuesList" class="recovery-issues-list"></div>
@@ -1474,6 +1485,7 @@ function getAppScript() {
       selectedId: null,
       controller: null,
       token: 0,
+      error: null,
     };
     let pathMigrationPollTimer = null;
     const queueBoardState = {
@@ -5552,7 +5564,7 @@ function getAppScript() {
       const controller = new AbortController();
       playbackState.metadataControllers.set(part.fingerprint, controller);
       try {
-        const data = await fetchJson(playbackFileApiPath(part, '/media-metadata'), {
+        const data = await fetchJsonSilent(playbackFileApiPath(part, '/media-metadata'), {
           method:'PUT',
           headers:{ 'Content-Type':'application/json' },
           body:JSON.stringify({ fingerprint:part.fingerprint, width, height, duration }),
@@ -6478,7 +6490,19 @@ function getAppScript() {
       button.setAttribute('aria-label', total > 0 ? '打开待处理问题，共 ' + total + ' 项' : '打开待处理问题，当前没有待处理项');
     }
 
+    function renderRecoveryIssueStatus() {
+      const status = document.getElementById('recoveryIssuesStatus');
+      const message = document.getElementById('recoveryIssuesStatusMessage');
+      const retry = document.getElementById('recoveryIssuesRetryBtn');
+      if (!status || !message || !retry) return;
+      const hasError = Boolean(recoveryIssueState.error);
+      status.hidden = !hasError;
+      message.textContent = recoveryIssueState.error || '';
+      retry.disabled = recoveryIssueRequestInFlight;
+    }
+
     function setRecoveryIssueItems(items, summary) {
+      recoveryIssueState.error = null;
       recoveryIssueState.items = Array.isArray(items) ? items : [];
       if (!recoveryIssueState.items.some((item) => item.id === recoveryIssueState.selectedId)) {
         recoveryIssueState.selectedId = recoveryIssueState.items[0]?.id || null;
@@ -6499,7 +6523,9 @@ function getAppScript() {
       if (recoveryIssueState.items.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'recovery-issues-empty';
-        empty.textContent = '当前没有需要你处理的问题。系统仍会在后台继续复核临时异常。';
+        empty.textContent = recoveryIssueState.error
+          ? '待处理问题暂时无法加载，请点击上方“重试”。'
+          : '当前没有需要你处理的问题。系统仍会在后台继续复核临时异常。';
         host.appendChild(empty);
         return;
       }
@@ -6610,7 +6636,9 @@ function getAppScript() {
       if (!issue) {
         const empty = document.createElement('div');
         empty.className = 'recovery-issues-empty';
-        empty.textContent = recoveryIssueState.items.length === 0
+        empty.textContent = recoveryIssueState.error
+          ? '待处理问题暂时无法加载，请先重试。'
+          : recoveryIssueState.items.length === 0
           ? '没有需要处理的问题。'
           : '从左侧选择一项查看详情。';
         host.appendChild(empty);
@@ -6705,6 +6733,7 @@ function getAppScript() {
     }
 
     function renderRecoveryIssueCenter() {
+      renderRecoveryIssueStatus();
       renderRecoveryIssueList();
       renderRecoveryIssueDetail();
     }
@@ -6722,11 +6751,18 @@ function getAppScript() {
         setRecoveryIssueItems(snapshot?.issues || [], snapshot?.issueSummary);
       } catch (error) {
         if (error?.name !== 'AbortError' && document.getElementById('recoveryIssuesModal')?.classList.contains('active')) {
+          recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请点击“重试”再次加载。';
           document.getElementById('recoveryIssuesLive').textContent = '待处理问题加载失败，请稍后重试。';
+          renderRecoveryIssueCenter();
+        } else if (error?.name !== 'AbortError') {
+          recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请打开面板后重试。';
         }
       } finally {
         if (token === recoveryIssueState.token) recoveryIssueState.controller = null;
         recoveryIssueRequestInFlight = false;
+        if (document.getElementById('recoveryIssuesModal')?.classList.contains('active')) {
+          renderRecoveryIssueStatus();
+        }
       }
     }
 
@@ -7256,6 +7292,7 @@ function getAppScript() {
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
     document.getElementById('recoveryIssuesBtn').addEventListener('click', (event) => openRecoveryIssues(event.currentTarget));
+    document.getElementById('recoveryIssuesRetryBtn').addEventListener('click', () => void refreshRecoveryIssues());
     document.getElementById('closeRecoveryIssuesBtn').addEventListener('click', () => closeModal('recoveryIssuesModal'));
     document.getElementById('recoveryIssuesBackBtn').addEventListener('click', () => {
       document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');

@@ -71,6 +71,34 @@ test("problem center keeps focus contained and uses a two-level mobile flow", as
   await expect(modal).not.toHaveClass(/active/);
 });
 
+test("problem center shows a visible retry state and preserves the last list", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await openRecoveryCenter(page);
+  let fail = true;
+  await page.route("**/api/queue/state", async (route) => {
+    if (fail) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ success: false, message: "模拟加载失败" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.locator("#closeRecoveryIssuesBtn").click();
+  await page.locator("#recoveryIssuesBtn").click();
+  await expect(page.locator("#recoveryIssuesStatus")).toBeVisible();
+  await expect(page.locator("#recoveryIssuesStatus")).toContainText("已有列表会保留");
+  await expect(page.locator("#recoveryIssuesList .recovery-issue-row")).toHaveCount(1);
+  await expect(page.locator("#recoveryIssuesList")).not.toContainText("当前没有需要你处理的问题");
+
+  fail = false;
+  await page.locator("#recoveryIssuesRetryBtn").click();
+  await expect(page.locator("#recoveryIssuesStatus")).toBeHidden();
+  await expect(page.locator("#recoveryIssuesList .recovery-issue-row")).toHaveCount(1);
+});
+
 test("conflict candidate confirmation explains both retained copies and sends one action", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop candidate decision coverage");

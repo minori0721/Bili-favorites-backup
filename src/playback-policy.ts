@@ -16,9 +16,8 @@ export function decidePlaybackMediaError(input: PlaybackMediaErrorInput): Playba
 
   const actualCodec = String(input.actualCodec || "").trim().toLowerCase();
   const requestedCodec = String(input.requestedCodec || "").trim().toLowerCase();
-  const isHevc = (codec: string) => /^(?:hevc|h\.?265|hev1|hvc1)(?:$|[\s._-])/.test(codec);
-  const actualHevc = isHevc(actualCodec);
-  const requestedHevc = isHevc(requestedCodec);
+  const actualHevc = /^(?:hevc|h\.?265|hev1|hvc1)(?:$|[\s._-])/.test(actualCodec);
+  const requestedHevc = /^(?:hevc|h\.?265|hev1|hvc1)(?:$|[\s._-])/.test(requestedCodec);
   const likelyHevc = actualHevc || (!actualCodec && requestedHevc);
 
   if ((code === 0 || code === 3) && likelyHevc && !input.browserSupportsHevc) return "hevc";

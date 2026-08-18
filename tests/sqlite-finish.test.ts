@@ -145,6 +145,13 @@ test("application info derives safe dev, release, and local build labels", () =>
   assert.match(appHtml, /referrerpolicy:'no-referrer'/);
   assert.match(appHtml, /let fallbackStarted = false/);
   assert.match(appHtml, /function decidePlaybackMediaError\(input\)/);
+  const playbackPolicyStart = appHtml.indexOf('const decidePlaybackMediaError =');
+  const playbackPolicyEnd = appHtml.indexOf('const TEMPLATE_VARS =', playbackPolicyStart);
+  assert.ok(playbackPolicyStart >= 0 && playbackPolicyEnd > playbackPolicyStart);
+  assert.doesNotMatch(appHtml.slice(playbackPolicyStart, playbackPolicyEnd), /__name/);
+  assert.match(appHtml, /id="recoveryIssuesStatus"/);
+  assert.match(appHtml, /recoveryIssueState\.error/);
+  assert.match(appHtml, /fetchJsonSilent\(playbackFileApiPath\(part, '\/media-metadata'\)/);
   const appScript = appHtml.split("<script>")[1]?.split("</script>")[0] || "";
   assert.ok(appScript.length > 0);
   assert.doesNotThrow(() => new Function(appScript));
