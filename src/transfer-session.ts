@@ -197,6 +197,15 @@ export class TransferSessionStore {
     return row ? sessionFromRow(row) : null;
   }
 
+  hasActiveForBvid(bvid: string) {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT 1 FROM transfer_sessions
+      WHERE bvid=? AND phase NOT IN ('completed','superseded')
+      LIMIT 1
+    `).get(String(bvid || ""));
+    return Boolean(row);
+  }
+
   listFiles(sessionId: string, generation?: number) {
     const session = this.get(sessionId);
     const targetGeneration = generation ?? session?.generation;

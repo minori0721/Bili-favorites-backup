@@ -60,6 +60,16 @@ export interface UploadFailureRecoveryPage {
   nextCursor: UploadFailureRecoveryCursor | null;
 }
 
+export interface VerifiedLocalCleanupCursor {
+  updatedAt: number;
+  bvid: string;
+}
+
+export interface VerifiedLocalCleanupPage {
+  items: VideoArchiveEntry[];
+  nextCursor: VerifiedLocalCleanupCursor | null;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
@@ -78,6 +88,7 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(backup_status);
 CREATE INDEX IF NOT EXISTS idx_videos_bili_status ON videos(bili_status, bvid);
+CREATE INDEX IF NOT EXISTS idx_videos_local_cleanup ON videos(backup_status, local_dir, updated_at, bvid);
 
 CREATE TABLE IF NOT EXISTS favorite_relations (
   user_id TEXT NOT NULL,
@@ -178,6 +189,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(status, not_before, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(status, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_bvid_status ON jobs(bvid, status);
 
 CREATE TABLE IF NOT EXISTS transfer_sessions (
   id TEXT PRIMARY KEY,
@@ -203,6 +215,8 @@ CREATE INDEX IF NOT EXISTS idx_transfer_sessions_status
   ON transfer_sessions(phase, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transfer_sessions_target
   ON transfer_sessions(user_id, media_id, bvid, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transfer_sessions_bvid_phase
+  ON transfer_sessions(bvid, phase);
 
 CREATE TABLE IF NOT EXISTS transfer_session_files (
   session_id TEXT NOT NULL REFERENCES transfer_sessions(id) ON DELETE CASCADE,
@@ -1594,6 +1608,55 @@ export class StateDatabase {
       WHERE v.backup_status IN (${placeholders})
         OR (v.local_dir IS NOT NULL AND r.backup_status IN ('verified','partial_verified'))
     `).all(...statuses) as any[]).map((row) => parseJson<VideoArchiveEntry>(row.payload_json, undefined as any)).filter(Boolean);
+  }
+
+  listVerifiedLocalCleanupPage(
+    cursor: VerifiedLocalCleanupCursor | null,
+    limit = 25,
+  ): VerifiedLocalCleanupPage {
+    const after = cursor || { updatedAt: -1, bvid: "" };
+    const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.db.prepare(`
+      SELECT v.payload_json, v.local_dir, v.updated_at, v.bvid
+      FROM videos v
+      WHERE v.local_dir IS NOT NULL AND v.local_dir<>''
+        AND v.backup_status IN ('verified','partial_verified')
+        AND EXISTS (
+          SELECT 1 FROM favorite_relations r WHERE r.bvid=v.bvid
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM favorite_relations r
+          WHERE r.bvid=v.bvid AND r.backup_status NOT IN ('verified','partial_verified')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.bvid=v.bvid
+            AND j.status IN ('pending','retry_wait','leased','running','manual_wait')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM transfer_sessions s
+          WHERE s.bvid=v.bvid AND s.phase NOT IN ('completed','superseded')
+        )
+        AND (
+          v.updated_at>@updatedAt
+          OR (v.updated_at=@updatedAt AND v.bvid>@bvid)
+        )
+      ORDER BY v.updated_at ASC, v.bvid ASC
+      LIMIT @limit
+    `).all({ ...after, limit: normalizedLimit }) as any[];
+    const items = rows.flatMap((row) => {
+      const video = parseJson<VideoArchiveEntry>(row.payload_json, undefined as any);
+      if (!video || !row.local_dir) return [];
+      video.localDir = String(row.local_dir);
+      return [video];
+    });
+    const last = rows[rows.length - 1];
+    return {
+      items,
+      nextCursor: rows.length === normalizedLimit && last
+        ? { updatedAt: Number(last.updated_at || 0), bvid: String(last.bvid || "") }
+        : null,
+    };
   }
 
   listRelationsByStatuses(statuses: string[]) {

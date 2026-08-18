@@ -31,6 +31,7 @@ import {
   type DownloadCacheInspection,
   type DownloadRecoverySummary,
   writeDownloadSession,
+  type DownloadCleanupOptions,
 } from "./download-session.js";
 import {
   LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
@@ -95,6 +96,7 @@ const CHARGING_RECHECK_JITTER_MS = 12 * 60 * 60_000;
 const CHARGING_TRANSIENT_BASE_MS = 6 * 60 * 60_000;
 const CHARGING_TRANSIENT_JITTER_MS = 30 * 60_000;
 const CHARGING_NO_ACCOUNT_DELAY_MS = 24 * 60 * 60_000;
+const LOCAL_CLEANUP_RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000] as const;
 
 export function computeUploadVerificationTiming(putAcceptedAtValues: number[], now = Date.now()) {
   const acceptedAt = putAcceptedAtValues.filter((value) => Number.isFinite(value) && value > 0);
@@ -144,6 +146,11 @@ export function computeQualityCleanupRetryDelayMs(attempts: number, random: () =
   const base = Math.min(maximum, minimum * (2 ** Math.max(0, Math.min(20, Math.floor(attempts || 0)))));
   const normalized = Math.max(0, Math.min(1, Number(random()) || 0));
   return Math.max(minimum, Math.min(maximum, Math.round(base * (0.8 + normalized * 0.4))));
+}
+
+export function computeLocalCleanupRetryDelayMs(attempts: number) {
+  const index = Math.max(0, Math.min(LOCAL_CLEANUP_RETRY_DELAYS_MS.length - 1, Math.floor(Number(attempts) || 0)));
+  return LOCAL_CLEANUP_RETRY_DELAYS_MS[index];
 }
 
 export type RecoveryIssueKind =
@@ -235,6 +242,10 @@ export class SyncScheduler {
   private readonly leaseOwner = crypto.randomUUID();
   private jobDispatchTimer: NodeJS.Timeout | null = null;
   private leaseHeartbeatTimer: NodeJS.Timeout | null = null;
+  private localCleanupRetryTimer: NodeJS.Timeout | null = null;
+  private localCleanupSweepPromise: Promise<void> | null = null;
+  private readonly localCleanupInFlight = new Map<string, Promise<void>>();
+  private readonly localCleanupRetries = new Map<string, { attempts: number; nextAt: number; localDir: string }>();
   private accessProbePromise: Promise<void> | null = null;
   private accessProbeJobId: string | null = null;
   private legacyTempRecoveryPromise: Promise<void> | null = null;
@@ -1844,15 +1855,240 @@ export class SyncScheduler {
     this.schedulePersistentJobWake();
   }
 
-  private async maybeCleanupVerifiedLocalDir(bvid: string, localDir: string) {
-    if (!localDir || this.jobStore.hasJobsForBvid(bvid, ["upload", "verify_upload", "history_upload"])) return;
+  private scheduleLocalCleanupRetryTimer() {
+    if (this.localCleanupRetryTimer) {
+      clearTimeout(this.localCleanupRetryTimer);
+      this.localCleanupRetryTimer = null;
+    }
+    if (!this.acceptingJobs || this.localCleanupRetries.size === 0) return;
+    const next = [...this.localCleanupRetries.values()]
+      .map((item) => item.nextAt)
+      .reduce((minimum, value) => Math.min(minimum, value), Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(next)) return;
+    this.localCleanupRetryTimer = setTimeout(() => {
+      this.localCleanupRetryTimer = null;
+      const now = this.now();
+      for (const [bvid, item] of this.localCleanupRetries) {
+        if (item.nextAt <= now) this.requestLocalCleanup(bvid, item.localDir);
+      }
+      this.scheduleLocalCleanupRetryTimer();
+    }, Math.max(1_000, next - this.now()));
+    this.localCleanupRetryTimer.unref?.();
+  }
+
+  private scheduleLocalCleanupRetry(bvid: string, localDir: string) {
+    const previous = this.localCleanupRetries.get(bvid);
+    const attempts = (previous?.attempts || 0) + 1;
+    this.localCleanupRetries.set(bvid, {
+      attempts,
+      nextAt: this.now() + computeLocalCleanupRetryDelayMs(attempts - 1),
+      localDir,
+    });
+    this.scheduleLocalCleanupRetryTimer();
+    logManager.push({
+      timestamp: new Date(this.now()).toISOString(),
+      type: "system",
+      level: "warn",
+      summary: `已验证归档暂未完成本地清理，将在稍后自动重试 ${bvid}`,
+      raw: `[DownloadRecovery] remote proof was not ready for local cleanup; attempt=${attempts}`,
+      bvid,
+      simpleVisible: true,
+      debugVisible: true,
+    });
+  }
+
+  private startLocalCleanupSweep() {
+    if (this.localCleanupSweepPromise || !this.acceptingJobs) return;
+    this.localCleanupSweepPromise = (async () => {
+      let cursor: import("./database.js").VerifiedLocalCleanupCursor | null = null;
+      while (this.acceptingJobs) {
+        const page = this.stateManager.listVerifiedLocalCleanupPage(cursor, 25);
+        if (page.items.length === 0) break;
+        for (const video of page.items) {
+          if (!this.acceptingJobs) break;
+          const work = this.requestLocalCleanup(video.bvid, String(video.localDir || ""));
+          if (work) await work;
+        }
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+    })().catch((error) => {
+      console.warn(`[Scheduler] Verified local cleanup sweep stopped: ${safeErrorSummary(error)}`);
+    }).finally(() => {
+      this.localCleanupSweepPromise = null;
+    });
+  }
+
+  private localCleanupRetryableError() {
+    const error: any = new Error("Remote archive proof is not ready for local cleanup");
+    error.localCleanupRetryable = true;
+    return error;
+  }
+
+  private async inspectCleanupRemoteFile(config: AppConfig, file: RemoteFileRecord) {
+    if (!file.path || !Number.isFinite(Number(file.size))) return "structural" as const;
+    try {
+      const result = await this.remoteFileInspector(config, file.path, Number(file.size));
+      return result.status === "verified" ? "verified" as const : "remote_retry" as const;
+    } catch {
+      return "remote_retry" as const;
+    }
+  }
+
+  private async inspectCleanupHistoryFile(config: AppConfig, remotePath: string, expectedSize: number) {
+    if (!remotePath || !Number.isFinite(expectedSize)) return "structural" as const;
+    try {
+      const result = await this.remoteFileInspector(config, remotePath, expectedSize);
+      return result.status === "verified" ? "verified" as const : "remote_retry" as const;
+    } catch {
+      return "remote_retry" as const;
+    }
+  }
+
+  private async performVerifiedLocalCleanup(bvid: string, localDir: string) {
+    if (!this.acceptingJobs || !localDir) return;
+    if (this.jobStore.hasActiveJobsForBvid(bvid) || this.transferSessions.hasActiveForBvid(bvid)) return;
+
+    const video = this.stateManager.getDatabase().getVideo(bvid);
+    if (!video) return;
+    video.localDir = localDir;
+    if (!["verified", "partial_verified"].includes(video.backupStatus || "")) return;
     const relations = this.stateManager.listRelationsForBvid(bvid);
-    if (relations.some((relation) => !["verified", "partial_verified"].includes(relation.backupStatus || ""))) return;
-    const pendingHistory = historySessionGroups(localDir).some((group) =>
-      group.files.some((file) => relations.some((relation) => !(file.uploadedTargets || []).includes(`${relation.userId}:${relation.mediaId}`)))
-    );
-    if (pendingHistory) return;
-    await this.cleanupSharedUploadDir(localDir, new Set([bvid]));
+    if (relations.length === 0 || relations.some((relation) => !["verified", "partial_verified"].includes(relation.backupStatus || ""))) return;
+
+    const tempRoot = path.resolve(this.legacyTempDir);
+    const candidateDir = path.resolve(localDir);
+    if (candidateDir === tempRoot || !candidateDir.startsWith(`${tempRoot}${path.sep}`) || path.basename(candidateDir) !== bvid) return;
+    let localStat: fs.Stats;
+    try {
+      localStat = await fs.promises.lstat(candidateDir);
+      if (!localStat.isDirectory() || localStat.isSymbolicLink()) return;
+      const [realRoot, realCandidate] = await Promise.all([
+        fs.promises.realpath(tempRoot),
+        fs.promises.realpath(candidateDir),
+      ]);
+      if (realCandidate === realRoot || !realCandidate.startsWith(`${realRoot}${path.sep}`)) return;
+    } catch {
+      return;
+    }
+
+    const manifest = readDownloadSession(localDir);
+    if (!manifest || manifest.bvid !== bvid || !["complete", "partial"].includes(manifest.status) || manifest.outputs.length === 0) return;
+
+    const normalizeRelative = (value: string) => value.replace(/\\/g, "/");
+    const localFileIsValid = async (relativePath: string, expectedSize: number) => {
+      const normalized = normalizeRelative(relativePath);
+      const localFile = path.resolve(localDir, normalized);
+      const localRoot = path.resolve(localDir);
+      if (localFile === localRoot || !localFile.startsWith(`${localRoot}${path.sep}`)) return false;
+      try {
+        const stat = await fs.promises.lstat(localFile);
+        return stat.isFile() && !stat.isSymbolicLink() && stat.size === expectedSize;
+      } catch {
+        return false;
+      }
+    };
+
+    const proofByRelativePath = new Map<string, RemoteFileRecord[]>();
+    const addProof = (file: RemoteFileRecord) => {
+      if (["awaiting_verification", "failed"].includes(file.verificationStatus || "")) return;
+      const relative = file.localRelativePath ? normalizeRelative(file.localRelativePath) : "";
+      if (!relative || !Number.isFinite(Number(file.size)) || !file.path) return;
+      const list = proofByRelativePath.get(relative) || [];
+      if (!list.some((candidate) => candidate.path === file.path && candidate.size === file.size)) list.push(file);
+      proofByRelativePath.set(relative, list);
+    };
+    for (const file of video.remoteFiles || []) addProof(file);
+    for (const relation of relations) {
+      for (const file of relation.remoteFiles || []) addProof(file);
+    }
+
+    const confirmedRelativePaths = new Set<string>();
+    for (const output of manifest.outputs) {
+      const relativePath = normalizeRelative(output.relativePath);
+      if (!(await localFileIsValid(relativePath, Number(output.size)))) return;
+      const proofs = (proofByRelativePath.get(relativePath) || [])
+        .filter((file) => Number(file.size) === Number(output.size));
+      if (proofs.length === 0) return;
+      let verified = false;
+      let structural = false;
+      for (const proof of proofs) {
+        const result = await this.inspectCleanupRemoteFile(this.configStore.get(), proof);
+        if (result === "verified") {
+          verified = true;
+          break;
+        }
+        if (result === "structural") structural = true;
+      }
+      if (!verified) {
+        if (structural && proofs.every((proof) => !proof.path || !Number.isFinite(Number(proof.size)))) return;
+        throw this.localCleanupRetryableError();
+      }
+      confirmedRelativePaths.add(relativePath);
+    }
+
+    let allTrackedFilesConfirmed = true;
+    const targetKeys = relations.map((relation) => `${relation.userId}:${relation.mediaId}`);
+    for (const group of historySessionGroups(localDir)) {
+      for (const file of group.files) {
+        const relativePath = normalizeRelative(file.relativePath);
+        const uploadedToAllTargets = targetKeys.every((targetKey) => (file.uploadedTargets || []).includes(targetKey));
+        if (!uploadedToAllTargets) {
+          allTrackedFilesConfirmed = false;
+          continue;
+        }
+        if (!(await localFileIsValid(relativePath, Number(file.size)))) {
+          allTrackedFilesConfirmed = false;
+          continue;
+        }
+        for (const relation of relations) {
+          const remotePath = relation.remotePath
+            ? joinRemotePath(relation.remotePath, "_history", this.historySnapshotSegment(group.snapshotAt), path.basename(relativePath))
+            : "";
+          const result = await this.inspectCleanupHistoryFile(this.configStore.get(), remotePath, Number(file.size));
+          if (result !== "verified") throw this.localCleanupRetryableError();
+        }
+        confirmedRelativePaths.add(relativePath);
+      }
+    }
+
+    if (confirmedRelativePaths.size === 0) return;
+    if (!this.acceptingJobs) return;
+    const cleanupOptions: DownloadCleanupOptions = {
+      confirmedRelativePaths,
+      preserveManifest: !allTrackedFilesConfirmed,
+    };
+    await this.cleanupSharedUploadDir(localDir, new Set([bvid]), cleanupOptions);
+  }
+
+  private requestLocalCleanup(bvid: string, localDir: string) {
+    if (!this.acceptingJobs || !localDir) return null;
+    const active = this.localCleanupInFlight.get(bvid);
+    if (active) return active;
+    const retry = this.localCleanupRetries.get(bvid);
+    if (retry && retry.nextAt > this.now()) return null;
+    const work = this.performVerifiedLocalCleanup(bvid, localDir)
+      .then(() => {
+        this.localCleanupRetries.delete(bvid);
+        this.scheduleLocalCleanupRetryTimer();
+      })
+      .catch((error: any) => {
+        if (error?.localCleanupRetryable) {
+          this.scheduleLocalCleanupRetry(bvid, localDir);
+        } else {
+          console.warn(`[Scheduler] Verified local cleanup skipped for ${bvid}: ${safeErrorSummary(error)}`);
+        }
+      })
+      .finally(() => {
+        this.localCleanupInFlight.delete(bvid);
+      });
+    this.localCleanupInFlight.set(bvid, work);
+    return work;
+  }
+
+  private async maybeCleanupVerifiedLocalDir(bvid: string, localDir: string) {
+    const work = this.requestLocalCleanup(bvid, localDir);
+    if (work) await work;
   }
 
   private uploadTaskKey(task: any) {
@@ -3484,6 +3720,8 @@ export class SyncScheduler {
       void this.tick();
     }, startupJitter);
     this.startRecoveryAutomation();
+    this.startLocalCleanupSweep();
+    this.scheduleLocalCleanupRetryTimer();
     this.dispatchPersistentJobs();
   }
 
@@ -3579,6 +3817,10 @@ export class SyncScheduler {
       clearTimeout(this.downloadStartTimer);
       this.downloadStartTimer = null;
     }
+    if (this.localCleanupRetryTimer) {
+      clearTimeout(this.localCleanupRetryTimer);
+      this.localCleanupRetryTimer = null;
+    }
   }
 
   private stopPollingTimers() {
@@ -3634,6 +3876,17 @@ export class SyncScheduler {
       const activeRefresh = this.localCacheRefresh;
       await Promise.race([activeRefresh.catch(() => undefined), delay(remaining())]);
       if (this.localCacheRefresh === activeRefresh) break;
+    }
+    if (this.localCleanupSweepPromise && remaining() > 0) {
+      await Promise.race([
+        this.localCleanupSweepPromise.catch(() => undefined),
+        delay(remaining()),
+      ]);
+    }
+    while (this.localCleanupInFlight.size > 0 && remaining() > 0) {
+      const activeCleanup = Promise.allSettled([...this.localCleanupInFlight.values()]);
+      await Promise.race([activeCleanup, delay(remaining())]);
+      if (this.localCleanupInFlight.size > 0) break;
     }
     this.jobStore.releaseOwner(this.leaseOwner);
     this.stateManager.close();
@@ -4376,11 +4629,18 @@ export class SyncScheduler {
     }];
   }
 
-  private async cleanupSharedUploadDir(downloadDir: string, bvids: Set<string> = new Set()) {
+  private async cleanupSharedUploadDir(
+    downloadDir: string,
+    bvids: Set<string> = new Set(),
+    options: DownloadCleanupOptions = {},
+  ) {
     try {
-      const result = await cleanupUploadedSessionFiles(downloadDir);
-      for (const bvid of bvids) {
-        this.stateManager.markLocalUploadGroupComplete(bvid, downloadDir);
+      const result = await cleanupUploadedSessionFiles(downloadDir, options);
+      if (!this.acceptingJobs) return;
+      if (!options.preserveManifest) {
+        for (const bvid of bvids) {
+          this.stateManager.markLocalUploadGroupComplete(bvid, downloadDir);
+        }
       }
       if (!result.removedDirectory) {
         logManager.push({

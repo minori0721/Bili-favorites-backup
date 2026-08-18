@@ -99,6 +99,8 @@ test("SQLite hot-path indexes are present and selected by representative plans",
       "idx_relations_remote_schedule",
       "idx_relations_user_unavailable_page",
       "idx_relations_user_unavailable_latest",
+      "idx_jobs_bvid_status",
+      "idx_transfer_sessions_bvid_phase",
     ]) assert.equal(indexes.has(name), true, name);
 
     const plans = [

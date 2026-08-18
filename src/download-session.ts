@@ -135,6 +135,19 @@ export interface DownloadCleanupResult {
   removedFiles: number;
   removedDirectories: number;
   removedBytes: number;
+  retainedBytes: number;
+  removedDirectory: boolean;
+}
+
+export interface DownloadCleanupOptions {
+  /**
+   * Restrict deletion to manifest paths that have been independently confirmed
+   * as uploaded. Omitting this keeps the legacy helper behavior for callers
+   * that already own the proof decision.
+   */
+  confirmedRelativePaths?: Iterable<string>;
+  /** Keep the manifest when some tracked outputs still need upload. */
+  preserveManifest?: boolean;
 }
 
 export interface Aria2TrackRecoveryIssue {
@@ -832,14 +845,14 @@ async function removeEmptyDirectories(target: string, root: string): Promise<voi
   }
 }
 
-export async function cleanupUploadedSessionFiles(downloadDir: string) {
+export async function cleanupUploadedSessionFiles(downloadDir: string, options: DownloadCleanupOptions = {}) {
   const manifest = readDownloadSession(downloadDir);
   if (!manifest) {
     let remaining: string[] = [];
     try { remaining = await fs.promises.readdir(downloadDir); } catch { /* already removed */ }
     if (remaining.length === 0) {
       await fs.promises.rm(downloadDir, { recursive: true, force: true });
-      return { removedDirectory: true, retainedBytes: 0 };
+      return { removedFiles: 0, removedDirectories: 1, removedBytes: 0, removedDirectory: true, retainedBytes: 0 };
     }
     const retainedBytes = directorySizeSync(downloadDir);
     writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
@@ -848,23 +861,56 @@ export async function cleanupUploadedSessionFiles(downloadDir: string) {
       retainedAt: nowIso(),
       reason: "The download session manifest was missing during cleanup; all local files were preserved.",
     });
-    return { removedDirectory: false, retainedBytes };
+    return { removedFiles: 0, removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes };
   }
-  const uploadedPaths = new Set([
+  const manifestPaths = new Set([
     ...manifest.outputs.map((output) => output.relativePath),
     ...manifest.history.map((output) => output.relativePath),
   ]);
-  for (const relativePath of uploadedPaths) {
-    await fs.promises.unlink(path.join(downloadDir, relativePath)).catch(() => undefined);
+  const confirmedPaths = options.confirmedRelativePaths === undefined
+    ? manifestPaths
+    : new Set([...options.confirmedRelativePaths]
+      .map((value) => normalizeManifestRelativePath(value))
+      .filter((value): value is string => typeof value === "string" && manifestPaths.has(value)));
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (const relativePath of confirmedPaths) {
+    try {
+      const stat = await fs.promises.lstat(path.join(downloadDir, relativePath));
+      if (!stat.isFile()) continue;
+      await fs.promises.unlink(path.join(downloadDir, relativePath));
+      removedFiles += 1;
+      removedBytes += stat.size;
+    } catch {
+      // The file may have been removed by a prior idempotent cleanup attempt.
+    }
   }
-  await fs.promises.unlink(downloadSessionPath(downloadDir)).catch(() => undefined);
+  if (!options.preserveManifest) {
+    await fs.promises.unlink(downloadSessionPath(downloadDir)).catch(() => undefined);
+  } else if (confirmedPaths.size > 0) {
+    const confirmed = new Set(confirmedPaths);
+    manifest.outputs = manifest.outputs.filter((output) => !confirmed.has(output.relativePath));
+    manifest.history = manifest.history.filter((output) => !confirmed.has(output.relativePath));
+    writeDownloadSession(downloadDir, manifest);
+  }
   await removeEmptyDirectories(downloadDir, downloadDir);
   const retainedBytes = directorySizeSync(downloadDir);
   let remaining: string[] = [];
   try { remaining = await fs.promises.readdir(downloadDir); } catch { /* removed concurrently */ }
   if (remaining.length === 0) {
     await fs.promises.rm(downloadDir, { recursive: true, force: true });
-    return { removedDirectory: true, retainedBytes: 0 };
+    return { removedFiles, removedDirectories: 1, removedBytes, removedDirectory: true, retainedBytes: 0 };
+  }
+  const trackedFilesRemain = [...manifestPaths].some((relativePath) => fs.existsSync(path.join(downloadDir, relativePath)));
+  if (options.preserveManifest || trackedFilesRemain) {
+    writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
+      schemaVersion: 1,
+      bvid: manifest.bvid,
+      sessionId: manifest.sessionId,
+      retainedAt: nowIso(),
+      reason: "Unverified or incomplete local artifacts were preserved after confirmed outputs were cleaned.",
+    });
+    return { removedFiles, removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
   }
   writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
     schemaVersion: 1,
@@ -873,7 +919,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string) {
     retainedAt: nowIso(),
     reason: "Unverified local artifacts were preserved after all verified outputs were uploaded.",
   });
-  return { removedDirectory: false, retainedBytes };
+  return { removedFiles, removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
 }
 
 function directorySizeSync(target: string): number {
@@ -968,7 +1014,13 @@ function classifyManifestRecovery(downloadDir: string, manifest: DownloadSession
 }
 
 export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise<DownloadCleanupResult> {
-  const result: DownloadCleanupResult = { removedFiles: 0, removedDirectories: 0, removedBytes: 0 };
+  const result: DownloadCleanupResult = {
+    removedFiles: 0,
+    removedDirectories: 0,
+    removedBytes: 0,
+    removedDirectory: false,
+    retainedBytes: 0,
+  };
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(rootDir, { withFileTypes: true });

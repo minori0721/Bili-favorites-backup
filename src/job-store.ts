@@ -617,6 +617,24 @@ export class PersistentJobStore {
     return Number((this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as any).count || 0) > 0;
   }
 
+  hasActiveJobsForBvid(bvid: string, kinds?: PersistentJobKind[]) {
+    const statuses = PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES;
+    const statusPlaceholders = statuses.map(() => "?").join(",");
+    if (!kinds?.length) {
+      return Boolean(this.stateDatabase.db.prepare(`
+        SELECT 1 FROM jobs
+        WHERE bvid=? AND status IN (${statusPlaceholders})
+        LIMIT 1
+      `).get(bvid, ...statuses));
+    }
+    const kindPlaceholders = kinds.map(() => "?").join(",");
+    return Boolean(this.stateDatabase.db.prepare(`
+      SELECT 1 FROM jobs
+      WHERE bvid=? AND kind IN (${kindPlaceholders}) AND status IN (${statusPlaceholders})
+      LIMIT 1
+    `).get(bvid, ...kinds, ...statuses));
+  }
+
   countJobsForBvid(bvid: string, kinds: PersistentJobKind[]) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");

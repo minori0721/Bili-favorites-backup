@@ -2287,6 +2287,13 @@ export class StateManager {
       .map((video) => ({ video: { ...video }, relation: this.findRelationForBvid(video.bvid) }));
   }
 
+  listVerifiedLocalCleanupPage(
+    cursor: import("./database.js").VerifiedLocalCleanupCursor | null,
+    limit = 25,
+  ) {
+    return this.database.listVerifiedLocalCleanupPage(cursor, limit);
+  }
+
   listStaleActiveBackups(maxAgeMs: number) {
     const active = ["queued", "downloading", "downloaded", "uploading"];
     const relationSource = this.lazyState ? this.database.listStaleRelations(active, Date.now() - maxAgeMs) : Object.values(this.state.relations || {});
