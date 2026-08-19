@@ -39,7 +39,8 @@ test("problem center explains protection and resolves one action without duplica
     element.click();
     element.click();
   });
-  await expect(page.locator("#recoveryIssuesDetail")).toContainText("没有需要处理的问题");
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
@@ -69,6 +70,27 @@ test("problem center keeps focus contained and uses a two-level mobile flow", as
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.keyboard.press("Escape");
   await expect(modal).not.toHaveClass(/active/);
+});
+
+test("problem center uses one compact empty state when no issues exist", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await page.request.post("/__test/reset", { data: { recoveryIssueEmpty: true } });
+  await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
+  await page.goto("/");
+  await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
+  await page.locator("#recoveryIssuesBtn").click();
+  await expect(page.locator("#recoveryIssuesModal")).toHaveClass(/active/);
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
+  await expect(page.locator("#recoveryIssuesEmptyMessage")).toContainText("新的异常会出现在这里");
+  await expect(page.locator(".recovery-issues-layout")).toHaveClass(/is-empty/);
+  await expect(page.locator(".recovery-issues-list-pane")).toBeHidden();
+  await expect(page.locator("#recoveryIssuesDetail")).toBeHidden();
+  await expect(page.getByText("当前没有需要处理的问题", { exact:true })).toHaveCount(1);
+  await expect(page.locator("#closeRecoveryIssuesBtn")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#recoveryIssuesModal")).not.toHaveClass(/active/);
+  await expect(page.locator("#recoveryIssuesBtn")).toBeFocused();
 });
 
 test("problem center shows a visible retry state and preserves the last list", async ({ page, browserProblems }) => {
@@ -114,7 +136,8 @@ test("conflict candidate confirmation explains both retained copies and sends on
     element.click();
     element.click();
   });
-  await expect(page.locator("#recoveryIssuesDetail")).toContainText("没有需要处理的问题");
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
 });

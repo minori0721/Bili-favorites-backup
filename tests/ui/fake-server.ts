@@ -20,6 +20,7 @@ type TestState = {
   recoveryActionCount: number;
   recoveryIssueResolved: boolean;
   recoveryIssueKind: "visibility" | "candidate";
+  recoveryIssueEmpty: boolean;
 };
 
 function initialState(): TestState {
@@ -38,6 +39,7 @@ function initialState(): TestState {
     recoveryActionCount: 0,
     recoveryIssueResolved: false,
     recoveryIssueKind: "visibility",
+    recoveryIssueEmpty: false,
   };
 }
 
@@ -133,6 +135,7 @@ app.post("/__test/reset", (request, response) => {
   state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
   state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
   if (request.body?.recoveryIssueKind === "candidate") state.recoveryIssueKind = "candidate";
+  state.recoveryIssueEmpty = request.body?.recoveryIssueEmpty === true;
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
@@ -179,7 +182,7 @@ app.get("/api/users", (_request, response) => response.json(ok([{
 app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({ running: [], completed: [] })));
 app.get("/api/queue/state", (_request, response) => {
   const candidateIssue = state.recoveryIssueKind === "candidate";
-  const issues = state.recoveryIssueResolved ? [] : [{
+  const issues = state.recoveryIssueEmpty || state.recoveryIssueResolved ? [] : [{
     id: "upload.test-recovery",
     kind: candidateIssue ? "conflict_candidate_ready" : "remote_visibility_timeout",
     severity: "info",

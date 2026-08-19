@@ -653,6 +653,7 @@ function getAppStyles() {
     .recovery-issues-entry.has-danger { border-color:#C94F4F; color:#9B2C2C; background:#FFF0F0; }
     .recovery-issues-modal { padding:0; align-items:stretch; }
     .recovery-issues-shell { width:min(1180px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; box-shadow:0 24px 80px rgba(18,38,35,.22); }
+    .recovery-issues-shell.is-empty { height:min(520px,100dvh); }
     .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid #D8E3E0; background:#FFF; }
     .recovery-issues-heading { min-width:0; }
     .recovery-issues-heading h2 { margin:0; font-size:18px; }
@@ -666,7 +667,9 @@ function getAppStyles() {
     .recovery-issues-status button:hover,.recovery-issues-status button:focus-visible { background:#FFF0D8; outline:2px solid rgba(184,111,27,.22); outline-offset:1px; }
     .recovery-issues-status button:disabled { cursor:wait; opacity:.58; }
     .recovery-issues-layout { min-height:0; display:grid; grid-template-columns:minmax(280px,350px) minmax(0,1fr); }
+    .recovery-issues-layout.is-empty { grid-template-columns:minmax(0,1fr); }
     .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:#EEF4F2; padding:12px; }
+    .recovery-issues-list-pane[hidden],.recovery-issues-detail[hidden] { display:none!important; }
     .recovery-issues-list { display:grid; gap:8px; }
     .recovery-issue-row { width:100%; min-height:76px; display:grid; grid-template-columns:10px minmax(0,1fr); gap:10px; align-items:start; padding:12px; border:1px solid #D7E2DF; border-radius:8px; background:#FFF; color:#233E39; text-align:left; cursor:pointer; }
     .recovery-issue-row:hover,.recovery-issue-row:focus-visible,.recovery-issue-row.active { border-color:#39AFA5; outline:none; box-shadow:0 0 0 3px rgba(57,197,187,.12); }
@@ -695,6 +698,18 @@ function getAppStyles() {
     .recovery-technical-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 18px; padding:8px 0 12px; font-size:12px; }
     .recovery-technical-grid div { overflow-wrap:anywhere; }
     .recovery-issues-empty { min-height:260px; display:grid; place-items:center; text-align:center; color:#60736F; padding:30px; }
+    .recovery-issues-empty-state { grid-column:1/-1; min-height:0; height:100%; display:grid; place-items:center; align-content:center; gap:12px; padding:42px 30px; text-align:center; color:#60736F; background:#F8FBFA; }
+    .recovery-issues-empty-state[hidden] { display:none; }
+    .recovery-issues-empty-mark { width:54px; height:54px; display:grid; place-items:center; border:1px solid #BFD8D3; border-radius:50%; color:#17877C; background:#FFF; font-size:26px; font-weight:800; }
+    .recovery-issues-empty-copy { max-width:520px; }
+    .recovery-issues-empty-copy h3 { margin:0; color:#28443F; font-size:18px; line-height:1.4; }
+    .recovery-issues-empty-copy p { margin:8px 0 0; color:#60736F; line-height:1.7; }
+    .recovery-issues-empty-state.is-error { background:#FFF9F0; color:#8D4D08; }
+    .recovery-issues-empty-state.is-error .recovery-issues-empty-mark { border-color:#E8C58D; color:#B86F1B; }
+    .recovery-issues-empty-state.is-error .recovery-issues-empty-copy h3 { color:#8D4D08; }
+    .recovery-issues-empty-retry { min-height:40px; margin-top:16px; padding:8px 16px; border:1px solid #198E84; border-radius:8px; background:#198E84; color:#FFF; font-weight:800; cursor:pointer; }
+    .recovery-issues-empty-retry:hover,.recovery-issues-empty-retry:focus-visible { background:#147A72; outline:2px solid rgba(25,142,132,.24); outline-offset:2px; }
+    .recovery-issues-empty-retry:disabled { cursor:wait; opacity:.58; }
     .recovery-issues-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
     .help-icon-btn { width:32px; height:32px; border-radius:50%; border:1px solid rgba(57,197,187,0.55); background:linear-gradient(180deg,rgba(255,255,255,0.86),rgba(244,253,251,0.72)); color:var(--accent); font-size:15px; font-weight:900; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; box-shadow:inset 0 1px 0 rgba(255,255,255,0.9),0 5px 14px rgba(57,197,187,0.10); }
@@ -805,10 +820,13 @@ function getAppStyles() {
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
       .recovery-issues-shell { width:100%; height:100dvh; border:0; display:flex; flex-direction:column; }
+      .recovery-issues-shell.is-empty { height:min(460px,100dvh); }
       .recovery-issues-header { min-height:58px; padding:8px 10px; }
       .recovery-issues-status { flex:0 0 auto; padding:9px 10px; }
       .recovery-issues-layout { position:relative; display:block; flex:1 1 auto; min-height:0; height:auto; overflow:hidden; }
+      .recovery-issues-layout.is-empty { display:block; }
       .recovery-issues-list-pane,.recovery-issues-detail { position:absolute; inset:0; width:100%; height:100%; border:0; transition:transform .16s ease; }
+      .recovery-issues-empty-state { position:absolute; inset:0; height:100%; padding:34px 20px; }
       .recovery-issues-list-pane { transform:translateX(0); padding:10px; }
       .recovery-issues-detail { transform:translateX(100%); padding:18px 16px 28px; }
       .recovery-issues-shell.show-detail .recovery-issues-list-pane { transform:translateX(-24%); }
@@ -1402,6 +1420,14 @@ function getModals() {
         <button id="recoveryIssuesRetryBtn" type="button">重试</button>
       </div>
       <div class="recovery-issues-layout">
+        <div id="recoveryIssuesEmptyState" class="recovery-issues-empty-state" role="status" hidden>
+          <div class="recovery-issues-empty-mark" aria-hidden="true">✓</div>
+          <div class="recovery-issues-empty-copy">
+            <h3 id="recoveryIssuesEmptyTitle">当前没有需要处理的问题</h3>
+            <p id="recoveryIssuesEmptyMessage">系统会继续在后台自动复核，新的异常会出现在这里。</p>
+            <button id="recoveryIssuesEmptyRetryBtn" class="recovery-issues-empty-retry" type="button" hidden>重试</button>
+          </div>
+        </div>
         <aside class="recovery-issues-list-pane" aria-label="待处理问题列表">
           <div id="recoveryIssuesList" class="recovery-issues-list"></div>
         </aside>
@@ -6491,12 +6517,43 @@ function getAppScript() {
     }
 
     function renderRecoveryIssueStatus() {
+      const shell = document.querySelector('.recovery-issues-shell');
+      const layout = document.querySelector('.recovery-issues-layout');
+      const listPane = document.querySelector('.recovery-issues-list-pane');
+      const detail = document.getElementById('recoveryIssuesDetail');
       const status = document.getElementById('recoveryIssuesStatus');
       const message = document.getElementById('recoveryIssuesStatusMessage');
       const retry = document.getElementById('recoveryIssuesRetryBtn');
-      if (!status || !message || !retry) return;
+      const emptyState = document.getElementById('recoveryIssuesEmptyState');
+      const emptyTitle = document.getElementById('recoveryIssuesEmptyTitle');
+      const emptyMessage = document.getElementById('recoveryIssuesEmptyMessage');
+      const emptyRetry = document.getElementById('recoveryIssuesEmptyRetryBtn');
+      const hasItems = recoveryIssueState.items.length > 0;
       const hasError = Boolean(recoveryIssueState.error);
-      status.hidden = !hasError;
+      if (shell) {
+        shell.classList.toggle('is-empty', !hasItems);
+        if (!hasItems) shell.classList.remove('show-detail');
+      }
+      if (layout) layout.classList.toggle('is-empty', !hasItems);
+      if (listPane) listPane.hidden = !hasItems;
+      if (detail) detail.hidden = !hasItems;
+      if (emptyState) {
+        emptyState.hidden = hasItems;
+        emptyState.classList.toggle('is-error', !hasItems && hasError);
+        emptyState.setAttribute('role', hasError ? 'alert' : 'status');
+      }
+      if (emptyTitle) emptyTitle.textContent = hasError
+        ? '待处理问题暂时无法加载'
+        : '当前没有需要处理的问题';
+      if (emptyMessage) emptyMessage.textContent = hasError
+        ? '当前没有可用的问题列表，已有数据不会被清除。请重新加载。'
+        : '系统会继续在后台自动复核，新的异常会出现在这里。';
+      if (emptyRetry) {
+        emptyRetry.hidden = !hasError;
+        emptyRetry.disabled = recoveryIssueRequestInFlight;
+      }
+      if (!status || !message || !retry) return;
+      status.hidden = !hasItems || !hasError;
       message.textContent = recoveryIssueState.error || '';
       retry.disabled = recoveryIssueRequestInFlight;
     }
@@ -6521,12 +6578,6 @@ function getAppScript() {
       const host = document.getElementById('recoveryIssuesList');
       host.innerHTML = '';
       if (recoveryIssueState.items.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'recovery-issues-empty';
-        empty.textContent = recoveryIssueState.error
-          ? '待处理问题暂时无法加载，请点击上方“重试”。'
-          : '当前没有需要你处理的问题。系统仍会在后台继续复核临时异常。';
-        host.appendChild(empty);
         return;
       }
       recoveryIssueState.items.forEach((issue) => {
@@ -6632,15 +6683,12 @@ function getAppScript() {
     function renderRecoveryIssueDetail() {
       const host = document.getElementById('recoveryIssuesDetail');
       host.innerHTML = '';
+      if (recoveryIssueState.items.length === 0) return;
       const issue = recoveryIssueState.items.find((item) => item.id === recoveryIssueState.selectedId);
       if (!issue) {
         const empty = document.createElement('div');
         empty.className = 'recovery-issues-empty';
-        empty.textContent = recoveryIssueState.error
-          ? '待处理问题暂时无法加载，请先重试。'
-          : recoveryIssueState.items.length === 0
-          ? '没有需要处理的问题。'
-          : '从左侧选择一项查看详情。';
+        empty.textContent = '从左侧选择一项查看详情。';
         host.appendChild(empty);
         return;
       }
@@ -7293,6 +7341,7 @@ function getAppScript() {
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
     document.getElementById('recoveryIssuesBtn').addEventListener('click', (event) => openRecoveryIssues(event.currentTarget));
     document.getElementById('recoveryIssuesRetryBtn').addEventListener('click', () => void refreshRecoveryIssues());
+    document.getElementById('recoveryIssuesEmptyRetryBtn').addEventListener('click', () => void refreshRecoveryIssues());
     document.getElementById('closeRecoveryIssuesBtn').addEventListener('click', () => closeModal('recoveryIssuesModal'));
     document.getElementById('recoveryIssuesBackBtn').addEventListener('click', () => {
       document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');
