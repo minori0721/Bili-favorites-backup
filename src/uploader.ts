@@ -51,6 +51,7 @@ import {
 import {
   createRemoteFileResolver,
   RemoteFileResolutionConflictError,
+  normalizeRemoteDirectoryEntry,
   type RemoteFileResolver,
 } from "./remote-file-resolver.js";
 import { buildStorageDavUrl } from "./storage-url.js";
@@ -1265,15 +1266,22 @@ export async function listRemoteFilesRecursive(
     }
     for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
       const item = items[itemIndex];
+      let normalized;
+      try {
+        normalized = normalizeRemoteDirectoryEntry(dir, item);
+      } catch (error) {
+        skipped.push({ path: dir, reason: `远端条目解析失败：${error instanceof Error ? error.message : String(error)}` });
+        continue;
+      }
       if (files.length >= maxFiles) {
         complete = false;
         skipped.push({ path: dir, reason: `扫描数量超过上限 ${maxFiles}` });
         return;
       }
-      const itemPath = normalizeRemotePath(String(item?.filename || item?.path || `${dir.replace(/\/$/, "")}/${item?.basename || ""}`));
-      const name = String(item?.basename || remoteBasename(itemPath));
+      const itemPath = normalized.path;
+      const name = normalized.name;
       if (!name) continue;
-      if (item?.type === "directory") {
+      if (normalized.type === "directory") {
         if (depth >= maxDepth) {
           complete = false;
           skipped.push({ path: itemPath, reason: `超过最大扫描深度 ${maxDepth}` });
@@ -1294,7 +1302,7 @@ export async function listRemoteFilesRecursive(
         name,
         path: itemPath,
         dir: remoteDirname(itemPath),
-        size: Number.isFinite(Number(item?.size)) ? Number(item.size) : undefined,
+        size: normalized.size,
       });
     }
   }

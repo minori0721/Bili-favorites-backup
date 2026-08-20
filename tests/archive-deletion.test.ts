@@ -147,10 +147,12 @@ function createService(
   options: {
     schedulerIdle?: () => boolean;
     maintenance?: Array<boolean>;
+    maintenanceSummaries?: Array<Record<string, unknown>>;
     now?: () => number;
     config?: AppConfig;
     previewCleanupIntervalMs?: number;
     preparationRecovery?: (userId: string, accountRemoved: boolean) => void;
+    prepareSourceDeletion?: (userId: string, mediaId: number, bvid: string) => Promise<void>;
   } = {}
 ) {
   const config = options.config || testConfig({
@@ -165,7 +167,11 @@ function createService(
     now: options.now,
     previewCleanupIntervalMs: options.previewCleanupIntervalMs,
     isSchedulerIdle: options.schedulerIdle || (() => true),
-    setMaintenance: (locked) => options.maintenance?.push(locked),
+    setMaintenance: (locked, summary) => {
+      options.maintenance?.push(locked);
+      if (summary) options.maintenanceSummaries?.push({ ...summary });
+    },
+    prepareSourceDeletion: options.prepareSourceDeletion,
     onAccountPreparationRecovery: options.preparationRecovery,
   });
 }
@@ -292,6 +298,46 @@ test("archive deletion retains a shared physical file and only removes the selec
   }
 });
 
+test("source deletion keeps the source identity while the worker is running", async () => {
+  const runtime = await createTestDir("archive-delete-source-maintenance-identity");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  const maintenanceSummaries: Array<Record<string, unknown>> = [];
+  const preparationCalls: Array<[string, number, string]> = [];
+  let service: ArchiveDeletionService | undefined;
+  try {
+    const remotePath = "/backup/source-maintenance.mp4";
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVSOURCEMAINTENANCE", active: false,
+      paths: [{ path: remotePath, size: 21 }],
+    });
+    dav.files.set(remotePath, { type: "file", size: 21 });
+    service = createService(manager, users, dav, {
+      maintenanceSummaries,
+      prepareSourceDeletion: async (userId, mediaId, bvid) => {
+        preparationCalls.push([userId, mediaId, bvid]);
+      },
+    });
+    const preview = service.previewSource("u1", 10, "BVSOURCEMAINTENANCE");
+    service.start(preview.id, "DELETE ARCHIVE");
+    const completed = await waitForOperation(service, preview.id, ["completed"]);
+    assert.equal(completed.status, "completed");
+    assert.deepEqual(preparationCalls, [["u1", 10, "BVSOURCEMAINTENANCE"]]);
+    assert.ok(maintenanceSummaries.some((summary) =>
+      summary.status === "running"
+      && summary.scope === "source"
+      && summary.userId === "u1"
+      && summary.mediaId === 10
+      && summary.bvid === "BVSOURCEMAINTENANCE"
+    ));
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("archive deletion does not retry authorization failures and never removes unknown directory contents", async () => {
   const runtime = await createTestDir("archive-delete-auth-and-directory");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
@@ -316,7 +362,7 @@ test("archive deletion does not retry authorization failures and never removes u
       SELECT status FROM archive_deleted_sources WHERE deletion_id=?
     `).get(headPreview.id) as any;
     assert.equal(restoredFailure.status, "restored");
-    assert.equal(manager.getRelation("u1", 10, "BVAUTHHEAD")?.backupStatus, "discovered");
+    assert.equal(manager.getRelation("u1", 10, "BVAUTHHEAD")?.backupStatus, "verified");
     assert.equal(service.get(headPreview.id)?.status, "superseded");
     assert.equal(manager.getDatabase().hasUnfinishedArchiveDeletion(), false);
 
@@ -519,7 +565,8 @@ test("account previews report active tasks, expire after thirty minutes, and sou
     assert.equal(reused.expiresAt, accountPreview.expiresAt);
     assert.equal(deletionRowCount(manager, "archive_deletion_items", accountPreview.id), 1);
     assert.equal(deletionRowCount(manager, "archive_deleted_sources", accountPreview.id), 1);
-    assert.throws(() => service!.previewSource("u1", 10, "BVPREVIEWTTL"), /任务空闲/);
+    const sourcePreview = service.previewSource("u1", 10, "BVPREVIEWTTL");
+    assert.equal(sourcePreview.activeTasks, 1);
     currentTime = accountPreview.expiresAt! + 1;
     assert.throws(
       () => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"),

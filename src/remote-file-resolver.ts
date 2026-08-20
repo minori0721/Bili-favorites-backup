@@ -1,9 +1,26 @@
+import { joinRemotePath, normalizeRemotePath, remoteBasename } from "./remote-path.js";
+
 export interface RemoteDirectoryClient {
   stat(path: string): Promise<any>;
   getDirectoryContents?(path: string, options?: Record<string, unknown>): Promise<any>;
 }
 
+export interface NormalizedRemoteDirectoryEntry {
+  path: string;
+  name: string;
+  type: "file" | "directory";
+  size?: number;
+}
+
 export type RemoteLookupFallback = "never" | "risk_only" | "always";
+
+export type RemoteFailureCategory = "transient" | "permission" | "unsupported" | "not_found" | "conflict" | "unknown";
+
+export interface RemoteFailureInfo {
+  category: RemoteFailureCategory;
+  status?: number;
+  code?: string;
+}
 
 export interface RemoteFileObservation {
   status: "exists" | "missing";
@@ -26,6 +43,31 @@ export class RemoteFileResolutionConflictError extends Error {
 
 function statusCode(error: any) {
   return Number(error?.statusCode || error?.response?.status || error?.status || 0) || undefined;
+}
+
+export function classifyRemoteFailure(error: any): RemoteFailureInfo {
+  const status = statusCode(error);
+  const code = String(error?.code || error?.cause?.code || "").toUpperCase() || undefined;
+  const message = String(error?.message || error || "");
+  const networkLike = Boolean(code && new Set([
+    "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "ESOCKETTIMEDOUT",
+    "EAI_AGAIN", "ENETDOWN", "ENETUNREACH", "EHOSTUNREACH",
+  ]).has(code)) || /timeout|timed out|socket hang up|network|temporarily unavailable|connection reset|connection refused/i.test(message);
+
+  if (status === 401 || status === 403) return { category: "permission", status, code };
+  if (status === 405 || status === 501 || /method not allowed|not implemented/i.test(message)) {
+    return { category: "unsupported", status, code };
+  }
+  if (status === 409 || status === 412 || /conflict|precondition/i.test(message)) {
+    return { category: "conflict", status, code };
+  }
+  if (status === 404 || /not found|enoent|no such file/i.test(message)) {
+    return { category: "not_found", status, code };
+  }
+  if (networkLike || status === 408 || status === 425 || status === 429 || (status !== undefined && status >= 500)) {
+    return { category: "transient", status, code };
+  }
+  return { category: "unknown", status, code };
 }
 
 export function isRemoteNotFoundError(error: any) {
@@ -136,24 +178,97 @@ function joinRemoteLookupPath(parent: string, child: string) {
   return name ? `${root.replace(/\/$/g, "")}/${name}` : root;
 }
 
-function entryPath(parent: string, entry: any) {
-  const raw = String(entry?.filename || entry?.path || "");
-  if (!raw) return joinRemoteLookupPath(parent, String(entry?.basename || entry?.name || ""));
-  return normalizeRemoteLookupPath(raw.startsWith("/") ? raw : joinRemoteLookupPath(parent, raw));
+function normalizeListedPath(value: string) {
+  const raw = String(value || "");
+  if (!raw.startsWith("/")) throw new Error("远端条目路径必须是绝对路径");
+  const withoutTrailingSlash = raw.replace(/\/+$/g, "") || "/";
+  if (withoutTrailingSlash === "/") return "/";
+  const parts = withoutTrailingSlash.split("/").slice(1);
+  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) {
+    throw new Error("远端条目包含非法路径片段");
+  }
+  for (const part of parts) {
+    const unsafeBackslash = part.replace(/\\(?=['"’‘]|%[0-9a-f]{2})/gi, "").includes("\\");
+    if (unsafeBackslash) throw new Error("远端条目包含非法字符");
+  }
+  return `/${parts.join("/")}`;
 }
 
-function entryName(parent: string, entry: any) {
-  const basename = String(entry?.basename || entry?.name || "");
-  return basename || remoteLookupBasename(entryPath(parent, entry));
+function decodeHrefPath(value: string) {
+  const raw = String(value || "");
+  if (/^https?:\/\//i.test(raw)) {
+    const url = new URL(raw);
+    if (url.search || url.hash) throw new Error("远端条目URL不能包含查询串或片段");
+    return decodeURIComponent(url.pathname);
+  }
+  if (raw.includes("?") || raw.includes("#")) throw new Error("远端条目路径不能包含查询串或片段");
+  return raw;
+}
+
+function rawEntryPath(entry: any) {
+  return String(entry?.filename || entry?.path || entry?.href || "");
+}
+
+function entryResourceType(entry: any) {
+  return entry?.resourcetype ?? entry?.props?.resourcetype ?? entry?.props?.resourceType;
 }
 
 function entryIsDirectory(entry: any) {
-  return entry?.type === "directory" || entry?.isDirectory === true || entry?.resourcetype === "collection";
+  const resourceType = entryResourceType(entry);
+  const collection = typeof resourceType === "string"
+    ? /collection/i.test(resourceType)
+    : Boolean(resourceType && typeof resourceType === "object" && (
+      Object.prototype.hasOwnProperty.call(resourceType, "collection")
+      || Object.prototype.hasOwnProperty.call(resourceType, "d:collection")
+    ));
+  return entry?.type === "directory"
+    || entry?.isDirectory === true
+    || entry?.isDirectory === "true"
+    || entry?.is_dir === true
+    || collection;
 }
 
 function entrySize(entry: any) {
   const value = Number(entry?.size);
   return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+export function normalizeRemoteDirectoryEntry(parent: string, entry: any): NormalizedRemoteDirectoryEntry {
+  const raw = rawEntryPath(entry);
+  const fallbackName = String(entry?.basename || entry?.name || "");
+  if (!raw && !fallbackName) throw new Error("远端条目缺少路径和名称");
+  const decoded = decodeHrefPath(raw || fallbackName);
+  // OpenList may escape punctuation in a filename as `\'` or `\%XX`.
+  // Keep that spelling in the canonical remote path, but reject every other
+  // backslash because it can otherwise become an alternate path separator.
+  const unsafeBackslash = decoded
+    .replace(/\\(?=['"’‘]|%[0-9a-f]{2})/gi, "")
+    .includes("\\");
+  if (unsafeBackslash || decoded.includes("\0")) throw new Error("远端条目包含非法字符");
+  const path = decoded.startsWith("/")
+    ? normalizeListedPath(decoded)
+    : normalizeListedPath(joinRemoteLookupPath(normalizeRemotePath(parent, { allowTrailingSlash: true }), decoded));
+  const name = fallbackName || remoteLookupBasename(path);
+  const unsafeNameBackslash = name
+    .replace(/\\(?=['"’‘]|%[0-9a-f]{2})/gi, "")
+    .includes("\\");
+  if (!name || name === "." || name === ".." || name.includes("/") || unsafeNameBackslash) {
+    throw new Error("远端条目名称无效");
+  }
+  return {
+    path,
+    name,
+    type: entryIsDirectory(entry) ? "directory" : "file",
+    size: entrySize(entry),
+  };
+}
+
+function entryPath(parent: string, entry: any) {
+  return normalizeRemoteDirectoryEntry(parent, entry).path;
+}
+
+function entryName(parent: string, entry: any) {
+  return normalizeRemoteDirectoryEntry(parent, entry).name;
 }
 
 function isDirectChild(parent: string, child: string) {

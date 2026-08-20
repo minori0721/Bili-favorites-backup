@@ -70,6 +70,22 @@ export interface NormalizedTvAuth {
   uid?: number;
 }
 
+export class BiliAuthRefreshError extends Error {
+  readonly originalError: unknown;
+  readonly status?: number;
+  readonly code?: string;
+
+  constructor(originalError: unknown) {
+    super("B站授权刷新请求失败");
+    this.name = "BiliAuthRefreshError";
+    this.originalError = originalError;
+    const source = originalError as any;
+    const status = Number(source?.status || source?.statusCode || source?.response?.status || 0);
+    this.status = status > 0 ? status : undefined;
+    this.code = typeof source?.code === "string" ? source.code : undefined;
+  }
+}
+
 // ---------- core API ----------
 
 function isRiskOrLoginStatus(statusCode: number) {
@@ -460,20 +476,23 @@ export async function getVideoPageSnapshot(
 
 /**
  * Refresh accessToken + cookie using refreshToken.
- * Returns updated cookie object, or null if refresh failed.
+ * Returns updated auth data; failures retain a classified original error for callers.
  */
 export async function refreshUserAuth(
   accessToken: string,
   refreshToken: string
-): Promise<NormalizedTvAuth | null> {
+): Promise<NormalizedTvAuth> {
   try {
     const tv = new TvQrcodeLogin();
     const result: any = await tv.refresh(accessToken, refreshToken);
     const auth = normalizeTvAuthResult(result);
+    if (!auth.accessToken) {
+      throw new Error("刷新响应缺少 access token");
+    }
     console.log("[Bili] Token refreshed successfully");
     return auth;
   } catch (error: any) {
     console.error(`[Bili] Token refresh failed: ${safeErrorSummary(error)}`);
-    return null;
+    throw new BiliAuthRefreshError(error);
   }
 }

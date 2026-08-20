@@ -340,7 +340,7 @@ test("playback excludes sources throughout archive deletion preparation and exec
 
     database.db.prepare("UPDATE archive_deletions SET status='failed' WHERE id='delete-playback'").run();
     database.db.prepare("UPDATE archive_deleted_sources SET status='failed' WHERE deletion_id='delete-playback'").run();
-    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
+    assert.doesNotThrow(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)));
   } finally {
     database.close();
   }

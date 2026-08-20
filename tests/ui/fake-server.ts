@@ -210,11 +210,16 @@ app.get("/api/queue/state", (_request, response) => {
     nextAutomaticCheckAt: Date.parse("2026-08-17T12:10:00.000Z"),
     safeDiagnostic: "{\n  \"issue\": \"remote_visibility_timeout\",\n  \"bvid\": \"BV1RECOVERY1\"\n}",
   }];
+  const disposition = candidateIssue ? "intentional_confirmation" : "background";
+  const visibleIssues = disposition === "background" ? [] : issues.map((issue) => ({ ...issue, disposition }));
   response.json(ok({
     downloadPending: [], downloadRunning: [], uploadPending: [], uploadRunning: [],
     scheduler: { status: "idle", title: "当前调度空闲", detail: "没有运行中的任务", queuedActions: [] },
-    issues,
-    issueSummary: { total: issues.length, danger: 0, warning: 0, info: issues.length },
+    issues: visibleIssues,
+    backgroundRecoveries: disposition === "background" ? issues.map((issue) => ({ ...issue, disposition })) : [],
+    actionRequiredIssues: [],
+    intentionalConfirmations: candidateIssue ? visibleIssues : [],
+    issueSummary: { total: 0, danger: 0, warning: 0, info: 0, actionRequired: 0, intentional: candidateIssue ? 1 : 0, background: candidateIssue ? 0 : 1 },
     recovery: {}, chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
   }));
 });

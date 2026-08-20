@@ -15,11 +15,11 @@ const test = base.extend<{ browserProblems: string[] }>({
   },
 });
 
-async function openRecoveryCenter(page: Page, recoveryIssueKind: "visibility" | "candidate" = "visibility") {
+async function openRecoveryCenter(page: Page, recoveryIssueKind: "visibility" | "candidate" = "candidate") {
   await page.request.post("/__test/reset", { data: { recoveryIssueKind } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
   await page.goto("/");
-  await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 1");
+  await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0 · 待确认 1");
   await page.locator("#recoveryIssuesBtn").click();
   await expect(page.locator("#recoveryIssuesModal")).toHaveClass(/active/);
   await expect(page.locator(".recovery-issue-row")).toHaveCount(1);
@@ -33,7 +33,7 @@ test("problem center explains protection and resolves one action without duplica
   else await row.click();
   await expect(page.locator("#recoveryIssuesDetail")).toContainText("发生了什么");
   await expect(page.locator("#recoveryIssuesDetail")).toContainText("没有自动覆盖或删除远端文件");
-  await expect(page.locator("#recoveryIssuesDetail")).toContainText("只读取远端状态，不上传或删除文件");
+  await expect(page.locator("#recoveryIssuesDetail")).toContainText("正式旧路径保持不变");
   const action = page.getByRole("button", { name: "立即重新检查" });
   await action.evaluate((element: HTMLButtonElement) => {
     element.click();
@@ -91,6 +91,17 @@ test("problem center uses one compact empty state when no issues exist", async (
   await page.keyboard.press("Escape");
   await expect(page.locator("#recoveryIssuesModal")).not.toHaveClass(/active/);
   await expect(page.locator("#recoveryIssuesBtn")).toBeFocused();
+});
+
+test("background remote visibility recovery does not ask for manual action", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await page.request.post("/__test/reset", { data: { recoveryIssueKind: "visibility" } });
+  await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
+  await page.goto("/");
+  await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
+  await page.locator("#recoveryIssuesBtn").click();
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
 });
 
 test("problem center shows a visible retry state and preserves the last list", async ({ page, browserProblems }) => {

@@ -47,6 +47,12 @@ import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
 import { sqlitePaths, UNAVAILABLE_COVER_BACKFILL_MARKER, type UnavailablePageCursor, type UnavailablePageFilter } from "./database.js";
 import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
+import {
+  AUTH_REFRESH_MAX_UNKNOWN_ATTEMPTS,
+  classifyAuthRefreshError,
+  isAuthRefreshAttemptBlocked,
+  nextAuthRefreshFailureState,
+} from "./auth-refresh.js";
 import { renderArchivedFilename } from "./filename.js";
 import {
   applyMigrationPackageFile,
@@ -112,6 +118,9 @@ const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, us
   isSchedulerIdle: () => !scheduler.hasRunningTransferTasks()
     && !scheduler.hasPersistentTransferWork()
     && !scheduler.hasActiveOrQueuedSchedulerWork(),
+  prepareSourceDeletion: async (userId, mediaId, bvid) => {
+    await scheduler.prepareSourceDeletion(userId, mediaId, bvid);
+  },
   setMaintenance: (locked, summary) => scheduler.setArchiveDeletionMaintenance(locked, summary),
   onAccountDeletionCompleted: (userId) => {
     scheduler.restoreUserAfterLogin(userId);
@@ -240,9 +249,14 @@ function formatExpiresText(expires?: number) {
 function buildAuthHealth(user: BiliUser) {
   const autoRefreshEnabled = Boolean(user.accessToken && user.refreshToken);
   const lastError = sanitizeDiagnosticText(user.lastAuthRefreshError || "", 500);
+  const failureCategory = user.authRefreshFailureCategory
+    || (lastError ? classifyAuthRefreshError(lastError) : undefined);
+  const failureAttempts = Math.max(0, Math.floor(Number(user.authRefreshFailureAttempts) || 0));
+  const retryAtMs = user.authRefreshRetryAt ? Date.parse(user.authRefreshRetryAt) : NaN;
   const expired = Boolean(user.expires && user.expires <= Date.now());
   const expiringSoon = Boolean(user.expires && user.expires > Date.now() && user.expires - Date.now() < 10 * 24 * 60 * 60 * 1000);
-  const needsManualLogin = !autoRefreshEnabled || Boolean(lastError);
+  const unknownExhausted = failureCategory === "unknown" && failureAttempts >= AUTH_REFRESH_MAX_UNKNOWN_ATTEMPTS;
+  const needsManualLogin = !autoRefreshEnabled || failureCategory === "permanent" || unknownExhausted;
   let level: "ok" | "warn" | "error" = "ok";
   let summary = "自动刷新已启用";
   let detail = "普通登录过期会自动刷新，无需人工处理。";
@@ -251,10 +265,21 @@ function buildAuthHealth(user: BiliUser) {
     level = "error";
     summary = "需要重新扫码登录";
     detail = "当前账号缺少自动刷新凭据，无法无人值守续期。";
-  } else if (lastError) {
+  } else if (failureCategory === "permanent") {
     level = "error";
-    summary = "自动刷新失败，需要人工确认";
-    detail = lastError;
+    summary = "登录授权已失效，需要重新登录";
+    detail = lastError || "refreshToken 已失效，后台不会继续重复尝试。请重新扫码登录。";
+  } else if (unknownExhausted) {
+    level = "error";
+    summary = "授权刷新连续异常，需要检查";
+    detail = lastError || "后台已完成有限次数重试，仍无法判断授权状态，请检查网络或重新登录。";
+  } else if (failureCategory === "transient" || failureCategory === "unknown") {
+    level = "warn";
+    summary = "授权刷新后台重试中";
+    const retryText = Number.isFinite(retryAtMs) && retryAtMs > Date.now()
+      ? `预计 ${new Date(retryAtMs).toLocaleString("zh-CN", { hour12: false })} 后重试。`
+      : "将在后台继续重试。";
+    detail = `${lastError || "上次刷新暂未成功。"} ${retryText}不会立即要求重新扫码。`;
   } else if (expired) {
     level = "warn";
     summary = "登录态已过期，等待自动刷新";
@@ -273,6 +298,9 @@ function buildAuthHealth(user: BiliUser) {
     needsManualLogin,
     lastSuccessAt: user.lastAuthRefreshAt || "",
     lastError,
+    failureCategory: failureCategory || "",
+    failureAttempts,
+    retryAt: user.authRefreshRetryAt || "",
   };
 }
 
@@ -285,26 +313,41 @@ async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto"
     throw new Error("当前账号缺少 accessToken 或 refreshToken，请重新扫码登录。");
   }
 
-  const refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
-  if (!refreshed) {
-    throw new Error("当前登录会话已经失效，请重新登录!");
+  try {
+    const refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
+    const info = await getUserInfo(refreshed.cookie);
+    const nowIso = new Date().toISOString();
+    userStore.updatePartial(user.id, {
+      name: info.name,
+      avatar: info.avatar,
+      cookie: refreshed.cookie,
+      rawAuth: refreshed.rawAuth,
+      accessToken: refreshed.accessToken || user.accessToken,
+      refreshToken: refreshed.refreshToken || user.refreshToken,
+      expires: refreshed.expires || user.expires,
+      lastAuthRefreshAt: nowIso,
+      lastAuthRefreshError: "",
+      authRefreshFailureCategory: undefined,
+      authRefreshFailureAttempts: undefined,
+      authRefreshRetryAt: undefined,
+      lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
+    });
+    scheduler.wakeChargingAccessProbes();
+  } catch (error: any) {
+    const current = userStore.getById(user.id) || user;
+    const failure = nextAuthRefreshFailureState(
+      current.authRefreshFailureCategory,
+      current.authRefreshFailureAttempts,
+      error,
+    );
+    userStore.updatePartial(user.id, {
+      lastAuthRefreshError: safeErrorSummary(error),
+      authRefreshFailureCategory: failure.category,
+      authRefreshFailureAttempts: failure.attempts,
+      authRefreshRetryAt: failure.retryAt,
+    });
+    throw error;
   }
-
-  const info = await getUserInfo(refreshed.cookie);
-  const nowIso = new Date().toISOString();
-  userStore.updatePartial(user.id, {
-    name: info.name,
-    avatar: info.avatar,
-    cookie: refreshed.cookie,
-    rawAuth: refreshed.rawAuth,
-    accessToken: refreshed.accessToken || user.accessToken,
-    refreshToken: refreshed.refreshToken || user.refreshToken,
-    expires: refreshed.expires || user.expires,
-    lastAuthRefreshAt: nowIso,
-    lastAuthRefreshError: "",
-    lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
-  });
-  scheduler.wakeChargingAccessProbes();
 }
 
 // ---------- auto token refresh (biliLive-tools pattern) ----------
@@ -323,18 +366,28 @@ function startTokenRefreshLoop() {
 
       const users = userStore.list();
       for (const user of users) {
+        const now = Date.now();
+        const failureCategory = user.authRefreshFailureCategory;
+        const failureAttempts = Math.max(0, Math.floor(Number(user.authRefreshFailureAttempts) || 0));
+        const retryAt = user.authRefreshRetryAt ? Date.parse(user.authRefreshRetryAt) : NaN;
+        if (isAuthRefreshAttemptBlocked(failureCategory, failureAttempts, user.authRefreshRetryAt, now)) {
+          if (Number.isFinite(retryAt) && retryAt > now) {
+            nextInterval = Math.min(nextInterval, Math.max(60_000, retryAt - now));
+          }
+          continue;
+        }
         // Refresh if expires in less than 10 days, or if we have refreshToken
         const tenDays = 10 * 24 * 60 * 60 * 1000;
         if (user.refreshToken && user.accessToken) {
-          if (!user.expires || user.expires - Date.now() < tenDays) {
+          if (!user.expires || user.expires - now < tenDays) {
             console.log(`[Auth] Refreshing token for user ${user.name} (${user.id})`);
             try {
               await refreshUserAuthForStore(user.id, "auto");
               console.log(`[Auth] Token refreshed for user ${user.name}`);
             } catch (error: any) {
-              userStore.updatePartial(user.id, {
-                lastAuthRefreshError: safeErrorSummary(error),
-              });
+              const updated = userStore.getById(user.id);
+              const retry = updated?.authRefreshRetryAt ? Date.parse(updated.authRefreshRetryAt) : NaN;
+              if (Number.isFinite(retry)) nextInterval = Math.min(nextInterval, Math.max(60_000, retry - Date.now()));
               console.warn(`[Auth] Token refresh failed for user ${user.name}: ${safeErrorSummary(error)}`);
             }
           }
@@ -964,6 +1017,9 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
           expires: authData.expires,
           lastAuthRefreshAt: new Date().toISOString(),
           lastAuthRefreshError: "",
+          authRefreshFailureCategory: undefined,
+          authRefreshFailureAttempts: undefined,
+          authRefreshRetryAt: undefined,
         });
         if (archiveDeletion.restoreAccount(userId)) {
           scheduler.restoreUserAfterLogin(userId);

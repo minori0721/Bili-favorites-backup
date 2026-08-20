@@ -478,7 +478,7 @@ export class PersistentJobStore {
       .run(JSON.stringify(payload || {}), Date.now(), id).changes === 1;
   }
 
-  wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}) {
+  wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}, notBefore = Date.now()) {
     const row = this.stateDatabase.db.prepare("SELECT status, payload_json FROM jobs WHERE id=?").get(id) as any;
     if (!row || !["manual_wait", "failed", "retry_wait", "pending"].includes(String(row.status))) return null;
     let payload: Record<string, unknown> = {};
@@ -493,7 +493,7 @@ export class PersistentJobStore {
       UPDATE jobs SET status='pending', not_before=?, attempts=0, lease_owner=NULL,
         lease_expires_at=NULL, last_error=NULL, payload_json=?, updated_at=?
       WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')
-    `).run(now, JSON.stringify(mergedPayload), now, id);
+    `).run(Math.max(now, Math.floor(Number(notBefore) || now)), JSON.stringify(mergedPayload), now, id);
     return this.findById(id);
   }
 

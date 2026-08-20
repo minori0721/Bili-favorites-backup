@@ -44,6 +44,7 @@ export interface QueueBoardItem {
   sequence?: number;
   awaitingManualRecovery?: boolean;
   recoveryJobId?: string;
+  recoveryDisposition?: "background" | "action_required" | "intentional_confirmation";
   stage: QueueBoardStage;
 }
 

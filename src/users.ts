@@ -37,6 +37,12 @@ export interface BiliUser {
   lastAuthRefreshAt?: string;
   /** Last TV auth refresh error, if any */
   lastAuthRefreshError?: string;
+  /** Classification used to decide whether a refresh failure can be retried unattended. */
+  authRefreshFailureCategory?: "transient" | "permanent" | "unknown";
+  /** Number of consecutive refresh failures in the current failure streak. */
+  authRefreshFailureAttempts?: number;
+  /** Earliest time for the next unattended refresh attempt. */
+  authRefreshRetryAt?: string;
   /** Stable non-secret device identity used by BBDown's APP playback API. */
   appBuvid?: string;
 }

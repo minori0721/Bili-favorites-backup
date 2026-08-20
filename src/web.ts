@@ -1512,6 +1512,7 @@ function getAppScript() {
       controller: null,
       token: 0,
       error: null,
+      summary: null,
     };
     let pathMigrationPollTimer = null;
     const queueBoardState = {
@@ -6497,11 +6498,15 @@ function getAppScript() {
 
     function recoveryIssueCounts(items) {
       const list = Array.isArray(items) ? items : [];
+      const actionRequired = list.filter((item) => (item.disposition || 'action_required') === 'action_required');
+      const intentional = list.filter((item) => item.disposition === 'intentional_confirmation');
       return {
-        total:list.length,
-        danger:list.filter((item) => item.severity === 'danger').length,
-        warning:list.filter((item) => item.severity === 'warning').length,
-        info:list.filter((item) => item.severity === 'info').length,
+        total:actionRequired.length,
+        danger:actionRequired.filter((item) => item.severity === 'danger').length,
+        warning:actionRequired.filter((item) => item.severity === 'warning').length,
+        info:actionRequired.filter((item) => item.severity === 'info').length,
+        actionRequired:actionRequired.length,
+        intentional:intentional.length,
       };
     }
 
@@ -6510,10 +6515,13 @@ function getAppScript() {
       if (!button) return;
       const total = Number(summary?.total || 0);
       const danger = Number(summary?.danger || 0);
-      button.textContent = '待处理 ' + total;
+      const intentional = Number(summary?.intentional || 0);
+      button.textContent = '待处理 ' + total + (intentional > 0 ? ' · 待确认 ' + intentional : '');
       button.classList.toggle('has-issues', total > 0);
       button.classList.toggle('has-danger', danger > 0);
-      button.setAttribute('aria-label', total > 0 ? '打开待处理问题，共 ' + total + ' 项' : '打开待处理问题，当前没有待处理项');
+      button.setAttribute('aria-label', total > 0 || intentional > 0
+        ? '打开恢复中心，待处理 ' + total + ' 项，待确认 ' + intentional + ' 项'
+        : '打开恢复中心，当前没有需要处理或确认的项目');
     }
 
     function renderRecoveryIssueStatus() {
@@ -6542,12 +6550,13 @@ function getAppScript() {
         emptyState.classList.toggle('is-error', !hasItems && hasError);
         emptyState.setAttribute('role', hasError ? 'alert' : 'status');
       }
+      const intentionalOnly = !hasItems && Number(recoveryIssueState.summary?.intentional || 0) > 0;
       if (emptyTitle) emptyTitle.textContent = hasError
         ? '待处理问题暂时无法加载'
-        : '当前没有需要处理的问题';
+        : (intentionalOnly ? '当前没有需要立即处理的问题' : '当前没有需要处理的问题');
       if (emptyMessage) emptyMessage.textContent = hasError
         ? '当前没有可用的问题列表，已有数据不会被清除。请重新加载。'
-        : '系统会继续在后台自动复核，新的异常会出现在这里。';
+        : (intentionalOnly ? '仍有待确认项目，请打开恢复中心查看。' : '系统会继续在后台自动复核，新的异常会出现在这里。');
       if (emptyRetry) {
         emptyRetry.hidden = !hasError;
         emptyRetry.disabled = recoveryIssueRequestInFlight;
@@ -6561,10 +6570,11 @@ function getAppScript() {
     function setRecoveryIssueItems(items, summary) {
       recoveryIssueState.error = null;
       recoveryIssueState.items = Array.isArray(items) ? items : [];
+      recoveryIssueState.summary = summary || recoveryIssueCounts(recoveryIssueState.items);
       if (!recoveryIssueState.items.some((item) => item.id === recoveryIssueState.selectedId)) {
         recoveryIssueState.selectedId = recoveryIssueState.items[0]?.id || null;
       }
-      updateRecoveryIssuesEntry(summary || recoveryIssueCounts(recoveryIssueState.items));
+      updateRecoveryIssuesEntry(recoveryIssueState.summary);
       if (document.getElementById('recoveryIssuesModal')?.classList.contains('active')) {
         renderRecoveryIssueCenter();
       }
@@ -6694,7 +6704,9 @@ function getAppScript() {
       }
       const kicker = document.createElement('div');
       kicker.className = 'recovery-detail-kicker';
-      kicker.textContent = issue.severity === 'danger' ? '需要确认' : (issue.severity === 'warning' ? '建议处理' : '系统持续复核中');
+       kicker.textContent = issue.disposition === 'intentional_confirmation'
+         ? '等待你的选择'
+         : (issue.severity === 'danger' ? '需要确认' : (issue.severity === 'warning' ? '建议处理' : '系统持续复核中'));
       const heading = document.createElement('h2');
       heading.className = 'recovery-detail-title';
       heading.textContent = issue.title || '待处理问题';
@@ -6796,7 +6808,10 @@ function getAppScript() {
       try {
         const snapshot = await fetchJsonSilent('/api/queue/state', { signal:controller.signal });
         if (token !== recoveryIssueState.token) return;
-        setRecoveryIssueItems(snapshot?.issues || [], snapshot?.issueSummary);
+        setRecoveryIssueItems(
+          snapshot?.issues || [...(snapshot?.actionRequiredIssues || []), ...(snapshot?.intentionalConfirmations || [])],
+          snapshot?.issueSummary,
+        );
       } catch (error) {
         if (error?.name !== 'AbortError' && document.getElementById('recoveryIssuesModal')?.classList.contains('active')) {
           recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请点击“重试”再次加载。';
@@ -6893,7 +6908,7 @@ function getAppScript() {
       const info = card.querySelector('.queue-info');
       if (!info) return;
       let actions = info.querySelector('.queue-recovery-actions');
-      const shouldShow = Boolean(item.awaitingManualRecovery && item.recoveryJobId);
+      const shouldShow = Boolean(item.awaitingManualRecovery && item.recoveryJobId && item.recoveryDisposition !== 'background');
       if (!shouldShow) {
         if (actions) actions.remove();
         return;
@@ -7240,7 +7255,10 @@ function getAppScript() {
         const data = await fetchJsonSilent('/api/queue/state');
         if (logMode !== 'queue') return;
         const snapshot = data || {};
-        setRecoveryIssueItems(snapshot.issues || [], snapshot.issueSummary);
+        setRecoveryIssueItems(
+          snapshot.issues || [...(snapshot.actionRequiredIssues || []), ...(snapshot.intentionalConfirmations || [])],
+          snapshot.issueSummary,
+        );
         const nowMs = Date.now();
         let grid = board.querySelector('.queue-board');
         if (!grid) {

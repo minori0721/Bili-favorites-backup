@@ -12,6 +12,7 @@ import { PersistentJobStore } from "./job-store.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import { isRemoteNotFoundError } from "./uploader.js";
 import { isRemotePathWithin, joinRemotePath, normalizeRemotePath } from "./remote-path.js";
+import { normalizeRemoteDirectoryEntry } from "./remote-file-resolver.js";
 import { buildStorageDavUrl } from "./storage-url.js";
 
 export interface PathMigrationDavClient {
@@ -71,7 +72,17 @@ function joinRemote(root: string, relative: string) {
 }
 
 function entryType(value: any): "file" | "directory" {
-  return value?.type === "directory" || value?.isDirectory === true ? "directory" : "file";
+  const resourceType = value?.resourcetype ?? value?.props?.resourcetype ?? value?.props?.resourceType;
+  const collection = typeof resourceType === "string"
+    ? /collection/i.test(resourceType)
+    : Boolean(resourceType && typeof resourceType === "object" && (
+      Object.prototype.hasOwnProperty.call(resourceType, "collection")
+      || Object.prototype.hasOwnProperty.call(resourceType, "d:collection")
+    ));
+  return value?.type === "directory"
+    || value?.isDirectory === true
+    || value?.isDirectory === "true"
+    || collection ? "directory" : "file";
 }
 
 function statusCode(error: any) {
@@ -331,19 +342,20 @@ export class PathMigrationService {
       }
       if (!Array.isArray(entries)) throw new Error("远端存储返回了无效的目录清单");
       if (entries.length > MAX_ENTRIES) throw new Error(`远端目录条目超过安全上限 ${MAX_ENTRIES}`);
-      entries.sort((left, right) => String(left?.filename || left?.path || left?.basename || "").localeCompare(String(right?.filename || right?.path || right?.basename || "")));
-      for (const entry of entries) {
-        if (shouldContinue && !shouldContinue()) return;
-        const rawEntryPath = String(entry?.filename || entry?.path || `${directory.replace(/\/$/g, "")}/${entry?.basename || ""}`).replace(/\\/g, "/");
-        let entryPath: string;
+      const normalizedEntries = entries.map((entry) => {
         try {
-          entryPath = normalizeRemotePath(rawEntryPath, { allowTrailingSlash: true });
+          return { entry, normalized: normalizeRemoteDirectoryEntry(directory, entry) };
         } catch {
           throw new Error("远端条目包含非法相对路径");
         }
+      });
+      normalizedEntries.sort((left, right) => left.normalized.name.localeCompare(right.normalized.name));
+      for (const { entry, normalized } of normalizedEntries) {
+        if (shouldContinue && !shouldContinue()) return;
+        const entryPath = normalized.path;
         if (!isWithin(root, entryPath) || entryPath === root) continue;
-        const itemType = entryType(entry);
-        let size = typeof entry?.size === "number" && Number.isFinite(entry.size) ? Number(entry.size) : undefined;
+        const itemType = normalized.type;
+        let size = normalized.size;
         if (itemType === "file" && size === undefined) {
           const stat = await client.stat(entryPath);
           size = Number.isFinite(Number(stat?.size)) ? Number(stat.size) : undefined;

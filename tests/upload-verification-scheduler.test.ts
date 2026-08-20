@@ -297,10 +297,10 @@ test("recovery automation selects due work beyond a thousand deferred issues", a
   }
 });
 
-test("recovery automation stops after one automatic redownload and reports the stale local file", async () => {
+test("recovery automation stops after the automatic redownload limit and reports the stale local file", async () => {
   const fixture = await createStructuredRecoveryFixture("recovery-auto-loop-guard", { status: "missing" }, {
     local: "missing",
-    automaticRecoveryAttempts: 1,
+    automaticRecoveryAttempts: 3,
   });
   const { runtime, manager, scheduler, session, job } = fixture;
   try {
@@ -311,7 +311,7 @@ test("recovery automation stops after one automatic redownload and reports the s
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
     assert.equal(issue?.kind, "local_file_missing");
     assert.equal(issue?.recommendedAction?.id, "redownload");
-    assert.match(issue?.summary || "", /自动重新下载过一次/);
+    assert.match(issue?.summary || "", /自动重新下载 3 次/);
   } finally {
     scheduler.stop();
     manager.close();
