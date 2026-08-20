@@ -571,7 +571,7 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
-test("BBDown 2.0.1 adopts 2.0.0 Web resume tracks when runtime settings are unchanged", async () => {
+test("BBDown 2.0.2 adopts 2.0.1 Web resume tracks when runtime settings are unchanged", async () => {
   const runtime = await createTestDir("download-session-compatible-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1BBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -584,7 +584,7 @@ test("BBDown 2.0.1 adopts 2.0.0 Web resume tracks when runtime settings are unch
       pages,
     });
     const previous = readDownloadSession(downloadDir)!;
-    previous.bbdownCommit = "fcb895f357df49c45010cefab773025d5d50cf7c";
+    previous.bbdownCommit = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
     previous.configFingerprint = "previous-bbdown";
     writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
     await fs.promises.writeFile(path.join(downloadDir, "video-track.mp4.aria2"), "resume");
@@ -598,13 +598,46 @@ test("BBDown 2.0.1 adopts 2.0.0 Web resume tracks when runtime settings are unch
     });
     assert.equal(upgraded.incompatibleFragmentsMoved, 0);
     assert.equal(fs.existsSync(path.join(downloadDir, "video-track.mp4.aria2")), true);
-    assert.equal(upgraded.manifest.bbdownCommit, "fd926373dfe03d68bf84a1ad8a4ffbf402b00988");
+    assert.equal(upgraded.manifest.bbdownCommit, "bd532f51f41da4cc63b991e431add7f84b28db2a");
   } finally {
     await removeTestDir(runtime);
   }
 });
 
-test("BBDown 2.0.1 isolates 2.0.0 APP resume tracks before PlayerUnite redownload", async () => {
+test("BBDown 2.0.2 keeps 2.0.0 Web resume tracks when runtime settings are unchanged", async () => {
+  const runtime = await createTestDir("download-session-legacy-web-bbdown-upgrade");
+  const downloadDir = path.join(runtime, "BV1LEGACYBBDOWN");
+  const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
+  try {
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1LEGACYBBDOWN",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "web" }),
+      pages,
+    });
+    const previous = readDownloadSession(downloadDir)!;
+    previous.bbdownCommit = "fcb895f357df49c45010cefab773025d5d50cf7c";
+    previous.configFingerprint = "legacy-bbdown";
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
+    await fs.promises.writeFile(path.join(downloadDir, "legacy-track.mp4.aria2"), "resume");
+
+    const upgraded = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1LEGACYBBDOWN",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "web" }),
+      pages,
+    });
+    assert.equal(upgraded.incompatibleFragmentsMoved, 0);
+    assert.equal(fs.existsSync(path.join(downloadDir, "legacy-track.mp4.aria2")), true);
+    assert.equal(upgraded.manifest.bbdownCommit, "bd532f51f41da4cc63b991e431add7f84b28db2a");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("BBDown 2.0.2 isolates 2.0.1 APP resume tracks before PlayerUnite redownload", async () => {
   const runtime = await createTestDir("download-session-app-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1APPBBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -617,7 +650,7 @@ test("BBDown 2.0.1 isolates 2.0.0 APP resume tracks before PlayerUnite redownloa
       pages,
     });
     const previous = readDownloadSession(downloadDir)!;
-    previous.bbdownCommit = "fcb895f357df49c45010cefab773025d5d50cf7c";
+    previous.bbdownCommit = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
     previous.configFingerprint = "previous-bbdown";
     writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
     const rawTrackDir = path.join(downloadDir, "123456");
@@ -635,7 +668,7 @@ test("BBDown 2.0.1 isolates 2.0.0 APP resume tracks before PlayerUnite redownloa
     assert.equal(upgraded.incompatibleFragmentsMoved, 2);
     assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4")), false);
     assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4.aria2")), false);
-    assert.equal(upgraded.manifest.bbdownCommit, "fd926373dfe03d68bf84a1ad8a4ffbf402b00988");
+    assert.equal(upgraded.manifest.bbdownCommit, "bd532f51f41da4cc63b991e431add7f84b28db2a");
   } finally {
     await removeTestDir(runtime);
   }

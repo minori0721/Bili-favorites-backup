@@ -16,9 +16,10 @@ import {
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
-const PREVIOUS_BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
-const LEGACY_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
+export const BBDOWN_SOURCE_COMMIT = "bd532f51f41da4cc63b991e431add7f84b28db2a";
+const PREVIOUS_BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
+const LEGACY_BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
+const HISTORIC_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
 
 export type DownloadSessionKind = "backup" | "quality_upgrade";
 export type DownloadSessionStatus = "prepared" | "downloading" | "complete" | "partial" | "failed";
@@ -718,7 +719,10 @@ export async function prepareDownloadSession(options: {
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
-      const compatibleBbdownUpgrade = manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
+      const compatibleBbdownUpgrade = [
+        PREVIOUS_BBDOWN_SOURCE_COMMIT,
+        LEGACY_BBDOWN_SOURCE_COMMIT,
+      ].includes(manifest.bbdownCommit)
         && previousSnapshot.apiMode === nextSnapshot.apiMode
         && nextSnapshot.apiMode !== "app"
         && sameRuntimeConfig;
@@ -729,6 +733,7 @@ export async function prepareDownloadSession(options: {
           manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
           || manifest.bbdownCommit === LEGACY_BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === HISTORIC_BBDOWN_SOURCE_COMMIT
         );
       if (!legacyWebUpgrade && !compatibleBbdownUpgrade) {
         incompatibleFragmentsMoved = await quarantineIncompatibleFragments(downloadDir);

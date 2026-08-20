@@ -5,7 +5,8 @@
 - 基准版本：`v2.5.0`。
 - 发布提交：`efa9a4b`（`发布 v2.5.0 OpenList 与上传恢复增强`）。
 - SQLite：`user_version 10`；JSON 状态：schema 13；迁移包：schema 3。
-- 当前 dev 在发布基线外没有额外代码变化。
+- 当前 dev 固定 BBDown fork Release `bfb-2.0.2`，源码提交 `bd532f51f41da4cc63b991e431add7f84b28db2a`，Linux x64 ZIP SHA256 `bd7327f9aae88279b5b89dfec3118aad6488d21c5d527fe54917aca53f12874c`。
+- 当前 dev 在发布基线外包含 BBDown 2.0.2 更新及本轮远端路径、上传安全和画质升级恢复修复。
 
 ## 发布验证
 

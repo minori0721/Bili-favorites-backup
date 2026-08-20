@@ -125,7 +125,7 @@ npm run build
 
 项目当前使用固定BBDown fork Release、固定FFmpeg构建和aria2续传，不在构建时跟随上游`master`。
 
-`v2.5.0`继续固定BBDown fork Release `bfb-2.0.1`：普通UGC改用PlayerUnite并合并AVC、HEVC和AV1流；APP结果仅480P或低于明确请求档位时，只在WEB视频档位确实更高时合并WEB视频，APP取得的普通、杜比和Hi-Res音频继续保留。每个账号使用独立、稳定且不进入WEB Cookie的APP设备标识。
+`v2.5.0`继续固定BBDown fork Release `bfb-2.0.2`：普通UGC改用PlayerUnite并合并AVC、HEVC和AV1流；APP结果仅480P或低于明确请求档位时，只在WEB视频档位确实更高时合并WEB视频，APP取得的普通、杜比和Hi-Res音频继续保留。每个账号使用独立、稳定且不进入WEB Cookie的APP设备标识。
 
 “全量扫描并对账”右侧的“归档库”只读取当前`data/bfb.sqlite`和账号配置。全局与账号目录会按BV号合并重复关系，并使用schema 8持久投影完成筛选、搜索和稳定分页；具体收藏夹继续实时读取当前收藏顺序和历史关系。每批读取50项，搜索覆盖归档前标题、UP主和BV号。可播放卡片进入现有播放器，并按当前目录、筛选、排序和基础搜索形成连续队列；同一BV有多份已验证成品时优先选择实际媒体参数更高且更完整的来源。不可播放卡片只展示本地保存的来源与脱敏状态，不会为了补信息临时访问B站。
 

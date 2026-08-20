@@ -15,7 +15,7 @@
 
 常驻“APP接口”要求**所有启用账号**都具有access token。勾选Hi-Res或杜比时，页面会自动切换到APP接口；后端也会拒绝`网页接口 + Hi-Res/杜比`的矛盾配置。
 
-`v2.5.0`固定BBDown fork `bfb-2.0.1`，会为每个账号保存独立的APP设备标识，并使用PlayerUnite读取普通UGC的AVC、HEVC和AV1流。APP最高仅480P或低于明确请求档位时，BBDown只在WEB视频更高时合并WEB视频，APP音频保持不变；WEB比较失败不会让已经取得的APP结果失败。
+`v2.5.0`固定BBDown fork `bfb-2.0.2`，会为每个账号保存独立的APP设备标识，并使用PlayerUnite读取普通UGC的AVC、HEVC和AV1流。APP最高仅480P或低于明确请求档位时，BBDown只在WEB视频更高时合并WEB视频，APP音频保持不变；WEB比较失败不会让已经取得的APP结果失败。
 
 ## 账号失效
 
