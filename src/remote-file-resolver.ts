@@ -196,17 +196,41 @@ function normalizeListedPath(value: string) {
 
 function decodeHrefPath(value: string) {
   const raw = String(value || "");
-  if (/^https?:\/\//i.test(raw)) {
-    const url = new URL(raw);
-    if (url.search || url.hash) throw new Error("远端条目URL不能包含查询串或片段");
-    return decodeURIComponent(url.pathname);
+  let url: URL;
+  try {
+    url = new URL(raw, "http://bfb.invalid");
+  } catch {
+    throw new Error("远端条目URL格式无效");
   }
-  if (raw.includes("?") || raw.includes("#")) throw new Error("远端条目路径不能包含查询串或片段");
-  return raw;
+  if (url.search || url.hash) throw new Error("远端条目URL不能包含查询串或片段");
+  const decodedPath = decodeURIComponent(url.pathname);
+  // A relative href is uncommon but valid in WebDAV responses. Keep it
+  // relative to the directory being listed instead of the synthetic URL root.
+  return raw.startsWith("/") || /^https?:\/\//i.test(raw)
+    ? decodedPath
+    : decodedPath.replace(/^\/+/, "");
 }
 
-function rawEntryPath(entry: any) {
-  return String(entry?.filename || entry?.path || entry?.href || "");
+function entryField(entry: any, key: string) {
+  const value = entry?.[key];
+  return value === undefined || value === null || value === "" ? "" : String(value);
+}
+
+function entryNameHints(entry: any) {
+  const hints: string[] = [];
+  for (const key of ["basename", "name"] as const) {
+    const value = entryField(entry, key);
+    if (value) hints.push(value);
+  }
+  for (const key of ["filename", "path", "href"] as const) {
+    const value = entryField(entry, key);
+    if (!value) continue;
+    const withoutQuery = key === "href" ? value.split(/[?#]/, 1)[0] : value;
+    const lastSlash = Math.max(withoutQuery.lastIndexOf("/"), withoutQuery.lastIndexOf("\\"));
+    const hint = withoutQuery.slice(lastSlash + 1);
+    if (hint) hints.push(hint);
+  }
+  return hints;
 }
 
 function entryResourceType(entry: any) {
@@ -234,20 +258,57 @@ function entrySize(entry: any) {
 }
 
 export function normalizeRemoteDirectoryEntry(parent: string, entry: any): NormalizedRemoteDirectoryEntry {
-  const raw = rawEntryPath(entry);
-  const fallbackName = String(entry?.basename || entry?.name || "");
-  if (!raw && !fallbackName) throw new Error("远端条目缺少路径和名称");
-  const decoded = decodeHrefPath(raw || fallbackName);
+  const structuredPaths = (["filename", "path"] as const)
+    .map((key) => ({ key, value: entryField(entry, key) }))
+    .filter((item) => item.value);
+  const href = entryField(entry, "href");
+  const structuredNames = (["basename", "name"] as const)
+    .map((key) => ({ key, value: entryField(entry, key) }))
+    .filter((item) => item.value);
+  if (structuredPaths.length === 0 && !href && structuredNames.length === 0) {
+    throw new Error("远端条目缺少路径和名称");
+  }
+
+  const fallbackName = structuredNames[0]?.value || "";
+  if (structuredNames.some((item) => !remoteNameMatches(fallbackName, item.value))) {
+    throw new Error("远端条目名称字段不一致");
+  }
+
+  const normalizePathValue = (raw: string, source: "structured" | "href") => {
+    const decoded = source === "href" ? decodeHrefPath(raw) : raw;
+    const unsafeBackslash = decoded
+      .replace(/\\(?=['"’‘]|%[0-9a-f]{2})/gi, "")
+      .includes("\\");
+    if (unsafeBackslash || decoded.includes("\0")) throw new Error("远端条目包含非法字符");
+    return decoded.startsWith("/")
+      ? normalizeListedPath(decoded)
+      : normalizeListedPath(joinRemoteLookupPath(normalizeRemotePath(parent, { allowTrailingSlash: true }), decoded));
+  };
+
+  const normalizedStructuredPaths = structuredPaths.map((item) => normalizePathValue(item.value, "structured"));
+  const normalizedHrefPath = href ? normalizePathValue(href, "href") : undefined;
+  const normalizedFallbackPath = normalizedStructuredPaths.length === 0 && !normalizedHrefPath && fallbackName
+    ? normalizePathValue(fallbackName, "structured")
+    : undefined;
+  const allPaths = [
+    ...normalizedStructuredPaths,
+    ...(normalizedHrefPath ? [normalizedHrefPath] : []),
+    ...(normalizedFallbackPath ? [normalizedFallbackPath] : []),
+  ];
+  const path = allPaths[0];
+  if (!path) throw new Error("远端条目缺少可用路径");
+  if (allPaths.some((candidate) => !remoteNameMatches(path, candidate))) {
+    throw new Error("远端条目路径字段不一致");
+  }
+
+  const pathName = remoteLookupBasename(path);
+  if (fallbackName && !remoteNameMatches(pathName, fallbackName)) {
+    throw new Error("远端条目路径和名称不一致");
+  }
+
   // OpenList may escape punctuation in a filename as `\'` or `\%XX`.
   // Keep that spelling in the canonical remote path, but reject every other
   // backslash because it can otherwise become an alternate path separator.
-  const unsafeBackslash = decoded
-    .replace(/\\(?=['"’‘]|%[0-9a-f]{2})/gi, "")
-    .includes("\\");
-  if (unsafeBackslash || decoded.includes("\0")) throw new Error("远端条目包含非法字符");
-  const path = decoded.startsWith("/")
-    ? normalizeListedPath(decoded)
-    : normalizeListedPath(joinRemoteLookupPath(normalizeRemotePath(parent, { allowTrailingSlash: true }), decoded));
   const name = fallbackName || remoteLookupBasename(path);
   const unsafeNameBackslash = name
     .replace(/\\(?=['"’‘]|%[0-9a-f]{2})/gi, "")
@@ -263,12 +324,8 @@ export function normalizeRemoteDirectoryEntry(parent: string, entry: any): Norma
   };
 }
 
-function entryPath(parent: string, entry: any) {
-  return normalizeRemoteDirectoryEntry(parent, entry).path;
-}
-
-function entryName(parent: string, entry: any) {
-  return normalizeRemoteDirectoryEntry(parent, entry).name;
+function entryMayMatchName(expectedName: string, entry: any) {
+  return entryNameHints(entry).some((hint) => remoteNameMatches(expectedName, hint));
 }
 
 function isDirectChild(parent: string, child: string) {
@@ -336,19 +393,22 @@ export class RemoteFileResolver {
         throw listError;
       }
 
-      const matches = entries
-        .filter((entry) => {
-          const parent = remoteLookupDirname(expectedPath);
-          const candidatePath = entryPath(parent, entry);
-          return isDirectChild(parent, candidatePath)
-            && remoteNameMatches(expectedName, entryName(parent, entry));
-        })
-        .map((entry) => ({
-          path: entryPath(remoteLookupDirname(expectedPath), entry),
-          name: entryName(remoteLookupDirname(expectedPath), entry),
-          size: entrySize(entry),
-          directory: entryIsDirectory(entry),
-        }));
+      const parent = remoteLookupDirname(expectedPath);
+      const matches: NormalizedRemoteDirectoryEntry[] = [];
+      for (const entry of entries) {
+        let normalized: NormalizedRemoteDirectoryEntry;
+        try {
+          normalized = normalizeRemoteDirectoryEntry(parent, entry);
+        } catch (entryError) {
+          if (entryMayMatchName(expectedName, entry)) {
+            throw new RemoteFileResolutionConflictError("远端目录中存在无法安全解析的同名条目");
+          }
+          continue;
+        }
+        if (isDirectChild(parent, normalized.path) && remoteNameMatches(expectedName, normalized.name)) {
+          matches.push(normalized);
+        }
+      }
       if (matches.length > 1) {
         throw new RemoteFileResolutionConflictError("远端目录中存在多个无法唯一确认的同名文件");
       }
@@ -356,7 +416,14 @@ export class RemoteFileResolver {
       if (!match) {
         return { status: "missing", path: expectedPath, directory: false, source: "directory", name: expectedName };
       }
-      return { status: "exists", ...match, source: "directory" };
+      return {
+        status: "exists",
+        path: match.path,
+        name: match.name,
+        size: match.size,
+        directory: match.type === "directory",
+        source: "directory",
+      };
     }
   }
 }

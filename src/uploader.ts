@@ -1240,9 +1240,10 @@ export async function listRemoteDir(config: AppConfig, remotePath: string): Prom
 export async function listRemoteFilesRecursive(
   config: AppConfig,
   rootPath: string,
-  options: { maxDepth?: number; maxFiles?: number } = {}
+  options: { maxDepth?: number; maxFiles?: number } = {},
+  clientOverride?: Pick<WebDAVClient, "getDirectoryContents">
 ): Promise<{ files: RemoteListedFile[]; skipped: Array<{ path: string; reason: string }>; complete: boolean }> {
-  const client = buildDavClient(config);
+  const client = clientOverride || buildDavClient(config);
   const root = normalizeRemotePath(rootPath, { allowTrailingSlash: true });
   const maxDepth = Math.max(0, Math.floor(options.maxDepth ?? 4));
   const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 2000));
@@ -1261,6 +1262,7 @@ export async function listRemoteFilesRecursive(
     try {
       items = await client.getDirectoryContents(dir) as any[];
     } catch (error: any) {
+      complete = false;
       skipped.push({ path: dir, reason: `远端目录读取失败：${error?.message || error}` });
       return;
     }
@@ -1270,6 +1272,7 @@ export async function listRemoteFilesRecursive(
       try {
         normalized = normalizeRemoteDirectoryEntry(dir, item);
       } catch (error) {
+        complete = false;
         skipped.push({ path: dir, reason: `远端条目解析失败：${error instanceof Error ? error.message : String(error)}` });
         continue;
       }

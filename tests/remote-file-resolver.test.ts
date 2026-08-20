@@ -4,6 +4,7 @@ import {
   RemoteFileResolutionConflictError,
   RemoteFileResolver,
   isLikelyEncodedFilename,
+  normalizeRemoteDirectoryEntry,
   remoteNameMatches,
 } from "../src/remote-file-resolver.js";
 
@@ -122,4 +123,89 @@ test("comparison normalization does not make ordinary punctuation or case equiva
   assert.equal(remoteNameMatches("100%.mp4", "100%.mp4"), true);
   assert.equal(isLikelyEncodedFilename("plain-video.mp4"), false);
   assert.equal(isLikelyEncodedFilename("video'name.mp4"), true);
+});
+
+test("structured OpenList fields keep literal hash and question-mark filenames", () => {
+  assert.deepEqual(
+    normalizeRemoteDirectoryEntry("/target", {
+      filename: "/target/clip#one?.mp4",
+      basename: "clip#one?.mp4",
+      type: "file",
+      size: 42,
+    }),
+    {
+      path: "/target/clip#one?.mp4",
+      name: "clip#one?.mp4",
+      type: "file",
+      size: 42,
+    },
+  );
+  assert.equal(
+    normalizeRemoteDirectoryEntry("/target", { basename: "clip#one?.mp4", type: "file", size: 42 }).path,
+    "/target/clip#one?.mp4",
+  );
+});
+
+test("href uses URL semantics while percent-encoded punctuation remains valid", () => {
+  assert.equal(
+    normalizeRemoteDirectoryEntry("/target", {
+      href: "/target/clip%23one%3Ftwo.mp4",
+      basename: "clip#one?two.mp4",
+      type: "file",
+      size: 7,
+    }).path,
+    "/target/clip#one?two.mp4",
+  );
+  assert.throws(
+    () => normalizeRemoteDirectoryEntry("/target", { href: "/target/clip.mp4?token=redacted", type: "file" }),
+    /查询串或片段/,
+  );
+  assert.throws(
+    () => normalizeRemoteDirectoryEntry("/target", { href: "/target/clip.mp4#part", type: "file" }),
+    /查询串或片段/,
+  );
+});
+
+test("structured fields and href must identify the same remote path", () => {
+  assert.throws(
+    () => normalizeRemoteDirectoryEntry("/target", {
+      filename: "/target/clip-a.mp4",
+      href: "/target/clip-b.mp4",
+      basename: "clip-a.mp4",
+      type: "file",
+    }),
+    /路径字段不一致/,
+  );
+});
+
+test("an unrelated malformed directory entry is isolated from a valid target", async () => {
+  const resolver = new RemoteFileResolver({
+    stat: async () => { throw notFound(); },
+    getDirectoryContents: async () => [
+      { filename: "/target/unrelated\0.mp4", basename: "unrelated.mp4", type: "file", size: 1 },
+      { filename: "/target/clip#one?.mp4", basename: "clip#one?.mp4", type: "file", size: 42 },
+    ],
+  });
+
+  const result = await resolver.inspect("/target/clip#one?.mp4", { fallback: "always" });
+  assert.equal(result.status, "exists");
+  assert.equal(result.path, "/target/clip#one?.mp4");
+  assert.equal(result.size, 42);
+});
+
+test("a malformed entry that may be the target fails closed", async () => {
+  const resolver = new RemoteFileResolver({
+    stat: async () => { throw notFound(); },
+    getDirectoryContents: async () => [{
+      filename: "/target/clip#one?.mp4\0",
+      basename: "clip#one?.mp4",
+      type: "file",
+      size: 42,
+    }],
+  });
+
+  await assert.rejects(
+    resolver.inspect("/target/clip#one?.mp4", { fallback: "always" }),
+    RemoteFileResolutionConflictError,
+  );
 });
