@@ -181,6 +181,33 @@ test("COPY target verification failure preserves the source", async () => {
   assert.equal(client.files.has("/target/old.mp4"), true);
 });
 
+test("COPY response loss with a same-size target preserves both files without proof", async () => {
+  const client = new MemoryRemote();
+  client.files.set("/target/old.mp4", Buffer.from("old"));
+  const originalCopy = client.copyFile.bind(client);
+  client.copyFile = async (...args: Parameters<MemoryRemote["copyFile"]>) => {
+    await originalCopy(...args);
+    throw Object.assign(new Error("connection reset after COPY"), { status: 502 });
+  };
+  const runner = await createRemoteReplacementRunner(config, {
+    client,
+    capabilities: { copy: "supported", move: "unsupported" },
+  });
+  let targetVerified = false;
+  await assert.rejects(
+    () => runner(config, "/target/old.mp4", "/target/new.mp4"),
+    (error: any) => {
+      assert.equal(error.code, "REMOTE_COPY_RESULT_UNCERTAIN");
+      assert.equal(error.targetReady, true);
+      assert.equal(error.sourceStillPresent, true);
+      return true;
+    },
+  );
+  assert.equal(targetVerified, false);
+  assert.equal(client.files.has("/target/old.mp4"), true);
+  assert.equal(client.files.has("/target/new.mp4"), true);
+});
+
 test("COPY plus DELETE retry does not copy the same file twice", async () => {
   const client = new MemoryRemote();
   client.failDeleteCount = 1;

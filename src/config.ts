@@ -1,6 +1,7 @@
 import path from "node:path";
 import { dataDir } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./storage.js";
+import { parseStorageBaseUrl } from "./storage-url.js";
 
 export type UploadLayout = "user-folder-video" | "folder-video" | "video-only";
 export type BBDownApiMode = "web" | "app";
@@ -240,12 +241,9 @@ export function validateConfig(input: Partial<AppConfig>) {
       return "alistUrl is required";
     }
     try {
-      const url = new URL(input.alistUrl);
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        return "alistUrl must be an http(s) URL";
-      }
+      parseStorageBaseUrl(input.alistUrl);
     } catch {
-      return "alistUrl must be a valid URL";
+      return "alistUrl must be a valid HTTP(S) URL without credentials, query, or fragment";
     }
   }
 

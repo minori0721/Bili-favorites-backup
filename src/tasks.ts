@@ -233,7 +233,7 @@ export class QualityUpgradeTask extends Task {
       requireVerifiedMediaMetadata: true,
     });
     const targetRemotePath = this.target.remotePath;
-    const stageRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
+    const stageRemotePath = this.stageRemotePath || joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
     this.stageRemotePath = stageRemotePath;
     this.uploadResult = await this.uploadRunner(this.downloadDir, stageRemotePath, this.config, {
       cleanupLocal: false,
@@ -249,12 +249,13 @@ export class QualityUpgradeTask extends Task {
   }
 
   async runReplacePhase(runId: string) {
-    if (!this.uploadResult?.files.length) {
+    const stagedFiles = this.uploadResult?.files || [];
+    if (!stagedFiles.length && !this.finalFiles?.length) {
       throw new Error("Quality upgrade staged upload result is missing");
     }
     console.log(`[Task] Starting quality-upgrade remote replacement for ${this.bvid}`);
     const targetRemotePath = this.target.remotePath;
-    const plannedFinalFiles = this.uploadResult.files.map((file) => ({
+    const plannedFinalFiles = (stagedFiles.length ? stagedFiles : (this.finalFiles || [])).map((file) => ({
       ...file,
       path: joinRemotePath(targetRemotePath, file.name),
     }));
@@ -265,11 +266,13 @@ export class QualityUpgradeTask extends Task {
       }
       plannedFinalPaths.add(file.path);
     }
-    const backupRemotePath = joinRemotePath(targetRemotePath, `.quality-upgrade-backup-${runId}`);
+    const stageRemotePath = this.stageRemotePath || joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`);
+    const backupRemotePath = this.backupRemotePath || joinRemotePath(targetRemotePath, `.quality-upgrade-backup-${runId}`);
+    this.stageRemotePath = stageRemotePath;
     this.backupRemotePath = backupRemotePath;
     const backupFiles = this.backupFiles ||= [];
     const finalFiles = this.finalFiles ||= [];
-    this.onReplacing?.(this, this.stageRemotePath || joinRemotePath(targetRemotePath, `.quality-upgrade-${runId}`), backupRemotePath);
+    this.onReplacing?.(this, stageRemotePath, backupRemotePath);
     const replace = this.replacementRunner || (this.moveRunner === moveRemoteFile
       ? await createRemoteReplacementRunner(this.config)
       : this.moveRunner);
@@ -280,6 +283,7 @@ export class QualityUpgradeTask extends Task {
           ...oldFile,
           path: joinRemotePath(backupRemotePath, oldFile.name),
         };
+        const alreadyVerified = backupFiles.some((file) => file.path === backupFile.path);
         const recordBackupProof = () => {
           if (!backupFiles.some((file) => file.path === backupFile.path)) {
             backupFiles.push(backupFile);
@@ -287,23 +291,32 @@ export class QualityUpgradeTask extends Task {
           }
         };
         await replace(this.config, oldFile.path, backupFile.path, oldFile.size, {
-          targetPreviouslyVerified: backupFiles.some((file) => file.path === backupFile.path),
+          targetPreviouslyVerified: alreadyVerified,
           onTargetVerified: recordBackupProof,
         });
         recordBackupProof();
       }
       this.qualityStageLabel = "移动新版到正式目录";
-      for (let i = 0; i < this.uploadResult.files.length; i += 1) {
-        const stagedFile = this.uploadResult.files[i];
+      for (let i = 0; i < plannedFinalFiles.length; i += 1) {
+        const stagedFile = stagedFiles[i];
         const finalFile = plannedFinalFiles[i];
+        if (!finalFile) continue;
         const recordFinalProof = () => {
           if (!finalFiles.some((file) => file.path === finalFile.path)) {
             finalFiles.push(finalFile);
             this.onFinalFileMoved?.(this, finalFile);
           }
         };
-        await replace(this.config, stagedFile.path, finalFile.path, stagedFile.size, {
-          targetPreviouslyVerified: finalFiles.some((file) => file.path === finalFile.path),
+        const alreadyVerified = finalFiles.some((file) => file.path === finalFile.path);
+        const sourceFile = stagedFile || {
+          ...finalFile,
+          path: joinRemotePath(stageRemotePath, finalFile.name),
+        };
+        if (!stagedFile && !alreadyVerified) {
+          throw new Error(`Quality upgrade staged file is missing: ${finalFile.name}`);
+        }
+        await replace(this.config, sourceFile.path, finalFile.path, sourceFile.size, {
+          targetPreviouslyVerified: alreadyVerified,
           onTargetVerified: recordFinalProof,
         });
         recordFinalProof();
@@ -314,8 +327,8 @@ export class QualityUpgradeTask extends Task {
         throw new Error(`Moved upgraded files missing after final rename: ${finalVerifyResult.missing.join(", ")}`);
       }
     } catch (error) {
-      for (const finalFile of this.finalFiles.reverse()) {
-        const stagedFile = this.uploadResult.files.find((file) => file.name === finalFile.name);
+      for (const finalFile of [...this.finalFiles].reverse()) {
+        const stagedFile = stagedFiles.find((file) => file.name === finalFile.name);
         if (stagedFile) {
           try {
             await replace(this.config, finalFile.path, stagedFile.path, finalFile.size);
@@ -326,10 +339,10 @@ export class QualityUpgradeTask extends Task {
       }
       for (let i = this.backupFiles.length - 1; i >= 0; i -= 1) {
         const backupFile = this.backupFiles[i];
-        const oldFile = this.target.oldFiles[i];
+        const oldFile = this.target.oldFiles.find((file) => file.name === backupFile.name);
         if (oldFile) {
           try {
-              await replace(this.config, backupFile.path, oldFile.path, backupFile.size);
+            await replace(this.config, backupFile.path, oldFile.path, backupFile.size);
           } catch (rollbackError) {
             console.warn(`[Task] Failed to restore backup file ${backupFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }

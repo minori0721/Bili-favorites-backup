@@ -58,6 +58,7 @@ import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
 import { createRemoteReplacementRunner } from "./remote-operations.js";
+import { isRemotePathWithin, normalizeRemotePath, remoteDirname } from "./remote-path.js";
 import {
   closePlaybackDeliveryTracker,
   getPlaybackDeliveryStatus,
@@ -819,7 +820,8 @@ app.put("/api/config", (req, res) => {
   const protectedChanged = activePathMigration && protectedAlistKeys.some((key) => {
     if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
     if (key === "alistDest") {
-      return normalizeRemotePath(String(req.body[key] || "")) !== normalizeRemotePath(String(previous[key] || ""));
+      return normalizeRemotePath(String(req.body[key] || ""), { allowTrailingSlash: true })
+        !== normalizeRemotePath(String(previous[key] || ""), { allowTrailingSlash: true });
     }
     return req.body[key] !== previous[key];
   });
@@ -830,7 +832,8 @@ app.put("/api/config", (req, res) => {
   const archiveDeletionProtectedChanged = activeArchiveDeletion && protectedAlistKeys.some((key) => {
     if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
     if (key === "alistDest") {
-      return normalizeRemotePath(String(req.body[key] || "")) !== normalizeRemotePath(String(previous[key] || ""));
+      return normalizeRemotePath(String(req.body[key] || ""), { allowTrailingSlash: true })
+        !== normalizeRemotePath(String(previous[key] || ""), { allowTrailingSlash: true });
     }
     return req.body[key] !== previous[key];
   });
@@ -1988,26 +1991,8 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 }));
 
-function normalizeRemotePath(value: string) {
-  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");
-  return normalized.startsWith("/") ? normalized || "/" : `/${normalized}`;
-}
-
-function remoteBasename(value: string) {
-  const parts = normalizeRemotePath(value).split("/").filter(Boolean);
-  return parts[parts.length - 1] || "";
-}
-
-function remoteDirname(value: string) {
-  const normalized = normalizeRemotePath(value);
-  const index = normalized.lastIndexOf("/");
-  return index <= 0 ? "/" : normalized.slice(0, index);
-}
-
 function isRemotePathUnder(root: string, target: string) {
-  const normalizedRoot = normalizeRemotePath(root);
-  const normalizedTarget = normalizeRemotePath(target);
-  return normalizedRoot === "/" || normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+  return isRemotePathWithin(root, target);
 }
 
 function extractBvid(value: string) {
@@ -2018,10 +2003,13 @@ async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManage
   const operation = relation.qualityUpgrade;
   const config = configStore.get();
   if (operation.finalizedAt && operation.newFiles?.length) {
-    const cleanup = await deleteRemoteFiles(config, operation.oldFiles.map((file) => ({
-      ...file,
-      path: joinRemotePath(operation.backupRemotePath, file.name),
-    })));
+    const backupFiles = operation.backupFiles?.length
+      ? operation.backupFiles
+      : operation.oldFiles.map((file) => ({
+          ...file,
+          path: joinRemotePath(operation.backupRemotePath, file.name),
+        }));
+    const cleanup = await deleteRemoteFiles(config, backupFiles);
     if (cleanup.failed > 0) {
       throw new Error(`Failed to clean interrupted quality-upgrade backups for ${relation.bvid}`);
     }
@@ -2030,17 +2018,10 @@ async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManage
   }
   const replace = await createRemoteReplacementRunner(config);
   for (const newFile of operation.newFiles || []) {
-      await replace(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name), newFile.size);
+    await replace(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name), newFile.size, { targetPreviouslyVerified: true });
   }
-  const backupFiles = operation.oldFiles.map((oldFile) => {
-    const recorded = (operation.backupFiles || []).find((file) => file.name === oldFile.name);
-    return recorded || {
-      ...oldFile,
-      path: joinRemotePath(operation.backupRemotePath, oldFile.name),
-    };
-  });
-  for (let i = backupFiles.length - 1; i >= 0; i -= 1) {
-    const backupFile = backupFiles[i];
+  const backupFiles = [...(operation.backupFiles || [])];
+  for (const backupFile of [...backupFiles].reverse()) {
     const oldFile = operation.oldFiles.find((file) => file.name === backupFile.name);
     if (oldFile) {
       await replace(config, backupFile.path, oldFile.path, oldFile.size);
@@ -2361,7 +2342,7 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
     return;
   }
   const config = configStore.get();
-  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
   const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
   const scanLimit = Math.max(100, Math.min(100_000, Number(config.renameScanMaxFiles || 10_000)));
   const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 8, maxFiles: scanLimit });
@@ -2460,7 +2441,7 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
       res.status(400).json({ success: false, message: "items must contain 1-10000 entries" });
       return;
     }
-    const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+    const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
     const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
     const requestedTargets = new Set<string>();
     const requestedSources = new Set(items.map((item) => normalizeRemotePath(item.oldPath)));

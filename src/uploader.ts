@@ -53,9 +53,11 @@ import {
   RemoteFileResolutionConflictError,
   type RemoteFileResolver,
 } from "./remote-file-resolver.js";
+import { buildStorageDavUrl } from "./storage-url.js";
+import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
 
 export function buildDavClient(config: AppConfig): WebDAVClient {
-  const davUrl = config.alistUrl.replace(/\/$/, "") + "/dav";
+  const davUrl = buildStorageDavUrl(config.alistUrl);
   return createClient(davUrl, {
     username: config.alistUsername,
     password: config.alistPassword,
@@ -63,7 +65,7 @@ export function buildDavClient(config: AppConfig): WebDAVClient {
 }
 
 export async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
-  const segments = remotePath.split('/').filter(s => s.length > 0);
+  const segments = normalizeRemotePath(remotePath, { allowTrailingSlash: true }).split('/').filter(s => s.length > 0);
   let currentPath = '';
   for (const segment of segments) {
     currentPath += '/' + segment;
@@ -368,8 +370,55 @@ interface PreparedUploadEntry {
   stat: fs.Stats;
 }
 
+async function inspectLocalUploadPath(localRoot: string, localFile: string) {
+  const root = path.resolve(localRoot);
+  const target = path.resolve(localFile);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error("本地上传路径超出下载目录");
+  }
+  const rootInfo = await fs.promises.lstat(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error("本地上传根目录不是可信目录");
+  }
+  const relative = path.relative(root, target);
+  const segments = relative ? relative.split(path.sep) : [];
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const info = await fs.promises.lstat(current);
+    if (info.isSymbolicLink()) throw new Error("本地上传路径不能包含软链接或junction");
+    if (current !== target && !info.isDirectory()) throw new Error("本地上传父路径不是目录");
+    if (current === target) {
+      if (!info.isFile() || info.size <= 0) throw new Error("本地上传文件为空或无效");
+      return info;
+    }
+  }
+  throw new Error("本地上传目标不是文件");
+}
+
+async function openVerifiedLocalUpload(localRoot: string, localFile: string, expectedSize: number) {
+  const before = await inspectLocalUploadPath(localRoot, localFile);
+  const handle = await fs.promises.open(localFile, "r");
+  try {
+    const opened = await handle.stat();
+    const identityMatches = !Number.isFinite(Number(before.ino)) || !Number.isFinite(Number(opened.ino))
+      || (before.dev === opened.dev && before.ino === opened.ino);
+    if (!identityMatches || !opened.isFile() || opened.size !== expectedSize) {
+      throw Object.assign(new Error("本地上传文件在校验后发生变化"), {
+        code: "LOCAL_UPLOAD_CHANGED",
+        status: 422,
+      });
+    }
+    return { handle, stream: handle.createReadStream(), stat: opened };
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 async function putAndVerifyLocalFile(
   client: WebDAVClient,
+  localRoot: string,
   localFile: string,
   remoteFile: string,
   stat: fs.Stats,
@@ -389,7 +438,8 @@ async function putAndVerifyLocalFile(
     return { verificationStatus: "verified" as const, skippedUpload: true, putAccepted: false };
   }
   await beforePut?.();
-  const fileStream = fs.createReadStream(localFile);
+  const opened = await openVerifiedLocalUpload(localRoot, localFile, stat.size);
+  const fileStream = opened.stream;
   try {
     try {
       const putAccepted = await client.putFileContents(remoteFile, fileStream as any, {
@@ -397,7 +447,7 @@ async function putAndVerifyLocalFile(
         // The preflight is advisory; conditional PUT closes the race where
         // another writer creates a different file before this request starts.
         overwrite: false,
-        headers: buildUploadHeaders(localFile, stat),
+        headers: buildUploadHeaders(localFile, opened.stat),
       });
       if (putAccepted === false) {
         if (!allowExistingMatch) {
@@ -436,6 +486,7 @@ async function putAndVerifyLocalFile(
     return { verificationStatus, skippedUpload: false, putAccepted: true };
   } finally {
     fileStream.destroy();
+    await opened.handle.close().catch(() => undefined);
   }
 }
 
@@ -528,10 +579,13 @@ async function uploadWithAListDirect(
       throw new UploadOperationError(classifyUploadError(localError, remotePath));
     }
     const remoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
-    const stat = await fs.promises.stat(localFile);
-    if (!stat.isFile() || stat.size <= 0) {
+    let stat: fs.Stats;
+    try {
+      stat = await inspectLocalUploadPath(localRoot, localFile);
+    } catch (error) {
       const localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`);
       localError.status = 422;
+      localError.cause = error;
       throw new UploadOperationError(classifyUploadError(localError, remoteFile));
     }
     preparedEntries.push({ ...entry, localFile, remoteFile, stat });
@@ -598,6 +652,7 @@ async function uploadWithAListDirect(
       try {
         transferResult = await putAndVerifyLocalFile(
           client,
+          localRoot,
           localFile,
           originalRemoteFile,
           stat,
@@ -640,6 +695,7 @@ async function uploadWithAListDirect(
         try {
           transferResult = await putAndVerifyLocalFile(
             client,
+            localRoot,
             localFile,
             uploadedRemoteFile,
             stat,
@@ -858,7 +914,7 @@ async function uploadWithTransferSession(
     }
     let stat: fs.Stats;
     try {
-      stat = await fs.promises.stat(localFile);
+      stat = await inspectLocalUploadPath(localRoot, localFile);
     } catch (error) {
       const localError: any = new Error(`Local upload file is missing: ${entry.relativePath}`);
       localError.status = 422;
@@ -990,6 +1046,7 @@ async function uploadWithTransferSession(
       try {
         transfer = await putAndVerifyLocalFile(
           client,
+          localRoot,
           entry.localFile,
           sessionFile.finalPath,
           entry.stat,
@@ -1019,6 +1076,7 @@ async function uploadWithTransferSession(
         try {
           transfer = await putAndVerifyLocalFile(
             client,
+            localRoot,
             entry.localFile,
             compatibilityPath,
             entry.stat,
@@ -1178,30 +1236,13 @@ export async function listRemoteDir(config: AppConfig, remotePath: string): Prom
     .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
 }
 
-function normalizeRemotePath(value: string) {
-  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");
-  return normalized.startsWith("/") ? normalized || "/" : `/${normalized}`;
-}
-
-function remoteBasename(value: string) {
-  const normalized = normalizeRemotePath(value);
-  const parts = normalized.split("/").filter(Boolean);
-  return parts[parts.length - 1] || "";
-}
-
-function remoteDirname(value: string) {
-  const normalized = normalizeRemotePath(value);
-  const index = normalized.lastIndexOf("/");
-  return index <= 0 ? "/" : normalized.slice(0, index);
-}
-
 export async function listRemoteFilesRecursive(
   config: AppConfig,
   rootPath: string,
   options: { maxDepth?: number; maxFiles?: number } = {}
 ): Promise<{ files: RemoteListedFile[]; skipped: Array<{ path: string; reason: string }>; complete: boolean }> {
   const client = buildDavClient(config);
-  const root = normalizeRemotePath(rootPath);
+  const root = normalizeRemotePath(rootPath, { allowTrailingSlash: true });
   const maxDepth = Math.max(0, Math.floor(options.maxDepth ?? 4));
   const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 2000));
   const files: RemoteListedFile[] = [];
@@ -1262,10 +1303,6 @@ export async function listRemoteFilesRecursive(
   return { files, skipped, complete };
 }
 
-function isRemotePathWithin(root: string, target: string) {
-  return root === "/" || target === root || target.startsWith(`${root}/`);
-}
-
 export async function batchRenameRemotePaths(
   config: AppConfig,
   items: RenameRemoteItem[],
@@ -1285,7 +1322,7 @@ export async function batchRenameRemotePaths(
 }> {
   const client = clientOverride || buildDavClient(config);
   const operationId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos");
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
   const prepared = items.map((item, index) => {
     const oldPath = normalizeRemotePath(item.oldPath);
     const newPath = normalizeRemotePath(item.newPath);

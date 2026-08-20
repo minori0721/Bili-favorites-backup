@@ -8,6 +8,7 @@ import type { StateManager } from "./state.js";
 import type { BiliUser, UserStore } from "./users.js";
 import { buildDavClient, isRemoteNotFoundError } from "./uploader.js";
 import { createRemoteFileResolver } from "./remote-file-resolver.js";
+import { normalizeLegacyRemotePath, remoteBasename } from "./remote-path.js";
 
 export type ArchiveDeletionScope = "account" | "source";
 export type ArchiveDeletionStatus = "preview" | "preparing" | "pending" | "running" | "retry_wait" | "failed" | "completed" | "expired" | "superseded";
@@ -36,21 +37,15 @@ const RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000];
 const TERMINAL_ITEM_STATUSES = new Set(["deleted", "missing", "retained"]);
 
 function normalizeRemotePath(value: string) {
-  const raw = String(value || "").trim().replace(/\\/g, "/");
-  const normalized = `/${raw.split("/").filter(Boolean).join("/")}`;
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.some((part) => part === "." || part === ".." || part.includes("\0"))) {
+  try {
+    return normalizeLegacyRemotePath(value);
+  } catch {
     throw archiveDeletionError("远端路径包含非法片段", 409, false);
   }
-  return normalized || "/";
 }
 
 function isWithin(root: string, target: string) {
   return root === "/" || target === root || target.startsWith(`${root}/`);
-}
-
-function remoteBasename(value: string) {
-  return path.posix.basename(normalizeRemotePath(value));
 }
 
 function statusCode(error: any) {

@@ -10,6 +10,8 @@ import type { StateDatabase } from "./database.js";
 import type { FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
 import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
 import { buildDavClient } from "./uploader.js";
+import { isRemotePathWithin, normalizeStoredRemoteFilePath } from "./remote-path.js";
+import { parseStorageBaseUrl } from "./storage-url.js";
 import {
   createRemoteFileResolver,
   isLikelyEncodedFilename,
@@ -625,16 +627,12 @@ export function getPlaybackSearch(
 }
 
 function normalizeStoredPath(value: unknown) {
-  const raw = String(value || "");
-  if (!raw.startsWith("/") || raw.includes("\\") || raw.includes("\0") || raw.endsWith("/")) return null;
-  const normalized = path.posix.normalize(raw);
-  if (normalized !== raw || normalized.split("/").some((segment) => segment === "." || segment === "..")) return null;
-  return normalized;
+  return normalizeStoredRemoteFilePath(value);
 }
 
 function isWithinRoot(filePath: string, rootValue: unknown) {
-  const root = String(rootValue || "").replace(/\/+$/, "");
-  return !root || filePath.startsWith(`${root}/`);
+  const root = String(rootValue || "");
+  return !root || isRemotePathWithin(root, filePath, false);
 }
 
 function encodeDavPath(remotePath: string) {
@@ -899,7 +897,7 @@ export async function streamPlaybackFile(
 
   let base: URL;
   try {
-    base = new URL(String(config.alistUrl || ""));
+    base = parseStorageBaseUrl(config.alistUrl);
   } catch {
     markPlaybackDelivery(input, "failed");
     throw new PlaybackHttpError(502, "PLAYBACK_ALIST_CONFIG", "远端存储连接配置无效");

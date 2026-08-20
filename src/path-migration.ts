@@ -11,6 +11,8 @@ import {
 import { PersistentJobStore } from "./job-store.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import { isRemoteNotFoundError } from "./uploader.js";
+import { isRemotePathWithin, joinRemotePath, normalizeRemotePath } from "./remote-path.js";
+import { buildStorageDavUrl } from "./storage-url.js";
 
 export interface PathMigrationDavClient {
   getDirectoryContents(path: string): Promise<any>;
@@ -42,17 +44,15 @@ const MAX_ENTRIES = 100_000;
 const VERIFY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function normalizeRoot(value: string) {
-  const raw = String(value || "").trim().replace(/\\/g, "/");
-  if (!raw.startsWith("/")) throw new Error("归档路径必须是绝对路径");
-  const parts = raw.split("/").filter(Boolean);
-  if (parts.some((part) => part === "." || part === ".." || part.includes("\0"))) {
-    throw new Error("归档路径不能包含 .、.. 或非法字符");
+  try {
+    return normalizeRemotePath(String(value || "").trim(), { allowTrailingSlash: true });
+  } catch {
+    throw new Error("归档路径必须是绝对路径且不能包含非法片段");
   }
-  return `/${parts.join("/")}` || "/";
 }
 
 function isWithin(root: string, target: string) {
-  return root === "/" || target === root || target.startsWith(`${root}/`);
+  return isRemotePathWithin(root, target);
 }
 
 function relativePath(root: string, target: string) {
@@ -67,7 +67,7 @@ function relativePath(root: string, target: string) {
 }
 
 function joinRemote(root: string, relative: string) {
-  return relative ? `${root.replace(/\/$/g, "")}/${relative}` : root;
+  return joinRemotePath(root, relative);
 }
 
 function entryType(value: any): "file" | "directory" {
@@ -221,7 +221,7 @@ export class PathMigrationService {
     this.configStore = configStore;
     this.jobStore = new PersistentJobStore(db);
     this.clientFactory = options.clientFactory || ((config) => {
-      const davUrl = `${String(config.alistUrl || "").replace(/\/$/, "")}/dav`;
+      const davUrl = buildStorageDavUrl(config.alistUrl);
       return createClient(davUrl, { username: config.alistUsername, password: config.alistPassword }) as unknown as PathMigrationDavClient;
     });
     this.now = options.now || Date.now;
@@ -334,7 +334,13 @@ export class PathMigrationService {
       entries.sort((left, right) => String(left?.filename || left?.path || left?.basename || "").localeCompare(String(right?.filename || right?.path || right?.basename || "")));
       for (const entry of entries) {
         if (shouldContinue && !shouldContinue()) return;
-        const entryPath = String(entry?.filename || entry?.path || `${directory.replace(/\/$/g, "")}/${entry?.basename || ""}`).replace(/\\/g, "/");
+        const rawEntryPath = String(entry?.filename || entry?.path || `${directory.replace(/\/$/g, "")}/${entry?.basename || ""}`).replace(/\\/g, "/");
+        let entryPath: string;
+        try {
+          entryPath = normalizeRemotePath(rawEntryPath, { allowTrailingSlash: true });
+        } catch {
+          throw new Error("远端条目包含非法相对路径");
+        }
         if (!isWithin(root, entryPath) || entryPath === root) continue;
         const itemType = entryType(entry);
         let size = typeof entry?.size === "number" && Number.isFinite(entry.size) ? Number(entry.size) : undefined;
@@ -352,6 +358,7 @@ export class PathMigrationService {
   private async runPreview(id: string) {
     const record = this.db.getPathMigration(id);
     if (!record || record.status !== "scanning") return;
+    if (!this.db.resetPathMigrationPreview(id)) return;
     const config = this.configStore.get();
     const client = this.clientFactory(config);
     const sourceItems: PathMigrationItemRecord[] = [];

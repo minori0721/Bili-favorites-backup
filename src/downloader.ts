@@ -79,6 +79,8 @@ async function cleanupNewInvalidArtifacts(downloadDir: string, baseline: Set<str
 
 const activeDownloadChildren = new Map<ReturnType<typeof spawn>, string>();
 let shutdownRequested = false;
+const DEBUG_PROBE_TIMEOUT_MS = 45_000;
+const DEBUG_PROBE_OUTPUT_LIMIT = 1_000_000;
 
 export async function shutdownActiveDownloads(timeoutMs = 20_000) {
   shutdownRequested = true;
@@ -717,34 +719,51 @@ async function getDirectoryTotalSize(dir: string): Promise<number> {
 }
 
 async function runDebugProbe(
+  command: string,
   bvid: string,
   baseArgs: string[],
   cwd: string,
-  sensitiveValues: string[]
+  sensitiveValues: string[],
+  accountUid: string,
+  timeoutMs = DEBUG_PROBE_TIMEOUT_MS,
 ) {
   const debugLogPath = createDebugLogPath(bvid);
   const args = [...baseArgs, "--debug", "--only-show-info"];
   return new Promise<string>((resolve, reject) => {
-    const child = spawn("BBDown", args, {
+    const child = spawn(command, args, {
       cwd,
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    activeDownloadChildren.set(child, "");
+    activeDownloadChildren.set(child, String(accountUid || ""));
     let out = "";
     let settled = false;
+    let truncated = false;
+    let timer: NodeJS.Timeout | null = null;
+    const append = (chunk: unknown) => {
+      if (out.length >= DEBUG_PROBE_OUTPUT_LIMIT) {
+        truncated = true;
+        return;
+      }
+      const text = String(chunk);
+      const remaining = DEBUG_PROBE_OUTPUT_LIMIT - out.length;
+      out += text.slice(0, remaining);
+      if (text.length > remaining) truncated = true;
+    };
     child.stdout.on("data", (chunk) => {
-      out += chunk.toString();
+      append(chunk);
     });
     child.stderr.on("data", (chunk) => {
-      out += chunk.toString();
+      append(chunk);
     });
     const persist = async (content: string) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       activeDownloadChildren.delete(child);
       try {
-        await writeDebugLogAtomic(debugLogPath, redactSensitiveOutput(content, sensitiveValues));
+        const suffix = truncated ? "\n[debug probe output truncated]" : "";
+        await writeDebugLogAtomic(debugLogPath, redactSensitiveOutput(`${content}${suffix}`, sensitiveValues));
         resolve(debugLogPath);
       } catch (error) {
         reject(error);
@@ -752,8 +771,18 @@ async function runDebugProbe(
     };
     child.on("close", () => { void persist(out); });
     child.on("error", (error) => {
-      void persist(`${out}\n[debug probe error] ${safeErrorSummary(error)}`);
+      append(`\n[debug probe error] ${safeErrorSummary(error)}`);
+      void persist(out);
     });
+    timer = setTimeout(() => {
+      void (async () => {
+        await terminateDownloadProcessTree(child, false);
+        if (activeDownloadChildren.has(child)) await terminateDownloadProcessTree(child, true);
+        append("\n[debug probe timeout]");
+        await persist(out);
+      })();
+    }, Math.max(1, timeoutMs));
+    timer.unref?.();
   });
 }
 
@@ -1054,7 +1083,7 @@ function runCommand(
           return;
         }
 
-        runDebugProbe(bvid, args, cwd, sensitiveValues)
+        runDebugProbe(command, bvid, args, cwd, sensitiveValues, String(options.accountUid || ""))
           .then((debugLogPath) => {
             const finalLine = `${failure.line} (debug: ${debugLogPath})`;
             logManager.push({

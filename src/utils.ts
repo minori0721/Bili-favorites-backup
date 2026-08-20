@@ -2,6 +2,8 @@ export function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+import { joinRemotePath as joinStrictRemotePath } from "./remote-path.js";
+
 export function sanitizeSegment(value: string) {
   return value
     .replace(/[\\/:*?"<>|]/g, "_")
@@ -10,14 +12,5 @@ export function sanitizeSegment(value: string) {
 }
 
 export function joinRemotePath(base: string, ...segments: string[]) {
-  const normalizedBase = base.replace(/\/+$/, "");
-  const cleaned = segments
-    .filter((segment) => Boolean(segment))
-    .map((segment) => segment.replace(/^\/+|\/+$/g, ""));
-
-  if (cleaned.length === 0) {
-    return normalizedBase;
-  }
-
-  return `${normalizedBase}/${cleaned.join("/")}`;
+  return joinStrictRemotePath(base, ...segments);
 }

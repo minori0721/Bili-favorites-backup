@@ -104,6 +104,132 @@ test("artifact identity ignores API mode but separates output-affecting profiles
   assert.notEqual(buildQualityArtifactKey("BVSHARED", qualityArtifactProfileFromConfig(otherTemplate)), webKey);
 });
 
+test("quality replacement proofs are idempotent and reject a different operation", async () => {
+  const runtime = await createTestDir("quality-proof-idempotence");
+  const manager = new StateManager({ dbPath: ":memory:", statePath: path.join(runtime, "missing.json") });
+  const oldFile = {
+    name: "old.mp4",
+    path: "/backup/u1/1/old.mp4",
+    size: 10,
+    verificationStatus: "verified" as const,
+  };
+  try {
+    manager.recordFavoriteItem("u1", 1, "Favorites", { bvid: "BVPROOF", title: "Proof", upperName: "Tester" });
+    const operation = {
+      artifactKey: "artifact-a",
+      stageRemotePath: "/backup/u1/1/.stage-a",
+      backupRemotePath: "/backup/u1/1/.backup-a",
+      oldRemotePath: "/backup/u1/1",
+      oldFiles: [oldFile],
+    };
+    assert.equal(manager.markQualityUpgradeReplacing("BVPROOF", "u1", 1, operation), true);
+    const backupFile = { ...oldFile, path: "/backup/u1/1/.backup-a/old.mp4" };
+    const newFile = { name: "new.mp4", path: "/backup/u1/1/new.mp4", size: 20, verificationStatus: "verified" as const };
+    manager.recordQualityUpgradeBackupFile("BVPROOF", "u1", 1, backupFile);
+    manager.recordQualityUpgradeFinalFile("BVPROOF", "u1", 1, newFile);
+    assert.equal(manager.markQualityUpgradeReplacing("BVPROOF", "u1", 1, {
+      ...operation,
+      oldFiles: [],
+    }), true);
+    assert.equal(manager.markQualityUpgradeReplacing("BVPROOF", "u1", 1, {
+      ...operation,
+      stageRemotePath: "/backup/u1/1/.stage-other",
+    }), false);
+    const persisted = manager.getQualityUpgradeOperation("u1", 1, "BVPROOF")!;
+    assert.deepEqual(persisted.backupFiles, [backupFile]);
+    assert.deepEqual(persisted.newFiles, [newFile]);
+    assert.equal(persisted.stageRemotePath, operation.stageRemotePath);
+  } finally {
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("quality task uses persisted stage and backup paths during replacement recovery", async () => {
+  const oldFile = { name: "old.mp4", path: "/target/old.mp4", size: 10, verificationStatus: "verified" as const };
+  const task = new QualityUpgradeTask("BVPERSISTEDPATHS", {}, testConfig(), {
+    userId: "u1",
+    mediaId: 1,
+    folderTitle: "Favorites",
+    remotePath: "/target",
+    oldFiles: [oldFile],
+  });
+  task.uploadResult = {
+    remotePath: "/target/.payload-stage",
+    files: [{ name: "new.mp4", path: "/target/.payload-stage/new.mp4", size: 20, verificationStatus: "verified" }],
+    allVerified: true,
+  };
+  task.stageRemotePath = "/target/.persisted-stage";
+  task.backupRemotePath = "/target/.persisted-backup";
+  const calls: Array<[string, string, number | undefined]> = [];
+  task.replacementRunner = async (_config, source, targetPath, size) => {
+    calls.push([source, targetPath, size]);
+  };
+  task.verifyRunner = async (_config, files) => ({ ok: files.length === 1, missing: [] });
+  await task.runReplacePhase("different-run-id");
+  assert.deepEqual(calls, [
+    ["/target/old.mp4", "/target/.persisted-backup/old.mp4", 10],
+    ["/target/.payload-stage/new.mp4", "/target/new.mp4", 20],
+  ]);
+});
+
+test("scheduler rebuild prefers relation quality proofs over stale job payload files", async () => {
+  const runtime = await createTestDir("quality-relation-proof-priority");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const config = testConfig();
+  const users = [user("u1", 1)];
+  const scheduler = new SyncScheduler(
+    { get: () => config } as any,
+    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) || null } as any,
+    manager,
+  ) as any;
+  const oldFile = { name: "old.mp4", path: "/target/old.mp4", size: 10, verificationStatus: "verified" as const };
+  try {
+    manager.recordFavoriteItem("u1", 1, "Favorites", { bvid: "BVRELATIONPROOF", title: "Proof priority", upperName: "Tester" });
+    manager.markQualityUpgradeReplacing("BVRELATIONPROOF", "u1", 1, {
+      artifactKey: "artifact-proof",
+      stageRemotePath: "/target/.relation-stage",
+      backupRemotePath: "/target/.relation-backup",
+      oldRemotePath: "/target",
+      oldFiles: [oldFile],
+    });
+    const relationBackup = { ...oldFile, path: "/target/.relation-backup/old.mp4" };
+    const relationFinal = { name: "new.mp4", path: "/target/new.mp4", size: 20, verificationStatus: "verified" as const };
+    manager.recordQualityUpgradeBackupFile("BVRELATIONPROOF", "u1", 1, relationBackup);
+    manager.recordQualityUpgradeFinalFile("BVRELATIONPROOF", "u1", 1, relationFinal);
+    const rebuilt = scheduler.buildQualityUpgradeTask({
+      kind: "quality_replace",
+      bvid: "BVRELATIONPROOF",
+      userId: "u1",
+      mediaId: 1,
+      payload: {
+        artifactKey: "artifact-proof",
+        target: {
+          userId: "u1",
+          mediaId: 1,
+          folderTitle: "Favorites",
+          remotePath: "/stale-target",
+          oldFiles: [{ ...oldFile, path: "/stale-target/wrong.mp4" }],
+        },
+        stageRemotePath: "/stale-stage",
+        backupRemotePath: "/stale-backup",
+        backupFiles: [{ name: "stale.mp4", path: "/stale-backup/stale.mp4", size: 1 }],
+        finalFiles: [{ name: "stale.mp4", path: "/stale-target/stale.mp4", size: 1 }],
+      },
+    });
+    assert.equal(rebuilt.target.remotePath, "/target");
+    assert.deepEqual(rebuilt.target.oldFiles, [oldFile]);
+    assert.equal(rebuilt.stageRemotePath, "/target/.relation-stage");
+    assert.equal(rebuilt.backupRemotePath, "/target/.relation-backup");
+    assert.deepEqual(rebuilt.backupFiles, [relationBackup]);
+    assert.deepEqual(rebuilt.finalFiles, [relationFinal]);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("three targets share one quality download and fan out after a running target merge", async () => {
   const runtime = await createTestDir("quality-shared-download");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });

@@ -2429,10 +2429,36 @@ export class StateManager {
   ) {
     const relation = this.getRelation(userId, mediaId, bvid);
     if (!relation) return false;
-    relation.qualityUpgrade = { ...operation, startedAt: nowIso() };
+    const existing = relation.qualityUpgrade;
+    const sameOperation = existing
+      && String(existing.artifactKey || "") === String(operation.artifactKey || "")
+      && existing.stageRemotePath === operation.stageRemotePath
+      && existing.backupRemotePath === operation.backupRemotePath
+      && existing.oldRemotePath === operation.oldRemotePath;
+    if (existing && !sameOperation) return false;
+    relation.qualityUpgrade = {
+      ...(sameOperation ? existing : undefined),
+      ...operation,
+      startedAt: sameOperation ? existing!.startedAt : nowIso(),
+      oldFiles: sameOperation && existing!.oldFiles.length > 0 ? existing!.oldFiles : operation.oldFiles,
+      backupFiles: sameOperation ? existing!.backupFiles : undefined,
+      newFiles: sameOperation ? existing!.newFiles : undefined,
+      finalizedAt: sameOperation ? existing!.finalizedAt : undefined,
+    };
     relation.lastError = "Quality upgrade is replacing remote files.";
     this.save();
     return true;
+  }
+
+  getQualityUpgradeOperation(userId: string, mediaId: number, bvid: string) {
+    const operation = this.getRelation(userId, mediaId, bvid)?.qualityUpgrade;
+    if (!operation) return null;
+    return {
+      ...operation,
+      oldFiles: operation.oldFiles.map((file) => ({ ...file })),
+      backupFiles: operation.backupFiles?.map((file) => ({ ...file })),
+      newFiles: operation.newFiles?.map((file) => ({ ...file })),
+    };
   }
 
   listInterruptedQualityUpgrades() {
@@ -2468,9 +2494,13 @@ export class StateManager {
   finalizeQualityUpgradeRemoteFiles(bvid: string, userId: string, mediaId: number, remotePath: string, remoteFiles: RemoteFileRecord[]) {
     const relation = this.getRelation(userId, mediaId, bvid);
     if (!relation?.qualityUpgrade || remoteFiles.length === 0) return false;
+    const existing = relation.qualityUpgrade.newFiles || [];
+    const byKey = new Map<string, RemoteFileRecord>();
+    for (const file of existing) byKey.set(file.path || file.name, file);
+    for (const file of remoteFiles) byKey.set(file.path || file.name, file);
     relation.qualityUpgrade = {
       ...relation.qualityUpgrade,
-      newFiles: remoteFiles,
+      newFiles: [...byKey.values()],
       finalizedAt: nowIso(),
     };
     this.save();

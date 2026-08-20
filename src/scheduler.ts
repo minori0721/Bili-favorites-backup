@@ -638,7 +638,7 @@ export class SyncScheduler {
             mediaId: target.mediaId,
             priority: 30,
             maxAttempts: this.configStore.get().maxRetries + 1,
-            payload: this.serializeQualityUpgrade(task.control, target, [target]),
+            payload: this.serializeQualityUpgrade(task.control, target, task.control.targets),
           });
         }
         this.dispatchPersistentJobs();
@@ -698,10 +698,10 @@ export class SyncScheduler {
       if (isQualityUploadPhaseTask(task)) {
         if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
         if (task instanceof QualityUpgradeUploadReplaceTask) {
-          this.jobStore.enqueue({ kind: "quality_replace", dedupeKey: `quality-replace:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 30, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control, task.control.target, [task.control.target]) });
+          this.jobStore.enqueue({ kind: "quality_replace", dedupeKey: `quality-replace:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 30, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control, task.control.target, task.control.targets) });
           this.syncQualityUpgradeControl(task, "pending");
         } else if (task instanceof QualityUpgradeReplaceTask) {
-          this.jobStore.enqueue({ kind: "quality_cleanup", dedupeKey: `quality-cleanup:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 60, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control, task.control.target, [task.control.target]) });
+          this.jobStore.enqueue({ kind: "quality_cleanup", dedupeKey: `quality-cleanup:${task.control.target.userId}:${task.control.target.mediaId}:${task.bvid}`, bvid: task.bvid, userId: task.control.target.userId, mediaId: task.control.target.mediaId, priority: 60, maxAttempts: this.configStore.get().maxRetries + 1, payload: this.serializeQualityUpgrade(task.control, task.control.target, task.control.targets) });
           this.syncQualityUpgradeControl(task, "pending");
         } else {
           this.syncQualityUpgradeControl(task, "completed");
@@ -1087,6 +1087,32 @@ export class SyncScheduler {
     return task.targets.length > 1 ? `${label} · ${task.targets.length}个目标` : label;
   }
 
+  private qualityUpgradeProof(bvid: string, target: QualityUpgradeTarget, artifactKey?: string) {
+    const proof = this.stateManager.getQualityUpgradeOperation(target.userId, target.mediaId, bvid);
+    if (!proof) return null;
+    if (artifactKey && proof.artifactKey && proof.artifactKey !== artifactKey) return null;
+    return proof;
+  }
+
+  private mergeQualityProofFiles(
+    payloadFiles: unknown,
+    relationFiles: RemoteFileRecord[] | undefined,
+  ) {
+    if (relationFiles && relationFiles.length > 0) return relationFiles.map((file) => ({ ...file }));
+    const merged = new Map<string, RemoteFileRecord>();
+    const add = (value: unknown) => {
+      if (!Array.isArray(value)) return;
+      for (const item of value) {
+        if (!item || typeof item !== "object") continue;
+        const file = item as RemoteFileRecord;
+        const key = String(file.name || file.path || "");
+        if (key) merged.set(key, { ...file });
+      }
+    };
+    add(payloadFiles);
+    return [...merged.values()];
+  }
+
   private serializeQualityUpgrade(
     task: QualityUpgradeTask,
     target: QualityUpgradeTarget = task.target,
@@ -1119,27 +1145,60 @@ export class SyncScheduler {
 
   private buildQualityUpgradeTask(job: any) {
     const payload = job.payload || {};
-    const targets = this.qualityTargetsFromPayload(payload);
+    const bvid = String(payload.bvid || job.bvid || "");
+    const artifactKey = String(payload.artifactKey || "");
+    const fallbackProof = job.userId && Number.isInteger(Number(job.mediaId))
+      ? this.stateManager.getQualityUpgradeOperation(String(job.userId), Number(job.mediaId), bvid)
+      : null;
+    const fallbackTarget = fallbackProof ? [{
+      userId: String(job.userId),
+      mediaId: Number(job.mediaId),
+      folderTitle: String(payload.folderTitle || ""),
+      remotePath: fallbackProof.oldRemotePath,
+      oldFiles: fallbackProof.oldFiles,
+    }] : [];
+    const rawTargets = this.qualityTargetsFromPayload(payload, fallbackTarget);
+    const targets = rawTargets.map((candidate) => {
+      const proof = this.qualityUpgradeProof(bvid, candidate, artifactKey || undefined);
+      if (!proof) return candidate;
+      return {
+        ...candidate,
+        remotePath: proof.oldRemotePath || candidate.remotePath,
+        oldFiles: proof.oldFiles.length > 0 ? proof.oldFiles : candidate.oldFiles,
+      };
+    });
     const target = targets[0];
     const user = this.userStore.getById(String(payload.downloadUserId || payload.userId || job.userId || target?.userId || ""));
     const needsDownloadCredentials = job.kind === "quality_download";
     if (!target || (needsDownloadCredentials && !this.isUserSyncEligible(user))) return null;
     const qualityProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
-    const artifactKey = String(payload.artifactKey || buildQualityArtifactKey(String(payload.bvid || job.bvid || ""), qualityProfile));
+    const resolvedArtifactKey = artifactKey || buildQualityArtifactKey(bvid, qualityProfile);
     const taskConfig = applyQualityArtifactProfile(this.configStore.get(), qualityProfile);
-    const task = new QualityUpgradeTask(String(payload.bvid || job.bvid || ""), user ? downloadCredentialsForUser(user) : {
+    const primaryProof = this.qualityUpgradeProof(bvid, target, resolvedArtifactKey);
+    const stageRemotePath = primaryProof?.stageRemotePath || payload.stageRemotePath;
+    const backupRemotePath = primaryProof?.backupRemotePath || payload.backupRemotePath;
+    const persistedBackupFiles = this.mergeQualityProofFiles(payload.backupFiles, primaryProof?.backupFiles);
+    const persistedFinalFiles = this.mergeQualityProofFiles(payload.finalFiles, primaryProof?.newFiles);
+    const persistedUploadResult = payload.uploadResult && typeof payload.uploadResult === "object"
+      ? {
+          ...payload.uploadResult,
+          files: this.mergeQualityProofFiles((payload.uploadResult as any).files, undefined),
+        }
+      : undefined;
+    const task = new QualityUpgradeTask(bvid, user ? downloadCredentialsForUser(user) : {
       SESSDATA: "",
       bili_jct: "",
       DedeUserID: "",
-    }, taskConfig, target, { targets, artifactKey, qualityProfile });
+    }, taskConfig, target, { targets, artifactKey: resolvedArtifactKey, qualityProfile });
     task.runId = payload.runId;
     task.downloadDir = payload.downloadDir;
     task.outputFiles = Array.isArray(payload.outputFiles) ? payload.outputFiles : [];
-    task.uploadResult = payload.uploadResult;
-    task.backupFiles = Array.isArray(payload.backupFiles) ? payload.backupFiles : [];
-    task.finalFiles = Array.isArray(payload.finalFiles) ? payload.finalFiles : [];
-    task.stageRemotePath = payload.stageRemotePath;
-    task.backupRemotePath = payload.backupRemotePath;
+    task.uploadResult = persistedUploadResult as any;
+    task.backupFiles = persistedBackupFiles;
+    task.finalFiles = persistedFinalFiles;
+    task.stageRemotePath = stageRemotePath;
+    task.backupRemotePath = backupRemotePath;
+    if (!task.runId && (stageRemotePath || backupRemotePath)) task.runId = `resume-${resolvedArtifactKey.slice(0, 24)}`;
     task.videoTitle = String(payload.videoTitle || task.bvid);
     task.folderTitle = targets.length > 1 ? `${targets.length}个目标` : String(payload.folderTitle || target.folderTitle || "");
     task.downloadUserId = user?.id || String(payload.downloadUserId || payload.userId || "");
@@ -1151,20 +1210,28 @@ export class SyncScheduler {
     task.onStartUpgrade = () => {
       logManager.push({ timestamp: new Date().toISOString(), type: "download", level: "info", summary: `开始重调画质 ${task.bvid}: ${task.videoTitle}（${task.targets.length}个目标）`, raw: `[QualityUpgrade] start artifact=${task.artifactKey} targets=${task.targets.length} bvid=${task.bvid}`, bvid: task.bvid, simpleVisible: true });
     };
-    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => this.stateManager.markQualityUpgradeReplacing(task.bvid, target.userId, target.mediaId, {
-      artifactKey: task.artifactKey,
-      stageRemotePath,
-      backupRemotePath,
-      oldRemotePath: target.remotePath,
-      oldFiles: target.oldFiles,
-    });
+    task.onReplacing = (_task, stageRemotePath, backupRemotePath) => {
+      const accepted = this.stateManager.markQualityUpgradeReplacing(task.bvid, target.userId, target.mediaId, {
+        artifactKey: task.artifactKey,
+        stageRemotePath,
+        backupRemotePath,
+        oldRemotePath: target.remotePath,
+        oldFiles: target.oldFiles,
+      });
+      if (!accepted) {
+        throw Object.assign(new Error("画质升级存在另一份未完成的远端替换证明"), {
+          code: "QUALITY_UPGRADE_OPERATION_CONFLICT",
+          statusCode: 409,
+        });
+      }
+    };
     task.onBackupFileMoved = (_task, file) => {
       this.stateManager.recordQualityUpgradeBackupFile(task.bvid, target.userId, target.mediaId, file);
-      if (task.persistentJobId) this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task, target, [target]));
+      if (task.persistentJobId) this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task, target, task.targets));
     };
     task.onFinalFileMoved = (_task, file) => {
       this.stateManager.recordQualityUpgradeFinalFile(task.bvid, target.userId, target.mediaId, file);
-      if (task.persistentJobId) this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task, target, [target]));
+      if (task.persistentJobId) this.jobStore.updatePayload(task.persistentJobId, this.serializeQualityUpgrade(task, target, task.targets));
     };
     task.onUploaded = (_task, result) => this.stateManager.finalizeQualityUpgradeRemoteFiles(task.bvid, target.userId, target.mediaId, result.remotePath, result.files);
     task.onCompletedUpgrade = () => {

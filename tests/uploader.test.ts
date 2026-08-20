@@ -30,6 +30,73 @@ test("upload MIME detection covers media subtitles images and JSON", () => {
   assert.equal(detectUploadMimeType("unknown.bin"), "application/octet-stream");
 });
 
+test("uploads reject symlink files and symlinked parent directories", async (t) => {
+  const runtime = await createTestDir("upload-symlink-protection");
+  try {
+    const realDir = path.join(runtime, "real");
+    const realFile = path.join(realDir, "video.mp4");
+    await fs.promises.mkdir(realDir, { recursive: true });
+    await fs.promises.writeFile(realFile, "safe-content");
+    try {
+      await fs.promises.symlink(realFile, path.join(runtime, "alias.mp4"), "file");
+      await fs.promises.symlink(realDir, path.join(runtime, "linked"), "junction");
+    } catch {
+      t.skip("当前Windows环境不允许创建测试软链接或junction");
+      return;
+    }
+    for (const relativePath of ["alias.mp4", "linked/video.mp4"]) {
+      await assert.rejects(
+        () => uploadWithAList(runtime, "/target", testConfig(), {
+          cleanupLocal: false,
+          files: [relativePath],
+          log: noopLog,
+        }),
+        (error: any) => {
+          assert.equal(error.uploadFailure?.status, 422);
+          return true;
+        },
+      );
+    }
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("upload rechecks the local file after preflight before opening the stream", async () => {
+  const runtime = await createTestDir("upload-local-replacement");
+  const server = await startWebDavServer();
+  try {
+    const filePath = path.join(runtime, "video.mp4");
+    await fs.promises.writeFile(filePath, "original-size");
+    let replaced = false;
+    await assert.rejects(
+      () => uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["video.mp4"],
+        verificationDelaysMs: [0],
+        uploadStartLimiter: {
+          wait: async () => {
+            if (!replaced) {
+              replaced = true;
+              await fs.promises.writeFile(filePath, "replacement-with-different-size");
+            }
+          },
+        },
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.equal(error.uploadFailure?.status, 422);
+        assert.match(error.message, /本地上传文件在校验后发生变化/);
+        return true;
+      },
+    );
+    assert.equal(server.puts.length, 0);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
 function xmlEscape(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&apos;", '"': "&quot;" }[char]!));
 }

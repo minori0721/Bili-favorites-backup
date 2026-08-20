@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { WebDAVClient } from "webdav";
 import type { AppConfig } from "./config.js";
+import { joinRemotePath, normalizeRemotePath, remoteDirname } from "./remote-path.js";
 
 export type RemoteCapability = "supported" | "unsupported" | "unknown";
 
@@ -62,23 +63,6 @@ export class RemoteReplacementError extends Error {
   }
 }
 
-function normalizeRemotePath(value: string) {
-  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "");
-  return normalized.startsWith("/") ? normalized || "/" : `/${normalized}`;
-}
-
-function joinRemotePath(root: string, child: string) {
-  const normalizedRoot = normalizeRemotePath(root);
-  const normalizedChild = String(child || "").replace(/\\/g, "/").replace(/^\/+/, "");
-  return normalizedChild ? `${normalizedRoot.replace(/\/$/g, "")}/${normalizedChild}` : normalizedRoot;
-}
-
-function remoteDirname(value: string) {
-  const normalized = normalizeRemotePath(value);
-  const index = normalized.lastIndexOf("/");
-  return index <= 0 ? "/" : normalized.slice(0, index);
-}
-
 function statusCode(error: any) {
   return Number(error?.statusCode || error?.response?.status || error?.status || 0) || undefined;
 }
@@ -114,7 +98,7 @@ async function readRemote(client: RemoteOperationsClient, target: string) {
 }
 
 async function ensureRemoteDirectory(client: RemoteOperationsClient, remotePath: string) {
-  const segments = normalizeRemotePath(remotePath).split("/").filter(Boolean);
+  const segments = normalizeRemotePath(remotePath, { allowTrailingSlash: true }).split("/").filter(Boolean);
   let current = "";
   for (const segment of segments) {
     current += `/${segment}`;
@@ -201,7 +185,7 @@ export async function probeRemoteCapabilities(
   client: RemoteOperationsClient,
   rootValue: string
 ): Promise<RemoteOperationCapabilities> {
-  const root = normalizeRemotePath(rootValue || "/");
+  const root = normalizeRemotePath(rootValue || "/", { allowTrailingSlash: true });
   const probeRoot = joinRemotePath(root, `._bfb-replace-probe-${crypto.randomUUID()}`);
   const body = Buffer.from("bfb-remote-replacement-probe\n", "utf8");
   const copySource = joinRemotePath(probeRoot, "copy-source.bin");
@@ -291,8 +275,27 @@ async function replaceWithCapabilities(
     if (!attempt.targetPreviouslyVerified) {
       throw replacementError("远端替换目标已存在，但缺少本次操作的持久验证证明", source, target, state, "REMOTE_TARGET_UNPROVEN", 409);
     }
-    if (capabilities.move === "supported") {
-      throw replacementError("MOVE替换目标已存在，未覆盖远端文件", source, target, state, "REMOTE_TARGET_CONFLICT", 409);
+    if (capabilities.move === "supported" && state.sourceState.exists) {
+      try {
+        await client.deleteFile(source);
+      } catch (error) {
+        const observed = await inspectReplacementState(client, source, target, expectedSize);
+        if (observed.sourceState.exists) {
+          throw replacementError(
+            `已验证目标存在，但清理重复源文件失败: ${String((error as any)?.message || error)}`,
+            source,
+            target,
+            observed,
+            "REMOTE_VERIFIED_SOURCE_CLEANUP_FAILED",
+            statusCode(error)
+          );
+        }
+      }
+      const observed = await inspectReplacementState(client, source, target, expectedSize);
+      if (observed.sourceState.exists || !observed.targetMatches) {
+        throw replacementError("已验证目标存在，但源文件仍可见，未继续替换", source, target, observed, "REMOTE_VERIFIED_SOURCE_STILL_VISIBLE", 409);
+      }
+      return;
     }
   }
 
@@ -354,6 +357,14 @@ async function replaceWithCapabilities(
           statusCode(error)
         );
       }
+      throw replacementError(
+        "远端COPY响应未确认，但目标出现同大小文件；为避免误删，已保留源文件和目标文件",
+        source,
+        target,
+        observed,
+        "REMOTE_COPY_RESULT_UNCERTAIN",
+        409
+      );
     }
   }
 

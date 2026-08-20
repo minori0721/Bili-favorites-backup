@@ -100,6 +100,53 @@ test("path migration validates mount boundaries and nesting", () => {
   assert.throws(() => validateArchiveMigrationRoots("relative", "/drive/new"), /绝对路径/);
 });
 
+test("restarting a scanning path migration clears stale preview items before rescan", () => {
+  const db = new StateDatabase(":memory:");
+  db.createPathMigration({
+    id: "migration-stale-scan",
+    sourceRoot: "/drive/old",
+    destinationRoot: "/drive/new",
+    alistIdentityHash: "hash",
+    status: "scanning",
+    sourceManifestHash: "stale-hash",
+    entryCount: 8,
+    fileCount: 5,
+    directoryCount: 3,
+    totalBytes: 80,
+    reusableCount: 2,
+    copiedCount: 1,
+    verifiedCount: 3,
+    conflictCount: 1,
+    extraCount: 1,
+    lastError: "stale preview",
+  });
+  db.insertPathMigrationItems([{
+    migrationId: "migration-stale-scan",
+    relativePath: "old.mp4",
+    itemType: "file",
+    expectedSize: 10,
+    sourcePath: "/drive/old/old.mp4",
+    destinationPath: "/drive/new/old.mp4",
+    status: "conflict",
+    attempts: 2,
+    nextAttemptAt: 100,
+    createdAt: 1,
+    updatedAt: 2,
+  }]);
+  try {
+    assert.equal(db.resetPathMigrationPreview("migration-stale-scan"), true);
+    const record = db.getPathMigration("migration-stale-scan")!;
+    assert.equal(record.sourceManifestHash, undefined);
+    assert.equal(record.entryCount, 0);
+    assert.equal(record.totalBytes, 0);
+    assert.equal(record.lastError, undefined);
+    assert.equal(db.db.prepare("SELECT COUNT(*) AS count FROM path_migration_items WHERE migration_id=?").get("migration-stale-scan")!.count, 0);
+    assert.equal(db.resetPathMigrationPreview("migration-stale-scan"), true);
+  } finally {
+    db.close();
+  }
+});
+
 test("path migration capability probe tests COPY and MOVE independently", async () => {
   const dav = new FakeDav();
   const capabilities = await probePathMigrationDavCapabilities(dav, "/drive/old");

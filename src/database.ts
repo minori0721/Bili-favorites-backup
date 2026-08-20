@@ -1107,6 +1107,31 @@ export class StateDatabase {
     return this.getPathMigration(id);
   }
 
+  resetPathMigrationPreview(id: string) {
+    const transaction = this.db.transaction(() => {
+      const changed = this.db.prepare(`
+        UPDATE path_migrations SET
+          source_manifest_hash=NULL,
+          entry_count=0,
+          file_count=0,
+          directory_count=0,
+          total_bytes=0,
+          reusable_count=0,
+          copied_count=0,
+          verified_count=0,
+          conflict_count=0,
+          extra_count=0,
+          last_error=NULL,
+          updated_at=?
+        WHERE id=? AND status='scanning'
+      `).run(Date.now(), id).changes;
+      if (changed !== 1) return false;
+      this.db.prepare("DELETE FROM path_migration_items WHERE migration_id=?").run(id);
+      return true;
+    });
+    return transaction();
+  }
+
   claimPathMigrationCleanup(id: string) {
     return this.db.prepare(`
       UPDATE path_migrations
