@@ -364,6 +364,33 @@ test("projection keeps normal and deleted visibility independent across shared s
   }
 });
 
+test("failed or running archive cleanup remains visible in the normal library", () => {
+  const database = fixture();
+  try {
+    database.db.prepare(`
+      INSERT INTO archive_deletions(
+        id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
+        file_count,total_bytes,created_at,updated_at
+      ) VALUES('projection-failed','source','u1',10,'BVSHARED','failed','test','/archive',1,1001,?,?)
+    `).run(now, now);
+    database.db.prepare(`
+      INSERT INTO archive_deleted_sources(
+        user_id,media_id,bvid,deletion_id,status,file_count,total_bytes,deleted_at
+      ) VALUES('u1',10,'BVSHARED','projection-failed','failed',1,1001,?)
+    `).run(now);
+    database.refreshArchiveLibraryProjection(["BVSHARED"]);
+
+    const normal = queryArchiveLibraryItems(database, users(), { scope: "global" });
+    const item = normal.items.find((entry) => entry.bvid === "BVSHARED")!;
+    assert.equal(item.statusGroup, "playable");
+    assert.equal(item.memberships.length, 2);
+    assert.equal(item.memberships.find((membership) => membership.userId === "u1")?.deletionStatus, "failed");
+    assert.equal(queryArchiveLibraryItems(database, users(), { scope: "global", filter: "deleted" }).items.some((entry) => entry.bvid === "BVSHARED"), false);
+  } finally {
+    database.close();
+  }
+});
+
 test("historical folder pagination preserves every row without unsafe integer cursor loss", () => {
   const database = new StateDatabase(":memory:");
   try {

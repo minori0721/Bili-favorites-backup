@@ -87,3 +87,22 @@ npm --prefix docs audit --omit=dev
 - `npm run test:ui` 已完整结束：45项中27项通过、18项按环境条件跳过，0失败、0挂起；覆盖桌面 `1280×720`、手机竖屏 `390×844` 和横屏 `844×390`。
 - 文档站 `npm ci` 与 `npm --prefix docs run docs:build` 均通过；根项目和文档站生产依赖审计结果未变化。
 - UI测试只连接本地隔离假API，未访问真实B站、AList/OpenList、Aliyun或删除服务；测试产物保留在本地未跟踪目录，不属于发布内容。
+
+### 本轮远端存储可靠性与通用 WebDAV 收口（2026-08-21）
+
+- BFB继续只使用标准 WebDAV；没有接入 AList/OpenList 私有 REST API，也没有新增配置字段、Token、Digest 或 OAuth 认证。
+- 远端文件状态改为显式三态。`404/ENOENT/ENOTDIR`或完整目录列表无匹配才是缺失；`400/405/501`、权限、冲突、限流、5xx、网络中断和异常目录响应进入未知/不支持路径，禁止把未知状态变成补传、删证明或删除成功。
+- 目录列表缓存按父目录失效，普通成功上传不增加固定HEAD/PROPFIND；真实 COPY/MOVE、扩展PUT头的结果才更新进程内能力画像，画像不落盘、不记录凭据、最多保留32个后端且30分钟过期。
+- 来源重新收藏会原子终止对应删除操作；账号删除的SQLite事务不再派发内存任务，提交后才唤醒调度器；路径迁移导入在替换SQLite前等待预览/worker空闲并持有生命周期屏障。路径迁移目录级 `DELETE` 按既定边界未改动。
+- 播放 `HEAD 405/501` 仅使用一次 `GET Range: bytes=0-0` 回退；兼容文件名只在原名确认无法安全落盘后生成稳定别名，不重命名旧归档、不计算视频哈希。
+
+本轮专项验证新增覆盖：400/405未知状态与Retry-After、上传后缓存失效、COPY能力记忆、来源重新出现、删除无目录DELETE、账号事务提交后派发、路径迁移取消/导入屏障、HEAD Range回退和兼容文件名边界。最终测试结果以本次运行记录为准；服务器、真实AList/OpenList文件和浏览器插件均未使用。
+
+### 本轮最终验收（2026-08-21）
+
+- `npm ci`：通过；根项目安装提示现有生产依赖风险，未执行自动修复。
+- `npm test`：`388` 项，`386` 通过，`2` 项按环境跳过（缺少 `aria2c`、Windows 不允许创建软链接或 junction），`0` 失败、`0` 挂起。
+- `npm run test:ui`：`45` 项，`27` 通过，`18` 按环境条件跳过，`0` 失败；覆盖桌面 `1280×720`、手机竖屏 `390×844` 和横屏 `844×390`。仅使用本地隔离假API和CLI Playwright，不调用浏览器插件。
+- `npm run build`、`npm --prefix docs ci`、`npm --prefix docs run docs:build`、`git diff --check`：通过。
+- `npm audit --omit=dev`：根项目 `11` 项（2低、3中、6高，部分暂无修复）；`npm --prefix docs audit --omit=dev`：`0` 项。本轮没有修改依赖版本或执行破坏性审计修复。
+- 本轮未提交、未push、未更新 Aliyun，未访问真实 AList/OpenList 文件；应用仍保持 `2.5.0`、SQLite schema `10`、状态 schema `13`、迁移包 schema `3`。

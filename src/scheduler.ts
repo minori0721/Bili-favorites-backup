@@ -51,7 +51,7 @@ import {
   nextAuthRefreshFailureState,
 } from "./auth-refresh.js";
 import { TransferSessionStore } from "./transfer-session.js";
-import { classifyRemoteFailure, type RemoteFailureCategory } from "./remote-file-resolver.js";
+import { classifyRemoteFailure, type RemoteFailureCategory, type RemoteFailureInfo } from "./remote-file-resolver.js";
 import {
   PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES,
   PersistentJobStore,
@@ -252,6 +252,7 @@ export class SyncScheduler {
   private timer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
   private running = false;
+  private readonly activeSyncUsers = new Set<string>();
   private acceptingJobs = true;
   private configStore: ConfigStore;
   private userStore: UserStore;
@@ -2511,14 +2512,14 @@ export class SyncScheduler {
     return uploadTask;
   }
 
-  private queueUploadWork(item: RecoveryUploadItem) {
+  private queueUploadWork(item: RecoveryUploadItem, dispatch = true) {
     const mediaId = Number(item.mediaId);
     if (item.userId && Number.isInteger(mediaId)
       && this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(item.userId, mediaId, item.bvid)) {
       return false;
     }
     this.jobStore.enqueue(this.buildPersistentUploadJob(item));
-    this.dispatchPersistentJobs();
+    if (dispatch) this.dispatchPersistentJobs();
     return true;
   }
 
@@ -2855,6 +2856,7 @@ export class SyncScheduler {
           }
           const ready = candidateResults.length === payload.conflictCandidate.files.length
             && candidateResults.every((result) => result.status === "verified");
+          const candidateHasUnknown = candidateResults.some((result) => result.status === "unknown");
           const assessment: RecoveryAssessment = ready
             ? {
               kind: "conflict_candidate_ready",
@@ -2867,8 +2869,12 @@ export class SyncScheduler {
               kind: "manual_review",
               checkedAt: this.now(),
               localStatus: this.inspectRecoveryLocalFiles(job).status,
-              remoteStatus: candidateResults.some((result) => result.status === "mismatch") ? "mismatch" : "missing",
-              summary: "冲突候选的远端状态已经变化，系统没有切换当前归档，请重新检查存储后端。",
+              remoteStatus: candidateHasUnknown
+                ? "unknown"
+                : (candidateResults.some((result) => result.status === "mismatch") ? "mismatch" : "missing"),
+              summary: candidateHasUnknown
+                ? "暂时无法确认冲突候选的远端状态，系统没有切换当前归档；稍后会自动复核。"
+                : "冲突候选的远端状态已经变化，系统没有切换当前归档，请重新检查存储后端。",
             };
           this.updateRecoveryAssessment(job.id, assessment);
           return { changed: true, assessment };
@@ -2888,6 +2894,17 @@ export class SyncScheduler {
           }
           if (oldResults.length === existingProof.files.length && oldResults.every((result) => result.status === "verified")) {
             return { changed: this.finalizeRetainedArchiveRecovery(job, existingProof), resolved: true };
+          }
+          if (oldResults.some((result) => result.status === "unknown")) {
+            const assessment: RecoveryAssessment = {
+              kind: "manual_review",
+              checkedAt: this.now(),
+              localStatus: this.inspectRecoveryLocalFiles(job).status,
+              remoteStatus: "unknown",
+              summary: "暂时无法确认现有归档的远端状态，系统没有恢复证明或重新上传。",
+            };
+            this.updateRecoveryAssessment(job.id, assessment);
+            return { changed: true, assessment };
           }
         } catch (error) {
           const assessment = this.buildRemoteRecoveryAssessment("unknown", error, "旧归档");
@@ -2911,7 +2928,7 @@ export class SyncScheduler {
         return { changed: true, assessment };
       }
 
-      const results: Array<{ file: typeof local.files[number]; status: "verified" | "missing" | "mismatch"; remoteSize?: number }> = [];
+      const results: Array<{ file: typeof local.files[number]; status: "verified" | "missing" | "mismatch" | "unknown"; remoteSize?: number; failure?: RemoteFailureInfo }> = [];
       try {
         for (const file of local.files) {
           const result = await this.remoteFileInspector(this.configStore.get(), file.finalPath, file.expectedSize);
@@ -2933,6 +2950,20 @@ export class SyncScheduler {
           localStatus: local.status,
           remoteStatus: "verified",
           summary: "远端文件与本地文件同大小，但缺少本次Session的PUT证明，系统没有把它标记为本次上传成功。",
+        };
+        this.updateRecoveryAssessment(job.id, assessment);
+        return { changed: true, assessment };
+      }
+
+      const unknownCount = results.filter((item) => item.status === "unknown").length;
+      if (unknownCount > 0) {
+        const assessment: RecoveryAssessment = {
+          kind: "manual_review",
+          checkedAt: this.now(),
+          localStatus: local.status,
+          remoteStatus: "unknown",
+          fileName: path.basename(results.find((item) => item.status === "unknown")?.file.name || ""),
+          summary: "暂时无法确认部分远端文件状态，系统没有重复上传、覆盖或删除；恢复检查会稍后重试。",
         };
         this.updateRecoveryAssessment(job.id, assessment);
         return { changed: true, assessment };
@@ -3625,12 +3656,16 @@ export class SyncScheduler {
     return [...targets.values()];
   }
 
-  private queueCompletedRetirementUpload(bvid: string, local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>, targets: UploadTarget[]) {
-    if (targets.length === 0) return 0;
+  private buildCompletedRetirementUploads(
+    bvid: string,
+    local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>,
+    targets: UploadTarget[],
+  ): RecoveryUploadItem[] {
+    if (targets.length === 0) return [];
     const meta = this.stateManager.getVideoMeta(bvid);
-    this.stateManager.markDownloaded(bvid, local.localDir, targets);
+    const items: RecoveryUploadItem[] = [];
     for (const target of targets) {
-      this.queueUploadWork({
+      items.push({
         bvid,
         localDir: local.localDir,
         remotePath: target.remotePath,
@@ -3646,7 +3681,7 @@ export class SyncScheduler {
         priority: true,
       });
       for (const history of historySessionGroups(local.localDir)) {
-        this.queueUploadWork({
+        items.push({
           bvid,
           localDir: local.localDir,
           remotePath: joinRemotePath(target.remotePath, "_history", this.historySnapshotSegment(history.snapshotAt)),
@@ -3663,7 +3698,31 @@ export class SyncScheduler {
         });
       }
     }
-    return targets.length;
+    return items;
+  }
+
+  private persistCompletedRetirementUploadJobs(
+    bvid: string,
+    local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>,
+    targets: UploadTarget[],
+  ) {
+    let queued = 0;
+    for (const item of this.buildCompletedRetirementUploads(bvid, local, targets)) {
+      if (this.queueUploadWork(item, false)) queued += 1;
+    }
+    return queued;
+  }
+
+  private queueCompletedRetirementUpload(
+    bvid: string,
+    local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>,
+    targets: UploadTarget[],
+  ) {
+    if (targets.length === 0) return 0;
+    this.stateManager.markDownloaded(bvid, local.localDir, targets);
+    const queued = this.persistCompletedRetirementUploadJobs(bvid, local, targets);
+    this.dispatchPersistentJobs();
+    return queued;
   }
 
   private findCompletedQualitySession(job: any) {
@@ -3971,7 +4030,7 @@ export class SyncScheduler {
     while (true) {
       const runningTransfer = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
         .some((queue) => queue.getTasks().some((task) => task.status === "running" && this.archiveTaskReferencesUser(task, user.id)));
-      if (!this.running && !runningTransfer) break;
+      if (!this.activeSyncUsers.has(user.id) && !runningTransfer) break;
       if (Date.now() >= deadline) {
         throw Object.assign(new Error("账号仍有正在执行的同步或传输任务，请稍后重新确认清理"), { statusCode: 409 });
       }
@@ -3986,15 +4045,19 @@ export class SyncScheduler {
     }
     const runningTransfer = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
       .some((queue) => queue.getTasks().some((task) => task.status === "running" && this.archiveTaskReferencesUser(task, userId)));
-    if (this.running || runningTransfer) {
+    if (this.activeSyncUsers.has(userId) || runningTransfer) {
       throw Object.assign(new Error("账号仍有正在执行的同步或传输任务"), { statusCode: 409 });
     }
 
     const database = this.stateManager.getDatabase();
+    const postCommitRetirements: Array<{
+      bvid: string;
+      local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>;
+      targets: UploadTarget[];
+    }> = [];
     try {
-      return database.db.transaction(() => {
-        const removedQueuedTasks = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
-          .reduce((count, queue) => count + queue.removePendingTasks((task) => this.archiveTaskReferencesUser(task, userId)).length, 0);
+      let removedQueuedTasks = 0;
+      const result = database.db.transaction(() => {
         const relationBvids = new Set(database.listRelationsForUser(userId).map((relation) => relation.bvid));
         const downloadJobs = this.jobStore.list(["download", "quality_download"], 100_000);
         let reassignedJobs = 0;
@@ -4061,7 +4124,8 @@ export class SyncScheduler {
           if (local) {
             this.jobStore.complete(job.id);
             canceledJobs += 1;
-            directUploadTargets += this.queueCompletedRetirementUpload(String(job.bvid), local, targets);
+            directUploadTargets += this.persistCompletedRetirementUploadJobs(String(job.bvid), local, targets);
+            if (targets.length > 0) postCommitRetirements.push({ bvid: String(job.bvid), local, targets });
             continue;
           }
           if (targets.length === 0) {
@@ -4102,8 +4166,22 @@ export class SyncScheduler {
         }
         const detachedRelations = this.stateManager.detachUserRelations(userId);
         commit();
-        return { canceledJobs, removedQueuedTasks, reassignedJobs, directUploadTargets, detachedRelations };
+        return { canceledJobs, reassignedJobs, directUploadTargets, detachedRelations };
       })();
+      // The maintenance lock prevents these pending in-memory tasks from
+      // starting while the SQLite transaction is being committed. Removing
+      // them afterwards keeps a failed transaction fully reversible.
+      removedQueuedTasks = [this.downloadQueue, this.uploadQueue, this.verificationQueue]
+        .reduce((count, queue) => count + queue.removePendingTasks((task) => this.archiveTaskReferencesUser(task, userId)).length, 0);
+      for (const retirement of postCommitRetirements) {
+        try {
+          this.stateManager.markDownloaded(retirement.bvid, retirement.local.localDir, retirement.targets);
+        } catch (error) {
+          console.warn(`[Scheduler] Failed to refresh local retirement state for ${retirement.bvid}: ${sanitizeUploadText((error as any)?.message || error)}`);
+        }
+      }
+      this.dispatchPersistentJobs();
+      return { ...result, removedQueuedTasks };
     } catch (error) {
       this.stateManager.reload();
       throw error;
@@ -4941,37 +5019,42 @@ export class SyncScheduler {
     const users = this.userStore.list().filter((user) => this.isUserSyncEligible(user));
     this.updateSchedulerProgress({ detail: `正在检查 ${users.length} 个启用账号。` });
     for (const user of users) {
-      const cooldown = this.stateManager.getUserCooldown(user.id);
-      if (cooldown) {
-        console.warn(`[Scheduler] User ${user.name} is cooling down until ${new Date(cooldown.until).toISOString()}: ${cooldown.reason}`);
-        continue;
-      }
-
-      for (const folder of user.favorites) {
-        try {
-          this.updateSchedulerProgress({
-            userName: user.name,
-            folderTitle: folder.title,
-            mediaId: folder.mediaId,
-            detail: forceFullFavoriteScan ? "准备全量扫描收藏夹。" : "准备同步收藏夹。",
-          });
-          if (forceFullFavoriteScan) {
-            await this.scanAllPages(user, folder.mediaId, folder.title);
-          } else {
-            const hotLastPage = await this.scanHotPages(user, folder.mediaId, folder.title, manual);
-            await this.scanHistoryPages(user, folder.mediaId, folder.title, manual, hotLastPage);
-          }
-        } catch (error: any) {
-          if (error instanceof BiliRiskOrLoginError) {
-            this.stateManager.setUserCooldown(user.id, error.message, cooldownMs());
-            console.warn(`[Scheduler] Risk control for user ${user.name}; cooling down.`);
-            break;
-          }
-          console.error(`[Scheduler] Failed to scan favorite: ${safeErrorSummary(error)}`);
+      this.activeSyncUsers.add(user.id);
+      try {
+        const cooldown = this.stateManager.getUserCooldown(user.id);
+        if (cooldown) {
+          console.warn(`[Scheduler] User ${user.name} is cooling down until ${new Date(cooldown.until).toISOString()}: ${cooldown.reason}`);
+          continue;
         }
 
-        const jitter = 2000 + Math.floor(Math.random() * 3000);
-        await delay(jitter);
+        for (const folder of user.favorites) {
+          try {
+            this.updateSchedulerProgress({
+              userName: user.name,
+              folderTitle: folder.title,
+              mediaId: folder.mediaId,
+              detail: forceFullFavoriteScan ? "准备全量扫描收藏夹。" : "准备同步收藏夹。",
+            });
+            if (forceFullFavoriteScan) {
+              await this.scanAllPages(user, folder.mediaId, folder.title);
+            } else {
+              const hotLastPage = await this.scanHotPages(user, folder.mediaId, folder.title, manual);
+              await this.scanHistoryPages(user, folder.mediaId, folder.title, manual, hotLastPage);
+            }
+          } catch (error: any) {
+            if (error instanceof BiliRiskOrLoginError) {
+              this.stateManager.setUserCooldown(user.id, error.message, cooldownMs());
+              console.warn(`[Scheduler] Risk control for user ${user.name}; cooling down.`);
+              break;
+            }
+            console.error(`[Scheduler] Failed to scan favorite: ${safeErrorSummary(error)}`);
+          }
+
+          const jitter = 2000 + Math.floor(Math.random() * 3000);
+          await delay(jitter);
+        }
+      } finally {
+        this.activeSyncUsers.delete(user.id);
       }
     }
   }
@@ -5201,7 +5284,9 @@ export class SyncScheduler {
       lastHistoryScanAt: scanStartedAt,
       total: lastTotal,
     });
-    this.stateManager.markMissingFavoritesInactive(user.id, mediaId, seenBvids);
+    if (!this.stateManager.getDatabase().isArchiveFolderDeletionActive(user.id, mediaId)) {
+      this.stateManager.markMissingFavoritesInactive(user.id, mediaId, seenBvids);
+    }
   }
 
   private async scanHotPages(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean) {
@@ -5339,6 +5424,9 @@ export class SyncScheduler {
   ) {
     let newItems = 0;
     for (const [indexInPage, rawItem] of items.entries()) {
+      if (this.stateManager.getDatabase().isArchiveSourceDeletionActive(user.id, mediaId, rawItem.bvid)) {
+        continue;
+      }
       const item = await this.resolveSelfVisibleItemForSync(user, rawItem);
       seenBvids?.add(item.bvid);
       const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
@@ -5628,6 +5716,12 @@ export class SyncScheduler {
           this.cycleContext!.remoteOk += 1;
           return;
         }
+        if (result.unknown.length > 0) {
+          const delayMs = this.computeRemoteVerifyBackoffMs(entry, result.retryAfterMs);
+          this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
+          this.cycleContext!.remoteErrors += 1;
+          return;
+        }
 
         const confirmed = await this.confirmRemoteStillMissing(entry, relation, remoteFiles, resolvedRemotePath);
         if (confirmed.status === "ok") {
@@ -5642,7 +5736,7 @@ export class SyncScheduler {
           return;
         }
         if (confirmed.status === "unknown") {
-          const delayMs = this.computeRemoteVerifyBackoffMs(entry);
+          const delayMs = this.computeRemoteVerifyBackoffMs(entry, confirmed.retryAfterMs);
           this.stateManager.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
           this.cycleContext!.remoteErrors += 1;
           return;
@@ -5836,7 +5930,7 @@ export class SyncScheduler {
   ): Promise<
     | { status: "ok"; remoteFiles: NonNullable<VideoArchiveEntry["remoteFiles"]> }
     | { status: "missing"; missing: string[] }
-    | { status: "unknown" }
+    | { status: "unknown"; retryAfterMs?: number }
   > {
     try {
       const remoteFiles = knownFiles?.length ? knownFiles : await this.resolveRemoteFilesForVerify(entry, relation, resolvedRemotePath);
@@ -5847,6 +5941,9 @@ export class SyncScheduler {
       const result = await verifyRemoteFiles(config, remoteFiles);
       if (result.ok) {
         return { status: "ok", remoteFiles };
+      }
+      if (result.unknown.length > 0) {
+        return { status: "unknown", retryAfterMs: result.retryAfterMs };
       }
       return { status: "missing", missing: result.missing };
     } catch {
@@ -5873,14 +5970,15 @@ export class SyncScheduler {
     await delay(waitMs);
   }
 
-  private computeRemoteVerifyBackoffMs(entry: VideoArchiveEntry) {
+  private computeRemoteVerifyBackoffMs(entry: VideoArchiveEntry, retryAfterMs?: number) {
     const missingCount = Math.max(0, entry.remoteMissingCount || 0);
     const base = 30_000;
     const max = 30 * 60_000;
     const exp = Math.min(6, missingCount);
     const backoff = Math.min(max, base * Math.pow(2, exp));
     const jitter = Math.floor(Math.random() * 3_000);
-    return backoff + jitter;
+    const serverDelay = Number.isFinite(retryAfterMs) ? Math.max(0, Number(retryAfterMs)) : 0;
+    return Math.max(backoff, Math.min(max, serverDelay)) + jitter;
   }
 
   private startLegacyTempCacheRecovery() {

@@ -953,9 +953,14 @@ app.post("/api/path-migration/resume", (_req, res) => {
   res.json({ success: true, data: pathMigration.resume() });
 });
 
-app.post("/api/path-migration/cancel", (_req, res) => {
-  res.json({ success: true, data: pathMigration.cancel() });
-});
+app.post("/api/path-migration/cancel", asyncHandler(async (_req, res) => {
+  const state = pathMigration.cancel();
+  if (!await pathMigration.waitForIdle(30_000)) {
+    res.status(409).json({ success: false, message: "归档路径预览仍未停止，请等待当前请求结束后再导入或重载状态库" });
+    return;
+  }
+  res.json({ success: true, data: state });
+}));
 
 app.post("/api/path-migration/cleanup-old", asyncHandler(async (req, res) => {
   const confirmation = String(req.body?.confirmation || "");
@@ -1977,6 +1982,10 @@ app.post("/api/migration/estimate", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
+  if (pathMigration.isBusy()) {
+    res.status(409).json({ success: false, message: "归档路径任务仍在运行，禁止导入预览包" });
+    return;
+  }
   if (stateManager.getDatabase().getActivePathMigration()) {
     res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
     return;
@@ -1999,6 +2008,10 @@ app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/migration/import", asyncHandler(async (req, res) => {
+  if (pathMigration.isBusy()) {
+    res.status(409).json({ success: false, message: "归档路径任务仍在运行，禁止导入迁移包" });
+    return;
+  }
   if (stateManager.getDatabase().getActivePathMigration()) {
     res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
     return;
@@ -2020,15 +2033,27 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
     if (!backfillStopped || !coverQueueIdle) {
       throw Object.assign(new Error("封面任务未能在安全期限内停止，请稍后重试导入"), { statusCode: 409 });
     }
-    result = await scheduler.withCleanupLock(async () => applyMigrationPackageFile(upload.archivePath, {
-      restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
-      restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
-      restoreState: parseBooleanOption(req.query.restoreState, true),
-      restoreCovers: parseBooleanOption(req.query.restoreCovers, true),
-      restoreLogs: parseBooleanOption(req.query.restoreLogs, false),
-      restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
-      reload: reloadStoresAfterImport,
-    }, stateManager));
+    result = await scheduler.withCleanupLock(async () => {
+      if (!await pathMigration.waitForIdle(30_000)) {
+        throw Object.assign(new Error("归档路径任务未能在安全期限内停止，请稍后重试导入"), { statusCode: 409 });
+      }
+      if (!pathMigration.tryAcquireLifecycleBarrier()) {
+        throw Object.assign(new Error("归档路径任务刚刚开始运行，请稍后重试导入"), { statusCode: 409 });
+      }
+      try {
+        return applyMigrationPackageFile(upload.archivePath, {
+          restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
+          restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
+          restoreState: parseBooleanOption(req.query.restoreState, true),
+          restoreCovers: parseBooleanOption(req.query.restoreCovers, true),
+          restoreLogs: parseBooleanOption(req.query.restoreLogs, false),
+          restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
+          reload: reloadStoresAfterImport,
+        }, stateManager);
+      } finally {
+        pathMigration.releaseLifecycleBarrier();
+      }
+    });
     if (result.restored.some((item) => item === "state" || item === "covers")) {
       stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
     }

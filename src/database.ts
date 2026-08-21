@@ -642,7 +642,7 @@ function refreshArchiveLibraryProjectionUnsafe(db: Database.Database, bvids?: st
         CASE WHEN EXISTS(
           SELECT 1 FROM archive_deleted_sources ads
           WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-            AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
+             AND ads.status='completed'
         ) THEN 'deleted' ELSE 'normal' END AS visibility,
         r.last_seen_at AS recent_key,
         lower(trim(COALESCE(
@@ -1030,26 +1030,55 @@ export class StateDatabase {
     return Boolean(row?.blocked);
   }
 
+  isArchiveSourceDeletionActive(userId: string, mediaId: number, bvid: string) {
+    const row = this.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM archive_deleted_sources
+        WHERE user_id=? AND media_id=? AND bvid=?
+          AND status IN ('preparing','config_removing','pending','running','retry_wait')
+      ) AS active
+    `).get(userId, mediaId, bvid) as any;
+    return Boolean(row?.active);
+  }
+
+  isArchiveFolderDeletionActive(userId: string, mediaId: number) {
+    const row = this.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM archive_deleted_sources
+        WHERE user_id=? AND media_id=?
+          AND status IN ('preparing','config_removing','pending','running','retry_wait')
+      ) AS active
+    `).get(userId, mediaId) as any;
+    return Boolean(row?.active);
+  }
+
   restoreCompletedArchiveSource(userId: string, mediaId: number, bvid: string, restoredAt = Date.now()) {
     const candidate = this.db.prepare(`
-      SELECT 1 FROM archive_deleted_sources
-      WHERE user_id=? AND media_id=? AND bvid=? AND status IN ('completed','failed')
+      SELECT 1 FROM archive_deleted_sources s
+      JOIN archive_deletions d ON d.id=s.deletion_id
+      WHERE d.scope='source' AND s.user_id=? AND s.media_id=? AND s.bvid=?
+        AND s.status IN ('preparing','config_removing','pending','running','retry_wait','completed','failed')
       LIMIT 1
     `).get(userId, mediaId, bvid);
     if (!candidate) return 0;
     return this.db.transaction(() => {
       const restored = this.db.prepare(`
-        UPDATE archive_deleted_sources
+        UPDATE archive_deleted_sources AS s
         SET status='restored', restored_at=?
-        WHERE user_id=? AND media_id=? AND bvid=? AND status IN ('completed','failed')
+        WHERE deletion_id IN (SELECT id FROM archive_deletions WHERE scope='source')
+          AND user_id=? AND media_id=? AND bvid=?
+          AND s.status IN ('preparing','config_removing','pending','running','retry_wait','completed','failed')
       `).run(restoredAt, userId, mediaId, bvid).changes;
       if (restored > 0) {
         this.db.prepare(`
           UPDATE archive_deletions
           SET status='superseded', last_error='归档来源已重新加入活动收藏，旧清理任务已结束', updated_at=?
-          WHERE scope='source' AND status='failed' AND id IN (
-            SELECT deletion_id FROM archive_deleted_sources
-            WHERE user_id=? AND media_id=? AND bvid=? AND status='restored'
+          WHERE scope='source'
+            AND status IN ('preparing','config_removing','pending','running','retry_wait','failed')
+            AND id IN (
+            SELECT s.deletion_id FROM archive_deleted_sources s
+            JOIN archive_deletions d ON d.id=s.deletion_id
+            WHERE d.scope='source' AND s.user_id=? AND s.media_id=? AND s.bvid=? AND s.status='restored'
           )
         `).run(restoredAt, userId, mediaId, bvid);
         refreshArchiveLibraryProjectionUnsafe(this.db, [bvid]);

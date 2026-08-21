@@ -1,4 +1,5 @@
 import { joinRemotePath, normalizeRemotePath, remoteBasename } from "./remote-path.js";
+import type { RemoteBackendProfile } from "./remote-storage.js";
 
 export interface RemoteDirectoryClient {
   stat(path: string): Promise<any>;
@@ -20,15 +21,17 @@ export interface RemoteFailureInfo {
   category: RemoteFailureCategory;
   status?: number;
   code?: string;
+  retryAfterMs?: number;
 }
 
 export interface RemoteFileObservation {
-  status: "exists" | "missing";
+  status: "exists" | "missing" | "unknown";
   path: string;
   size?: number;
   directory: boolean;
   source: "stat" | "directory";
   name?: string;
+  failure?: RemoteFailureInfo;
 }
 
 export class RemoteFileResolutionConflictError extends Error {
@@ -45,6 +48,28 @@ export function remoteStatusCode(error: any) {
   return Number(error?.statusCode || error?.response?.status || error?.status || 0) || undefined;
 }
 
+function retryAfterMs(error: any) {
+  const headers = error?.response?.headers || error?.headers;
+  const raw = typeof headers?.get === "function"
+    ? headers.get("retry-after")
+    : headers?.["retry-after"] ?? headers?.["Retry-After"];
+  if (raw == null) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const at = Date.parse(String(raw));
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+}
+
+function failureInfo(category: RemoteFailureCategory, status: number | undefined, code: string | undefined, error: any): RemoteFailureInfo {
+  const retry = retryAfterMs(error);
+  return {
+    category,
+    status,
+    code,
+    ...(retry === undefined ? {} : { retryAfterMs: retry }),
+  };
+}
+
 export function classifyRemoteFailure(error: any): RemoteFailureInfo {
   const status = remoteStatusCode(error);
   const code = String(error?.code || error?.cause?.code || "").toUpperCase() || undefined;
@@ -57,46 +82,33 @@ export function classifyRemoteFailure(error: any): RemoteFailureInfo {
   // Once a transport exposes an HTTP status, that status is authoritative.
   // Do not let a provider's response body (for example, "not found" in a
   // 500 response) change the operation category.
-  if (status === 401 || status === 403) return { category: "permission", status, code };
+  if (status === 401 || status === 403) return failureInfo("permission", status, code, error);
   if (status === 405 || status === 501) {
-    return { category: "unsupported", status, code };
+    return failureInfo("unsupported", status, code, error);
   }
   if (status === 409 || status === 412) {
-    return { category: "conflict", status, code };
+    return failureInfo("conflict", status, code, error);
   }
   if (status === 404) {
-    return { category: "not_found", status, code };
+    return failureInfo("not_found", status, code, error);
   }
   if (status === 408 || status === 425 || status === 429 || (status !== undefined && status >= 500)) {
-    return { category: "transient", status, code };
+    return failureInfo("transient", status, code, error);
   }
-  if (status !== undefined) return { category: "unknown", status, code };
+  if (status !== undefined) return failureInfo("unknown", status, code, error);
 
-  if (networkLike) return { category: "transient", status, code };
+  if (networkLike) return failureInfo("transient", status, code, error);
 
   // Without an HTTP status only an explicit local missing-file code is safe
   // to interpret as absence. Text-only messages are deliberately unknown.
   if (code === "ENOENT" || code === "ENOTDIR") {
-    return { category: "not_found", status, code };
+    return failureInfo("not_found", status, code, error);
   }
-  return { category: "unknown", status, code };
+  return failureInfo("unknown", status, code, error);
 }
 
 export function isRemoteNotFoundError(error: any) {
   return classifyRemoteFailure(error).category === "not_found";
-}
-
-function isPathLookupFailure(error: any) {
-  const status = remoteStatusCode(error);
-  return status === 400 || status === 404 || status === 405;
-}
-
-function decodePercentOnce(value: string) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
 
 function decodeXmlEntities(value: string) {
@@ -134,19 +146,12 @@ function removeOpenListEscapes(value: string) {
 }
 
 function textCandidates(value: string) {
-  const output = new Set<string>();
-  const queue = [String(value || "")];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (output.has(current)) continue;
-    output.add(current);
-    const xmlDecoded = decodeXmlEntities(current);
-    const percentDecoded = decodePercentOnce(current);
-    const escapedRemoved = removeOpenListEscapes(current);
-    for (const next of [xmlDecoded, percentDecoded, escapedRemoved]) {
-      if (next !== current && !output.has(next)) queue.push(next);
-    }
-  }
+  const raw = String(value || "");
+  const output = new Set<string>([
+    raw,
+    decodeXmlEntities(raw),
+    removeOpenListEscapes(raw),
+  ]);
   return [...output].flatMap((candidate) => {
     const normalized = candidate.normalize("NFC");
     return normalized === candidate ? [candidate] : [candidate, normalized];
@@ -263,7 +268,14 @@ function entryIsDirectory(entry: any) {
 }
 
 function entrySize(entry: any) {
-  const value = Number(entry?.size);
+  const value = Number(
+    entry?.size
+      ?? entry?.contentLength
+      ?? entry?.getcontentlength
+      ?? entry?.props?.getcontentlength
+      ?? entry?.props?.["d:getcontentlength"]
+      ?? entry?.props?.["{DAV:}getcontentlength"]
+  );
   return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
@@ -345,24 +357,41 @@ function isDirectChild(parent: string, child: string) {
 export class RemoteFileResolver {
   private readonly directoryCache = new Map<string, Promise<any[]>>();
 
-  constructor(private readonly client: RemoteDirectoryClient) {}
+  constructor(
+    private readonly client: RemoteDirectoryClient,
+    private readonly profile?: RemoteBackendProfile,
+  ) {}
 
   clear() {
     this.directoryCache.clear();
+  }
+
+  invalidateDirectory(parent: string) {
+    this.directoryCache.delete(normalizeRemoteLookupPath(parent));
+  }
+
+  invalidatePath(remotePath: string) {
+    this.invalidateDirectory(remoteLookupDirname(remotePath));
   }
 
   private listDirectory(parent: string) {
     const key = normalizeRemoteLookupPath(parent);
     const existing = this.directoryCache.get(key);
     if (existing) return existing;
+    if (this.profile?.capabilities.directoryList === "unsupported") {
+      return Promise.reject(Object.assign(new Error("远端不支持目录列表"), { status: 405 }));
+    }
     if (typeof this.client.getDirectoryContents !== "function") {
-      return Promise.resolve([] as any[]);
+      return Promise.reject(Object.assign(new Error("远端不支持目录列表"), { status: 405 }));
     }
     const pending = Promise.resolve(this.client.getDirectoryContents(key)).then((result) => {
       if (!Array.isArray(result)) throw new Error("远端目录响应格式无效");
+      if (this.profile) this.profile.capabilities.directoryList = "supported";
       return result;
     }).catch((error) => {
       this.directoryCache.delete(key);
+      const status = remoteStatusCode(error);
+      if (this.profile && (status === 405 || status === 501)) this.profile.capabilities.directoryList = "unsupported";
       throw error;
     });
     this.directoryCache.set(key, pending);
@@ -386,21 +415,37 @@ export class RemoteFileResolver {
         name: remoteLookupBasename(expectedPath),
       };
     } catch (error) {
-      if (!isPathLookupFailure(error)) throw error;
+      const failure = classifyRemoteFailure(error);
       const fallback = options.fallback || "never";
       const expectedName = remoteLookupBasename(expectedPath);
+      if (failure.category === "not_found") {
+        // A literal 404 is enough for ordinary names. Encoded or escaped
+        // names still get one parent-directory lookup because OpenList-style
+        // backends may expose a different access spelling for the same file.
+        if (fallback === "never" || (fallback === "risk_only" && !isLikelyEncodedFilename(expectedName))) {
+          return { status: "missing", path: expectedPath, directory: false, source: "stat", name: expectedName };
+        }
+      }
+      // A permission, transient, or explicit conflict response does not tell
+      // us that the object is absent. A provider may expose a directory listing
+      // while denying stat, but treating an empty listing as deletion here can
+      // erase a valid proof during an outage or an ACL change.
+      if (["permission", "transient", "conflict"].includes(failure.category)) {
+        return { status: "unknown", path: expectedPath, directory: false, source: "stat", name: remoteLookupBasename(expectedPath), failure };
+      }
       if (fallback === "never" || (fallback === "risk_only" && !isLikelyEncodedFilename(expectedName))) {
-        return { status: "missing", path: expectedPath, directory: false, source: "stat", name: expectedName };
+        return { status: "unknown", path: expectedPath, directory: false, source: "stat", name: expectedName, failure };
       }
 
       let entries: any[];
       try {
         entries = await this.listDirectory(remoteLookupDirname(expectedPath));
       } catch (listError) {
-        if (isRemoteNotFoundError(listError)) {
+        const listFailure = classifyRemoteFailure(listError);
+        if (listFailure.category === "not_found") {
           return { status: "missing", path: expectedPath, directory: false, source: "directory", name: expectedName };
         }
-        throw listError;
+        return { status: "unknown", path: expectedPath, directory: false, source: "directory", name: expectedName, failure: listFailure };
       }
 
       const parent = remoteLookupDirname(expectedPath);
@@ -438,6 +483,6 @@ export class RemoteFileResolver {
   }
 }
 
-export function createRemoteFileResolver(client: RemoteDirectoryClient) {
-  return new RemoteFileResolver(client);
+export function createRemoteFileResolver(client: RemoteDirectoryClient, profile?: RemoteBackendProfile) {
+  return new RemoteFileResolver(client, profile);
 }

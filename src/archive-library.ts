@@ -139,7 +139,7 @@ const playableFileSql = (alias: string) => `
 const deletionExistsSql = (alias: string) => `EXISTS(
   SELECT 1 FROM archive_deleted_sources ads
   WHERE ads.user_id=${alias}.user_id AND ads.media_id=${alias}.media_id AND ads.bvid=${alias}.bvid
-    AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
+    AND ads.status='completed'
 )`;
 
 function archiveLibraryUsers(database: StateDatabase, users: BiliUser[]) {
@@ -806,8 +806,8 @@ function itemFromRecords(
     ? chooseBestPlaybackSource(database, records, queuePosition)
     : selectedPlayback;
   const hasPending = records.some(({ relation, video: entry }) => pendingStatuses.has((relation.backupStatus || entry.backupStatus) as BackupStatus));
-  const hasDeletionRecord = records.some((record) => Boolean(record.deletionStatus));
-  const statusGroup = hasDeletionRecord ? "deleted" : best ? "playable" : hasPending ? "pending" : "issue";
+  const hasCompletedDeletion = records.some((record) => record.deletionStatus === "completed");
+  const statusGroup = hasCompletedDeletion ? "deleted" : best ? "playable" : hasPending ? "pending" : "issue";
   const memberships = records.map((record) => membershipFromRecord(record, users, selected, includeAllMemberships));
   const limitedMemberships = includeAllMemberships ? memberships : memberships.slice(0, 3);
   const weakestMeasuredPart = best?.parts.length && best.parts.every((part) => Number(part.actualWidth) > 0 && Number(part.actualHeight) > 0)

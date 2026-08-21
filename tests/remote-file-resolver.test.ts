@@ -23,6 +23,57 @@ test("remote error classification trusts HTTP status over misleading response te
   assert.equal(classifyRemoteFailure(Object.assign(new Error("missing"), { code: "ENOENT" })).category, "not_found");
 });
 
+test("unsupported and malformed stat responses stay unknown unless an explicit directory fallback confirms absence", async () => {
+  const unsupported = Object.assign(new Error("method not allowed"), { status: 405 });
+  const badRequest = Object.assign(new Error("bad request"), { status: 400 });
+  const never = new RemoteFileResolver({ stat: async () => { throw unsupported; } });
+  const riskOnly = await never.inspect("/target/plain.mp4", { fallback: "risk_only" });
+  assert.equal(riskOnly.status, "unknown");
+  assert.equal(riskOnly.failure?.category, "unsupported");
+
+  const malformed = new RemoteFileResolver({ stat: async () => { throw badRequest; } });
+  const unknown = await malformed.inspect("/target/plain.mp4", { fallback: "never" });
+  assert.equal(unknown.status, "unknown");
+  assert.equal(unknown.failure?.category, "unknown");
+
+  const explicitFallback = new RemoteFileResolver({
+    stat: async () => { throw unsupported; },
+    getDirectoryContents: async () => [],
+  });
+  const missing = await explicitFallback.inspect("/target/plain.mp4", { fallback: "always" });
+  assert.equal(missing.status, "missing");
+});
+
+test("transient stat failures preserve Retry-After without becoming missing", async () => {
+  const error: any = new Error("busy");
+  error.status = 429;
+  error.headers = { "retry-after": "7" };
+  const resolver = new RemoteFileResolver({ stat: async () => { throw error; } });
+  const result = await resolver.inspect("/target/plain.mp4", { fallback: "always" });
+  assert.equal(result.status, "unknown");
+  assert.equal(result.failure?.category, "transient");
+  assert.equal(result.failure?.retryAfterMs, 7_000);
+});
+
+test("remote directory cache can be invalidated after a write", async () => {
+  let version = 0;
+  let listCalls = 0;
+  const resolver = new RemoteFileResolver({
+    stat: async () => { throw notFound(); },
+    getDirectoryContents: async () => {
+      listCalls += 1;
+      return version === 0 ? [] : [{ filename: "/target/video'name.mp4", basename: "video'name.mp4", type: "file", size: 10 }];
+    },
+  });
+  const first = await resolver.inspect("/target/video'name.mp4", { fallback: "always" });
+  assert.equal(first.status, "missing");
+  version = 1;
+  resolver.invalidatePath("/target/video'name.mp4");
+  const second = await resolver.inspect("/target/video'name.mp4", { fallback: "always" });
+  assert.equal(second.status, "exists");
+  assert.equal(listCalls, 2);
+});
+
 test("safe first-upload names keep the stat fast path and do not list the directory", async () => {
   let statCalls = 0;
   let listCalls = 0;

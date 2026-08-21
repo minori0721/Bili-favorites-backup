@@ -10,8 +10,9 @@ import type { StateDatabase } from "./database.js";
 import type { FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
 import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
 import { buildDavClient } from "./uploader.js";
+import { getRemoteBackendProfile } from "./remote-storage.js";
 import { isRemotePathWithin, normalizeStoredRemoteFilePath } from "./remote-path.js";
-import { parseStorageBaseUrl } from "./storage-url.js";
+import { buildStorageDavFileUrl, parseStorageBaseUrl } from "./storage-url.js";
 import {
   createRemoteFileResolver,
   isLikelyEncodedFilename,
@@ -902,8 +903,7 @@ export async function streamPlaybackFile(
     markPlaybackDelivery(input, "failed");
     throw new PlaybackHttpError(502, "PLAYBACK_ALIST_CONFIG", "远端存储连接配置无效");
   }
-  const basePath = base.pathname.replace(/\/+$/, "");
-  const buildTarget = (remotePath: string) => new URL(`${basePath}/dav${encodeDavPath(remotePath)}`, `${base.protocol}//${base.host}`);
+  const buildTarget = (remotePath: string) => buildStorageDavFileUrl(config.alistUrl, remotePath);
   let target = buildTarget(file.remotePath);
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -933,7 +933,7 @@ export async function streamPlaybackFile(
       await result.response.body?.cancel();
       const resolvePath = input.transport?.resolveRemotePath || (async (remotePath: string) => {
         const client = buildDavClient(config);
-        const observed = await createRemoteFileResolver(client).inspect(remotePath, { fallback: "always" });
+        const observed = await createRemoteFileResolver(client, getRemoteBackendProfile(config)).inspect(remotePath, { fallback: "always" });
         return observed.status === "exists" && !observed.directory ? observed.path : undefined;
       });
       try {
@@ -967,7 +967,35 @@ export async function streamPlaybackFile(
       res.end();
       return;
     }
-    const upstream = result.response!;
+    let upstream = result.response!;
+    if (req.method === "HEAD" && [405, 501].includes(upstream.status)) {
+      // Some WebDAV providers reject HEAD even though a one-byte ranged GET
+      // is supported. Use that fallback only for HEAD, and always discard the
+      // GET body so this branch never downloads video data for a metadata request.
+      await upstream.body?.cancel();
+      const headFallbackHeaders = { ...headers };
+      if (!headFallbackHeaders.Range) headFallbackHeaders.Range = "bytes=0-0";
+      const fallbackResult = await fetchPlaybackUpstream(
+        target,
+        base,
+        "GET",
+        headFallbackHeaders,
+        controller.signal,
+        preferRedirect,
+        input.transport || {},
+      );
+      if (fallbackResult.directLocation) {
+        markPlaybackDelivery(input, "direct");
+        res.status(302);
+        res.setHeader("Location", fallbackResult.directLocation);
+        res.setHeader("Cache-Control", "private, no-store");
+        res.setHeader("Referrer-Policy", "no-referrer");
+        res.setHeader("Content-Length", "0");
+        res.end();
+        return;
+      }
+      upstream = fallbackResult.response!;
+    }
     clearTimeout(timeout);
     if (upstream.status === 401 || upstream.status === 403) {
       await upstream.body?.cancel();

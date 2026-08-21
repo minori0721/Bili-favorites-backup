@@ -338,6 +338,55 @@ test("source deletion keeps the source identity while the worker is running", as
   }
 });
 
+test("reappearing source supersedes an active deletion before it can delete files", async () => {
+  const runtime = await createTestDir("archive-delete-source-restored-during-worker");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  let service: ArchiveDeletionService | undefined;
+  let releasePreparation!: () => void;
+  let preparationStarted!: () => void;
+  const preparationGate = new Promise<void>((resolve) => { releasePreparation = resolve; });
+  const started = new Promise<void>((resolve) => { preparationStarted = resolve; });
+  try {
+    const remotePath = "/backup/reappearing-source.mp4";
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVREAPPEARING", active: false,
+      paths: [{ path: remotePath, size: 12 }],
+    });
+    dav.files.set(remotePath, { type: "file", size: 12 });
+    service = createService(manager, users, dav, {
+      prepareSourceDeletion: async () => {
+        preparationStarted();
+        await preparationGate;
+      },
+    });
+    const preview = service.previewSource("u1", 10, "BVREAPPEARING");
+    service.start(preview.id, "DELETE ARCHIVE");
+    await started;
+
+    manager.recordFavoriteItem("u1", 10, "重新加入", {
+      bvid: "BVREAPPEARING", title: "重新加入", upperName: "测试UP",
+    } as any, { favOrder: 1 }, new Date(now + 1_000).toISOString());
+    const restored = manager.getDatabase().db.prepare(`
+      SELECT status FROM archive_deleted_sources WHERE deletion_id=?
+    `).get(preview.id) as any;
+    assert.equal(restored.status, "restored");
+    assert.equal(service.get(preview.id)?.status, "superseded");
+    assert.equal(manager.getRelation("u1", 10, "BVREAPPEARING")?.activeInFavorite, true);
+
+    releasePreparation();
+    await waitForOperation(service, preview.id, ["superseded"]);
+    assert.deepEqual(dav.deleteCalls, []);
+    assert.equal(dav.files.has(remotePath), true);
+  } finally {
+    releasePreparation?.();
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("archive deletion does not retry authorization failures and never removes unknown directory contents", async () => {
   const runtime = await createTestDir("archive-delete-auth-and-directory");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });

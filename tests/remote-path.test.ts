@@ -7,7 +7,7 @@ import {
   normalizeStoredRemoteFilePath,
   remoteDirname,
 } from "../src/remote-path.js";
-import { buildStorageDavUrl, parseStorageBaseUrl } from "../src/storage-url.js";
+import { buildStorageDavFileUrl, buildStorageDavUrl, parseStorageBaseUrl } from "../src/storage-url.js";
 
 test("strict remote paths handle roots and trailing slashes without accepting traversal", () => {
   assert.equal(normalizeRemotePath("/"), "/");
@@ -39,4 +39,9 @@ test("shared storage URL parsing preserves reverse-proxy paths for all callers",
   const parsed = parseStorageBaseUrl("http://openlist:5244/gateway/");
   assert.equal(parsed.pathname, "/gateway/");
   assert.equal(buildStorageDavUrl(parsed.toString()), "http://openlist:5244/gateway/dav");
+  assert.equal(buildStorageDavUrl("http://openlist:5244/gateway/dav/"), "http://openlist:5244/gateway/dav");
+  assert.equal(
+    buildStorageDavFileUrl("http://openlist:5244/gateway/dav", "/archive/中文 file.mp4").toString(),
+    "http://openlist:5244/gateway/dav/archive/%E4%B8%AD%E6%96%87%20file.mp4",
+  );
 });

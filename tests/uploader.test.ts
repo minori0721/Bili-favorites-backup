@@ -18,6 +18,7 @@ import { TransferSessionStore } from "../src/transfer-session.js";
 import { UploadOperationError } from "../src/upload-health.js";
 import { UploadTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import { createRemoteFileResolver } from "../src/remote-file-resolver.js";
 
 const noopLog = { push() {} };
 
@@ -28,6 +29,24 @@ test("upload MIME detection covers media subtitles images and JSON", () => {
   assert.equal(detectUploadMimeType("cover.webp"), "image/webp");
   assert.equal(detectUploadMimeType("metadata.json"), "application/json");
   assert.equal(detectUploadMimeType("unknown.bin"), "application/octet-stream");
+});
+
+test("remote visibility errors stay unknown instead of becoming a missing-file retry", async () => {
+  const error: any = new Error("backend busy");
+  error.status = 503;
+  error.headers = { "retry-after": "11" };
+  const client = {
+    stat: async () => { throw error; },
+    getDirectoryContents: async () => { throw error; },
+  } as any;
+  await assert.rejects(
+    () => verifyUploadedFile(client, "/target/video.mp4", 12, [0], createRemoteFileResolver(client)),
+    (caught: any) => {
+      assert.equal(caught.uploadFailure?.status, 503);
+      assert.equal(caught.uploadFailure?.retryAfterMs, 11_000);
+      return true;
+    },
+  );
 });
 
 test("uploads reject symlink files and symlinked parent directories", async (t) => {
@@ -107,6 +126,7 @@ async function startWebDavServer(options: {
   failPutStatus?: number;
   failMoveName?: string;
   rejectFourByteNames?: boolean;
+  rejectExtendedHeaders?: boolean;
   remoteSizeOffset?: number;
   putStatus?: 201 | 204;
   writeBeforePutFailure?: boolean;
@@ -169,6 +189,11 @@ async function startWebDavServer(options: {
         if (options.writeBeforePutFailure) files.set(requestPath, body);
         res.statusCode = options.failPutStatus || 405;
         res.end("Method Not Allowed");
+        return;
+      }
+      if (options.rejectExtendedHeaders && (req.headers["x-oc-mtime"] || req.headers["x-oc-ctime"])) {
+        res.statusCode = 422;
+        res.end("extended headers are not supported");
         return;
       }
       if (options.rejectFourByteNames && Array.from(requestPath).some((character) => Buffer.byteLength(character, "utf-8") === 4)) {
@@ -1050,12 +1075,34 @@ test("a failed request can be retried with a fresh full stream", async () => {
   }
 });
 
+test("a backend that rejects extended upload headers is learned after one safe retry", async () => {
+  const runtime = await createTestDir("upload-extended-header-fallback");
+  const server = await startWebDavServer({ rejectExtendedHeaders: true });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), "header-compatible-video");
+    const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+      cleanupLocal: false,
+      verificationDelaysMs: [0],
+      log: noopLog,
+    });
+    assert.equal(result.allVerified, true);
+    assert.equal(server.puts.length, 2);
+    assert.match(String(server.puts[0].headers["x-oc-mtime"]), /^\d+$/);
+    assert.equal(server.puts[1].headers["x-oc-mtime"], undefined);
+    assert.equal(server.puts[1].headers["x-oc-ctime"], undefined);
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("a four-byte filename falls back once and records the verified compatible remote path", async () => {
   const runtime = await createTestDir("upload-compatible-name");
   const server = await startWebDavServer({ rejectFourByteNames: true });
   try {
     const originalName = "2026-05-29_15-15-39-谁的🍷 自己来认领-爱拍照的千鹤-BV1XeVa6jEog.mp4";
-    const compatibleName = "2026-05-29_15-15-39-谁的 自己来认领-爱拍照的千鹤-BV1XeVa6jEog.mp4";
+    const compatibleName = buildCompatibilityUploadName(originalName, new Set([originalName]));
+    assert.ok(compatibleName);
     const payload = Buffer.from("compatible-name-content");
     await fs.promises.writeFile(path.join(runtime, originalName), payload);
     const result = await uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
@@ -1148,10 +1195,16 @@ test("history upload confirms an OpenList-escaped existing file without re-uploa
 });
 
 test("compatible filename generation avoids collisions with existing local names", () => {
-  const reserved = new Set(["title-BV1TEST.mp4", "title-BV1TEST-compat-2.mp4"]);
+  const base = buildCompatibilityUploadName("title-🍷BV1TEST.mp4");
+  assert.ok(base);
+  const reserved = new Set([base]);
+  const collision = buildCompatibilityUploadName("title-🍷BV1TEST.mp4", reserved);
+  assert.ok(collision);
+  assert.notEqual(collision, base);
+  assert.match(collision, /-[0-9a-f]{10}-2\.mp4$/);
   assert.equal(
-    buildCompatibilityUploadName("title-🍷BV1TEST.mp4", reserved),
-    "title-BV1TEST-compat-3.mp4"
+    buildCompatibilityUploadName("title-🍷BV1TEST.mp4", new Set([base, collision])),
+    collision.replace(/-2\.mp4$/, "-3.mp4"),
   );
 });
 

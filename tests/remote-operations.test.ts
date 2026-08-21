@@ -10,12 +10,14 @@ import {
 import { QualityUpgradeTask } from "../src/tasks.js";
 import { batchRenameRemotePaths, uploadWithAList } from "../src/uploader.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import { clearRemoteBackendProfiles } from "../src/remote-storage.js";
 
 class MemoryRemote implements RemoteOperationsClient {
   readonly files = new Map<string, Buffer>();
   readonly directories = new Set<string>(["/"]);
   readonly copies: Array<[string, string]> = [];
   readonly moves: Array<[string, string]> = [];
+  moveAttempts = 0;
   readonly deletes: string[] = [];
   readonly puts: string[] = [];
   copySupported = true;
@@ -78,6 +80,7 @@ class MemoryRemote implements RemoteOperationsClient {
   }
 
   async moveFile(sourceValue: string, targetValue: string) {
+    this.moveAttempts += 1;
     const source = this.normalize(sourceValue);
     const target = this.normalize(targetValue);
     if (!this.moveSupported) throw Object.assign(new Error("MOVE not supported"), { status: this.moveStatus });
@@ -302,6 +305,54 @@ test("unknown MOVE capability is resolved by the real operation", async () => {
   assert.equal(client.moves.length, 1);
   assert.equal(client.files.has("/target/old.mp4"), false);
   assert.deepEqual(client.files.get("/target/new.mp4"), Buffer.from("old"));
+});
+
+test("a real MOVE 405 is learned per backend and skipped by the next replacement", async () => {
+  clearRemoteBackendProfiles();
+  const client = new MemoryRemote();
+  client.moveSupported = false;
+  const profileConfig = testConfig({ alistUrl: "http://profile-cache.invalid:5244" });
+  const first = await createRemoteReplacementRunner(profileConfig, { client });
+  client.files.set("/target/old-1.mp4", Buffer.from("old"));
+  await first(profileConfig, "/target/old-1.mp4", "/target/new-1.mp4");
+
+  const second = await createRemoteReplacementRunner(profileConfig, { client });
+  client.files.set("/target/old-2.mp4", Buffer.from("old"));
+  await second(profileConfig, "/target/old-2.mp4", "/target/new-2.mp4");
+  assert.equal(client.moves.length, 0);
+  assert.equal(client.copies.length, 2);
+});
+
+test("a transient MOVE failure does not poison the unsupported capability cache", async () => {
+  clearRemoteBackendProfiles();
+  const client = new MemoryRemote();
+  client.moveSupported = false;
+  client.moveStatus = 500;
+  const profileConfig = testConfig({ alistUrl: "http://profile-transient.invalid:5244" });
+  const first = await createRemoteReplacementRunner(profileConfig, { client });
+  client.files.set("/target/old-1.mp4", Buffer.from("old"));
+  await assert.rejects(() => first(profileConfig, "/target/old-1.mp4", "/target/new-1.mp4"));
+
+  const second = await createRemoteReplacementRunner(profileConfig, { client });
+  client.files.set("/target/old-2.mp4", Buffer.from("old"));
+  await assert.rejects(() => second(profileConfig, "/target/old-2.mp4", "/target/new-2.mp4"));
+  assert.equal(client.moveAttempts, 2);
+});
+
+test("a real COPY 405 is learned and does not probe COPY on the next replacement", async () => {
+  clearRemoteBackendProfiles();
+  const client = new MemoryRemote();
+  client.moveSupported = false;
+  client.copySupported = false;
+  const profileConfig = testConfig({ alistUrl: "http://profile-copy.invalid:5244" });
+  const first = await createRemoteReplacementRunner(profileConfig, { client });
+  client.files.set("/target/old-copy-1.mp4", Buffer.from("old"));
+  await assert.rejects(() => first(profileConfig, "/target/old-copy-1.mp4", "/target/new-copy-1.mp4"));
+  const second = await createRemoteReplacementRunner(profileConfig, { client });
+  client.files.set("/target/old-copy-2.mp4", Buffer.from("old"));
+  await assert.rejects(() => second(profileConfig, "/target/old-copy-2.mp4", "/target/new-copy-2.mp4"));
+  assert.equal(client.moveAttempts, 1);
+  assert.equal(client.copies.length, 0);
 });
 
 test("batch rename uses COPY plus DELETE on a MOVE-unsupported backend", async () => {

@@ -28,6 +28,20 @@ export function parseStorageBaseUrl(value: unknown) {
 export function buildStorageDavUrl(value: unknown) {
   const url = parseStorageBaseUrl(value);
   const pathname = url.pathname.replace(/\/+$/, "");
-  url.pathname = `${pathname}/dav` || "/dav";
+  url.pathname = /(?:^|\/)dav$/i.test(pathname) ? (pathname || "/dav") : `${pathname}/dav` || "/dav";
   return url.toString();
+}
+
+export function buildStorageDavFileUrl(value: unknown, remotePath: string) {
+  const url = new URL(buildStorageDavUrl(value));
+  const davPath = url.pathname.replace(/\/+$/, "");
+  const encodedPath = String(remotePath || "/")
+    .replace(/^\/+/, "")
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  url.pathname = `${davPath}/${encodedPath}`;
+  url.search = "";
+  url.hash = "";
+  return url;
 }

@@ -23,7 +23,7 @@ export function resolveRemotePath(context: UploadContext) {
   }
 }
 
-import { createClient, WebDAVClient } from "webdav";
+import type { WebDAVClient } from "webdav";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -54,17 +54,12 @@ import {
   RemoteFileResolutionConflictError,
   normalizeRemoteDirectoryEntry,
   type RemoteFileResolver,
+  type RemoteFailureInfo,
 } from "./remote-file-resolver.js";
-import { buildStorageDavUrl } from "./storage-url.js";
+import { buildDavClient as buildSharedDavClient, getRemoteBackendProfile, type RemoteBackendProfile } from "./remote-storage.js";
 import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
 
-export function buildDavClient(config: AppConfig): WebDAVClient {
-  const davUrl = buildStorageDavUrl(config.alistUrl);
-  return createClient(davUrl, {
-    username: config.alistUsername,
-    password: config.alistPassword,
-  });
-}
+export const buildDavClient = buildSharedDavClient;
 
 export async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
   const segments = normalizeRemotePath(remotePath, { allowTrailingSlash: true }).split('/').filter(s => s.length > 0);
@@ -177,14 +172,17 @@ export function detectUploadMimeType(filePath: string) {
   return MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
 }
 
-export function buildUploadHeaders(filePath: string, stat: fs.Stats) {
+export function buildUploadHeaders(filePath: string, stat: fs.Stats, includeExtendedTimestamps = true) {
   const modifiedSeconds = Math.max(0, Math.floor(stat.mtimeMs / 1000));
-  return {
+  const headers: Record<string, string> = {
     "Content-Length": String(stat.size),
     "Content-Type": detectUploadMimeType(filePath),
-    "X-OC-Mtime": String(modifiedSeconds),
-    "X-OC-Ctime": String(modifiedSeconds),
   };
+  if (includeExtendedTimestamps) {
+    headers["X-OC-Mtime"] = String(modifiedSeconds);
+    headers["X-OC-Ctime"] = String(modifiedSeconds);
+  }
+  return headers;
 }
 
 export function hasFourByteCharacters(value: string) {
@@ -197,20 +195,44 @@ function stripFourByteCharacters(value: string) {
     .join("");
 }
 
+function stripUnsafeRemoteNameCharacters(value: string) {
+  return Array.from(value)
+    .filter((character) => {
+      const codePoint = character.codePointAt(0) || 0;
+      return codePoint !== 0 && codePoint !== 0x7f && !(codePoint >= 0 && codePoint <= 0x1f);
+    })
+    .join("")
+    .replace(/[\\/]+/g, "_")
+    .replace(/[\u0000-\u001f\u007f]/g, "");
+}
+
+function truncateUtf8(value: string, maxBytes: number) {
+  let result = "";
+  for (const character of value) {
+    if (Buffer.byteLength(result + character, "utf8") > maxBytes) break;
+    result += character;
+  }
+  return result;
+}
+
 export function buildCompatibilityUploadName(fileName: string, reservedNames: ReadonlySet<string> = new Set()) {
   if (!hasFourByteCharacters(fileName)) return undefined;
-  const extension = path.extname(fileName);
-  const stem = extension ? fileName.slice(0, -extension.length) : fileName;
-  const safeStem = stripFourByteCharacters(stem) || "file";
-  const safeExtension = stripFourByteCharacters(extension);
-  const baseCandidate = `${safeStem}${safeExtension}`;
+  const normalizedName = String(fileName).normalize("NFC");
+  const extension = path.extname(normalizedName);
+  const stem = extension ? normalizedName.slice(0, -extension.length) : normalizedName;
+  const safeStem = stripUnsafeRemoteNameCharacters(stripFourByteCharacters(stem)) || "file";
+  const safeExtension = stripUnsafeRemoteNameCharacters(stripFourByteCharacters(extension));
+  const digest = crypto.createHash("sha256").update(normalizedName, "utf8").digest("hex").slice(0, 10);
+  const suffix = `-${digest}`;
+  const stemLimit = Math.max(1, 220 - Buffer.byteLength(safeExtension, "utf8") - Buffer.byteLength(suffix, "utf8"));
+  const baseCandidate = `${truncateUtf8(safeStem, stemLimit)}${suffix}${safeExtension}`;
   if (!reservedNames.has(baseCandidate)) return baseCandidate;
 
-  let suffix = 2;
-  let candidate = `${safeStem}-compat-${suffix}${safeExtension}`;
+  let collisionIndex = 2;
+  let candidate = `${truncateUtf8(safeStem, Math.max(1, 220 - Buffer.byteLength(safeExtension, "utf8") - Buffer.byteLength(`-${digest}-${collisionIndex}`, "utf8")))}-${digest}-${collisionIndex}${safeExtension}`;
   while (reservedNames.has(candidate)) {
-    suffix += 1;
-    candidate = `${safeStem}-compat-${suffix}${safeExtension}`;
+    collisionIndex += 1;
+    candidate = `${truncateUtf8(safeStem, Math.max(1, 220 - Buffer.byteLength(safeExtension, "utf8") - Buffer.byteLength(`-${digest}-${collisionIndex}`, "utf8")))}-${digest}-${collisionIndex}${safeExtension}`;
   }
   return candidate;
 }
@@ -242,11 +264,19 @@ export async function verifyUploadedFile(
         return;
       }
       const mismatch: any = new Error(
-        observed.directory
+        observed.status === "unknown"
+          ? "Remote upload visibility could not be confirmed"
+          : observed.directory
           ? "Remote upload target is a directory"
           : `Remote size mismatch: expected ${expectedSize}, received ${Number.isFinite(lastSize) ? lastSize : "unknown"}`
       );
-      mismatch.status = observed.status === "missing" ? 404 : 409;
+      mismatch.status = observed.status === "missing"
+        ? 404
+        : observed.failure?.status || (observed.failure?.category === "transient" ? 503 : 409);
+      if (observed.failure) {
+        mismatch.remoteFailure = observed.failure;
+        mismatch.retryAfterMs = observed.failure.retryAfterMs;
+      }
       lastError = mismatch;
     } catch (error) {
       lastError = error;
@@ -255,7 +285,10 @@ export async function verifyUploadedFile(
   const verificationError: any = new Error(
     `Remote upload verification failed for ${remoteFile}: ${(lastError as Error)?.message || "file not visible"}`
   );
-  verificationError.status = isRemoteNotFoundError(lastError) ? 404 : 409;
+  verificationError.status = Number((lastError as any)?.status || 0)
+    || (isRemoteNotFoundError(lastError) ? 404 : 409);
+  verificationError.remoteFailure = (lastError as any)?.remoteFailure;
+  verificationError.retryAfterMs = (lastError as any)?.retryAfterMs;
   verificationError.cause = lastError;
   throw new UploadOperationError(classifyUploadError(verificationError, remoteFile));
 }
@@ -274,6 +307,12 @@ async function inspectExpectedRemoteFile(
     directoryConflict.status = 409;
     throw directoryConflict;
   }
+  if (observed.status === "unknown") {
+    throw new UploadPreflightConflictError(
+      "UPLOAD_REMOTE_STATE_UNKNOWN",
+      "远端上传目标状态无法确认，系统没有重复上传或覆盖未知文件",
+    );
+  }
   if (Number.isFinite(observed.size) && observed.size === expectedSize) return "verified" as const;
   const mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(observed.size) ? observed.size : "unknown"}`);
   mismatch.status = 409;
@@ -288,6 +327,15 @@ async function inspectRemoteFile(
 ) {
   const observed = await resolver.inspect(remoteFile, { fallback });
   if (observed.status === "missing") return { status: "missing" as const, directory: false, path: observed.path };
+  if (observed.status === "unknown") {
+    return {
+      status: "unknown" as const,
+      size: observed.size,
+      directory: observed.directory,
+      path: observed.path,
+      failure: observed.failure,
+    };
+  }
   return {
     status: "exists" as const,
     size: observed.size,
@@ -336,6 +384,12 @@ async function verify405WrittenFile(
   );
   notVisible.status = 405;
   throw notVisible;
+}
+
+async function confirmRemoteMissing(resolver: RemoteFileResolver, remoteFile: string) {
+  resolver.invalidatePath(remoteFile);
+  const observed = await resolver.inspect(remoteFile, { fallback: "always" });
+  return observed.status === "missing";
 }
 
 async function verifyOrAwaitRemoteVisibility(
@@ -450,6 +504,7 @@ async function putAndVerifyLocalFile(
   beforePut?: () => Promise<void>,
   allowExistingMatch = false,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
+  profile?: RemoteBackendProfile,
 ) {
   const preflight = await inspectExpectedRemoteFile(client, remoteFile, stat.size, resolver, "risk_only");
   if (preflight === "verified") {
@@ -462,46 +517,72 @@ async function putAndVerifyLocalFile(
     return { verificationStatus: "verified" as const, skippedUpload: true, putAccepted: false };
   }
   await beforePut?.();
-  const opened = await openVerifiedLocalUpload(localRoot, localFile, stat.size);
-  const fileStream = opened.stream;
-  try {
+  const putOnce = async (includeExtendedTimestamps: boolean) => {
+    const opened = await openVerifiedLocalUpload(localRoot, localFile, stat.size);
     try {
-      const putAccepted = await client.putFileContents(remoteFile, fileStream as any, {
+      const putAccepted = await client.putFileContents(remoteFile, opened.stream as any, {
         contentLength: false,
         // The preflight is advisory; conditional PUT closes the race where
         // another writer creates a different file before this request starts.
         overwrite: false,
-        headers: buildUploadHeaders(localFile, opened.stat),
+        headers: buildUploadHeaders(localFile, opened.stat, includeExtendedTimestamps),
       });
-      if (putAccepted === false) {
-        if (!allowExistingMatch) {
-          throw new UploadPreflightConflictError(
-            "UPLOAD_CONDITIONAL_TARGET_APPEARED",
-            "条件PUT发现远端目标已存在，系统没有把未知文件标记为本次上传成功",
-          );
-        }
-        const verificationStatus = await verifyOrAwaitRemoteVisibility(
-          client,
-          remoteFile,
-          stat.size,
-          verificationDelaysMs || [0],
-          resolver,
-        );
-        await assertLocalUploadUnchanged(opened, stat.size);
-        return {
-          verificationStatus,
-          skippedUpload: true,
-          putAccepted: false,
-        };
-      }
-    } catch (error) {
-      // Some WebDAV drivers persist the PUT body and then incorrectly answer 405.
-      // Only accept that response after the exact target is independently verified.
-      if (uploadStatus(error) !== 405) throw error;
-      await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0], resolver);
-      await assertLocalUploadUnchanged(opened, stat.size);
-      return { verificationStatus: "verified" as const, skippedUpload: false, putAccepted: true };
+      return { putAccepted, openedStat: opened.stat };
+    } finally {
+      opened.stream.destroy();
+      await opened.handle.close().catch(() => undefined);
     }
+  };
+
+  const assertPathUnchanged = async (openedStat: fs.Stats) => {
+    const after = await inspectLocalUploadPath(localRoot, localFile);
+    const identityMatches = !Number.isFinite(Number(openedStat.ino)) || !Number.isFinite(Number(after.ino))
+      || (openedStat.dev === after.dev && openedStat.ino === after.ino);
+    if (!identityMatches || !after.isFile() || after.size !== stat.size || after.size !== openedStat.size
+      || after.mtimeMs !== openedStat.mtimeMs || after.ctimeMs !== openedStat.ctimeMs) {
+      throw Object.assign(new Error("本地上传文件在传输完成后发生变化"), {
+        code: "LOCAL_UPLOAD_CHANGED_AFTER_TRANSFER",
+        status: 422,
+      });
+    }
+  };
+
+  const includeExtendedTimestamps = profile?.capabilities.extendedUploadHeaders !== "unsupported";
+  const verify405 = async () => {
+    resolver.invalidatePath(remoteFile);
+    await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0], resolver);
+    await inspectLocalUploadPath(localRoot, localFile);
+    return { verificationStatus: "verified" as const, skippedUpload: false, putAccepted: true };
+  };
+  let putAccepted: any;
+  let openedStat: fs.Stats;
+  try {
+    ({ putAccepted, openedStat } = await putOnce(includeExtendedTimestamps));
+  } catch (error) {
+    const status = uploadStatus(error);
+    if ([400, 422].includes(status) && includeExtendedTimestamps && await confirmRemoteMissing(resolver, remoteFile)) {
+      try {
+        ({ putAccepted, openedStat } = await putOnce(false));
+        if (profile) profile.capabilities.extendedUploadHeaders = "unsupported";
+      } catch (fallbackError) {
+        if (uploadStatus(fallbackError) === 405) return verify405();
+        throw fallbackError;
+      }
+    } else if (status === 405) {
+      return verify405();
+    } else {
+      throw error;
+    }
+  }
+
+  if (putAccepted === false) {
+    if (!allowExistingMatch) {
+      throw new UploadPreflightConflictError(
+        "UPLOAD_CONDITIONAL_TARGET_APPEARED",
+        "条件PUT发现远端目标已存在，系统没有把未知文件标记为本次上传成功",
+      );
+    }
+    resolver.invalidatePath(remoteFile);
     const verificationStatus = await verifyOrAwaitRemoteVisibility(
       client,
       remoteFile,
@@ -509,12 +590,20 @@ async function putAndVerifyLocalFile(
       verificationDelaysMs || [0],
       resolver,
     );
-    await assertLocalUploadUnchanged(opened, stat.size);
-    return { verificationStatus, skippedUpload: false, putAccepted: true };
-  } finally {
-    fileStream.destroy();
-    await opened.handle.close().catch(() => undefined);
+    await assertPathUnchanged(openedStat);
+    return { verificationStatus, skippedUpload: true, putAccepted: false };
   }
+
+  resolver.invalidatePath(remoteFile);
+  const verificationStatus = await verifyOrAwaitRemoteVisibility(
+    client,
+    remoteFile,
+    stat.size,
+    verificationDelaysMs || [0],
+    resolver,
+  );
+  await assertPathUnchanged(openedStat);
+  return { verificationStatus, skippedUpload: false, putAccepted: true };
 }
 
 function promoteProgressive405ToSessionFailure(error: UploadOperationError, completedFiles: number, totalFiles: number) {
@@ -584,7 +673,8 @@ async function uploadWithAListDirect(
   options: UploadOptions = {}
 ): Promise<UploadResult> {
   const client = options.client || buildDavClient(config);
-  const resolver = createRemoteFileResolver(client);
+  const profile = getRemoteBackendProfile(config);
+  const resolver = createRemoteFileResolver(client, profile);
   const logger = options.log || logManager;
   const uploadedFiles: RemoteFileRecord[] = [];
   const qualityProfile = buildRemoteFileQualityProfile(config);
@@ -685,8 +775,9 @@ async function uploadWithAListDirect(
           stat,
           options.verificationDelaysMs,
           beforePut,
-          uploadIntent !== "normal_backup" || acceptedExistingPaths.has(originalRemoteFile.replace(/\\/g, "/")),
-          resolver,
+           uploadIntent !== "normal_backup" || acceptedExistingPaths.has(originalRemoteFile.replace(/\\/g, "/")),
+           resolver,
+           profile,
         );
       } catch (error) {
         const uploadError = await toUploadOperationError(error, originalRemoteFile);
@@ -728,8 +819,9 @@ async function uploadWithAListDirect(
             stat,
             options.verificationDelaysMs,
             beforePut,
-            uploadIntent !== "normal_backup",
-            resolver,
+           uploadIntent !== "normal_backup",
+           resolver,
+           profile,
           );
         } catch (compatibilityError) {
           const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
@@ -842,6 +934,11 @@ async function inspectPathForExpectedSize(
 ) {
   const result = await inspectRemoteFile(client, remotePath, resolver, "always");
   if (result.status === "missing") return result;
+  if (result.status === "unknown") {
+    const unknown: any = new Error("远端上传目标状态无法确认");
+    unknown.status = 409;
+    throw unknown;
+  }
   if (result.directory) {
     const directoryConflict: any = new Error("Remote upload target is a directory");
     directoryConflict.status = 409;
@@ -897,7 +994,8 @@ async function uploadWithTransferSession(
 ): Promise<UploadResult> {
   const store = options.transferSessionStore!;
   const client = options.client || buildDavClient(config);
-  const resolver = createRemoteFileResolver(client);
+  const profile = getRemoteBackendProfile(config);
+  const resolver = createRemoteFileResolver(client, profile);
   const bvid = String(options.bvid || "");
   if (!bvid && !options.sessionId) throw new Error("Transactional upload requires a BVID or session id");
   const session = store.ensure({
@@ -1079,10 +1177,11 @@ async function uploadWithTransferSession(
           entry.stat,
           verificationDelays,
           beforeAuthorizedPut,
-          uploadIntent !== "normal_backup"
-            || Boolean(sessionFile.putAcceptedAt)
-            || acceptedExistingPaths.has(sessionFile.finalPath.replace(/\\/g, "/")),
-          resolver,
+           uploadIntent !== "normal_backup"
+             || Boolean(sessionFile.putAcceptedAt)
+             || acceptedExistingPaths.has(sessionFile.finalPath.replace(/\\/g, "/")),
+           resolver,
+           profile,
         );
       } catch (error) {
         const uploadError = await toUploadOperationError(error, sessionFile.finalPath);
@@ -1109,8 +1208,9 @@ async function uploadWithTransferSession(
             entry.stat,
             verificationDelays,
             beforeAuthorizedPut,
-            uploadIntent !== "normal_backup",
-            resolver,
+           uploadIntent !== "normal_backup",
+           resolver,
+           profile,
           );
         } catch (compatibilityError) {
           throw await toUploadOperationError(compatibilityError, compatibilityPath);
@@ -1201,16 +1301,29 @@ export async function resumeUploadSession(
 export async function verifyRemoteFiles(
   config: AppConfig,
   files: RemoteFileRecord[]
-): Promise<{ ok: boolean; missing: string[] }> {
+): Promise<{ ok: boolean; missing: string[]; unknown: string[]; failures: Record<string, RemoteFailureInfo>; retryAfterMs?: number }> {
   if (files.length === 0) {
-    return { ok: false, missing: ["<no uploaded files recorded>"] };
+    return { ok: false, missing: ["<no uploaded files recorded>"], unknown: [], failures: {} };
   }
   const client = buildDavClient(config);
-  const resolver = createRemoteFileResolver(client);
+  const resolver = createRemoteFileResolver(client, getRemoteBackendProfile(config));
   const missing: string[] = [];
+  const unknown: string[] = [];
+  const failures: Record<string, RemoteFailureInfo> = {};
+  let retryAfterMs: number | undefined;
   for (const file of files) {
     try {
       const observed = await resolver.inspect(file.path, { fallback: "always" });
+      if (observed.status === "unknown") {
+        unknown.push(file.path);
+        if (observed.failure) {
+          failures[file.path] = observed.failure;
+          if (observed.failure.retryAfterMs !== undefined) {
+            retryAfterMs = Math.max(retryAfterMs || 0, observed.failure.retryAfterMs);
+          }
+        }
+        continue;
+      }
       if (observed.status !== "exists"
         || observed.directory
         || (typeof file.size === "number" && (!Number.isFinite(observed.size) || observed.size !== file.size))) {
@@ -1218,21 +1331,28 @@ export async function verifyRemoteFiles(
       }
     } catch (error) {
       if (error instanceof RemoteFileResolutionConflictError) throw error;
-      missing.push(file.path);
+      unknown.push(file.path);
     }
   }
-  return { ok: missing.length === 0, missing };
+  return {
+    ok: missing.length === 0 && unknown.length === 0,
+    missing,
+    unknown,
+    failures,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  };
 }
 
 export async function inspectRemoteFileSize(
   config: AppConfig,
   remotePath: string,
   expectedSize: number
-): Promise<{ status: "verified" | "missing" | "mismatch"; remoteSize?: number }> {
+): Promise<{ status: "verified" | "missing" | "mismatch" | "unknown"; remoteSize?: number; failure?: RemoteFailureInfo }> {
   const client = buildDavClient(config);
-  const resolver = createRemoteFileResolver(client);
+  const resolver = createRemoteFileResolver(client, getRemoteBackendProfile(config));
   const observed = await resolver.inspect(remotePath, { fallback: "always" });
   if (observed.status === "missing") return { status: "missing" };
+  if (observed.status === "unknown") return { status: "unknown", failure: observed.failure };
   if (!observed.directory && Number.isFinite(observed.size) && observed.size === expectedSize) {
     return { status: "verified", remoteSize: observed.size };
   }
@@ -1257,10 +1377,19 @@ export interface RenameRemoteItem {
 export async function listRemoteDir(config: AppConfig, remotePath: string): Promise<string[]> {
   const client = buildDavClient(config);
   const items = await client.getDirectoryContents(remotePath) as any[];
-  return items
-    .filter((item: any) => item && item.type !== "directory")
-    .map((item: any) => item?.basename)
-    .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+  if (!Array.isArray(items)) throw new Error("远端目录响应格式无效");
+  const names: string[] = [];
+  for (const item of items) {
+    try {
+      const normalized = normalizeRemoteDirectoryEntry(remotePath, item);
+      if (normalized.type === "file" && normalized.name) names.push(normalized.name);
+    } catch {
+      // A malformed unrelated entry should not hide valid files in the same
+      // directory. A resolver doing an exact lookup still fails closed when a
+      // malformed entry could be the requested name.
+    }
+  }
+  return names;
 }
 
 export async function listRemoteFilesRecursive(

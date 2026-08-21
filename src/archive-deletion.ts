@@ -7,7 +7,8 @@ import { PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, PersistentJobStore } from
 import type { StateManager } from "./state.js";
 import type { BiliUser, UserStore } from "./users.js";
 import { buildDavClient, isRemoteNotFoundError } from "./uploader.js";
-import { createRemoteFileResolver } from "./remote-file-resolver.js";
+import { classifyRemoteFailure, createRemoteFileResolver } from "./remote-file-resolver.js";
+import { getRemoteBackendProfile } from "./remote-storage.js";
 import { normalizeLegacyRemotePath, remoteBasename } from "./remote-path.js";
 
 export type ArchiveDeletionScope = "account" | "source";
@@ -61,8 +62,14 @@ function statusCode(error: any) {
 }
 
 function isTransientError(error: any) {
-  const status = statusCode(error);
-  return status === 0 || status === 408 || status === 429 || status >= 500;
+  return classifyRemoteFailure(error).category === "transient";
+}
+
+function retryDelayMs(error: any, attempt: number) {
+  const base = RETRY_DELAYS_MS[Math.min(Math.max(0, attempt), RETRY_DELAYS_MS.length - 1)];
+  const hint = Number(error?.retryAfterMs || error?.cause?.retryAfterMs || 0);
+  if (!Number.isFinite(hint) || hint <= 0) return base;
+  return Math.min(RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1], Math.max(base, hint));
 }
 
 function archiveDeletionError(message: string, code = 400, transient = false) {
@@ -1029,6 +1036,10 @@ export class ArchiveDeletionService {
       this.jobStore.complete(job.id, this.leaseOwner);
       return;
     }
+    if (["superseded", "completed", "expired"].includes(operation.status)) {
+      this.jobStore.complete(job.id, this.leaseOwner);
+      return;
+    }
     this.setMaintenance(true, {
       id: deletionId,
       status: "running",
@@ -1043,11 +1054,15 @@ export class ArchiveDeletionService {
       await this.processOperation(deletionId);
       this.jobStore.complete(job.id, this.leaseOwner);
     } catch (error: any) {
+      if (this.isOperationSuperseded(deletionId)) {
+        this.jobStore.complete(job.id, this.leaseOwner);
+        return;
+      }
       const summary = safeDeletionError(error, "归档清理失败");
       const transient = Boolean(error?.transient || isTransientError(error));
       const attempt = Number(job.attempts || 0);
       if (transient && attempt < RETRY_DELAYS_MS.length) {
-        const nextAt = this.now() + RETRY_DELAYS_MS[attempt];
+        const nextAt = this.now() + retryDelayMs(error, attempt);
         const result = this.jobStore.retry(job.id, this.leaseOwner, summary, nextAt);
         this.setOperationFailure(deletionId, result.exhausted ? "failed" : "retry_wait", summary);
       } else {
@@ -1086,15 +1101,28 @@ export class ArchiveDeletionService {
     };
   }
 
+  private isOperationRunnable(id: string) {
+    const row = this.db.db.prepare("SELECT status FROM archive_deletions WHERE id=?").get(id) as any;
+    return ["pending", "running", "retry_wait"].includes(String(row?.status || ""));
+  }
+
+  private isOperationSuperseded(id: string) {
+    const row = this.db.db.prepare("SELECT status FROM archive_deletions WHERE id=?").get(id) as any;
+    return String(row?.status || "") === "superseded";
+  }
+
   private async processOperation(id: string) {
     const operation = this.get(id);
     if (!operation) throw archiveDeletionError("归档清理任务不存在", 404);
+    if (!this.isOperationRunnable(id)) return;
     if (operation.scope === "source") {
       if (this.prepareSourceDeletion) {
         await this.prepareSourceDeletion(operation.userId, operation.mediaId!, operation.bvid!);
       }
+      if (!this.isOperationRunnable(id)) return;
       this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid!);
     }
+    if (!this.isOperationRunnable(id)) return;
     this.assertRemainingProofsStillCurrent(id);
     const config = this.configStore.get();
     const row = this.db.db.prepare("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id) as any;
@@ -1103,15 +1131,20 @@ export class ArchiveDeletionService {
       throw archiveDeletionError("AList连接或归档路径与预览不一致", 409, false);
     }
     const now = this.now();
-    this.db.db.prepare("UPDATE archive_deletions SET status='running', updated_at=?, last_error=NULL WHERE id=?").run(now, id);
+    const claimed = this.db.db.prepare(`
+      UPDATE archive_deletions SET status='running', updated_at=?, last_error=NULL
+      WHERE id=? AND status IN ('pending','retry_wait','running')
+    `).run(now, id).changes;
+    if (claimed !== 1) return;
     this.db.db.prepare("UPDATE archive_deleted_sources SET status='running' WHERE deletion_id=? AND status<>'completed'").run(id);
     const client = this.clientFactory(config);
-    const resolver = createRemoteFileResolver(client);
+    const resolver = createRemoteFileResolver(client, getRemoteBackendProfile(config));
     const items = this.db.db.prepare("SELECT * FROM archive_deletion_items WHERE deletion_id=? ORDER BY remote_path").all(id) as any[];
     const sharedPaths = this.externalReferencePaths(id);
     const resolvedRemotePaths = new Map<string, string>();
     let preflightConflict = false;
     for (const item of items) {
+      if (!this.isOperationRunnable(id)) return;
       if (TERMINAL_ITEM_STATUSES.has(String(item.status))) continue;
       const remotePath = normalizeRemotePath(item.remote_path);
       if (!isWithin(root, remotePath) || remotePath === root) {
@@ -1130,7 +1163,19 @@ export class ArchiveDeletionService {
         const observed = await resolver.inspect(remotePath, { fallback: "always" });
         const remoteSize = finiteSize(observed.size);
         if (observed.status === "missing") {
-          this.markItemTerminal(id, remotePath, "missing");
+          // Keep this as an observation until every item has passed preflight.
+          // The relation/proof reconciliation belongs to the all-clear phase.
+          this.updateItem(id, remotePath, "observed_missing", undefined);
+        } else if (observed.status === "unknown") {
+          if (observed.failure?.category === "transient") {
+            this.updateItem(id, remotePath, "failed", "远端预检暂时失败");
+            throw Object.assign(
+              archiveDeletionError("远端预检暂时失败", observed.failure.status || 503, true),
+              { retryAfterMs: observed.failure.retryAfterMs },
+            );
+          }
+          this.updateItem(id, remotePath, "conflict", "远端文件状态无法确认，未开始删除");
+          preflightConflict = true;
         } else if (observed.directory || remoteSize !== expectedSize) {
           this.updateItem(id, remotePath, "conflict", "远端文件类型或大小与归档证明不一致");
           preflightConflict = true;
@@ -1151,12 +1196,17 @@ export class ArchiveDeletionService {
       }
     }
     if (preflightConflict) throw archiveDeletionError("远端文件与预览证明不一致，未开始删除", 409, false);
+    if (!this.isOperationRunnable(id)) return;
+    const observedMissing = this.db.db.prepare("SELECT remote_path FROM archive_deletion_items WHERE deletion_id=? AND status='observed_missing' ORDER BY remote_path")
+      .all(id) as Array<{ remote_path: string }>;
+    for (const item of observedMissing) this.markItemTerminal(id, normalizeRemotePath(item.remote_path), "missing");
     const sharedVerified = this.db.db.prepare("SELECT remote_path FROM archive_deletion_items WHERE deletion_id=? AND status='shared_verified' ORDER BY remote_path")
       .all(id) as Array<{ remote_path: string }>;
     for (const item of sharedVerified) this.markItemTerminal(id, normalizeRemotePath(item.remote_path), "retained");
     this.syncOperationCounts(id);
     const verified = this.db.db.prepare("SELECT * FROM archive_deletion_items WHERE deletion_id=? AND status='verified' ORDER BY remote_path").all(id) as any[];
     for (const item of verified) {
+      if (!this.isOperationRunnable(id)) return;
       const remotePath = normalizeRemotePath(item.remote_path);
       const accessPath = resolvedRemotePaths.get(remotePath) || remotePath;
       this.updateItem(id, remotePath, "deleting", undefined, true);
@@ -1170,6 +1220,20 @@ export class ArchiveDeletionService {
       }
       resolver.clear();
       const missing = await this.confirmMissing(client, remotePath, resolver);
+      if (!this.isOperationRunnable(id)) {
+        if (missing && this.isOperationSuperseded(id)) {
+          const reconciledAt = this.now();
+          this.reconcileSourceProofsForPath(id, remotePath, reconciledAt);
+          this.db.db.prepare(`
+            UPDATE archive_deletion_items SET status='superseded', last_error=NULL, updated_at=?
+            WHERE deletion_id=? AND remote_path=? AND status='deleting'
+          `).run(reconciledAt, id, remotePath);
+          const bvids = (this.db.db.prepare("SELECT DISTINCT bvid FROM archive_deleted_sources WHERE deletion_id=?").all(id) as Array<{ bvid: string }>).map((row) => row.bvid);
+          this.db.refreshArchiveLibraryProjection(bvids);
+          this.stateManager.reload();
+        }
+        return;
+      }
       if (!missing) {
         this.updateItem(id, remotePath, "failed", "删除后远端文件仍然可见", true);
         throw archiveDeletionError("删除后远端文件仍然可见", 503, true);
@@ -1284,7 +1348,7 @@ export class ArchiveDeletionService {
     this.db.db.transaction(() => {
       const changed = this.db.db.prepare(`
         UPDATE archive_deletion_items SET status=?, last_error=NULL, updated_at=?
-        WHERE deletion_id=? AND remote_path=? AND status IN ('pending','verified','shared_verified','deleting','failed')
+      WHERE deletion_id=? AND remote_path=? AND status IN ('pending','observed_missing','verified','shared_verified','deleting','failed')
       `).run(status, now, id, remotePath).changes;
       if (changed === 1) {
         this.reconcileSourceProofsForPath(id, remotePath, now);

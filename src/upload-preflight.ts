@@ -12,9 +12,10 @@ export interface ExistingArchiveProof {
 
 export interface ObservedRemoteEntry {
   path: string;
-  status: "missing" | "exists";
+  status: "missing" | "exists" | "unknown";
   directory?: boolean;
   size?: number;
+  failure?: { category?: string; status?: number; code?: string };
 }
 
 export interface UploadTargetPreflightEntry {
@@ -103,8 +104,10 @@ export function decideUploadGroupPreflight(input: {
       }
       if (!observed || observed.status !== "exists" || observed.directory || observed.size !== expectedSize) {
         throw new UploadPreflightConflictError(
-          "UPLOAD_EXISTING_ARCHIVE_CHANGED",
-          "现有归档与SQLite证明不一致，系统没有上传新版、覆盖旧文件或混合分P",
+          observed?.status === "unknown" ? "UPLOAD_EXISTING_ARCHIVE_STATE_UNKNOWN" : "UPLOAD_EXISTING_ARCHIVE_CHANGED",
+          observed?.status === "unknown"
+            ? "现有归档的远端状态无法确认，系统没有上传新版、覆盖旧文件或混合分P"
+            : "现有归档与SQLite证明不一致，系统没有上传新版、覆盖旧文件或混合分P",
         );
       }
     }
@@ -120,6 +123,12 @@ export function decideUploadGroupPreflight(input: {
   for (const target of input.targets) {
     const observed = target.observed;
     if (observed.status === "missing") continue;
+    if (observed.status === "unknown") {
+      throw new UploadPreflightConflictError(
+        "UPLOAD_REMOTE_STATE_UNKNOWN",
+        "远端上传目标状态无法确认，系统没有重复上传或覆盖未知文件",
+      );
+    }
     if (observed.directory) {
       throw new UploadPreflightConflictError(
         "UPLOAD_TARGET_IS_DIRECTORY",

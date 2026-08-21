@@ -95,6 +95,8 @@ function extractStatus(error: any) {
 }
 
 function extractRetryAfterMs(error: any) {
+  const carried = Number(error?.retryAfterMs);
+  if (Number.isFinite(carried) && carried >= 0) return carried;
   const headers = error?.response?.headers || error?.headers;
   const raw = typeof headers?.get === "function"
     ? headers.get("retry-after")

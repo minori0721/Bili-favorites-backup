@@ -3,8 +3,9 @@ import type { WebDAVClient } from "webdav";
 import type { AppConfig } from "./config.js";
 import { joinRemotePath, normalizeRemotePath, remoteDirname } from "./remote-path.js";
 import { isRemoteNotFoundError as isResolvedRemoteNotFoundError } from "./remote-file-resolver.js";
+import { getRemoteBackendProfile, type RemoteBackendProfile, type RemoteCapability as SharedRemoteCapability } from "./remote-storage.js";
 
-export type RemoteCapability = "supported" | "unsupported" | "unknown";
+export type RemoteCapability = SharedRemoteCapability;
 
 export interface RemoteOperationCapabilities {
   copy: RemoteCapability;
@@ -278,6 +279,7 @@ async function replaceWithCapabilities(
   newPathValue: string,
   expectedSizeHint?: number,
   attempt: RemoteReplacementAttempt = {},
+  profile?: RemoteBackendProfile,
 ) {
   const source = normalizeRemotePath(oldPathValue);
   const target = normalizeRemotePath(newPathValue);
@@ -327,6 +329,8 @@ async function replaceWithCapabilities(
       }
       if (moveCapability === "unknown" && isUnsupportedMethod(error)) {
         moveCapability = "unsupported";
+        capabilities.move = moveCapability;
+        if (profile) profile.capabilities.move = "unsupported";
       } else {
         throw replacementError(
           `远端MOVE替换失败: ${String((error as any)?.message || error)}`,
@@ -341,6 +345,8 @@ async function replaceWithCapabilities(
     if (moveCapability !== "unsupported") {
       const observed = await inspectReplacementState(client, source, target, expectedSize);
       if (!observed.sourceState.exists && observed.targetMatches) {
+        capabilities.move = "supported";
+        if (profile) profile.capabilities.move = "supported";
         await attempt.onTargetVerified?.();
         return;
       }
@@ -370,6 +376,10 @@ async function replaceWithCapabilities(
     try {
       await client.copyFile(source, target, { overwrite: false });
     } catch (error) {
+      if (capabilities.copy === "unknown" && isUnsupportedMethod(error)) {
+        capabilities.copy = "unsupported";
+        if (profile) profile.capabilities.copy = "unsupported";
+      }
       const observed = await inspectReplacementState(client, source, target, expectedSize);
       if (!observed.targetMatches) {
         throw replacementError(
@@ -397,6 +407,8 @@ async function replaceWithCapabilities(
     throw replacementError("远端COPY后目标文件校验失败，保留源文件", source, target, copied, "REMOTE_COPY_UNCONFIRMED", 409);
   }
   if (targetCreatedThisAttempt) await attempt.onTargetVerified?.();
+  capabilities.copy = "supported";
+  if (profile) profile.capabilities.copy = "supported";
   if (!copied.sourceState.exists) return;
 
   try {
@@ -427,8 +439,20 @@ export async function createRemoteReplacementRunner(
   // Do not write probe files during startup or before a real replacement.
   // Unknown capabilities are resolved by the actual operation and its
   // postcondition checks.
-  const capabilities = options.capabilities || { copy: "unknown" as const, move: "unknown" as const };
-  return async (_config, oldPath, newPath, expectedSize, attempt) => replaceWithCapabilities(client, capabilities, oldPath, newPath, expectedSize, attempt);
+  const profile = options.capabilities ? undefined : getRemoteBackendProfile(config);
+  const capabilities = options.capabilities || {
+    copy: profile?.capabilities.copy || "unknown" as const,
+    move: profile?.capabilities.move || "unknown" as const,
+  };
+  return async (_config, oldPath, newPath, expectedSize, attempt) => replaceWithCapabilities(
+    client,
+    capabilities,
+    oldPath,
+    newPath,
+    expectedSize,
+    attempt,
+    profile,
+  );
 }
 
 export async function replaceRemoteFile(

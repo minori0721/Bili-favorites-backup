@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { createClient, type WebDAVClient } from "webdav";
+import type { WebDAVClient } from "webdav";
 import type { AppConfig, ConfigStore } from "./config.js";
 import {
   type PathMigrationItemRecord,
@@ -12,7 +12,7 @@ import { PersistentJobStore } from "./job-store.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import { isRemotePathWithin, joinRemotePath, normalizeRemotePath } from "./remote-path.js";
 import { classifyRemoteFailure, isRemoteNotFoundError, normalizeRemoteDirectoryEntry } from "./remote-file-resolver.js";
-import { buildStorageDavUrl } from "./storage-url.js";
+import { buildDavClient } from "./remote-storage.js";
 
 export interface PathMigrationDavClient {
   getDirectoryContents(path: string): Promise<any>;
@@ -230,6 +230,7 @@ export class PathMigrationService {
   private worker: Promise<void> | null = null;
   private previewTask: Promise<void> | null = null;
   private starting = false;
+  private lifecycleBarrier = false;
   private stopped = false;
   private readonly ensuredDirectories = new Set<string>();
   private readonly leaseOwner = `path-migration:${crypto.randomUUID()}`;
@@ -239,10 +240,7 @@ export class PathMigrationService {
     this.db = db;
     this.configStore = configStore;
     this.jobStore = new PersistentJobStore(db);
-    this.clientFactory = options.clientFactory || ((config) => {
-      const davUrl = buildStorageDavUrl(config.alistUrl);
-      return createClient(davUrl, { username: config.alistUsername, password: config.alistPassword }) as unknown as PathMigrationDavClient;
-    });
+    this.clientFactory = options.clientFactory || ((config) => buildDavClient(config) as unknown as PathMigrationDavClient);
     this.now = options.now || Date.now;
     this.sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     this.isSchedulerIdle = options.isSchedulerIdle || (() => true);
@@ -274,7 +272,53 @@ export class PathMigrationService {
     return record ? this.db.listPathMigrationItems(record.id, statuses, offset, limit) : [];
   }
 
+  isBusy() {
+    return Boolean(this.previewTask || this.worker || this.starting || this.lifecycleBarrier);
+  }
+
+  async waitForIdle(timeoutMs = 30_000) {
+    const deadline = Date.now() + Math.max(1, timeoutMs);
+    return new Promise<boolean>((resolve) => {
+      let pollTimer: NodeJS.Timeout | undefined;
+      let timeoutTimer: NodeJS.Timeout | undefined;
+      let settled = false;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (pollTimer) clearTimeout(pollTimer);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        resolve(result);
+      };
+      const poll = () => {
+        if (!this.starting && !this.previewTask && !this.worker) {
+          finish(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          finish(false);
+          return;
+        }
+        pollTimer = setTimeout(poll, 25);
+        pollTimer.unref?.();
+      };
+      timeoutTimer = setTimeout(() => finish(false), Math.max(1, timeoutMs));
+      timeoutTimer.unref?.();
+      poll();
+    });
+  }
+
+  tryAcquireLifecycleBarrier() {
+    if (this.lifecycleBarrier || this.previewTask || this.worker || this.starting) return false;
+    this.lifecycleBarrier = true;
+    return true;
+  }
+
+  releaseLifecycleBarrier() {
+    this.lifecycleBarrier = false;
+  }
+
   async preview(destinationValue: string) {
+    if (this.lifecycleBarrier) throw new Error("状态库正在切换，暂时不能创建归档路径预览");
     const config = this.configStore.get();
     const active = this.db.getActivePathMigration();
     if (active) throw new Error("已有未结束的归档路径迁移");
@@ -326,7 +370,7 @@ export class PathMigrationService {
   }
 
   rebind(database: StateDatabase) {
-    if (this.previewTask || this.worker) throw new Error("归档路径任务仍在运行，不能替换状态数据库");
+    if (this.isBusy()) throw new Error("归档路径任务仍在运行，不能替换状态数据库");
     this.db = database;
     this.jobStore.rebind(database);
     this.ensuredDirectories.clear();
@@ -457,6 +501,7 @@ export class PathMigrationService {
   }
 
   async start(id?: string) {
+    if (this.lifecycleBarrier) throw new Error("状态库正在切换，暂时不能开始归档路径迁移");
     if (this.starting) throw new Error("归档路径迁移正在执行开始前复核");
     const record = this.db.getPathMigration(id || this.latestMigrationId());
     if (!record || record.status !== "ready") throw new Error("只有无冲突的就绪预览才能开始迁移");
@@ -803,6 +848,7 @@ export class PathMigrationService {
   }
 
   pause(id?: string) {
+    if (this.lifecycleBarrier) throw new Error("状态库正在切换，暂时不能暂停归档路径迁移");
     const record = this.db.getPathMigration(id || this.latestMigrationId());
     if (!record || !["copying", "verifying"].includes(record.status)) throw new Error("当前迁移不能暂停");
     this.db.updatePathMigration(record.id, { status: "paused" });
@@ -810,6 +856,7 @@ export class PathMigrationService {
   }
 
   resume(id?: string) {
+    if (this.lifecycleBarrier) throw new Error("状态库正在切换，暂时不能继续归档路径迁移");
     const record = this.db.getPathMigration(id || this.latestMigrationId());
     if (!record || record.status !== "paused") throw new Error("当前迁移不能继续");
     this.db.updatePathMigration(record.id, { status: "copying", lastError: undefined });
@@ -819,6 +866,7 @@ export class PathMigrationService {
   }
 
   cancel(id?: string) {
+    if (this.lifecycleBarrier) throw new Error("状态库正在切换，暂时不能取消归档路径迁移");
     const record = this.db.getPathMigration(id || this.latestMigrationId());
     if (!record || ["switching", "cleanup_pending", "cleanup_running", "completed", "cancelled"].includes(record.status)) throw new Error("切换后不能取消迁移");
     this.db.updatePathMigration(record.id, { status: "cancelled" });
@@ -829,6 +877,7 @@ export class PathMigrationService {
   }
 
   async cleanupOld(id?: string, keepOld = false) {
+    if (this.lifecycleBarrier) throw new Error("状态库正在切换，暂时不能清理旧归档目录");
     const record = this.db.getPathMigration(id || this.latestMigrationId());
     if (record?.status === "cleanup_running") {
       throw migrationConflictError("旧归档目录正在由另一个请求处理，请稍后刷新状态");

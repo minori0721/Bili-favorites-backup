@@ -963,6 +963,13 @@ export class StateManager {
     seenAt = nowIso()
   ) {
     this.database.restoreCompletedArchiveSource(userId, mediaId, item.bvid, Date.parse(seenAt) || Date.now());
+    // A source deletion owns the relation until its worker finishes. Do not
+    // let a concurrently finishing favorite scan recreate or overwrite that
+    // source after the deletion worker has claimed it.
+    if (this.database.isArchiveSourceDeletionActive(userId, mediaId, item.bvid)) {
+      const existing = this.state.videos![item.bvid];
+      return { wasKnown: Boolean(existing), entry: existing };
+    }
     const existing = this.state.videos![item.bvid];
     const wasKnown = Boolean(existing);
     const favoriteUnavailable = Boolean(item.favoriteUnavailable || item.unavailable);

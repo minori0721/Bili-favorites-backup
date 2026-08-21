@@ -395,6 +395,16 @@ test("stopping a slow path preview prevents late SQLite writes", async () => {
   db.close();
 });
 
+test("waitForIdle waits for a preview that is still starting", async () => {
+  const db = new StateDatabase(":memory:");
+  const service = new PathMigrationService(db, fakeStore(fakeConfig()), { clientFactory: () => new FakeDav() });
+  (service as any).starting = true;
+  const waiting = service.waitForIdle(250);
+  setTimeout(() => { (service as any).starting = false; }, 30);
+  assert.equal(await waiting, true);
+  db.close();
+});
+
 test("path migration active index permits only one unfinished migration", () => {
   const db = new StateDatabase(":memory:");
   const record = {

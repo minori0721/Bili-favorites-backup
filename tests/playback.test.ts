@@ -711,7 +711,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
   const content = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
   let upstreamRequests = 0;
   let upstreamClosed = false;
-  let mode: "normal" | "slow" | "auth" | "forbidden" | "missing" | "error" | "redirect" | "direct" | "httpredirect" | "wrongtype" = "normal";
+  let mode: "normal" | "slow" | "auth" | "forbidden" | "missing" | "error" | "redirect" | "direct" | "httpredirect" | "wrongtype" | "head405" = "normal";
   let upstreamBase = "";
   const upstream = http.createServer((req, res) => {
     upstreamRequests += 1;
@@ -720,6 +720,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
     if (mode === "forbidden") { res.writeHead(403).end("forbidden credential detail"); return; }
     if (mode === "missing") { res.writeHead(404).end("/archive/private/video.mp4"); return; }
     if (mode === "error") { res.writeHead(503).end("upstream secret body"); return; }
+    if (mode === "head405" && req.method === "HEAD") { res.writeHead(405).end(); return; }
     if (mode === "redirect" && String(req.url || "").startsWith("/dav/")) {
       res.writeHead(302, { Location: "/storage/playback.mp4" }).end();
       return;
@@ -776,7 +777,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
   app.all("/stream", async (req, res) => {
     try {
       await streamPlaybackFile(database, {
-        alistUrl: upstreamBase,
+         alistUrl: req.query.davEndpoint === "1" ? `${upstreamBase}/dav` : upstreamBase,
         alistUsername: "alist-user",
         alistPassword: "alist-pass",
         playbackDeliveryMode: "auto",
@@ -808,10 +809,21 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
     assert.equal(head.headers.get("accept-ranges"), "bytes");
     assert.equal(head.headers.get("content-type"), "video/mp4");
 
+    mode = "head405";
+    const headFallback = await fetch(`${proxyBase}/stream`, { method: "HEAD" });
+    assert.equal(headFallback.status, 206);
+    assert.equal(headFallback.headers.get("content-range"), `bytes 0-0/${content.length}`);
+    assert.equal(await headFallback.text(), "");
+    mode = "normal";
+
     const ranged = await fetch(`${proxyBase}/stream`, { headers: { Range: "bytes=5-11", "If-Range": '"playback-test"' } });
     assert.equal(ranged.status, 206);
     assert.equal(ranged.headers.get("content-range"), `bytes 5-11/${content.length}`);
     assert.equal(await ranged.text(), content.subarray(5, 12).toString());
+
+    const davEndpoint = await fetch(`${proxyBase}/stream?davEndpoint=1`);
+    assert.equal(davEndpoint.status, 200);
+    assert.equal(await davEndpoint.text(), content.toString());
 
     const beforeInvalid = upstreamRequests;
     const invalid = await fetch(`${proxyBase}/stream`, { headers: { Range: "bytes=0-1,4-5" } });
