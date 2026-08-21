@@ -41,12 +41,12 @@ export class RemoteFileResolutionConflictError extends Error {
   }
 }
 
-function statusCode(error: any) {
+export function remoteStatusCode(error: any) {
   return Number(error?.statusCode || error?.response?.status || error?.status || 0) || undefined;
 }
 
 export function classifyRemoteFailure(error: any): RemoteFailureInfo {
-  const status = statusCode(error);
+  const status = remoteStatusCode(error);
   const code = String(error?.code || error?.cause?.code || "").toUpperCase() || undefined;
   const message = String(error?.message || error || "");
   const networkLike = Boolean(code && new Set([
@@ -54,30 +54,40 @@ export function classifyRemoteFailure(error: any): RemoteFailureInfo {
     "EAI_AGAIN", "ENETDOWN", "ENETUNREACH", "EHOSTUNREACH",
   ]).has(code)) || /timeout|timed out|socket hang up|network|temporarily unavailable|connection reset|connection refused/i.test(message);
 
+  // Once a transport exposes an HTTP status, that status is authoritative.
+  // Do not let a provider's response body (for example, "not found" in a
+  // 500 response) change the operation category.
   if (status === 401 || status === 403) return { category: "permission", status, code };
-  if (status === 405 || status === 501 || /method not allowed|not implemented/i.test(message)) {
+  if (status === 405 || status === 501) {
     return { category: "unsupported", status, code };
   }
-  if (status === 409 || status === 412 || /conflict|precondition/i.test(message)) {
+  if (status === 409 || status === 412) {
     return { category: "conflict", status, code };
   }
-  if (status === 404 || /not found|enoent|no such file/i.test(message)) {
+  if (status === 404) {
     return { category: "not_found", status, code };
   }
-  if (networkLike || status === 408 || status === 425 || status === 429 || (status !== undefined && status >= 500)) {
+  if (status === 408 || status === 425 || status === 429 || (status !== undefined && status >= 500)) {
     return { category: "transient", status, code };
+  }
+  if (status !== undefined) return { category: "unknown", status, code };
+
+  if (networkLike) return { category: "transient", status, code };
+
+  // Without an HTTP status only an explicit local missing-file code is safe
+  // to interpret as absence. Text-only messages are deliberately unknown.
+  if (code === "ENOENT" || code === "ENOTDIR") {
+    return { category: "not_found", status, code };
   }
   return { category: "unknown", status, code };
 }
 
 export function isRemoteNotFoundError(error: any) {
-  const status = statusCode(error);
-  const message = String(error?.message || error || "").toLowerCase();
-  return status === 404 || message.includes("not found") || message.includes("enoent");
+  return classifyRemoteFailure(error).category === "not_found";
 }
 
 function isPathLookupFailure(error: any) {
-  const status = statusCode(error);
+  const status = remoteStatusCode(error);
   return status === 400 || status === 404 || status === 405;
 }
 

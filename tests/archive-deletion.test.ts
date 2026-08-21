@@ -1027,6 +1027,7 @@ test("startup continues a prepared account deletion after the login was already 
     await first.stop();
     first.rememberAccount(live);
     first.beginAccountPreparation(preview.id, "DELETE REMOTE ARCHIVE");
+    first.beginAccountConfigRemoval(preview.id);
     manager.detachUserRelations(live.id);
     users.set([]);
 

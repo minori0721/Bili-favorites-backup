@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { WebDAVClient } from "webdav";
 import type { AppConfig } from "./config.js";
 import { joinRemotePath, normalizeRemotePath, remoteDirname } from "./remote-path.js";
+import { isRemoteNotFoundError as isResolvedRemoteNotFoundError } from "./remote-file-resolver.js";
 
 export type RemoteCapability = "supported" | "unsupported" | "unknown";
 
@@ -68,15 +69,14 @@ function statusCode(error: any) {
 }
 
 function isRemoteNotFound(error: any) {
-  const status = statusCode(error);
-  const message = String(error?.message || error || "").toLowerCase();
-  return status === 404 || message.includes("not found") || message.includes("enoent");
+  return isResolvedRemoteNotFoundError(error);
 }
 
 function isUnsupportedMethod(error: any) {
   const status = statusCode(error);
-  return [405, 501].includes(status || 0)
-    || /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
+  if ([405, 501].includes(status || 0)) return true;
+  if (status) return false;
+  return /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
 }
 
 function isDirectory(stat: any) {
@@ -132,7 +132,7 @@ async function putProbeFile(client: RemoteOperationsClient, target: string, body
       },
     });
   } catch (error) {
-    if (statusCode(error) !== 405) throw error;
+    if (!isUnsupportedMethod(error)) throw error;
     const observed = await readRemote(client, target);
     if (!observed.exists || observed.directory || observed.size !== body.length) throw error;
   }
@@ -219,6 +219,40 @@ async function inspectReplacementState(client: RemoteOperationsClient, source: s
   return { sourceState, targetState, targetMatches };
 }
 
+async function removeVerifiedSource(
+  client: RemoteOperationsClient,
+  source: string,
+  target: string,
+  expectedSize: number,
+) {
+  try {
+    await client.deleteFile(source);
+  } catch (error) {
+    const observed = await inspectReplacementState(client, source, target, expectedSize);
+    if (observed.sourceState.exists) {
+      throw replacementError(
+        `已验证目标存在，但清理重复源文件失败: ${String((error as any)?.message || error)}`,
+        source,
+        target,
+        observed,
+        "REMOTE_VERIFIED_SOURCE_CLEANUP_FAILED",
+        statusCode(error),
+      );
+    }
+  }
+  const observed = await inspectReplacementState(client, source, target, expectedSize);
+  if (observed.sourceState.exists || !observed.targetMatches) {
+    throw replacementError(
+      "已验证目标存在，但源文件仍可见，未继续替换",
+      source,
+      target,
+      observed,
+      "REMOTE_VERIFIED_SOURCE_STILL_VISIBLE",
+      409,
+    );
+  }
+}
+
 function replacementError(
   message: string,
   source: string,
@@ -275,31 +309,14 @@ async function replaceWithCapabilities(
     if (!attempt.targetPreviouslyVerified) {
       throw replacementError("远端替换目标已存在，但缺少本次操作的持久验证证明", source, target, state, "REMOTE_TARGET_UNPROVEN", 409);
     }
-    if (capabilities.move === "supported" && state.sourceState.exists) {
-      try {
-        await client.deleteFile(source);
-      } catch (error) {
-        const observed = await inspectReplacementState(client, source, target, expectedSize);
-        if (observed.sourceState.exists) {
-          throw replacementError(
-            `已验证目标存在，但清理重复源文件失败: ${String((error as any)?.message || error)}`,
-            source,
-            target,
-            observed,
-            "REMOTE_VERIFIED_SOURCE_CLEANUP_FAILED",
-            statusCode(error)
-          );
-        }
-      }
-      const observed = await inspectReplacementState(client, source, target, expectedSize);
-      if (observed.sourceState.exists || !observed.targetMatches) {
-        throw replacementError("已验证目标存在，但源文件仍可见，未继续替换", source, target, observed, "REMOTE_VERIFIED_SOURCE_STILL_VISIBLE", 409);
-      }
+    if (attempt.targetPreviouslyVerified && state.sourceState.exists) {
+      await removeVerifiedSource(client, source, target, expectedSize);
       return;
     }
   }
 
-  if (capabilities.move === "supported") {
+  let moveCapability = capabilities.move;
+  if (moveCapability !== "unsupported") {
     try {
       await client.moveFile(source, target, { overwrite: false });
     } catch (error) {
@@ -308,31 +325,38 @@ async function replaceWithCapabilities(
         await attempt.onTargetVerified?.();
         return;
       }
+      if (moveCapability === "unknown" && isUnsupportedMethod(error)) {
+        moveCapability = "unsupported";
+      } else {
+        throw replacementError(
+          `远端MOVE替换失败: ${String((error as any)?.message || error)}`,
+          source,
+          target,
+          observed,
+          "REMOTE_MOVE_FAILED",
+          statusCode(error),
+        );
+      }
+    }
+    if (moveCapability !== "unsupported") {
+      const observed = await inspectReplacementState(client, source, target, expectedSize);
+      if (!observed.sourceState.exists && observed.targetMatches) {
+        await attempt.onTargetVerified?.();
+        return;
+      }
       throw replacementError(
-        `远端MOVE替换失败: ${String((error as any)?.message || error)}`,
+        "远端MOVE返回后未能同时确认源消失和目标大小",
         source,
         target,
         observed,
-        "REMOTE_MOVE_FAILED",
-        statusCode(error)
+        "REMOTE_MOVE_UNCONFIRMED",
       );
     }
-    const observed = await inspectReplacementState(client, source, target, expectedSize);
-    if (!observed.sourceState.exists && observed.targetMatches) {
-      await attempt.onTargetVerified?.();
-      return;
-    }
-    throw replacementError("远端MOVE返回后未能同时确认源消失和目标大小", source, target, observed, "REMOTE_MOVE_UNCONFIRMED");
   }
 
-  if (capabilities.move !== "unsupported") {
-    throw replacementError("MOVE能力未知，未自动降级为COPY+DELETE", source, target, state, "REMOTE_MOVE_UNKNOWN");
-  }
-  if (capabilities.copy !== "supported") {
+  if (capabilities.copy === "unsupported") {
     throw replacementError(
-      capabilities.copy === "unknown"
-        ? "MOVE明确不可用，但COPY能力未知，未执行COPY+DELETE"
-        : "远端同时不支持安全MOVE和COPY",
+      "远端同时不支持安全MOVE和COPY",
       source,
       target,
       state,
@@ -400,7 +424,10 @@ export async function createRemoteReplacementRunner(
   options: { client?: RemoteOperationsClient; capabilities?: RemoteOperationCapabilities } = {}
 ): Promise<RemoteReplacementRunner> {
   const client = options.client || (await import("./uploader.js")).buildDavClient(config) as unknown as RemoteOperationsClient;
-  const capabilities = options.capabilities || await probeRemoteCapabilities(client, config.alistDest || "/");
+  // Do not write probe files during startup or before a real replacement.
+  // Unknown capabilities are resolved by the actual operation and its
+  // postcondition checks.
+  const capabilities = options.capabilities || { copy: "unknown" as const, move: "unknown" as const };
   return async (_config, oldPath, newPath, expectedSize, attempt) => replaceWithCapabilities(client, capabilities, oldPath, newPath, expectedSize, attempt);
 }
 

@@ -290,16 +290,18 @@ test("quality upgrade persists a copied backup proof before DELETE and resumes w
   assert.deepEqual(persistedFinalFiles.map((file) => file.path), ["/target/new.mp4"]);
 });
 
-test("unknown MOVE capability never silently falls back to COPY", async () => {
+test("unknown MOVE capability is resolved by the real operation", async () => {
   const client = new MemoryRemote();
   client.files.set("/target/old.mp4", Buffer.from("old"));
   const runner = await createRemoteReplacementRunner(config, {
     client,
     capabilities: { copy: "supported", move: "unknown" },
   });
-  await assert.rejects(() => runner(config, "/target/old.mp4", "/target/new.mp4"), /能力未知/);
+  await runner(config, "/target/old.mp4", "/target/new.mp4");
   assert.equal(client.copies.length, 0);
-  assert.equal(client.files.has("/target/old.mp4"), true);
+  assert.equal(client.moves.length, 1);
+  assert.equal(client.files.has("/target/old.mp4"), false);
+  assert.deepEqual(client.files.get("/target/new.mp4"), Buffer.from("old"));
 });
 
 test("batch rename uses COPY plus DELETE on a MOVE-unsupported backend", async () => {
@@ -308,7 +310,7 @@ test("batch rename uses COPY plus DELETE on a MOVE-unsupported backend", async (
   client.files.set("/target/old.mp4", Buffer.from("old"));
   const result = await batchRenameRemotePaths(config, [{ oldPath: "/target/old.mp4", newPath: "/target/new.mp4" }], client as any);
   assert.equal(result.success, 1);
-  assert.equal(client.copies.filter(([source]) => !source.includes("._bfb-replace-probe-")).length, 2);
+  assert.equal(client.copies.filter(([source]) => source === "/target/old.mp4").length, 1);
   assert.equal(client.files.has("/target/old.mp4"), false);
   assert.equal(client.files.has("/target/new.mp4"), true);
 });

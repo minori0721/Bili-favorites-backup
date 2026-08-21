@@ -139,7 +139,7 @@ const playableFileSql = (alias: string) => `
 const deletionExistsSql = (alias: string) => `EXISTS(
   SELECT 1 FROM archive_deleted_sources ads
   WHERE ads.user_id=${alias}.user_id AND ads.media_id=${alias}.media_id AND ads.bvid=${alias}.bvid
-    AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
+    AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
 )`;
 
 function archiveLibraryUsers(database: StateDatabase, users: BiliUser[]) {
@@ -613,7 +613,7 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
       FROM archive_deleted_sources ads
       JOIN source_keys keys
         ON keys.user_id=ads.user_id AND keys.media_id=ads.media_id AND keys.bvid=ads.bvid
-      WHERE ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
+      WHERE ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
     ), latest_deletion AS (
       SELECT * FROM ranked_deletions WHERE rank=1
     ), completed_deletions AS (
@@ -1167,7 +1167,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       conflict_count, failed_count, last_error, updated_at, completed_at
     FROM archive_deletions
     WHERE scope='account' AND user_id IN (${userIds.map(() => "?").join(",")})
-      AND status IN ('preparing','pending','running','retry_wait','failed','completed')
+      AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
     ORDER BY user_id, COALESCE(started_at, created_at) DESC, created_at DESC
   `).all(...userIds) as any[] : [];
   const accountDeletions = new Map<string, any>();

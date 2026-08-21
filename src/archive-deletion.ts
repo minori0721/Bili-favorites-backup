@@ -11,7 +11,7 @@ import { createRemoteFileResolver } from "./remote-file-resolver.js";
 import { normalizeLegacyRemotePath, remoteBasename } from "./remote-path.js";
 
 export type ArchiveDeletionScope = "account" | "source";
-export type ArchiveDeletionStatus = "preview" | "preparing" | "pending" | "running" | "retry_wait" | "failed" | "completed" | "expired" | "superseded";
+export type ArchiveDeletionStatus = "preview" | "preparing" | "config_removing" | "pending" | "running" | "retry_wait" | "failed" | "completed" | "expired" | "superseded";
 
 export interface ArchiveDeletionDavClient {
   stat(remotePath: string): Promise<any>;
@@ -257,7 +257,7 @@ export class ArchiveDeletionService {
   private syncMaintenanceState() {
     const row = this.db.db.prepare(`
       SELECT id, status, scope, user_id, media_id, bvid FROM archive_deletions
-      WHERE status IN ('preparing','pending','running','retry_wait')
+      WHERE status IN ('preparing','config_removing','pending','running','retry_wait')
       ORDER BY updated_at DESC LIMIT 1
     `).get() as any;
     if (row) {
@@ -550,7 +550,7 @@ export class ArchiveDeletionService {
       error: item.last_error ? safeDeletionError(item.last_error) : undefined,
     }));
     let activeTasks = 0;
-    if (["preview", "preparing"].includes(String(row.status))) {
+    if (["preview", "preparing", "config_removing"].includes(String(row.status))) {
       const statuses = PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES.map(() => "?").join(",");
       if (String(row.scope) === "source") {
         activeTasks = Number((this.db.db.prepare(`
@@ -615,10 +615,10 @@ export class ArchiveDeletionService {
     const row = this.db.db.prepare(`
       SELECT id FROM archive_deletions
       WHERE scope='account' AND user_id=?
-        AND status IN ('preparing','pending','running','retry_wait','failed','completed')
+        AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
       ORDER BY CASE status
-        WHEN 'preparing' THEN 0 WHEN 'pending' THEN 1 WHEN 'running' THEN 2
-        WHEN 'retry_wait' THEN 3 WHEN 'failed' THEN 4 ELSE 5 END,
+        WHEN 'preparing' THEN 0 WHEN 'config_removing' THEN 1 WHEN 'pending' THEN 2 WHEN 'running' THEN 3
+        WHEN 'retry_wait' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END,
         updated_at DESC, id DESC
       LIMIT 1
     `).get(userId) as any;
@@ -666,7 +666,7 @@ export class ArchiveDeletionService {
     })();
     if (!claimed) {
       const existing = this.getAccountOperation(operation.userId);
-      if (existing && ["preparing", "pending", "running", "retry_wait"].includes(existing.status)) {
+      if (existing && ["preparing", "config_removing", "pending", "running", "retry_wait"].includes(existing.status)) {
         return { operation: existing, claimed: false };
       }
       throw archiveDeletionError("账号归档清理已由其他请求处理，请刷新状态", 409);
@@ -679,18 +679,18 @@ export class ArchiveDeletionService {
     const current = this.get(id);
     if (!current) throw archiveDeletionError("账号归档清理任务不存在", 404);
     if (["pending", "running", "retry_wait", "completed"].includes(current.status)) return current;
-    if (current.scope !== "account" || current.status !== "preparing") {
+    if (current.scope !== "account" || !["preparing", "config_removing"].includes(current.status)) {
       throw archiveDeletionError("账号归档清理尚未取得准备权", 409);
     }
-    this.validateAccountPreparation(id);
+    if (current.status === "preparing") this.validateAccountPreparation(id);
     const now = this.now();
     this.db.db.transaction(() => {
       const changed = this.db.db.prepare(`
         UPDATE archive_deletions SET status='pending', updated_at=?, last_error=NULL
-        WHERE id=? AND status='preparing'
+        WHERE id=? AND status IN ('preparing','config_removing')
       `).run(now, id).changes;
       if (changed !== 1) throw archiveDeletionError("账号归档清理准备状态已变化", 409);
-      this.db.db.prepare("UPDATE archive_deleted_sources SET status='pending' WHERE deletion_id=? AND status='preparing'").run(id);
+      this.db.db.prepare("UPDATE archive_deleted_sources SET status='pending' WHERE deletion_id=? AND status IN ('preparing','config_removing')").run(id);
       this.jobStore.enqueue({
         kind: "archive_delete",
         dedupeKey: `archive-delete:${id}`,
@@ -710,7 +710,7 @@ export class ArchiveDeletionService {
 
   validateAccountPreparation(id: string) {
     const operation = this.get(id);
-    if (!operation || operation.scope !== "account" || operation.status !== "preparing") {
+    if (!operation || operation.scope !== "account" || !["preparing", "config_removing"].includes(operation.status)) {
       throw archiveDeletionError("账号归档清理准备状态已变化", 409);
     }
     const config = this.configStore.get();
@@ -730,10 +730,10 @@ export class ArchiveDeletionService {
       const updated = this.db.db.prepare(`
         UPDATE archive_deletions
         SET status='preview', expires_at=?, started_at=NULL, updated_at=?, last_error=?
-        WHERE id=? AND status='preparing'
+        WHERE id=? AND status IN ('preparing','config_removing')
       `).run(now + PREVIEW_TTL_MS, now, safeDeletionError(reason), id).changes;
       if (updated === 1) {
-        this.db.db.prepare("UPDATE archive_deleted_sources SET status='preview' WHERE deletion_id=? AND status='preparing'").run(id);
+        this.db.db.prepare("UPDATE archive_deleted_sources SET status='preview' WHERE deletion_id=? AND status IN ('preparing','config_removing')").run(id);
         this.refreshProjectionForDeletionIds([id]);
       }
       return updated === 1;
@@ -742,10 +742,39 @@ export class ArchiveDeletionService {
     return changed;
   }
 
+  beginAccountConfigRemoval(id: string) {
+    const now = this.now();
+    const changed = this.db.db.transaction(() => {
+      const updated = this.db.db.prepare(`
+        UPDATE archive_deletions
+        SET status='config_removing', updated_at=?, last_error=NULL
+        WHERE id=? AND scope='account' AND status='preparing'
+      `).run(now, id).changes;
+      if (updated === 1) {
+        this.db.db.prepare(`
+          UPDATE archive_deleted_sources SET status='config_removing'
+          WHERE deletion_id=? AND status='preparing'
+        `).run(id);
+        this.refreshProjectionForDeletionIds([id]);
+      }
+      return updated === 1;
+    })();
+    if (!changed) throw archiveDeletionError("账号归档清理准备状态已变化", 409);
+    this.syncMaintenanceState();
+    return this.get(id)!;
+  }
+
+  recordAccountPreparationError(id: string, error: unknown) {
+    this.db.db.prepare(`
+      UPDATE archive_deletions SET last_error=?, updated_at=?
+      WHERE id=? AND status IN ('preparing','config_removing')
+    `).run(safeDeletionError(error, "账号归档清理准备失败"), this.now(), id);
+  }
+
   private recoverAccountPreparations() {
     const rows = this.db.db.prepare(`
       SELECT id, user_id FROM archive_deletions
-      WHERE scope='account' AND status='preparing'
+      WHERE scope='account' AND status IN ('preparing','config_removing')
       ORDER BY created_at, id
     `).all() as Array<{ id: string; user_id: string }>;
     for (const row of rows) {
@@ -764,7 +793,7 @@ export class ArchiveDeletionService {
       } catch (error) {
         this.db.db.prepare(`
           UPDATE archive_deletions SET last_error=?, updated_at=?
-          WHERE id=? AND status='preparing'
+          WHERE id=? AND status IN ('preparing','config_removing')
         `).run(safeDeletionError(error, "账号归档清理恢复失败"), this.now(), row.id);
       }
     }

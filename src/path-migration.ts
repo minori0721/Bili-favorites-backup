@@ -10,9 +10,8 @@ import {
 } from "./database.js";
 import { PersistentJobStore } from "./job-store.js";
 import { safeErrorSummary } from "./diagnostics.js";
-import { isRemoteNotFoundError } from "./uploader.js";
 import { isRemotePathWithin, joinRemotePath, normalizeRemotePath } from "./remote-path.js";
-import { normalizeRemoteDirectoryEntry } from "./remote-file-resolver.js";
+import { classifyRemoteFailure, isRemoteNotFoundError, normalizeRemoteDirectoryEntry } from "./remote-file-resolver.js";
 import { buildStorageDavUrl } from "./storage-url.js";
 
 export interface PathMigrationDavClient {
@@ -90,13 +89,12 @@ function statusCode(error: any) {
 }
 
 function isTransientError(error: any) {
-  const status = statusCode(error);
-  return status === 0 || status >= 500 || status === 408 || status === 429;
+  return classifyRemoteFailure(error).category === "transient";
 }
 
 function isImmediateStopError(error: any) {
-  const status = statusCode(error);
-  return status === 401 || status === 403 || status === 405 || status === 409 || status === 412;
+  const category = classifyRemoteFailure(error).category;
+  return category === "permission" || category === "unsupported" || category === "conflict";
 }
 
 function migrationConflictError(message: string) {
@@ -129,8 +127,9 @@ function pathSummary(record: PathMigrationRecord) {
 
 function isUnsupportedDavMethod(error: any) {
   const status = statusCode(error);
-  return [405, 500, 501].includes(status)
-    || /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
+  if ([405, 501].includes(status)) return true;
+  if (status) return false;
+  return /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
 }
 
 async function deleteProbePath(client: PathMigrationDavClient, target: string) {
@@ -149,9 +148,9 @@ async function putProbeFile(client: PathMigrationDavClient, target: string, body
       headers: { "Content-Length": String(body.length), "Content-Type": "application/octet-stream" },
     });
   } catch (error) {
-    if (statusCode(error) !== 405) throw error;
+    if (!isUnsupportedDavMethod(error)) throw error;
     const stat = await client.stat(target);
-    if (Number(stat?.size) !== body.length) throw error;
+    if (entryType(stat) !== "file" || Number(stat?.size) !== body.length) throw error;
   }
 }
 
@@ -173,7 +172,8 @@ export async function probePathMigrationDavCapabilities(
     await putProbeFile(client, source, probeBody);
     try {
       await client.copyFile(source, copyTarget, { overwrite: false });
-      copy = true;
+      const copied = await client.stat(copyTarget);
+      copy = entryType(copied) === "file" && Number(copied?.size) === probeBody.length;
     } catch (error) {
       if (!isUnsupportedDavMethod(error)) throw error;
     }
@@ -181,7 +181,15 @@ export async function probePathMigrationDavCapabilities(
     await putProbeFile(client, moveSource, probeBody);
     try {
       await client.moveFile(moveSource, moveTarget, { overwrite: false });
-      move = true;
+      const moved = await client.stat(moveTarget);
+      let sourceVisible = true;
+      try {
+        await client.stat(moveSource);
+      } catch (error) {
+        if (isRemoteNotFoundError(error)) sourceVisible = false;
+        else throw error;
+      }
+      move = !sourceVisible && entryType(moved) === "file" && Number(moved?.size) === probeBody.length;
     } catch (error) {
       if (!isUnsupportedDavMethod(error)) throw error;
     }
@@ -318,7 +326,7 @@ export class PathMigrationService {
   }
 
   rebind(database: StateDatabase) {
-    if (this.previewTask) throw new Error("归档路径预览仍在运行，不能替换状态数据库");
+    if (this.previewTask || this.worker) throw new Error("归档路径任务仍在运行，不能替换状态数据库");
     this.db = database;
     this.jobStore.rebind(database);
     this.ensuredDirectories.clear();
@@ -461,12 +469,9 @@ export class PathMigrationService {
     this.setMaintenance(true, pathSummary(record));
     try {
       const client = this.clientFactory(config);
-      const capabilities = await probePathMigrationDavCapabilities(client, record.sourceRoot);
-      if (!capabilities.copy) {
-        throw migrationConflictError(
-          `当前远端存储不支持 WebDAV COPY，无法安全迁移归档路径${capabilities.move ? "（MOVE 可用）" : "（COPY 和 MOVE 均不可用）"}`
-        );
-      }
+      // COPY is verified on each real item below. Do not create probe files
+      // in a user's archive: capability can differ by path and a probe can
+      // itself leave state behind on a backend with delayed visibility.
       const manifest = await this.computeManifest(client, record.sourceRoot);
       const current = this.db.getPathMigration(record.id);
       if (!current || current.status !== "ready") {
@@ -909,14 +914,16 @@ export class PathMigrationService {
       clearInterval(this.leaseTimer);
       this.leaseTimer = null;
     }
-    try {
-      if (this.db.db.open) this.jobStore.releaseOwner(this.leaseOwner);
-    } catch {
-      // The state database may already have been replaced during shutdown/import.
-    }
-    this.setMaintenance(false);
     const tasks = [this.previewTask, this.worker].filter((task): task is Promise<void> => Boolean(task));
-    if (tasks.length === 0) return true;
+    if (tasks.length === 0) {
+      try {
+        if (this.db.db.open) this.jobStore.releaseOwner(this.leaseOwner);
+      } catch {
+        // The state database may already have been replaced during shutdown/import.
+      }
+      this.setMaintenance(false);
+      return true;
+    }
     let timer: NodeJS.Timeout | null = null;
     const timedOut = new Promise<boolean>((resolve) => {
       timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
@@ -925,6 +932,14 @@ export class PathMigrationService {
     const completed = Promise.allSettled(tasks).then(() => true);
     const result = await Promise.race([completed, timedOut]);
     if (timer) clearTimeout(timer);
+    if (result) {
+      try {
+        if (this.db.db.open) this.jobStore.releaseOwner(this.leaseOwner);
+      } catch {
+        // The state database may already have been replaced during shutdown/import.
+      }
+      this.setMaintenance(false);
+    }
     return result;
   }
 }

@@ -18,6 +18,7 @@ function account(): BiliUser {
 function harness(options: {
   removeError?: Error;
   retireError?: Error;
+  finalizeError?: Error;
   quiesce?: () => Promise<void>;
   preview?: any;
 } = {}) {
@@ -36,6 +37,11 @@ function harness(options: {
       operation = { id: "preview-1", scope: "account", userId: "1001", status: "preparing" };
       return { operation, claimed: true };
     },
+    beginAccountConfigRemoval: () => {
+      calls.push("config-removing");
+      operation.status = "config_removing";
+      return operation;
+    },
     validateAccountPreparation: () => { calls.push("validate-preparing"); },
     completeAccountPreparation: () => {
       calls.push("complete");
@@ -43,6 +49,7 @@ function harness(options: {
       return operation;
     },
     abortAccountPreparation: () => { calls.push("abort"); operation.status = "preview"; return true; },
+    recordAccountPreparationError: () => { calls.push("record-error"); },
   };
   const scheduler = {
     retireUser: async () => {
@@ -55,9 +62,9 @@ function harness(options: {
       await options.quiesce?.();
       return { canceledProcesses: 0 };
     },
-    finalizeUserRemoteDeletion: (_userId: string, commit: () => void) => {
+    finalizeUserRemoteDeletion: (_userId: string) => {
       calls.push("finalize");
-      commit();
+      if (options.finalizeError) throw options.finalizeError;
       return { detachedRelations: 1 };
     },
     restoreUserAfterLogin: () => { calls.push("restore-scheduler"); },
@@ -92,7 +99,7 @@ test("account and remote removal claims preparation before pruning tasks", async
   });
   assert.equal(result.operation?.status, "pending");
   assert.deepEqual(fixture.calls, [
-    "begin", "quiesce", "validate-preparing", "remember", "finalize", "remove", "mark-removed", "complete",
+    "begin", "quiesce", "validate-preparing", "remember", "config-removing", "remove", "finalize", "mark-removed", "complete",
   ]);
 
   const mismatch = harness({ preview: { id: "preview-2", scope: "source", userId: "1001" } });
@@ -123,7 +130,7 @@ test("remote account removal releases preparation when users.json cannot be upda
   }), /write failed/);
   assert.equal(fixture.getStoredUser()?.id, fixture.user.id);
   assert.deepEqual(fixture.calls, [
-    "begin", "quiesce", "validate-preparing", "remember", "finalize", "remove",
+    "begin", "quiesce", "validate-preparing", "remember", "config-removing", "remove",
     "abort", "restore-snapshot", "restore-scheduler",
   ]);
 });
@@ -159,4 +166,20 @@ test("concurrent remote removals return one operation without restoring the remo
   assert.equal(fixture.calls.filter((call) => call === "begin").length, 1);
   assert.equal(fixture.calls.filter((call) => call === "remove").length, 1);
   assert.equal(fixture.calls.includes("upsert"), false);
+});
+
+test("remote removal never restores credentials after config removal succeeds", async () => {
+  const fixture = harness({
+    finalizeError: new Error("database finalization failed"),
+    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" },
+  });
+  await assert.rejects(() => executeAccountRemoval(fixture as any, fixture.user.id, {
+    mode: "account_and_remote",
+    previewId: "preview-1",
+    confirmation: "DELETE REMOTE ARCHIVE",
+  }), /database finalization failed/);
+  assert.equal(fixture.getStoredUser(), null);
+  assert.equal(fixture.calls.includes("upsert"), false);
+  assert.equal(fixture.calls.includes("restore-snapshot"), false);
+  assert.equal(fixture.calls.includes("record-error"), true);
 });

@@ -49,7 +49,7 @@ class FakeDav implements PathMigrationDavClient {
     if (this.put405AfterWrite) throw Object.assign(new Error("Method Not Allowed"), { status: 405 });
   }
   async copyFile(source: string, destination: string) {
-    if (!this.copySupported) throw Object.assign(new Error("COPY not supported"), { status: 500 });
+    if (!this.copySupported) throw Object.assign(new Error("COPY not supported"), { status: 501 });
     const sourceStat = this.files.get(source);
     if (!sourceStat) throw Object.assign(new Error("not found"), { status: 404 });
     if (this.files.has(destination)) throw Object.assign(new Error("conflict"), { status: 409 });
@@ -59,7 +59,7 @@ class FakeDav implements PathMigrationDavClient {
     if (!source.includes("._bfb-webdav-probe-")) this.copies.push([source, destination]);
   }
   async moveFile(source: string, destination: string) {
-    if (!this.moveSupported) throw Object.assign(new Error("MOVE not supported"), { status: 500 });
+    if (!this.moveSupported) throw Object.assign(new Error("MOVE not supported"), { status: 501 });
     const sourceStat = this.files.get(source);
     if (!sourceStat) throw Object.assign(new Error("not found"), { status: 404 });
     if (this.files.has(destination)) throw Object.assign(new Error("conflict"), { status: 409 });
@@ -163,7 +163,7 @@ test("path migration capability probe tests COPY and MOVE independently", async 
   assert.equal([...dav.files.keys()].some((name) => name.includes("._bfb-webdav-probe-")), false);
 });
 
-test("path migration blocks before copying when COPY is unavailable", async () => {
+test("path migration fails closed on the first real COPY when COPY is unavailable", async () => {
   const db = new StateDatabase(":memory:");
   const config = fakeConfig();
   const dav = new FakeDav();
@@ -175,13 +175,11 @@ test("path migration blocks before copying when COPY is unavailable", async () =
   });
   const preview = await service.preview("/drive/new");
   await waitFor(service, (state) => state.status === "ready");
-  await assert.rejects(() => service.start(preview.id), (error: any) => {
-    assert.equal(error.statusCode, 409);
-    assert.match(error.message, /不支持 WebDAV COPY/);
-    return true;
-  });
+  await service.start(preview.id);
+  await waitFor(service, (state) => state.status === "paused");
   assert.equal(dav.copies.length, 0);
   assert.equal(config.alistDest, "/drive/old");
+  await service.stop();
   db.close();
 });
 

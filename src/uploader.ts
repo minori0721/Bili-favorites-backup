@@ -50,6 +50,7 @@ import {
 } from "./upload-preflight.js";
 import {
   createRemoteFileResolver,
+  isRemoteNotFoundError as isResolvedRemoteNotFoundError,
   RemoteFileResolutionConflictError,
   normalizeRemoteDirectoryEntry,
   type RemoteFileResolver,
@@ -410,10 +411,32 @@ async function openVerifiedLocalUpload(localRoot: string, localFile: string, exp
         status: 422,
       });
     }
-    return { handle, stream: handle.createReadStream(), stat: opened };
+    // Keep ownership of the descriptor here. The upload stream must not close
+    // the handle before the post-transfer fstat below runs.
+    return { handle, stream: handle.createReadStream({ autoClose: false }), stat: opened };
   } catch (error) {
     await handle.close().catch(() => undefined);
     throw error;
+  }
+}
+
+async function assertLocalUploadUnchanged(
+  opened: { handle: { stat(): Promise<fs.Stats> }; stat: fs.Stats },
+  expectedSize: number,
+) {
+  const after = await opened.handle.stat();
+  const identityMatches = !Number.isFinite(Number(opened.stat.ino)) || !Number.isFinite(Number(after.ino))
+    || (opened.stat.dev === after.dev && opened.stat.ino === after.ino);
+  const metadataMatches = after.isFile()
+    && after.size === expectedSize
+    && after.size === opened.stat.size
+    && after.mtimeMs === opened.stat.mtimeMs
+    && after.ctimeMs === opened.stat.ctimeMs;
+  if (!identityMatches || !metadataMatches) {
+    throw Object.assign(new Error("本地上传文件在传输完成后发生变化"), {
+      code: "LOCAL_UPLOAD_CHANGED_AFTER_TRANSFER",
+      status: 422,
+    });
   }
 }
 
@@ -464,6 +487,7 @@ async function putAndVerifyLocalFile(
           verificationDelaysMs || [0],
           resolver,
         );
+        await assertLocalUploadUnchanged(opened, stat.size);
         return {
           verificationStatus,
           skippedUpload: true,
@@ -475,6 +499,7 @@ async function putAndVerifyLocalFile(
       // Only accept that response after the exact target is independently verified.
       if (uploadStatus(error) !== 405) throw error;
       await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0], resolver);
+      await assertLocalUploadUnchanged(opened, stat.size);
       return { verificationStatus: "verified" as const, skippedUpload: false, putAccepted: true };
     }
     const verificationStatus = await verifyOrAwaitRemoteVisibility(
@@ -484,6 +509,7 @@ async function putAndVerifyLocalFile(
       verificationDelaysMs || [0],
       resolver,
     );
+    await assertLocalUploadUnchanged(opened, stat.size);
     return { verificationStatus, skippedUpload: false, putAccepted: true };
   } finally {
     fileStream.destroy();
@@ -1518,9 +1544,7 @@ export async function moveRemoteFile(config: AppConfig, oldPath: string, newPath
 }
 
 export function isRemoteNotFoundError(error: any) {
-  const status = error?.status || error?.response?.status || error?.statusCode;
-  const message = String(error?.message || error || "").toLowerCase();
-  return status === 404 || message.includes("not found") || message.includes("enoent");
+  return isResolvedRemoteNotFoundError(error);
 }
 
 export async function deleteRemoteFiles(

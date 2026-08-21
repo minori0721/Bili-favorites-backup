@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   RemoteFileResolutionConflictError,
   RemoteFileResolver,
+  classifyRemoteFailure,
   isLikelyEncodedFilename,
   normalizeRemoteDirectoryEntry,
   remoteNameMatches,
@@ -13,6 +14,14 @@ function notFound() {
   error.status = 404;
   return error;
 }
+
+test("remote error classification trusts HTTP status over misleading response text", () => {
+  assert.equal(classifyRemoteFailure(Object.assign(new Error("not found"), { status: 500 })).category, "transient");
+  assert.equal(classifyRemoteFailure(Object.assign(new Error("not found"), { status: 403 })).category, "permission");
+  assert.equal(classifyRemoteFailure(Object.assign(new Error("not found"), { status: 404 })).category, "not_found");
+  assert.equal(classifyRemoteFailure(Object.assign(new Error("not found"), { code: "EUNKNOWN" })).category, "unknown");
+  assert.equal(classifyRemoteFailure(Object.assign(new Error("missing"), { code: "ENOENT" })).category, "not_found");
+});
 
 test("safe first-upload names keep the stat fast path and do not list the directory", async () => {
   let statCalls = 0;

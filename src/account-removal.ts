@@ -22,15 +22,17 @@ interface AccountRemovalArchiveGateway {
   markAccountRemoved(userId: string): void;
   restoreAccount(userId: string): boolean;
   beginAccountPreparation(id: string, confirmation: string): { operation: AccountRemovalOperation; claimed: boolean };
+  beginAccountConfigRemoval(id: string): AccountRemovalOperation;
   validateAccountPreparation(id: string): unknown;
   completeAccountPreparation(id: string): AccountRemovalOperation;
   abortAccountPreparation(id: string, reason?: string): boolean;
+  recordAccountPreparationError(id: string, error: unknown): void;
 }
 
 interface AccountRemovalSchedulerGateway {
   retireUser(user: BiliUser): Promise<Record<string, unknown>>;
   quiesceUserRemoteDeletion(user: BiliUser): Promise<Record<string, unknown>>;
-  finalizeUserRemoteDeletion(userId: string, commit: () => void): Record<string, unknown>;
+  finalizeUserRemoteDeletion(userId: string, commit?: () => void): Record<string, unknown>;
   restoreUserAfterLogin(userId: string): unknown;
 }
 
@@ -134,19 +136,31 @@ export async function executeAccountRemoval(
     }
 
     let retired: Record<string, unknown> = {};
+    let configRemoved = false;
     try {
       const quiesced = await dependencies.scheduler.quiesceUserRemoteDeletion(user);
       dependencies.archiveDeletion.validateAccountPreparation(previewId);
       dependencies.archiveDeletion.rememberAccount(user);
-      let operation: AccountRemovalOperation | undefined;
-      const finalized = dependencies.scheduler.finalizeUserRemoteDeletion(user.id, () => {
-        dependencies.userStore.remove(user.id);
-        dependencies.archiveDeletion.markAccountRemoved(user.id);
-        operation = dependencies.archiveDeletion.completeAccountPreparation(previewId);
-      });
+      dependencies.archiveDeletion.beginAccountConfigRemoval(previewId);
+      dependencies.userStore.remove(user.id);
+      configRemoved = true;
+      const finalized = dependencies.scheduler.finalizeUserRemoteDeletion(user.id);
+      dependencies.archiveDeletion.markAccountRemoved(user.id);
+      const operation = dependencies.archiveDeletion.completeAccountPreparation(previewId);
       retired = { ...quiesced, ...finalized };
       return { mode, retired, operation };
     } catch (error) {
+      // Once users.json has been durably changed, never write the account
+      // back from a later SQLite/scheduler failure. The persisted
+      // config_removing phase lets startup finish the saga safely.
+      if (configRemoved) {
+        try {
+          dependencies.archiveDeletion.recordAccountPreparationError(previewId, error);
+        } catch (recordError) {
+          dependencies.onRollbackError?.(recordError);
+        }
+        throw error;
+      }
       if (restoreAccountAfterFailure(dependencies, user, previewId)) throw error;
       try {
         dependencies.archiveDeletion.markAccountRemoved(user.id);

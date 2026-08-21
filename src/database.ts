@@ -371,7 +371,7 @@ CREATE INDEX IF NOT EXISTS idx_archive_deletions_target
   ON archive_deletions(user_id, media_id, bvid, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_deletions_active
   ON archive_deletions((1))
-  WHERE status IN ('preparing','pending','running','retry_wait');
+  WHERE status IN ('preparing','config_removing','pending','running','retry_wait');
 
 CREATE TABLE IF NOT EXISTS archive_deletion_items (
   deletion_id TEXT NOT NULL REFERENCES archive_deletions(id) ON DELETE CASCADE,
@@ -642,7 +642,7 @@ function refreshArchiveLibraryProjectionUnsafe(db: Database.Database, bvids?: st
         CASE WHEN EXISTS(
           SELECT 1 FROM archive_deleted_sources ads
           WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
-            AND ads.status IN ('preparing','pending','running','retry_wait','failed','completed')
+            AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
         ) THEN 'deleted' ELSE 'normal' END AS visibility,
         r.last_seen_at AS recent_key,
         lower(trim(COALESCE(
@@ -880,7 +880,7 @@ export class StateDatabase {
             ON favorite_relations(backup_status, COALESCE(next_remote_check_at, last_remote_check_at, 0), bvid);
           CREATE UNIQUE INDEX idx_archive_deletions_active
             ON archive_deletions((1))
-            WHERE status IN ('preparing','pending','running','retry_wait');
+            WHERE status IN ('preparing','config_removing','pending','running','retry_wait');
         `);
         if (currentVersion < 8) refreshArchiveLibraryProjectionUnsafe(this.db);
         this.db.exec("DROP INDEX IF EXISTS idx_transfer_sessions_status");
@@ -987,7 +987,7 @@ export class StateDatabase {
     const row = this.db.prepare(`
       SELECT EXISTS(
         SELECT 1 FROM archive_deletions
-        WHERE status IN ('preparing','pending','running','retry_wait')
+        WHERE status IN ('preparing','config_removing','pending','running','retry_wait')
       ) AS present
     `).get() as any;
     return Boolean(row?.present);
@@ -997,7 +997,7 @@ export class StateDatabase {
     const row = this.db.prepare(`
       SELECT EXISTS(
         SELECT 1 FROM archive_deletions
-        WHERE status IN ('preparing','pending','running','retry_wait','failed')
+        WHERE status IN ('preparing','config_removing','pending','running','retry_wait','failed')
       ) AS present
     `).get() as any;
     return Boolean(row?.present);
@@ -1008,7 +1008,7 @@ export class StateDatabase {
       SELECT EXISTS(
         SELECT 1 FROM archive_deletions
         WHERE scope='account' AND user_id=?
-          AND status IN ('preparing','pending','running','retry_wait','failed')
+          AND status IN ('preparing','config_removing','pending','running','retry_wait','failed')
       ) AS present
     `).get(userId) as any;
     return Boolean(row?.present);
@@ -1024,7 +1024,7 @@ export class StateDatabase {
       SELECT EXISTS(
         SELECT 1 FROM archive_deleted_sources
         WHERE user_id=? AND media_id=? AND bvid=?
-          AND status IN ('preparing','pending','running','retry_wait','failed','completed')
+          AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
       ) AS blocked
     `).get(userId, mediaId, bvid) as any;
     return Boolean(row?.blocked);
