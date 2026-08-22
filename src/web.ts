@@ -152,6 +152,9 @@ export function renderLoginPage() {
     .login-meta { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px 12px; margin-top:20px; font-size:12px; }
     .login-meta a { color:var(--muted); text-decoration:none; border-radius:6px; }
     .login-meta a:hover,.login-meta a:focus-visible { color:var(--accent); outline:none; text-decoration:underline; text-underline-offset:3px; }
+    @media (prefers-reduced-motion: reduce) {
+      *,*::before,*::after { animation-duration:0.01ms!important; animation-iteration-count:1!important; transition-duration:0.01ms!important; scroll-behavior:auto!important; }
+    }
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(20px); }
       to { opacity: 1; transform: translateY(0); }
@@ -223,7 +226,7 @@ export function renderAppPage() {
     ${getLogSection()}
   </main>
   ${getModals()}
-  <div id="toastContainer" class="toast-container"></div>
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
   <script>
     ${getAppScript()}
   </script>
@@ -247,9 +250,11 @@ function getAppStyles() {
       --glass-blur: blur(18px);
       --glass-shadow: 0 18px 48px rgba(57,197,187,0.09), inset 0 1px 0 rgba(255,255,255,0.78);
       --success: #4CAF50; --success-bg: #E8F5E9;
+      --archive-muted: #526B66; --archive-muted-soft: #5A716D;
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at 10% -10%,rgba(57,197,187,0.18) 0%,transparent 30%),radial-gradient(circle at 86% 4%,rgba(224,247,250,0.68) 0%,transparent 28%),linear-gradient(180deg,#ffffff 0%,var(--bg) 52%); color:var(--ink); }
+    html.modal-open,body.modal-open { overflow:hidden; overscroll-behavior:none; }
     header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px 20px; padding:20px 32px; background:rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); border-bottom:1px solid rgba(214,240,237,0.76); position:sticky; top:0; z-index:10; box-shadow:0 8px 30px rgba(57,197,187,0.05); }
     header h1 { margin:0; font-size:24px; color:var(--accent); font-weight:700; }
     .app-brand,.header-actions { display:flex; align-items:center; min-width:0; }
@@ -367,7 +372,6 @@ function getAppStyles() {
       .video-play-affordance { display:none!important; }
     }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
-    body.archive-library-open { overflow:hidden; }
     .archive-library-modal { padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
     .archive-library-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:#F5F9F8; color:var(--ink); }
     .archive-library-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:#EEF5F3; }
@@ -389,11 +393,11 @@ function getAppStyles() {
     .archive-nav-item.active { border-left-color:var(--accent); background:#DDF1ED; color:#183F3A; }
     .archive-nav-copy { min-width:0; }
     .archive-nav-title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:680; }
-    .archive-nav-meta { display:block; margin-top:2px; color:#718581; font-size:10px; }
-    .archive-nav-count { color:#718581; font-size:11px; font-variant-numeric:tabular-nums; }
-    .archive-nav-empty { padding:18px 10px; color:#718581; font-size:12px; text-align:center; }
+    .archive-nav-meta { display:block; margin-top:2px; color:var(--archive-muted); font-size:10px; }
+    .archive-nav-count { color:var(--archive-muted); font-size:11px; font-variant-numeric:tabular-nums; }
+    .archive-nav-empty { padding:18px 10px; color:var(--archive-muted); font-size:12px; text-align:center; }
     .archive-nav-inactive { margin-top:7px; border-top:1px solid #DCE8E6; padding-top:7px; }
-    .archive-nav-inactive summary { cursor:pointer; color:#718581; font-size:11px; font-weight:700; padding:7px 8px; }
+    .archive-nav-inactive summary { cursor:pointer; color:var(--archive-muted); font-size:11px; font-weight:700; padding:7px 8px; }
     .archive-nav-deletion { margin:7px 8px 3px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:8px 9px; color:#526B66; font-size:10px; line-height:1.55; }
     .archive-nav-deletion button { margin-top:6px; border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:5px 8px; font:inherit; font-weight:700; cursor:pointer; }
     .archive-nav-deletion button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
@@ -401,7 +405,7 @@ function getAppStyles() {
     .archive-library-topbar { flex:0 0 auto; min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); }
     .archive-library-heading { min-width:0; }
     .archive-library-heading h2 { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:18px; letter-spacing:0; }
-    .archive-library-heading span { display:block; margin-top:3px; color:#718581; font-size:11px; }
+    .archive-library-heading span { display:block; margin-top:3px; color:var(--archive-muted); font-size:11px; }
     .archive-library-mobile-back { display:none; flex:0 0 auto; font-size:19px; }
     .archive-library-toolbar { flex:0 0 auto; display:grid; grid-template-columns:minmax(220px,1fr) auto auto; gap:10px; align-items:center; padding:12px 20px; border-bottom:1px solid #E5EDEA; background:#FFFFFF; }
     .archive-library-search { position:relative; min-width:0; }
@@ -433,33 +437,33 @@ function getAppStyles() {
     .archive-library-cover-badge { max-width:75%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-radius:4px; background:rgba(18,28,27,0.80); color:#F4F7F6; padding:3px 6px; font-size:10px; }
     .archive-library-card-copy { display:block; padding:9px 7px 10px; }
     .archive-library-title { display:-webkit-box; min-height:39px; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; color:#263F3B; font-size:13px; font-weight:720; line-height:1.48; }
-    .archive-library-meta { display:block; margin-top:6px; overflow:hidden; color:#718581; font-size:10px; line-height:1.55; text-overflow:ellipsis; white-space:nowrap; }
-    .archive-library-memberships { display:block; margin-top:5px; overflow:hidden; color:#5A716D; font-size:10px; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
+    .archive-library-meta { display:block; margin-top:6px; overflow:hidden; color:var(--archive-muted); font-size:10px; line-height:1.55; text-overflow:ellipsis; white-space:nowrap; }
+    .archive-library-memberships { display:block; margin-top:5px; overflow:hidden; color:var(--archive-muted-soft); font-size:10px; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
     .archive-library-status { display:inline-flex; flex:0 0 auto; align-items:center; max-width:100%; border-radius:4px; padding:3px 6px; font-size:10px; font-weight:750; white-space:nowrap; }
     .archive-library-status.playable { background:#DDF4E7; color:#267047; }
     .archive-library-status.pending { background:#FFF0CF; color:#8A6111; }
     .archive-library-status.issue { background:#FDE4E2; color:#A0433C; }
     .archive-library-status.deleted { background:#E8ECEB; color:#52615E; }
-    .archive-library-footer { min-height:38px; display:flex; justify-content:center; align-items:center; padding:10px; color:#718581; font-size:11px; text-align:center; }
+    .archive-library-footer { min-height:38px; display:flex; justify-content:center; align-items:center; padding:10px; color:var(--archive-muted); font-size:11px; text-align:center; }
     .archive-library-footer button { margin-left:7px; border:0; background:transparent; color:#16877D; padding:4px; font:inherit; font-weight:700; cursor:pointer; }
-    .archive-library-empty { grid-column:1/-1; min-height:220px; display:grid; place-items:center; color:#718581; font-size:13px; text-align:center; }
+    .archive-library-empty { grid-column:1/-1; min-height:220px; display:grid; place-items:center; color:var(--archive-muted); font-size:13px; text-align:center; }
     .archive-library-detail { position:absolute; z-index:4; top:0; right:0; bottom:0; width:min(440px,100%); display:flex; flex-direction:column; border-left:1px solid #D8E3E0; background:#FFFFFF; box-shadow:-20px 0 50px rgba(25,52,48,0.14); transform:translateX(102%); visibility:hidden; transition:transform .16s ease,visibility 0s linear .16s; }
     .archive-library-detail.open { transform:translateX(0); visibility:visible; transition-delay:0s; }
     .archive-library-detail-head { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:64px; padding:12px 16px; border-bottom:1px solid #E0EAE8; }
     .archive-library-detail-head h3 { margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:16px; }
     .archive-library-detail-body { min-height:0; overflow:auto; padding:16px; }
     .archive-library-detail-cover { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:6px; background:#E5ECEA; }
-    .archive-library-detail-meta { margin:10px 0 14px; color:#667D79; font-size:12px; line-height:1.65; }
+    .archive-library-detail-meta { margin:10px 0 14px; color:var(--archive-muted-soft); font-size:12px; line-height:1.65; }
     .archive-library-source { border-top:1px solid #E5ECEA; padding:12px 0; }
     .archive-library-source:first-child { border-top:0; }
     .archive-library-source strong { display:block; color:#2D4B46; font-size:13px; }
-    .archive-library-source span { display:block; margin-top:4px; color:#718581; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+    .archive-library-source span { display:block; margin-top:4px; color:var(--archive-muted); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
     .archive-library-source-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:9px; }
     .archive-library-source-actions button { border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:6px 10px; font:inherit; font-size:11px; font-weight:700; cursor:pointer; }
     .archive-library-source-actions button.danger-action { border-color:#E5AAA4; background:#FFF3F2; color:#A13D35; }
     .archive-library-source-actions button:disabled { cursor:not-allowed; opacity:.58; }
     .archive-library-source-actions button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
-    .archive-library-source-reason { color:#738783!important; font-size:10px!important; }
+    .archive-library-source-reason { color:var(--archive-muted)!important; font-size:10px!important; }
     .archive-deletion-progress { margin-top:10px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:9px 10px; color:#526B66; font-size:11px; line-height:1.65; }
     .archive-library-detail-retry { margin-top:12px; border:1px solid #63BFB7; border-radius:5px; background:#EDF8F6; color:#176E66; padding:7px 12px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
     .archive-library-detail-retry:focus-visible { outline:2px solid rgba(57,197,187,0.30); outline-offset:2px; }
@@ -500,6 +504,17 @@ function getAppStyles() {
     @media (max-width:380px) {
       .archive-library-grid { grid-template-columns:1fr; }
     }
+    @media (pointer:coarse) {
+      .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close,.archive-library-card-more { width:44px; height:44px; }
+      .archive-library-search-clear { top:0; right:0; width:44px; height:44px; }
+      .archive-library-segment button,.archive-library-filterbar button,.archive-library-source-actions button,.archive-library-detail-retry,
+      .video-detail-status .retry-button,.playback-message-actions button,.playback-tool-button,.playback-part-button,
+      .recovery-issues-status button,.log-toggle button { min-height:44px; }
+      .playback-close,.playback-search-clear,.playback-shell.is-mobile-immersive .playback-queue-close,
+      .help-icon-btn,.section-title-row .help-icon-btn,.toast-close { width:44px; height:44px; min-width:44px; min-height:44px; }
+      .playback-immersive-control { min-width:44px; height:44px; min-height:44px; }
+      .playback-search-clear { top:0; right:0; }
+    }
     @media (prefers-reduced-motion:reduce) {
       .archive-library-card,.archive-library-detail,.archive-library-sidebar,.archive-library-main { transition:none!important; }
     }
@@ -510,7 +525,6 @@ function getAppStyles() {
     .account-removal-option strong { display:block; color:#294943; font-size:13px; }
     .account-removal-option span { display:block; margin-top:3px; color:#718581; font-size:11px; line-height:1.55; }
     .account-removal-preview { border:1px solid #E2EAE8; border-radius:6px; background:#FFFFFF; padding:10px 12px; color:#526B66; font-size:12px; line-height:1.7; }
-    body.playback-open { overflow:hidden; }
     .playback-modal { padding:18px; align-items:stretch; background:rgba(11,16,16,0.88); backdrop-filter:blur(12px); }
     .playback-shell { width:min(1480px,100%); min-width:0; height:calc(100dvh - 36px); margin:auto; overflow:hidden; display:flex; flex-direction:column; color:#F4F7F6; background:#151B1A; border:1px solid #34413F; border-radius:8px; box-shadow:0 28px 80px rgba(0,0,0,0.38); animation:playbackEnter .18s ease-out; }
     .playback-header { flex:0 0 auto; min-width:0; display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:68px; padding:13px 16px 13px 20px; border-bottom:1px solid #2D3836; background:#19201F; }
@@ -776,6 +790,7 @@ function getAppStyles() {
     .confirm-action-input-hint { margin-top:6px; font-size:12px; }
     .clipboard-fallback-input { position:fixed; left:-9999px; top:0; width:1px; height:1px; opacity:0; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
+    .toast-container[aria-hidden="true"] { visibility:hidden; }
     .toast { background:white; color:var(--ink); padding:14px 14px 14px 18px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:flex-start; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:420px; word-break:break-word; pointer-events:auto; }
     .toast-message { flex:1; min-width:0; line-height:1.55; }
     .toast-close { width:26px; height:26px; border:1px solid var(--glass-border); border-radius:50%; background:rgba(255,255,255,0.72); color:var(--muted); cursor:pointer; font-size:16px; line-height:1; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
@@ -786,6 +801,9 @@ function getAppStyles() {
     @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
     @keyframes toastIn { from{opacity:0;transform:translateX(40px) scale(0.9)} to{opacity:1;transform:translateX(0) scale(1)} }
     @keyframes toastOut { from{opacity:1;transform:translateX(0) scale(1)} to{opacity:0;transform:translateX(40px) scale(0.9)} }
+    @media (prefers-reduced-motion: reduce) {
+      *,*::before,*::after { animation-duration:0.01ms!important; animation-iteration-count:1!important; transition-duration:0.01ms!important; scroll-behavior:auto!important; }
+    }
     @supports not ((backdrop-filter: blur(1px))) {
       header,.card,.modal .panel { background:var(--panel); }
       .modal { background:rgba(26,47,45,0.58); }
@@ -937,40 +955,40 @@ function getSettingsSection() {
         <button class="help-icon-btn" id="settingsHelpBtn" type="button" title="查看当前设置如何执行" aria-label="查看当前设置如何执行">?</button>
       </div>
       <div class="settings-grid">
-        <div><label>轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
-        <div><label>BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" /><p class="muted field-hint">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
+        <div><label for="pollInterval">轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
+        <div><label for="delaySeconds">BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" aria-describedby="delaySecondsHint" /><p class="muted field-hint" id="delaySecondsHint">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
 
         <div class="settings-group"><div class="settings-group-title">远端存储（AList / OpenList WebDAV）</div></div>
-        <div class="field-full"><label>远端内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244 或 http://openlist:5244" autocomplete="off" /><p class="muted field-hint">兼容字段名保持为 alistUrl；这里可以填写 AList 或 OpenList 的 WebDAV 服务地址。</p></div>
-        <div class="field-full"><label>远端网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://openlist.example.com" autocomplete="off" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在网盘中查看”入口；留空则不显示。支持 AList 和 OpenList 的网页地址。</p></div>
-        <div><label>远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
-        <div><label>远端密码（WebDAV 密码）</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
-        <div class="field-full"><label>目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" /><p class="muted field-hint">已有归档时请使用“迁移归档路径”，系统会先探测 COPY/MOVE 能力、复制并确认新目录，旧目录不会自动删除。</p></div>
-        <div class="field-full"><label>上传目录结构</label>
-          <select id="uploadLayout">
+        <div class="field-full"><label for="alistUrl">远端内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244 或 http://openlist:5244" autocomplete="off" aria-describedby="alistUrlHint" /><p class="muted field-hint" id="alistUrlHint">兼容字段名保持为 alistUrl；这里可以填写 AList 或 OpenList 的 WebDAV 服务地址。</p></div>
+        <div class="field-full"><label for="alistBrowserUrl">远端网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://openlist.example.com" autocomplete="off" aria-describedby="alistBrowserUrlHint" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在网盘中查看”入口；留空则不显示。支持 AList 和 OpenList 的网页地址。</p></div>
+        <div><label for="alistUsername">远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
+        <div><label for="alistPassword">远端密码（WebDAV 密码）</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
+        <div class="field-full"><label for="alistDest">目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" aria-describedby="alistDestHint" /><p class="muted field-hint" id="alistDestHint">已有归档时请使用“迁移归档路径”，系统会先探测 COPY/MOVE 能力、复制并确认新目录，旧目录不会自动删除。</p></div>
+        <div class="field-full"><label for="uploadLayout">上传目录结构</label>
+          <select id="uploadLayout" aria-describedby="uploadLayoutHint">
             <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
             <option value="folder-video">收藏夹名 / 视频</option>
             <option value="video-only">仅视频文件</option>
           </select>
-          <p class="muted field-hint">目录结构变化只影响新任务，不会移动已有远端文件。</p>
+          <p class="muted field-hint" id="uploadLayoutHint">目录结构变化只影响新任务，不会移动已有远端文件。</p>
         </div>
-        <div class="field-full"><label>归档播放传输方式</label>
-          <select id="playbackDeliveryMode">
+        <div class="field-full"><label for="playbackDeliveryMode">归档播放传输方式</label>
+          <select id="playbackDeliveryMode" aria-describedby="playbackDeliveryModeHint">
             <option value="auto">优先网盘直连，失败自动代理</option>
             <option value="proxy">始终由 BFB 代理</option>
           </select>
-          <p class="muted field-hint">直连可节省 BFB 服务器流量，但网盘临时签名地址会在当前浏览器的网络请求中可见。</p>
+          <p class="muted field-hint" id="playbackDeliveryModeHint">直连可节省 BFB 服务器流量，但网盘临时签名地址会在当前浏览器的网络请求中可见。</p>
         </div>
 
         <div class="settings-group"><div class="settings-group-title">下载控制 (BBDown)</div></div>
-        <div class="field-full"><label>播放接口</label>
-          <div class="segmented-control" id="bbdownApiModeControl">
+        <div class="field-full"><label id="bbdownApiModeLabel">播放接口</label>
+          <div class="segmented-control" id="bbdownApiModeControl" role="radiogroup" aria-labelledby="bbdownApiModeLabel" aria-describedby="bbdownApiModeHint">
             <label><input type="radio" name="bbdownApiMode" value="web" checked /><span>网页接口</span></label>
             <label><input type="radio" name="bbdownApiMode" value="app" /><span>APP接口</span></label>
           </div>
-          <p class="muted field-hint">网页接口遇到播放风控会暂停 3 分钟并自动单任务探测；APP 接口需要扫码登录 token，极少数 APP 空响应会仅对当前视频回退网页接口。</p>
+          <p class="muted field-hint" id="bbdownApiModeHint">网页接口遇到播放风控会暂停 3 分钟并自动单任务探测；APP 接口需要扫码登录 token，极少数 APP 空响应会仅对当前视频回退网页接口。</p>
         </div>
-        <div><label>视频编码</label>
+        <div><label for="bbdownEncoding">视频编码</label>
           <select id="bbdownEncoding">
             <option value="">自动 (默认)</option>
             <option value="HEVC">HEVC (H.265)</option>
@@ -978,7 +996,7 @@ function getSettingsSection() {
             <option value="AV1">AV1</option>
           </select>
         </div>
-        <div><label>最高画质</label>
+        <div><label for="bbdownQuality">最高画质</label>
           <select id="bbdownQuality">
             <option value="">自动 (最高)</option>
             <option value="8K">8K</option>
@@ -1003,22 +1021,22 @@ function getSettingsSection() {
           <div class="template-tags selected-tags" id="selectedTags"></div>
           <label class="template-label">当前模板预览</label>
           <div class="template-preview" id="templatePreview"></div>
-          <label class="template-label">自定义模板（高级）</label>
+          <label class="template-label" for="filenameTemplate">自定义模板（高级）</label>
           <input id="filenameTemplate" type="text" placeholder="例如: <videoTitle>-<ownerName>-<bvid>" />
         </div>
-        <div class="field-full"><label>远端重命名扫描上限</label><input id="renameScanMaxFiles" type="number" min="100" max="100000" /></div>
+        <div class="field-full"><label for="renameScanMaxFiles">远端重命名扫描上限</label><input id="renameScanMaxFiles" type="number" min="100" max="100000" /></div>
 
         <div class="settings-group"><div class="settings-group-title">任务队列与重试</div></div>
-        <div><label>失败重试次数</label><input id="maxRetries" type="number" min="0" /></div>
-        <div><label>重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
-        <div><label>同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
-        <div><label>同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
-        <div class="field-full"><label>远端文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" /><p class="muted field-hint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
-        <div class="field-full"><label>本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
-        <div class="field-full"><label>任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
-        <div><label>远端对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
-        <div><label>远端对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
-        <div class="field-full"><label>每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
+        <div><label for="maxRetries">失败重试次数</label><input id="maxRetries" type="number" min="0" /></div>
+        <div><label for="retryDelaySeconds">重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
+        <div><label for="concurrentDownloads">同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
+        <div><label for="concurrentUploads">同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
+        <div class="field-full"><label for="uploadFileIntervalSeconds">远端文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" aria-describedby="uploadFileIntervalHint" /><p class="muted field-hint" id="uploadFileIntervalHint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
+        <div class="field-full"><label for="localCacheLimitGB">本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
+        <div class="field-full"><label for="queuePrefetchLimit">任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
+        <div><label for="remoteVerifyConcurrency">远端对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
+        <div><label for="remoteVerifyRateLimitPerSecond">远端对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
+        <div class="field-full"><label for="remoteRequeueLimitPerCycle">每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
       </div>
       <div class="row settings-actions">
         <button id="saveConfigBtn">保存设置并生效</button>
@@ -1049,9 +1067,9 @@ function getLogSection() {
 
 function getModals() {
   return `
-  <div class="modal" id="loginModal">
+  <div class="modal" id="loginModal" aria-labelledby="loginModalTitle">
     <div class="panel">
-      <h2>扫码登录</h2>
+      <h2 id="loginModalTitle">扫码登录</h2>
       <p class="muted">请使用B站APP扫码登录（TV端接口）。</p>
       <div class="qr-wrap">
         <img id="loginQr" class="login-qr" alt="QR" />
@@ -1063,9 +1081,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="favoritesModal">
+  <div class="modal" id="favoritesModal" aria-labelledby="favoritesModalTitle">
     <div class="panel">
-      <h2>选择同步收藏夹</h2>
+      <h2 id="favoritesModalTitle">选择同步收藏夹</h2>
       <p class="muted">勾选你需要自动备份的收藏夹。点击收藏夹名称可查看内部视频详情。</p>
       <div class="favorites-list" id="favoritesList"></div>
       <div class="row modal-actions split-actions">
@@ -1076,11 +1094,11 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal archive-library-modal" id="archiveLibraryModal">
+  <div class="modal archive-library-modal" id="archiveLibraryModal" aria-labelledby="archiveLibraryDialogTitle">
     <section class="archive-library-shell" aria-labelledby="archiveLibraryTitle">
       <aside class="archive-library-sidebar" aria-label="归档目录">
         <div class="archive-library-brand">
-          <h2>归档库</h2>
+          <h2 id="archiveLibraryDialogTitle">归档库</h2>
           <button id="closeArchiveLibraryBtn" class="archive-library-close" type="button" aria-label="关闭归档库" title="关闭">×</button>
         </div>
         <nav class="archive-library-nav" id="archiveLibraryNav"></nav>
@@ -1120,7 +1138,7 @@ function getModals() {
           <div class="archive-library-footer" id="archiveLibraryFooter" aria-live="polite"></div>
         </div>
       </section>
-      <aside class="archive-library-detail" id="archiveLibraryDetail" role="dialog" aria-modal="true" aria-labelledby="archiveLibraryDetailTitle" aria-hidden="true">
+      <aside class="archive-library-detail" id="archiveLibraryDetail" role="dialog" aria-labelledby="archiveLibraryDetailTitle" aria-hidden="true">
         <div class="archive-library-detail-head">
           <h3 id="archiveLibraryDetailTitle">归档详情</h3>
           <button id="archiveLibraryDetailCloseBtn" class="archive-library-detail-close" type="button" aria-label="关闭详情" title="关闭">×</button>
@@ -1130,7 +1148,7 @@ function getModals() {
     </section>
   </div>
 
-  <div class="modal" id="videoDetailModal">
+  <div class="modal" id="videoDetailModal" aria-labelledby="videoDetailTitle">
     <div class="panel panel-medium">
       <h2 id="videoDetailTitle">收藏夹详情</h2>
       <div class="filter-toggle" id="videoDetailFilterBar">
@@ -1147,7 +1165,7 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal playback-modal" id="playbackModal">
+  <div class="modal playback-modal" id="playbackModal" aria-labelledby="playbackDialogTitle">
     <section class="playback-shell" aria-labelledby="playbackDialogTitle">
       <div class="playback-header">
         <div class="playback-heading">
@@ -1222,9 +1240,9 @@ function getModals() {
     </section>
   </div>
 
-  <div class="modal" id="unavailableModal">
+  <div class="modal" id="unavailableModal" aria-labelledby="unavailableModalTitle">
     <div class="panel panel-wide">
-      <h2>下架视频清单</h2>
+      <h2 id="unavailableModalTitle">下架视频清单</h2>
       <div class="filter-toggle">
         <button id="filterMissingBtn" class="active">下架未上传</button>
         <button id="filterUploadedBtn">下架已上传</button>
@@ -1236,9 +1254,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="syncHelpModal">
+  <div class="modal" id="syncHelpModal" aria-labelledby="syncHelpModalTitle">
     <div class="panel panel-large">
-      <h2>同步与对账说明</h2>
+      <h2 id="syncHelpModalTitle">同步与对账说明</h2>
       <div class="help-tabs">
         <button id="syncHelpSimpleBtn" class="active" type="button">简要介绍</button>
         <button id="syncHelpDetailBtn" type="button">详细介绍</button>
@@ -1250,9 +1268,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="settingsHelpModal">
+  <div class="modal" id="settingsHelpModal" aria-labelledby="settingsHelpModalTitle">
     <div class="panel panel-wider">
-      <h2>当前设置执行流程</h2>
+      <h2 id="settingsHelpModalTitle">当前设置执行流程</h2>
       <p class="muted">这里不会保存设置，也不会触发同步，只按当前表单里的值生成说明。</p>
       <div id="settingsFlowContent"></div>
       <div class="row modal-actions">
@@ -1261,9 +1279,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="renamePreviewModal">
+  <div class="modal" id="renamePreviewModal" aria-labelledby="renamePreviewModalTitle">
     <div class="panel panel-max">
-      <h2>检查旧命名文件</h2>
+      <h2 id="renamePreviewModalTitle">检查旧命名文件</h2>
       <p class="muted">先预览会改哪些远端文件。只有勾选并二次确认后，才会真正修改 AList / OpenList 网盘文件名。</p>
       <div id="renamePreviewSummary" class="muted"></div>
       <div class="row preview-actions">
@@ -1284,9 +1302,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="qualityUpgradeModal">
+  <div class="modal" id="qualityUpgradeModal" aria-labelledby="qualityUpgradeModalTitle">
     <div class="panel panel-max">
-      <h2>检查可升级画质</h2>
+      <h2 id="qualityUpgradeModalTitle">检查可升级画质</h2>
       <p class="muted">按当前 BBDown 画质、编码、Hi-Res、杜比设置重新下载。新版文件上传并验证成功后，才会删除旧远端文件。</p>
       <div id="qualityUpgradeSummary" class="muted"></div>
       <div class="row preview-actions">
@@ -1307,10 +1325,10 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="cleanupDataModal">
+  <div class="modal" id="cleanupDataModal" aria-labelledby="cleanupDataModalTitle">
     <div class="panel panel-large">
       <div class="section-title-row">
-        <h2>清理数据</h2>
+        <h2 id="cleanupDataModalTitle">清理数据</h2>
         <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么" aria-label="查看清理项目说明">?</button>
       </div>
       <p class="muted">勾选要清理的小抽屉。清理只会碰本项目的 <code>data</code> 和 <code>temp</code>，不会乱动别的地方。</p>
@@ -1333,9 +1351,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="migrationModal">
+  <div class="modal" id="migrationModal" aria-labelledby="migrationModalTitle">
     <div class="panel panel-large">
-      <h2>数据迁移</h2>
+      <h2 id="migrationModalTitle">数据迁移</h2>
       <p class="muted">导出会打包本地持久化数据；包含账号登录信息时，请把压缩包当作敏感文件保管。</p>
       <div class="segmented-control" id="migrationModeControl">
         <label><input type="radio" name="migrationMode" value="lightweight" checked /><span>轻量迁移</span></label>
@@ -1369,13 +1387,13 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="pathMigrationModal">
+  <div class="modal" id="pathMigrationModal" aria-labelledby="pathMigrationModalTitle">
     <div class="panel panel-large">
-      <h2>迁移归档路径</h2>
+      <h2 id="pathMigrationModalTitle">迁移归档路径</h2>
       <p class="muted">系统会在同一 AList / OpenList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。开始前会用隔离临时文件探测 COPY 和 MOVE；复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
       <div class="settings-grid">
-        <div><label>当前归档路径</label><input id="pathMigrationSource" type="text" readonly /></div>
-        <div><label>新归档路径</label><input id="pathMigrationDestination" type="text" placeholder="例如: /阿里云盘/bili-backup-2" /></div>
+        <div><label for="pathMigrationSource">当前归档路径</label><input id="pathMigrationSource" type="text" readonly /></div>
+        <div><label for="pathMigrationDestination">新归档路径</label><input id="pathMigrationDestination" type="text" placeholder="例如: /阿里云盘/bili-backup-2" /></div>
       </div>
       <div id="pathMigrationSummary" class="cleanup-list"></div>
       <div id="pathMigrationItems" class="rename-skip-list"></div>
@@ -1393,9 +1411,9 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="cleanupHelpModal">
+  <div class="modal" id="cleanupHelpModal" aria-labelledby="cleanupHelpModalTitle">
     <div class="panel panel-narrow">
-      <h2>清理小贴士</h2>
+      <h2 id="cleanupHelpModalTitle">清理小贴士</h2>
       <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
       <div id="cleanupHelpContent" class="cleanup-help-list"></div>
       <p class="muted help-note">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连内置 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。外接 OpenList 的数据目录由 OpenList 自己管理。</p>
@@ -1405,7 +1423,7 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal recovery-issues-modal" id="recoveryIssuesModal" aria-hidden="true">
+  <div class="modal recovery-issues-modal" id="recoveryIssuesModal" aria-hidden="true" aria-labelledby="recoveryIssuesTitle">
     <section class="recovery-issues-shell" aria-labelledby="recoveryIssuesTitle">
       <header class="recovery-issues-header">
         <button id="recoveryIssuesBackBtn" class="recovery-issues-back" type="button" aria-label="返回待处理列表" title="返回">←</button>
@@ -1437,7 +1455,7 @@ function getModals() {
     </section>
   </div>
 
-  <div class="modal" id="confirmActionModal">
+  <div class="modal" id="confirmActionModal" aria-labelledby="confirmActionTitle">
     <div class="panel panel-narrow">
       <h2 id="confirmActionTitle">确认操作</h2>
       <div id="confirmActionMessage" class="confirm-action-message"></div>
@@ -1454,7 +1472,7 @@ function getModals() {
     </div>
   </div>
 
-  <div class="modal" id="accountRemovalModal">
+  <div class="modal" id="accountRemovalModal" aria-labelledby="accountRemovalTitle">
     <div class="panel panel-narrow">
       <h2 id="accountRemovalTitle">删除账号</h2>
       <p class="muted">请选择账号登录信息和远端归档的处理方式。</p>
@@ -1655,6 +1673,8 @@ function getAppScript() {
     let migrationImportBlocked = false;
     const modalStack = [];
     const modalBackgroundState = new Map();
+    const archiveLibraryLayoutMedia = window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)');
+    let modalScrollState = null;
     let pendingConfirmAction = null;
 
     function safeText(value, fallback = '未知') {
@@ -1727,8 +1747,39 @@ function getAppScript() {
       }, 0);
     }
 
+    function syncModalScrollLock(locked) {
+      const root = document.documentElement;
+      const body = document.body;
+      if (locked && !modalScrollState) {
+        const scrollbarWidth = Math.max(0, window.innerWidth - root.clientWidth);
+        modalScrollState = {
+          rootHadClass:root.classList.contains('modal-open'),
+          bodyHadClass:body.classList.contains('modal-open'),
+          bodyPaddingRight:body.style.paddingRight
+        };
+        if (scrollbarWidth > 0) {
+          const paddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
+          body.style.paddingRight = (paddingRight + scrollbarWidth) + 'px';
+        }
+        root.classList.add('modal-open');
+        body.classList.add('modal-open');
+        return;
+      }
+      if (!locked && modalScrollState) {
+        root.classList.toggle('modal-open', modalScrollState.rootHadClass);
+        body.classList.toggle('modal-open', modalScrollState.bodyHadClass);
+        body.style.paddingRight = modalScrollState.bodyPaddingRight;
+        modalScrollState = null;
+      }
+    }
+
     function syncModalBackground(hidden) {
-      const roots = [document.querySelector('header'), document.querySelector('main')].filter(Boolean);
+      syncModalScrollLock(hidden);
+      const roots = [
+        document.querySelector('header'),
+        document.querySelector('main'),
+        document.getElementById('toastContainer')
+      ].filter(Boolean);
       roots.forEach((root) => {
         if (hidden) {
           if (!modalBackgroundState.has(root)) {
@@ -1748,6 +1799,14 @@ function getAppScript() {
         else root.setAttribute('aria-hidden', previous.ariaHidden);
         modalBackgroundState.delete(root);
       });
+    }
+
+    function ensureModalAccessibleName(modal) {
+      if (modal.hasAttribute('aria-label') || modal.hasAttribute('aria-labelledby')) return;
+      const heading = modal.querySelector('h1,h2,h3');
+      if (!heading) return;
+      if (!heading.id) heading.id = modal.id + 'Title';
+      modal.setAttribute('aria-labelledby', heading.id);
     }
 
     function syncModalStack() {
@@ -1836,6 +1895,7 @@ function getAppScript() {
       if (!modal) return false;
       const existingIndex = modalStack.findIndex((entry) => entry.modal === modal);
       if (existingIndex >= 0) return existingIndex === modalStack.length - 1;
+      ensureModalAccessibleName(modal);
       const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       modalStack.push({ modal, trigger:trigger instanceof HTMLElement ? trigger : previousFocus, previousFocus });
       modal.classList.add('active');
@@ -1904,9 +1964,20 @@ function getAppScript() {
     }
 
     function showToast(message, type = 'error') {
-      const container = document.getElementById('toastContainer');
+      const modal = activeModal();
+      let container = modal?.querySelector('[data-modal-toast-host="true"]') || null;
+      if (!container && modal) {
+        container = document.createElement('div');
+        container.className = 'toast-container modal-toast-container';
+        container.dataset.modalToastHost = 'true';
+        container.setAttribute('aria-live', 'polite');
+        container.setAttribute('aria-atomic', 'false');
+        modal.appendChild(container);
+      }
+      if (!container) container = document.getElementById('toastContainer');
       const toast = document.createElement('div');
       toast.className = 'toast ' + type;
+      toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
       const text = document.createElement('div');
       text.className = 'toast-message';
       text.textContent = String(message || '');
@@ -1915,13 +1986,19 @@ function getAppScript() {
       close.type = 'button';
       close.setAttribute('aria-label', '关闭提示');
       close.textContent = '\u00d7';
-      close.addEventListener('click', () => toast.remove());
+      const removeToast = () => {
+        toast.remove();
+        if (container?.matches('[data-modal-toast-host="true"]') && !container.childElementCount) container.remove();
+      };
+      close.addEventListener('click', removeToast);
       toast.appendChild(text);
       toast.appendChild(close);
       container.appendChild(toast);
       setTimeout(() => {
+        if (!toast.isConnected) return;
         toast.classList.add('fade-out');
-        toast.addEventListener('animationend', () => toast.remove());
+        toast.addEventListener('animationend', removeToast, { once:true });
+        setTimeout(removeToast, 400);
       }, 3500);
     }
 
@@ -3284,7 +3361,6 @@ function getAppScript() {
       archiveLibraryState.navigationController = null;
       archiveLibraryState.loading = false;
       closeArchiveLibraryDetail({ restoreFocus:false });
-      document.body.classList.remove('archive-library-open');
     }
 
     function archiveLibrarySessionCurrent(token) {
@@ -3335,7 +3411,34 @@ function getAppScript() {
     }
 
     function isArchiveLibraryMobileLayout() {
-      return window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)').matches;
+      return archiveLibraryLayoutMedia.matches;
+    }
+
+    function setArchiveLibraryLayerAvailability(element, available) {
+      if (!element) return;
+      element.inert = !available;
+      if (available) element.removeAttribute('aria-hidden');
+      else element.setAttribute('aria-hidden', 'true');
+    }
+
+    function syncArchiveLibraryPanels() {
+      const shell = document.querySelector('.archive-library-shell');
+      const sidebar = document.querySelector('.archive-library-sidebar');
+      const main = document.querySelector('.archive-library-main');
+      const detailOpen = document.getElementById('archiveLibraryDetail')?.classList.contains('open');
+      if (detailOpen) {
+        setArchiveLibraryLayerAvailability(sidebar, false);
+        setArchiveLibraryLayerAvailability(main, false);
+        return;
+      }
+      if (!isArchiveLibraryMobileLayout()) {
+        setArchiveLibraryLayerAvailability(sidebar, true);
+        setArchiveLibraryLayerAvailability(main, true);
+        return;
+      }
+      const showContent = Boolean(shell?.classList.contains('show-content'));
+      setArchiveLibraryLayerAvailability(sidebar, !showContent);
+      setArchiveLibraryLayerAvailability(main, showContent);
     }
 
     function archiveSummaryText(summary) {
@@ -3585,6 +3688,7 @@ function getAppScript() {
     }
 
     async function selectArchiveLibraryDirectory(context, trigger) {
+      const shouldFocusMobileBack = Boolean(trigger && isArchiveLibraryMobileLayout());
       saveArchiveLibraryScroll();
       if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
       archiveLibraryState.searchTimer = null;
@@ -3601,8 +3705,9 @@ function getAppScript() {
       syncArchiveLibraryNavigationSelection();
       setArchiveLibraryHeading();
       document.querySelector('.archive-library-shell').classList.add('show-content');
+      syncArchiveLibraryPanels();
       await loadArchiveLibraryItems(true);
-      if (trigger && document.activeElement === trigger && isArchiveLibraryMobileLayout()) {
+      if (shouldFocusMobileBack && document.getElementById('archiveLibraryModal').classList.contains('active')) {
         document.getElementById('archiveLibraryMobileBackBtn').focus({ preventScroll:true });
       }
     }
@@ -3796,14 +3901,8 @@ function getAppScript() {
       }
     }
 
-    function syncArchiveLibraryDetailLayer(open) {
-      const sidebar = document.querySelector('.archive-library-sidebar');
-      const main = document.querySelector('.archive-library-main');
-      [sidebar, main].filter(Boolean).forEach((element) => {
-        element.inert = Boolean(open);
-        if (open) element.setAttribute('aria-hidden', 'true');
-        else element.removeAttribute('aria-hidden');
-      });
+    function syncArchiveLibraryDetailLayer() {
+      syncArchiveLibraryPanels();
     }
 
     function closeArchiveLibraryDetail(options = {}) {
@@ -3817,7 +3916,7 @@ function getAppScript() {
       detail.classList.remove('open');
       detail.setAttribute('aria-hidden', 'true');
       document.getElementById('archiveLibraryDetailBody').replaceChildren();
-      syncArchiveLibraryDetailLayer(false);
+      syncArchiveLibraryDetailLayer();
       archiveLibraryState.detailTrigger = null;
       archiveLibraryState.detailBvid = null;
       if (wasOpen && options.restoreFocus !== false) {
@@ -3970,7 +4069,7 @@ function getAppScript() {
       archiveLibraryState.detailBvid = bvid;
       detail.classList.add('open');
       detail.setAttribute('aria-hidden', 'false');
-      syncArchiveLibraryDetailLayer(true);
+      syncArchiveLibraryDetailLayer();
       document.getElementById('archiveLibraryDetailTitle').textContent = '归档详情';
       body.textContent = '正在读取...';
       setTimeout(() => {
@@ -4147,9 +4246,9 @@ function getAppScript() {
       archiveLibraryState.title = '全部归档';
       document.getElementById('archiveLibrarySearchInput').value = '';
       document.querySelector('.archive-library-shell').classList.remove('show-content');
+      syncArchiveLibraryPanels();
       renderArchiveLibraryNavigation();
       setArchiveLibraryHeading();
-      document.body.classList.add('archive-library-open');
       openModal('archiveLibraryModal', trigger);
       const token = archiveLibraryState.sessionToken;
       try {
@@ -4671,7 +4770,6 @@ function getAppScript() {
       playbackState.progressTimer = null;
       destroyCurrentArt();
       clearMediaSession();
-      document.body.classList.remove('playback-open');
       const shell = document.querySelector('.playback-shell');
       shell.classList.remove('is-mobile-immersive', 'queue-open');
       const stage = document.getElementById('playbackStage');
@@ -6202,7 +6300,6 @@ function getAppScript() {
       playbackState.continuous = playbackState.preferences.continuous;
       playbackState.trigger = trigger || null;
       playbackState.focusBvid = bvid;
-      document.body.classList.add('playback-open');
       openModal('playbackModal', trigger);
       setPlaybackQueueDrawer(false);
       if (syncPlaybackImmersiveMode()) {
@@ -6244,7 +6341,6 @@ function getAppScript() {
       playbackState.continuous = playbackState.preferences.continuous;
       playbackState.trigger = trigger || null;
       playbackState.focusBvid = bvid;
-      document.body.classList.add('playback-open');
       openModal('playbackModal', trigger);
       setPlaybackQueueDrawer(false);
       if (syncPlaybackImmersiveMode()) {
@@ -7374,6 +7470,7 @@ function getAppScript() {
       closeArchiveLibraryDetail({ restoreFocus:false });
       const shell = document.querySelector('.archive-library-shell');
       shell.classList.remove('show-content');
+      syncArchiveLibraryPanels();
       shell.scrollLeft = 0;
       const active = document.querySelector('.archive-nav-item.active');
       if (active) setTimeout(() => {
@@ -7381,6 +7478,7 @@ function getAppScript() {
         shell.scrollLeft = 0;
       }, 0);
     });
+    archiveLibraryLayoutMedia.addEventListener('change', syncArchiveLibraryPanels);
     document.getElementById('archiveLibraryDetailCloseBtn').addEventListener('click', closeArchiveLibraryDetail);
     document.getElementById('archiveLibrarySearchInput').addEventListener('input', scheduleArchiveLibrarySearch);
     document.getElementById('archiveLibrarySearchClearBtn').addEventListener('click', () => {
