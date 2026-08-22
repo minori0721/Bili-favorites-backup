@@ -29,6 +29,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
+import { redactRemotePathForDisplay } from "./diagnostics.js";
 import { type RemoteFileQualityProfile, type RemoteFileRecord, type UploadFileMetadata } from "./state.js";
 import { captureUploadResponseBody, classifyUploadError, sanitizeUploadText, UploadOperationError } from "./upload-health.js";
 import {
@@ -50,6 +51,7 @@ import {
 } from "./upload-preflight.js";
 import {
   createRemoteFileResolver,
+  ensureRemoteDirectory,
   isRemoteNotFoundError as isResolvedRemoteNotFoundError,
   RemoteFileResolutionConflictError,
   normalizeRemoteDirectoryEntry,
@@ -61,26 +63,8 @@ import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname 
 
 export const buildDavClient = buildSharedDavClient;
 
-export async function ensureRemoteDir(client: WebDAVClient, remotePath: string) {
-  const segments = normalizeRemotePath(remotePath, { allowTrailingSlash: true }).split('/').filter(s => s.length > 0);
-  let currentPath = '';
-  for (const segment of segments) {
-    currentPath += '/' + segment;
-    if (await client.exists(currentPath) === false) {
-      try {
-        await client.createDirectory(currentPath);
-      } catch (error) {
-        try {
-          if (await client.exists(currentPath)) {
-            continue;
-          }
-        } catch (checkError) {
-          throw checkError;
-        }
-        throw error;
-      }
-    }
-  }
+export async function ensureRemoteDir(client: WebDAVClient, remotePath: string, profile?: RemoteBackendProfile) {
+  await ensureRemoteDirectory(client as any, remotePath, profile);
 }
 
 export interface UploadResult {
@@ -203,6 +187,7 @@ function stripUnsafeRemoteNameCharacters(value: string) {
     })
     .join("")
     .replace(/[\\/]+/g, "_")
+    .replace(/[<>:\"|?*]/g, "_")
     .replace(/[\u0000-\u001f\u007f]/g, "");
 }
 
@@ -215,8 +200,17 @@ function truncateUtf8(value: string, maxBytes: number) {
   return result;
 }
 
+export function needsCompatibilityName(fileName: string) {
+  const value = String(fileName || "");
+  return hasFourByteCharacters(value)
+    || value.normalize("NFC") !== value
+    || /[\u0000-\u001f\u007f]/.test(value)
+    || /[\\/<>:\"|?*]/.test(value)
+    || Buffer.byteLength(value, "utf8") > 220;
+}
+
 export function buildCompatibilityUploadName(fileName: string, reservedNames: ReadonlySet<string> = new Set()) {
-  if (!hasFourByteCharacters(fileName)) return undefined;
+  if (!needsCompatibilityName(fileName)) return undefined;
   const normalizedName = String(fileName).normalize("NFC");
   const extension = path.extname(normalizedName);
   const stem = extension ? normalizedName.slice(0, -extension.length) : normalizedName;
@@ -387,9 +381,16 @@ async function verify405WrittenFile(
 }
 
 async function confirmRemoteMissing(resolver: RemoteFileResolver, remoteFile: string) {
-  resolver.invalidatePath(remoteFile);
-  const observed = await resolver.inspect(remoteFile, { fallback: "always" });
-  return observed.status === "missing";
+  // A rejected PUT can be reported after a provider has accepted the body.
+  // Require a short bounded window of consistent absence before retrying with
+  // different headers; otherwise leave the upload awaiting verification.
+  for (const delayMs of [0, 250, 750]) {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    resolver.invalidatePath(remoteFile);
+    const observed = await resolver.inspect(remoteFile, { fallback: "always" });
+    if (observed.status !== "missing") return false;
+  }
+  return true;
 }
 
 async function verifyOrAwaitRemoteVisibility(
@@ -624,7 +625,7 @@ function promoteProgressive405ToSessionFailure(error: UploadOperationError, comp
 
 function shouldRetryWithCompatibilityName(error: UploadOperationError, fileName: string) {
   const status = error.uploadFailure.status;
-  return hasFourByteCharacters(fileName)
+  return needsCompatibilityName(fileName)
     && error.uploadFailure.category === "deterministic"
     && status !== undefined
     && [400, 405, 422].includes(status);
@@ -737,7 +738,7 @@ async function uploadWithAListDirect(
         retainedProof: groupDecision.proof,
       };
     }
-    await ensureRemoteDir(client, remotePath);
+    await ensureRemoteDir(client, remotePath, profile);
   } catch (error) {
     throw await toUploadOperationError(error, remotePath);
   }
@@ -752,14 +753,14 @@ async function uploadWithAListDirect(
       const originalRemoteFile = entry.remoteFile;
       const stat = entry.stat;
       const sizeKB = (stat.size / 1024).toFixed(1);
-      console.log(`[WebDAV] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`);
+      console.log(`[WebDAV] Uploading ${entry.name} to ${redactRemotePathForDisplay(originalRemoteFile)} (${stat.size} bytes)`);
       
       logger.push({
         timestamp: new Date().toISOString(),
         type: "upload",
         level: "info",
         summary: `正在上传: ${entry.name} (${sizeKB} KB) → ${remotePath}`,
-        raw: `[WebDAV] Uploading ${entry.name} to ${originalRemoteFile} (${stat.size} bytes)`,
+        raw: `[WebDAV] Uploading ${entry.name} to ${redactRemotePathForDisplay(originalRemoteFile)} (${stat.size} bytes)`,
         simpleVisible: true,
       });
 
@@ -787,13 +788,13 @@ async function uploadWithAListDirect(
         if (!compatibilityName) {
           promoteProgressive405ToSessionFailure(uploadError, uploadedFiles.length, preparedEntries.length);
           const info = uploadError.uploadFailure;
-          console.error(`[WebDAV] Upload failed status=${info.status || "unknown"} category=${info.category} path=${originalRemoteFile}: ${info.summary}`);
+          console.error(`[WebDAV] Upload failed status=${info.status || "unknown"} category=${info.category} path=${redactRemotePathForDisplay(originalRemoteFile)}: ${info.summary}`);
           logger.push({
             timestamp: new Date().toISOString(),
             type: "upload",
             level: "error",
             summary: `上传失败: ${entry.name} - ${info.summary}`,
-            raw: `[WebDAV] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${originalRemoteFile}: ${info.summary}`,
+            raw: `[WebDAV] Failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${redactRemotePathForDisplay(originalRemoteFile)}: ${info.summary}`,
             simpleVisible: true,
           });
           throw uploadError;
@@ -827,13 +828,13 @@ async function uploadWithAListDirect(
           const finalError = await toUploadOperationError(compatibilityError, uploadedRemoteFile);
           promoteProgressive405ToSessionFailure(finalError, uploadedFiles.length, preparedEntries.length);
           const info = finalError.uploadFailure;
-          console.error(`[WebDAV] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} path=${uploadedRemoteFile}: ${info.summary}`);
+          console.error(`[WebDAV] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} path=${redactRemotePathForDisplay(uploadedRemoteFile)}: ${info.summary}`);
           logger.push({
             timestamp: new Date().toISOString(),
             type: "upload",
             level: "error",
             summary: `兼容文件名上传失败: ${compatibilityName} - ${info.summary}`,
-            raw: `[WebDAV] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${uploadedRemoteFile}: ${info.summary}`,
+            raw: `[WebDAV] Compatible-name upload failed status=${info.status || "unknown"} category=${info.category} retryable=${info.retryable} path=${redactRemotePathForDisplay(uploadedRemoteFile)}: ${info.summary}`,
             simpleVisible: true,
           });
           throw finalError;
@@ -1085,7 +1086,7 @@ async function uploadWithTransferSession(
         retainedProof: groupDecision.proof,
       };
     }
-    await ensureRemoteDir(client, remotePath);
+    await ensureRemoteDir(client, remotePath, profile);
   } catch (error) {
     store.updateSession(session.id, { phase: "failed", lastError: sanitizeUploadText((error as any)?.message || error) }, sessionGeneration);
     throw await toUploadOperationError(error, remotePath);
@@ -1649,7 +1650,7 @@ export async function batchRenameRemotePaths(
       type: "system",
       level: "info",
       summary: `重命名: ${remoteBasename(item.oldPath)} → ${remoteBasename(item.newPath)}`,
-      raw: `[Rename] ${item.oldPath} -> ${item.newPath}`,
+      raw: `[Rename] ${redactRemotePathForDisplay(item.oldPath)} -> ${redactRemotePathForDisplay(item.newPath)}`,
       simpleVisible: true,
     });
   }
@@ -1668,7 +1669,7 @@ export async function remotePathExists(config: AppConfig, remotePath: string) {
 export async function moveRemoteFile(config: AppConfig, oldPath: string, newPath: string) {
   const client = buildDavClient(config);
   const targetPath = normalizeRemotePath(newPath);
-  await ensureRemoteDir(client, remoteDirname(targetPath));
+  await ensureRemoteDir(client, remoteDirname(targetPath), getRemoteBackendProfile(config));
   await client.moveFile(normalizeRemotePath(oldPath), targetPath, { overwrite: false });
 }
 
@@ -1696,7 +1697,7 @@ export async function deleteRemoteFiles(
         type: "system",
         level: "info",
         summary: `删除旧远端文件: ${remoteBasename(targetPath)}`,
-        raw: `[Delete] ${targetPath}`,
+        raw: `[Delete] ${redactRemotePathForDisplay(targetPath)}`,
         simpleVisible: true,
       });
     } catch (error: any) {
@@ -1715,7 +1716,7 @@ export async function deleteRemoteFiles(
         type: "system",
         level: "error",
         summary: `删除旧远端文件失败: ${remoteBasename(targetPath)} - ${message}`,
-        raw: `[Delete] Failed: ${targetPath}: ${message}`,
+        raw: `[Delete] Failed: ${redactRemotePathForDisplay(targetPath)}: ${message}`,
         simpleVisible: true,
       });
     }

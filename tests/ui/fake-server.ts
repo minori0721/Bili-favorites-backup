@@ -234,6 +234,7 @@ app.get("/api/logs/stream", (request, response) => {
   response.flushHeaders();
   response.write(": ready\n\n");
   const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 10_000);
+  heartbeat.unref?.();
   request.on("close", () => clearInterval(heartbeat));
 });
 

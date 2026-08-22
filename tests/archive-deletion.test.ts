@@ -298,6 +298,39 @@ test("archive deletion retains a shared physical file and only removes the selec
   }
 });
 
+test("completed deletion keeps the preview file and byte snapshot after proofs are reconciled", async () => {
+  const runtime = await createTestDir("archive-delete-final-stats");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  let service: ArchiveDeletionService | undefined;
+  try {
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVFINALSTATS", active: false,
+      paths: [
+        { path: "/backup/final-stats/one.mp4", size: 11 },
+        { path: "/backup/final-stats/two.mp4", size: 29 },
+      ],
+    });
+    dav.files.set("/backup/final-stats/one.mp4", { type: "file", size: 11 });
+    dav.files.set("/backup/final-stats/two.mp4", { type: "file", size: 29 });
+    service = createService(manager, users, dav);
+    const preview = service.previewSource("u1", 10, "BVFINALSTATS");
+    service.start(preview.id, "DELETE ARCHIVE");
+    await waitForOperation(service, preview.id, ["completed"]);
+    const source = manager.getDatabase().db.prepare(`
+      SELECT status, file_count, total_bytes, retained_count
+      FROM archive_deleted_sources WHERE deletion_id=?
+    `).get(preview.id) as any;
+    assert.deepEqual(source, { status: "completed", file_count: 2, total_bytes: 40, retained_count: 0 });
+    assert.equal(Number((manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM remote_files WHERE bvid='BVFINALSTATS'").get() as any).count), 0);
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("source deletion keeps the source identity while the worker is running", async () => {
   const runtime = await createTestDir("archive-delete-source-maintenance-identity");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
@@ -381,6 +414,89 @@ test("reappearing source supersedes an active deletion before it can delete file
     assert.equal(dav.files.has(remotePath), true);
   } finally {
     releasePreparation?.();
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("reappearing source during the DELETE keeps the relation active and queues a replacement", async () => {
+  const runtime = await createTestDir("archive-delete-source-restored-after-delete");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  let service: ArchiveDeletionService | undefined;
+  try {
+    const remotePath = "/backup/reappearing-after-delete.mp4";
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVREAPPEARINGAFTER", active: false,
+      paths: [{ path: remotePath, size: 13 }],
+    });
+    dav.files.set(remotePath, { type: "file", size: 13 });
+    const originalDelete = dav.deleteFile.bind(dav);
+    dav.deleteFile = async (target) => {
+      manager.recordFavoriteItem("u1", 10, "重新加入", {
+        bvid: "BVREAPPEARINGAFTER", title: "重新加入", upperName: "测试UP",
+      } as any, { favOrder: 1 }, new Date(now + 1_000).toISOString());
+      await originalDelete(target);
+    };
+    service = createService(manager, users, dav);
+    const preview = service.previewSource("u1", 10, "BVREAPPEARINGAFTER");
+    service.start(preview.id, "DELETE ARCHIVE");
+    await waitForOperation(service, preview.id, ["superseded"]);
+
+    assert.deepEqual(dav.deleteCalls, [remotePath]);
+    assert.equal(dav.files.has(remotePath), false);
+    const relation = manager.getRelation("u1", 10, "BVREAPPEARINGAFTER");
+    assert.equal(relation?.activeInFavorite, true);
+    assert.equal(relation?.backupStatus, "discovered");
+    assert.match(relation?.lastError || "", /重新加入/);
+    assert.equal(Number((manager.getDatabase().db.prepare(`
+      SELECT COUNT(*) AS count FROM remote_files
+      WHERE user_id='u1' AND media_id=10 AND bvid='BVREAPPEARINGAFTER'
+    `).get() as any).count), 0);
+  } finally {
+    if (service) await service.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("completed deletion finalizes even when its relation disappears before SQLite reconciliation", async () => {
+  const runtime = await createTestDir("archive-delete-missing-relation-finalize");
+  const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
+  const users = fakeUserStore([user("u1", [])]);
+  const dav = new FakeDav();
+  let service: ArchiveDeletionService | undefined;
+  try {
+    const remotePath = "/backup/missing-relation.mp4";
+    insertSource(manager, {
+      userId: "u1", mediaId: 10, bvid: "BVMISSINGRELATION", active: false,
+      paths: [{ path: remotePath, size: 14 }],
+    });
+    dav.files.set(remotePath, { type: "file", size: 14 });
+    const originalDelete = dav.deleteFile.bind(dav);
+    dav.deleteFile = async (target) => {
+      await originalDelete(target);
+      manager.getDatabase().db.prepare(`
+        DELETE FROM favorite_relations
+        WHERE user_id='u1' AND media_id=10 AND bvid='BVMISSINGRELATION'
+      `).run();
+    };
+    service = createService(manager, users, dav);
+    const preview = service.previewSource("u1", 10, "BVMISSINGRELATION");
+    service.start(preview.id, "DELETE ARCHIVE");
+    await waitForOperation(service, preview.id, ["completed"]);
+
+    const source = manager.getDatabase().db.prepare(`
+      SELECT status, file_count, total_bytes FROM archive_deleted_sources WHERE deletion_id=?
+    `).get(preview.id) as any;
+    assert.deepEqual(source, { status: "completed", file_count: 1, total_bytes: 14 });
+    assert.equal(manager.getRelation("u1", 10, "BVMISSINGRELATION"), null);
+    assert.equal(Number((manager.getDatabase().db.prepare(`
+      SELECT COUNT(*) AS count FROM remote_files WHERE bvid='BVMISSINGRELATION'
+    `).get() as any).count), 0);
+  } finally {
     if (service) await service.stop();
     manager.close();
     await removeTestDir(runtime);

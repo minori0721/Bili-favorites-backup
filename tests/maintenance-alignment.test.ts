@@ -65,9 +65,10 @@ test("schema 3 migration rejects allowed files missing from its checksum manifes
 });
 
 test("diagnostic sanitizer removes headers, json secrets, query tokens and URL credentials", () => {
-  const input = 'Authorization: Bearer abc\nCookie: SESSDATA=secret; bili_jct=csrf-secret\nhttps://user:pass@example.com/a?access_token=xyz {"password":"pw","ok":"visible"}';
+  const input = 'Authorization: Bearer abc\nCookie: SESSDATA=secret; bili_jct=csrf-secret\nhttps://user:pass@example.com/backup/private/video.mp4?access_token=xyz /backup/private/video.mp4 {"password":"pw","ok":"visible"}';
   const output = sanitizeDiagnosticText(input);
-  assert.doesNotMatch(output, /abc|secret|user:pass|xyz|"pw"/);
+  assert.doesNotMatch(output, /abc|secret|user:pass|xyz|"pw"|\/backup\/private/);
+  assert.match(output, /<remote:video\.mp4#[0-9a-f]{8}>/);
   assert.match(output, /visible/);
 });
 

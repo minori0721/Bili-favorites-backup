@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { WebDAVClient } from "webdav";
 import type { AppConfig } from "./config.js";
 import { joinRemotePath, normalizeRemotePath, remoteDirname } from "./remote-path.js";
-import { isRemoteNotFoundError as isResolvedRemoteNotFoundError } from "./remote-file-resolver.js";
+import { ensureRemoteDirectory, isRemoteNotFoundError as isResolvedRemoteNotFoundError } from "./remote-file-resolver.js";
 import { getRemoteBackendProfile, type RemoteBackendProfile, type RemoteCapability as SharedRemoteCapability } from "./remote-storage.js";
 
 export type RemoteCapability = SharedRemoteCapability;
@@ -95,30 +95,6 @@ async function readRemote(client: RemoteOperationsClient, target: string) {
   } catch (error) {
     if (isRemoteNotFound(error)) return { exists: false, directory: false, size: undefined };
     throw error;
-  }
-}
-
-async function ensureRemoteDirectory(client: RemoteOperationsClient, remotePath: string) {
-  const segments = normalizeRemotePath(remotePath, { allowTrailingSlash: true }).split("/").filter(Boolean);
-  let current = "";
-  for (const segment of segments) {
-    current += `/${segment}`;
-    if (typeof client.exists === "function" && await client.exists(current)) {
-      const observed = await readRemote(client, current);
-      if (!observed.directory) throw new Error("远端目标父路径不是目录");
-      continue;
-    }
-    const existing = await readRemote(client, current);
-    if (existing.exists) {
-      if (!existing.directory) throw new Error("远端目标父路径不是目录");
-      continue;
-    }
-    try {
-      await client.createDirectory(current);
-    } catch (error) {
-      const after = await readRemote(client, current);
-      if (!after.exists || !after.directory) throw error;
-    }
   }
 }
 
@@ -284,7 +260,7 @@ async function replaceWithCapabilities(
   const source = normalizeRemotePath(oldPathValue);
   const target = normalizeRemotePath(newPathValue);
   if (source === target) return;
-  await ensureRemoteDirectory(client, remoteDirname(target));
+  await ensureRemoteDirectory(client, remoteDirname(target), profile);
 
   const hintedSize = Number.isFinite(expectedSizeHint) ? expectedSizeHint : undefined;
   const initial = await inspectReplacementState(client, source, target, hintedSize);

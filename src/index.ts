@@ -46,7 +46,7 @@ import {
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
 import { sqlitePaths, UNAVAILABLE_COVER_BACKFILL_MARKER, type UnavailablePageCursor, type UnavailablePageFilter } from "./database.js";
-import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
+import { redactRemotePathForDisplay, safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
 import {
   AUTH_REFRESH_MAX_UNKNOWN_ATTEMPTS,
   classifyAuthRefreshError,
@@ -2552,12 +2552,12 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
         return;
       }
       if (requestedTargets.has(newPath)) {
-        res.status(400).json({ success: false, message: `duplicate target path: ${newPath}` });
+        res.status(400).json({ success: false, message: "duplicate target path" });
         return;
       }
       requestedTargets.add(newPath);
       if (!requestedSources.has(newPath) && await remotePathExists(config, newPath)) {
-        res.status(400).json({ success: false, message: `target exists: ${newPath}` });
+        res.status(400).json({ success: false, message: "target exists" });
         return;
       }
       safeItems.push({ bvid, oldPath, newPath });
@@ -2574,7 +2574,22 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
       }
     }
     for (const [bvid, renames] of stateRenames) stateManager.renameRemoteFilesBatch(bvid, renames);
-    res.json({ success: true, data: result });
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        results: result.results.map((entry: any) => ({
+          ...entry,
+          oldPath: redactRemotePathForDisplay(entry.oldPath),
+          newPath: redactRemotePathForDisplay(entry.newPath),
+          actualPath: entry.actualPath ? redactRemotePathForDisplay(entry.actualPath) : entry.actualPath,
+          observedPaths: Array.isArray(entry.observedPaths)
+            ? entry.observedPaths.map((value: string) => redactRemotePathForDisplay(value))
+            : entry.observedPaths,
+          error: entry.error ? sanitizeDiagnosticText(entry.error, 500) : entry.error,
+        })),
+      },
+    });
     return;
   }
   res.status(400).json({ success: false, message: "items required" });

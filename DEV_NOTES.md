@@ -106,3 +106,12 @@ npm --prefix docs audit --omit=dev
 - `npm run build`、`npm --prefix docs ci`、`npm --prefix docs run docs:build`、`git diff --check`：通过。
 - `npm audit --omit=dev`：根项目 `11` 项（2低、3中、6高，部分暂无修复）；`npm --prefix docs audit --omit=dev`：`0` 项。本轮没有修改依赖版本或执行破坏性审计修复。
 - 本轮未提交、未push、未更新 Aliyun，未访问真实 AList/OpenList 文件；应用仍保持 `2.5.0`、SQLite schema `10`、状态 schema `13`、迁移包 schema `3`。
+
+### 本轮可靠性修复验证（2026-08-22）
+
+- 删除状态机：新增实际 DELETE 发出后来源重新加入、关系在SQLite收尾前消失、预览文件/字节快照保留和 9065 条证明折叠为 4533 个物理路径的回归覆盖。删除只逐文件执行，不发送目录级 DELETE；共享文件只保留物理文件并清除目标来源证明。
+- 通用 WebDAV：保留有 `exists()` 客户端的正常单请求快速路径；没有 `exists()` 的 stat-only 客户端按 `exists/missing/unknown` 和文件/目录类型做安全判断。能力缓存、目录缓存失效、兼容文件名和扩展头安全回退均使用隔离 Fake WebDAV 验证。
+- 播放与诊断：外部 HTTPS 跳转使用已校验 DNS 地址，覆盖私网、循环、超限跳转、Range 206/416 和跨源认证移除；日志、重命名响应和错误摘要不输出完整远端路径、签名或凭据。
+- `npm test`：395 项，393 通过，2 项按环境跳过（缺少 `aria2c`、Windows 不允许创建软链接或 junction），0 失败、0 挂起。
+- `npm run test:ui`：45 项，27 通过，18 按视口项目条件跳过，0 失败；覆盖 `1280x720`、`390x844` 和 `844x390`，仅使用本地隔离假 API 与 CLI Playwright，不使用浏览器插件。
+- `npm run build`、`npm --prefix docs run docs:build`：通过。工作区未部署服务器、未访问真实 AList/OpenList 文件，应用仍保持 `2.5.0`、SQLite schema `10`、状态 schema `13`、迁移包 schema `3`。

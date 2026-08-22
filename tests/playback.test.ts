@@ -223,6 +223,36 @@ test("playback proxy never restores AList authorization after an external redire
   assert.deepEqual(requests.map((request) => request.authorization), ["Basic secret", null, null]);
 });
 
+test("playback proxy binds an external hop to the address that passed DNS validation", async () => {
+  const alistBase = new URL("http://alist:5244");
+  const requests: string[] = [];
+  const pinned: Array<{ host: string; address: string; family: number }> = [];
+  const fetchImpl = async (value: string | URL | Request) => {
+    const url = String(value);
+    requests.push(url);
+    return new Response(null, { status: 302, headers: { Location: "https://media.example.com/final" } });
+  };
+  const result = await fetchPlaybackUpstream(
+    new URL("http://alist:5244/dav/video.mp4"),
+    alistBase,
+    "GET",
+    { Authorization: "Basic secret" },
+    new AbortController().signal,
+    false,
+    {
+      fetch: fetchImpl as typeof fetch,
+      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+      fetchPinned: async (url, _init, address) => {
+        pinned.push({ host: url.hostname, address: address.address, family: address.family });
+        return new Response("data", { status: 206, headers: { "Content-Type": "video/mp4" } });
+      },
+    },
+  );
+  assert.equal(result.response?.status, 206);
+  assert.deepEqual(requests, ["http://alist:5244/dav/video.mp4"]);
+  assert.deepEqual(pinned, [{ host: "media.example.com", address: "93.184.216.34", family: 4 }]);
+});
+
 test("playback proxy rejects private DNS, HTTP, cyclic, and excessive redirects", async () => {
   const alistBase = new URL("http://alist:5244");
   const auth = { Authorization: "Basic secret" };

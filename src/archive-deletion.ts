@@ -1139,107 +1139,136 @@ export class ArchiveDeletionService {
     this.db.db.prepare("UPDATE archive_deleted_sources SET status='running' WHERE deletion_id=? AND status<>'completed'").run(id);
     const client = this.clientFactory(config);
     const resolver = createRemoteFileResolver(client, getRemoteBackendProfile(config));
-    const items = this.db.db.prepare("SELECT * FROM archive_deletion_items WHERE deletion_id=? ORDER BY remote_path").all(id) as any[];
     const sharedPaths = this.externalReferencePaths(id);
     const resolvedRemotePaths = new Map<string, string>();
+    const affectedBvids = new Set<string>();
     let preflightConflict = false;
-    for (const item of items) {
-      if (!this.isOperationRunnable(id)) return;
-      if (TERMINAL_ITEM_STATUSES.has(String(item.status))) continue;
-      const remotePath = normalizeRemotePath(item.remote_path);
-      if (!isWithin(root, remotePath) || remotePath === root) {
-        this.updateItem(id, remotePath, "conflict", "归档文件超出允许的远端路径边界");
-        preflightConflict = true;
-        continue;
-      }
-      const shared = sharedPaths.has(remotePath);
-      const expectedSize = finiteSize(item.expected_size);
-      if (expectedSize === undefined) {
-        this.updateItem(id, remotePath, "conflict", "缺少可验证的文件大小证明");
-        preflightConflict = true;
-        continue;
-      }
-      try {
-        const observed = await resolver.inspect(remotePath, { fallback: "always" });
-        const remoteSize = finiteSize(observed.size);
-        if (observed.status === "missing") {
-          // Keep this as an observation until every item has passed preflight.
-          // The relation/proof reconciliation belongs to the all-clear phase.
-          this.updateItem(id, remotePath, "observed_missing", undefined);
-        } else if (observed.status === "unknown") {
-          if (observed.failure?.category === "transient") {
-            this.updateItem(id, remotePath, "failed", "远端预检暂时失败");
-            throw Object.assign(
-              archiveDeletionError("远端预检暂时失败", observed.failure.status || 503, true),
-              { retryAfterMs: observed.failure.retryAfterMs },
-            );
+    // Keep the remote-path cursor stable, but process rows in bounded batches.
+    // The access-path map is intentionally retained because OpenList may expose
+    // an escaped spelling that must be used for the subsequent DELETE.
+    let cursor = "";
+    while (true) {
+      const items = this.db.db.prepare(`
+        SELECT * FROM archive_deletion_items
+        WHERE deletion_id=? AND remote_path>?
+        ORDER BY remote_path LIMIT 250
+      `).all(id, cursor) as any[];
+      if (items.length === 0) break;
+      for (const item of items) {
+        if (!this.isOperationRunnable(id)) return;
+        if (TERMINAL_ITEM_STATUSES.has(String(item.status))) continue;
+        const remotePath = normalizeRemotePath(item.remote_path);
+        if (!isWithin(root, remotePath) || remotePath === root) {
+          this.updateItem(id, remotePath, "conflict", "归档文件超出允许的远端路径边界");
+          preflightConflict = true;
+          continue;
+        }
+        const shared = sharedPaths.has(remotePath);
+        const expectedSize = finiteSize(item.expected_size);
+        if (expectedSize === undefined) {
+          this.updateItem(id, remotePath, "conflict", "缺少可验证的文件大小证明");
+          preflightConflict = true;
+          continue;
+        }
+        try {
+          const observed = await resolver.inspect(remotePath, { fallback: "always" });
+          const remoteSize = finiteSize(observed.size);
+          if (observed.status === "missing") {
+            this.updateItem(id, remotePath, "observed_missing", undefined);
+          } else if (observed.status === "unknown") {
+            if (observed.failure?.category === "transient") {
+              this.updateItem(id, remotePath, "failed", "远端预检暂时失败");
+              throw Object.assign(
+                archiveDeletionError("远端预检暂时失败", observed.failure.status || 503, true),
+                { retryAfterMs: observed.failure.retryAfterMs },
+              );
+            }
+            this.updateItem(id, remotePath, "conflict", "远端文件状态无法确认，未开始删除");
+            preflightConflict = true;
+          } else if (observed.directory || remoteSize !== expectedSize) {
+            this.updateItem(id, remotePath, "conflict", "远端文件类型或大小与归档证明不一致");
+            preflightConflict = true;
+          } else {
+            resolvedRemotePaths.set(remotePath, observed.path);
+            this.updateItem(id, remotePath, shared ? "shared_verified" : "verified", undefined);
           }
-          this.updateItem(id, remotePath, "conflict", "远端文件状态无法确认，未开始删除");
-          preflightConflict = true;
-        } else if (observed.directory || remoteSize !== expectedSize) {
-          this.updateItem(id, remotePath, "conflict", "远端文件类型或大小与归档证明不一致");
-          preflightConflict = true;
-        } else {
-          resolvedRemotePaths.set(remotePath, observed.path);
-          this.updateItem(id, remotePath, shared ? "shared_verified" : "verified", undefined);
-        }
-      } catch (error: any) {
-        if (isRemoteNotFoundError(error)) {
-          this.updateItem(id, remotePath, "missing", undefined);
-        } else if (isTransientError(error)) {
-          this.updateItem(id, remotePath, "failed", safeDeletionError(error));
-          throw archiveDeletionError("远端预检暂时失败", statusCode(error) || 503, true);
-        } else {
-          this.updateItem(id, remotePath, "conflict", "远端文件无法安全核验");
-          preflightConflict = true;
+        } catch (error: any) {
+          if (isRemoteNotFoundError(error)) {
+            this.updateItem(id, remotePath, "missing", undefined);
+          } else if (isTransientError(error)) {
+            this.updateItem(id, remotePath, "failed", safeDeletionError(error));
+            throw archiveDeletionError("远端预检暂时失败", statusCode(error) || 503, true);
+          } else {
+            this.updateItem(id, remotePath, "conflict", "远端文件无法安全核验");
+            preflightConflict = true;
+          }
         }
       }
+      cursor = String(items[items.length - 1].remote_path);
     }
     if (preflightConflict) throw archiveDeletionError("远端文件与预览证明不一致，未开始删除", 409, false);
     if (!this.isOperationRunnable(id)) return;
-    const observedMissing = this.db.db.prepare("SELECT remote_path FROM archive_deletion_items WHERE deletion_id=? AND status='observed_missing' ORDER BY remote_path")
-      .all(id) as Array<{ remote_path: string }>;
-    for (const item of observedMissing) this.markItemTerminal(id, normalizeRemotePath(item.remote_path), "missing");
-    const sharedVerified = this.db.db.prepare("SELECT remote_path FROM archive_deletion_items WHERE deletion_id=? AND status='shared_verified' ORDER BY remote_path")
-      .all(id) as Array<{ remote_path: string }>;
-    for (const item of sharedVerified) this.markItemTerminal(id, normalizeRemotePath(item.remote_path), "retained");
+    const terminalize = (status: "observed_missing" | "shared_verified", terminal: "missing" | "retained") => {
+      while (true) {
+        const rows = this.db.db.prepare(`
+          SELECT remote_path FROM archive_deletion_items
+          WHERE deletion_id=? AND status=? ORDER BY remote_path LIMIT 250
+        `).all(id, status) as Array<{ remote_path: string }>;
+        if (rows.length === 0) break;
+        for (const item of rows) {
+          for (const bvid of this.markItemTerminal(id, normalizeRemotePath(item.remote_path), terminal)) affectedBvids.add(bvid);
+        }
+      }
+    };
+    terminalize("observed_missing", "missing");
+    terminalize("shared_verified", "retained");
     this.syncOperationCounts(id);
-    const verified = this.db.db.prepare("SELECT * FROM archive_deletion_items WHERE deletion_id=? AND status='verified' ORDER BY remote_path").all(id) as any[];
-    for (const item of verified) {
-      if (!this.isOperationRunnable(id)) return;
-      const remotePath = normalizeRemotePath(item.remote_path);
-      const accessPath = resolvedRemotePaths.get(remotePath) || remotePath;
-      this.updateItem(id, remotePath, "deleting", undefined, true);
-      try {
-        await client.deleteFile(accessPath);
-      } catch (error: any) {
-        if (!isRemoteNotFoundError(error)) {
-          this.updateItem(id, remotePath, "failed", safeDeletionError(error), true);
-          throw archiveDeletionError("远端文件删除暂时失败", statusCode(error) || 503, isTransientError(error));
+    while (true) {
+      const verified = this.db.db.prepare(`
+        SELECT * FROM archive_deletion_items
+        WHERE deletion_id=? AND status='verified' ORDER BY remote_path LIMIT 250
+      `).all(id) as any[];
+      if (verified.length === 0) break;
+      for (const item of verified) {
+        if (!this.isOperationRunnable(id)) {
+          if (affectedBvids.size > 0) this.recomputeVideoAggregates([...affectedBvids], this.now());
+          return;
         }
-      }
-      resolver.clear();
-      const missing = await this.confirmMissing(client, remotePath, resolver);
-      if (!this.isOperationRunnable(id)) {
-        if (missing && this.isOperationSuperseded(id)) {
-          const reconciledAt = this.now();
-          this.reconcileSourceProofsForPath(id, remotePath, reconciledAt);
-          this.db.db.prepare(`
-            UPDATE archive_deletion_items SET status='superseded', last_error=NULL, updated_at=?
-            WHERE deletion_id=? AND remote_path=? AND status='deleting'
-          `).run(reconciledAt, id, remotePath);
-          const bvids = (this.db.db.prepare("SELECT DISTINCT bvid FROM archive_deleted_sources WHERE deletion_id=?").all(id) as Array<{ bvid: string }>).map((row) => row.bvid);
-          this.db.refreshArchiveLibraryProjection(bvids);
-          this.stateManager.reload();
+        const remotePath = normalizeRemotePath(item.remote_path);
+        const accessPath = resolvedRemotePaths.get(remotePath) || remotePath;
+        this.updateItem(id, remotePath, "deleting", undefined, true);
+        try {
+          await client.deleteFile(accessPath);
+        } catch (error: any) {
+          if (!isRemoteNotFoundError(error)) {
+            this.updateItem(id, remotePath, "failed", safeDeletionError(error), true);
+            throw archiveDeletionError("远端文件删除暂时失败", statusCode(error) || 503, isTransientError(error));
+          }
         }
-        return;
+        resolver.clear();
+        const missing = await this.confirmMissing(client, remotePath, resolver);
+        if (!this.isOperationRunnable(id)) {
+          if (missing && this.isOperationSuperseded(id)) {
+            const reconciledAt = this.now();
+            for (const bvid of this.reconcileSourceProofsForPath(id, remotePath, reconciledAt)) affectedBvids.add(bvid);
+            this.db.db.prepare(`
+              UPDATE archive_deletion_items SET status='superseded', last_error=NULL, updated_at=?
+              WHERE deletion_id=? AND remote_path=? AND status='deleting'
+            `).run(reconciledAt, id, remotePath);
+            this.recomputeVideoAggregates([...affectedBvids], reconciledAt);
+            this.db.refreshArchiveLibraryProjection(affectedBvids);
+            this.stateManager.reload();
+          }
+          return;
+        }
+        if (!missing) {
+          this.updateItem(id, remotePath, "failed", "删除后远端文件仍然可见", true);
+          throw archiveDeletionError("删除后远端文件仍然可见", 503, true);
+        }
+        for (const bvid of this.markItemTerminal(id, remotePath, "deleted")) affectedBvids.add(bvid);
       }
-      if (!missing) {
-        this.updateItem(id, remotePath, "failed", "删除后远端文件仍然可见", true);
-        throw archiveDeletionError("删除后远端文件仍然可见", 503, true);
-      }
-      this.markItemTerminal(id, remotePath, "deleted");
     }
+    if (affectedBvids.size > 0) this.recomputeVideoAggregates([...affectedBvids], this.now());
     this.finalizeOperation(id);
   }
 
@@ -1265,7 +1294,8 @@ export class ArchiveDeletionService {
 
   private reconcileSourceProofsForPath(id: string, remotePath: string, now: number) {
     const sourceRows = this.db.db.prepare(`
-      SELECT s.user_id, s.media_id, s.bvid, r.payload_json AS relation_json
+      SELECT s.user_id, s.media_id, s.bvid, r.payload_json AS relation_json,
+        r.active_in_favorite
       FROM archive_deleted_sources s
       LEFT JOIN favorite_relations r
         ON r.user_id=s.user_id AND r.media_id=s.media_id AND r.bvid=s.bvid
@@ -1288,6 +1318,7 @@ export class ArchiveDeletionService {
     const bvids = new Set<string>();
     const checkedAt = new Date(now).toISOString();
     for (const source of sourceRows) {
+      bvids.add(String(source.bvid));
       deleteSourceProof.run(source.user_id, source.media_id, source.bvid, remotePath);
       if (!source.relation_json) continue;
       const relation = parseJson<any>(source.relation_json, {});
@@ -1299,7 +1330,27 @@ export class ArchiveDeletionService {
           return String(file?.path || "") !== remotePath;
         }
       });
-      if (remainingFiles.length > 0) {
+      const restoredDuringDeletion = Number(source.active_in_favorite) === 1;
+      if (restoredDuringDeletion) {
+        relation.activeInFavorite = true;
+        relation.remoteMissingCount = 0;
+        relation.lastRemoteCheckAt = checkedAt;
+        relation.nextRemoteCheckAt = undefined;
+        relation.statusUpdatedAt = checkedAt;
+        if (remainingFiles.length > 0) {
+          relation.remoteFiles = remainingFiles;
+          relation.remotePath = relation.remotePath || path.posix.dirname(String(remainingFiles[0]?.path || remotePath));
+          relation.backupStatus = "partial_verified";
+          relation.pendingPartialBackup = true;
+          relation.lastError = "归档清理期间来源重新加入，已删除文件等待补传。";
+        } else {
+          delete relation.remotePath;
+          delete relation.remoteFiles;
+          relation.pendingPartialBackup = undefined;
+          relation.backupStatus = "discovered";
+          relation.lastError = "归档清理期间来源重新加入，已删除文件等待补传。";
+        }
+      } else if (remainingFiles.length > 0) {
         relation.remoteFiles = remainingFiles;
         relation.remotePath = relation.remotePath || path.posix.dirname(String(remainingFiles[0]?.path || remotePath));
         relation.backupStatus = originalFiles.length === remainingFiles.length ? relation.backupStatus : "partial_verified";
@@ -1330,7 +1381,6 @@ export class ArchiveDeletionService {
         source.media_id,
         source.bvid,
       );
-      bvids.add(String(source.bvid));
     }
     this.db.db.prepare(`
       DELETE FROM remote_files
@@ -1340,24 +1390,38 @@ export class ArchiveDeletionService {
           WHERE linked.remote_path=remote_files.remote_path AND linked.user_id<>''
         )
     `).run(remotePath);
-    if (bvids.size > 0) this.recomputeVideoAggregates([...bvids], now);
+    return [...bvids];
   }
 
   private markItemTerminal(id: string, remotePath: string, status: "deleted" | "missing" | "retained") {
     const now = this.now();
+    let affectedBvids: string[] = [];
     this.db.db.transaction(() => {
       const changed = this.db.db.prepare(`
         UPDATE archive_deletion_items SET status=?, last_error=NULL, updated_at=?
       WHERE deletion_id=? AND remote_path=? AND status IN ('pending','observed_missing','verified','shared_verified','deleting','failed')
       `).run(status, now, id, remotePath).changes;
       if (changed === 1) {
-        this.reconcileSourceProofsForPath(id, remotePath, now);
+        if (status === "retained") {
+          this.db.db.prepare(`
+            UPDATE archive_deleted_sources SET retained_count=retained_count+1
+            WHERE deletion_id=? AND EXISTS(
+              SELECT 1 FROM remote_files rf
+              WHERE rf.user_id=archive_deleted_sources.user_id
+                AND rf.media_id=archive_deleted_sources.media_id
+                AND rf.bvid=archive_deleted_sources.bvid
+                AND rf.remote_path=?
+            )
+          `).run(id, remotePath);
+        }
+        affectedBvids = this.reconcileSourceProofsForPath(id, remotePath, now);
         this.db.db.prepare(`
           UPDATE archive_deletions SET completed_count=completed_count+1,
             retained_count=retained_count+?, updated_at=? WHERE id=?
         `).run(status === "retained" ? 1 : 0, now, id);
       }
     })();
+    return affectedBvids;
   }
 
   private updateItem(id: string, remotePath: string, status: string, error?: string, incrementAttempt = false) {
@@ -1403,23 +1467,6 @@ export class ArchiveDeletionService {
         WHERE s.deletion_id=?
         ORDER BY s.user_id, s.media_id, s.bvid
       `).all(id) as any[];
-      const fileRows = this.db.db.prepare(`
-        SELECT rf.user_id, rf.media_id, rf.bvid, rf.remote_path, rf.expected_size,
-          i.status AS item_status
-        FROM remote_files rf
-        JOIN archive_deleted_sources s
-          ON s.deletion_id=? AND s.user_id=rf.user_id AND s.media_id=rf.media_id AND s.bvid=rf.bvid
-        LEFT JOIN archive_deletion_items i
-          ON i.deletion_id=s.deletion_id AND i.remote_path=rf.remote_path
-        ORDER BY rf.user_id, rf.media_id, rf.bvid, rf.remote_path
-      `).all(id) as any[];
-      const filesBySource = new Map<string, any[]>();
-      for (const file of fileRows) {
-        const key = `${file.user_id}\0${file.media_id}\0${file.bvid}`;
-        const group = filesBySource.get(key) || [];
-        group.push(file);
-        filesBySource.set(key, group);
-      }
       const updateRelation = this.db.db.prepare(`
         UPDATE favorite_relations SET backup_status='lost', active_in_favorite=0,
           last_remote_check_at=NULL, next_remote_check_at=NULL, payload_json=?, updated_at=?
@@ -1432,25 +1479,34 @@ export class ArchiveDeletionService {
       `);
       const bvids = new Set<string>();
       for (const source of sourceRows) {
-        if (!source.relation_json) continue;
-        const relation = parseJson<any>(source.relation_json, {});
-        const sourceFiles = filesBySource.get(`${source.user_id}\0${source.media_id}\0${source.bvid}`) || [];
-        const totalBytes = sourceFiles.reduce((sum, file) => sum + Number(file.expected_size || 0), 0);
-        const retainedCount = sourceFiles.filter((file) => file.item_status === "retained").length;
-        delete relation.remotePath;
-        delete relation.remoteFiles;
-        delete relation.uploadedAt;
-        delete relation.verifiedAt;
-        delete relation.lastRemoteCheckAt;
-        delete relation.nextRemoteCheckAt;
-        relation.remoteMissingCount = 0;
-        relation.activeInFavorite = false;
-        relation.backupStatus = "lost";
-        relation.statusUpdatedAt = iso;
-        relation.lastError = "归档已由用户手动删除。";
-        updateRelation.run(JSON.stringify(relation), now, source.user_id, source.media_id, source.bvid);
+        if (source.relation_json) {
+          const relation = parseJson<any>(source.relation_json, {});
+          delete relation.remotePath;
+          delete relation.remoteFiles;
+          delete relation.uploadedAt;
+          delete relation.verifiedAt;
+          delete relation.lastRemoteCheckAt;
+          delete relation.nextRemoteCheckAt;
+          relation.remoteMissingCount = 0;
+          relation.activeInFavorite = false;
+          relation.backupStatus = "lost";
+          relation.statusUpdatedAt = iso;
+          relation.lastError = "归档已由用户手动删除。";
+          updateRelation.run(JSON.stringify(relation), now, source.user_id, source.media_id, source.bvid);
+        }
         deleteSourceFiles.run(source.user_id, source.media_id, source.bvid);
-        completeSource.run(now, sourceFiles.length, totalBytes, retainedCount, id, source.user_id, source.media_id, source.bvid);
+        // These counters are the durable snapshot captured at preview time.
+        // remote_files has already been reconciled by the terminal item path.
+        completeSource.run(
+          now,
+          Number(source.file_count || 0),
+          Number(source.total_bytes || 0),
+          Number(source.retained_count || 0),
+          id,
+          source.user_id,
+          source.media_id,
+          source.bvid,
+        );
         bvids.add(String(source.bvid));
       }
       this.db.db.prepare(`

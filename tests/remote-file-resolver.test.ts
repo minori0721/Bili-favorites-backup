@@ -4,6 +4,7 @@ import {
   RemoteFileResolutionConflictError,
   RemoteFileResolver,
   classifyRemoteFailure,
+  ensureRemoteDirectory,
   isLikelyEncodedFilename,
   normalizeRemoteDirectoryEntry,
   remoteNameMatches,
@@ -72,6 +73,19 @@ test("remote directory cache can be invalidated after a write", async () => {
   const second = await resolver.inspect("/target/video'name.mp4", { fallback: "always" });
   assert.equal(second.status, "exists");
   assert.equal(listCalls, 2);
+});
+
+test("production directory preparation rejects a file occupying a parent path", async () => {
+  let createCalls = 0;
+  const client = {
+    stat: async () => ({ type: "file", size: 17 }),
+    createDirectory: async () => { createCalls += 1; },
+  } as any;
+  await assert.rejects(
+    ensureRemoteDirectory(client, "/target", { identity: "test", capabilities: {} } as any),
+    /不是目录/,
+  );
+  assert.equal(createCalls, 0);
 });
 
 test("safe first-upload names keep the stat fast path and do not list the directory", async () => {

@@ -14,6 +14,7 @@ import {
   type DownloadSessionManifest,
 } from "./download-session.js";
 import { sanitizeUploadText } from "./upload-health.js";
+import { redactRemotePathForDisplay } from "./diagnostics.js";
 import { TransferSessionStore } from "./transfer-session.js";
 import { createRemoteReplacementRunner, type RemoteReplacementRunner } from "./remote-operations.js";
 import {
@@ -333,7 +334,7 @@ export class QualityUpgradeTask extends Task {
           try {
             await replace(this.config, finalFile.path, stagedFile.path, finalFile.size);
           } catch (rollbackError) {
-            console.warn(`[Task] Failed to roll back upgraded file ${finalFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
+            console.warn(`[Task] Failed to roll back upgraded file ${redactRemotePathForDisplay(finalFile.path)}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
         }
       }
@@ -344,7 +345,7 @@ export class QualityUpgradeTask extends Task {
           try {
             await replace(this.config, backupFile.path, oldFile.path, backupFile.size);
           } catch (rollbackError) {
-            console.warn(`[Task] Failed to restore backup file ${backupFile.path}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
+            console.warn(`[Task] Failed to restore backup file ${redactRemotePathForDisplay(backupFile.path)}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
           }
         }
       }
@@ -573,7 +574,7 @@ export class UploadTask extends Task {
   }
 
   async run() {
-    console.log(`[Task] Starting upload for ${this.bvid} to ${this.remotePath}`);
+    console.log(`[Task] Starting upload for ${this.bvid} to ${redactRemotePathForDisplay(this.remotePath)}`);
     if (!this.files || this.files.length === 0) {
       throw new Error("Upload file whitelist is missing; local cache must be adopted before upload");
     }

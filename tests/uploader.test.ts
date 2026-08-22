@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildCompatibilityUploadName,
+  needsCompatibilityName,
   ensureRemoteDir,
   uploadWithAList,
   resumeUploadSession,
@@ -1096,6 +1097,49 @@ test("a backend that rejects extended upload headers is learned after one safe r
   }
 });
 
+test("extended-header fallback refuses a second PUT when remote absence is unknown", async () => {
+  const runtime = await createTestDir("upload-extended-header-unknown");
+  let statCalls = 0;
+  let putCalls = 0;
+  try {
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), "header-unknown-video");
+    const client = {
+      exists: async () => false,
+      createDirectory: async () => undefined,
+      stat: async () => {
+        statCalls += 1;
+        if (statCalls <= 2) {
+          const missing: any = new Error("not found");
+          missing.status = 404;
+          throw missing;
+        }
+        const unknown: any = new Error("method not allowed");
+        unknown.status = 405;
+        throw unknown;
+      },
+      putFileContents: async () => {
+        putCalls += 1;
+        const rejected: any = new Error("extended headers are not supported");
+        rejected.status = 422;
+        throw rejected;
+      },
+    } as any;
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig(), {
+        cleanupLocal: false,
+        client,
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => error?.uploadFailure?.status === 422,
+    );
+    assert.equal(putCalls, 1);
+    assert.ok(statCalls >= 3);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("a four-byte filename falls back once and records the verified compatible remote path", async () => {
   const runtime = await createTestDir("upload-compatible-name");
   const server = await startWebDavServer({ rejectFourByteNames: true });
@@ -1206,6 +1250,17 @@ test("compatible filename generation avoids collisions with existing local names
     buildCompatibilityUploadName("title-🍷BV1TEST.mp4", new Set([base, collision])),
     collision.replace(/-2\.mp4$/, "-3.mp4"),
   );
+});
+
+test("compatibility filename detection covers normalization, unsafe characters and long UTF-8 names", () => {
+  assert.equal(needsCompatibilityName("plain-video.mp4"), false);
+  assert.equal(needsCompatibilityName("e\u0301-video.mp4"), true);
+  assert.equal(needsCompatibilityName("bad:name?.mp4"), true);
+  assert.equal(needsCompatibilityName(`${"中".repeat(100)}.mp4`), true);
+  const alias = buildCompatibilityUploadName("bad:name?.mp4");
+  assert.ok(alias);
+  assert.equal(Buffer.byteLength(alias!, "utf8") <= 220, true);
+  assert.doesNotMatch(alias!, /[:?]/);
 });
 
 test("zero-byte and remote-size mismatch failures preserve local files", async () => {

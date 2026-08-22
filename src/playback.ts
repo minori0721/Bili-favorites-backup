@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
+import https from "node:https";
 import net from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -783,10 +784,53 @@ export function safePlaybackRedirectLocation(location: string | null, alistBase:
 type PlaybackLookup = typeof dns.promises.lookup;
 type PlaybackFetch = typeof fetch;
 
+interface PinnedPlaybackAddress {
+  address: string;
+  family: 4 | 6;
+}
+
 export interface PlaybackTransportOptions {
   lookup?: PlaybackLookup;
   fetch?: PlaybackFetch;
+  fetchPinned?: (url: URL, init: RequestInit, address: PinnedPlaybackAddress) => Promise<Response>;
   resolveRemotePath?: (remotePath: string) => Promise<string | undefined>;
+}
+
+function fetchPinnedHttps(url: URL, init: RequestInit, address: PinnedPlaybackAddress) {
+  return new Promise<Response>((resolve, reject) => {
+    const headers = new Headers(init.headers);
+    const request = https.request(url, {
+      method: init.method || "GET",
+      headers: Object.fromEntries(headers.entries()),
+      hostname: url.hostname.replace(/^\[|\]$/g, ""),
+      port: url.port ? Number(url.port) : 443,
+      servername: url.hostname.replace(/^\[|\]$/g, ""),
+      signal: init.signal || undefined,
+      // Keep the validated hostname for TLS/SNI while pinning the socket to
+      // the address that passed the private-network check.
+      lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+    }, (response) => {
+      const responseHeaders = new Headers();
+      for (const [key, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) {
+          for (const item of value) responseHeaders.append(key, item);
+        } else if (value !== undefined) {
+          responseHeaders.set(key, String(value));
+        }
+      }
+      const body = response.statusCode === 204 || response.statusCode === 304
+        ? null
+        : Readable.toWeb(response as any) as any;
+      resolve(new Response(body, {
+        status: response.statusCode || 502,
+        statusText: response.statusMessage || undefined,
+        headers: responseHeaders,
+      }));
+    });
+    request.once("error", reject);
+    if (init.body != null) request.end(init.body as any);
+    else request.end();
+  });
 }
 
 async function validatedExternalPlaybackLocation(
@@ -797,7 +841,8 @@ async function validatedExternalPlaybackLocation(
   const normalized = safePlaybackRedirectLocation(value, alistBase);
   if (!normalized) return null;
   const target = new URL(normalized);
-  if (net.isIP(target.hostname)) return normalized;
+  const literalAddress = target.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(literalAddress)) return { location: normalized, address: { address: literalAddress, family: net.isIP(literalAddress) as 4 | 6 } };
   let addresses: dns.LookupAddress[];
   try {
     addresses = await lookup(target.hostname, { all: true, verbatim: true }) as dns.LookupAddress[];
@@ -805,7 +850,11 @@ async function validatedExternalPlaybackLocation(
     return null;
   }
   if (addresses.length === 0 || addresses.some((entry) => isPrivatePlaybackHost(entry.address))) return null;
-  return normalized;
+  const first = addresses[0];
+  return {
+    location: normalized,
+    address: { address: first.address, family: (first.family === 6 ? 6 : 4) as 4 | 6 },
+  };
 }
 
 const PLAYBACK_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -822,8 +871,17 @@ export async function fetchPlaybackUpstream(
   const fetchImpl = options.fetch || fetch;
   const lookup = options.lookup || dns.promises.lookup;
   const seen = new Set<string>();
+  const pinnedAddresses = new Map<string, PinnedPlaybackAddress>();
   let current = target;
   let crossedOrigin = target.origin !== alistBase.origin;
+
+  if (crossedOrigin) {
+    const external = await validatedExternalPlaybackLocation(current.toString(), alistBase, lookup);
+    if (!external) throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_UNSAFE", "远端存储返回了不安全的外部播放地址");
+    pinnedAddresses.set(current.hostname, external.address);
+    if (preferDirect) return { directLocation: external.location };
+    current = new URL(external.location);
+  }
 
   for (let redirects = 0; redirects <= 5; redirects += 1) {
     const key = current.toString();
@@ -835,12 +893,18 @@ export async function fetchPlaybackUpstream(
     const requestHeaders = sameAlistOrigin && !crossedOrigin
       ? authenticatedHeaders
       : Object.fromEntries(Object.entries(authenticatedHeaders).filter(([name]) => name.toLowerCase() !== "authorization"));
-    const response = await fetchImpl(current, {
+    const requestInit: RequestInit = {
       method,
       headers: requestHeaders,
       signal,
       redirect: "manual",
-    });
+    };
+    const pinned = crossedOrigin ? pinnedAddresses.get(current.hostname) : undefined;
+    const response = pinned
+      ? (options.fetchPinned
+        ? await options.fetchPinned(current, requestInit, pinned)
+        : (options.fetch ? await fetchImpl(current, requestInit) : await fetchPinnedHttps(current, requestInit, pinned)))
+      : await fetchImpl(current, requestInit);
     if (!PLAYBACK_REDIRECT_STATUSES.has(response.status)) return { response };
 
     const location = response.headers.get("location");
@@ -866,8 +930,9 @@ export async function fetchPlaybackUpstream(
     if (!external) {
       throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_UNSAFE", "远端存储返回了不安全的外部播放地址");
     }
-    if (preferDirect) return { directLocation: external };
-    current = new URL(external);
+    if (preferDirect) return { directLocation: external.location };
+    current = new URL(external.location);
+    pinnedAddresses.set(current.hostname, external.address);
   }
   throw new PlaybackHttpError(502, "PLAYBACK_REDIRECT_LIMIT", "远端存储播放地址跳转次数过多");
 }

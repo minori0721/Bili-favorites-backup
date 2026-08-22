@@ -4,6 +4,8 @@ import type { RemoteBackendProfile } from "./remote-storage.js";
 export interface RemoteDirectoryClient {
   stat(path: string): Promise<any>;
   getDirectoryContents?(path: string, options?: Record<string, unknown>): Promise<any>;
+  createDirectory?(path: string): Promise<any>;
+  exists?(path: string): Promise<boolean>;
 }
 
 export interface NormalizedRemoteDirectoryEntry {
@@ -479,6 +481,58 @@ export class RemoteFileResolver {
         directory: match.type === "directory",
         source: "directory",
       };
+    }
+  }
+}
+
+/**
+ * Create each parent directory only after its type has been observed.  The
+ * legacy WebDAV `exists()` helper collapses permission and method errors into
+ * a boolean, so it is retained only for small test clients without `stat()`.
+ */
+export async function ensureRemoteDirectory(
+  client: RemoteDirectoryClient,
+  remotePath: string,
+  profile?: RemoteBackendProfile,
+) {
+  if (typeof client.createDirectory !== "function") {
+    throw new Error("远端客户端不支持创建目录");
+  }
+  const resolver = new RemoteFileResolver(client, profile);
+  const segments = normalizeRemotePath(remotePath, { allowTrailingSlash: true }).split("/").filter(Boolean);
+  let current = "";
+  for (const segment of segments) {
+    current += `/${segment}`;
+    if (typeof client.exists === "function") {
+      // Keep the WebDAV client's single-request fast path for normal uploads.
+      // Providers that expose only stat() still get the stricter type check
+      // below; a real PUT/MKCOL conflict remains fail-closed for exists-only
+      // clients instead of spending another request on every upload.
+      if (await client.exists(current)) continue;
+    } else if (typeof client.stat === "function") {
+      const observed = await resolver.inspect(current, { fallback: "never" });
+      if (observed.status === "exists") {
+        if (!observed.directory) throw new Error("远端目标父路径不是目录");
+        continue;
+      }
+      if (observed.status === "unknown") {
+        throw Object.assign(new Error("远端目标父路径状态无法确认"), { remoteFailure: observed.failure });
+      }
+    } else {
+      throw new Error("远端客户端不支持目录状态查询");
+    }
+
+    try {
+      await client.createDirectory(current);
+    } catch (error) {
+      resolver.invalidatePath(current);
+      if (typeof client.stat === "function") {
+        const after = await resolver.inspect(current, { fallback: "never" });
+        if (after.status === "exists" && after.directory) continue;
+      } else if (typeof client.exists === "function" && await client.exists(current)) {
+        continue;
+      }
+      throw error;
     }
   }
 }
