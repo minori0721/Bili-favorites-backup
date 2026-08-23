@@ -6929,6 +6929,7 @@ function getAppScript() {
     function recoveryIssueTypeLabel(issue) {
       const labels = {
         remote_size_limit:'远端单文件超过限制',
+        remote_write_rejected:'远端写入结果未确认',
         remote_size_conflict:'远端存在同名冲突',
         partial_remote_state:'多分P状态不一致',
         local_file_missing:'本地补传文件已丢失',

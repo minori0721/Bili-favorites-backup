@@ -68,8 +68,8 @@ test("manual recovery uploads keep scheduler maintenance locked", async () => {
 
 async function createStructuredRecoveryFixture(
   name: string,
-  remoteResult: { status: "verified" | "missing" | "mismatch"; remoteSize?: number },
-  options: { local?: "available" | "missing" | "changed"; automaticRecoveryAttempts?: number } = {},
+  remoteResult: { status: "verified" | "missing" | "mismatch"; remoteSize?: number; parentStatus?: "visible" | "missing" | "unknown" },
+  options: { local?: "available" | "missing" | "changed"; automaticRecoveryAttempts?: number; attempts?: number } = {},
 ) {
   const runtime = await createTestDir(name);
   const localDir = path.join(runtime, "temp", "BVVERIFY");
@@ -91,7 +91,7 @@ async function createStructuredRecoveryFixture(
     { get: () => testConfig() } as any,
     { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
     manager,
-    { remoteFileInspector: async () => remoteResult },
+    { remoteFileInspector: async () => remoteResult, legacyTempDir: path.join(runtime, "temp") },
   ) as any;
   scheduler.downloadQueue.setStartGate(() => false);
   scheduler.uploadQueue.setStartGate(() => false);
@@ -108,6 +108,7 @@ async function createStructuredRecoveryFixture(
   scheduler.transferSessions.updateFile(session.id, "video.mp4", {
     status: "awaiting_remote",
     putAcceptedAt: Date.now() - 11 * 60_000,
+    attempts: options.attempts || 0,
   }, session.generation);
   scheduler.transferSessions.updateSession(session.id, { phase: "failed", lastError: "visibility timeout" }, session.generation);
   const job = scheduler.jobStore.enqueue({
@@ -191,6 +192,69 @@ test("recovery automation queues one fresh download when both local and remote f
     assert.equal(download.payload.automaticRecoveryAttempts, 1);
     assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "queued");
     assert.equal(scheduler.getRecoveryIssues().length, 0);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("repeated missing target with a visible parent becomes actionable without claiming a size limit", async () => {
+  const fixture = await createStructuredRecoveryFixture(
+    "recovery-remote-write-rejected",
+    { status: "missing", parentStatus: "visible" },
+    { local: "available", attempts: 3 },
+  );
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    const current = scheduler.jobStore.findById(job.id);
+    assert.equal(current?.status, "manual_wait");
+    assert.equal(scheduler.transferSessions.get(session.id)?.phase, "failed");
+    const issue = scheduler.getQueueSnapshot().issues.find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "remote_write_rejected");
+    assert.equal(issue?.severity, "warning");
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), [
+      "redownload_with_encoding",
+      "open_settings",
+      "recheck",
+    ]);
+    const boardItem = scheduler.getQueueSnapshot().uploadPending.find((item: any) => item.persistentJobId === job.id);
+    assert.equal(boardItem?.phase, "manual_action");
+    assert.equal(boardItem?.actionRequired, true);
+    assert.deepEqual(boardItem?.recoveryActions?.map((action: any) => action.id), ["redownload_with_encoding"]);
+    assert.match(issue?.summary || "", /可以尝试一次换编码/);
+    assert.doesNotMatch(issue?.summary || "", /超过存储限制/);
+    assert.doesNotMatch(issue?.safeDiagnostic || "", /\/target/);
+
+    const retry = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "redownload_with_encoding", {
+      encodingPriority: ["AV1", "HEVC", "AVC"],
+      strict: true,
+    });
+    assert.equal(retry.ok, true, JSON.stringify(retry));
+    assert.ok(retry.childJobId);
+    assert.equal((scheduler.jobStore.findById(job.id)?.payload as any).encodingRetry.strict, true);
+    assert.equal(scheduler.jobStore.list(["download"]).filter((candidate) => (candidate.payload as any).encodingRetry?.parentJobId === job.id).length, 1);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("one missing target with a visible parent remains a background visibility check", async () => {
+  const fixture = await createStructuredRecoveryFixture(
+    "recovery-visible-parent-single-attempt",
+    { status: "missing", parentStatus: "visible" },
+    { local: "available", attempts: 1 },
+  );
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.ok(issue, JSON.stringify({ job: scheduler.jobStore.findById(job.id), issues: scheduler.getRecoveryIssues() }));
+    assert.equal(issue?.kind, "remote_visibility_timeout");
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["recheck", "reupload"]);
   } finally {
     scheduler.stop();
     manager.close();

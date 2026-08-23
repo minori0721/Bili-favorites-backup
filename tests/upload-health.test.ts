@@ -69,6 +69,22 @@ test("provider single-file limits become a stable manual-recovery code without l
   assert.equal(payloadTooLarge.code, REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE);
 });
 
+test("ambiguous provider write evidence is carried without becoming a size-limit claim", () => {
+  const failure = classifyUploadError({
+    status: 405,
+    message: "Method Not Allowed",
+    remoteWriteEvidence: "target_missing_parent_visible",
+    remoteWriteStatus: 405,
+    remoteParentStatus: "visible",
+  }, "/target/video.mp4");
+  assert.equal(failure.category, "deterministic");
+  assert.equal(failure.retryable, false);
+  assert.equal(failure.code, undefined);
+  assert.equal(failure.remoteWriteEvidence, "target_missing_parent_visible");
+  assert.equal(failure.remoteWriteStatus, 405);
+  assert.equal(failure.remoteParentStatus, "visible");
+});
+
 test("retry delay uses exponential backoff, jitter and explicit Retry-After", () => {
   assert.equal(computeTaskRetryDelayMs(5, 0, undefined, () => 0.5), 5000);
   assert.equal(computeTaskRetryDelayMs(5, 1, undefined, () => 0.5), 10000);

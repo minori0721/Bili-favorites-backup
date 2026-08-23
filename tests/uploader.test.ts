@@ -535,6 +535,8 @@ test("a 405 with a missing remote file remains a failure", async () => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure.status, 405);
         assert.equal(error.uploadFailure.category, "deterministic");
+        assert.equal(error.uploadFailure.remoteWriteEvidence, "target_missing_parent_visible");
+        assert.equal(error.uploadFailure.remoteParentStatus, "visible");
         return true;
       }
     );

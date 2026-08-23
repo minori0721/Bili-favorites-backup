@@ -43,6 +43,23 @@ test("unsupported and malformed stat responses stay unknown unless an explicit d
   });
   const missing = await explicitFallback.inspect("/target/plain.mp4", { fallback: "always" });
   assert.equal(missing.status, "missing");
+  assert.equal(missing.parentStatus, "visible");
+
+  const missingParent = new RemoteFileResolver({
+    stat: async () => { throw unsupported; },
+    getDirectoryContents: async () => { throw notFound(); },
+  });
+  const missingParentResult = await missingParent.inspect("/target/plain.mp4", { fallback: "always" });
+  assert.equal(missingParentResult.status, "missing");
+  assert.equal(missingParentResult.parentStatus, "missing");
+
+  const unknownParent = new RemoteFileResolver({
+    stat: async () => { throw unsupported; },
+    getDirectoryContents: async () => { throw Object.assign(new Error("method not allowed"), { status: 405 }); },
+  });
+  const unknownParentResult = await unknownParent.inspect("/target/plain.mp4", { fallback: "always" });
+  assert.equal(unknownParentResult.status, "unknown");
+  assert.equal(unknownParentResult.parentStatus, "unknown");
 });
 
 test("transient stat failures preserve Retry-After without becoming missing", async () => {

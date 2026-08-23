@@ -358,6 +358,8 @@ async function verify405WrittenFile(
   initialErrors: unknown[] = [],
 ) {
   let lastError: unknown;
+  let sawMissing = false;
+  let allParentsVisible = true;
   for (const delayMs of delaysMs.length > 0 ? delaysMs : [0]) {
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     try {
@@ -365,6 +367,10 @@ async function verify405WrittenFile(
       const remoteSize = observed.size;
       if (observed.status === "exists" && !observed.directory && Number.isFinite(remoteSize) && remoteSize === expectedSize) {
         return "verified" as const;
+      }
+      if (observed.status === "missing") {
+        sawMissing = true;
+        if (observed.parentStatus !== "visible") allParentsVisible = false;
       }
       const mismatch: any = new Error(
         observed.directory
@@ -385,8 +391,17 @@ async function verify405WrittenFile(
     `Remote upload verification failed after 405 response: ${(lastError as Error)?.message || "file not visible"}`
   );
   notVisible.status = 405;
-  if (initialErrors.some((error) => isSingleFileSizeLimitError(error))) {
+  const sizeLimit = initialErrors.some((error) => isSingleFileSizeLimitError(error));
+  if (sizeLimit) {
     notVisible.code = REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE;
+  } else if (sawMissing && allParentsVisible) {
+    // OpenList/Tianyi may collapse a provider-side write rejection into a
+    // generic 405. This is only evidence that the target is still absent
+    // while its parent is visible; it is deliberately not called a size
+    // limit because the provider did not say so.
+    notVisible.remoteWriteEvidence = "target_missing_parent_visible";
+    notVisible.remoteWriteStatus = 405;
+    notVisible.remoteParentStatus = "visible";
   }
   throw notVisible;
 }
@@ -1368,16 +1383,25 @@ export async function inspectRemoteFileSize(
   config: AppConfig,
   remotePath: string,
   expectedSize: number
-): Promise<{ status: "verified" | "missing" | "mismatch" | "unknown"; remoteSize?: number; failure?: RemoteFailureInfo }> {
+): Promise<{
+  status: "verified" | "missing" | "mismatch" | "unknown";
+  remoteSize?: number;
+  parentStatus?: "visible" | "missing" | "unknown";
+  failure?: RemoteFailureInfo;
+}> {
   const client = buildDavClient(config);
   const resolver = createRemoteFileResolver(client, getRemoteBackendProfile(config));
   const observed = await resolver.inspect(remotePath, { fallback: "always" });
-  if (observed.status === "missing") return { status: "missing" };
-  if (observed.status === "unknown") return { status: "unknown", failure: observed.failure };
+  if (observed.status === "missing") return { status: "missing", parentStatus: observed.parentStatus };
+  if (observed.status === "unknown") return { status: "unknown", parentStatus: observed.parentStatus, failure: observed.failure };
   if (!observed.directory && Number.isFinite(observed.size) && observed.size === expectedSize) {
-    return { status: "verified", remoteSize: observed.size };
+    return { status: "verified", remoteSize: observed.size, parentStatus: observed.parentStatus };
   }
-  return { status: "mismatch", remoteSize: Number.isFinite(observed.size) ? observed.size : undefined };
+  return {
+    status: "mismatch",
+    remoteSize: Number.isFinite(observed.size) ? observed.size : undefined,
+    parentStatus: observed.parentStatus,
+  };
 }
 
 /** Batch rename files on remote storage via WebDAV MOVE */

@@ -8,6 +8,8 @@ export type UploadFailureCategory =
   | "server"
   | "unknown";
 
+export type RemoteWriteEvidence = "target_missing_parent_visible";
+
 export interface UploadFailureInfo {
   category: UploadFailureCategory;
   status?: number;
@@ -17,6 +19,9 @@ export interface UploadFailureInfo {
   retryable: boolean;
   fingerprint: string;
   retryAfterMs?: number;
+  remoteWriteEvidence?: RemoteWriteEvidence;
+  remoteWriteStatus?: number;
+  remoteParentStatus?: "visible" | "missing" | "unknown";
 }
 
 export interface UploadHealthSnapshot {
@@ -158,6 +163,9 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
     ? responseDetail
     : undefined;
   const detail = usableResponseDetail ?? error?.data ?? error?.message ?? error;
+  const remoteWriteEvidence = error?.remoteWriteEvidence || error?.cause?.remoteWriteEvidence;
+  const remoteWriteStatus = Number(error?.remoteWriteStatus ?? error?.cause?.remoteWriteStatus);
+  const remoteParentStatus = error?.remoteParentStatus || error?.cause?.remoteParentStatus;
   const summary = sizeLimit
     ? "远端拒绝上传：单文件超过存储限制"
     : sanitizeUploadText(detail);
@@ -191,6 +199,9 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
     retryable,
     fingerprint: buildFingerprint(category, status, code, summary, remotePath),
     retryAfterMs: extractRetryAfterMs(error),
+    ...(remoteWriteEvidence === "target_missing_parent_visible" ? { remoteWriteEvidence } : {}),
+    ...(Number.isInteger(remoteWriteStatus) && remoteWriteStatus >= 100 && remoteWriteStatus <= 599 ? { remoteWriteStatus } : {}),
+    ...(["visible", "missing", "unknown"].includes(remoteParentStatus) ? { remoteParentStatus } : {}),
   };
 }
 

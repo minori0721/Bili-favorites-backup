@@ -58,6 +58,7 @@ import {
   sanitizeUploadText,
   UploadCircuitBreaker,
   type UploadFailureInfo,
+  type RemoteWriteEvidence,
 } from "./upload-health.js";
 import { DownloadApiHealth } from "./download-api-health.js";
 import { cancelActiveDownloadsForAccount } from "./downloader.js";
@@ -180,6 +181,7 @@ export function computeLocalCleanupRetryDelayMs(attempts: number) {
 
 export type RecoveryIssueKind =
   | "remote_visibility_timeout"
+  | "remote_write_rejected"
   | "remote_size_conflict"
   | "remote_size_limit"
   | "partial_remote_state"
@@ -249,6 +251,9 @@ interface RecoveryAssessment {
   fileName?: string;
   expectedSize?: number;
   observedSize?: number;
+  writeStatus?: number;
+  writeEvidence?: RemoteWriteEvidence | "repeated_missing_parent_visible";
+  uploadAttempts?: number;
   summary: string;
 }
 
@@ -601,8 +606,10 @@ export class SyncScheduler {
         && failure.status === 409;
       const remoteSizeLimit = !isQualityUploadPhaseTask(task)
         && failure.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE;
+      const remoteWriteRejected = !isQualityUploadPhaseTask(task)
+        && failure.remoteWriteEvidence === "target_missing_parent_visible";
       const authorizedRecovery = task instanceof UploadTask && task.reuploadPermissionUsed;
-      if (!manualConflict && !remoteSizeLimit) logTaskError(task, error);
+      if (!manualConflict && !remoteSizeLimit && !remoteWriteRejected) logTaskError(task, error);
       if (isQualityUploadPhaseTask(task)) {
         task.control.error = error;
         if (task.persistentJobId) {
@@ -637,7 +644,7 @@ export class SyncScheduler {
       const uploadHealth = this.uploadCircuit.getSnapshot();
       const isolatedDeterministicFailure = failure.category === "deterministic" && uploadHealth.state === "closed";
       if (task.persistentJobId) {
-        if (manualConflict || authorizedRecovery || remoteSizeLimit) {
+        if (manualConflict || authorizedRecovery || remoteSizeLimit || remoteWriteRejected) {
           const assessment = remoteSizeLimit
             ? {
               kind: "remote_size_limit" as const,
@@ -646,6 +653,16 @@ export class SyncScheduler {
               remoteStatus: "size_limit" as const,
               summary: failure.summary,
             }
+            : remoteWriteRejected
+              ? {
+                kind: "remote_write_rejected" as const,
+                checkedAt: Date.now(),
+                localStatus: "available" as const,
+                remoteStatus: "missing" as const,
+                writeStatus: failure.remoteWriteStatus || failure.status,
+                writeEvidence: failure.remoteWriteEvidence,
+                summary: "远端拒绝了写入，但目标文件仍不可见、父目录可见；WebDAV没有返回足够信息确定是大小限制、驱动限制还是最终一致性问题。可尝试一次换编码，不代表已确认是大小限制。",
+              }
             : undefined;
           const parked = this.jobStore.parkManualRecovery(task.persistentJobId, this.leaseOwner, failure.summary, {
             awaitingManualRecovery: true,
@@ -664,6 +681,8 @@ export class SyncScheduler {
               level: "error",
               summary: remoteSizeLimit
                 ? `${task.historyOnly ? "历史分P" : "上传"}因远端单文件限制暂停 ${task.bvid}：请检查存储设置后再继续`
+                : remoteWriteRejected
+                ? `${task.historyOnly ? "历史分P" : "上传"}因远端写入结果未确认而暂停 ${task.bvid}：可尝试一次换编码，原文件已保留`
                 : manualConflict
                 ? `${task.historyOnly ? "历史分P" : "上传"}因远端文件冲突暂停 ${task.bvid}：请处理冲突后重新确认或继续上传`
                 : `${task.historyOnly ? "历史分P" : "上传"}授权重传失败，已暂停 ${task.bvid}：请手动重新确认`,
@@ -2753,7 +2772,7 @@ export class SyncScheduler {
     // A provider's per-file quota is a deterministic item-level condition,
     // not evidence that the whole WebDAV backend is unhealthy. Park the item
     // without opening the global upload circuit for unrelated videos.
-    if (failure.code !== REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE) {
+    if (failure.code !== REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE && !failure.remoteWriteEvidence) {
       this.uploadCircuit.recordFailure(this.uploadTaskKey(task), failure);
       if (this.uploadCircuit.getSnapshot().state !== "closed") {
         this.stateManager.setUploadCooldown(this.uploadCircuit.getSnapshot() as any);
@@ -3030,6 +3049,15 @@ export class SyncScheduler {
       fileName: value.fileName ? path.basename(String(value.fileName)) : undefined,
       expectedSize: Number.isFinite(Number(value.expectedSize)) ? Number(value.expectedSize) : undefined,
       observedSize: Number.isFinite(Number(value.observedSize)) ? Number(value.observedSize) : undefined,
+      writeStatus: Number.isInteger(Number(value.writeStatus)) && Number(value.writeStatus) >= 100 && Number(value.writeStatus) <= 599
+        ? Number(value.writeStatus)
+        : undefined,
+      writeEvidence: ["target_missing_parent_visible", "repeated_missing_parent_visible"].includes(String(value.writeEvidence || ""))
+        ? String(value.writeEvidence) as RecoveryAssessment["writeEvidence"]
+        : undefined,
+      uploadAttempts: Number.isFinite(Number(value.uploadAttempts)) && Number(value.uploadAttempts) >= 0
+        ? Number(value.uploadAttempts)
+        : undefined,
       summary: sanitizeUploadText(value.summary || "等待人工检查", 300),
     };
   }
@@ -3421,7 +3449,13 @@ export class SyncScheduler {
         return { changed: true, assessment };
       }
 
-      const results: Array<{ file: typeof local.files[number]; status: "verified" | "missing" | "mismatch" | "unknown"; remoteSize?: number; failure?: RemoteFailureInfo }> = [];
+      const results: Array<{
+        file: typeof local.files[number];
+        status: "verified" | "missing" | "mismatch" | "unknown";
+        remoteSize?: number;
+        parentStatus?: "visible" | "missing" | "unknown";
+        failure?: RemoteFailureInfo;
+      }> = [];
       try {
         for (const file of local.files) {
           const result = await this.remoteFileInspector(this.configStore.get(), file.finalPath, file.expectedSize);
@@ -3499,6 +3533,30 @@ export class SyncScheduler {
           this.updateRecoveryAssessment(job.id, assessment);
           return { changed: true, assessment };
         }
+        const parentVisible = results.length > 0
+          && results.every((item) => item.status === "missing" && item.parentStatus === "visible");
+        const uploadAttempts = Math.max(...local.files.map((file) => Number(file.attempts || 0)), 0);
+        const priorWriteEvidence = previous?.kind === "remote_write_rejected"
+          || (payload.remoteWriteEvidence === "target_missing_parent_visible");
+        if (local.status === "available" && parentVisible && (priorWriteEvidence || uploadAttempts >= 2)) {
+          const writeEvidence = priorWriteEvidence
+            ? "target_missing_parent_visible" as const
+            : "repeated_missing_parent_visible" as const;
+          const assessment: RecoveryAssessment = {
+            kind: "remote_write_rejected",
+            checkedAt: this.now(),
+            localStatus: local.status,
+            remoteStatus: "missing",
+            writeStatus: previous?.writeStatus || Number(payload.remoteWriteStatus) || (priorWriteEvidence ? 405 : undefined),
+            writeEvidence,
+            uploadAttempts,
+            summary: priorWriteEvidence
+              ? "远端拒绝了写入，但目标文件仍不可见、父目录可见；WebDAV没有返回足够信息确定具体原因。可以尝试一次换编码，不代表已确认是大小限制。"
+              : "多次上传后远端目标仍不可见，但父目录可见；WebDAV返回的信息不足以确定是大小限制、驱动限制还是最终一致性问题。可以尝试一次换编码。",
+          };
+          this.updateRecoveryAssessment(job.id, assessment);
+          return { changed: true, assessment };
+        }
         const assessment: RecoveryAssessment = {
           kind: "remote_visibility_timeout",
           checkedAt: this.now(),
@@ -3554,6 +3612,10 @@ export class SyncScheduler {
         return job?.kind === "upload" && !(job.payload as any)?.historyOnly
           ? [redownloadWithEncoding, openSettings, recheck]
           : [openSettings, recheck];
+      case "remote_write_rejected":
+        return job?.kind === "upload" && !(job.payload as any)?.historyOnly
+          ? [redownloadWithEncoding, openSettings, recheck]
+          : [openSettings, recheck];
       case "unknown_same_size":
       case "legacy_conflict_interrupted":
         return [recheck];
@@ -3586,9 +3648,10 @@ export class SyncScheduler {
     const disposition = recoveryIssueDisposition(kind);
     const severity = ["remote_size_conflict", "remote_size_limit", "partial_remote_state", "unknown_same_size", "legacy_conflict_interrupted", "remote_permission", "remote_unsupported", "remote_unknown"].includes(kind)
       ? "danger"
-      : (["local_file_missing", "local_file_changed", "encoding_retry_failed"].includes(kind) ? "warning" : "info");
+      : (["local_file_missing", "local_file_changed", "encoding_retry_failed", "remote_write_rejected"].includes(kind) ? "warning" : "info");
     const titleByKind: Record<string, string> = {
       remote_visibility_timeout: "远端文件仍在等待可见",
+      remote_write_rejected: "远端写入结果未确认",
       remote_size_conflict: "远端存在同名冲突文件",
       remote_size_limit: "远端单文件超过存储限制",
       partial_remote_state: "多分P远端状态不一致",
@@ -3619,6 +3682,9 @@ export class SyncScheduler {
       mediaId: job.mediaId ?? undefined,
       localStatus: assessment?.localStatus || "unknown",
       remoteStatus: assessment?.remoteStatus || "unknown",
+      writeStatus: assessment?.writeStatus,
+      writeEvidence: assessment?.writeEvidence,
+      uploadAttempts: assessment?.uploadAttempts,
       checkedAt: assessment?.checkedAt || undefined,
       attempts: job.attempts,
       automaticRecoveryAttempts: Number(payload.automaticRecoveryAttempts || 0),
@@ -3862,8 +3928,8 @@ export class SyncScheduler {
       return { ok: false as const, status: 409, message: "编码替换任务正在恢复，请刷新待处理项" };
     }
     const assessment = this.recoveryAssessment(payload);
-    if (!assessment || !["remote_size_limit", "encoding_retry_failed"].includes(assessment.kind)) {
-      return { ok: false as const, status: 409, message: "当前任务不是可更换编码的远端限制错误，请先重新检查" };
+    if (!assessment || !["remote_size_limit", "remote_write_rejected", "encoding_retry_failed"].includes(assessment.kind)) {
+      return { ok: false as const, status: 409, message: "当前任务不是可更换编码的远端写入错误，请先重新检查" };
     }
     const local = this.inspectRecoveryLocalFiles(job);
     if (local.status !== "available") {
@@ -5578,7 +5644,7 @@ export class SyncScheduler {
     const recoveryActions = payload.awaitingManualRecovery
       && !payload.historyOnly
       && !retryBusy
-      && ["remote_size_limit", "encoding_retry_failed"].includes(String(assessment?.kind || ""))
+      && ["remote_size_limit", "remote_write_rejected", "encoding_retry_failed"].includes(String(assessment?.kind || ""))
       ? [{ id: "redownload_with_encoding" as const, label: "换编码" }]
       : undefined;
 

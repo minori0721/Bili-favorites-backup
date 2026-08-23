@@ -33,6 +33,8 @@ export interface RemoteFileObservation {
   directory: boolean;
   source: "stat" | "directory";
   name?: string;
+  /** Whether the parent directory itself was successfully listed. */
+  parentStatus?: "visible" | "missing" | "unknown";
   failure?: RemoteFailureInfo;
 }
 
@@ -445,9 +447,24 @@ export class RemoteFileResolver {
       } catch (listError) {
         const listFailure = classifyRemoteFailure(listError);
         if (listFailure.category === "not_found") {
-          return { status: "missing", path: expectedPath, directory: false, source: "directory", name: expectedName };
+          return {
+            status: "missing",
+            path: expectedPath,
+            directory: false,
+            source: "directory",
+            name: expectedName,
+            parentStatus: "missing",
+          };
         }
-        return { status: "unknown", path: expectedPath, directory: false, source: "directory", name: expectedName, failure: listFailure };
+        return {
+          status: "unknown",
+          path: expectedPath,
+          directory: false,
+          source: "directory",
+          name: expectedName,
+          parentStatus: "unknown",
+          failure: listFailure,
+        };
       }
 
       const parent = remoteLookupDirname(expectedPath);
@@ -471,7 +488,14 @@ export class RemoteFileResolver {
       }
       const match = matches[0];
       if (!match) {
-        return { status: "missing", path: expectedPath, directory: false, source: "directory", name: expectedName };
+        return {
+          status: "missing",
+          path: expectedPath,
+          directory: false,
+          source: "directory",
+          name: expectedName,
+          parentStatus: "visible",
+        };
       }
       return {
         status: "exists",
@@ -480,6 +504,7 @@ export class RemoteFileResolver {
         size: match.size,
         directory: match.type === "directory",
         source: "directory",
+        parentStatus: "visible",
       };
     }
   }
