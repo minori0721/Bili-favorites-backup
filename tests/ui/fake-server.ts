@@ -21,6 +21,7 @@ type TestState = {
   recoveryIssueResolved: boolean;
   recoveryIssueKind: "visibility" | "candidate";
   recoveryIssueEmpty: boolean;
+  queueBoardMode: "empty" | "manual_wait";
 };
 
 function initialState(): TestState {
@@ -40,6 +41,7 @@ function initialState(): TestState {
     recoveryIssueResolved: false,
     recoveryIssueKind: "visibility",
     recoveryIssueEmpty: false,
+    queueBoardMode: "empty",
   };
 }
 
@@ -136,6 +138,7 @@ app.post("/__test/reset", (request, response) => {
   state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
   if (request.body?.recoveryIssueKind === "candidate") state.recoveryIssueKind = "candidate";
   state.recoveryIssueEmpty = request.body?.recoveryIssueEmpty === true;
+  if (request.body?.queueBoardMode === "manual_wait") state.queueBoardMode = "manual_wait";
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
@@ -181,6 +184,27 @@ app.get("/api/users", (_request, response) => response.json(ok([{
 }])));
 app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({ running: [], completed: [] })));
 app.get("/api/queue/state", (_request, response) => {
+  const manualWaitQueue = state.queueBoardMode === "manual_wait";
+  const queueItems = manualWaitQueue ? [{
+    id: "job-remote-visibility",
+    bvid: "BV1wzGP6jEPh",
+    title: "99ninth_ AZUR LANE 2026 Summer Festival…",
+    upperName: "-キリリ-",
+    cover: "",
+    folderTitle: "惨6",
+    remotePath: "",
+    userId: "user-1",
+    mediaId: 101,
+    detail: "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
+    status: "manual_wait",
+    phase: "background_wait",
+    nextAction: "recheck",
+    nextActionAt: Date.now() + 5 * 60_000,
+    retries: 0,
+    maxRetries: 3,
+    actionRequired: false,
+    recoveryDisposition: "background",
+  }] : [];
   const candidateIssue = state.recoveryIssueKind === "candidate";
   const issues = state.recoveryIssueEmpty || state.recoveryIssueResolved ? [] : [{
     id: "upload.test-recovery",
@@ -215,14 +239,20 @@ app.get("/api/queue/state", (_request, response) => {
   const disposition = candidateIssue ? "intentional_confirmation" : "background";
   const visibleIssues = disposition === "background" ? [] : issues.map((issue) => ({ ...issue, disposition }));
   response.json(ok({
-    downloadPending: [], downloadRunning: [], uploadPending: [], uploadRunning: [],
-    scheduler: { status: "idle", title: "当前调度空闲", detail: "没有运行中的任务", queuedActions: [] },
+    downloadPending: [], downloadRunning: [], uploadPending: queueItems, uploadRunning: [],
+    scheduler: {
+      status: "idle",
+      title: manualWaitQueue ? "同步空闲，后台队列待处理" : "当前调度空闲",
+      detail: "没有运行中的任务",
+      queuedActions: [],
+    },
     issues: visibleIssues,
     backgroundRecoveries: disposition === "background" ? issues.map((issue) => ({ ...issue, disposition })) : [],
     actionRequiredIssues: [],
     intentionalConfirmations: candidateIssue ? visibleIssues : [],
     issueSummary: { total: 0, danger: 0, warning: 0, info: 0, actionRequired: 0, intentional: candidateIssue ? 1 : 0, background: candidateIssue ? 0 : 1 },
-    recovery: {}, chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
+    recovery: manualWaitQueue ? { pendingUploads: 1 } : {},
+    chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
   }));
 });
 app.post("/api/recovery-issues/:id/actions/:action", (_request, response) => {

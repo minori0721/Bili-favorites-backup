@@ -527,13 +527,19 @@ export class PersistentJobStore {
     return result;
   }
 
-  listForBoard(kinds: PersistentJobKind[], limit = 100) {
+  listForBoard(
+    kinds: PersistentJobKind[],
+    limit = 100,
+    statuses: PersistentJobRecord["status"][] = ["pending", "retry_wait", "leased", "running", "manual_wait", "failed"]
+  ) {
     if (kinds.length === 0) return [];
+    if (statuses.length === 0) return [];
     const placeholders = kinds.map(() => "?").join(",");
+    const statusPlaceholders = statuses.map(() => "?").join(",");
     return (this.stateDatabase.db.prepare(`
-      SELECT * FROM jobs WHERE kind IN (${placeholders})
+      SELECT * FROM jobs WHERE kind IN (${placeholders}) AND status IN (${statusPlaceholders})
       ORDER BY priority ASC, not_before ASC, created_at ASC LIMIT ?
-    `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
+    `).all(...kinds, ...statuses, Math.max(1, limit)) as any[]).map(rowToJob);
   }
 
   list(kinds: PersistentJobKind[], limit = 1000) {

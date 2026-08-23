@@ -103,7 +103,11 @@ test("application info derives safe dev, release, and local build labels", () =>
   const appHtml = renderAppPage();
   assert.match(appHtml, /class="app-brand"/);
   assert.match(appHtml, /class="header-actions"/);
-  assert.match(appHtml, /setInterval\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, 1000\)/);
+  assert.match(appHtml, /setTimeout\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, Math\.max\(1_000/);
+  assert.match(appHtml, /function queueBoardRefreshDelay\(snapshot\)/);
+  assert.match(appHtml, /setInterval\(updateQueueBoardClock, 1_000\)/);
+  assert.match(appHtml, /id="logQueueBtn" class="active"/);
+  assert.match(appHtml, /setLogMode\('queue'\)/);
   assert.match(appHtml, /visibilitychange/);
   assert.match(appHtml, /if \(document\.hidden\) \{[\s\S]*?stopQueueBoardPolling\(\);[\s\S]*?stopRecoveryIssuePolling\(\);[\s\S]*?\}/);
   assert.match(appHtml, /id="playbackModal"/);

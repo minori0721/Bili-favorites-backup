@@ -1411,6 +1411,19 @@ export class StateDatabase {
     return row ? parseVideoRow(row) : undefined;
   }
 
+  listVideosByBvids(bvids: string[]) {
+    const unique = [...new Set(bvids.map((bvid) => String(bvid || "").trim()).filter(Boolean))];
+    if (unique.length === 0) return [];
+    const placeholders = unique.map(() => "?").join(",");
+    return (this.db.prepare(`
+      SELECT v.payload_json, summary.backup_status AS aggregate_status
+      FROM videos v LEFT JOIN video_backup_summary summary ON summary.bvid=v.bvid
+      WHERE v.bvid IN (${placeholders})
+    `).all(...unique) as any[])
+      .map((row) => parseVideoRow(row))
+      .filter(Boolean);
+  }
+
   getRelation(key: string) {
     const parts = key.split(":");
     const userId = parts.shift() || "";

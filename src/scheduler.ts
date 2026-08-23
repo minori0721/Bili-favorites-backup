@@ -17,7 +17,14 @@ import { tempDir } from "./paths.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { inspectRemoteFileSize, listRemoteDir, resolveRemotePath, verifyRemoteFiles } from "./uploader.js";
 import type { ExistingArchiveProof, UploadIntent } from "./upload-preflight.js";
-import { computeTaskRetryDelayMs, mapQueueBoardTask, type QueueBoardItem, TaskQueue } from "./queue.js";
+import {
+  computeTaskRetryDelayMs,
+  mapQueueBoardTask,
+  type QueueBoardAction,
+  type QueueBoardItem,
+  type QueueBoardPhase,
+  TaskQueue,
+} from "./queue.js";
 import { queueCoverCache } from "./cover-cache.js";
 import {
   buildUploadFileMetadataFromSession,
@@ -4898,68 +4905,185 @@ export class SyncScheduler {
     this.schedulerProgress = snapshot;
   }
 
+  private mapQueueTaskForBoard(task: any, stage: QueueBoardItem["stage"]): QueueBoardItem {
+    const job = task.persistentJob as any;
+    const payload = job?.payload || {};
+    const isVerification = job?.kind === "verify_upload" || task instanceof UploadVerificationTask;
+    const firstString = (...values: unknown[]) => {
+      for (const value of values) {
+        if (typeof value === "string" && value.trim()) return value;
+      }
+      return "";
+    };
+    const item = mapQueueBoardTask(task, stage, {
+      title: firstString(task.videoTitle, payload.videoTitle, task.bvid),
+      upperName: firstString(task.upperName, payload.upperName),
+      cover: firstString(task.cover, payload.cover),
+      coverLocalPath: firstString(task.coverLocalPath, payload.coverLocalPath) || undefined,
+      folderTitle: firstString(task.folderTitle, payload.folderTitle),
+      detail: firstString(task.detail) || (isVerification
+        ? (task.status === "running" ? "正在确认远端文件" : "已上传，等待远端确认")
+        : ""),
+      persistentJobId: task.persistentJobId ? String(task.persistentJobId) : undefined,
+    });
+    if (isVerification) {
+      item.phase = task.status === "running" ? "remote_verifying" : task.status === "retry_wait" ? "retry_wait" : "queued";
+      item.nextAction = task.status === "retry_wait" ? "verify" : undefined;
+      item.nextActionAt = task.status === "retry_wait" && typeof task.retryAt === "number" ? task.retryAt : undefined;
+    }
+    return item;
+  }
+
+  private mapPersistentJobForBoard(job: any): QueueBoardItem | null {
+    const payload = (job.payload || {}) as any;
+    const kind = String(job.kind || "");
+    const isDownload = ["download", "quality_download"].includes(kind);
+    const isUpload = ["upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup", "verify_upload"].includes(kind);
+    if (!isDownload && !isUpload) return null;
+    if (job.status === "failed" && !payload.awaitingManualRecovery) return null;
+
+    const assessment = payload.awaitingManualRecovery ? this.recoveryAssessment(payload) : null;
+    const disposition = assessment ? recoveryIssueDisposition(assessment.kind) : undefined;
+    const isVerification = kind === "verify_upload";
+    const stage: QueueBoardItem["stage"] = isDownload
+      ? (job.status === "running" ? "download_running" : "download_pending")
+      : "upload_pending";
+    let phase: QueueBoardPhase = job.status === "running"
+      ? (isVerification ? "remote_verifying" : "running")
+      : job.status === "leased"
+        ? "leased"
+        : job.status === "retry_wait"
+          ? "retry_wait"
+          : "queued";
+    if (payload.awaitingManualRecovery) {
+      phase = disposition === "background" ? "background_wait" : "manual_action";
+    }
+
+    const detail = payload.awaitingManualRecovery
+      ? (assessment?.summary || "等待安全复核：系统会先自动检查远端状态")
+      : isVerification
+        ? (job.status === "running" || job.status === "leased" ? "正在确认远端文件" : "已上传，等待远端确认")
+        : String(payload.qualityStageLabel || payload.detail || job.lastError || "等待处理");
+    const nextAction: QueueBoardAction | undefined = payload.awaitingManualRecovery
+      ? "recheck"
+      : job.status === "retry_wait"
+        ? (isVerification ? "verify" : "retry")
+        : undefined;
+    const nextActionAt = payload.awaitingManualRecovery
+      ? assessment?.nextCheckAt
+      : job.status === "retry_wait" && Number(job.notBefore) > 0
+        ? Number(job.notBefore)
+        : undefined;
+
+    return mapQueueBoardTask({
+      id: job.id,
+      bvid: job.bvid,
+      userId: job.userId,
+      mediaId: job.mediaId,
+      videoTitle: payload.videoTitle || job.bvid,
+      upperName: payload.upperName || "",
+      cover: payload.cover || "",
+      coverLocalPath: payload.coverLocalPath,
+      folderTitle: payload.folderTitle || payload.primaryFolderTitle || "",
+      remotePath: payload.remotePath || payload.remoteFile || "",
+      detail,
+      status: job.status,
+      retries: job.attempts,
+      maxRetries: job.maxAttempts,
+      retryAt: job.status === "retry_wait" ? job.notBefore : undefined,
+      queuedAt: job.createdAt,
+      persistentJobId: job.id,
+    }, stage, {
+      status: String(job.status || "pending"),
+      phase,
+      nextAction,
+      nextActionAt,
+      actionRequired: Boolean(payload.awaitingManualRecovery && disposition !== "background"),
+      lastError: job.lastError ? String(job.lastError) : undefined,
+      awaitingManualRecovery: Boolean(payload.awaitingManualRecovery),
+      recoveryJobId: payload.awaitingManualRecovery ? String(job.id) : undefined,
+      recoveryDisposition: disposition,
+    });
+  }
+
+  private enrichQueueBoardMetadata(items: QueueBoardItem[]) {
+    const metadata = this.stateManager.getVideoMetaBatch(items.map((item) => item.bvid));
+    for (const item of items) {
+      const fallback = metadata.get(item.bvid);
+      if (!fallback) continue;
+      if (!item.title || item.title === item.bvid) item.title = fallback.title || item.title;
+      if (!item.upperName) item.upperName = fallback.upperName || "";
+      if (!item.cover) item.cover = fallback.cover || "";
+      if (!item.coverLocalPath) item.coverLocalPath = fallback.coverLocalPath || undefined;
+    }
+  }
+
   getQueueSnapshot() {
     const downloadPending: QueueBoardItem[] = [];
     const downloadRunning: QueueBoardItem[] = [];
     const uploadPending: QueueBoardItem[] = [];
     const uploadRunning: QueueBoardItem[] = [];
+    const seenPersistentJobIds = new Set<string>();
+
+    const addTask = (task: any, stage: QueueBoardItem["stage"]) => {
+      const item = this.mapQueueTaskForBoard(task, stage);
+      if (item.persistentJobId) seenPersistentJobIds.add(item.persistentJobId);
+      const target = stage === "download_pending"
+        ? downloadPending
+        : stage === "download_running"
+          ? downloadRunning
+          : stage === "upload_running"
+            ? uploadRunning
+            : uploadPending;
+      target.push(item);
+    };
 
     for (const task of this.downloadQueue.getTasks()) {
       if (task.status === "running") {
-        downloadRunning.push(mapQueueBoardTask(task, "download_running"));
+        addTask(task, "download_running");
       } else if (task.status === "pending" || task.status === "retry_wait") {
-        downloadPending.push(mapQueueBoardTask(task, "download_pending"));
+        addTask(task, "download_pending");
       }
     }
     for (const task of this.uploadQueue.getTasks()) {
       if (task.status === "running") {
-        uploadRunning.push(mapQueueBoardTask(task, "upload_running"));
+        addTask(task, "upload_running");
       } else if (task.status === "pending" || task.status === "retry_wait") {
-        uploadPending.push(mapQueueBoardTask(task, "upload_pending"));
+        addTask(task, "upload_pending");
       }
     }
-    for (const job of this.jobStore.listForBoard(["verify_upload"], 100)) {
-      if (["leased", "running"].includes(job.status)) continue;
-      const payload = job.payload as any;
-      uploadPending.push(mapQueueBoardTask({
-        id: job.id,
-        bvid: job.bvid,
-        userId: job.userId,
-        mediaId: job.mediaId,
-        videoTitle: payload.videoTitle || job.bvid,
-        folderTitle: payload.folderTitle || "",
-        remotePath: payload.remotePath || payload.remoteFile || "",
-        detail: "已上传，等待远端确认",
-        retries: job.attempts,
-        maxRetries: job.maxAttempts,
-        retryAt: job.notBefore,
-        queuedAt: job.createdAt,
-      }, "upload_pending"));
-    }
-    for (const job of this.jobStore.listForBoard(["upload", "history_upload"], 100)) {
-      const payload = job.payload as any;
-      if (!payload.awaitingManualRecovery) continue;
-      const assessment = this.recoveryAssessment(payload);
-      uploadPending.push(mapQueueBoardTask({
-        id: job.id,
-        bvid: job.bvid,
-        userId: job.userId,
-        mediaId: job.mediaId,
-        videoTitle: payload.videoTitle || job.bvid,
-        folderTitle: payload.folderTitle || "",
-        remotePath: payload.remotePath || "",
-        detail: assessment?.summary || "等待安全复核：系统会先自动检查远端状态",
-        retries: job.attempts,
-        maxRetries: job.maxAttempts,
-        queuedAt: job.createdAt,
-      }, "upload_pending", {
-          awaitingManualRecovery: true,
-          recoveryJobId: job.id,
-          recoveryDisposition: assessment ? recoveryIssueDisposition(assessment.kind) : "action_required",
-        }));
+    for (const task of this.verificationQueue.getTasks()) {
+      if (task.status === "running" || task.status === "pending" || task.status === "retry_wait") {
+        addTask(task, "upload_pending");
+      }
     }
 
-    const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.sequence || 0) - Number(b.sequence || 0);
+    // Download jobs remain represented by the bounded in-memory prefetch queue.
+    // Upload/verification jobs also need a persisted view so manual waits and
+    // confirmation work remain visible after a restart or before prefetch.
+    const boardKinds: PersistentJobKind[] = [
+      "upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup", "verify_upload",
+    ];
+    const boardLimit = Math.max(1, Number(this.configStore.get().queuePrefetchLimit || 25));
+    const persistentJobs = this.jobStore.listForBoard(boardKinds, boardLimit);
+    for (const job of persistentJobs) {
+      if (seenPersistentJobIds.has(String(job.id))) continue;
+      const item = this.mapPersistentJobForBoard(job);
+      if (!item) continue;
+      seenPersistentJobIds.add(String(job.id));
+      if (item.stage === "download_running" || item.stage === "download_pending") {
+        (item.stage === "download_running" ? downloadRunning : downloadPending).push(item);
+      } else {
+        uploadPending.push(item);
+      }
+    }
+
+    this.enrichQueueBoardMetadata([...downloadPending, ...downloadRunning, ...uploadPending, ...uploadRunning]);
+
+    const bySequence = (a: QueueBoardItem, b: QueueBoardItem) => {
+      if (a.sequence !== undefined || b.sequence !== undefined) return Number(a.sequence || 0) - Number(b.sequence || 0);
+      return Number(a.nextActionAt || a.retryAt || a.queuedAt || 0) - Number(b.nextActionAt || b.retryAt || b.queuedAt || 0);
+    };
     const byStartedAt = (a: QueueBoardItem, b: QueueBoardItem) => Number(a.startedAt || 0) - Number(b.startedAt || 0);
     downloadPending.sort(bySequence);
     uploadPending.sort(bySequence);

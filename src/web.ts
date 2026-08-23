@@ -651,8 +651,10 @@ function getAppStyles() {
     .local-cache-status.paused { border-color:#FFB74D; background:#FFF8E1; color:#8D6E00; }
     .upload-health-status { border:1px solid #E57373; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF1F1; font-size:12px; color:#9B2C2C; }
     .download-api-health-status { border:1px solid #FFB74D; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF8E1; font-size:12px; color:#8D6E00; }
+    .queue-board-notice { border:1px solid rgba(255,183,77,0.75); border-radius:10px; background:#FFF8E1; color:#8D6E00; padding:8px 10px; margin:0 0 10px; font-size:12px; }
+    .queue-board-notice.error { border-color:rgba(214,90,90,0.5); background:#FFF1F1; color:#9B2C2C; }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
-    .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:420px; display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
+    .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:clamp(280px,42vh,420px); display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
     .queue-col-count { min-width:28px; text-align:right; }
     .queue-list { display:grid; gap:8px; overflow-y:auto; padding-right:4px; min-height:0; align-content:start; flex:1; }
@@ -664,11 +666,12 @@ function getAppStyles() {
     .queue-card.entering { animation:queueCardIn .22s cubic-bezier(0.16,1,0.3,1); }
     .queue-card.leaving { opacity:0; transform:scale(.98); }
     .queue-card:hover { box-shadow:0 6px 16px rgba(57,197,187,0.12); border-color:var(--accent); }
-    .queue-cover { width:64px; height:44px; object-fit:cover; border-radius:6px; background:#eee; flex-shrink:0; }
+    .queue-cover { width:64px; height:44px; object-fit:cover; display:flex; align-items:center; justify-content:center; border-radius:6px; background:#eee; color:#9aa8a6; font-size:10px; flex-shrink:0; }
     .queue-info { min-width:0; flex:1; }
     .queue-title { font-size:12px; font-weight:700; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-    .queue-meta { font-size:11px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .queue-meta { font-size:11px; color:var(--muted); margin-top:3px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
+    .queue-status { flex:1 1 100%; min-width:0; color:var(--ink); line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
     .queue-recovery-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }
     .queue-recovery-actions button { border:1px solid var(--accent); border-radius:8px; padding:4px 8px; background:rgba(57,197,187,0.08); color:var(--accent); cursor:pointer; font-size:11px; font-weight:700; }
@@ -1092,10 +1095,11 @@ function getSettingsSection() {
 
 function getLogSection() {
   return `<section class="card">
-      <h2>任务日志</h2>
+      <h2>任务中心</h2>
       <div class="log-toggle">
         <button id="recoveryIssuesBtn" class="recovery-issues-entry" type="button" aria-haspopup="dialog">待处理 0</button>
-        <button id="logSimpleBtn" class="active">精简模式</button>
+        <button id="logQueueBtn" class="active" type="button">队列看板</button>
+        <button id="logSimpleBtn" type="button">精简日志</button>
         <button id="logRawBtn">原始输出</button>
         <button id="logDebugBtn">调试模式</button>
       </div>
@@ -1561,10 +1565,13 @@ function getAppScript() {
 
     let currentLoginId = null;
     let favoritesUserId = null;
-    let logMode = 'simple';
+    let logMode = 'queue';
     let logEntries = [];
     let queueBoardPollTimer = null;
+    let queueBoardClockTimer = null;
     let queueBoardRequestInFlight = false;
+    let queueBoardRequestController = null;
+    let queueBoardRequestToken = 0;
     let recoveryIssuePollTimer = null;
     let recoveryIssueRequestInFlight = false;
     const recoveryIssueState = {
@@ -1580,6 +1587,9 @@ function getAppScript() {
       columns: {},
       cards: new Map(),
       renderLimit: 80,
+      lastSnapshot: null,
+      lastUpdatedAt: 0,
+      lastError: null,
     };
     let unavailableUserId = null;
     let unavailableFilter = 'missing';
@@ -7124,11 +7134,38 @@ function getAppScript() {
       return m + 'm ' + s + 's';
     }
 
-    function queueElapsedLabel(item) {
-      const stage = item.stage || '';
-      if (stage === 'download_running') return '运行';
-      if (stage === 'upload_running') return '上传';
-      return '等待';
+    function queuePhaseLabel(item) {
+      const phase = item.phase || '';
+      if (phase === 'running') return item.stage === 'download_running' ? '正在下载' : '正在上传';
+      if (phase === 'remote_verifying') return '正在确认远端';
+      if (phase === 'retry_wait') return '等待重试';
+      if (phase === 'background_wait') return '等待系统复核';
+      if (phase === 'manual_action') return '等待处理';
+      if (phase === 'leased') return '已领取，等待执行';
+      return '排队等待';
+    }
+
+    function queueTimeLabel(item, nowMs) {
+      const nextAt = Number(item.nextActionAt || 0);
+      if (nextAt > 0) {
+        if (nextAt > nowMs) {
+          const prefix = item.nextAction === 'recheck' ? '约 ' : '';
+          const action = item.nextAction === 'recheck'
+            ? '后自动复核'
+            : item.nextAction === 'verify' ? '后确认' : '后重试';
+          return prefix + formatElapsed(nextAt - nowMs) + action;
+        }
+        if (item.nextAction === 'recheck') return '复核时间已到，等待调度';
+        return item.nextAction === 'verify' ? '等待确认调度' : '等待重试调度';
+      }
+      if (item.phase === 'running' || item.phase === 'remote_verifying') {
+        const startedAt = Number(item.startedAt || 0);
+        return startedAt > 0 ? '已运行 ' + formatElapsed(Math.max(0, nowMs - startedAt)) : '正在处理';
+      }
+      if (item.phase === 'queued' && Number(item.queuedAt || 0) > 0) {
+        return '已等待 ' + formatElapsed(Math.max(0, nowMs - Number(item.queuedAt)));
+      }
+      return item.phase === 'background_wait' ? '等待系统复核' : '等待处理';
     }
 
     function makeQueueCardKey(item) {
@@ -7196,16 +7233,28 @@ function getAppScript() {
     }
 
     function updateQueueCard(card, item, nowMs) {
+      card.__queueItem = item;
       card.dataset.queueStage = item.stage || '';
+      card.dataset.queuePhase = item.phase || '';
       const titleEl = card.querySelector('.queue-title');
       const metaEl = card.querySelector('.queue-meta');
       const extraEl = card.querySelector('.queue-extra');
       const coverEl = card.querySelector('.queue-cover');
       const cachedCoverUrl = localCoverUrl(item);
-      const remoteCoverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const remoteCoverUrl = typeof item.cover === 'string' && item.cover.trim()
+        ? item.cover.replace('http://', 'https://')
+        : '';
       const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
       if (coverEl instanceof HTMLImageElement) {
-        if (coverUrl && coverEl.src !== coverUrl) coverEl.src = coverUrl;
+        if (coverUrl) {
+          if (coverEl.src !== coverUrl) coverEl.src = coverUrl;
+        } else {
+          const placeholder = document.createElement('div');
+          placeholder.className = 'queue-cover';
+          placeholder.textContent = '封面';
+          placeholder.setAttribute('aria-hidden', 'true');
+          coverEl.replaceWith(placeholder);
+        }
       } else if (coverUrl && coverEl) {
         const img = document.createElement('img');
         img.className = 'queue-cover';
@@ -7219,30 +7268,39 @@ function getAppScript() {
         titleEl.title = safeText(item.title || item.bvid, '未知任务');
       }
       if (metaEl) {
-        metaEl.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-');
+        const folder = item.folderTitle ? ' · 收藏夹：' + safeText(item.folderTitle, '') : '';
+        metaEl.textContent = safeText(item.upperName || item.ownerName, '未知UP') + ' · ' + safeText(item.bvid, '-') + folder;
       }
       if (extraEl) {
-        const retryAt = Number(item.retryAt || 0);
-        const retryWaiting = retryAt > nowMs;
-        const t0 = Number((retryWaiting ? retryAt : 0) || item.startedAt || item.queuedAt || 0);
-        const elapsed = t0 > 0 ? formatElapsed(Math.abs(nowMs - t0)) : '0s';
         extraEl.innerHTML = '';
-        if (item.detail) {
+        if (item.detail || queuePhaseLabel(item)) {
           const detail = document.createElement('span');
-          detail.className = 'queue-pill';
-          detail.textContent = String(item.detail);
+          detail.className = 'queue-status';
+          detail.textContent = String(item.detail || queuePhaseLabel(item));
           extraEl.appendChild(detail);
         }
-        const retry = document.createElement('span');
-        retry.className = 'queue-pill';
-        retry.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0);
+        if (item.phase === 'retry_wait') {
+          const retry = document.createElement('span');
+          retry.className = 'queue-pill';
+          retry.textContent = '重试 ' + Number(item.retries || 0) + '/' + Number(item.maxRetries || 0);
+          extraEl.appendChild(retry);
+        }
         const time = document.createElement('span');
         time.className = 'queue-pill';
-        time.textContent = retryWaiting ? '等待重试 ' + elapsed : queueElapsedLabel(item) + ' ' + elapsed;
-        extraEl.appendChild(retry);
+        time.dataset.queueTime = '1';
+        time.textContent = queueTimeLabel(item, nowMs);
         extraEl.appendChild(time);
       }
       updateQueueRecoveryActions(card, item);
+    }
+
+    function updateQueueBoardClock() {
+      const nowMs = Date.now();
+      for (const card of queueBoardState.cards.values()) {
+        const item = card.__queueItem;
+        const time = card.querySelector('[data-queue-time="1"]');
+        if (item && time) time.textContent = queueTimeLabel(item, nowMs);
+      }
     }
 
     function renderQueueCard(item, nowMs) {
@@ -7250,18 +7308,23 @@ function getAppScript() {
       card.className = 'queue-card';
       card.dataset.queueKey = makeQueueCardKey(item);
       const cachedCoverUrl = localCoverUrl(item);
-      const remoteCoverUrl = item.cover ? String(item.cover).replace('http://', 'https://') : '';
+      const remoteCoverUrl = typeof item.cover === 'string' && item.cover.trim()
+        ? item.cover.replace('http://', 'https://')
+        : '';
       const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
       if (coverUrl) {
         const img = document.createElement('img');
         img.className = 'queue-cover';
         img.src = coverUrl;
+        img.alt = safeText(item.title || item.bvid, '视频封面');
         img.referrerPolicy = 'no-referrer';
         img.loading = 'lazy';
         card.appendChild(img);
       } else {
         const cover = document.createElement('div');
         cover.className = 'queue-cover';
+        cover.textContent = '封面';
+        cover.setAttribute('aria-hidden', 'true');
         card.appendChild(cover);
       }
       const info = document.createElement('div');
@@ -7337,6 +7400,12 @@ function getAppScript() {
       const started = status.startedAt ? formatDateTime(status.startedAt) : '未运行';
       const progress = status.total ? String(status.checked || 0) + '/' + String(status.total) : (status.biliTotal ? String(status.indexed || 0) + '/' + String(status.biliTotal) : '无');
       const recovery = status.recovery || {};
+      const statusLabels = { idle:'空闲', running:'运行中', queued:'排队中', paused:'已暂停', error:'异常' };
+      const statusLabel = statusLabels[status.status] || status.status || '空闲';
+      const hasPendingBackgroundWork = Number(recovery.pendingUploads || 0) > 0 || Number(recovery.pendingDownloads || 0) > 0 || Number(recovery.pendingVerifications || 0) > 0;
+      const titleText = status.status === 'idle' && hasPendingBackgroundWork
+        ? '同步空闲，后台队列待处理'
+        : (status.title || '同步调度空闲');
       const recoveryText = '下载 ' + Number(recovery.pendingDownloads || 0) +
         ' / 上传 ' + Number(recovery.pendingUploads || 0) +
         ' / 确认 ' + Number(recovery.pendingVerifications || 0) +
@@ -7349,7 +7418,7 @@ function getAppScript() {
       const left = document.createElement('div');
       const title = document.createElement('div');
       title.className = 'scheduler-status-title';
-      title.textContent = status.title || '当前调度空闲';
+      title.textContent = titleText;
       const detail = document.createElement('div');
       detail.className = 'scheduler-status-detail';
       detail.textContent = status.detail || '当前没有正在运行的同步、扫描或对账任务。';
@@ -7364,7 +7433,7 @@ function getAppScript() {
       const grid = document.createElement('div');
       grid.className = 'scheduler-status-grid';
       const rows = [
-        ['任务状态', status.status || 'idle'],
+        ['任务状态', statusLabel],
         ...(status.maintenance ? [['维护锁', (status.maintenance.kind === 'archive_delete' ? '归档清理：' : '归档路径迁移：') + (status.maintenance.status || '进行中')]] : []),
         ['账号', status.userName || '无'],
         ['收藏夹', status.folderTitle || '无'],
@@ -7509,15 +7578,61 @@ function getAppScript() {
       }
     }
 
+    function renderQueueBoardNotice(board, message, error = false) {
+      let notice = board.querySelector('[data-queue-board-notice="1"]');
+      if (!message) {
+        if (notice) notice.remove();
+        return;
+      }
+      if (!notice) {
+        notice = document.createElement('div');
+        notice.dataset.queueBoardNotice = '1';
+        board.insertBefore(notice, board.firstChild);
+      }
+      notice.className = 'queue-board-notice' + (error ? ' error' : '');
+      notice.textContent = message;
+    }
+
+    function queueBoardRefreshDelay(snapshot) {
+      const items = [
+        ...(snapshot.downloadPending || []),
+        ...(snapshot.downloadRunning || []),
+        ...(snapshot.uploadPending || []),
+        ...(snapshot.uploadRunning || []),
+      ];
+      if (items.some((item) => ['running', 'remote_verifying'].includes(item.phase))) return 2_000;
+      if (items.length > 0 || snapshot.maintenance) return 5_000;
+      return 15_000;
+    }
+
+    function scheduleQueueBoardPoll(delayMs) {
+      if (queueBoardPollTimer) clearTimeout(queueBoardPollTimer);
+      if (document.hidden || logMode !== 'queue') {
+        queueBoardPollTimer = null;
+        return;
+      }
+      queueBoardPollTimer = setTimeout(() => {
+        queueBoardPollTimer = null;
+        void refreshQueueBoard();
+      }, Math.max(1_000, Number(delayMs) || 5_000));
+    }
+
     async function refreshQueueBoard() {
       if (logMode !== 'queue' || queueBoardRequestInFlight) return;
       const board = ensureQueueBoardHost();
       if (!board) return;
+      const token = ++queueBoardRequestToken;
+      const controller = new AbortController();
+      queueBoardRequestController = controller;
       queueBoardRequestInFlight = true;
       try {
-        const data = await fetchJsonSilent('/api/queue/state');
-        if (logMode !== 'queue') return;
+        const data = await fetchJsonSilent('/api/queue/state', { signal: controller.signal });
+        if (token !== queueBoardRequestToken || logMode !== 'queue') return;
         const snapshot = data || {};
+        queueBoardState.lastSnapshot = snapshot;
+        queueBoardState.lastUpdatedAt = Date.now();
+        queueBoardState.lastError = null;
+        renderQueueBoardNotice(board, '');
         setRecoveryIssueItems(
           snapshot.issues || [...(snapshot.actionRequiredIssues || []), ...(snapshot.intentionalConfirmations || [])],
           snapshot.issueSummary,
@@ -7553,20 +7668,38 @@ function getAppScript() {
           }
         }
         requestAnimationFrame(() => animateQueueBoard(firstRects));
+        scheduleQueueBoardPoll(queueBoardRefreshDelay(snapshot));
       } catch (e) {
-        board.innerHTML = '<div class="empty-state video-detail-status error">队列看板加载失败</div>';
-        queueBoardState.columns = {};
-        queueBoardState.cards.clear();
+        if (token !== queueBoardRequestToken || e?.name === 'AbortError') return;
+        queueBoardState.lastError = e?.message || '队列看板暂时无法更新';
+        if (queueBoardState.lastSnapshot) {
+          const lastTime = queueBoardState.lastUpdatedAt ? formatDateTime(queueBoardState.lastUpdatedAt) : '未知时间';
+          renderQueueBoardNotice(board, '更新失败，继续显示 ' + lastTime + ' 的状态；稍后自动重试。', true);
+        } else {
+          board.innerHTML = '<div class="empty-state video-detail-status error">队列看板暂时无法加载，请稍后重试。</div>';
+        }
+        scheduleQueueBoardPoll(10_000);
       } finally {
-        queueBoardRequestInFlight = false;
+        if (token === queueBoardRequestToken) {
+          queueBoardRequestInFlight = false;
+          queueBoardRequestController = null;
+        }
       }
     }
 
     function stopQueueBoardPolling() {
       if (queueBoardPollTimer) {
-        clearInterval(queueBoardPollTimer);
+        clearTimeout(queueBoardPollTimer);
         queueBoardPollTimer = null;
       }
+      if (queueBoardClockTimer) {
+        clearInterval(queueBoardClockTimer);
+        queueBoardClockTimer = null;
+      }
+      queueBoardRequestToken += 1;
+      queueBoardRequestController?.abort();
+      queueBoardRequestController = null;
+      queueBoardRequestInFlight = false;
     }
 
     function resetQueueBoardState() {
@@ -7579,18 +7712,20 @@ function getAppScript() {
         board.parentElement?.querySelector('[data-upload-health-status="1"]')?.remove();
         board.innerHTML = '';
       }
+      queueBoardState.lastSnapshot = null;
+      queueBoardState.lastUpdatedAt = 0;
+      queueBoardState.lastError = null;
     }
 
     function startQueueBoardPolling() {
       stopQueueBoardPolling();
       if (document.hidden) return;
+      queueBoardClockTimer = setInterval(updateQueueBoardClock, 1_000);
       void refreshQueueBoard();
-      queueBoardPollTimer = setInterval(() => {
-        void refreshQueueBoard();
-      }, 1000);
     }
 
     function setLogMode(mode) {
+      stopQueueBoardPolling();
       logMode = mode;
       const simpleBtn = document.getElementById('logSimpleBtn');
       const rawBtn = document.getElementById('logRawBtn');
@@ -8225,6 +8360,7 @@ function getAppScript() {
     initTemplateEditor();
     initLogStream();
     loadQualityUpgradeState();
+    setLogMode('queue');
     startRecoveryIssuePolling();
   `;
 }

@@ -2927,14 +2927,37 @@ export class StateManager {
     const entry = this.state.videos?.[bvid];
     if (!entry) return null;
     return {
-      title: entry.title,
-      upperName: entry.upperName,
-      cover: entry.cover,
+      title: displayTitle(entry),
+      upperName: displayUpperName(entry),
+      cover: displayCover(entry),
+      coverLocalPath: displayCoverLocalPath(entry),
       description: entry.description,
       favoriteUnavailable: entry.favoriteUnavailable,
       selfVisible: entry.selfVisible,
       accessRestriction: entry.accessRestriction,
     };
+  }
+
+  getVideoMetaBatch(bvids: string[]) {
+    const unique = [...new Set(bvids.map((bvid) => String(bvid || "").trim()).filter(Boolean))];
+    const result = new Map<string, ReturnType<StateManager["getVideoMeta"]>>();
+    const videos = this.lazyState
+      ? this.database.listVideosByBvids(unique)
+      : unique.map((bvid) => this.state.videos?.[bvid]).filter(Boolean);
+    for (const entry of videos) {
+      if (!entry) continue;
+      result.set(entry.bvid, {
+        title: displayTitle(entry),
+        upperName: displayUpperName(entry),
+        cover: displayCover(entry),
+        coverLocalPath: displayCoverLocalPath(entry),
+        description: entry.description,
+        favoriteUnavailable: entry.favoriteUnavailable,
+        selfVisible: entry.selfVisible,
+        accessRestriction: entry.accessRestriction,
+      });
+    }
+    return result;
   }
 
   getCompletedLocalDownload(bvid: string) {

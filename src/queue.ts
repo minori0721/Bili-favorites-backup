@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { sanitizeDiagnosticText } from "./diagnostics.js";
 
 export abstract class Task {
   id: string;
@@ -24,6 +25,15 @@ export abstract class Task {
 }
 
 export type QueueBoardStage = "download_pending" | "download_running" | "upload_pending" | "upload_running";
+export type QueueBoardPhase =
+  | "queued"
+  | "leased"
+  | "running"
+  | "retry_wait"
+  | "remote_verifying"
+  | "background_wait"
+  | "manual_action";
+export type QueueBoardAction = "retry" | "verify" | "recheck";
 
 export interface QueueBoardItem {
   id: string;
@@ -42,6 +52,14 @@ export interface QueueBoardItem {
   startedAt?: number;
   retryAt?: number;
   sequence?: number;
+  status?: string;
+  phase?: QueueBoardPhase;
+  nextAction?: QueueBoardAction;
+  nextActionAt?: number;
+  actionRequired?: boolean;
+  lastError?: string;
+  coverLocalPath?: string;
+  persistentJobId?: string;
   awaitingManualRecovery?: boolean;
   recoveryJobId?: string;
   recoveryDisposition?: "background" | "action_required" | "intentional_confirmation";
@@ -50,12 +68,19 @@ export interface QueueBoardItem {
 
 export function mapQueueBoardTask(task: any, stage: QueueBoardStage, overrides: Partial<QueueBoardItem> = {}): QueueBoardItem {
   const target = task.target || {};
+  const status = String(task.status || "pending");
+  const isRetryWait = status === "retry_wait";
+  const phase: QueueBoardPhase = status === "running"
+    ? "running"
+    : status === "retry_wait"
+      ? "retry_wait"
+      : "queued";
   return {
     id: String(task.id || ""),
     bvid: String(task.bvid || ""),
     title: String(task.videoTitle || task.title || task.bvid || ""),
     upperName: String(task.upperName || ""),
-    cover: task.cover ? String(task.cover) : "",
+    cover: typeof task.cover === "string" ? task.cover : "",
     folderTitle: String(task.folderTitle || target.folderTitle || ""),
     remotePath: String(task.remotePath || target.remotePath || ""),
     detail: String(task.detail || ""),
@@ -67,6 +92,14 @@ export function mapQueueBoardTask(task: any, stage: QueueBoardStage, overrides: 
     startedAt: typeof task.startedAt === "number" ? task.startedAt : undefined,
     retryAt: typeof task.retryAt === "number" ? task.retryAt : undefined,
     sequence: typeof task.sequence === "number" ? task.sequence : undefined,
+    status,
+    phase,
+    nextAction: isRetryWait ? "retry" : undefined,
+    nextActionAt: isRetryWait && typeof task.retryAt === "number" ? task.retryAt : undefined,
+    actionRequired: false,
+    lastError: task.error?.message ? sanitizeDiagnosticText(task.error.message, 500) : undefined,
+    coverLocalPath: typeof task.coverLocalPath === "string" ? task.coverLocalPath : undefined,
+    persistentJobId: task.persistentJobId ? String(task.persistentJobId) : undefined,
     ...overrides,
     stage,
   };
