@@ -5,6 +5,8 @@ import { computeTaskRetryDelayMs } from "../src/queue.js";
 import {
   classifyUploadError,
   captureUploadResponseBody,
+  isSingleFileSizeLimitError,
+  REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
   sanitizeUploadText,
   UploadCircuitBreaker,
 } from "../src/upload-health.js";
@@ -43,6 +45,28 @@ test("upload errors are classified without treating wrapped network 405 as deter
 
   assert.equal(classifyUploadError({ status: 500, message: "backend failed" }, "/a").category, "server");
   assert.equal(classifyUploadError({ code: "ETIMEDOUT", message: "request timeout" }, "/a").category, "transient");
+});
+
+test("provider single-file limits become a stable manual-recovery code without leaking the response body", () => {
+  const error = {
+    status: 405,
+    responseBody: JSON.stringify({ code: "SingleFileSizeOverLimit", message: "single file exceeds provider limit", requestId: "secret-id" }),
+  };
+  assert.equal(isSingleFileSizeLimitError(error), true);
+  const failure = classifyUploadError(error, "/target/video.mp4");
+  assert.equal(failure.code, REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE);
+  assert.equal(failure.category, "deterministic");
+  assert.equal(failure.retryable, false);
+  assert.equal(failure.summary, "远端拒绝上传：单文件超过存储限制");
+  assert.doesNotMatch(failure.summary, /SingleFileSizeOverLimit|secret-id/);
+
+  const payloadTooLarge = classifyUploadError({
+    status: 413,
+    data: { code: "UploadSingleFileOverLimited" },
+  }, "/target/video.mp4");
+  assert.equal(payloadTooLarge.category, "deterministic");
+  assert.equal(payloadTooLarge.retryable, false);
+  assert.equal(payloadTooLarge.code, REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE);
 });
 
 test("retry delay uses exponential backoff, jitter and explicit Retry-After", () => {

@@ -30,6 +30,8 @@ export interface UploadHealthSnapshot {
   pausedDownloads: boolean;
 }
 
+export const REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE = "REMOTE_SINGLE_FILE_SIZE_LIMIT";
+
 const NETWORK_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
@@ -61,6 +63,31 @@ export function sanitizeUploadText(value: unknown, maxLength = 500) {
     .replace(/\[redacted\]/gi, "[REDACTED]")
     .trim();
   return text || "Unknown upload error";
+}
+
+function uploadErrorDetails(error: any) {
+  return [
+    error?.code,
+    error?.cause?.code,
+    error?.responseBody,
+    error?.body,
+    error?.response?.body,
+    error?.data,
+    error?.message,
+  ].map(stringifyErrorDetail).filter(Boolean).join(" ");
+}
+
+export function isSingleFileSizeLimitError(error: any) {
+  const detail = uploadErrorDetails(error);
+  return new RegExp([
+    REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
+    "SingleFileSizeOverLimit",
+    "UploadSingleFileOverLimited",
+    "SingleFileOverLimit",
+    "single[^\\n]{0,80}file[^\\n]{0,80}(size|over)[^\\n]{0,80}limit",
+    "file[^\\n]{0,80}size[^\\n]{0,80}(exceed|over|limit)",
+    "upload[^\\n]{0,80}file[^\\n]{0,80}(exceed|over|limit)",
+  ].join("|"), "i").test(detail);
 }
 
 export async function captureUploadResponseBody(error: any, maxBytes = 4096) {
@@ -122,18 +149,26 @@ function buildFingerprint(category: UploadFailureCategory, status: number | unde
 
 export function classifyUploadError(error: any, remotePath: string): UploadFailureInfo {
   const status = extractStatus(error);
-  const code = String(error?.code || error?.cause?.code || "").toUpperCase() || undefined;
+  const sizeLimit = isSingleFileSizeLimitError(error);
+  const code = sizeLimit
+    ? REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
+    : (String(error?.code || error?.cause?.code || "").toUpperCase() || undefined);
   const responseDetail = error?.responseBody ?? error?.body ?? error?.response?.body;
   const usableResponseDetail = typeof responseDetail === "string" || Buffer.isBuffer(responseDetail)
     ? responseDetail
     : undefined;
   const detail = usableResponseDetail ?? error?.data ?? error?.message ?? error;
-  const summary = sanitizeUploadText(detail);
+  const summary = sizeLimit
+    ? "远端拒绝上传：单文件超过存储限制"
+    : sanitizeUploadText(detail);
   const networkLike = Boolean(code && NETWORK_CODES.has(code)) || /ECONNRESET|ETIMEDOUT|timeout|socket hang up|network/i.test(summary);
   let category: UploadFailureCategory = "unknown";
   let retryable = true;
 
-  if (status === 401 || status === 403) {
+  if (sizeLimit) {
+    category = "deterministic";
+    retryable = false;
+  } else if (status === 401 || status === 403) {
     category = "auth";
     retryable = false;
   } else if (status === 429) {

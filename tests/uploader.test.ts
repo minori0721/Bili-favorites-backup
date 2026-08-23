@@ -125,6 +125,7 @@ async function startWebDavServer(options: {
   failFirstPut?: boolean;
   failPutName?: string;
   failPutStatus?: number;
+  failPutBody?: string;
   failMoveName?: string;
   rejectFourByteNames?: boolean;
   rejectExtendedHeaders?: boolean;
@@ -189,7 +190,7 @@ async function startWebDavServer(options: {
       if (options.failPutName && requestPath.endsWith(`/${options.failPutName}`)) {
         if (options.writeBeforePutFailure) files.set(requestPath, body);
         res.statusCode = options.failPutStatus || 405;
-        res.end("Method Not Allowed");
+        res.end(options.failPutBody || "Method Not Allowed");
         return;
       }
       if (options.rejectExtendedHeaders && (req.headers["x-oc-mtime"] || req.headers["x-oc-ctime"])) {
@@ -401,6 +402,38 @@ test("a 405 after completed files is treated as a temporary upload session failu
   }
 });
 
+test("a later single-file limit is not rewritten as a transient multipart session error", async () => {
+  const runtime = await createTestDir("upload-progressive-size-limit");
+  const server = await startWebDavServer({
+    failPutName: "p02.mp4",
+    failPutStatus: 405,
+    failPutBody: '{"code":"SingleFileSizeOverLimit"}',
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "first-file");
+    await fs.promises.writeFile(path.join(runtime, "p02.mp4"), "second-file-too-large");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4", "p02.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+        uploadIntent: "history_upload",
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
+        assert.equal(error.uploadSessionTransient, undefined);
+        assert.equal(error.uploadFailure?.summary, "远端拒绝上传：单文件超过存储限制");
+        return true;
+      },
+    );
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("history preflight-verified files count as progress before a later 405", async () => {
   const runtime = await createTestDir("upload-resumed-progressive-405");
   const first = Buffer.from("already-uploaded");
@@ -505,6 +538,65 @@ test("a 405 with a missing remote file remains a failure", async () => {
         return true;
       }
     );
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 size-limit response survives post-PUT verification and enters manual recovery classification", async () => {
+  const runtime = await createTestDir("upload-405-size-limit");
+  const server = await startWebDavServer({
+    failPutName: "p01.mp4",
+    failPutStatus: 405,
+    failPutBody: '{"code":"SingleFileSizeOverLimit","message":"single file too large"}',
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "too-large-for-provider");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
+        assert.equal(error.uploadFailure?.summary, "远端拒绝上传：单文件超过存储限制");
+        assert.doesNotMatch(error.uploadFailure?.summary || "", /SingleFileSizeOverLimit/);
+        return true;
+      },
+    );
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 400 size-limit response does not trigger the extended-header fallback PUT", async () => {
+  const runtime = await createTestDir("upload-400-size-limit");
+  const server = await startWebDavServer({
+    failPutName: "p01.mp4",
+    failPutStatus: 400,
+    failPutBody: '{"code":"SingleFileSizeOverLimit"}',
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "too-large-for-provider");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
+        assert.equal(error.uploadFailure?.category, "deterministic");
+        return true;
+      },
+    );
+    assert.equal(server.puts.length, 1);
   } finally {
     await server.close();
     await removeTestDir(runtime);

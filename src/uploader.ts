@@ -31,7 +31,14 @@ import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
 import { redactRemotePathForDisplay } from "./diagnostics.js";
 import { type RemoteFileQualityProfile, type RemoteFileRecord, type UploadFileMetadata } from "./state.js";
-import { captureUploadResponseBody, classifyUploadError, sanitizeUploadText, UploadOperationError } from "./upload-health.js";
+import {
+  captureUploadResponseBody,
+  classifyUploadError,
+  isSingleFileSizeLimitError,
+  REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
+  sanitizeUploadText,
+  UploadOperationError,
+} from "./upload-health.js";
 import {
   TransferSessionStore,
   type TransferSessionFileRecord,
@@ -348,6 +355,7 @@ async function verify405WrittenFile(
   expectedSize: number,
   delaysMs: number[],
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
+  initialErrors: unknown[] = [],
 ) {
   let lastError: unknown;
   for (const delayMs of delaysMs.length > 0 ? delaysMs : [0]) {
@@ -377,6 +385,9 @@ async function verify405WrittenFile(
     `Remote upload verification failed after 405 response: ${(lastError as Error)?.message || "file not visible"}`
   );
   notVisible.status = 405;
+  if (initialErrors.some((error) => isSingleFileSizeLimitError(error))) {
+    notVisible.code = REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE;
+  }
   throw notVisible;
 }
 
@@ -549,9 +560,10 @@ async function putAndVerifyLocalFile(
   };
 
   const includeExtendedTimestamps = profile?.capabilities.extendedUploadHeaders !== "unsupported";
-  const verify405 = async () => {
+  const verify405 = async (...initialErrors: unknown[]) => {
+    for (const initialError of initialErrors) await captureUploadResponseBody(initialError);
     resolver.invalidatePath(remoteFile);
-    await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0], resolver);
+    await verify405WrittenFile(client, remoteFile, stat.size, verificationDelaysMs || [0], resolver, initialErrors);
     await inspectLocalUploadPath(localRoot, localFile);
     return { verificationStatus: "verified" as const, skippedUpload: false, putAccepted: true };
   };
@@ -561,16 +573,21 @@ async function putAndVerifyLocalFile(
     ({ putAccepted, openedStat } = await putOnce(includeExtendedTimestamps));
   } catch (error) {
     const status = uploadStatus(error);
+    if ([400, 405, 413, 422].includes(status)) await captureUploadResponseBody(error);
+    if (isSingleFileSizeLimitError(error)) throw error;
     if ([400, 422].includes(status) && includeExtendedTimestamps && await confirmRemoteMissing(resolver, remoteFile)) {
       try {
         ({ putAccepted, openedStat } = await putOnce(false));
         if (profile) profile.capabilities.extendedUploadHeaders = "unsupported";
       } catch (fallbackError) {
-        if (uploadStatus(fallbackError) === 405) return verify405();
+        if (uploadStatus(fallbackError) === 405) {
+          await captureUploadResponseBody(fallbackError);
+          return verify405(error, fallbackError);
+        }
         throw fallbackError;
       }
     } else if (status === 405) {
-      return verify405();
+      return verify405(error);
     } else {
       throw error;
     }
@@ -608,7 +625,9 @@ async function putAndVerifyLocalFile(
 }
 
 function promoteProgressive405ToSessionFailure(error: UploadOperationError, completedFiles: number, totalFiles: number) {
-  if (error.uploadFailure.status !== 405 || completedFiles <= 0) return error;
+  if (error.uploadFailure.status !== 405
+    || completedFiles <= 0
+    || error.uploadFailure.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE) return error;
   const info = error.uploadFailure;
   info.category = "transient";
   info.retryable = true;
@@ -625,7 +644,8 @@ function promoteProgressive405ToSessionFailure(error: UploadOperationError, comp
 
 function shouldRetryWithCompatibilityName(error: UploadOperationError, fileName: string) {
   const status = error.uploadFailure.status;
-  return needsCompatibilityName(fileName)
+  return error.uploadFailure.code !== REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
+    && needsCompatibilityName(fileName)
     && error.uploadFailure.category === "deterministic"
     && status !== undefined
     && [400, 405, 422].includes(status);

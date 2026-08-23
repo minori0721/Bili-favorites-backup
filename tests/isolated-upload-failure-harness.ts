@@ -27,7 +27,12 @@ scheduler.queueUploadWork({
   priority: true,
 });
 const task = scheduler.uploadQueue.getTasks()[0];
-const failure = classifyUploadError({ status: 405, message: "Method Not Allowed" }, `${remotePath}/isolated.mp4`);
+const failure = classifyUploadError(
+  process.env.BFB_TEST_UPLOAD_SIZE_LIMIT === "1"
+    ? { status: 405, responseBody: JSON.stringify({ code: "SingleFileSizeOverLimit", message: "single file too large" }) }
+    : { status: 405, message: "Method Not Allowed" },
+  `${remotePath}/isolated.mp4`,
+);
 const uploadError = new UploadOperationError(failure);
 if (process.env.BFB_TEST_UPLOAD_SESSION_TRANSIENT === "1") {
   uploadError.uploadFailure.category = "transient";
@@ -49,6 +54,8 @@ console.log("ISOLATED_UPLOAD_FAILURE_RESULT=" + JSON.stringify({
   uploadHealthState: scheduler.uploadCircuit.getSnapshot().state,
   canStartDownload: scheduler.canStartDownloadTask(),
   localFileExists: fs.existsSync(path.join(localDir, "isolated.mp4")),
+  awaitingManualRecovery: retry?.payload?.awaitingManualRecovery === true,
+  recoveryIssueKind: scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${task.persistentJobId}`)?.kind,
   videoStatus: state.videos?.[bvid]?.backupStatus,
   relationStatus: state.relations?.[`u1:1:${bvid}`]?.backupStatus,
 }));

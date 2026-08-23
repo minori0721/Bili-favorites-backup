@@ -280,7 +280,7 @@ test("persistent retry keeps not_before and does not consume attempts for a defe
   }
 });
 
-test("an exhausted persistent job is retained and a later enqueue revives it", () => {
+test("an exhausted normal upload stays visible to recovery and a normal enqueue cannot hide it", () => {
   const database = new StateDatabase(":memory:");
   try {
     const jobs = new PersistentJobStore(database);
@@ -295,18 +295,63 @@ test("an exhausted persistent job is retained and a later enqueue revives it", (
     const result = jobs.retry(claimed.id, "worker", "remote conflict", Date.now() + 60_000);
     assert.equal(result.exhausted, true);
     assert.equal(jobs.findById(queued.id)?.status, "failed");
+    assert.equal(jobs.findById(queued.id)?.payload.awaitingManualRecovery, true);
 
-    const revived = jobs.enqueue({
+    const duplicate = jobs.enqueue({
       kind: "upload",
       dedupeKey: "upload:revive",
       bvid: "BVREVIVE",
       maxAttempts: 3,
       payload: { phase: "retry" },
     });
-    assert.equal(revived.id, queued.id);
-    assert.equal(revived.status, "pending");
-    assert.equal(revived.attempts, 0);
-    assert.deepEqual(revived.payload, { phase: "retry" });
+    assert.equal(duplicate.id, queued.id);
+    assert.equal(duplicate.status, "failed");
+    assert.equal(duplicate.attempts, 1);
+    assert.equal(duplicate.payload.awaitingManualRecovery, true);
+    assert.equal(duplicate.payload.phase, "first");
+
+    const revived = jobs.wakeManualJob(queued.id, { phase: "retry" });
+    assert.equal(revived?.status, "pending");
+    assert.equal(revived?.attempts, 0);
+    assert.equal(revived?.payload.phase, "retry");
+  } finally {
+    database.close();
+  }
+});
+
+test("startup normalization exposes legacy failed upload jobs without touching active or quality jobs", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const jobs = new PersistentJobStore(database);
+    const legacy = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:legacy-recovery",
+      bvid: "BVLEGACYRECOVERY",
+      payload: { localDir: "/tmp/legacy" },
+    });
+    database.db.prepare("UPDATE jobs SET status='failed', payload_json='{}', lease_owner=NULL, lease_expires_at=NULL WHERE id=?").run(legacy.id);
+    const retryWait = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:retry-wait-preserved",
+      bvid: "BVRETRYWAIT",
+      payload: { localDir: "/tmp/retry" },
+    });
+    database.db.prepare("UPDATE jobs SET status='retry_wait', payload_json='{}' WHERE id=?").run(retryWait.id);
+    const quality = jobs.enqueue({
+      kind: "quality_upload",
+      dedupeKey: "quality:failed-preserved",
+      bvid: "BVQUALITYFAILED",
+      payload: { localDir: "/tmp/quality" },
+    });
+    database.db.prepare("UPDATE jobs SET status='failed', payload_json='{}' WHERE id=?").run(quality.id);
+
+    assert.equal(jobs.normalizeTerminalUploadRecovery(), 1);
+    assert.equal(jobs.findById(legacy.id)?.payload.awaitingManualRecovery, true);
+    assert.equal(jobs.findById(legacy.id)?.payload.allowReupload, false);
+    assert.equal(jobs.findById(retryWait.id)?.payload.awaitingManualRecovery, undefined);
+    assert.equal(jobs.findById(quality.id)?.payload.awaitingManualRecovery, undefined);
+    assert.equal(jobs.listManualRecovery(["upload"]).some((job) => job.id === legacy.id), true);
+    assert.equal(jobs.normalizeTerminalUploadRecovery(), 0);
   } finally {
     database.close();
   }

@@ -39,6 +39,7 @@ import {
 } from "./database.js";
 import {
   classifyUploadError,
+  REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
   sanitizeUploadText,
   UploadCircuitBreaker,
   type UploadFailureInfo,
@@ -164,6 +165,7 @@ export function computeLocalCleanupRetryDelayMs(attempts: number) {
 export type RecoveryIssueKind =
   | "remote_visibility_timeout"
   | "remote_size_conflict"
+  | "remote_size_limit"
   | "partial_remote_state"
   | "local_file_missing"
   | "local_file_changed"
@@ -222,7 +224,7 @@ interface RecoveryAssessment {
   checkedAt: number;
   nextCheckAt?: number;
   localStatus: "available" | "missing" | "changed" | "unknown";
-  remoteStatus: "verified" | "missing" | "mismatch" | "mixed" | "error" | "unknown" | "transient" | "permission" | "unsupported";
+  remoteStatus: "verified" | "missing" | "mismatch" | "mixed" | "error" | "unknown" | "transient" | "permission" | "unsupported" | "size_limit";
   fileName?: string;
   expectedSize?: number;
   observedSize?: number;
@@ -533,8 +535,10 @@ export class SyncScheduler {
       const manualConflict = !isQualityUploadPhaseTask(task)
         && failure.category === "deterministic"
         && failure.status === 409;
+      const remoteSizeLimit = !isQualityUploadPhaseTask(task)
+        && failure.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE;
       const authorizedRecovery = task instanceof UploadTask && task.reuploadPermissionUsed;
-      if (!manualConflict) logTaskError(task, error);
+      if (!manualConflict && !remoteSizeLimit) logTaskError(task, error);
       if (isQualityUploadPhaseTask(task)) {
         task.control.error = error;
         if (task.persistentJobId) {
@@ -569,12 +573,22 @@ export class SyncScheduler {
       const uploadHealth = this.uploadCircuit.getSnapshot();
       const isolatedDeterministicFailure = failure.category === "deterministic" && uploadHealth.state === "closed";
       if (task.persistentJobId) {
-        if (manualConflict || authorizedRecovery) {
+        if (manualConflict || authorizedRecovery || remoteSizeLimit) {
+          const assessment = remoteSizeLimit
+            ? {
+              kind: "remote_size_limit" as const,
+              checkedAt: Date.now(),
+              localStatus: "available" as const,
+              remoteStatus: "size_limit" as const,
+              summary: failure.summary,
+            }
+            : undefined;
           const parked = this.jobStore.parkManualRecovery(task.persistentJobId, this.leaseOwner, failure.summary, {
             awaitingManualRecovery: true,
             allowReupload: false,
             resumeOnly: true,
             manualRecoveryReason: failure.summary,
+            ...(assessment ? { recoveryAssessment: assessment } : {}),
           });
           if (parked) {
             if (!task.historyOnly) {
@@ -584,7 +598,9 @@ export class SyncScheduler {
               timestamp: new Date().toISOString(),
               type: "upload",
               level: "error",
-              summary: manualConflict
+              summary: remoteSizeLimit
+                ? `${task.historyOnly ? "历史分P" : "上传"}因远端单文件限制暂停 ${task.bvid}：请检查存储设置后再继续`
+                : manualConflict
                 ? `${task.historyOnly ? "历史分P" : "上传"}因远端文件冲突暂停 ${task.bvid}：请处理冲突后重新确认或继续上传`
                 : `${task.historyOnly ? "历史分P" : "上传"}授权重传失败，已暂停 ${task.bvid}：请手动重新确认`,
               raw: this.formatUploadFailureLog(task, failure),
@@ -2272,9 +2288,14 @@ export class SyncScheduler {
 
   private recordUploadFailure(task: UploadTask | QualityUploadPhaseTask, error: any) {
     const failure: UploadFailureInfo = error?.uploadFailure || classifyUploadError(error, task.remotePath || "<remote>");
-    this.uploadCircuit.recordFailure(this.uploadTaskKey(task), failure);
-    if (this.uploadCircuit.getSnapshot().state !== "closed") {
-      this.stateManager.setUploadCooldown(this.uploadCircuit.getSnapshot() as any);
+    // A provider's per-file quota is a deterministic item-level condition,
+    // not evidence that the whole WebDAV backend is unhealthy. Park the item
+    // without opening the global upload circuit for unrelated videos.
+    if (failure.code !== REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE) {
+      this.uploadCircuit.recordFailure(this.uploadTaskKey(task), failure);
+      if (this.uploadCircuit.getSnapshot().state !== "closed") {
+        this.stateManager.setUploadCooldown(this.uploadCircuit.getSnapshot() as any);
+      }
     }
     this.scheduleUploadProbe();
     this.downloadQueue.poke();
@@ -3052,6 +3073,8 @@ export class SyncScheduler {
       case "remote_size_conflict":
       case "partial_remote_state":
         return [recheck, reupload];
+      case "remote_size_limit":
+        return [openSettings, reupload];
       case "unknown_same_size":
       case "legacy_conflict_interrupted":
         return [recheck];
@@ -3077,12 +3100,13 @@ export class SyncScheduler {
     const kind = assessment?.kind || (payload.conflictRelativePath ? "remote_size_conflict" : "manual_review");
     const actions = this.uploadRecoveryActions(assessment);
     const disposition = recoveryIssueDisposition(kind);
-    const severity = ["remote_size_conflict", "partial_remote_state", "unknown_same_size", "legacy_conflict_interrupted", "remote_permission", "remote_unsupported", "remote_unknown"].includes(kind)
+    const severity = ["remote_size_conflict", "remote_size_limit", "partial_remote_state", "unknown_same_size", "legacy_conflict_interrupted", "remote_permission", "remote_unsupported", "remote_unknown"].includes(kind)
       ? "danger"
       : (["local_file_missing", "local_file_changed"].includes(kind) ? "warning" : "info");
     const titleByKind: Record<string, string> = {
       remote_visibility_timeout: "远端文件仍在等待可见",
       remote_size_conflict: "远端存在同名冲突文件",
+      remote_size_limit: "远端单文件超过存储限制",
       partial_remote_state: "多分P远端状态不一致",
       local_file_missing: "本地补传文件已丢失",
       local_file_changed: "本地补传文件已变化",
@@ -3481,6 +3505,18 @@ export class SyncScheduler {
 
   resumePersistedWorkOnStartup() {
     this.jobStore.recoverExpiredLeases();
+    const normalizedUploadRecoveries = this.jobStore.normalizeTerminalUploadRecovery();
+    if (normalizedUploadRecoveries > 0) {
+      logManager.push({
+        timestamp: new Date(this.now()).toISOString(),
+        type: "system",
+        level: "info",
+        summary: `已将 ${normalizedUploadRecoveries} 个耗尽的上传任务恢复到待处理中心`,
+        raw: `[Recovery] normalized terminal upload jobs=${normalizedUploadRecoveries}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
     try {
       this.migrateLegacyQualityDownloadJobs();
     } catch (error) {

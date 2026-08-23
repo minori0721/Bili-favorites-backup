@@ -362,7 +362,7 @@ export class PersistentJobStore {
     if (exhausted) {
       if (["upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup"].includes(String(row.kind))) {
         let payloadPatch = "";
-        if (String(row.kind) === "history_upload") {
+        if (["upload", "history_upload"].includes(String(row.kind))) {
           const payloadRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
           let payload: Record<string, unknown> = {};
           try { payload = JSON.parse(String(payloadRow?.payload_json || "{}")); } catch { payload = {}; }
@@ -392,6 +392,24 @@ export class PersistentJobStore {
         last_error=?, updated_at=? WHERE id=? AND lease_owner=?
     `).run(attempts, Math.max(now, Math.floor(notBefore)), error.slice(0, 1000), now, id, leaseOwner);
     return { updated: true, exhausted: false, attempts };
+  }
+
+  normalizeTerminalUploadRecovery() {
+    const now = Date.now();
+    const result = this.stateDatabase.db.prepare(`
+      UPDATE jobs
+      SET payload_json=json_set(
+            CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,
+            '$.awaitingManualRecovery', json('true'),
+            '$.resumeOnly', json('true'),
+            '$.allowReupload', json('false')
+          ),
+          updated_at=?
+      WHERE kind IN ('upload','history_upload')
+        AND status='failed'
+        AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0)<>1
+    `).run(now);
+    return Number(result.changes || 0);
   }
 
   retryIndefinitely(id: string, leaseOwner: string, error: string, notBefore: number) {
