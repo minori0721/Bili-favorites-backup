@@ -1011,7 +1011,7 @@ export class SyncScheduler {
             task.mediaId,
             task.partialBackup,
           );
-          this.completeEncodingRetrySuccess(task.bvid, encodingRetry, task.downloadDir, task.persistentJobId);
+          this.completeEncodingRetrySuccess(task.bvid, encodingRetry, task.persistentJobId);
           return;
         }
         this.stateManager.markUploadedPendingVerification(
@@ -2044,7 +2044,7 @@ export class SyncScheduler {
             task.mediaId,
             Boolean(payload.partialBackup),
           );
-          this.completeEncodingRetrySuccess(task.bvid, encodingRetry, String(payload.localDir || ""), task.persistentJobId);
+          this.completeEncodingRetrySuccess(task.bvid, encodingRetry, task.persistentJobId);
           return;
         }
         this.jobStore.complete(task.persistentJobId, this.leaseOwner);
@@ -2093,7 +2093,7 @@ export class SyncScheduler {
           task.remoteFile,
         );
         if (relationVerified && this.jobStore.countEncodingRetryJobs(encodingRetry.parentJobId, encodingRetry.generation) === 0) {
-          this.completeEncodingRetrySuccess(task.bvid, encodingRetry, String(payload.localDir || ""));
+          this.completeEncodingRetrySuccess(task.bvid, encodingRetry);
         }
         return;
       }
@@ -2678,12 +2678,16 @@ export class SyncScheduler {
     return true;
   }
 
-  private completeEncodingRetrySuccess(bvid: string, context: EncodingRetryContext, candidateLocalDir: string, childJobId?: string) {
+  private completeEncodingRetrySuccess(bvid: string, context: EncodingRetryContext, childJobId?: string) {
     if (childJobId) this.jobStore.complete(childJobId, this.leaseOwner);
     const completed = this.jobStore.completeEncodingRetryParent(context.parentJobId, context.generation);
     if (!completed) return false;
     void this.cleanupEncodingRetryOriginal(context);
-    void this.maybeCleanupVerifiedLocalDir(bvid, candidateLocalDir);
+    // Encoding-retry candidates have an isolated directory name rather than
+    // the plain BVID directory. Use the dedicated manifest-scoped cleanup so
+    // a successful replacement does not leave the candidate media behind or
+    // weaken the normal BVID-directory safety gate.
+    void this.cleanupEncodingRetryCandidate(context);
     logManager.push({
       timestamp: new Date(this.now()).toISOString(),
       type: "upload",

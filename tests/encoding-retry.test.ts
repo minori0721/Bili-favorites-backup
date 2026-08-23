@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
+import { DOWNLOAD_RETAINED_FILE, writeDownloadSession } from "../src/download-session.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 test("one-off encoding retry stays pending, uses an isolated directory, and is idempotent", async () => {
@@ -128,6 +129,120 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
     assert.equal(second.idempotent, true);
     assert.equal(second.childJobId, first.childJobId);
     assert.equal(scheduler.jobStore.list(["download"]).filter((job) => (job.payload as any).encodingRetry?.parentJobId === parent.id).length, 1);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("successful encoding retry cleans the isolated candidate but preserves unknown artifacts", async () => {
+  const runtime = await createTestDir("encoding-retry-success-cleanup");
+  const tempDir = path.join(runtime, "temp");
+  const bvid = "BVENCODINGCLEANUP";
+  const candidateLocalDir = path.join(tempDir, `${bvid}-encoding-retry-child-g1`);
+  const originalLocalDir = path.join(tempDir, bvid);
+  const state = new StateManager({
+    dbPath: path.join(runtime, "state.sqlite"),
+    statePath: path.join(runtime, "unused-state.json"),
+  });
+  const user = {
+    id: "u1",
+    uid: 1,
+    name: "Tester",
+    cookie: { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+    favorites: [{ mediaId: 1, title: "Favorites" }],
+    enabled: true,
+    lastLoginAt: new Date().toISOString(),
+  };
+  const config = testConfig({ bbdownEncoding: "AV1" });
+  const scheduler = new SyncScheduler(
+    { get: () => config } as any,
+    { list: () => [user], getById: (id: string) => id === user.id ? user : undefined } as any,
+    state,
+    { legacyTempDir: tempDir },
+  ) as any;
+  scheduler.downloadQueue.setStartGate(() => false);
+  scheduler.uploadQueue.setStartGate(() => false);
+
+  try {
+    const output = "video.mp4";
+    const outputBytes = Buffer.from("replacement-av1");
+    await fs.promises.mkdir(candidateLocalDir, { recursive: true });
+    await fs.promises.writeFile(path.join(candidateLocalDir, output), outputBytes);
+    const unknownArtifact = path.join(candidateLocalDir, "_unknown", "debug.bin");
+    await fs.promises.mkdir(path.dirname(unknownArtifact), { recursive: true });
+    await fs.promises.writeFile(unknownArtifact, Buffer.alloc(32));
+    const now = new Date().toISOString();
+    writeDownloadSession(candidateLocalDir, {
+      schemaVersion: 1,
+      sessionId: "encoding-retry-cleanup-session",
+      kind: "backup",
+      bvid,
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: {
+        quality: "4K",
+        encoding: "AV1",
+        encodingPriority: ["AV1", "HEVC", "AVC"],
+        apiMode: "web",
+        hiRes: false,
+        dolby: false,
+        filenameTemplate: "<videoTitle>-<bvid>",
+      },
+      createdAt: now,
+      updatedAt: now,
+      snapshotAt: now,
+      status: "complete",
+      pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+      outputs: [{
+        pageIndex: 1,
+        cid: 1,
+        relativePath: output,
+        size: outputBytes.length,
+        duration: 2,
+        videoCodec: "av1",
+        width: 1920,
+        height: 1080,
+        frameRate: 60,
+        quickHash: "test",
+        verifiedAt: now,
+      }],
+      history: [],
+    });
+
+    const parent = scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:encoding-retry-cleanup",
+      bvid,
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "manual_wait",
+      payload: { awaitingManualRecovery: true },
+    });
+    const context = {
+      parentJobId: parent.id,
+      generation: 1,
+      priority: ["AV1", "HEVC", "AVC"],
+      strict: true,
+      candidateLocalDir,
+      originalLocalDir,
+      state: "running",
+    };
+    assert.equal(scheduler.jobStore.updatePayload(parent.id, {
+      awaitingManualRecovery: true,
+      encodingRetry: context,
+    }), true);
+
+    assert.equal(scheduler.completeEncodingRetrySuccess(bvid, context), true);
+    for (let attempt = 0; attempt < 20 && fs.existsSync(path.join(candidateLocalDir, output)); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(fs.existsSync(path.join(candidateLocalDir, output)), false);
+    assert.equal(fs.existsSync(unknownArtifact), true);
+    assert.equal(fs.existsSync(path.join(candidateLocalDir, DOWNLOAD_RETAINED_FILE)), true);
+    assert.equal(scheduler.jobStore.findById(parent.id), null);
   } finally {
     scheduler.stop();
     state.close();
