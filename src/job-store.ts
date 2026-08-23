@@ -496,6 +496,132 @@ export class PersistentJobStore {
       .run(JSON.stringify(payload || {}), Date.now(), id).changes === 1;
   }
 
+  startEncodingRetry(
+    parentId: string,
+    child: EnqueuePersistentJob,
+    retryState: Record<string, unknown>,
+  ) {
+    return this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as any;
+      if (!row) return null;
+      const parent = rowToJob(row);
+      if (!['manual_wait', 'failed', 'retry_wait', 'pending'].includes(String(parent.status))
+        || (parent.payload as any)?.awaitingManualRecovery !== true) {
+        return null;
+      }
+      const currentRetry = (parent.payload as any)?.encodingRetry;
+      if (currentRetry && ['running', 'uploading', 'verifying'].includes(String(currentRetry.state || '')) && currentRetry.replacementJobId) {
+        const existing = this.findById(String(currentRetry.replacementJobId));
+        if (existing) return { parent, child: existing, idempotent: true };
+      }
+
+      const created = this.enqueue(child);
+      const payload = {
+        ...parent.payload,
+        encodingRetry: {
+          ...retryState,
+          replacementJobId: created.id,
+          state: 'running',
+        },
+      };
+      const updated = this.stateDatabase.db.prepare(`
+        UPDATE jobs SET payload_json=?, updated_at=?
+        WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')
+          AND json_extract(payload_json, '$.awaitingManualRecovery')=1
+      `).run(JSON.stringify(payload), Date.now(), parentId);
+      if (updated.changes !== 1) {
+        this.complete(created.id);
+        return null;
+      }
+      return { parent: this.findById(parentId)!, child: created, idempotent: false };
+    })();
+  }
+
+  finishEncodingRetry(
+    parentId: string,
+    generation: number,
+    payloadPatch: Record<string, unknown> = {},
+  ) {
+    return this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as any;
+      if (!row) return false;
+      const payload = JSON.parse(String(row.payload_json || "{}")) as Record<string, any>;
+      const retry = payload.encodingRetry;
+      if (!retry
+        || Number(retry.generation) !== Number(generation)
+        || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
+      const { replacementJobId: _replacementJobId, ...retryWithoutLease } = retry;
+      const nextPayload = {
+        ...payload,
+        ...payloadPatch,
+        encodingRetry: {
+          ...retryWithoutLease,
+          state: 'failed',
+        },
+      };
+      return this.stateDatabase.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?")
+        .run(JSON.stringify(nextPayload), Date.now(), parentId).changes === 1;
+    })();
+  }
+
+  updateEncodingRetry(parentId: string, generation: number, patch: Record<string, unknown>) {
+    return this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+      if (!row) return false;
+      let payload: Record<string, any>;
+      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { return false; }
+      const retry = payload.encodingRetry;
+      if (!retry
+        || Number(retry.generation) !== Number(generation)
+        || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
+      const nextPayload = {
+        ...payload,
+        encodingRetry: {
+          ...retry,
+          ...patch,
+        },
+      };
+      return this.stateDatabase.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?")
+        .run(JSON.stringify(nextPayload), Date.now(), parentId).changes === 1;
+    })();
+  }
+
+  countEncodingRetryJobs(parentId: string, generation: number) {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT COUNT(*) AS count FROM jobs
+      WHERE kind IN ('download','upload','history_upload','verify_upload')
+        AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1
+        AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
+        AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+    `).get(parentId, generation) as any;
+    return Number(row?.count || 0);
+  }
+
+  cancelEncodingRetryChildren(parentId: string, generation: number) {
+    return this.stateDatabase.db.prepare(`
+      DELETE FROM jobs
+      WHERE kind IN ('download','upload','history_upload','verify_upload')
+        AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1
+        AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
+        AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+    `).run(parentId, generation).changes;
+  }
+
+  completeEncodingRetryParent(parentId: string, generation: number) {
+    return this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+      if (!row) return false;
+      let payload: Record<string, any>;
+      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { return false; }
+      const retry = payload.encodingRetry;
+      if (!retry
+        || Number(retry.generation) !== Number(generation)
+        || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
+      return this.stateDatabase.db.prepare("DELETE FROM jobs WHERE id=? AND json_extract(payload_json, '$.awaitingManualRecovery')=1")
+        .run(parentId).changes === 1;
+    })();
+  }
+
   wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}, notBefore = Date.now()) {
     const row = this.stateDatabase.db.prepare("SELECT status, payload_json FROM jobs WHERE id=?").get(id) as any;
     if (!row || !["manual_wait", "failed", "retry_wait", "pending"].includes(String(row.status))) return null;

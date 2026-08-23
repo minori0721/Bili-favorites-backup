@@ -15,6 +15,66 @@ import { PersistentJobStore } from "../src/job-store.js";
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
+test("encoding retry counts only replacement children and keeps duplicate starts idempotent", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  const retry = {
+    parentJobId: "upload-parent",
+    generation: 1,
+    priority: ["AV1", "HEVC", "AVC"],
+    strict: true,
+    candidateLocalDir: "C:/temp/BVENC-encoding-retry",
+    originalLocalDir: "C:/temp/BVENC",
+    state: "running",
+  };
+  try {
+    const parent = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload-parent",
+      bvid: "BVENC",
+      userId: "u1",
+      mediaId: 1,
+      status: undefined,
+      payload: { awaitingManualRecovery: true, encodingRetry: retry },
+    } as any);
+    retry.parentJobId = parent.id;
+    const childInput: any = {
+      kind: "verify_upload",
+      dedupeKey: "encoding-retry-verify",
+      bvid: "BVENC",
+      userId: "u1",
+      mediaId: 1,
+      payload: { encodingRetry: retry },
+    };
+    const child = jobs.enqueue(childInput);
+    jobs.updatePayload(parent.id, {
+      ...parent.payload,
+      encodingRetry: { ...retry, replacementJobId: child.id },
+    });
+    assert.equal(jobs.countEncodingRetryJobs(parent.id, 1), 1);
+
+    const duplicate = jobs.startEncodingRetry(parent.id, childInput, retry);
+    assert.equal(duplicate?.idempotent, true);
+    assert.equal(duplicate?.child.id, child.id);
+    assert.equal(jobs.countEncodingRetryJobs(parent.id, 1), 1);
+
+    jobs.complete(child.id);
+    assert.equal(jobs.countEncodingRetryJobs(parent.id, 1), 0);
+    assert.equal(jobs.finishEncodingRetry(parent.id, 1), true);
+    assert.equal(jobs.completeEncodingRetryParent(parent.id, 1), false);
+    assert.ok(jobs.findById(parent.id));
+    const failedPayload = jobs.findById(parent.id)!.payload as any;
+    assert.equal(jobs.updatePayload(parent.id, {
+      ...failedPayload,
+      encodingRetry: { ...failedPayload.encodingRetry, state: "running" },
+    }), true);
+    assert.equal(jobs.completeEncodingRetryParent(parent.id, 1), true);
+    assert.equal(jobs.findById(parent.id), null);
+  } finally {
+    database.close();
+  }
+});
+
 test("archive source restoration skips write transactions when no deletion record exists", () => {
   const database = new StateDatabase(":memory:");
   const sqlite = database.db as any;

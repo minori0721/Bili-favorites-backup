@@ -43,6 +43,28 @@ test("defaults to the board and keeps remote verification data separate from ret
   await expect(page.locator("#logConsole")).toBeHidden();
 });
 
+test("codec preference editor supports a stable three-item reorder", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await openBoard(page);
+  const editor = page.locator("#bbdownEncodingPriorityEditor");
+  await editor.scrollIntoViewIfNeeded();
+  const items = editor.locator(".encoding-priority-item");
+  await expect(items).toHaveCount(3);
+  await expect(items.nth(0)).toContainText("HEVC");
+  await expect(items.nth(1)).toContainText("AVC");
+  await expect(items.nth(2)).toContainText("AV1");
+
+  await items.nth(0).getByRole("button", { name: "下移 HEVC" }).click();
+  await expect(items.nth(0)).toContainText("AVC");
+  await expect(items.nth(1)).toContainText("HEVC");
+  await expect(items.nth(2)).toContainText("AV1");
+
+  await items.nth(2).dragTo(items.nth(0));
+  await expect(items.nth(0)).toContainText("AV1");
+  await expect(items.nth(1)).toContainText("AVC");
+  await expect(items.nth(2)).toContainText("HEVC");
+});
+
 test("switching to logs and back preserves the board mode and card state", async ({ page, browserProblems }) => {
   void browserProblems;
   await openBoard(page);

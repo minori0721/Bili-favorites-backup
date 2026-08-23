@@ -3,7 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { isBBDownCredentialDirectoryName } from "./credential-temp.js";
-import type { AppConfig } from "./config.js";
+import {
+  DEFAULT_BBDOWN_ENCODING_PRIORITY,
+  normalizeBBDownEncodingPriority,
+  type AppConfig,
+  type BBDownEncoding,
+} from "./config.js";
 import type { QualityArtifactProfile } from "./quality-artifact.js";
 import type { UploadFileMetadata } from "./state.js";
 import { writeJsonFile } from "./storage.js";
@@ -71,6 +76,7 @@ export interface DownloadSessionManifest {
   configSnapshot: {
     quality: string;
     encoding: string;
+    encodingPriority?: BBDownEncoding[];
     apiMode?: "web" | "app";
     hiRes: boolean;
     dolby: boolean;
@@ -173,6 +179,7 @@ function configSnapshot(config: AppConfig): DownloadSessionManifest["configSnaps
   return {
     quality: String(config.bbdownQuality || ""),
     encoding: String(config.bbdownEncoding || ""),
+    encodingPriority: normalizeBBDownEncodingPriority(config.bbdownEncodingPriority, config.bbdownEncoding),
     apiMode: config.bbdownApiMode === "app" ? "app" : "web",
     hiRes: Boolean(config.bbdownHiRes),
     dolby: Boolean(config.bbdownDolby),
@@ -220,6 +227,10 @@ function normalizeManifestOutputPaths<T extends { relativePath: string }>(value:
     outputs.push({ ...(output as T), relativePath });
   }
   return outputs;
+}
+
+function sessionEncodingPriority(snapshot: DownloadSessionManifest["configSnapshot"]) {
+  return normalizeBBDownEncodingPriority(snapshot.encodingPriority, snapshot.encoding);
 }
 
 function normalizeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[] | undefined {
@@ -716,6 +727,7 @@ export async function prepareDownloadSession(options: {
       const sameRuntimeConfig = manifest.accountUid === accountUid
         && previousSnapshot.quality === nextSnapshot.quality
         && previousSnapshot.encoding === nextSnapshot.encoding
+        && JSON.stringify(sessionEncodingPriority(previousSnapshot)) === JSON.stringify(sessionEncodingPriority(nextSnapshot))
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;

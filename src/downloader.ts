@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { tempDir } from "./paths.js";
 import { createBBDownCredentialDirectory } from "./credential-temp.js";
 import { buildCookieString, BiliCookie } from "./users.js";
-import { AppConfig, type BBDownApiMode } from "./config.js";
+import { AppConfig, DEFAULT_BBDOWN_ENCODING_PRIORITY, type BBDownApiMode } from "./config.js";
 import { createBBDownSelectionTracker, logManager, parseBBDownOutput, type BBDownSelectedVideoSelection } from "./logger.js";
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
@@ -485,9 +485,12 @@ export function buildEncodingPriority(config: AppConfig) {
   if (config.bbdownHiRes) {
     priorities.push("flac");
   }
-  if (config.bbdownEncoding) {
-    priorities.push(normalizeEncodingPriority(config.bbdownEncoding));
-  }
+  const videoPriority = config.bbdownEncoding
+    ? [config.bbdownEncoding]
+    : (Array.isArray(config.bbdownEncodingPriority) && config.bbdownEncodingPriority.length > 0
+      ? config.bbdownEncodingPriority
+      : DEFAULT_BBDOWN_ENCODING_PRIORITY);
+  for (const encoding of videoPriority) priorities.push(normalizeEncodingPriority(String(encoding)));
   return [...new Set(priorities)].join(",");
 }
 

@@ -6,6 +6,39 @@ import { parseStorageBaseUrl } from "./storage-url.js";
 export type UploadLayout = "user-folder-video" | "folder-video" | "video-only";
 export type BBDownApiMode = "web" | "app";
 export type PlaybackDeliveryMode = "auto" | "proxy";
+export type BBDownEncoding = "HEVC" | "AVC" | "AV1";
+
+export const DEFAULT_BBDOWN_ENCODING_PRIORITY: readonly BBDownEncoding[] = ["HEVC", "AVC", "AV1"];
+
+const supportedBBDownEncodings = new Set<BBDownEncoding>(DEFAULT_BBDOWN_ENCODING_PRIORITY);
+
+function cloneEncodingPriority(value: readonly BBDownEncoding[]) {
+  return [...value] as BBDownEncoding[];
+}
+
+export function normalizeBBDownEncodingPriority(value: unknown, legacyEncoding = "") {
+  if (Array.isArray(value)) {
+    const normalized = value.map((item) => String(item || "").trim().toUpperCase());
+    if (normalized.length === DEFAULT_BBDOWN_ENCODING_PRIORITY.length
+      && normalized.every((item): item is BBDownEncoding => supportedBBDownEncodings.has(item as BBDownEncoding))
+      && new Set(normalized).size === DEFAULT_BBDOWN_ENCODING_PRIORITY.length) {
+      return normalized as BBDownEncoding[];
+    }
+  }
+
+  const legacy = String(legacyEncoding || "").trim().toUpperCase() as BBDownEncoding;
+  if (supportedBBDownEncodings.has(legacy)) {
+    return [legacy, ...DEFAULT_BBDOWN_ENCODING_PRIORITY.filter((item) => item !== legacy)];
+  }
+  return cloneEncodingPriority(DEFAULT_BBDOWN_ENCODING_PRIORITY);
+}
+
+export function isValidBBDownEncodingPriority(value: unknown): value is BBDownEncoding[] {
+  return Array.isArray(value)
+    && value.length === DEFAULT_BBDOWN_ENCODING_PRIORITY.length
+    && value.every((item): item is BBDownEncoding => supportedBBDownEncodings.has(item as BBDownEncoding))
+    && new Set(value).size === DEFAULT_BBDOWN_ENCODING_PRIORITY.length;
+}
 
 export interface AppConfig {
   pollIntervalMinutes: number;
@@ -25,6 +58,7 @@ export interface AppConfig {
   localCacheLimitGB: number;
   queuePrefetchLimit: number;
   bbdownEncoding: string;
+  bbdownEncodingPriority: BBDownEncoding[];
   bbdownQuality: string;
   bbdownApiMode: BBDownApiMode;
   bbdownHiRes: boolean;
@@ -56,6 +90,7 @@ const defaultConfig: AppConfig = {
   localCacheLimitGB: 10,
   queuePrefetchLimit: 25,
   bbdownEncoding: "",
+  bbdownEncodingPriority: cloneEncodingPriority(DEFAULT_BBDOWN_ENCODING_PRIORITY),
   bbdownQuality: "",
   bbdownApiMode: "web",
   bbdownHiRes: false,
@@ -92,6 +127,10 @@ export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecov
   if (input.bbdownApiMode === undefined && (merged.bbdownHiRes || merged.bbdownDolby)) {
     merged.bbdownApiMode = "app";
   }
+  merged.bbdownEncodingPriority = normalizeBBDownEncodingPriority(
+    input.bbdownEncodingPriority,
+    String(merged.bbdownEncoding || ""),
+  );
   merged.filenameTemplate = normalizeFilenameTemplate(merged.filenameTemplate);
   merged.alistBrowserUrl = String(merged.alistBrowserUrl || "").trim();
   if (merged.playbackDeliveryMode !== "auto" && merged.playbackDeliveryMode !== "proxy") {
@@ -104,7 +143,12 @@ function needsConfigMigration(input: Partial<AppConfig>, normalized: AppConfig) 
   if (Object.keys(input).some((key) => !configKeys.includes(key as keyof AppConfig))) {
     return true;
   }
-  return configKeys.some((key) => input[key] !== normalized[key]);
+  return configKeys.some((key) => {
+    if (key === "bbdownEncodingPriority") {
+      return JSON.stringify(input[key]) !== JSON.stringify(normalized[key]);
+    }
+    return input[key] !== normalized[key];
+  });
 }
 
 export class ConfigStore {
@@ -119,7 +163,7 @@ export class ConfigStore {
   }
 
   get() {
-    return { ...this.config };
+    return { ...this.config, bbdownEncodingPriority: cloneEncodingPriority(this.config.bbdownEncodingPriority) };
   }
 
   reload() {
@@ -139,7 +183,7 @@ export class ConfigStore {
   }
 
   reset() {
-    this.config = { ...defaultConfig };
+    this.config = { ...defaultConfig, bbdownEncodingPriority: cloneEncodingPriority(defaultConfig.bbdownEncodingPriority) };
   }
 }
 
@@ -161,6 +205,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "localCacheLimitGB",
   "queuePrefetchLimit",
   "bbdownEncoding",
+  "bbdownEncodingPriority",
   "bbdownQuality",
   "bbdownApiMode",
   "bbdownHiRes",
@@ -172,7 +217,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "remoteRequeueLimitPerCycle",
 ]);
 
-const allowedEncodings = new Set(["", "HEVC", "AVC", "AV1"]);
+const allowedEncodings = new Set(["", ...DEFAULT_BBDOWN_ENCODING_PRIORITY]);
 const allowedQualities = new Set(["", "8K", "4K", "1080P60", "1080P", "720P"]);
 
 export function validateConfig(input: Partial<AppConfig>) {
@@ -308,6 +353,10 @@ export function validateConfig(input: Partial<AppConfig>) {
     }
   }
 
+  if (input.bbdownEncodingPriority !== undefined && !isValidBBDownEncodingPriority(input.bbdownEncodingPriority)) {
+    return "bbdownEncodingPriority must contain HEVC, AVC, and AV1 exactly once";
+  }
+
   if (input.bbdownQuality !== undefined) {
     if (typeof input.bbdownQuality !== "string" || !allowedQualities.has(input.bbdownQuality)) {
       return "bbdownQuality is invalid";
@@ -360,6 +409,19 @@ export function validateConfig(input: Partial<AppConfig>) {
   }
 
   return null;
+}
+
+export function applyBBDownEncodingPreference(
+  config: AppConfig,
+  priority: readonly BBDownEncoding[],
+  strict = false,
+) {
+  const normalized = normalizeBBDownEncodingPriority(priority);
+  return {
+    ...config,
+    bbdownEncodingPriority: normalized,
+    bbdownEncoding: strict ? normalized[0] : "",
+  };
 }
 
 export function validateBBDownRuntimeConfig(

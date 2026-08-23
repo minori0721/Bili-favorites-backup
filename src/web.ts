@@ -316,6 +316,21 @@ function getAppStyles() {
     input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 4px rgba(57,197,187,0.14), inset 0 1px 0 rgba(255,255,255,0.8); background:white; }
     .checkbox-label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; margin:0; }
     .checkbox-label input { width:auto; margin:0; }
+    .encoding-priority-editor { display:grid; gap:7px; padding:8px; border:1px solid var(--glass-border-strong); border-radius:12px; background:rgba(255,255,255,0.62); }
+    .encoding-priority-item { display:grid; grid-template-columns:28px minmax(0,1fr) auto; gap:9px; align-items:center; min-height:46px; padding:7px 9px; border:1px solid rgba(214,240,237,0.95); border-radius:9px; background:#fff; cursor:grab; }
+    .encoding-priority-item:active { cursor:grabbing; }
+    .encoding-priority-item.dragging { opacity:.55; border-color:var(--accent); }
+    .encoding-priority-rank { display:grid; place-items:center; width:24px; height:24px; border-radius:50%; background:rgba(57,197,187,.12); color:#24766F; font-size:11px; font-weight:800; }
+    .encoding-priority-copy { min-width:0; display:grid; gap:2px; }
+    .encoding-priority-name { color:var(--ink); font-weight:800; }
+    .encoding-priority-hint { color:var(--muted); font-size:11px; }
+    .encoding-priority-actions { display:flex; gap:4px; }
+    .encoding-priority-actions button { width:30px; height:30px; padding:0; border:1px solid rgba(57,197,187,.36); border-radius:7px; background:#fff; color:var(--accent); cursor:pointer; font-weight:800; }
+    .encoding-priority-actions button:hover,.encoding-priority-actions button:focus-visible { background:rgba(57,197,187,.1); outline:2px solid rgba(57,197,187,.18); outline-offset:1px; }
+    .encoding-priority-actions button:disabled { opacity:.35; cursor:not-allowed; }
+    .encoding-strict-option { margin-top:10px; }
+    .encoding-retry-copy { margin:0 0 14px; color:#4D6862; line-height:1.65; }
+    .encoding-retry-status { min-height:22px; margin-top:8px; color:#A53838; font-size:12px; }
     .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; padding:16px; z-index:100; opacity:0; pointer-events:none; transition:opacity .16s ease; }
     .modal.active { opacity:1; pointer-events:auto; }
     .modal.is-closing { opacity:0; pointer-events:none; }
@@ -1029,13 +1044,17 @@ function getSettingsSection() {
           </div>
           <p class="muted field-hint" id="bbdownApiModeHint">网页接口遇到播放风控会暂停 3 分钟并自动单任务探测；APP 接口需要扫码登录 token，极少数 APP 空响应会仅对当前视频回退网页接口。</p>
         </div>
-        <div><label for="bbdownEncoding">视频编码</label>
-          <select id="bbdownEncoding">
-            <option value="">自动 (默认)</option>
-            <option value="HEVC">HEVC (H.265)</option>
-            <option value="AVC">AVC (H.264)</option>
+        <div class="field-full">
+          <label>视频编码偏好（从上到下）</label>
+          <div id="bbdownEncodingPriorityEditor" class="encoding-priority-editor" role="listbox" aria-label="视频编码偏好顺序"></div>
+          <label class="checkbox-label encoding-strict-option"><input type="checkbox" id="bbdownEncodingStrict" /> 只使用第一项，不自动回退</label>
+          <select id="bbdownEncoding" hidden aria-hidden="true">
+            <option value="">自动回退</option>
+            <option value="HEVC">HEVC</option>
+            <option value="AVC">AVC</option>
             <option value="AV1">AV1</option>
           </select>
+          <p class="muted field-hint">新任务按此顺序选择编码；默认 HEVC → AVC → AV1。修改不会重下载或改变已有归档。严格模式适合你明确只想要某一种编码的场景。</p>
         </div>
         <div><label for="bbdownQuality">最高画质</label>
           <select id="bbdownQuality">
@@ -1519,6 +1538,21 @@ function getModals() {
     </div>
   </div>
 
+  <div class="modal" id="encodingRetryModal" aria-labelledby="encodingRetryTitle">
+    <div class="panel panel-narrow">
+      <h2 id="encodingRetryTitle">换编码重新下载</h2>
+      <p id="encodingRetryCopy" class="encoding-retry-copy">系统会在隔离目录重新下载并上传。原文件会保留到新文件完成远端确认。</p>
+      <label>本次重试的编码顺序</label>
+      <div id="encodingRetryPriorityEditor" class="encoding-priority-editor" role="listbox" aria-label="本次重试编码顺序"></div>
+      <label class="checkbox-label encoding-strict-option"><input type="checkbox" id="encodingRetryStrict" checked /> 只使用第一项（推荐用于远端单文件限制）</label>
+      <div id="encodingRetryStatus" class="encoding-retry-status" role="alert" aria-live="polite"></div>
+      <div class="row modal-actions split-actions">
+        <button id="encodingRetrySubmitBtn" type="button">开始替换下载</button>
+        <button id="encodingRetryCancelBtn" class="ghost" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="accountRemovalModal" aria-labelledby="accountRemovalTitle">
     <div class="panel panel-narrow">
       <h2 id="accountRemovalTitle">删除账号</h2>
@@ -1577,6 +1611,7 @@ function getAppScript() {
     const recoveryIssueState = {
       items: [],
       selectedId: null,
+      focusId: null,
       controller: null,
       token: 0,
       error: null,
@@ -1730,6 +1765,8 @@ function getAppScript() {
     const archiveLibraryLayoutMedia = window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)');
     let modalScrollState = null;
     let pendingConfirmAction = null;
+    let bbdownEncodingPriorityState = ['HEVC', 'AVC', 'AV1'];
+    let encodingRetryDialogState = null;
     const MODAL_ENTER_FOCUS_DELAY_MS = 190;
 
     function safeText(value, fallback = '未知') {
@@ -1908,6 +1945,11 @@ function getAppScript() {
       if (modal.id === 'confirmActionModal' && pendingConfirmAction && !options.skipConfirm) {
         finishConfirmAction(false);
         return true;
+      }
+      if (modal.id === 'encodingRetryModal' && encodingRetryDialogState) {
+        const pending = encodingRetryDialogState;
+        encodingRetryDialogState = null;
+        pending.resolve(null);
       }
       if (modal.id === 'loginModal') {
         currentLoginId = null;
@@ -2159,7 +2201,10 @@ function getAppScript() {
           : '用于播放器中的“在网盘中查看”入口；留空则不显示。';
         browserUrlHint.classList.toggle('status-error', insecure);
       }
+      bbdownEncodingPriorityState = normalizeClientEncodingPriority(d.bbdownEncodingPriority, d.bbdownEncoding);
       document.getElementById('bbdownEncoding').value = d.bbdownEncoding || '';
+      document.getElementById('bbdownEncodingStrict').checked = Boolean(d.bbdownEncoding);
+      renderBBDownEncodingPriority();
       document.getElementById('bbdownQuality').value = d.bbdownQuality || '';
       setBBDownApiMode(d.bbdownApiMode || 'web');
       document.getElementById('bbdownHiRes').checked = !!d.bbdownHiRes;
@@ -2193,7 +2238,8 @@ function getAppScript() {
         alistPassword: document.getElementById('alistPassword').value.trim(),
         alistDest: document.getElementById('alistDest').value.trim(),
         playbackDeliveryMode: document.getElementById('playbackDeliveryMode').value === 'proxy' ? 'proxy' : 'auto',
-        bbdownEncoding: document.getElementById('bbdownEncoding').value,
+        bbdownEncoding: document.getElementById('bbdownEncodingStrict').checked ? bbdownEncodingPriorityState[0] : '',
+        bbdownEncodingPriority: bbdownEncodingPriorityState.slice(),
         bbdownQuality: document.getElementById('bbdownQuality').value,
         bbdownApiMode: getBBDownApiMode(),
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
@@ -2237,6 +2283,91 @@ function getAppScript() {
       const value = mode === 'app' ? 'app' : 'web';
       const input = document.querySelector('input[name="bbdownApiMode"][value="' + value + '"]');
       if (input) input.checked = true;
+    }
+
+    const ENCODING_PRIORITY_LABELS = {
+      HEVC: { name:'HEVC (H.265)', hint:'体积通常更小，兼容性取决于播放器' },
+      AVC: { name:'AVC (H.264)', hint:'兼容性最好，文件通常更大' },
+      AV1: { name:'AV1', hint:'压缩效率高，部分设备不支持解码' }
+    };
+
+    function normalizeClientEncodingPriority(value, legacy) {
+      const supported = ['HEVC','AVC','AV1'];
+      const candidate = Array.isArray(value) ? value.map(v => String(v || '').trim().toUpperCase()) : [];
+      if (candidate.length === supported.length && candidate.every(v => supported.includes(v)) && new Set(candidate).size === supported.length) return candidate;
+      const old = String(legacy || '').trim().toUpperCase();
+      return supported.includes(old) ? [old, ...supported.filter(v => v !== old)] : supported.slice();
+    }
+
+    function renderEncodingPriorityEditor(hostId, priority, onChange) {
+      const host = document.getElementById(hostId);
+      if (!host) return;
+      const values = normalizeClientEncodingPriority(priority);
+      host.innerHTML = '';
+      let dragIndex = null;
+      values.forEach((encoding, index) => {
+        const item = document.createElement('div');
+        item.className = 'encoding-priority-item';
+        item.draggable = true;
+        item.dataset.encoding = encoding;
+        item.dataset.index = String(index);
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-label', (index + 1) + '：' + (ENCODING_PRIORITY_LABELS[encoding]?.name || encoding));
+        item.tabIndex = 0;
+        const rank = document.createElement('span');
+        rank.className = 'encoding-priority-rank';
+        rank.textContent = String(index + 1);
+        const copy = document.createElement('span');
+        copy.className = 'encoding-priority-copy';
+        const name = document.createElement('strong');
+        name.className = 'encoding-priority-name';
+        name.textContent = ENCODING_PRIORITY_LABELS[encoding]?.name || encoding;
+        const hint = document.createElement('span');
+        hint.className = 'encoding-priority-hint';
+        hint.textContent = ENCODING_PRIORITY_LABELS[encoding]?.hint || '';
+        copy.append(name, hint);
+        const actions = document.createElement('span');
+        actions.className = 'encoding-priority-actions';
+        const move = (delta) => {
+          const nextIndex = index + delta;
+          if (nextIndex < 0 || nextIndex >= values.length) return;
+          const next = values.slice();
+          [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+          onChange(next);
+        };
+        const up = document.createElement('button');
+        up.type = 'button'; up.textContent = '↑'; up.title = '上移'; up.setAttribute('aria-label', '上移 ' + encoding); up.disabled = index === 0;
+        up.addEventListener('click', () => move(-1));
+        const down = document.createElement('button');
+        down.type = 'button'; down.textContent = '↓'; down.title = '下移'; down.setAttribute('aria-label', '下移 ' + encoding); down.disabled = index === values.length - 1;
+        down.addEventListener('click', () => move(1));
+        actions.append(up, down);
+        item.append(rank, copy, actions);
+        item.addEventListener('dragstart', (event) => { dragIndex = index; item.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; });
+        item.addEventListener('dragend', () => { dragIndex = null; item.classList.remove('dragging'); });
+        item.addEventListener('dragover', (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; });
+        item.addEventListener('drop', (event) => {
+          event.preventDefault();
+          if (dragIndex === null || dragIndex === index) return;
+          const next = values.slice();
+          const [picked] = next.splice(dragIndex, 1);
+          next.splice(index, 0, picked);
+          onChange(next);
+        });
+        item.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+          event.preventDefault();
+          move(event.key === 'ArrowUp' ? -1 : 1);
+        });
+        host.appendChild(item);
+      });
+    }
+
+    function renderBBDownEncodingPriority() {
+      renderEncodingPriorityEditor('bbdownEncodingPriorityEditor', bbdownEncodingPriorityState, (next) => {
+        bbdownEncodingPriorityState = next;
+        renderBBDownEncodingPriority();
+      });
     }
 
     function requireAppModeForPremiumAudio() {
@@ -2336,6 +2467,8 @@ function getAppScript() {
         uploadLayout: document.getElementById('uploadLayout').value,
         alistDest: document.getElementById('alistDest').value.trim() || '/bili-backup/videos',
         bbdownEncoding: document.getElementById('bbdownEncoding').value || '\u81ea\u52a8',
+        bbdownEncodingPriority: bbdownEncodingPriorityState.slice(),
+        bbdownEncodingStrict: document.getElementById('bbdownEncodingStrict')?.checked === true,
         bbdownQuality: document.getElementById('bbdownQuality').value || '\u81ea\u52a8\u6700\u9ad8',
         bbdownApiMode: getBBDownApiMode(),
         bbdownHiRes: document.getElementById('bbdownHiRes').checked,
@@ -2388,11 +2521,14 @@ function getAppScript() {
       const c = readCurrentConfigForm();
       const layoutText = c.uploadLayout === 'user-folder-video' ? '\u7528\u6237\u540d / \u6536\u85cf\u5939\u540d / \u89c6\u9891' : (c.uploadLayout === 'folder-video' ? '\u6536\u85cf\u5939\u540d / \u89c6\u9891' : '\u4ec5\u89c6\u9891\u6587\u4ef6');
       const audioText = [c.bbdownHiRes ? 'Hi-Res' : '', c.bbdownDolby ? 'Dolby' : ''].filter(Boolean).join(' + ') || '\u666e\u901a\u97f3\u9891';
+      const encodingText = c.bbdownEncodingStrict
+        ? '\u4e25\u683c ' + c.bbdownEncodingPriority[0]
+        : c.bbdownEncodingPriority.join(' \u2192 ');
       document.getElementById('settingsFlowContent').innerHTML =
         '<div class="flow-visual">' +
           '<div class="flow-step"><div class="badge">\u81ea\u52a8\u8f6e\u8be2</div><div class="desc">\u7a0b\u5e8f\u6bcf <strong>' + escapeHtml(c.pollIntervalMinutes) + ' \u5206\u949f</strong>\u81ea\u52a8\u68c0\u67e5\u4e00\u6b21\uff1b\u624b\u52a8\u6309\u94ae\u4f1a\u989d\u5916\u63d2\u961f\u89e6\u53d1\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u626b\u63cf\u6536\u85cf\u5939</div><div class="desc">\u53d1\u73b0\u65b0\u89c6\u9891\u540e\u6309\u5f53\u524d\u547d\u540d\u6a21\u677f\u51c6\u5907\u4efb\u52a1\uff1a<code>' + escapeHtml(c.filenameTemplate) + '</code></div></div>' +
-          '<div class="flow-step"><div class="badge">\u4e0b\u8f7d\u961f\u5217</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0b\u8f7d <strong>' + escapeHtml(c.concurrentDownloads) + '</strong> \u4e2a\uff1b\u672c\u5730 temp \u8fbe\u5230 <strong>' + escapeHtml(c.localCacheLimitGB || 0) + 'GB</strong> \u8f6f\u4e0a\u9650\u65f6\u4e0d\u518d\u542f\u52a8\u65b0\u4e0b\u8f7d\uff1b\u753b\u8d28\u4e3a <strong>' + escapeHtml(c.bbdownQuality) + '</strong>\uff0c\u7f16\u7801\u4e3a <strong>' + escapeHtml(c.bbdownEncoding) + '</strong>\uff0c\u97f3\u9891\u9009\u9879\u4e3a <strong>' + escapeHtml(audioText) + '</strong>\uff1b\u5206P\u4e4b\u95f4\u5ef6\u8fdf <strong>' + escapeHtml(c.perVideoDelaySeconds) + ' \u79d2</strong>\u3002</div></div>' +
+          '<div class="flow-step"><div class="badge">\u4e0b\u8f7d\u961f\u5217</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0b\u8f7d <strong>' + escapeHtml(c.concurrentDownloads) + '</strong> \u4e2a\uff1b\u672c\u5730 temp \u8fbe\u5230 <strong>' + escapeHtml(c.localCacheLimitGB || 0) + 'GB</strong> \u8f6f\u4e0a\u9650\u65f6\u4e0d\u518d\u542f\u52a8\u65b0\u4e0b\u8f7d\uff1b\u753b\u8d28\u4e3a <strong>' + escapeHtml(c.bbdownQuality) + '</strong>\uff0c\u7f16\u7801\u504f\u597d\u4e3a <strong>' + escapeHtml(encodingText) + '</strong>\uff0c\u97f3\u9891\u9009\u9879\u4e3a <strong>' + escapeHtml(audioText) + '</strong>\uff1b\u5206P\u4e4b\u95f4\u5ef6\u8fdf <strong>' + escapeHtml(c.perVideoDelaySeconds) + ' \u79d2</strong>\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u5931\u8d25\u91cd\u8bd5</div><div class="desc">\u4e0b\u8f7d\u6216\u4e0a\u4f20\u5931\u8d25\u540e\u6700\u591a\u91cd\u8bd5 <strong>' + escapeHtml(c.maxRetries) + '</strong> \u6b21\uff0c\u6bcf\u6b21\u95f4\u9694 <strong>' + escapeHtml(c.retryDelaySeconds) + ' \u79d2</strong>\uff1b\u4e0b\u8f7d\u5361\u4f4f\u8d85\u8fc7 30 \u5206\u949f\u4e14\u6700\u8fd1 10 \u5206\u949f\u4f4e\u4e8e 10KB/s \u4f1a\u81ea\u52a8\u8fdb\u5165\u91cd\u8bd5\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u4e0a\u4f20\u8fdc\u7aef\u5b58\u50a8</div><div class="desc">\u6700\u591a\u540c\u65f6\u4e0a\u4f20 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> \u4e2a\uff1b\u5b9e\u9645 PUT \u5168\u5c40\u95f4\u9694 <strong>' + escapeHtml(c.uploadFileIntervalSeconds || 0) + ' \u79d2</strong>\uff1b\u76ee\u6807\u8def\u5f84\u662f <code>' + escapeHtml(c.alistDest) + '</code>\uff0c\u76ee\u5f55\u7ed3\u6784\u662f <strong>' + escapeHtml(layoutText) + '</strong>\u3002</div></div>' +
           '<div class="flow-step"><div class="badge">\u72b6\u6001\u5bf9\u8d26</div><div class="desc">\u8fdc\u7aef\u5b58\u50a8\u5bf9\u8d26\u5e76\u53d1 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>\uff0c\u9650\u901f <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' \u6b21/\u79d2</strong>\uff0c\u6bcf\u8f6e\u6700\u591a\u8865\u4f20 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> \u4e2a\u7f3a\u5931\u89c6\u9891\u3002</div></div>' +
@@ -6769,7 +6905,11 @@ function getAppScript() {
       recoveryIssueState.error = null;
       recoveryIssueState.items = Array.isArray(items) ? items : [];
       recoveryIssueState.summary = summary || recoveryIssueCounts(recoveryIssueState.items);
-      if (!recoveryIssueState.items.some((item) => item.id === recoveryIssueState.selectedId)) {
+      const focused = recoveryIssueState.focusId;
+      if (focused && recoveryIssueState.items.some((item) => item.id === focused)) {
+        recoveryIssueState.selectedId = focused;
+        recoveryIssueState.focusId = null;
+      } else if (!recoveryIssueState.items.some((item) => item.id === recoveryIssueState.selectedId)) {
         recoveryIssueState.selectedId = recoveryIssueState.items[0]?.id || null;
       }
       updateRecoveryIssuesEntry(recoveryIssueState.summary);
@@ -6779,6 +6919,7 @@ function getAppScript() {
     }
 
     function recoveryIssueStatusLabel(issue) {
+      if (issue?.busy) return '处理中';
       if (issue?.disposition === 'intentional_confirmation') return '待确认';
       if (issue?.severity === 'danger') return '需要处理';
       if (issue?.severity === 'warning') return '建议处理';
@@ -6799,6 +6940,7 @@ function getAppScript() {
         unknown_same_size:'远端证明还未确认',
         legacy_conflict_interrupted:'旧冲突归档待复核',
         conflict_candidate_ready:'新候选等待选择',
+        encoding_retry_failed:'编码替换未完成',
         quality_failed:'画质重调已暂停',
         storage_backend:'存储设置需要检查',
         manual_review:'上传任务需要复核',
@@ -6880,6 +7022,35 @@ function getAppScript() {
       host.appendChild(section);
     }
 
+    function finishEncodingRetryDialog(result) {
+      const pending = encodingRetryDialogState;
+      if (!pending) return;
+      encodingRetryDialogState = null;
+      closeModal('encodingRetryModal', { restoreFocus:true });
+      pending.resolve(result);
+    }
+
+    function openEncodingRetryDialog(issue, trigger) {
+      if (encodingRetryDialogState) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        const priority = ['AV1', 'HEVC', 'AVC'];
+        encodingRetryDialogState = { resolve, issue, trigger, priority, strict:true };
+        const copy = document.getElementById('encodingRetryCopy');
+        if (copy) copy.textContent = '本次默认优先 AV1，以尽量避开单文件大小限制。原文件会保留到新文件完成远端确认。';
+        const status = document.getElementById('encodingRetryStatus');
+        if (status) status.textContent = '';
+        const strict = document.getElementById('encodingRetryStrict');
+        if (strict) strict.checked = true;
+        const renderDialogPriority = () => renderEncodingPriorityEditor('encodingRetryPriorityEditor', encodingRetryDialogState?.priority || priority, (next) => {
+          if (!encodingRetryDialogState) return;
+          encodingRetryDialogState.priority = next;
+          renderDialogPriority();
+        });
+        renderDialogPriority();
+        openModal('encodingRetryModal', trigger);
+      });
+    }
+
     async function runRecoveryIssueAction(issue, action, trigger) {
       if (!issue || !action) return;
       if (action.id === 'open_settings') {
@@ -6888,6 +7059,15 @@ function getAppScript() {
         field?.scrollIntoView({ behavior:'smooth', block:'center' });
         setTimeout(() => field?.focus({ preventScroll:true }), 260);
         return;
+      }
+      let actionBody = undefined;
+      if (action.id === 'redownload_with_encoding') {
+        const selected = await openEncodingRetryDialog(issue, trigger);
+        if (!selected) return;
+        actionBody = {
+          encodingPriority: selected.priority,
+          strict: selected.strict,
+        };
       }
       if (action.id === 'reupload' || action.id === 'redownload') {
         const reupload = action.id === 'reupload';
@@ -6926,6 +7106,7 @@ function getAppScript() {
       try {
         const data = await fetchJson('/api/recovery-issues/' + encodeURIComponent(issue.id) + '/actions/' + encodeURIComponent(action.id), {
           method:'POST',
+          ...(actionBody ? { headers:{'Content-Type':'application/json'}, body:JSON.stringify(actionBody) } : {}),
         });
         setRecoveryIssueItems(data?.issues || []);
         document.getElementById('recoveryIssuesLive').textContent = action.label + '已执行，待处理列表已更新。';
@@ -7000,7 +7181,12 @@ function getAppScript() {
         item.textContent = String(fact);
         protectedList.appendChild(item);
       });
-      if (issue.recommendedAction) {
+      if (issue.busy) {
+        const busyNote = document.createElement('p');
+        busyNote.className = 'recovery-safety-note';
+        busyNote.textContent = '替换下载、上传或远端确认正在进行。原文件仍保留，期间不能重复启动另一种编码。';
+        appendRecoveryDetailSection(host, '当前进度', busyNote);
+      } else if (issue.recommendedAction) {
         const actions = document.createElement('div');
         const primary = document.createElement('button');
         primary.type = 'button';
@@ -7102,7 +7288,8 @@ function getAppScript() {
       }
     }
 
-    function openRecoveryIssues(trigger) {
+    function openRecoveryIssues(trigger, focusId = null) {
+      recoveryIssueState.focusId = focusId || null;
       document.querySelector('.recovery-issues-shell')?.classList.remove('show-detail');
       openModal('recoveryIssuesModal', trigger);
       renderRecoveryIssueCenter();
@@ -7230,6 +7417,21 @@ function getAppScript() {
         actions.append(confirmButton, uploadButton);
         info.appendChild(actions);
       }
+      const supportsEncodingRetry = Array.isArray(item.recoveryActions)
+        && item.recoveryActions.some((action) => action.id === 'redownload_with_encoding')
+        && item.recoveryIssueId;
+      const existingEncodingButton = actions.querySelector('[data-recovery-action="redownload_with_encoding"]');
+      if (!supportsEncodingRetry) {
+        existingEncodingButton?.remove();
+        return;
+      }
+      const encodingButton = existingEncodingButton || document.createElement('button');
+      encodingButton.type = 'button';
+      encodingButton.dataset.recoveryAction = 'redownload_with_encoding';
+      encodingButton.textContent = '换编码';
+      encodingButton.title = '选择一次性编码顺序，隔离下载并确认新文件后再替换原文件';
+      encodingButton.onclick = () => openRecoveryIssues(encodingButton, String(item.recoveryIssueId));
+      if (!existingEncodingButton) actions.appendChild(encodingButton);
     }
 
     function updateQueueCard(card, item, nowMs) {
@@ -7976,6 +8178,16 @@ function getAppScript() {
     document.getElementById('confirmActionInput').addEventListener('input', syncConfirmActionInput);
     document.getElementById('confirmActionOkBtn').addEventListener('click', () => finishConfirmAction(true));
     document.getElementById('confirmActionCancelBtn').addEventListener('click', () => finishConfirmAction(false));
+    document.getElementById('encodingRetrySubmitBtn').addEventListener('click', () => {
+      if (!encodingRetryDialogState) return;
+      const priority = normalizeClientEncodingPriority(encodingRetryDialogState.priority);
+      if (priority.length !== 3) {
+        document.getElementById('encodingRetryStatus').textContent = '请保留 HEVC、AVC、AV1 三项，且每项只出现一次。';
+        return;
+      }
+      finishEncodingRetryDialog({ priority, strict: document.getElementById('encodingRetryStrict').checked });
+    });
+    document.getElementById('encodingRetryCancelBtn').addEventListener('click', () => finishEncodingRetryDialog(null));
     document.getElementById('videoGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('videoGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {

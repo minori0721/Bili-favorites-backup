@@ -3,7 +3,7 @@ import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, resumeUploadSession, verifyRemoteFiles } from "./uploader.js";
 import type { ExistingArchiveProof, UploadIntent } from "./upload-preflight.js";
-import { AppConfig, type BBDownApiMode } from "./config.js";
+import { AppConfig, type BBDownApiMode, type BBDownEncoding } from "./config.js";
 import { BiliCookie } from "./users.js";
 import type { RemoteFileRecord, UploadFileMetadata } from "./state.js";
 import { tempDir } from "./paths.js";
@@ -32,11 +32,26 @@ export interface UploadTarget {
   remotePath: string;
 }
 
+export interface EncodingRetryContext {
+  parentJobId: string;
+  generation: number;
+  priority: BBDownEncoding[];
+  strict: boolean;
+  candidateLocalDir: string;
+  originalLocalDir: string;
+  originalFiles?: string[];
+  target?: UploadTarget;
+  state?: "running" | "uploading" | "verifying" | "failed" | "completed";
+  lastError?: string;
+}
+
 export class DownloadTask extends Task {
   bvid: string;
   cookie: BiliCookie;
   config: AppConfig;
   downloadDir?: string;
+  downloadDirOverride?: string;
+  encodingRetry?: EncodingRetryContext;
   videoTitle?: string;
   upperName?: string;
   cover?: string;
@@ -68,6 +83,7 @@ export class DownloadTask extends Task {
     console.log(`[Task] Starting download for ${this.bvid}`);
     this.onDownloading?.(this);
     const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
+      downloadDir: this.downloadDirOverride,
       onPrepared: (downloadDir, manifest) => {
         this.downloadDir = downloadDir;
         this.recoveredPages = manifest.outputs.length;
@@ -504,6 +520,7 @@ export class UploadTask extends Task {
   consumeReuploadPermission?: (relativePath: string) => boolean;
   reuploadPermissionUsed = false;
   resumeOnly = false;
+  encodingRetry?: EncodingRetryContext;
   onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
 
   constructor(
@@ -537,6 +554,7 @@ export class UploadTask extends Task {
       reuploadAuthorizedFiles?: string[];
       consumeReuploadPermission?: (relativePath: string) => boolean;
       resumeOnly?: boolean;
+      encodingRetry?: EncodingRetryContext;
       onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
     } = {}
   ) {
@@ -570,6 +588,7 @@ export class UploadTask extends Task {
     this.reuploadAuthorizedFiles = [...new Set((options.reuploadAuthorizedFiles || []).map((value) => String(value || "").replace(/\\/g, "/")).filter(Boolean))];
     this.consumeReuploadPermission = options.consumeReuploadPermission;
     this.resumeOnly = Boolean(options.resumeOnly);
+    this.encodingRetry = options.encodingRetry;
     this.onTransferSession = options.onTransferSession;
   }
 
@@ -673,6 +692,7 @@ export class UploadVerificationTask extends Task {
   allowReupload = false;
   sessionVerification = false;
   filenameMetadataByPath?: Record<string, UploadFileMetadata>;
+  encodingRetry?: EncodingRetryContext;
 
   constructor(
     public readonly bvid: string,
@@ -681,7 +701,7 @@ export class UploadVerificationTask extends Task {
     public readonly remoteFile: string,
     public readonly expectedSize: number,
     public readonly config: AppConfig,
-    options: { transferSessionStore?: TransferSessionStore; sessionId?: string; sessionGeneration?: number; allowReupload?: boolean; sessionVerification?: boolean; filenameMetadataByPath?: Record<string, UploadFileMetadata> } = {}
+    options: { transferSessionStore?: TransferSessionStore; sessionId?: string; sessionGeneration?: number; allowReupload?: boolean; sessionVerification?: boolean; filenameMetadataByPath?: Record<string, UploadFileMetadata>; encodingRetry?: EncodingRetryContext } = {}
   ) {
     super(`Verify upload ${bvid}`, { maxRetries: 0, retryDelaySeconds: 1 });
     this.transferSessionStore = options.transferSessionStore;
@@ -690,6 +710,7 @@ export class UploadVerificationTask extends Task {
     this.allowReupload = Boolean(options.allowReupload);
     this.sessionVerification = Boolean(options.sessionVerification || options.sessionId);
     this.filenameMetadataByPath = options.filenameMetadataByPath;
+    this.encodingRetry = options.encodingRetry;
   }
 
   async run() {

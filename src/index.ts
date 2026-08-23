@@ -1700,12 +1700,12 @@ app.post("/api/queue/recover", (req, res) => {
 app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, res) => {
   const issueId = String(req.params.id || "").trim();
   const action = String(req.params.action || "").trim();
-  const allowedActions = new Set(["recheck", "reupload", "redownload", "retry_quality", "keep_existing", "use_candidate"]);
+  const allowedActions = new Set(["recheck", "reupload", "redownload", "redownload_with_encoding", "retry_quality", "keep_existing", "use_candidate"]);
   if (!issueId || issueId.length > 160 || !allowedActions.has(action)) {
     res.status(400).json({ success: false, message: "Invalid recovery issue action" });
     return;
   }
-  const result = await scheduler.resolveRecoveryIssue(issueId, action as any);
+  const result = await scheduler.resolveRecoveryIssue(issueId, action as any, req.body || {});
   if (!result.ok) {
     res.status(result.status).json({ success: false, message: result.message });
     return;

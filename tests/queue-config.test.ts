@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import path from "node:path";
-import { normalizeLoadedConfig, validateBBDownRuntimeConfig, validateConfig } from "../src/config.js";
+import {
+  applyBBDownEncodingPreference,
+  isValidBBDownEncodingPriority,
+  normalizeBBDownEncodingPriority,
+  normalizeLoadedConfig,
+  validateBBDownRuntimeConfig,
+  validateConfig,
+} from "../src/config.js";
+import { buildEncodingPriority } from "../src/downloader.js";
 import { Task, TaskQueue } from "../src/queue.js";
 import { computeUploadSessionRetryDelayMs, SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
@@ -330,6 +338,27 @@ test("playback delivery defaults to safe redirect preference and validates proxy
   assert.match(String(validateConfig({ alistBrowserUrl: "ftp://alist.example.com" })), /http\(s\)/);
   assert.match(String(validateConfig({ alistBrowserUrl: "https://user:pass@alist.example.com" })), /credentials/);
   assert.match(String(validateConfig({ alistBrowserUrl: "https://alist.example.com/?token=secret" })), /query/);
+});
+
+test("encoding preference normalizes legacy settings and preserves the selected fallback order", () => {
+  assert.deepEqual(normalizeBBDownEncodingPriority(undefined), ["HEVC", "AVC", "AV1"]);
+  assert.deepEqual(normalizeBBDownEncodingPriority(["avc", "av1", "hevc"]), ["AVC", "AV1", "HEVC"]);
+  assert.deepEqual(normalizeBBDownEncodingPriority(undefined, "AV1"), ["AV1", "HEVC", "AVC"]);
+  assert.equal(isValidBBDownEncodingPriority(["HEVC", "AVC", "AV1"]), true);
+  assert.equal(isValidBBDownEncodingPriority(["HEVC", "HEVC", "AV1"]), false);
+
+  const base = testConfig();
+  const reordered = applyBBDownEncodingPreference(base, ["AV1", "HEVC", "AVC"]);
+  assert.equal(reordered.bbdownEncoding, "");
+  assert.deepEqual(reordered.bbdownEncodingPriority, ["AV1", "HEVC", "AVC"]);
+  assert.equal(buildEncodingPriority(reordered), "av1,hevc,avc");
+
+  const strict = applyBBDownEncodingPreference(base, ["AVC", "HEVC", "AV1"], true);
+  assert.equal(strict.bbdownEncoding, "AVC");
+  assert.equal(buildEncodingPriority(strict), "avc");
+  assert.equal(buildEncodingPriority(testConfig({ bbdownEncoding: "HEVC", bbdownEncodingPriority: ["AV1", "AVC", "HEVC"] })), "hevc");
+  assert.match(String(validateConfig({ bbdownEncodingPriority: ["AV1", "HEVC", "AVC"] })), /^null$/);
+  assert.match(String(validateConfig({ bbdownEncodingPriority: ["AV1", "HEVC"] as any })), /exactly once/);
 });
 
 test("upload file interval validates its range and session retries use bounded backoff", () => {

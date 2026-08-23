@@ -21,6 +21,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     localCacheLimitGB: 0,
     queuePrefetchLimit: 25,
     bbdownEncoding: "",
+    bbdownEncodingPriority: ["HEVC", "AVC", "AV1"],
     bbdownQuality: "",
     bbdownApiMode: "web",
     bbdownHiRes: false,
