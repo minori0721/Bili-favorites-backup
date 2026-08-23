@@ -31,7 +31,12 @@ test("problem center explains protection and resolves one action without duplica
   const row = page.locator(".recovery-issue-row");
   if (testInfo.project.name !== "desktop") await row.tap();
   else await row.click();
+  await expect(row).toContainText("测试归档视频：新候选待确认");
+  await expect(page.locator("#recoveryIssuesSummary")).toContainText("待确认 1");
+  await expect(page.locator("#recoveryIssuesListCount")).toHaveText("1 项");
   await expect(page.locator("#recoveryIssuesDetail")).toContainText("发生了什么");
+  await expect(page.locator("#recoveryIssuesDetail")).toContainText("来源收藏夹");
+  await expect(page.locator("#recoveryIssuesDetail")).toContainText("下一步");
   await expect(page.locator("#recoveryIssuesDetail")).toContainText("没有自动覆盖或删除远端文件");
   await expect(page.locator("#recoveryIssuesDetail")).toContainText("正式旧路径保持不变");
   const action = page.getByRole("button", { name: "立即重新检查" });

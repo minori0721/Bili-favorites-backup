@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = 43197;
+const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
 
 export default defineConfig({
   testDir: "./tests/ui",

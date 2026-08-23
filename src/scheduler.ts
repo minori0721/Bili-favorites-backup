@@ -206,6 +206,8 @@ export interface RecoveryIssue {
   recommendedAction?: RecoveryIssueAction;
   availableActions: RecoveryIssueAction[];
   bvid?: string;
+  videoTitle?: string;
+  upperName?: string;
   userId?: string;
   mediaId?: number;
   folderTitle?: string;
@@ -3096,6 +3098,9 @@ export class SyncScheduler {
 
   private buildUploadRecoveryIssue(job: any): RecoveryIssue {
     const payload = job.payload as any;
+    const storedMeta = (!payload.videoTitle || !payload.upperName) && job.bvid
+      ? this.stateManager.getVideoMeta(String(job.bvid))
+      : null;
     const assessment = this.recoveryAssessment(payload);
     const kind = assessment?.kind || (payload.conflictRelativePath ? "remote_size_conflict" : "manual_review");
     const actions = this.uploadRecoveryActions(assessment);
@@ -3128,6 +3133,8 @@ export class SyncScheduler {
       issue: kind,
       task: job.kind,
       bvid: job.bvid || undefined,
+      videoTitle: payload.videoTitle || storedMeta?.title || undefined,
+      upperName: payload.upperName || storedMeta?.upperName || undefined,
       userId: job.userId || undefined,
       mediaId: job.mediaId ?? undefined,
       localStatus: assessment?.localStatus || "unknown",
@@ -3164,6 +3171,9 @@ export class SyncScheduler {
     const issues: RecoveryIssue[] = this.manualRecoveryJobs().map((job) => this.buildUploadRecoveryIssue(job));
     for (const job of this.jobStore.listFailed(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"], 1_000)) {
       const payload = job.payload as any;
+      const storedMeta = (!payload.videoTitle || !payload.upperName) && job.bvid
+        ? this.stateManager.getVideoMeta(String(job.bvid))
+        : null;
       const action: RecoveryIssueAction = { id: "retry_quality", label: "重新尝试画质重调", description: "从已保存的阶段继续，已验证旧文件不会被直接删除。" };
       issues.push({
         id: `quality.${job.id}`,
@@ -3175,6 +3185,8 @@ export class SyncScheduler {
         recommendedAction: action,
         availableActions: [action],
         bvid: job.bvid || payload.bvid,
+        videoTitle: payload.videoTitle || storedMeta?.title || undefined,
+        upperName: payload.upperName || storedMeta?.upperName || undefined,
         userId: job.userId || payload.userId,
         mediaId: job.mediaId ?? payload.mediaId,
         folderTitle: payload.folderTitle || payload.target?.folderTitle,

@@ -3,7 +3,7 @@ import type { Socket } from "node:net";
 import { renderAppPage } from "../../src/web.js";
 
 const app = express();
-const port = 43197;
+const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
 
 type TestState = {
   previewCount: number;
@@ -203,6 +203,8 @@ app.get("/api/queue/state", (_request, response) => {
       { id: "reupload", label: "继续上传", description: "仅为当前文件授权一次重新上传。", danger: true },
     ],
     bvid: "BV1RECOVERY1",
+    videoTitle: "测试归档视频：新候选待确认",
+    upperName: "测试UP主",
     folderTitle: "当前收藏夹",
     fileName: "P1.mp4",
     occurredAt: Date.parse("2026-08-17T12:00:00.000Z"),

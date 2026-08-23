@@ -316,8 +316,21 @@ function getAppStyles() {
     input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 4px rgba(57,197,187,0.14), inset 0 1px 0 rgba(255,255,255,0.8); background:white; }
     .checkbox-label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; margin:0; }
     .checkbox-label input { width:auto; margin:0; }
-    .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:none; align-items:center; justify-content:center; padding:16px; z-index:100; }
-    .modal.active { display:flex; }
+    .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; padding:16px; z-index:100; opacity:0; pointer-events:none; transition:opacity .16s ease; }
+    .modal.active { opacity:1; pointer-events:auto; }
+    .modal.is-closing { opacity:0; pointer-events:none; }
+    .modal > .panel,
+    .modal > .archive-library-shell,
+    .modal > .playback-shell,
+    .modal > .recovery-issues-shell { opacity:0; transform:translateY(6px) scale(.995); transition:opacity .18s cubic-bezier(.16,1,.3,1),transform .18s cubic-bezier(.16,1,.3,1); }
+    .modal.active:not(.is-closing) > .panel,
+    .modal.active:not(.is-closing) > .archive-library-shell,
+    .modal.active:not(.is-closing) > .playback-shell,
+    .modal.active:not(.is-closing) > .recovery-issues-shell { opacity:1; transform:none; }
+    .modal.active.is-closing > .panel,
+    .modal.active.is-closing > .archive-library-shell,
+    .modal.active.is-closing > .playback-shell,
+    .modal.active.is-closing > .recovery-issues-shell { opacity:0; transform:translateY(3px) scale(.998); transition-duration:.13s; }
     .modal .panel { background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); padding:30px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(26,47,45,0.14), inset 0 1px 0 rgba(255,255,255,0.82); border:1px solid var(--glass-border); max-height:90vh; overflow-y:auto; overflow-x:hidden; }
     .modal .panel.panel-narrow { max-width:760px; }
     .modal .panel.panel-medium { max-width:800px; }
@@ -666,12 +679,14 @@ function getAppStyles() {
     .recovery-issues-entry.has-issues { border-color:#D98B36; color:#8D4D08; background:#FFF7EA; }
     .recovery-issues-entry.has-danger { border-color:#C94F4F; color:#9B2C2C; background:#FFF0F0; }
     .recovery-issues-modal { padding:0; align-items:stretch; }
-    .recovery-issues-shell { width:min(1180px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; box-shadow:0 24px 80px rgba(18,38,35,.22); }
+    .recovery-issues-shell { width:min(1220px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; border-radius:10px; box-shadow:0 24px 80px rgba(18,38,35,.22); }
     .recovery-issues-shell.is-empty { height:min(520px,100dvh); }
     .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid #D8E3E0; background:#FFF; }
     .recovery-issues-heading { min-width:0; }
     .recovery-issues-heading h2 { margin:0; font-size:18px; }
-    .recovery-issues-heading p { margin:3px 0 0; color:#60736F; font-size:12px; }
+    .recovery-issues-heading p { margin:4px 0 0; color:#60736F; font-size:12px; line-height:1.45; }
+    .recovery-issues-summary { min-width:132px; padding:7px 10px; border:1px solid #D7E5E1; border-radius:7px; background:#F4F9F7; color:#3D5D57; font-size:12px; font-weight:800; text-align:center; }
+    .recovery-issues-summary:empty { visibility:hidden; }
     .recovery-issues-close,.recovery-issues-back { width:44px; height:44px; border:1px solid #C9D8D5; border-radius:50%; background:#FFF; color:#28443F; font-size:21px; cursor:pointer; flex:0 0 auto; }
     .recovery-issues-back { display:none; font-size:18px; }
     .recovery-issues-status { display:flex; align-items:center; gap:12px; min-height:48px; padding:9px 18px; border-bottom:1px solid #E8D6B8; background:#FFF7EA; color:#8D4D08; font-size:13px; line-height:1.45; }
@@ -682,31 +697,48 @@ function getAppStyles() {
     .recovery-issues-status button:disabled { cursor:wait; opacity:.58; }
     .recovery-issues-layout { min-height:0; display:grid; grid-template-columns:minmax(280px,350px) minmax(0,1fr); }
     .recovery-issues-layout.is-empty { grid-template-columns:minmax(0,1fr); }
-    .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:#EEF4F2; padding:12px; }
+    .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:#EEF4F2; padding:14px; }
     .recovery-issues-list-pane[hidden],.recovery-issues-detail[hidden] { display:none!important; }
-    .recovery-issues-list { display:grid; gap:8px; }
-    .recovery-issue-row { width:100%; min-height:76px; display:grid; grid-template-columns:10px minmax(0,1fr); gap:10px; align-items:start; padding:12px; border:1px solid #D7E2DF; border-radius:8px; background:#FFF; color:#233E39; text-align:left; cursor:pointer; }
+    .recovery-issues-list-header { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:0 2px 9px; color:#28443F; font-size:13px; }
+    .recovery-issues-list-header span { color:#6B817B; font-size:11px; font-weight:700; }
+    .recovery-issues-list { display:grid; gap:9px; }
+    .recovery-issue-row { width:100%; min-height:92px; display:grid; grid-template-columns:8px minmax(0,1fr) auto; gap:10px; align-items:start; padding:12px; border:1px solid #D7E2DF; border-radius:8px; background:#FFF; color:#233E39; text-align:left; cursor:pointer; }
     .recovery-issue-row:hover,.recovery-issue-row:focus-visible,.recovery-issue-row.active { border-color:#39AFA5; outline:none; box-shadow:0 0 0 3px rgba(57,197,187,.12); }
-    .recovery-issue-marker { width:8px; height:8px; margin-top:5px; border-radius:50%; background:#5C8F88; }
+    .recovery-issue-marker { width:8px; height:8px; margin-top:7px; border-radius:50%; background:#5C8F88; }
     .recovery-issue-row.warning .recovery-issue-marker { background:#D98B36; }
     .recovery-issue-row.danger .recovery-issue-marker { background:#C94F4F; }
-    .recovery-issue-row-title { display:block; font-size:13px; font-weight:800; line-height:1.35; }
-    .recovery-issue-row-meta { display:block; margin-top:5px; color:#677A76; font-size:11px; line-height:1.45; word-break:break-word; }
+    .recovery-issue-row-copy { min-width:0; display:grid; gap:5px; }
+    .recovery-issue-row-status { width:max-content; max-width:100%; padding:2px 7px; border-radius:999px; background:#EAF5F2; color:#27736A; font-size:10px; font-weight:800; line-height:1.35; }
+    .recovery-issue-row.warning .recovery-issue-row-status { background:#FFF3DF; color:#99601C; }
+    .recovery-issue-row.danger .recovery-issue-row-status { background:#FCE9E9; color:#A53838; }
+    .recovery-issue-row-title { display:block; overflow:hidden; font-size:13px; font-weight:800; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+    .recovery-issue-row-problem { display:block; overflow:hidden; color:#4D6862; font-size:11px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+    .recovery-issue-row-meta { display:block; overflow:hidden; color:#71837F; font-size:11px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+    .recovery-issue-row-arrow { align-self:center; color:#6B817B; font-size:18px; line-height:1; }
     .recovery-issues-detail { min-width:0; min-height:0; overflow:auto; background:#FFF; padding:24px clamp(18px,3vw,38px) 36px; }
     .recovery-issues-detail:focus { outline:none; }
-    .recovery-detail-kicker { color:#4B6762; font-size:12px; font-weight:700; }
-    .recovery-detail-title { margin:6px 0 6px; font-size:22px; line-height:1.3; color:#183A34; }
-    .recovery-detail-meta { color:#687B77; font-size:12px; overflow-wrap:anywhere; }
-    .recovery-detail-section { padding:18px 0; border-bottom:1px solid #E4ECEA; }
+    .recovery-detail-kicker { width:max-content; max-width:100%; padding:3px 8px; border-radius:999px; background:#EAF5F2; color:#27736A; font-size:11px; font-weight:800; }
+    .recovery-detail-kicker.warning { background:#FFF3DF; color:#99601C; }
+    .recovery-detail-kicker.danger { background:#FCE9E9; color:#A53838; }
+    .recovery-detail-title { margin:10px 0 3px; font-size:22px; line-height:1.3; color:#183A34; overflow-wrap:anywhere; }
+    .recovery-detail-problem { margin:0; color:#4D6862; font-size:13px; font-weight:700; line-height:1.5; }
+    .recovery-detail-meta { margin-top:7px; color:#687B77; font-size:12px; overflow-wrap:anywhere; }
+    .recovery-target-card { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:18px; padding:12px; border:1px solid #DCE9E6; border-radius:8px; background:#F7FBFA; }
+    .recovery-target-field { min-width:0; display:grid; gap:3px; }
+    .recovery-target-field-label { color:#71837F; font-size:10px; font-weight:700; }
+    .recovery-target-field-value { overflow-wrap:anywhere; color:#28443F; font-size:12px; font-weight:800; line-height:1.45; }
+    .recovery-detail-section { padding:16px 0; border-bottom:1px solid #E4ECEA; }
     .recovery-detail-section h3 { margin:0 0 8px; font-size:13px; color:#3D5D57; }
     .recovery-detail-section p { margin:0; color:#263E3A; line-height:1.7; }
-    .recovery-protected-list { margin:0; padding:0; display:grid; gap:8px; list-style:none; }
-    .recovery-protected-list li { position:relative; padding-left:22px; color:#3E5D57; line-height:1.55; }
-    .recovery-protected-list li::before { content:'✓'; position:absolute; left:0; color:#17877C; font-weight:900; }
+    .recovery-protected-list { margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px 8px; list-style:none; }
+    .recovery-protected-list li { position:relative; padding:6px 9px 6px 24px; border:1px solid #DCE9E6; border-radius:7px; background:#F7FBFA; color:#3E5D57; line-height:1.4; }
+    .recovery-protected-list li::before { content:'✓'; position:absolute; left:8px; color:#17877C; font-weight:900; }
     .recovery-primary-action { min-height:44px; padding:10px 16px; border:1px solid #198E84; border-radius:8px; background:#198E84; color:#FFF; font-weight:800; cursor:pointer; }
     .recovery-primary-action.danger-action { border-color:#B94747; background:#B94747; }
     .recovery-secondary-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
     .recovery-secondary-actions button,.recovery-copy-diagnostic { min-height:44px; padding:9px 13px; border:1px solid #BFD2CE; border-radius:8px; background:#FFF; color:#2B5D56; font-weight:700; cursor:pointer; }
+    .recovery-safety-note { margin:0; padding:10px 12px; border:1px solid #DCE9E6; border-radius:8px; background:#F7FBFA; color:#3E5D57; font-size:12px; line-height:1.55; }
+    .recovery-safety-note strong { color:#28443F; }
     .recovery-technical { margin-top:14px; color:#5B716C; }
     .recovery-technical summary { min-height:44px; display:flex; align-items:center; cursor:pointer; font-weight:700; }
     .recovery-technical-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 18px; padding:8px 0 12px; font-size:12px; }
@@ -837,9 +869,10 @@ function getAppStyles() {
       .queue-col { display:inline-flex; width:82vw; min-width:82vw; max-width:82vw; margin-right:12px; white-space:normal; vertical-align:top; scroll-snap-align:start; }
       .toast-container { left:12px; right:12px; bottom:12px; }
       .toast { max-width:none; }
-      .recovery-issues-shell { width:100%; height:100dvh; border:0; display:flex; flex-direction:column; }
+      .recovery-issues-shell { width:100%; height:100dvh; border:0; border-radius:0; display:flex; flex-direction:column; }
       .recovery-issues-shell.is-empty { height:min(460px,100dvh); }
       .recovery-issues-header { min-height:58px; padding:8px 10px; }
+      .recovery-issues-summary { display:none; }
       .recovery-issues-status { flex:0 0 auto; padding:9px 10px; }
       .recovery-issues-layout { position:relative; display:block; flex:1 1 auto; min-height:0; height:auto; overflow:hidden; }
       .recovery-issues-layout.is-empty { display:block; }
@@ -847,6 +880,9 @@ function getAppStyles() {
       .recovery-issues-empty-state { position:absolute; inset:0; height:100%; padding:34px 20px; }
       .recovery-issues-list-pane { transform:translateX(0); padding:10px; }
       .recovery-issues-detail { transform:translateX(100%); padding:18px 16px 28px; }
+      .recovery-issue-row-title,.recovery-issue-row-problem,.recovery-issue-row-meta { white-space:normal; }
+      .recovery-target-card { grid-template-columns:1fr; margin-top:16px; }
+      .recovery-detail-title { font-size:20px; }
       .recovery-issues-shell.show-detail .recovery-issues-list-pane { transform:translateX(-24%); }
       .recovery-issues-shell.show-detail .recovery-issues-detail { transform:translateX(0); }
       .recovery-issues-shell.show-detail .recovery-issues-back { display:block; }
@@ -914,7 +950,9 @@ function getAppStyles() {
       .playback-queue-head { padding:11px; }
     }
     @media (prefers-reduced-motion: reduce) {
+      .modal,.modal > .panel,.modal > .archive-library-shell,.modal > .playback-shell,.modal > .recovery-issues-shell,
       .playback-shell,.video-item.playable,.video-play-affordance,.playback-queue-item,.playback-art,.playback-queue,.playback-drawer-backdrop { animation:none; transition:none!important; }
+      .modal > .panel,.modal > .archive-library-shell,.modal > .playback-shell,.modal > .recovery-issues-shell { transform:none!important; }
     }
   </style>`;
 }
@@ -1429,8 +1467,9 @@ function getModals() {
         <button id="recoveryIssuesBackBtn" class="recovery-issues-back" type="button" aria-label="返回待处理列表" title="返回">←</button>
         <div class="recovery-issues-heading">
           <h2 id="recoveryIssuesTitle">待处理问题</h2>
-          <p>系统会先自动复核和恢复；这里只保留需要确认或暂时无法自动解决的事项。</p>
+          <p>只显示需要你决定的事项；其他异常会在后台自动复核。</p>
         </div>
+        <div id="recoveryIssuesSummary" class="recovery-issues-summary" aria-live="polite"></div>
         <button id="closeRecoveryIssuesBtn" class="recovery-issues-close" type="button" aria-label="关闭待处理问题" title="关闭">×</button>
       </header>
       <div id="recoveryIssuesStatus" class="recovery-issues-status" role="alert" hidden>
@@ -1447,6 +1486,10 @@ function getModals() {
           </div>
         </div>
         <aside class="recovery-issues-list-pane" aria-label="待处理问题列表">
+          <div class="recovery-issues-list-header">
+            <strong>需要你处理</strong>
+            <span id="recoveryIssuesListCount"></span>
+          </div>
           <div id="recoveryIssuesList" class="recovery-issues-list"></div>
         </aside>
         <main id="recoveryIssuesDetail" class="recovery-issues-detail" tabindex="-1"></main>
@@ -1672,10 +1715,12 @@ function getAppScript() {
     let migrationSelectedFile = null;
     let migrationImportBlocked = false;
     const modalStack = [];
+    const modalAnimationState = new Map();
     const modalBackgroundState = new Map();
     const archiveLibraryLayoutMedia = window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)');
     let modalScrollState = null;
     let pendingConfirmAction = null;
+    const MODAL_ENTER_FOCUS_DELAY_MS = 190;
 
     function safeText(value, fallback = '未知') {
       const text = String(value ?? '').trim();
@@ -1747,6 +1792,20 @@ function getAppScript() {
       }, 0);
     }
 
+    function focusModalControlWhenReady(modal, target) {
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const delay = reducedMotion ? 0 : MODAL_ENTER_FOCUS_DELAY_MS;
+      setTimeout(() => {
+        if (activeModal() !== modal) return;
+        const currentFocus = document.activeElement;
+        if (currentFocus instanceof HTMLElement && modal.contains(currentFocus)) return;
+        const focusTarget = target instanceof HTMLElement && target.isConnected
+          ? target
+          : focusableElements(modal)[0] || modal;
+        if (typeof focusTarget.focus === 'function') focusTarget.focus({ preventScroll:true });
+      }, delay);
+    }
+
     function syncModalScrollLock(locked) {
       const root = document.documentElement;
       const body = document.body;
@@ -1811,12 +1870,14 @@ function getAppScript() {
 
     function syncModalStack() {
       const top = modalStack[modalStack.length - 1] || null;
-      syncModalBackground(Boolean(top));
+      const hasClosingModal = modalAnimationState.size > 0;
+      syncModalBackground(Boolean(top || hasClosingModal));
       document.querySelectorAll('.modal').forEach((modal) => {
         const index = modalStack.findIndex((entry) => entry.modal === modal);
         if (index < 0) {
-          modal.style.removeProperty('z-index');
-          modal.inert = false;
+          const isClosing = modalAnimationState.has(modal);
+          if (!isClosing) modal.style.removeProperty('z-index');
+          modal.inert = isClosing;
           modal.setAttribute('aria-hidden', 'true');
           modal.setAttribute('aria-modal', 'false');
           return;
@@ -1881,18 +1942,41 @@ function getAppScript() {
         accountRemovalState = { userId:null, preview:null, operationId:null, pollTimer:null, trigger:null, controller:null, token:accountRemovalToken, loading:false };
       }
       const [entry] = modalStack.splice(index, 1);
-      modal.classList.remove('active');
+      const closingZIndex = modal.style.zIndex || String(100 + index * 20);
+      const motionReduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const closeDuration = motionReduced ? 0 : 170;
+      const closingState = { timer:null };
+      modalAnimationState.set(modal, closingState);
+      modal.classList.add('is-closing');
+      modal.style.zIndex = closingZIndex;
       modal.setAttribute('aria-hidden', 'true');
-      modal.inert = false;
-      modal.style.removeProperty('z-index');
+      modal.inert = true;
       syncModalStack();
-      if (options.restoreFocus !== false) restoreFocusAfterModal(entry);
+
+      const finishClose = () => {
+        if (modalAnimationState.get(modal) !== closingState) return;
+        modalAnimationState.delete(modal);
+        modal.classList.remove('active', 'is-closing');
+        modal.setAttribute('aria-hidden', 'true');
+        modal.inert = false;
+        modal.style.removeProperty('z-index');
+        syncModalStack();
+        if (options.restoreFocus !== false) restoreFocusAfterModal(entry);
+      };
+      closingState.timer = window.setTimeout(finishClose, closeDuration);
       return true;
     }
 
     function openModal(modalId, trigger) {
       const modal = document.getElementById(modalId);
       if (!modal) return false;
+      const closingState = modalAnimationState.get(modal);
+      if (closingState) {
+        window.clearTimeout(closingState.timer);
+        modalAnimationState.delete(modal);
+        modal.classList.remove('is-closing', 'active');
+        void modal.offsetWidth;
+      }
       const existingIndex = modalStack.findIndex((entry) => entry.modal === modal);
       if (existingIndex >= 0) return existingIndex === modalStack.length - 1;
       ensureModalAccessibleName(modal);
@@ -1902,11 +1986,7 @@ function getAppScript() {
       modal.setAttribute('role', 'dialog');
       if (!modal.hasAttribute('tabindex')) modal.tabIndex = -1;
       syncModalStack();
-      setTimeout(() => {
-        if (activeModal() !== modal) return;
-        const firstControl = focusableElements(modal)[0] || modal;
-        if (typeof firstControl.focus === 'function') firstControl.focus({ preventScroll:true });
-      }, 0);
+      focusModalControlWhenReady(modal, null);
       return true;
     }
 
@@ -1943,8 +2023,9 @@ function getAppScript() {
         okBtn.classList.toggle('danger-action', danger);
         okBtn.disabled = Boolean(requiredText);
         pendingConfirmAction = { resolve, requiredText };
+        const modal = document.getElementById('confirmActionModal');
         openModal('confirmActionModal', options.trigger);
-        setTimeout(() => (requiredText ? input : okBtn).focus({ preventScroll:true }), 0);
+        focusModalControlWhenReady(modal, requiredText ? input : okBtn);
       });
     }
 
@@ -6632,8 +6713,12 @@ function getAppScript() {
       const emptyTitle = document.getElementById('recoveryIssuesEmptyTitle');
       const emptyMessage = document.getElementById('recoveryIssuesEmptyMessage');
       const emptyRetry = document.getElementById('recoveryIssuesEmptyRetryBtn');
+      const summaryBadge = document.getElementById('recoveryIssuesSummary');
+      const listCount = document.getElementById('recoveryIssuesListCount');
       const hasItems = recoveryIssueState.items.length > 0;
       const hasError = Boolean(recoveryIssueState.error);
+      const actionCount = Number(recoveryIssueState.summary?.total || 0);
+      const confirmationCount = Number(recoveryIssueState.summary?.intentional || 0);
       if (shell) {
         shell.classList.toggle('is-empty', !hasItems);
         if (!hasItems) shell.classList.remove('show-detail');
@@ -6657,6 +6742,13 @@ function getAppScript() {
         emptyRetry.hidden = !hasError;
         emptyRetry.disabled = recoveryIssueRequestInFlight;
       }
+      if (summaryBadge) {
+        const summaryParts = [];
+        if (actionCount > 0) summaryParts.push('待处理 ' + actionCount);
+        if (confirmationCount > 0) summaryParts.push('待确认 ' + confirmationCount);
+        summaryBadge.textContent = summaryParts.join(' · ') || '自动复核中';
+      }
+      if (listCount) listCount.textContent = hasItems ? recoveryIssueState.items.length + ' 项' : '';
       if (!status || !message || !retry) return;
       status.hidden = !hasItems || !hasError;
       message.textContent = recoveryIssueState.error || '';
@@ -6676,6 +6768,42 @@ function getAppScript() {
       }
     }
 
+    function recoveryIssueStatusLabel(issue) {
+      if (issue?.disposition === 'intentional_confirmation') return '待确认';
+      if (issue?.severity === 'danger') return '需要处理';
+      if (issue?.severity === 'warning') return '建议处理';
+      return '待处理';
+    }
+
+    function recoveryIssueTypeLabel(issue) {
+      const labels = {
+        remote_size_limit:'远端单文件超过限制',
+        remote_size_conflict:'远端存在同名冲突',
+        partial_remote_state:'多分P状态不一致',
+        local_file_missing:'本地补传文件已丢失',
+        local_file_changed:'本地补传文件已变化',
+        remote_permission:'存储权限被拒绝',
+        remote_connection:'存储连接暂时不可用',
+        remote_unsupported:'存储不支持当前方法',
+        remote_unknown:'存储返回未知错误',
+        unknown_same_size:'远端证明还未确认',
+        legacy_conflict_interrupted:'旧冲突归档待复核',
+        conflict_candidate_ready:'新候选等待选择',
+        quality_failed:'画质重调已暂停',
+        storage_backend:'存储设置需要检查',
+        manual_review:'上传任务需要复核',
+      };
+      return labels[issue?.kind] || '任务需要复核';
+    }
+
+    function recoveryIssueTargetTitle(issue) {
+      return issue?.videoTitle || (issue?.bvid ? '视频 ' + issue.bvid : '') || issue?.fileName || '存储后端';
+    }
+
+    function recoveryIssueTargetMeta(issue) {
+      return [issue?.upperName, issue?.bvid].filter(Boolean).join(' · ') || (issue?.kind === 'storage_backend' ? 'AList / OpenList' : '系统级任务');
+    }
+
     function recoveryIssueMeta(issue) {
       return [issue.bvid, issue.folderTitle, issue.fileName].filter(Boolean).join(' · ') || '系统级问题';
     }
@@ -6693,18 +6821,30 @@ function getAppScript() {
         row.dataset.issueId = issue.id;
         row.classList.toggle('active', issue.id === recoveryIssueState.selectedId);
         row.setAttribute('aria-pressed', String(issue.id === recoveryIssueState.selectedId));
+        row.setAttribute('aria-label', [recoveryIssueStatusLabel(issue), recoveryIssueTargetTitle(issue), recoveryIssueTypeLabel(issue), recoveryIssueTargetMeta(issue)].join(' · '));
         const marker = document.createElement('span');
         marker.className = 'recovery-issue-marker';
         marker.setAttribute('aria-hidden', 'true');
         const text = document.createElement('span');
+        text.className = 'recovery-issue-row-copy';
+        const status = document.createElement('span');
+        status.className = 'recovery-issue-row-status';
+        status.textContent = recoveryIssueStatusLabel(issue);
         const title = document.createElement('span');
         title.className = 'recovery-issue-row-title';
-        title.textContent = issue.title || '待处理问题';
+        title.textContent = recoveryIssueTargetTitle(issue);
+        const problem = document.createElement('span');
+        problem.className = 'recovery-issue-row-problem';
+        problem.textContent = recoveryIssueTypeLabel(issue);
         const meta = document.createElement('span');
         meta.className = 'recovery-issue-row-meta';
-        meta.textContent = recoveryIssueMeta(issue);
-        text.append(title, meta);
-        row.append(marker, text);
+        meta.textContent = recoveryIssueTargetMeta(issue) + (issue.fileName ? ' · ' + issue.fileName : '');
+        text.append(status, title, problem, meta);
+        const arrow = document.createElement('span');
+        arrow.className = 'recovery-issue-row-arrow';
+        arrow.setAttribute('aria-hidden', 'true');
+        arrow.textContent = '›';
+        row.append(marker, text, arrow);
         row.addEventListener('click', () => {
           recoveryIssueState.selectedId = issue.id;
           renderRecoveryIssueCenter();
@@ -6799,17 +6939,44 @@ function getAppScript() {
         return;
       }
       const kicker = document.createElement('div');
-      kicker.className = 'recovery-detail-kicker';
-       kicker.textContent = issue.disposition === 'intentional_confirmation'
-         ? '等待你的选择'
-         : (issue.severity === 'danger' ? '需要确认' : (issue.severity === 'warning' ? '建议处理' : '系统持续复核中'));
+      kicker.className = 'recovery-detail-kicker ' + (issue.severity || 'info');
+      kicker.textContent = recoveryIssueStatusLabel(issue);
       const heading = document.createElement('h2');
       heading.className = 'recovery-detail-title';
-      heading.textContent = issue.title || '待处理问题';
+      heading.textContent = recoveryIssueTargetTitle(issue);
+      const problem = document.createElement('p');
+      problem.className = 'recovery-detail-problem';
+      problem.textContent = recoveryIssueTypeLabel(issue);
       const meta = document.createElement('div');
       meta.className = 'recovery-detail-meta';
       meta.textContent = recoveryIssueMeta(issue) + (issue.occurredAt ? ' · ' + formatDateTime(issue.occurredAt) : '');
-      host.append(kicker, heading, meta);
+      host.append(kicker, heading, problem, meta);
+
+      const targetCard = document.createElement('div');
+      targetCard.className = 'recovery-target-card';
+      const targetFields = [
+        ['来源收藏夹', issue.folderTitle || '系统级任务'],
+        ['UP主 / BV', recoveryIssueTargetMeta(issue)],
+        ['文件', issue.fileName || '未指定'],
+      ];
+      if (Number.isFinite(Number(issue.expectedSize)) || Number.isFinite(Number(issue.observedSize))) {
+        const expected = Number.isFinite(Number(issue.expectedSize)) ? formatBytes(Number(issue.expectedSize)) : '未知';
+        const observed = Number.isFinite(Number(issue.observedSize)) ? formatBytes(Number(issue.observedSize)) : '未知';
+        targetFields.push(['大小', expected + ' / 远端 ' + observed]);
+      }
+      targetFields.forEach(([label, value]) => {
+        const field = document.createElement('div');
+        field.className = 'recovery-target-field';
+        const fieldLabel = document.createElement('span');
+        fieldLabel.className = 'recovery-target-field-label';
+        fieldLabel.textContent = label;
+        const fieldValue = document.createElement('strong');
+        fieldValue.className = 'recovery-target-field-value';
+        fieldValue.textContent = String(value);
+        field.append(fieldLabel, fieldValue);
+        targetCard.appendChild(field);
+      });
+      host.appendChild(targetCard);
 
       const summary = document.createElement('p');
       summary.textContent = issue.summary || '任务已安全暂停。';
@@ -6823,8 +6990,6 @@ function getAppScript() {
         item.textContent = String(fact);
         protectedList.appendChild(item);
       });
-      appendRecoveryDetailSection(host, '系统保护了什么', protectedList);
-
       if (issue.recommendedAction) {
         const actions = document.createElement('div');
         const primary = document.createElement('button');
@@ -6849,11 +7014,13 @@ function getAppScript() {
           actions.appendChild(secondary);
         }
         const description = document.createElement('p');
-        description.className = 'muted status-line';
+        description.className = 'muted status-line recovery-action-note';
         description.textContent = issue.recommendedAction.description || '';
         actions.appendChild(description);
-        appendRecoveryDetailSection(host, '推荐处理', actions);
+        appendRecoveryDetailSection(host, '下一步', actions);
       }
+
+      appendRecoveryDetailSection(host, '系统保护了什么', protectedList);
 
       const technical = document.createElement('details');
       technical.className = 'recovery-technical';
@@ -6862,7 +7029,7 @@ function getAppScript() {
       const grid = document.createElement('div');
       grid.className = 'recovery-technical-grid';
       const technicalRows = [
-        ['问题类型', issue.kind || 'unknown'],
+        ['问题类型', recoveryIssueTypeLabel(issue)],
         ['最近复核', issue.checkedAt ? formatDateTime(issue.checkedAt) : '尚未复核'],
         ['下次自动复核', issue.nextAutomaticCheckAt ? formatDateTime(issue.nextAutomaticCheckAt) : '按需复核'],
         ['文件', issue.fileName || '未指定'],
