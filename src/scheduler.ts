@@ -3210,6 +3210,86 @@ export class SyncScheduler {
     return this.jobStore.listManualRecovery(["download"], 1_000);
   }
 
+  private legacyDownloadFailureIssueKey(userId: string, mediaId: number, bvid: string) {
+    return `${userId}:${mediaId}:${bvid}`;
+  }
+
+  private legacyDownloadFailureIssues() {
+    const jobsByBvid = new Set(
+      this.jobStore.listBvids(["download"]),
+    );
+    const legacyClassificationBvids = new Set(
+      this.jobStore.list(["access_probe"], 10_000)
+        .filter((job) => (job.payload as any)?.purpose === "legacy_failure_classification")
+        .map((job) => String(job.bvid || ""))
+        .filter(Boolean),
+    );
+    const seen = new Set<string>();
+    const issues: RecoveryIssue[] = [];
+    for (const record of this.stateManager.getDatabase().listPermanentFailureRecoveryRelations(1_000)) {
+      const relation = record.relation;
+      const bvid = String(relation.bvid || record.failure.bvid || "");
+      if (!bvid || jobsByBvid.has(bvid) || legacyClassificationBvids.has(bvid)) continue;
+      if (seen.has(this.legacyDownloadFailureIssueKey(relation.userId, relation.mediaId, bvid))) continue;
+      if (!relation.activeInFavorite || relation.accountDetachedAt) continue;
+      if (relation.favoriteUnavailable && !relation.selfVisible) continue;
+      if (["uploaded", "verified", "partial_verified", "uploading", "downloaded", "queued", "downloading"].includes(String(relation.backupStatus || ""))) continue;
+      if (this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(relation.userId, relation.mediaId, bvid)) continue;
+      const resolved = this.resolveRelation(relation);
+      if (!resolved) continue;
+
+      const failure = classifyDownloadRecoveryFailure({ message: record.failure.reason || "" });
+      const category: DownloadRecoveryCategory = failure.category === "source_unavailable" ? "unknown" : failure.category;
+      const alternateAccounts = this.userStore.list()
+        .filter((user) => user.id !== relation.userId && this.isUserSyncEligible(user))
+        .sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.id.localeCompare(right.id))
+        .map((user) => ({ value: user.id, label: `${user.name}（UID ${user.uid}）` }));
+      const kind = failure.kind || "download_retry_exhausted";
+      const actions = planRecoveryActions({
+        domain: "download",
+        kind,
+        jobKind: "download",
+        downloadCategory: category,
+        alternateAccounts,
+      });
+      const meta = this.stateManager.getVideoMeta(bvid);
+      const issueKey = this.legacyDownloadFailureIssueKey(relation.userId, relation.mediaId, bvid);
+      seen.add(issueKey);
+      issues.push({
+        id: `legacy-download.${issueKey}`,
+        kind,
+        severity: recoveryIssueSeverity(kind),
+        title: "旧版下载失败记录待处理",
+        summary: `这是旧版下载失败记录，系统不会自动重复下载。${sanitizeUploadText(record.failure.reason || "可手动重新尝试一次。", 220)}`,
+        protectedFacts: [
+          "当前收藏关系仍保留",
+          "不会删除或覆盖任何远端文件",
+          "只有点击重新下载后才会建立新的持久化任务",
+        ],
+        recommendedAction: actions[0],
+        availableActions: actions,
+        bvid,
+        videoTitle: meta?.title || undefined,
+        upperName: meta?.upperName || undefined,
+        userId: relation.userId,
+        mediaId: relation.mediaId,
+        folderTitle: relation.folderTitle,
+        occurredAt: Date.parse(record.failure.failedAt) || this.now(),
+        safeDiagnostic: JSON.stringify({
+          issue: "legacy_download_failure",
+          bvid,
+          userId: relation.userId,
+          mediaId: relation.mediaId,
+          category,
+          permanent: true,
+          failureAt: record.failure.failedAt,
+        }, null, 2),
+        disposition: "action_required",
+      });
+    }
+    return issues;
+  }
+
   private recoveryAssessment(payload: any): RecoveryAssessment | null {
     const value = payload?.recoveryAssessment;
     if (!value || typeof value !== "object") return null;
@@ -4116,6 +4196,7 @@ export class SyncScheduler {
     const issues: RecoveryIssue[] = [
       ...this.manualRecoveryJobs().map((job) => this.buildUploadRecoveryIssue(job)),
       ...this.manualDownloadRecoveryJobs().map((job) => this.buildDownloadRecoveryIssue(job)),
+      ...this.legacyDownloadFailureIssues(),
     ];
     const qualityJobs = new Map<string, any>();
     for (const job of this.jobStore.listFailed(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"], 1_000)) {
@@ -4519,6 +4600,117 @@ export class SyncScheduler {
     });
   }
 
+  private parseLegacyDownloadFailureKey(value: string) {
+    const parts = String(value || "").split(":");
+    if (parts.length < 3) return null;
+    const userId = String(parts.shift() || "");
+    const mediaId = Number(parts.shift());
+    const bvid = parts.join(":");
+    if (!userId || !Number.isInteger(mediaId) || mediaId <= 0 || !bvid) return null;
+    return { userId, mediaId, bvid };
+  }
+
+  private async resolveLegacyDownloadFailureIssue(
+    issueKey: string,
+    action: RecoveryIssueActionId,
+    options: { userId?: unknown },
+  ) {
+    if (!["retry_download", "retry_download_with_account", "defer_download"].includes(action)) {
+      return { ok: false as const, status: 400, message: "该下载待处理项不支持此操作" };
+    }
+    const lockKey = `legacy-download.${issueKey}`;
+    if (this.recoveryJobLocks.has(lockKey)) {
+      return { ok: false as const, status: 409, message: "该旧版下载记录正在被处理，请稍后刷新" };
+    }
+    this.recoveryJobLocks.add(lockKey);
+    try {
+      const target = this.parseLegacyDownloadFailureKey(issueKey);
+      if (!target) return { ok: false as const, status: 404, message: "旧版下载记录不存在或已自动解决" };
+      const database = this.stateManager.getDatabase();
+      const failure = database.getFailure(target.userId, target.bvid, target.mediaId);
+      const relation = this.stateManager.getRelationStatus(target.userId, target.mediaId, target.bvid);
+      if (!failure?.permanent || !relation?.activeInFavorite || relation.accountDetachedAt) {
+        return { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues };
+      }
+      if (relation.favoriteUnavailable && !relation.selfVisible) {
+        return { ok: false as const, status: 409, message: "当前视频仍被确认不可用，暂不能重新下载" };
+      }
+      if (["uploaded", "verified", "partial_verified", "uploading", "downloaded", "queued", "downloading"].includes(String(relation.backupStatus || ""))) {
+        return { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues };
+      }
+      if (database.isArchiveSourceDeletionBlocked(target.userId, target.mediaId, target.bvid)) {
+        return { ok: false as const, status: 409, message: "该收藏来源正在清理，请等待清理结束后再重试" };
+      }
+      const existingJob = this.jobStore.findByDedupeKey(`download:${target.bvid}`);
+      if (existingJob) {
+        return { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues };
+      }
+      const resolved = this.resolveRelation(relation);
+      if (!resolved) {
+        return { ok: false as const, status: 409, message: "原下载账号当前不可用，请先恢复账号或换一个可用账号" };
+      }
+
+      let selectedUserId = resolved.user.id;
+      if (action === "retry_download_with_account") {
+        const requestedUserId = String(options.userId || "");
+        const user = requestedUserId ? this.userStore.getById(requestedUserId) : null;
+        if (!this.isUserSyncEligible(user) || user.id === resolved.user.id) {
+          return { ok: false as const, status: 400, message: "请选择另一个当前可用的登录账号" };
+        }
+        try {
+          const snapshot = await this.videoAccessProbe(downloadCredentialsForUser(user), target.bvid);
+          if (!snapshot.available || snapshot.access.classification === "charging_restricted") {
+            return { ok: false as const, status: 409, message: "所选账号当前无法访问这个视频，请换一个账号或稍后再试" };
+          }
+        } catch (error: any) {
+          return {
+            ok: false as const,
+            status: 409,
+            message: `所选账号访问检查失败：${sanitizeUploadText(error?.message || error || "未知错误", 180)}`,
+          };
+        }
+        selectedUserId = user.id;
+      }
+
+      const deferred = action === "defer_download";
+      const notBefore = deferred ? this.now() + 24 * 60 * 60_000 : this.now();
+      let queued = false;
+      this.stateManager.runBatch(() => {
+        this.stateManager.resetRelationForRetry(
+          target.bvid,
+          target.userId,
+          target.mediaId,
+          deferred ? "用户已将旧版失败下载暂缓24小时。" : "用户已从待处理中心重新启动旧版失败下载。",
+          { clearFailure: true },
+        );
+        queued = this.enqueueIfNeeded(resolved.user, target.mediaId, resolved.folderTitle, target.bvid, {
+          persisted: true,
+          notBefore,
+          downloadUserId: selectedUserId,
+        });
+      });
+      if (!queued && !this.stateManager.getChargingRestriction(target.bvid)) {
+        return { ok: false as const, status: 409, message: "下载任务未能重新排队，请刷新待处理列表后重试" };
+      }
+      logManager.push({
+        timestamp: new Date(this.now()).toISOString(),
+        type: "download",
+        level: "info",
+        summary: deferred
+          ? `旧版下载失败已暂缓24小时 ${target.bvid}`
+          : `已从旧版失败记录重新启动下载 ${target.bvid}`,
+        raw: `[Recovery] legacy download action=${action} accountChanged=${selectedUserId !== resolved.user.id}`,
+        bvid: target.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      this.dispatchPersistentJobs();
+      return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
+    } finally {
+      this.recoveryJobLocks.delete(lockKey);
+    }
+  }
+
   private async resolveDownloadRecoveryIssue(
     jobId: string,
     action: RecoveryIssueActionId,
@@ -4706,6 +4898,9 @@ export class SyncScheduler {
     const scope = separator > 0 ? issueId.slice(0, separator) : "";
     const jobId = separator > 0 ? issueId.slice(separator + 1) : "";
     if (!jobId) return { ok: false as const, status: 404, message: "待处理项不存在或已自动解决" };
+    if (scope === "legacy-download") {
+      return this.resolveLegacyDownloadFailureIssue(jobId, action, options);
+    }
     if (scope === "download") {
       return this.resolveDownloadRecoveryIssue(jobId, action, options);
     }
@@ -6732,6 +6927,7 @@ export class SyncScheduler {
 
   private async resolveSelfVisibleItemForSync(
     user: BiliUser,
+    mediaId: number,
     item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]
   ) {
     if (!item.unavailable || !user.uid || Number(item.upperMid || 0) !== Number(user.uid)) {
@@ -6748,12 +6944,14 @@ export class SyncScheduler {
     if (cached && cached.expiresAt > Date.now()) {
       return cached.item;
     }
+    const previousRelation = this.stateManager.getRelationStatus(user.id, mediaId, item.bvid);
+    const wasSelfVisible = previousRelation?.selfVisible === true;
     const resolved = await resolveSelfVisibleFavoriteItem(user.cookie, user.uid, item);
     this.selfVisibleProbeCache.set(key, {
       expiresAt: Date.now() + 10 * 60_000,
       item: resolved,
     });
-    if (resolved.selfVisible) {
+    if (resolved.selfVisible && !wasSelfVisible) {
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
@@ -7012,7 +7210,7 @@ export class SyncScheduler {
       if (this.stateManager.getDatabase().isArchiveSourceDeletionActive(user.id, mediaId, rawItem.bvid)) {
         continue;
       }
-      const item = await this.resolveSelfVisibleItemForSync(user, rawItem);
+      const item = await this.resolveSelfVisibleItemForSync(user, mediaId, rawItem);
       seenBvids?.add(item.bvid);
       const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
       const result = this.stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {

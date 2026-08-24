@@ -2324,7 +2324,13 @@ export class StateManager {
     return [...relationItems, ...videoItems];
   }
 
-  resetRelationForRetry(bvid: string, userId: string, mediaId: number, reason: string) {
+  resetRelationForRetry(
+    bvid: string,
+    userId: string,
+    mediaId: number,
+    reason: string,
+    options: { clearFailure?: boolean } = {},
+  ) {
     const entry = this.state.videos?.[bvid];
     const relation = this.getRelation(userId, mediaId, bvid);
     const at = nowIso();
@@ -2342,6 +2348,9 @@ export class StateManager {
         this.setVideoStatus(entry, entry.biliStatus === "unavailable" ? "lost" : "discovered", at);
         entry.lastError = reason;
       }
+    }
+    if (options.clearFailure) {
+      this.clearFailedEntry(userId, mediaId, bvid);
     }
     this.save();
   }

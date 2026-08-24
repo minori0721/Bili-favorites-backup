@@ -753,6 +753,16 @@ export class PersistentJobStore {
     `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
   }
 
+  listBvids(kinds: PersistentJobKind[], limit = 100_000) {
+    if (kinds.length === 0) return [];
+    const placeholders = kinds.map(() => "?").join(",");
+    return (this.stateDatabase.db.prepare(`
+      SELECT DISTINCT bvid FROM jobs
+      WHERE kind IN (${placeholders}) AND bvid IS NOT NULL AND bvid != ''
+      LIMIT ?
+    `).all(...kinds, Math.max(1, Math.floor(limit))) as any[]).map((row) => String(row.bvid));
+  }
+
   listManualRecovery(kinds: PersistentJobKind[], limit = 1000) {
     if (kinds.length === 0) return [];
     const placeholders = kinds.map(() => "?").join(",");

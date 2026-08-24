@@ -150,3 +150,56 @@ test("manual download recovery can preflight an alternate account and preserve t
     await removeTestDir(runtime);
   }
 });
+
+test("legacy permanent download failures become manual recovery items without automatic requeue", async () => {
+  const runtime = await createTestDir("legacy-download-recovery");
+  const manager = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite") });
+  const now = new Date().toISOString();
+  manager.replaceStateSnapshot({
+    schemaVersion: 13,
+    processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
+    videos: {
+      BVLEGACY: {
+        bvid: "BVLEGACY", title: "Legacy self-visible video", upperName: "Owner", firstSeenAt: now, lastSeenAt: now,
+        biliStatus: "unavailable", backupStatus: "failed",
+      },
+    },
+    relations: {
+      "u1:7:BVLEGACY": {
+        userId: "u1", mediaId: 7, bvid: "BVLEGACY", folderTitle: "My favorites", firstSeenAt: now, lastSeenAt: now,
+        activeInFavorite: true, backupStatus: "failed", favoriteUnavailable: true, selfVisible: true,
+      },
+    },
+  } as any);
+  manager.markFailed("u1", "BVLEGACY", 7, "Arg_IndexOutOfRangeException from old BBDown", true);
+  const user = {
+    id: "u1", uid: 1, name: "Owner", cookie: { SESSDATA: "a", bili_jct: "a", DedeUserID: "1" },
+    favorites: [{ mediaId: 7, title: "My favorites" }], enabled: true, lastLoginAt: now,
+  };
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
+    manager,
+  ) as any;
+  scheduler.downloadQueue.setStartGate(() => false);
+  try {
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === "legacy-download.u1:7:BVLEGACY");
+    assert.ok(issue);
+    assert.equal(issue.kind, "download_retry_exhausted");
+    assert.ok(issue.summary.includes("旧版下载失败记录"));
+    assert.equal(scheduler.jobStore.findByDedupeKey("download:BVLEGACY"), null);
+
+    const retried = await scheduler.resolveRecoveryIssue(issue.id, "retry_download", {});
+    assert.equal(retried.ok, true);
+    assert.equal(manager.getDatabase().getFailure("u1", "BVLEGACY", 7), undefined);
+    assert.equal(manager.getRelationStatus("u1", 7, "BVLEGACY")?.backupStatus, "queued");
+    const job = scheduler.jobStore.findByDedupeKey("download:BVLEGACY");
+    assert.ok(job);
+    assert.equal((job!.payload as any).primaryUserId, "u1");
+    assert.equal(scheduler.getRecoveryIssues().some((item: any) => item.id === issue.id), false);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});

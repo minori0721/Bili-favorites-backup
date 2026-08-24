@@ -70,6 +70,12 @@ export interface VerifiedLocalCleanupPage {
   nextCursor: VerifiedLocalCleanupCursor | null;
 }
 
+export interface PermanentFailureRelationRecord {
+  userId: string;
+  failure: FailedEntry;
+  relation: FavoriteRelation;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
@@ -2303,6 +2309,35 @@ export class StateDatabase {
           SELECT payload_json FROM failures WHERE user_id=? AND bvid=? ORDER BY failed_at DESC LIMIT 1
         `).get(userId, bvid) as any;
     return row ? parseJson<FailedEntry>(row.payload_json, undefined as any) : undefined;
+  }
+
+  listPermanentFailureRecoveryRelations(limit = 1_000): PermanentFailureRelationRecord[] {
+    const rows = this.db.prepare(`
+      SELECT f.user_id, f.payload_json AS failure_json, r.payload_json AS relation_json
+      FROM failures f
+      JOIN favorite_relations r
+        ON r.user_id=f.user_id
+       AND r.bvid=f.bvid
+       AND (f.media_id=r.media_id OR f.media_id=0)
+      WHERE f.permanent=1
+        AND r.active_in_favorite=1
+      ORDER BY f.failed_at DESC, f.user_id ASC, f.media_id ASC, f.bvid ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.floor(limit))) as any[];
+    return rows.flatMap((row) => {
+      const failure = parseJson<FailedEntry>(row.failure_json, undefined as any);
+      const relation = parseJson<FavoriteRelation>(row.relation_json, undefined as any);
+      if (!failure?.bvid || !relation?.bvid || !relation.userId || !Number.isInteger(Number(relation.mediaId))) return [];
+      return [{
+        userId: String(row.user_id || relation.userId),
+        failure: {
+          ...failure,
+          bvid: String(failure.bvid),
+          mediaId: Number(failure.mediaId || 0),
+        },
+        relation,
+      }];
+    });
   }
 
   upsertFailure(userId: string, entry: FailedEntry) {
