@@ -200,6 +200,7 @@ export async function downloadWithBBDown(
   if (effectivePages.length === 0 && snapshot.available) {
     const metadataError: any = new Error("Unable to resolve the current video page list; retrying later");
     metadataError.deferToNextCycle = true;
+    metadataError.downloadFailureCategory = "transient";
     throw metadataError;
   }
   const effectiveApiMode: BBDownApiMode = options.apiModeOverride || config.bbdownApiMode || "web";
@@ -245,6 +246,8 @@ export async function downloadWithBBDown(
     }
     const unavailableError: any = new Error("Video is unavailable and no verified local pages can be recovered");
     unavailableError.permanent = true;
+    unavailableError.code = "BILI_VIDEO_UNAVAILABLE";
+    unavailableError.downloadFailureCategory = "source_unavailable";
     throw unavailableError;
   }
 
@@ -257,6 +260,8 @@ export async function downloadWithBBDown(
   if (needsAppToken && !appAccessToken) {
     const error: any = new Error("APP 接口需要 access token。请重新扫码登录后再启用该模式。");
     error.permanent = true;
+    error.code = "BBDOWN_APP_TOKEN_MISSING";
+    error.downloadFailureCategory = "account";
     throw error;
   }
 
@@ -410,6 +415,7 @@ export async function downloadWithBBDown(
       }
       const err = new Error(`BBDown did not complete all pages; remaining ${refreshed.missingPages.length}`);
       (err as any).deferToNextCycle = true;
+      (err as any).downloadFailureCategory = "transient";
       markDownloadSessionStatus(downloadDir, "failed", err.message);
       throw err;
     }
@@ -1045,6 +1051,7 @@ function runCommand(
         err.biliRiskControl = true;
         err.deferToNextCycle = true;
         err.apiMode = options.effectiveApiMode;
+        err.downloadFailureCategory = "transient";
         rejectOnce(err);
         return;
       }
@@ -1052,12 +1059,14 @@ function runCommand(
         const err: any = new Error("APP 播放接口未返回视频信息");
         err.appNoVideoInfo = true;
         err.apiMode = options.effectiveApiMode;
+        err.downloadFailureCategory = "transient";
         rejectOnce(err);
         return;
       }
       if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
         const err = new Error(`BBDown output filename too long: ${sanitizeDownloadDiagnosticText(combinedOutput || stderr || "unknown error").slice(0, 1000)}`);
         (err as any).filenameTooLong = true;
+        (err as any).downloadFailureCategory = "tool";
         rejectOnce(err);
         return;
       }
@@ -1068,6 +1077,8 @@ function runCommand(
           const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${finalLine}`), combinedOutput);
           (err as any).permanent = failure.permanent;
           (err as any).deferToNextCycle = failure.deferToNextCycle;
+          (err as any).downloadFailureCategory = failure.permanent ? "source_unavailable" : "transient";
+          if (failure.permanent) (err as any).code = "BILI_VIDEO_UNAVAILABLE";
           logManager.push({
             timestamp: new Date().toISOString(),
             type: "download",
@@ -1118,12 +1129,15 @@ function runCommand(
       if (nonZeroFailure?.permanent) {
         const err = attachAria2RecoveryIssue(new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`), combinedOutput);
         (err as any).permanent = true;
+        (err as any).code = "BILI_VIDEO_UNAVAILABLE";
+        (err as any).downloadFailureCategory = "source_unavailable";
         rejectOnce(err);
         return;
       }
       if (nonZeroFailure?.deferToNextCycle) {
         const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${nonZeroFailure.line}`), combinedOutput);
         (err as any).deferToNextCycle = true;
+        (err as any).downloadFailureCategory = "transient";
         rejectOnce(err);
         return;
       }

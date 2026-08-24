@@ -229,6 +229,29 @@ export class PersistentJobStore {
     return this.stateDatabase.db.transaction(() => this.replaceQualityDownloadJobsUnsafe(jobs, input))();
   }
 
+  restartFailedQualityAsDownload(id: string, input: EnqueuePersistentJob) {
+    if (input.kind !== "quality_download") throw new Error("restartFailedQualityAsDownload requires a quality_download replacement");
+    return this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(id) as any;
+      if (!row) return { ok: false as const, reason: "missing" as const };
+      const current = rowToJob(row);
+      if (!["quality_download", "quality_upload"].includes(current.kind)
+        || !["failed", "manual_wait"].includes(current.status)) {
+        return { ok: false as const, reason: "state_changed" as const };
+      }
+      const payload = current.payload as Record<string, any>;
+      if ((Array.isArray(payload.backupFiles) && payload.backupFiles.length > 0)
+        || (Array.isArray(payload.finalFiles) && payload.finalFiles.length > 0)) {
+        return { ok: false as const, reason: "replacement_started" as const };
+      }
+      const removed = this.stateDatabase.db.prepare(
+        "DELETE FROM jobs WHERE id=? AND kind IN ('quality_download','quality_upload') AND status IN ('failed','manual_wait')"
+      ).run(id).changes === 1;
+      if (!removed) return { ok: false as const, reason: "state_changed" as const };
+      return { ok: true as const, job: this.enqueue(input) };
+    })();
+  }
+
   countLegacyQualityDownloadJobs() {
     const row = this.stateDatabase.db.prepare(`
       SELECT COUNT(*) AS count FROM jobs
@@ -360,7 +383,7 @@ export class PersistentJobStore {
     const attempts = Number(row.attempts || 0) + 1;
     const exhausted = attempts >= Number(row.max_attempts || 1);
     if (exhausted) {
-      if (["upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup"].includes(String(row.kind))) {
+      if (["upload", "history_upload", "quality_download", "quality_upload", "quality_replace", "quality_cleanup"].includes(String(row.kind))) {
         let payloadPatch = "";
         if (["upload", "history_upload"].includes(String(row.kind))) {
           const payloadRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
@@ -392,6 +415,59 @@ export class PersistentJobStore {
         last_error=?, updated_at=? WHERE id=? AND lease_owner=?
     `).run(attempts, Math.max(now, Math.floor(notBefore)), error.slice(0, 1000), now, id, leaseOwner);
     return { updated: true, exhausted: false, attempts };
+  }
+
+  retryDownloadWithManualFallback(
+    id: string,
+    leaseOwner: string,
+    error: string,
+    notBefore: number,
+    payloadPatch: Record<string, unknown>,
+  ) {
+    return this.stateDatabase.db.transaction(() => {
+      const row = this.stateDatabase.db.prepare(
+        "SELECT kind, attempts, max_attempts, payload_json FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')"
+      ).get(id, leaseOwner) as any;
+      if (!row || String(row.kind) !== "download") return { updated: false, exhausted: false, attempts: 0 };
+      const attempts = Number(row.attempts || 0) + 1;
+      const exhausted = attempts >= Number(row.max_attempts || 1);
+      const now = Date.now();
+      let payload: Record<string, unknown> = {};
+      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { payload = {}; }
+      if (exhausted) {
+        const mergedPayload = {
+          ...payload,
+          ...payloadPatch,
+          awaitingManualRecovery: true,
+        };
+        const updated = this.stateDatabase.db.prepare(`
+          UPDATE jobs SET status='manual_wait', attempts=?, not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+            last_error=?, payload_json=?, updated_at=?
+          WHERE id=? AND lease_owner=? AND status IN ('leased','running')
+        `).run(
+          attempts,
+          Math.max(now, Math.floor(notBefore)),
+          error.slice(0, 1000),
+          JSON.stringify(mergedPayload),
+          now,
+          id,
+          leaseOwner,
+        ).changes === 1;
+        return { updated, exhausted: true, attempts };
+      }
+      const updated = this.stateDatabase.db.prepare(`
+        UPDATE jobs SET status='retry_wait', attempts=?, not_before=?, lease_owner=NULL, lease_expires_at=NULL,
+          last_error=?, updated_at=? WHERE id=? AND lease_owner=? AND status IN ('leased','running')
+      `).run(
+        attempts,
+        Math.max(now, Math.floor(notBefore)),
+        error.slice(0, 1000),
+        now,
+        id,
+        leaseOwner,
+      ).changes === 1;
+      return { updated, exhausted: false, attempts };
+    })();
   }
 
   normalizeTerminalUploadRecovery() {

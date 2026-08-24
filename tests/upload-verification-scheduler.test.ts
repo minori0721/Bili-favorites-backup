@@ -68,8 +68,13 @@ test("manual recovery uploads keep scheduler maintenance locked", async () => {
 
 async function createStructuredRecoveryFixture(
   name: string,
-  remoteResult: { status: "verified" | "missing" | "mismatch"; remoteSize?: number; parentStatus?: "visible" | "missing" | "unknown" },
-  options: { local?: "available" | "missing" | "changed"; automaticRecoveryAttempts?: number; attempts?: number } = {},
+  remoteResult: {
+    status: "verified" | "missing" | "mismatch" | "unknown";
+    remoteSize?: number;
+    parentStatus?: "visible" | "missing" | "unknown";
+    failure?: { category: "transient" | "permission" | "unsupported" | "not_found" | "conflict" | "unknown"; status?: number };
+  },
+  options: { local?: "available" | "missing" | "changed"; automaticRecoveryAttempts?: number; attempts?: number; now?: () => number } = {},
 ) {
   const runtime = await createTestDir(name);
   const localDir = path.join(runtime, "temp", "BVVERIFY");
@@ -91,7 +96,7 @@ async function createStructuredRecoveryFixture(
     { get: () => testConfig() } as any,
     { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
     manager,
-    { remoteFileInspector: async () => remoteResult, legacyTempDir: path.join(runtime, "temp") },
+    { remoteFileInspector: async () => remoteResult, legacyTempDir: path.join(runtime, "temp"), now: options.now },
   ) as any;
   scheduler.downloadQueue.setStartGate(() => false);
   scheduler.uploadQueue.setStartGate(() => false);
@@ -169,10 +174,44 @@ test("same-size recovery without a PUT proof remains manual and never writes new
     assert.equal(scheduler.jobStore.findById(job.id)?.status, "manual_wait");
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
     assert.equal(issue?.kind, "unknown_same_size");
-    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["recheck"]);
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["create_candidate", "recheck"]);
     const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
     assert.notEqual(relation?.backupStatus, "verified");
     assert.equal(relation?.remoteFiles?.[0]?.mediaMetadata, undefined);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("remote invisibility becomes actionable only after three persisted observations over 30 minutes", async () => {
+  const start = Date.parse("2026-08-24T00:00:00.000Z");
+  let clock = start;
+  const fixture = await createStructuredRecoveryFixture(
+    "recovery-visibility-stalled",
+    { status: "missing", parentStatus: "visible" },
+    { now: () => clock },
+  );
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    let assessment = (scheduler.jobStore.findById(job.id)?.payload as any).recoveryAssessment;
+    assert.equal(assessment.kind, "remote_visibility_timeout");
+    assert.equal(assessment.consecutiveObservations, 1);
+
+    clock = start + 6 * 60_000;
+    await scheduler.runRecoveryAutomationNow();
+    assessment = (scheduler.jobStore.findById(job.id)?.payload as any).recoveryAssessment;
+    assert.equal(assessment.kind, "remote_visibility_timeout");
+    assert.equal(assessment.consecutiveObservations, 2);
+
+    clock = start + 31 * 60_000;
+    await scheduler.runRecoveryAutomationNow();
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "remote_visibility_stalled");
+    assert.equal(issue?.recommendedAction?.id, "create_candidate");
+    assert.match(issue?.summary || "", /连续 3 次/);
   } finally {
     scheduler.stop();
     manager.close();
@@ -254,7 +293,8 @@ test("one missing target with a visible parent remains a background visibility c
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
     assert.ok(issue, JSON.stringify({ job: scheduler.jobStore.findById(job.id), issues: scheduler.getRecoveryIssues() }));
     assert.equal(issue?.kind, "remote_visibility_timeout");
-    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["recheck", "reupload"]);
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["recheck"]);
+    assert.equal(issue?.disposition, "background");
   } finally {
     scheduler.stop();
     manager.close();
@@ -396,11 +436,111 @@ test("recovery automation exposes remote size conflicts and never queues replace
     assert.equal(issue?.severity, "danger");
     assert.equal(issue?.expectedSize, 12);
     assert.equal(issue?.observedSize, 99);
+    assert.equal(issue?.recommendedAction?.id, "create_candidate");
+    assert.equal((scheduler.jobStore.findById(job.id)?.payload as any).recoveryAssessment.candidateEligible, true);
     assert.equal(issue?.safeDiagnostic.includes("/target"), false);
   } finally {
     scheduler.stop();
     manager.close();
     await removeTestDir(runtime);
+  }
+});
+
+test("a size conflict can start one full-group isolated candidate without touching the official path", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-create-candidate", { status: "mismatch", remoteSize: 99 });
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    await scheduler.runRecoveryAutomationNow();
+    const result = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "create_candidate");
+    assert.equal(result.ok, true);
+    const updated = scheduler.jobStore.findById(job.id)!;
+    assert.equal((updated.payload as any).conflictCandidateOnly, true);
+    assert.equal((updated.payload as any).awaitingManualRecovery, false);
+    assert.match(String((updated.payload as any).conflictCandidateRemotePath), /\/_conflicts\/upload-/);
+    assert.equal((updated.payload as any).remotePath, "/target");
+    assert.deepEqual((updated.payload as any).files, ["video.mp4"]);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("multipart mixed remote state creates one candidate containing every part", async () => {
+  const fixture = await createStructuredRecoveryFixture("recovery-multipart-candidate", { status: "missing", parentStatus: "visible" });
+  const { runtime, localDir, manager, scheduler, session, job } = fixture;
+  try {
+    await fs.promises.writeFile(path.join(localDir, "video-p2.mp4"), Buffer.alloc(7, 2));
+    scheduler.transferSessions.ensureFile(session.id, {
+      relativePath: "video-p2.mp4",
+      name: "video-p2.mp4",
+      expectedSize: 7,
+    }, session.generation);
+    scheduler.transferSessions.updateFile(session.id, "video-p2.mp4", {
+      status: "awaiting_remote",
+      putAcceptedAt: Date.now() - 11 * 60_000,
+    }, session.generation);
+    scheduler.jobStore.updatePayload(job.id, {
+      ...job.payload,
+      files: ["video.mp4", "video-p2.mp4"],
+      filenameMetadataByPath: {
+        ...(job.payload as any).filenameMetadataByPath,
+        "video-p2.mp4": { cid: 101, pageIndex: 2 },
+      },
+    });
+    scheduler.remoteFileInspector = async (_config: unknown, remotePath: string) => remotePath.endsWith("video.mp4")
+      ? { status: "verified", remoteSize: 12 }
+      : { status: "missing", parentStatus: "visible" };
+
+    await scheduler.runRecoveryAutomationNow();
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, "partial_remote_state");
+    assert.equal(issue?.recommendedAction?.id, "create_candidate");
+    const result = await scheduler.resolveRecoveryIssue(`upload.${job.id}`, "create_candidate");
+    assert.equal(result.ok, true);
+    const updated = scheduler.jobStore.findById(job.id)!;
+    assert.equal((updated.payload as any).conflictCandidateOnly, true);
+    assert.deepEqual((updated.payload as any).files, ["video.mp4", "video-p2.mp4"]);
+    assert.equal((updated.payload as any).remotePath, "/target");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("unknown WebDAV failures offer candidates only when the failure is path-specific and writable-looking", async () => {
+  const supportedFallback = await createStructuredRecoveryFixture("recovery-unsupported-candidate", {
+    status: "unknown",
+    parentStatus: "visible",
+    failure: { category: "unsupported", status: 405 },
+  });
+  try {
+    await supportedFallback.scheduler.runRecoveryAutomationNow();
+    const issue = supportedFallback.scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${supportedFallback.job.id}`);
+    assert.equal(issue?.kind, "remote_unsupported");
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["create_candidate", "recheck", "open_settings"]);
+  } finally {
+    supportedFallback.scheduler.stop();
+    supportedFallback.manager.close();
+    await removeTestDir(supportedFallback.runtime);
+  }
+
+  const permissionFailure = await createStructuredRecoveryFixture("recovery-permission-no-candidate", {
+    status: "unknown",
+    parentStatus: "visible",
+    failure: { category: "permission", status: 403 },
+  });
+  try {
+    await permissionFailure.scheduler.runRecoveryAutomationNow();
+    const issue = permissionFailure.scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${permissionFailure.job.id}`);
+    assert.equal(issue?.kind, "remote_permission");
+    assert.equal((permissionFailure.scheduler.jobStore.findById(permissionFailure.job.id)?.payload as any).recoveryAssessment.candidateEligible, false);
+    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["open_settings", "recheck"]);
+  } finally {
+    permissionFailure.scheduler.stop();
+    permissionFailure.manager.close();
+    await removeTestDir(permissionFailure.runtime);
   }
 });
 
@@ -829,7 +969,10 @@ test("a successful confirmation promotes uploaded to verified without another PU
   }
 });
 
-async function createConflictCandidateFixture(name: string) {
+async function createConflictCandidateFixture(
+  name: string,
+  options: { existingStatus?: "verified" | "partial_verified"; partialCandidate?: boolean } = {},
+) {
   const runtime = await createTestDir(name);
   const localDir = path.join(runtime, "temp", "BVVERIFY");
   await fs.promises.mkdir(localDir, { recursive: true });
@@ -837,7 +980,7 @@ async function createConflictCandidateFixture(name: string) {
   const observedAt = "2026-08-17T12:00:00.000Z";
   const oldProof = {
     remotePath: "/target",
-    status: "verified" as const,
+    status: options.existingStatus || "verified",
     uploadedAt: observedAt,
     verifiedAt: observedAt,
     files: [{
@@ -859,14 +1002,14 @@ async function createConflictCandidateFixture(name: string) {
   }];
   const snapshot = verificationState(localDir);
   Object.assign(snapshot.videos.BVVERIFY, {
-    backupStatus: "verified",
+    backupStatus: oldProof.status,
     remotePath: oldProof.remotePath,
     remoteFiles: oldProof.files,
     uploadedAt: oldProof.uploadedAt,
     verifiedAt: oldProof.verifiedAt,
   });
   Object.assign(snapshot.relations["u1:1:BVVERIFY"], {
-    backupStatus: "verified",
+    backupStatus: oldProof.status,
     remotePath: oldProof.remotePath,
     remoteFiles: oldProof.files,
     uploadedAt: oldProof.uploadedAt,
@@ -913,6 +1056,7 @@ async function createConflictCandidateFixture(name: string) {
   }) as any;
   task.userId = "u1";
   task.mediaId = 1;
+  task.partialBackup = Boolean(options.partialCandidate);
   task.persistentJobId = job.id;
   task.persistentJob = scheduler.jobStore.findById(job.id);
   task.result = {
@@ -939,6 +1083,10 @@ test("conflict candidate selection preserves the old archive proof in the audit 
   try {
     const parked = scheduler.jobStore.findById(job.id);
     assert.equal(parked?.status, "manual_wait");
+    const retained = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(retained?.backupStatus, "verified");
+    assert.equal(retained?.remotePath, "/target");
+    assert.equal(retained?.remoteFiles?.[0]?.mediaMetadata?.width, 640);
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${job.id}`);
     assert.equal(issue?.kind, "conflict_candidate_ready");
     assert.deepEqual(issue?.availableActions.map((action: any) => action.id), ["keep_existing", "use_candidate", "recheck"]);
@@ -954,6 +1102,98 @@ test("conflict candidate selection preserves the old archive proof in the audit 
     assert.equal(audit?.resolution, "selected_candidate");
     assert.equal(audit?.existingArchiveProof?.remotePath, "/target");
     assert.equal(audit?.existingArchiveProof?.files[0]?.mediaMetadata?.width, 640);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("conflict candidate uploads do not replace the official archive with an uploading state", async () => {
+  const task = new UploadTask("BVCANDIDATE", "C:/isolated", "/target", testConfig(), {
+    cleanupLocal: false,
+    files: ["video.mp4"],
+    conflictCandidateOnly: true,
+    conflictCandidateId: "upload-candidate",
+    conflictCandidateRemotePath: "/target/_conflicts/upload-candidate",
+  }) as any;
+  let ordinaryUploadTransitions = 0;
+  let candidateTransitions = 0;
+  task.onUploading = () => { ordinaryUploadTransitions += 1; };
+  task.onConflictCandidateUploading = () => { candidateTransitions += 1; };
+  task.uploadConflictCandidate = async () => ({
+    remotePath: "/target/_conflicts/upload-candidate",
+    files: [{ name: "video.mp4", path: "/target/_conflicts/upload-candidate/video.mp4", size: 12 }],
+    allVerified: true,
+    disposition: "conflict_candidate",
+  });
+
+  await task.run();
+
+  assert.equal(task.conflictCandidateAttempted, true);
+  assert.equal(ordinaryUploadTransitions, 0);
+  assert.equal(candidateTransitions, 1);
+});
+
+test("a failed candidate attempt preserves a complete existing archive proof", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-failure-proof");
+  const { runtime, manager, scheduler, oldProof } = fixture;
+  try {
+    const task = new UploadTask("BVVERIFY", fixture.localDir, "/target", testConfig(), {
+      cleanupLocal: false,
+      files: ["video.mp4"],
+      existingArchiveProof: oldProof,
+      conflictCandidateOnly: true,
+    });
+    task.userId = "u1";
+    task.mediaId = 1;
+    task.conflictCandidateAttempted = true;
+    manager.markUploading("BVVERIFY", "u1", 1);
+
+    scheduler.markUploadTaskFailed(task, "candidate upload failed");
+
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(relation?.backupStatus, "verified");
+    assert.equal(relation?.remotePath, "/target");
+    assert.equal(relation?.remoteFiles?.[0]?.size, 10);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a verified candidate automatically replaces an incomplete existing source", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-auto-select", {
+    existingStatus: "partial_verified",
+  });
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(relation?.backupStatus, "verified");
+    assert.equal(relation?.remotePath, "/target/_conflicts/upload-candidate");
+    assert.equal(relation?.remoteConflictCandidates?.[0]?.resolution, "selected_candidate");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a partial candidate automatically keeps a complete existing source", async () => {
+  const fixture = await createConflictCandidateFixture("upload-candidate-auto-keep", {
+    partialCandidate: true,
+  });
+  const { runtime, manager, scheduler, job } = fixture;
+  try {
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    const relation = manager.getRelationStatus("u1", 1, "BVVERIFY");
+    assert.equal(relation?.backupStatus, "verified");
+    assert.equal(relation?.remotePath, "/target");
+    assert.equal(relation?.remoteConflictCandidates?.[0]?.resolution, "kept_existing");
     await new Promise((resolve) => setTimeout(resolve, 50));
   } finally {
     scheduler.stop();

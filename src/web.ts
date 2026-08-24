@@ -307,6 +307,10 @@ function getAppStyles() {
     .settings-group { grid-column:1/-1; padding-top:14px; border-top:1px solid rgba(214,240,237,0.78); margin-top:8px; }
     .settings-group-title { font-weight:700; color:var(--ink); margin-bottom:12px; }
     .field-full { grid-column:1/-1; }
+    .storage-check-row { display:grid; grid-template-columns:max-content minmax(0,1fr); align-items:center; gap:4px 12px; }
+    .storage-check-row .field-hint { margin:0; }
+    .storage-check-status { grid-column:1/-1; min-height:1.4em; }
+    #recoveryChoiceSelect { width:100%; }
     label { display:block; font-weight:500; margin:0 0 8px; color:var(--ink); font-size:14px; }
     .field-hint { margin:6px 0 0; font-size:12px; }
     .row .field-hint { width:100%; margin-bottom:0; }
@@ -868,6 +872,8 @@ function getAppStyles() {
       main { padding:18px 12px 28px; gap:16px; }
       .card { padding:18px; border-radius:18px; }
       .settings-grid { grid-template-columns:1fr; gap:13px; }
+      .storage-check-row { grid-template-columns:1fr; }
+      .storage-check-row button { width:100%; }
       .row { gap:8px; }
       .account-actions,.settings-actions,.modal-actions,.preview-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
       .account-actions button,.settings-actions button,.modal-actions button,.preview-actions button { min-height:40px; }
@@ -1020,6 +1026,11 @@ function getSettingsSection() {
         <div><label for="alistUsername">远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
         <div><label for="alistPassword">远端密码（WebDAV 密码）</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
         <div class="field-full"><label for="alistDest">目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" aria-describedby="alistDestHint" /><p class="muted field-hint" id="alistDestHint">已有归档时请使用“迁移归档路径”，系统会先探测 COPY/MOVE 能力、复制并确认新目录，旧目录不会自动删除。</p></div>
+        <div class="field-full storage-check-row">
+          <button id="storageCheckBtn" class="ghost" type="button" aria-describedby="storageCheckHint storageCheckStatus">只读检查存储连接</button>
+          <p class="muted field-hint" id="storageCheckHint">只检查 WebDAV 地址、认证和归档目录读取；不会上传、创建、移动或删除文件，也不代表写入能力已验证。</p>
+          <div id="storageCheckStatus" class="status-line storage-check-status" role="status" aria-live="polite"></div>
+        </div>
         <div class="field-full"><label for="uploadLayout">上传目录结构</label>
           <select id="uploadLayout" aria-describedby="uploadLayoutHint">
             <option value="user-folder-video">用户名 / 收藏夹名 / 视频</option>
@@ -1553,6 +1564,20 @@ function getModals() {
     </div>
   </div>
 
+  <div class="modal" id="recoveryChoiceModal" aria-labelledby="recoveryChoiceTitle">
+    <div class="panel panel-narrow">
+      <h2 id="recoveryChoiceTitle">选择恢复方式</h2>
+      <p id="recoveryChoiceCopy" class="muted"></p>
+      <label id="recoveryChoiceLabel" for="recoveryChoiceSelect">可用选项</label>
+      <select id="recoveryChoiceSelect"></select>
+      <div id="recoveryChoiceStatus" class="status-line" role="alert" aria-live="polite"></div>
+      <div class="row modal-actions split-actions">
+        <button id="recoveryChoiceSubmitBtn" type="button">继续</button>
+        <button id="recoveryChoiceCancelBtn" class="ghost" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="accountRemovalModal" aria-labelledby="accountRemovalTitle">
     <div class="panel panel-narrow">
       <h2 id="accountRemovalTitle">删除账号</h2>
@@ -1767,6 +1792,7 @@ function getAppScript() {
     let pendingConfirmAction = null;
     let bbdownEncodingPriorityState = ['HEVC', 'AVC', 'AV1'];
     let encodingRetryDialogState = null;
+    let recoveryChoiceDialogState = null;
     const MODAL_ENTER_FOCUS_DELAY_MS = 190;
 
     function safeText(value, fallback = '未知') {
@@ -1949,6 +1975,11 @@ function getAppScript() {
       if (modal.id === 'encodingRetryModal' && encodingRetryDialogState) {
         const pending = encodingRetryDialogState;
         encodingRetryDialogState = null;
+        pending.resolve(null);
+      }
+      if (modal.id === 'recoveryChoiceModal' && recoveryChoiceDialogState) {
+        const pending = recoveryChoiceDialogState;
+        recoveryChoiceDialogState = null;
         pending.resolve(null);
       }
       if (modal.id === 'loginModal') {
@@ -2222,6 +2253,38 @@ function getAppScript() {
       document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>-<bvid>';
       document.getElementById('renameScanMaxFiles').value = d.renameScanMaxFiles ?? 10000;
       updateTemplatePreview();
+    }
+
+    async function checkStorageConnection() {
+      const button = document.getElementById('storageCheckBtn');
+      const status = document.getElementById('storageCheckStatus');
+      const original = button.textContent;
+      button.disabled = true;
+      button.textContent = '检查中...';
+      setStatus(status, '正在执行只读 WebDAV 检查，不会写入远端。');
+      try {
+        const result = await fetchJson('/api/storage/check', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            alistUrl:document.getElementById('alistUrl').value.trim(),
+            alistUsername:document.getElementById('alistUsername').value.trim(),
+            alistPassword:document.getElementById('alistPassword').value.trim(),
+            alistDest:document.getElementById('alistDest').value.trim(),
+          }),
+        });
+        setStatus(status, result.title + '：' + result.message, result.ok ? 'success' : 'error');
+        if (!result.ok && result.field) {
+          const field = document.getElementById(result.field);
+          field?.scrollIntoView({ behavior:'smooth', block:'center' });
+          setTimeout(() => field?.focus({ preventScroll:true }), 260);
+        }
+      } catch (error) {
+        setStatus(status, error?.message || '只读存储检查失败。', 'error');
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
     }
 
     async function saveConfig() {
@@ -3951,6 +4014,8 @@ function getAppScript() {
         return '可播放';
       }
       const labels = {
+        remote_visibility_timeout:'等待远端文件可见',
+        remote_visibility_stalled:'远端文件长时间不可见',
         discovered:'待备份', queued:'已排队', downloading:'下载中', downloaded:'待上传', uploading:'上传中',
         uploaded:'远端确认中', upload_failed:'待补传', charging_restricted:'充电限制', missing:'远端缺失',
         lost:'已失效', failed:'失败', verified:'无兼容媒体', partial_verified:'无兼容媒体'
@@ -6942,6 +7007,9 @@ function getAppScript() {
         legacy_conflict_interrupted:'旧冲突归档待复核',
         conflict_candidate_ready:'新候选等待选择',
         encoding_retry_failed:'编码替换未完成',
+        download_retry_exhausted:'下载重试次数已用完',
+        download_account_required:'下载账号需要更换',
+        download_tool_failure:'本地下载工具异常',
         quality_failed:'画质重调已暂停',
         storage_backend:'存储设置需要检查',
         manual_review:'上传任务需要复核',
@@ -7031,13 +7099,19 @@ function getAppScript() {
       pending.resolve(result);
     }
 
-    function openEncodingRetryDialog(issue, trigger) {
+    function openEncodingRetryDialog(issue, trigger, mode = 'upload') {
       if (encodingRetryDialogState) return Promise.resolve(null);
       return new Promise((resolve) => {
         const priority = ['AV1', 'HEVC', 'AVC'];
-        encodingRetryDialogState = { resolve, issue, trigger, priority, strict:true };
+        encodingRetryDialogState = { resolve, issue, trigger, priority, strict:true, mode };
+        const title = document.getElementById('encodingRetryTitle');
         const copy = document.getElementById('encodingRetryCopy');
-        if (copy) copy.textContent = '本次默认优先 AV1，以尽量避开单文件大小限制。原文件会保留到新文件完成远端确认。';
+        const submit = document.getElementById('encodingRetrySubmitBtn');
+        if (title) title.textContent = mode === 'quality' ? '换编码重调画质' : '换编码重新下载';
+        if (copy) copy.textContent = mode === 'quality'
+          ? '目标画质保持不变，新编码会使用独立版本重新下载。现有归档不会进入覆盖或删除流程。'
+          : '本次默认优先 AV1，以尽量避开单文件大小限制。原文件会保留到新文件完成远端确认。';
+        if (submit) submit.textContent = mode === 'quality' ? '开始新版本重调' : '开始替换下载';
         const status = document.getElementById('encodingRetryStatus');
         if (status) status.textContent = '';
         const strict = document.getElementById('encodingRetryStrict');
@@ -7052,23 +7126,79 @@ function getAppScript() {
       });
     }
 
+    function finishRecoveryChoiceDialog(value) {
+      const pending = recoveryChoiceDialogState;
+      if (!pending) return;
+      recoveryChoiceDialogState = null;
+      closeModal('recoveryChoiceModal', { restoreFocus:true });
+      pending.resolve(value);
+    }
+
+    function openRecoveryChoiceDialog(action, trigger) {
+      if (recoveryChoiceDialogState) return Promise.resolve(null);
+      const choices = Array.isArray(action?.choices) ? action.choices.filter((choice) => choice?.value) : [];
+      if (choices.length === 0) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        recoveryChoiceDialogState = { resolve, action, trigger };
+        document.getElementById('recoveryChoiceTitle').textContent = action.label || '选择恢复方式';
+        document.getElementById('recoveryChoiceCopy').textContent = action.description || '';
+        const select = document.getElementById('recoveryChoiceSelect');
+        select.innerHTML = '';
+        choices.forEach((choice) => {
+          const option = document.createElement('option');
+          option.value = String(choice.value);
+          option.textContent = String(choice.label || choice.value);
+          select.appendChild(option);
+        });
+        document.getElementById('recoveryChoiceStatus').textContent = '';
+        openModal('recoveryChoiceModal', trigger);
+      });
+    }
+
     async function runRecoveryIssueAction(issue, action, trigger) {
       if (!issue || !action) return;
       if (action.id === 'open_settings') {
         closeModal('recoveryIssuesModal');
-        const field = document.getElementById('alistUrl');
-        field?.scrollIntoView({ behavior:'smooth', block:'center' });
-        setTimeout(() => field?.focus({ preventScroll:true }), 260);
+        const checkButton = document.getElementById('storageCheckBtn');
+        checkButton?.scrollIntoView({ behavior:'smooth', block:'center' });
+        setTimeout(() => checkButton?.focus({ preventScroll:true }), 260);
         return;
       }
       let actionBody = undefined;
-      if (action.id === 'redownload_with_encoding') {
-        const selected = await openEncodingRetryDialog(issue, trigger);
+      if (action.id === 'redownload_with_encoding' || action.id === 'retry_quality_with_encoding') {
+        const selected = await openEncodingRetryDialog(issue, trigger, action.id === 'retry_quality_with_encoding' ? 'quality' : 'upload');
         if (!selected) return;
         actionBody = {
           encodingPriority: selected.priority,
           strict: selected.strict,
         };
+      }
+      if (action.id === 'retry_download_with_account') {
+        const userId = await openRecoveryChoiceDialog(action, trigger);
+        if (!userId) return;
+        actionBody = { userId };
+      }
+      if (action.id === 'create_candidate') {
+        const confirmed = await confirmAction({
+          title:'生成隔离候选',
+          message:'系统会把当前完整文件组上传到独立候选目录。',
+          detail:'正式旧路径不会覆盖、移动或删除；该操作会占用额外远端空间和上传流量，完整验证后再让你选择保留哪一份。',
+          confirmText:'生成候选',
+          danger:false,
+          trigger,
+        });
+        if (!confirmed) return;
+      }
+      if (action.id === 'retry_download') {
+        const confirmed = await confirmAction({
+          title:'重新下载一次',
+          message:'重置这个任务的失败次数并重新进入下载队列。',
+          detail:'已有本地进度、收藏来源和远端目标保持不变；不会删除任何归档。',
+          confirmText:'重新下载',
+          danger:false,
+          trigger,
+        });
+        if (!confirmed) return;
       }
       if (action.id === 'reupload' || action.id === 'redownload') {
         const reupload = action.id === 'reupload';
@@ -8189,6 +8319,16 @@ function getAppScript() {
       finishEncodingRetryDialog({ priority, strict: document.getElementById('encodingRetryStrict').checked });
     });
     document.getElementById('encodingRetryCancelBtn').addEventListener('click', () => finishEncodingRetryDialog(null));
+    document.getElementById('recoveryChoiceSubmitBtn').addEventListener('click', () => {
+      if (!recoveryChoiceDialogState) return;
+      const value = document.getElementById('recoveryChoiceSelect').value;
+      if (!value) {
+        document.getElementById('recoveryChoiceStatus').textContent = '请选择一个可用选项。';
+        return;
+      }
+      finishRecoveryChoiceDialog(value);
+    });
+    document.getElementById('recoveryChoiceCancelBtn').addEventListener('click', () => finishRecoveryChoiceDialog(null));
     document.getElementById('videoGrid').addEventListener('scroll', () => {
       const grid = document.getElementById('videoGrid');
       if (grid.scrollHeight - grid.scrollTop - grid.clientHeight < 120) {
@@ -8523,6 +8663,7 @@ function getAppScript() {
       window.location.href = '/login';
     });
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+    document.getElementById('storageCheckBtn').addEventListener('click', checkStorageConnection);
     document.getElementById('bbdownHiRes').addEventListener('change', requireAppModeForPremiumAudio);
     document.getElementById('bbdownDolby').addEventListener('change', requireAppModeForPremiumAudio);
     document.getElementById('bbdownApiModeControl').addEventListener('change', (event) => {

@@ -3,7 +3,7 @@ import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, resumeUploadSession, verifyRemoteFiles } from "./uploader.js";
 import type { ExistingArchiveProof, UploadIntent } from "./upload-preflight.js";
-import { AppConfig, type BBDownApiMode, type BBDownEncoding } from "./config.js";
+import { applyBBDownEncodingPreference, AppConfig, type BBDownApiMode, type BBDownEncoding } from "./config.js";
 import { BiliCookie } from "./users.js";
 import type { RemoteFileRecord, UploadFileMetadata } from "./state.js";
 import { tempDir } from "./paths.js";
@@ -43,6 +43,12 @@ export interface EncodingRetryContext {
   target?: UploadTarget;
   state?: "running" | "uploading" | "verifying" | "failed" | "completed";
   lastError?: string;
+}
+
+export interface QualityEncodingOverride {
+  generation: number;
+  priority: BBDownEncoding[];
+  strict: boolean;
 }
 
 export class DownloadTask extends Task {
@@ -133,6 +139,7 @@ export class QualityUpgradeTask extends Task {
   targets: QualityUpgradeTarget[];
   artifactKey: string;
   qualityProfile: QualityArtifactProfile;
+  qualityEncodingOverride?: QualityEncodingOverride;
   downloadUserId?: string;
   downloadRunner = downloadWithBBDown;
   uploadRunner = uploadWithAList;
@@ -183,6 +190,7 @@ export class QualityUpgradeTask extends Task {
       targets?: QualityUpgradeTarget[];
       artifactKey?: string;
       qualityProfile?: QualityArtifactProfile;
+      qualityEncodingOverride?: QualityEncodingOverride;
     } = {}
   ) {
     super(`Quality upgrade ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
@@ -190,6 +198,7 @@ export class QualityUpgradeTask extends Task {
     this.cookie = cookie;
     this.qualityProfile = normalizeQualityArtifactProfile(shared.qualityProfile || qualityArtifactProfileFromConfig(config));
     this.config = applyQualityArtifactProfile(config, this.qualityProfile);
+    this.qualityEncodingOverride = shared.qualityEncodingOverride;
     this.targets = uniqueQualityUpgradeTargets([target, ...(shared.targets || [])]);
     this.target = this.targets[0];
     this.artifactKey = shared.artifactKey || buildQualityArtifactKey(bvid, this.qualityProfile);
@@ -212,6 +221,13 @@ export class QualityUpgradeTask extends Task {
     this.qualityStageLabel = this.targets.length > 1 ? `下载新版 · ${this.targets.length}个目标` : "下载新版";
     this.onStartUpgrade?.(this);
     this.config = applyQualityArtifactProfile(this.config, this.qualityProfile);
+    if (this.qualityEncodingOverride) {
+      this.config = applyBBDownEncodingPreference(
+        this.config,
+        this.qualityEncodingOverride.priority,
+        this.qualityEncodingOverride.strict,
+      );
+    }
     const result = await this.downloadRunner(this.bvid, this.cookie, this.config, {
       downloadDir: this.downloadDir || path.join(tempDir, `quality-upgrade-${this.bvid}-${this.artifactKey.slice(0, 16)}`),
       kind: "quality_upgrade",
@@ -491,6 +507,7 @@ export class UploadTask extends Task {
   recoveryKey?: string;
   result?: UploadResult;
   onUploading?: (task: UploadTask) => void;
+  onConflictCandidateUploading?: (task: UploadTask) => void;
   cleanupLocal: boolean;
   files?: string[];
   filenameMetadataByPath?: Record<string, UploadFileMetadata>;
@@ -502,6 +519,10 @@ export class UploadTask extends Task {
   legacyConflictSideEffectsStarted = false;
   conflictCandidateId?: string;
   conflictCandidateRemotePath?: string;
+  conflictCandidateOnly = false;
+  conflictCandidateAttempted = false;
+  conflictCandidateReasonCode?: string;
+  conflictCandidateReasonSummary?: string;
   transferSessionStore?: TransferSessionStore;
   sessionId?: string;
   sessionGeneration?: number;
@@ -540,6 +561,9 @@ export class UploadTask extends Task {
       legacyConflictSideEffectsStarted?: boolean;
       conflictCandidateId?: string;
       conflictCandidateRemotePath?: string;
+      conflictCandidateOnly?: boolean;
+      conflictCandidateReasonCode?: string;
+      conflictCandidateReasonSummary?: string;
       transferSessionStore?: TransferSessionStore;
       sessionId?: string;
       sessionGeneration?: number;
@@ -556,6 +580,7 @@ export class UploadTask extends Task {
       resumeOnly?: boolean;
       encodingRetry?: EncodingRetryContext;
       onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
+      onConflictCandidateUploading?: (task: UploadTask) => void;
     } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
@@ -574,6 +599,9 @@ export class UploadTask extends Task {
     this.legacyConflictSideEffectsStarted = Boolean(options.legacyConflictSideEffectsStarted);
     this.conflictCandidateId = options.conflictCandidateId;
     this.conflictCandidateRemotePath = options.conflictCandidateRemotePath;
+    this.conflictCandidateOnly = Boolean(options.conflictCandidateOnly);
+    this.conflictCandidateReasonCode = options.conflictCandidateReasonCode;
+    this.conflictCandidateReasonSummary = options.conflictCandidateReasonSummary;
     this.transferSessionStore = options.transferSessionStore;
     this.sessionId = options.sessionId;
     this.sessionGeneration = options.sessionGeneration;
@@ -590,6 +618,7 @@ export class UploadTask extends Task {
     this.resumeOnly = Boolean(options.resumeOnly);
     this.encodingRetry = options.encodingRetry;
     this.onTransferSession = options.onTransferSession;
+    this.onConflictCandidateUploading = options.onConflictCandidateUploading;
   }
 
   async run() {
@@ -597,8 +626,16 @@ export class UploadTask extends Task {
     if (!this.files || this.files.length === 0) {
       throw new Error("Upload file whitelist is missing; local cache must be adopted before upload");
     }
-    this.onUploading?.(this);
     this.allowReupload = false;
+    if (this.conflictCandidateOnly) {
+      this.result = await this.runConflictCandidate(
+        this.conflictCandidateReasonCode || "UPLOAD_MANUAL_CONFLICT_CANDIDATE",
+        this.conflictCandidateReasonSummary || "用户确认生成隔离冲突候选",
+      );
+      console.log(`[Task] Completed conflict candidate upload for ${this.bvid}`);
+      return;
+    }
+    this.onUploading?.(this);
     try {
       this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
         cleanupLocal: this.cleanupLocal,
@@ -641,38 +678,7 @@ export class UploadTask extends Task {
         && reasonCode !== "UPLOAD_LEGACY_CONFLICT_ARCHIVE_INTERRUPTED"
         && Boolean(this.conflictCandidateId && this.conflictCandidateRemotePath);
       if (!candidateEligible) throw error;
-      const candidateResult = await uploadWithAList(
-        this.downloadDir,
-        this.conflictCandidateRemotePath!,
-        this.config,
-        {
-          cleanupLocal: false,
-          files: this.files,
-          filenameMetadataByPath: this.filenameMetadataByPath,
-          uploadIntent: "conflict_candidate",
-          bvid: this.bvid,
-          userId: this.userId,
-          mediaId: this.mediaId,
-        },
-      );
-      if (!candidateResult.allVerified) {
-        const pendingError: any = new Error("冲突候选已上传，正在等待远端完整可见");
-        pendingError.status = 503;
-        pendingError.code = "UPLOAD_CONFLICT_CANDIDATE_AWAITING_REMOTE";
-        throw pendingError;
-      }
-      this.result = {
-        ...candidateResult,
-        disposition: "conflict_candidate",
-        conflictCandidate: {
-          id: this.conflictCandidateId!,
-          originalRemotePath: this.remotePath,
-          candidateRemotePath: this.conflictCandidateRemotePath!,
-          reasonCode,
-          reasonSummary,
-          existingArchiveProof: this.existingArchiveProof,
-        },
-      };
+      this.result = await this.runConflictCandidate(reasonCode, reasonSummary);
     }
     if (this.result.sessionId && this.result.sessionId !== this.sessionId) {
       this.sessionId = this.result.sessionId;
@@ -680,6 +686,53 @@ export class UploadTask extends Task {
       this.onTransferSession?.(this, this.result.sessionId, this.result.sessionGeneration || 1);
     }
     console.log(`[Task] Completed upload for ${this.bvid}`);
+  }
+
+  private async runConflictCandidate(reasonCode: string, reasonSummary: string): Promise<UploadResult> {
+    this.conflictCandidateAttempted = true;
+    this.onConflictCandidateUploading?.(this);
+    return this.uploadConflictCandidate(reasonCode, reasonSummary);
+  }
+
+  private async uploadConflictCandidate(reasonCode: string, reasonSummary: string): Promise<UploadResult> {
+    if (!this.conflictCandidateId || !this.conflictCandidateRemotePath) {
+      const error: any = new Error("冲突候选缺少稳定任务标识或远端路径");
+      error.status = 409;
+      error.code = "UPLOAD_CONFLICT_CANDIDATE_CONTEXT_MISSING";
+      throw error;
+    }
+    const candidateResult = await uploadWithAList(
+      this.downloadDir,
+      this.conflictCandidateRemotePath,
+      this.config,
+      {
+        cleanupLocal: false,
+        files: this.files,
+        filenameMetadataByPath: this.filenameMetadataByPath,
+        uploadIntent: "conflict_candidate",
+        bvid: this.bvid,
+        userId: this.userId,
+        mediaId: this.mediaId,
+      },
+    );
+    if (!candidateResult.allVerified) {
+      const pendingError: any = new Error("冲突候选已上传，正在等待远端完整可见");
+      pendingError.status = 503;
+      pendingError.code = "UPLOAD_CONFLICT_CANDIDATE_AWAITING_REMOTE";
+      throw pendingError;
+    }
+    return {
+      ...candidateResult,
+      disposition: "conflict_candidate",
+      conflictCandidate: {
+        id: this.conflictCandidateId,
+        originalRemotePath: this.remotePath,
+        candidateRemotePath: this.conflictCandidateRemotePath,
+        reasonCode,
+        reasonSummary,
+        existingArchiveProof: this.existingArchiveProof,
+      },
+    };
   }
 }
 

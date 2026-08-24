@@ -64,6 +64,7 @@ import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
 import { createRemoteReplacementRunner } from "./remote-operations.js";
+import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
 import { isRemotePathWithin, normalizeRemotePath, remoteDirname } from "./remote-path.js";
 import {
   closePlaybackDeliveryTracker,
@@ -859,6 +860,28 @@ app.post("/api/logout", (req, res) => {
 app.get("/api/config", (req, res) => {
   res.json({ success: true, data: configStore.get() });
 });
+
+app.post("/api/storage/check", asyncHandler(async (req, res) => {
+  const allowed = new Set(["alistUrl", "alistUsername", "alistPassword", "alistDest"]);
+  const input = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    res.status(400).json({ success: false, message: "存储检查包含不支持的字段" });
+    return;
+  }
+  const draft: Partial<AppConfig> = {};
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) (draft as any)[key] = input[key];
+  }
+  const configError = validateConfig(draft);
+  if (configError) {
+    res.status(400).json({ success: false, message: configError });
+    return;
+  }
+  const candidate = { ...configStore.get(), ...draft };
+  const result = await checkRemoteStorageReadOnly(candidate);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: result });
+}));
 
 app.put("/api/config", (req, res) => {
   const error = validateConfig(req.body);
@@ -1700,7 +1723,20 @@ app.post("/api/queue/recover", (req, res) => {
 app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, res) => {
   const issueId = String(req.params.id || "").trim();
   const action = String(req.params.action || "").trim();
-  const allowedActions = new Set(["recheck", "reupload", "redownload", "redownload_with_encoding", "retry_quality", "keep_existing", "use_candidate"]);
+  const allowedActions = new Set([
+    "recheck",
+    "reupload",
+    "create_candidate",
+    "redownload",
+    "redownload_with_encoding",
+    "retry_download",
+    "retry_download_with_account",
+    "defer_download",
+    "retry_quality",
+    "retry_quality_with_encoding",
+    "keep_existing",
+    "use_candidate",
+  ]);
   if (!issueId || issueId.length > 160 || !allowedActions.has(action)) {
     res.status(400).json({ success: false, message: "Invalid recovery issue action" });
     return;

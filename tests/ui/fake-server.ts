@@ -18,9 +18,14 @@ type TestState = {
   itemQueries: string[];
   detailQueries: string[];
   recoveryActionCount: number;
+  lastRecoveryAction: string;
+  lastRecoveryBody: unknown;
   recoveryIssueResolved: boolean;
-  recoveryIssueKind: "visibility" | "candidate";
+  recoveryIssueKind: "visibility" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
   recoveryIssueEmpty: boolean;
+  storageCheckCount: number;
+  storageCheckBody: unknown;
+  storageCheckMode: "ok" | "path_error";
   queueBoardMode: "empty" | "manual_wait";
 };
 
@@ -38,9 +43,14 @@ function initialState(): TestState {
     itemQueries: [],
     detailQueries: [],
     recoveryActionCount: 0,
+    lastRecoveryAction: "",
+    lastRecoveryBody: null,
     recoveryIssueResolved: false,
     recoveryIssueKind: "visibility",
     recoveryIssueEmpty: false,
+    storageCheckCount: 0,
+    storageCheckBody: null,
+    storageCheckMode: "ok",
     queueBoardMode: "empty",
   };
 }
@@ -136,8 +146,12 @@ app.post("/__test/reset", (request, response) => {
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
   state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
   state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
-  if (request.body?.recoveryIssueKind === "candidate") state.recoveryIssueKind = "candidate";
+  const recoveryIssueKind = String(request.body?.recoveryIssueKind || "");
+  if (["visibility", "candidate", "create_candidate", "download", "quality", "storage"].includes(recoveryIssueKind)) {
+    state.recoveryIssueKind = recoveryIssueKind as TestState["recoveryIssueKind"];
+  }
   state.recoveryIssueEmpty = request.body?.recoveryIssueEmpty === true;
+  if (request.body?.storageCheckMode === "path_error") state.storageCheckMode = "path_error";
   if (request.body?.queueBoardMode === "manual_wait") state.queueBoardMode = "manual_wait";
   response.json(state);
 });
@@ -172,6 +186,30 @@ app.get("/api/config", (_request, response) => response.json(ok({
   filenameTemplate: "<videoTitle>-<bvid>",
   renameScanMaxFiles: 10_000,
 })));
+app.post("/api/storage/check", (request, response) => {
+  state.storageCheckCount += 1;
+  state.storageCheckBody = request.body;
+  if (state.storageCheckMode === "path_error") {
+    response.json(ok({
+      ok: false,
+      category: "path",
+      title: "归档目录不可访问",
+      message: "连接成功，但当前目标目录不存在。请检查目标存储路径。",
+      field: "alistDest",
+      readOnly: true,
+      writeVerified: false,
+    }));
+    return;
+  }
+  response.json(ok({
+    ok: true,
+    category: "ok",
+    title: "只读连接正常",
+    message: "WebDAV 地址、认证和归档目录均可读取；未执行写入测试。",
+    readOnly: true,
+    writeVerified: false,
+  }));
+});
 app.get("/api/users", (_request, response) => response.json(ok([{
   id: "user-1",
   uid: "10001",
@@ -206,26 +244,88 @@ app.get("/api/queue/state", (_request, response) => {
     recoveryDisposition: "background",
   }] : [];
   const candidateIssue = state.recoveryIssueKind === "candidate";
+  const issueByKind = {
+    visibility: {
+      kind: "remote_visibility_timeout",
+      severity: "info",
+      title: "远端文件仍在等待可见",
+      summary: "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
+      recommendedAction: { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
+      availableActions: [{ id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" }],
+    },
+    candidate: {
+      kind: "conflict_candidate_ready",
+      severity: "info",
+      title: "远端冲突候选等待选择",
+      summary: "正式旧路径保持不变，新文件候选已完整验证；请选择保留现有归档或采用候选。",
+      recommendedAction: { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" },
+      availableActions: [
+        { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" },
+        { id: "use_candidate", label: "采用新候选", description: "将候选设为当前归档，正式旧路径仍保留。" },
+        { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
+      ],
+    },
+    create_candidate: {
+      kind: "remote_size_conflict",
+      severity: "danger",
+      title: "远端文件与本地候选冲突",
+      summary: "完整本地文件组已通过预检，可以上传到隔离候选目录等待选择。",
+      recommendedAction: { id: "create_candidate", label: "生成隔离候选", description: "正式旧路径保持不变。" },
+      availableActions: [
+        { id: "create_candidate", label: "生成隔离候选", description: "正式旧路径保持不变。" },
+        { id: "recheck", label: "重新检查远端", description: "只读取远端状态。" },
+      ],
+    },
+    download: {
+      kind: "download_account_required",
+      severity: "danger",
+      title: "当前账号无法继续下载",
+      summary: "任务和本地进度已保留，可以先验证备用账号后继续。",
+      recommendedAction: {
+        id: "retry_download_with_account",
+        label: "换账号下载",
+        description: "只更换本次下载账号，收藏来源和上传目标保持不变。",
+        choices: [{ value: "user-2", label: "备用账号（UID 20002）" }],
+      },
+      availableActions: [
+        {
+          id: "retry_download_with_account",
+          label: "换账号下载",
+          description: "只更换本次下载账号，收藏来源和上传目标保持不变。",
+          choices: [{ value: "user-2", label: "备用账号（UID 20002）" }],
+        },
+        { id: "retry_download", label: "重新下载一次", description: "继续使用当前账号。" },
+        { id: "defer_download", label: "暂缓24小时", description: "保留进度后暂缓。" },
+      ],
+    },
+    quality: {
+      kind: "quality_failed",
+      severity: "warning",
+      title: "画质重调遇到编码问题",
+      summary: "旧归档仍然可用，可以保持目标画质并生成新的编码版本。",
+      recommendedAction: { id: "retry_quality_with_encoding", label: "换编码重调画质", description: "生成独立的新版本。" },
+      availableActions: [
+        { id: "retry_quality_with_encoding", label: "换编码重调画质", description: "生成独立的新版本。" },
+        { id: "retry_quality", label: "重新尝试画质重调", description: "使用原参数重试。" },
+      ],
+    },
+    storage: {
+      kind: "remote_permission",
+      severity: "danger",
+      title: "远端存储认证或权限异常",
+      summary: "请先检查当前草稿配置的只读连接，再决定是否保存设置。",
+      recommendedAction: { id: "open_settings", label: "检查存储配置", description: "打开设置并执行只读检查。" },
+      availableActions: [
+        { id: "open_settings", label: "检查存储配置", description: "打开设置并执行只读检查。" },
+        { id: "recheck", label: "重新检查远端", description: "使用已保存配置复核。" },
+      ],
+    },
+  } as const;
+  const configuredIssue = issueByKind[state.recoveryIssueKind];
   const issues = state.recoveryIssueEmpty || state.recoveryIssueResolved ? [] : [{
     id: "upload.test-recovery",
-    kind: candidateIssue ? "conflict_candidate_ready" : "remote_visibility_timeout",
-    severity: "info",
-    title: candidateIssue ? "远端冲突候选等待选择" : "远端文件仍在等待可见",
-    summary: candidateIssue
-      ? "正式旧路径保持不变，新文件候选已完整验证；请选择保留现有归档或采用候选。"
-      : "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
+    ...configuredIssue,
     protectedFacts: ["没有自动覆盖或删除远端文件", "没有把未确认文件标记为归档成功", "本地文件仍保留"],
-    recommendedAction: candidateIssue
-      ? { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" }
-      : { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
-    availableActions: candidateIssue ? [
-      { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" },
-      { id: "use_candidate", label: "采用新候选", description: "将候选设为当前归档，正式旧路径仍保留。" },
-      { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
-    ] : [
-      { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
-      { id: "reupload", label: "继续上传", description: "仅为当前文件授权一次重新上传。", danger: true },
-    ],
     bvid: "BV1RECOVERY1",
     videoTitle: "测试归档视频：新候选待确认",
     upperName: "测试UP主",
@@ -236,7 +336,9 @@ app.get("/api/queue/state", (_request, response) => {
     nextAutomaticCheckAt: Date.parse("2026-08-17T12:10:00.000Z"),
     safeDiagnostic: "{\n  \"issue\": \"remote_visibility_timeout\",\n  \"bvid\": \"BV1RECOVERY1\"\n}",
   }];
-  const disposition = candidateIssue ? "intentional_confirmation" : "background";
+  const disposition = candidateIssue
+    ? "intentional_confirmation"
+    : (state.recoveryIssueKind === "visibility" ? "background" : "action_required");
   const visibleIssues = disposition === "background" ? [] : issues.map((issue) => ({ ...issue, disposition }));
   response.json(ok({
     downloadPending: [], downloadRunning: [], uploadPending: queueItems, uploadRunning: [],
@@ -248,15 +350,25 @@ app.get("/api/queue/state", (_request, response) => {
     },
     issues: visibleIssues,
     backgroundRecoveries: disposition === "background" ? issues.map((issue) => ({ ...issue, disposition })) : [],
-    actionRequiredIssues: [],
+    actionRequiredIssues: disposition === "action_required" ? visibleIssues : [],
     intentionalConfirmations: candidateIssue ? visibleIssues : [],
-    issueSummary: { total: 0, danger: 0, warning: 0, info: 0, actionRequired: 0, intentional: candidateIssue ? 1 : 0, background: candidateIssue ? 0 : 1 },
+    issueSummary: {
+      total: disposition === "action_required" ? 1 : 0,
+      danger: disposition === "action_required" && configuredIssue.severity === "danger" ? 1 : 0,
+      warning: disposition === "action_required" && configuredIssue.severity === "warning" ? 1 : 0,
+      info: 0,
+      actionRequired: disposition === "action_required" ? 1 : 0,
+      intentional: candidateIssue ? 1 : 0,
+      background: disposition === "background" ? 1 : 0,
+    },
     recovery: manualWaitQueue ? { pendingUploads: 1 } : {},
     chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
   }));
 });
-app.post("/api/recovery-issues/:id/actions/:action", (_request, response) => {
+app.post("/api/recovery-issues/:id/actions/:action", (request, response) => {
   state.recoveryActionCount += 1;
+  state.lastRecoveryAction = request.params.action;
+  state.lastRecoveryBody = request.body ?? null;
   state.recoveryIssueResolved = true;
   response.json(ok({ issues: [] }));
 });

@@ -15,11 +15,18 @@ const test = base.extend<{ browserProblems: string[] }>({
   },
 });
 
-async function openRecoveryCenter(page: Page, recoveryIssueKind: "visibility" | "candidate" = "candidate") {
-  await page.request.post("/__test/reset", { data: { recoveryIssueKind } });
+type RecoveryFixtureKind = "visibility" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
+
+async function openRecoveryCenter(
+  page: Page,
+  recoveryIssueKind: RecoveryFixtureKind = "candidate",
+  resetData: Record<string, unknown> = {},
+) {
+  await page.request.post("/__test/reset", { data: { ...resetData, recoveryIssueKind } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
   await page.goto("/");
-  await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0 · 待确认 1");
+  const expectedBadge = recoveryIssueKind === "candidate" ? "待处理 0 · 待确认 1" : "待处理 1";
+  await expect(page.locator("#recoveryIssuesBtn")).toHaveText(expectedBadge);
   await page.locator("#recoveryIssuesBtn").click();
   await expect(page.locator("#recoveryIssuesModal")).toHaveClass(/active/);
   await expect(page.locator(".recovery-issue-row")).toHaveCount(1);
@@ -156,4 +163,84 @@ test("conflict candidate confirmation explains both retained copies and sends on
   await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
+});
+
+test("complete local groups can create one isolated candidate without touching the official path", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop nested confirmation coverage");
+  await openRecoveryCenter(page, "create_candidate");
+  await page.locator(".recovery-issue-row").click();
+  await page.getByRole("button", { name: "生成隔离候选" }).click();
+  await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
+  await expect(page.locator("#confirmActionTitle")).toHaveText("生成隔离候选");
+  await expect(page.locator("#confirmActionDetail")).toContainText("正式旧路径不会覆盖、移动或删除");
+  await expect(page.locator("#confirmActionDetail")).toContainText("额外远端空间和上传流量");
+  await expect(page.locator("#recoveryIssuesModal")).toHaveAttribute("aria-hidden", "true");
+  await page.locator("#confirmActionOkBtn").evaluate((element: HTMLButtonElement) => {
+    element.click();
+    element.click();
+  });
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.recoveryActionCount).toBe(1);
+  expect(state.lastRecoveryAction).toBe("create_candidate");
+});
+
+test("alternate-account download recovery submits only the selected account", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  await openRecoveryCenter(page, "download");
+  const row = page.locator(".recovery-issue-row");
+  if (testInfo.project.name === "desktop") await row.click();
+  else await row.tap();
+  await page.getByRole("button", { name: "换账号下载" }).click();
+  await expect(page.locator("#recoveryChoiceModal")).toHaveClass(/active/);
+  await expect(page.locator("#recoveryChoiceSelect")).toHaveValue("user-2");
+  await expect(page.locator("#recoveryChoiceSelect")).toContainText("备用账号（UID 20002）");
+  await page.locator("#recoveryChoiceSubmitBtn").click();
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.recoveryActionCount).toBe(1);
+  expect(state.lastRecoveryAction).toBe("retry_download_with_account");
+  expect(state.lastRecoveryBody).toEqual({ userId: "user-2" });
+});
+
+test("quality recovery keeps target quality and submits an isolated encoding preference", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop encoding dialog coverage");
+  await openRecoveryCenter(page, "quality");
+  await page.locator(".recovery-issue-row").click();
+  await page.getByRole("button", { name: "换编码重调画质" }).click();
+  await expect(page.locator("#encodingRetryModal")).toHaveClass(/active/);
+  await expect(page.locator("#encodingRetryTitle")).toHaveText("换编码重调画质");
+  await expect(page.locator("#encodingRetryCopy")).toContainText("目标画质保持不变");
+  await expect(page.locator("#encodingRetryCopy")).toContainText("现有归档不会进入覆盖或删除流程");
+  await page.locator("#encodingRetrySubmitBtn").click();
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.recoveryActionCount).toBe(1);
+  expect(state.lastRecoveryAction).toBe("retry_quality_with_encoding");
+  expect(state.lastRecoveryBody).toEqual({ encodingPriority: ["AV1", "HEVC", "AVC"], strict: true });
+});
+
+test("storage recovery opens settings and performs exactly one read-only draft check", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop settings focus coverage");
+  await openRecoveryCenter(page, "storage", { storageCheckMode: "path_error" });
+  await page.locator(".recovery-issue-row").click();
+  await page.getByRole("button", { name: "检查存储配置" }).click();
+  await expect(page.locator("#recoveryIssuesModal")).not.toHaveClass(/active/);
+  await expect(page.locator("#storageCheckBtn")).toBeFocused();
+  await page.locator("#storageCheckBtn").click();
+  await expect(page.locator("#storageCheckStatus")).toContainText("归档目录不可访问");
+  await expect(page.locator("#storageCheckStatus")).toContainText("目标目录不存在");
+  await expect(page.locator("#alistDest")).toBeFocused();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.storageCheckCount).toBe(1);
+  expect(state.storageCheckBody).toEqual({
+    alistUrl: "http://alist:5244",
+    alistUsername: "",
+    alistPassword: "",
+    alistDest: "/archive",
+  });
+  expect(state.recoveryActionCount).toBe(0);
 });

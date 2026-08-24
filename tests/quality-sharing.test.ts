@@ -582,7 +582,7 @@ test("quality cleanup locks the artifact against a concurrent new download", asy
   }
 });
 
-test("an exhausted quality download can be submitted again without a stuck failed job", async () => {
+test("an exhausted quality download remains visible and can be explicitly resumed", async () => {
   const runtime = await createTestDir("quality-download-exhaustion");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   try {
@@ -597,7 +597,14 @@ test("an exhausted quality download can be submitted again without a stuck faile
     const claimed = jobs.claimDue(["quality_download"], 1, "owner")[0];
     assert.equal(claimed.id, queued.id);
     assert.equal(jobs.retry(queued.id, "owner", "download failed", Date.now() + 60_000).exhausted, true);
-    assert.equal(jobs.findById(queued.id), null);
+    const failed = jobs.findById(queued.id)!;
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.lastError, "download failed");
+    const resumed = jobs.wakeManualJob(queued.id, { awaitingManualRecovery: false });
+    assert.equal(resumed?.id, queued.id);
+    assert.equal(resumed?.status, "pending");
+    assert.equal(resumed?.attempts, 0);
+    assert.equal(resumed?.lastError, undefined);
   } finally {
     manager.close();
     await removeTestDir(runtime);
