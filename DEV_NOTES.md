@@ -1,0 +1,17 @@
+# Dev 测试说明
+
+## 当前基线
+
+- BFB `v2.5.1` 已于 2026-08-25 从提交 `17a328c` 发布；`main`、标签 `v2.5.1` 与正式镜像使用同一提交。
+- BBDown fork 固定为 `bfb-2.0.4`，源码提交 `0ea9463202e8a57e0d673f29166e54f4ed770255`，Linux x64 ZIP SHA256 为 `74a944d25f5e29528b93e0bfebadbae7d0cc7cc1567cda531a26ed4d4e8dfa9a`。
+- SQLite 为 `user_version 11`，JSON 状态 schema 13，迁移包 schema 3。
+- 发布前完整 `npm test` 共 465 项，463 项通过，2 项按本机环境跳过；CLI Playwright 共 87 项，56 项通过、31 项按视口条件跳过。应用构建、文档构建、差异检查和 WSL2 Docker BBDown 实物校验均通过。
+- GitHub 首轮干净环境暴露的媒体探测工作目录和跨平台 RSS 门槛已在 `fb0719a` 修复；修复后的 `dev`、`main` 和标签 Docker 工作流全部通过。
+- 根项目生产依赖审计保留 11 项上游风险，文档站生产依赖为 0 项；未执行破坏性自动升级。
+- 本次发布未部署 Aliyun，也未访问真实 B站、AList/OpenList 文件。
+
+## 后续规则
+
+- 新改动追加到 CHANGELOG 的“未发布”章节，并在本文件记录专项测试和已知边界。
+- `main` 只接收已经在 `dev` 和隔离环境验证过的线性提交，不强推、不改写发布历史。
+- `output/` 和 `.review-*` 是本地未跟踪审查产物，不属于提交或发布内容。
