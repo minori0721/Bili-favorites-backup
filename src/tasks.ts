@@ -41,6 +41,7 @@ export interface EncodingRetryContext {
   generation: number;
   priority: BBDownEncoding[];
   strict: boolean;
+  quality?: string;
   candidateLocalDir: string;
   originalLocalDir: string;
   originalFiles?: string[];

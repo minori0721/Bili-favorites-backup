@@ -14,6 +14,7 @@ import { FolderDetailFilter, MANUAL_ARCHIVE_MEDIA_ID, type RemoteFileRecord, Sta
 import { mergeLiveFavoriteDetailItem, selectFavoriteDetailSource } from "./favorite-detail.js";
 import {
   BiliRiskOrLoginError,
+  getVideoPageSnapshot,
   getUserInfo,
   listFavoriteFolders,
   listFavoriteItemsPage,
@@ -76,7 +77,7 @@ import {
   resolvePlaybackFile,
   streamPlaybackFile,
 } from "./playback.js";
-import { actualQualityLabel, validBrowserMediaMetadata } from "./media-metadata.js";
+import { actualQualityLabel, isSelectableBilibiliQuality, validBrowserMediaMetadata } from "./media-metadata.js";
 import { UnavailableCoverBackfill, waitForCoverCacheIdle } from "./cover-cache.js";
 import { OnlineCoverCache } from "./online-cover-cache.js";
 import { OnlineContentService, sendOnlineCover, type OnlineArchiveStateResolver } from "./online-content.js";
@@ -113,7 +114,12 @@ const scheduler = new SyncScheduler(configStore, userStore, stateManager);
 const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
 const onlineCoverCache = new OnlineCoverCache(configStore.get().onlineCoverCacheLimitMB);
 const onlineContent = new OnlineContentService(onlineCoverCache);
-const mediaProbe = new MediaProbeService(configStore, undefined, () => scheduler.getLocalCacheCapacity());
+const mediaProbe = new MediaProbeService(
+  configStore,
+  undefined,
+  () => scheduler.getLocalCacheCapacity(),
+  getVideoPageSnapshot,
+);
 
 function isPlaybackMediaId(mediaId: number) {
   return Number.isInteger(mediaId) && (mediaId >= 1 || mediaId === MANUAL_ARCHIVE_MEDIA_ID);
@@ -1249,9 +1255,8 @@ app.post("/api/online-content/manual-archive", asyncHandler(async (req, res) => 
   const item = reference.item;
   const requestedQuality = String(req.body?.quality || "").trim().toUpperCase();
   const requestedEncoding = String(req.body?.encoding || "").trim().toUpperCase();
-  const allowedQualities = new Set(["8K", "4K", "1080P60", "1080P", "720P"]);
   const allowedEncodings = new Set(["HEVC", "AVC", "AV1"]);
-  if ((requestedQuality && !allowedQualities.has(requestedQuality))
+  if ((requestedQuality && !isSelectableBilibiliQuality(requestedQuality))
     || (requestedEncoding && !allowedEncodings.has(requestedEncoding))) {
     res.status(400).json({ success: false, message: "手动归档的画质或编码选项无效" });
     return;
@@ -1296,7 +1301,7 @@ app.post("/api/media-probe", asyncHandler(async (req, res) => {
   }
   const requestedQuality = String(req.body?.quality || "").trim().toUpperCase();
   const requestedEncoding = String(req.body?.encoding || "").trim().toUpperCase();
-  if ((requestedQuality && !["8K", "4K", "1080P60", "1080P", "720P"].includes(requestedQuality))
+  if ((requestedQuality && !isSelectableBilibiliQuality(requestedQuality))
     || (requestedEncoding && !["HEVC", "AVC", "AV1"].includes(requestedEncoding))) {
     res.status(400).json({ success: false, message: "媒体探测的画质或编码无效" });
     return;
@@ -2826,8 +2831,8 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
   res.status(400).json({ success: false, message: "items required" });
 }));
 
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error(`[HTTP] Unhandled route error: ${safeErrorSummary(err)}`);
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(`[HTTP] ${req.method} ${req.path} failed: ${safeErrorSummary(err)}`);
   if (res.headersSent) {
     return;
   }

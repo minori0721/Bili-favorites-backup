@@ -94,7 +94,7 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
       },
     });
 
-    const options = { encodingPriority: ["AV1", "HEVC", "AVC"], strict: true };
+    const options = { quality: "1080P", encodingPriority: ["AV1", "HEVC", "AVC"], strict: true };
     const first = await scheduler.resolveRecoveryIssue(`upload.${parent.id}`, "redownload_with_encoding", options);
     assert.equal(first.ok, true);
     assert.equal(first.idempotent, false);
@@ -103,6 +103,7 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
     const afterStart = scheduler.jobStore.findById(parent.id)!;
     const retry = (afterStart.payload as any).encodingRetry;
     assert.deepEqual(retry.priority, options.encodingPriority);
+    assert.equal(retry.quality, "1080P");
     assert.equal(retry.strict, true);
     assert.equal(retry.state, "running");
     assert.notEqual(retry.candidateLocalDir, localDir);
@@ -116,7 +117,10 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
     const task = scheduler.buildDownloadTask(child);
     assert.ok(task);
     assert.equal(task.encodingRetry.strict, true);
+    assert.equal(task.encodingRetry.quality, "1080P");
     assert.deepEqual(task.encodingRetry.priority, options.encodingPriority);
+    assert.equal(task.qualityStrict, true);
+    assert.equal(task.config.bbdownQuality, "1080P");
     assert.equal(task.config.bbdownEncoding, "AV1");
     assert.deepEqual(task.config.bbdownEncodingPriority, options.encodingPriority);
     assert.equal(task.downloadDirOverride, retry.candidateLocalDir);

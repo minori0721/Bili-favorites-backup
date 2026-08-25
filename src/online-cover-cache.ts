@@ -269,10 +269,10 @@ export class OnlineCoverCache {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      this.fetchWaiters.push(() => {
-        this.runningFetches += 1;
-        resolve();
-      });
+      // The finishing request hands its occupied slot directly to this
+      // waiter. Incrementing here would leak one slot per hand-off and
+      // eventually leave every later cover request waiting forever.
+      this.fetchWaiters.push(resolve);
     });
   }
 

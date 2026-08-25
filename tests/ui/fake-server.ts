@@ -26,10 +26,12 @@ type TestState = {
   storageCheckCount: number;
   storageCheckBody: unknown;
   storageCheckMode: "ok" | "path_error";
-  queueBoardMode: "empty" | "manual_wait";
+  queueBoardMode: "empty" | "manual_wait" | "media_retry";
   onlineNavigationCount: number;
   onlineItemQueries: string[];
   mediaProbeStartCount: number;
+  mediaProbeBodies: unknown[];
+  mediaProbeMode: "complete" | "failed" | "refine_mismatch";
   manualArchiveCount: number;
 };
 
@@ -59,6 +61,8 @@ function initialState(): TestState {
     onlineNavigationCount: 0,
     onlineItemQueries: [],
     mediaProbeStartCount: 0,
+    mediaProbeBodies: [],
+    mediaProbeMode: "complete",
     manualArchiveCount: 0,
   };
 }
@@ -161,6 +165,9 @@ app.post("/__test/reset", (request, response) => {
   state.recoveryIssueEmpty = request.body?.recoveryIssueEmpty === true;
   if (request.body?.storageCheckMode === "path_error") state.storageCheckMode = "path_error";
   if (request.body?.queueBoardMode === "manual_wait") state.queueBoardMode = "manual_wait";
+  if (request.body?.queueBoardMode === "media_retry") state.queueBoardMode = "media_retry";
+  if (request.body?.mediaProbeMode === "failed") state.mediaProbeMode = "failed";
+  if (request.body?.mediaProbeMode === "refine_mismatch") state.mediaProbeMode = "refine_mismatch";
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
@@ -231,6 +238,7 @@ app.get("/api/users", (_request, response) => response.json(ok([{
 app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({ running: [], completed: [] })));
 app.get("/api/queue/state", (_request, response) => {
   const manualWaitQueue = state.queueBoardMode === "manual_wait";
+  const mediaRetryQueue = state.queueBoardMode === "media_retry";
   const queueItems = manualWaitQueue ? [{
     id: "job-remote-visibility",
     bvid: "BV1wzGP6jEPh",
@@ -250,6 +258,29 @@ app.get("/api/queue/state", (_request, response) => {
     maxRetries: 3,
     actionRequired: false,
     recoveryDisposition: "background",
+  }] : mediaRetryQueue ? [{
+    id: "job-media-retry",
+    bvid: "BV1kg8Y6zEnZ",
+    title: "严格媒体规格重试",
+    upperName: "测试UP",
+    cover: "",
+    folderTitle: "当前收藏夹",
+    remotePath: "",
+    userId: "user-1",
+    mediaId: 101,
+    detail: "新候选未通过远端确认；系统已停止替换并保留原归档。",
+    status: "manual_wait",
+    phase: "manual_action",
+    nextAction: "recheck",
+    retries: 0,
+    maxRetries: 3,
+    actionRequired: true,
+    awaitingManualRecovery: true,
+    recoveryJobId: "job-media-retry",
+    recoveryDisposition: "action_required",
+    recoveryIssueId: "upload.job-media-retry",
+    recoveryKind: "encoding_retry_failed",
+    recoveryActions: [{ id: "redownload_with_encoding", label: "重新选择画质与编码" }],
   }] : [];
   const candidateIssue = state.recoveryIssueKind === "candidate";
   const issueByKind = {
@@ -311,9 +342,19 @@ app.get("/api/queue/state", (_request, response) => {
       severity: "warning",
       title: "画质重调遇到编码问题",
       summary: "旧归档仍然可用，可以保持目标画质并生成新的编码版本。",
-      recommendedAction: { id: "retry_quality_with_encoding", label: "换编码重调画质", description: "生成独立的新版本。" },
+      recommendedAction: {
+        id: "retry_quality_with_encoding",
+        label: "重新选择画质与编码",
+        description: "读取可用组合和大小后生成独立的新版本。",
+        mediaProfile: { quality: true, encoding: true },
+      },
       availableActions: [
-        { id: "retry_quality_with_encoding", label: "换编码重调画质", description: "生成独立的新版本。" },
+        {
+          id: "retry_quality_with_encoding",
+          label: "重新选择画质与编码",
+          description: "读取可用组合和大小后生成独立的新版本。",
+          mediaProfile: { quality: true, encoding: true },
+        },
         { id: "retry_quality", label: "重新尝试画质重调", description: "使用原参数重试。" },
       ],
     },
@@ -335,6 +376,7 @@ app.get("/api/queue/state", (_request, response) => {
     ...configuredIssue,
     protectedFacts: ["没有自动覆盖或删除远端文件", "没有把未确认文件标记为归档成功", "本地文件仍保留"],
     bvid: "BV1RECOVERY1",
+    userId: "user-1",
     videoTitle: "测试归档视频：新候选待确认",
     upperName: "测试UP主",
     folderTitle: "当前收藏夹",
@@ -448,22 +490,54 @@ app.get("/api/online-content/items", (request, response) => {
     page: { page: 1, pageSize: 50, hasMore: false, nextCursor: null },
   }));
 });
-app.post("/api/media-probe", (_request, response) => {
+app.post("/api/media-probe", (request, response) => {
   state.mediaProbeStartCount += 1;
+  state.mediaProbeBodies.push(request.body ?? null);
   response.status(202).json(ok({ probeId: "probe-online-1", status: "running", bvid: "BV1ONLINE001" }));
 });
-app.get("/api/media-probe/:id", (_request, response) => response.json(ok({
+app.get("/api/media-probe/:id", (_request, response) => {
+  if (state.mediaProbeMode === "failed") {
+    response.json(ok({
+      probeId: "probe-online-1",
+      bvid: "BV1RECOVERY1",
+      status: "failed",
+      error: "B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小",
+    }));
+    return;
+  }
+  if (state.mediaProbeMode === "refine_mismatch" && state.mediaProbeStartCount > 1) {
+    response.json(ok({
+      probeId: "probe-online-1",
+      bvid: "BV1RECOVERY1",
+      status: "complete",
+      pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [
+        { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true },
+      ] }],
+      combinations: [
+        { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true, pageCount: 1, availablePageCount: 1, totalBytes: 27 * 1024 * 1024, totalBytesKind: "final", totalSizeSource: "api" },
+      ],
+    }));
+    return;
+  }
+  response.json(ok({
   probeId: "probe-online-1",
   bvid: "BV1ONLINE001",
   status: "complete",
-  pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [{ bilibiliQuality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true }] }],
-  combinations: [{ bilibiliQuality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true }],
+  pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [
+    { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true },
+    { bilibiliQuality: "1080P", quality: "1080P", codec: "hevc", encoding: "HEVC", resolution: "1080x1920", frameRate: 60, duration: 120, estimatedBytes: 12 * 1024 * 1024, sizeSource: "api", available: true },
+  ] }],
+  combinations: [
+    { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true, pageCount: 1, availablePageCount: 1, totalVideoBytes: 24 * 1024 * 1024, totalAudioBytes: 2 * 1024 * 1024, totalBytes: 27 * 1024 * 1024, totalBytesKind: "final", peakBytes: 53 * 1024 * 1024, totalSizeSource: "api" },
+    { bilibiliQuality: "1080P", quality: "1080P", codec: "hevc", encoding: "HEVC", resolution: "1080x1920", frameRate: 60, duration: 120, estimatedBytes: 12 * 1024 * 1024, sizeSource: "api", available: true, pageCount: 1, availablePageCount: 1, totalVideoBytes: 12 * 1024 * 1024, totalAudioBytes: 2 * 1024 * 1024, totalBytes: 15 * 1024 * 1024, totalBytesKind: "final", peakBytes: 29 * 1024 * 1024, totalSizeSource: "range" },
+  ],
   estimatedBytes: 24 * 1024 * 1024,
   estimatedBytesKind: "final",
   estimatedPeakBytes: 50 * 1024 * 1024,
   cacheAvailableBytes: 512 * 1024 * 1024,
   estimatedBytesSource: "api",
-})));
+  }));
+});
 app.post("/api/online-content/manual-archive", (_request, response) => {
   state.manualArchiveCount += 1;
   response.status(202).json(ok({ status: "queued", bvid: "BV1ONLINE001" }));

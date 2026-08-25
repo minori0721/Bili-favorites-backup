@@ -71,6 +71,7 @@ import { DownloadApiHealth } from "./download-api-health.js";
 import { classifyDownloadRecoveryFailure } from "./download-recovery.js";
 import { cancelActiveDownloadsForAccount } from "./downloader.js";
 import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
+import { isSelectableBilibiliQuality } from "./media-metadata.js";
 import {
   isAuthRefreshAttemptBlocked,
   nextAuthRefreshFailureState,
@@ -258,6 +259,9 @@ interface RecoveryAssessment {
   requestedEncoding?: BBDownEncoding;
   actualEncodings?: string[];
   encodingMismatch?: boolean;
+  requestedQuality?: string;
+  actualQualities?: string[];
+  qualityMismatch?: boolean;
   verifiedPages?: number;
   summary: string;
 }
@@ -301,6 +305,7 @@ function parseEncodingRetryContext(value: unknown): EncodingRetryContext | null 
     generation,
     priority: [...item.priority] as BBDownEncoding[],
     strict: item.strict !== false,
+    quality: isSelectableBilibiliQuality(item.quality) ? String(item.quality).trim().toUpperCase() : undefined,
     candidateLocalDir,
     originalLocalDir,
     originalFiles: Array.isArray(item.originalFiles) ? item.originalFiles.map(String).filter(Boolean) : undefined,
@@ -993,6 +998,23 @@ export class SyncScheduler {
             task.persistentJobId,
             "encoding_retry_failed",
             strictEncodingDiagnosticPatch(assessment),
+          );
+          return;
+        }
+      }
+      if (encodingRetry?.quality) {
+        const assessment = assessStrictQuality(task.downloadDir, encodingRetry.quality, task.outputFiles);
+        if (assessment.status !== "matched") {
+          const error = new StrictQualityValidationError(assessment, "upload_preflight");
+          markDownloadSessionStatus(task.downloadDir, "failed", error.message);
+          this.finishEncodingRetryFailure(
+            task.bvid,
+            encodingRetry,
+            assessment.summary,
+            assessment.status === "mismatch" ? "mismatch" : "unknown",
+            task.persistentJobId,
+            "encoding_retry_failed",
+            strictQualityDiagnosticPatch(assessment),
           );
           return;
         }
@@ -2966,6 +2988,16 @@ export class SyncScheduler {
         verifiedPages: Math.max(0, Number(payloadPatch.verifiedPages || 0)),
       }
       : {};
+    const qualityDiagnostic = payloadPatch.requestedQuality
+      ? {
+        requestedQuality: String(payloadPatch.requestedQuality),
+        actualQualities: Array.isArray(payloadPatch.actualQualities)
+          ? payloadPatch.actualQualities.map(String).filter(Boolean)
+          : [],
+        qualityMismatch: payloadPatch.qualityMismatch !== false,
+        verifiedPages: Math.max(0, Number(payloadPatch.verifiedPages || 0)),
+      }
+      : {};
     const assessment: RecoveryAssessment = {
       kind: assessmentKind,
       checkedAt: this.now(),
@@ -2973,6 +3005,7 @@ export class SyncScheduler {
       remoteStatus,
       summary,
       ...encodingDiagnostic,
+      ...qualityDiagnostic,
     };
     const updated = this.jobStore.finishEncodingRetry(context.parentJobId, context.generation, {
       recoveryAssessment: assessment,
@@ -3047,6 +3080,19 @@ export class SyncScheduler {
       );
       return;
     }
+    if (error?.qualityValidation) {
+      const assessment = error.qualityAssessment;
+      this.finishEncodingRetryFailure(
+        task.bvid,
+        context,
+        assessment?.summary || summary,
+        assessment?.status === "mismatch" ? "mismatch" : "unknown",
+        task.persistentJobId,
+        "encoding_retry_failed",
+        assessment ? strictQualityDiagnosticPatch(assessment) : {},
+      );
+      return;
+    }
     const apiRetryAt = this.handleDownloadApiFailure(task, error);
     const job = task.persistentJob as any;
     if (!error?.permanent && apiRetryAt) {
@@ -3071,7 +3117,7 @@ export class SyncScheduler {
     this.finishEncodingRetryFailure(
       task.bvid,
       context,
-      `按 ${context.priority[0]} 编码重新下载失败：${summary}`,
+      `按 ${[context.quality, context.priority[0]].filter(Boolean).join(" / ")} 重新下载失败：${summary}`,
       "error",
       task.persistentJobId,
     );
@@ -3098,6 +3144,19 @@ export class SyncScheduler {
       );
       return;
     }
+    if (error?.qualityValidation) {
+      const assessment = error.qualityAssessment;
+      this.finishEncodingRetryFailure(
+        task.bvid,
+        context,
+        assessment?.summary || sanitizeUploadText(error?.message || error, 500),
+        assessment?.status === "mismatch" ? "mismatch" : "unknown",
+        task.persistentJobId,
+        "encoding_retry_failed",
+        assessment ? strictQualityDiagnosticPatch(assessment) : {},
+      );
+      return;
+    }
     const failure = this.recordUploadFailure(task, error);
     const job = task.persistentJob as any;
     const deterministic = failure.category === "deterministic" || failure.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE;
@@ -3114,7 +3173,7 @@ export class SyncScheduler {
     this.finishEncodingRetryFailure(
       task.bvid,
       context,
-      `按 ${context.priority[0]} 编码重新上传失败：${failure.summary}`,
+      `按 ${[context.quality, context.priority[0]].filter(Boolean).join(" / ")} 重新上传失败：${failure.summary}`,
       status,
       task.persistentJobId,
     );
@@ -4227,6 +4286,25 @@ export class SyncScheduler {
     return existingProof ? planned : planned.filter((action) => action.id !== "keep_existing");
   }
 
+  private uploadRecoverySummary(
+    kind: string,
+    assessment: RecoveryAssessment | null,
+    retry: EncodingRetryContext | null,
+    fallback: string,
+  ) {
+    if (kind !== "encoding_retry_failed") return fallback;
+    if (assessment?.qualityMismatch) {
+      return `请求 ${assessment.requestedQuality || retry?.quality || "指定画质"}，但实际文件未满足；错误候选没有上传或采用，原归档已保留。`;
+    }
+    if (assessment?.encodingMismatch) {
+      return `请求 ${assessment.requestedEncoding || retry?.priority?.[0] || "指定编码"}，但实际文件未满足；错误候选没有上传或采用，原归档已保留。`;
+    }
+    if (assessment?.remoteStatus === "mismatch") {
+      return "新候选上传后遇到远端同名大小冲突；系统未采用候选，原归档已保留。";
+    }
+    return "新候选未通过远端确认；系统已停止替换并保留原归档。";
+  }
+
   private buildUploadRecoveryIssue(job: any): RecoveryIssue {
     const payload = job.payload as any;
     const storedMeta = (!payload.videoTitle || !payload.upperName) && job.bvid
@@ -4261,6 +4339,8 @@ export class SyncScheduler {
       encoding_retry_failed: "编码替换未完成",
       manual_review: "上传任务需要复核",
     };
+    const rawSummary = assessment?.summary || sanitizeUploadText(payload.manualRecoveryReason || job.lastError || "上传任务已安全暂停，等待复核。", 300);
+    const retryFailureSummary = this.uploadRecoverySummary(kind, assessment, retry, rawSummary);
     const protectedFacts = [
       "没有自动覆盖或删除远端文件",
       "没有把未确认文件标记为归档成功",
@@ -4282,6 +4362,9 @@ export class SyncScheduler {
       requestedEncoding: assessment?.requestedEncoding,
       actualEncodings: assessment?.actualEncodings,
       encodingMismatch: assessment?.encodingMismatch,
+      requestedQuality: assessment?.requestedQuality,
+      actualQualities: assessment?.actualQualities,
+      qualityMismatch: assessment?.qualityMismatch,
       verifiedPages: assessment?.verifiedPages,
       firstObservedAt: assessment?.firstObservedAt,
       consecutiveObservations: assessment?.consecutiveObservations,
@@ -4294,10 +4377,12 @@ export class SyncScheduler {
       id: `upload.${job.id}`,
       kind,
       severity,
-      title: titleByKind[kind] || titleByKind.manual_review,
+      title: kind === "encoding_retry_failed" && (assessment?.requestedQuality || retry?.quality)
+        ? "媒体替换未完成"
+        : (titleByKind[kind] || titleByKind.manual_review),
       summary: retryBusy
-        ? `正在按 ${(retry?.priority || ["未知"])[0]} 编码重新下载并上传，原文件仍保留；完成后会自动确认。`
-        : (assessment?.summary || sanitizeUploadText(payload.manualRecoveryReason || job.lastError || "上传任务已安全暂停，等待复核。", 300)),
+        ? `正在按 ${[retry?.quality, retry?.priority?.[0]].filter(Boolean).join(" / ") || "指定媒体规格"} 重新下载并上传，原文件仍保留；完成后会自动确认。`
+        : retryFailureSummary,
       protectedFacts,
       recommendedAction: actions[0],
       availableActions: actions,
@@ -4311,6 +4396,9 @@ export class SyncScheduler {
       requestedEncoding: assessment?.requestedEncoding,
       actualEncodings: assessment?.actualEncodings,
       encodingMismatch: assessment?.encodingMismatch,
+      requestedQuality: assessment?.requestedQuality,
+      actualQualities: assessment?.actualQualities,
+      qualityMismatch: assessment?.qualityMismatch,
       verifiedPages: assessment?.verifiedPages,
       occurredAt: job.updatedAt || job.createdAt || this.now(),
       checkedAt: assessment?.checkedAt,
@@ -4492,6 +4580,13 @@ export class SyncScheduler {
         userId: job.userId || payload.userId,
         mediaId: job.mediaId ?? payload.mediaId,
         folderTitle: payload.folderTitle || payload.target?.folderTitle,
+        requestedQuality: payload.qualityFailure?.requestedQuality || payload.qualityProfile?.quality,
+        actualQualities: payload.qualityFailure?.actualQualities,
+        qualityMismatch: payload.qualityFailure?.qualityMismatch,
+        requestedEncoding: payload.qualityFailure?.requestedEncoding || payload.qualityEncodingOverride?.priority?.[0] || payload.qualityProfile?.encoding,
+        actualEncodings: payload.qualityFailure?.actualEncodings,
+        encodingMismatch: payload.qualityFailure?.encodingMismatch,
+        verifiedPages: payload.qualityFailure?.verifiedPages,
          occurredAt: job.updatedAt || job.createdAt || this.now(),
          safeDiagnostic: JSON.stringify({
            issue: "quality_failed",
@@ -4679,12 +4774,16 @@ export class SyncScheduler {
     return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
   }
 
-  private async startEncodingRetry(jobId: string, priority: BBDownEncoding[], strict: boolean) {
+  private async startEncodingRetry(jobId: string, priority: BBDownEncoding[], strict: boolean, requestedQuality?: string) {
     const job = this.jobStore.findById(jobId);
     if (!job || job.kind !== "upload" || !(job.payload as any)?.awaitingManualRecovery || (job.payload as any)?.historyOnly) {
       return { ok: false as const, status: 404, message: "该任务不支持编码替换" };
     }
     const payload = job.payload as any;
+    const quality = String(requestedQuality || "").trim().toUpperCase();
+    if (quality && !isSelectableBilibiliQuality(quality)) {
+      return { ok: false as const, status: 400, message: "不支持的画质档位" };
+    }
     const currentRetry = parseEncodingRetryContext(payload.encodingRetry);
     const retryState = payload.encodingRetry;
     if (retryState && ["running", "uploading", "verifying"].includes(String(retryState.state || ""))) {
@@ -4743,6 +4842,7 @@ export class SyncScheduler {
       generation,
       priority: [...priority],
       strict,
+      quality: quality || undefined,
       candidateLocalDir,
       originalLocalDir,
       originalFiles: [...new Set(originalFiles.map((file: string) => String(file).split(String.fromCharCode(92)).join("/").replace(/^\/+/, "")))],
@@ -4764,6 +4864,18 @@ export class SyncScheduler {
         downloadUserId: userId,
         detachedTargets: [target],
         encodingRetry: context,
+        ...(quality ? (() => {
+          const profile = normalizeQualityArtifactProfile({
+            ...qualityArtifactProfileFromConfig(this.configStore.get()),
+            quality,
+            encoding: priority[0],
+          });
+          return {
+            qualityProfile: profile,
+            qualityStrict: true,
+            qualityArtifactKey: buildQualityArtifactKey(bvid, profile),
+          };
+        })() : {}),
       },
     };
     const started = this.jobStore.startEncodingRetry(job.id, child, context as unknown as Record<string, unknown>);
@@ -4990,44 +5102,49 @@ export class SyncScheduler {
         ? { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues }
         : { ok: false as const, status: 409, message: "下载任务状态已经变化，请刷新后重试" };
     }
-    const qualityMode = action === "redownload_with_quality";
     const quality = String(options.quality || "").trim().toUpperCase();
+    const priority = isValidBBDownEncodingPriority(options.encodingPriority)
+      ? normalizeBBDownEncodingPriority(options.encodingPriority)
+      : undefined;
     const qualityEligible = payload.qualityFailure?.qualityEligible === true;
     const encodingEligible = payload.qualityFailure?.encodingEligible === true;
-    if (qualityMode) {
-      if (!qualityEligible) return { ok: false as const, status: 409, message: "当前失败证据不能安全更换画质档位" };
-      if (!["8K", "4K", "1080P60", "1080P", "720P"].includes(quality)) {
-        return { ok: false as const, status: 400, message: "不支持的画质档位" };
-      }
-    } else {
-      if (!encodingEligible) return { ok: false as const, status: 409, message: "当前失败证据不能安全更换编码" };
-      if (!isValidBBDownEncodingPriority(options.encodingPriority)) {
-        return { ok: false as const, status: 400, message: "编码顺序必须包含 HEVC、AVC、AV1 且各出现一次" };
-      }
+    if (quality && !isSelectableBilibiliQuality(quality)) {
+      return { ok: false as const, status: 400, message: "不支持的画质档位" };
+    }
+    if (!quality && !priority) {
+      return { ok: false as const, status: 400, message: "请选择画质或编码" };
     }
     const bvid = String(job.bvid || payload.bvid || "");
     const currentProfile = normalizeQualityArtifactProfile(
       payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()),
     );
-    const nextProfile = qualityMode ? { ...currentProfile, quality } : currentProfile;
+    const currentEncoding = String(payload.qualityEncodingOverride?.priority?.[0] || currentProfile.encoding || "").toUpperCase();
+    if (quality && quality !== currentProfile.quality && !qualityEligible) {
+      return { ok: false as const, status: 409, message: "当前失败证据不能安全更换画质档位" };
+    }
+    if (priority && priority[0] !== currentEncoding && !encodingEligible) {
+      return { ok: false as const, status: 409, message: "当前失败证据不能安全更换编码" };
+    }
+    const nextProfile = {
+      ...currentProfile,
+      ...(quality ? { quality } : {}),
+      ...(priority ? { encoding: priority[0] } : {}),
+    };
     const generation = Math.max(0, Number(payload.qualityRetryGeneration || 0), Number(payload.qualityEncodingOverride?.generation || 0)) + 1;
-    const priority = isValidBBDownEncodingPriority(options.encodingPriority)
-      ? normalizeBBDownEncodingPriority(options.encodingPriority)
-      : undefined;
     const artifactKey = crypto.createHash("sha256").update(JSON.stringify({
       sourceArtifactKey: String(payload.qualityArtifactKey || buildQualityArtifactKey(bvid, currentProfile)),
       generation,
-      quality: qualityMode ? quality : undefined,
+      quality: quality || undefined,
       priority,
     })).digest("hex");
     const nextPayload: Record<string, any> = {
       ...payload,
       bvid,
       qualityProfile: nextProfile,
-      qualityStrict: qualityMode || payload.qualityStrict === true,
-      qualityEncodingOverride: qualityMode
-        ? payload.qualityEncodingOverride
-        : { generation, priority, strict: options.strict !== false },
+      qualityStrict: Boolean(quality) || payload.qualityStrict === true,
+      qualityEncodingOverride: priority
+        ? { generation, priority, strict: options.strict !== false }
+        : payload.qualityEncodingOverride,
       qualityArtifactKey: artifactKey,
       qualityRetryGeneration: generation,
       awaitingManualRecovery: false,
@@ -5039,12 +5156,13 @@ export class SyncScheduler {
     for (const key of ["downloadDir", "outputFiles", "error"]) delete nextPayload[key];
     const woken = this.jobStore.wakeManualJob(job.id, nextPayload);
     if (!woken) return { ok: false as const, status: 409, message: "下载任务正在被其他操作处理，请刷新后重试" };
-    this.resumeDownloadRecoveryRelations(job, qualityMode ? `已按 ${quality} 严格重新下载。` : `已按 ${priority![0]} 编码严格重新下载。`);
+    const targetLabel = [quality, priority?.[0]].filter(Boolean).join(" / ");
+    this.resumeDownloadRecoveryRelations(job, `已按 ${targetLabel} 严格重新下载。`);
     logManager.push({
       timestamp: new Date(this.now()).toISOString(),
       type: "download",
       level: "info",
-      summary: qualityMode ? `已按 ${quality} 严格重新下载 ${bvid}` : `已按 ${priority![0]} 编码严格重新下载 ${bvid}`,
+      summary: `已按 ${targetLabel} 严格重新下载 ${bvid}`,
       raw: `[Recovery] strict-download action=${action} generation=${generation}`,
       bvid,
       simpleVisible: true,
@@ -5144,18 +5262,14 @@ export class SyncScheduler {
     const job = this.jobStore.findById(jobId);
     if (!job) return { ok: false as const, status: 404, message: "画质重调任务不存在或已恢复" };
     const qualityRetry = String(options.quality || "").trim().toUpperCase();
-    const encodingMode = !qualityRetry;
-    const eligibility = encodingMode
-      ? this.qualityEncodingRetryEligibility(job)
-      : this.qualityQualityRetryEligibility(job);
-    if (!eligibility.eligible) {
-      return { ok: false as const, status: 409, message: `当前不能${encodingMode ? "换编码" : "换分辨率"}重调：${eligibility.reason}` };
-    }
-    if (!encodingMode && !["8K", "4K", "1080P60", "1080P", "720P"].includes(qualityRetry)) {
+    const priority = options.priority && isValidBBDownEncodingPriority(options.priority)
+      ? normalizeBBDownEncodingPriority(options.priority)
+      : undefined;
+    if (qualityRetry && !isSelectableBilibiliQuality(qualityRetry)) {
       return { ok: false as const, status: 400, message: "不支持的画质档位" };
     }
-    if (encodingMode && (!options.priority || options.priority.length !== 3)) {
-      return { ok: false as const, status: 400, message: "编码顺序无效" };
+    if (!qualityRetry && !priority) {
+      return { ok: false as const, status: 400, message: "请选择画质或编码" };
     }
     const payload = job.payload as any;
     const bvid = String(job.bvid || payload.bvid || "");
@@ -5171,9 +5285,25 @@ export class SyncScheduler {
       Number(payload.qualityRetryGeneration || 0),
     ) + 1;
     const currentProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
-    const qualityProfile = qualityRetry ? { ...currentProfile, quality: qualityRetry } : currentProfile;
-    const priority = options.priority;
-    const strictEncoding = Boolean(options.strictEncoding);
+    const currentEncoding = String(payload.qualityEncodingOverride?.priority?.[0] || currentProfile.encoding || "").toUpperCase();
+    if (qualityRetry && qualityRetry !== currentProfile.quality) {
+      const eligibility = this.qualityQualityRetryEligibility(job);
+      if (!eligibility.eligible) {
+        return { ok: false as const, status: 409, message: `当前不能换分辨率重调：${eligibility.reason}` };
+      }
+    }
+    if (priority && priority[0] !== currentEncoding) {
+      const eligibility = this.qualityEncodingRetryEligibility(job);
+      if (!eligibility.eligible) {
+        return { ok: false as const, status: 409, message: `当前不能换编码重调：${eligibility.reason}` };
+      }
+    }
+    const qualityProfile = {
+      ...currentProfile,
+      ...(qualityRetry ? { quality: qualityRetry } : {}),
+      ...(priority ? { encoding: priority[0] } : {}),
+    };
+    const strictEncoding = Boolean(priority && options.strictEncoding);
     const artifactKey = crypto.createHash("sha256").update(JSON.stringify({
       sourceArtifactKey: String(payload.artifactKey || buildQualityArtifactKey(bvid, qualityProfile)),
       generation,
@@ -5195,13 +5325,11 @@ export class SyncScheduler {
       artifactKey,
       qualityProfile,
       qualityStrict: Boolean(qualityRetry) || Boolean(payload.qualityStrict),
-      qualityEncodingOverride: encodingMode
+      qualityEncodingOverride: priority
         ? { generation, priority, strict: strictEncoding }
         : payload.qualityEncodingOverride,
       qualityRetryGeneration: generation,
-      qualityStageLabel: qualityRetry
-        ? `等待按 ${qualityRetry}（仅此画质）下载新版`
-        : `等待按 ${priority![0]}${strictEncoding ? "（仅此编码）" : "优先"}下载新版`,
+      qualityStageLabel: `等待按 ${[qualityRetry, priority?.[0]].filter(Boolean).join(" / ")}${qualityRetry && priority ? "（仅此组合）" : qualityRetry ? "（仅此画质）" : "（仅此编码）"}下载新版`,
       awaitingManualRecovery: false,
       automaticQualityRecoveryAttempts: 0,
       supersededQualityArtifactKey: payload.artifactKey,
@@ -5245,10 +5373,8 @@ export class SyncScheduler {
       timestamp: new Date(this.now()).toISOString(),
       type: "download",
       level: "info",
-      summary: qualityRetry
-        ? `已按 ${qualityRetry} 严格重新建立画质重调 ${bvid}`
-        : `已按 ${priority![0]}${strictEncoding ? " 单编码" : " 优先"}重新建立画质重调 ${bvid}`,
-      raw: `[QualityRecovery] restart mode=${qualityRetry ? "quality" : "encoding"} generation=${generation} strict=${qualityRetry ? "quality" : strictEncoding} targets=${targets.length}`,
+      summary: `已按 ${[qualityRetry, priority?.[0]].filter(Boolean).join(" / ")} 重新建立画质重调 ${bvid}`,
+      raw: `[QualityRecovery] restart mode=profile generation=${generation} strictQuality=${Boolean(qualityRetry)} strictEncoding=${strictEncoding} targets=${targets.length}`,
       bvid,
       simpleVisible: true,
       debugVisible: true,
@@ -5318,13 +5444,28 @@ export class SyncScheduler {
         if (this.recoveryJobLocks.has(jobId)) {
           return { ok: false as const, status: 409, message: "该编码替换任务正在被处理，请稍后刷新" };
         }
-        const requestedPriority = normalizeBBDownEncodingPriority(options.encodingPriority);
-        if (!isValidBBDownEncodingPriority(options.encodingPriority)) {
+        const quality = String(options.quality || "").trim().toUpperCase();
+        const hasEncoding = options.encodingPriority !== undefined;
+        if (quality && !isSelectableBilibiliQuality(quality)) {
+          return { ok: false as const, status: 400, message: "不支持的画质档位" };
+        }
+        if (hasEncoding && !isValidBBDownEncodingPriority(options.encodingPriority)) {
           return { ok: false as const, status: 400, message: "编码顺序必须包含 HEVC、AVC、AV1 且各出现一次" };
         }
+        if (!quality && !hasEncoding) {
+          return { ok: false as const, status: 400, message: "请选择画质或编码" };
+        }
+        const requestedPriority = hasEncoding
+          ? normalizeBBDownEncodingPriority(options.encodingPriority)
+          : normalizeBBDownEncodingPriority(this.configStore.get().bbdownEncodingPriority, this.configStore.get().bbdownEncoding);
         this.recoveryJobLocks.add(jobId);
         try {
-          const started = await this.startEncodingRetry(jobId, requestedPriority, options.strict !== false);
+          const started = await this.startEncodingRetry(
+            jobId,
+            requestedPriority,
+            hasEncoding && options.strict !== false,
+            quality || undefined,
+          );
           if (!started.ok) return started;
           return {
             ok: true as const,
@@ -5374,8 +5515,16 @@ export class SyncScheduler {
       }
     }
     if (scope === "quality" && action === "retry_quality_with_encoding") {
-      if (!isValidBBDownEncodingPriority(options.encodingPriority)) {
+      const quality = String(options.quality || "").trim().toUpperCase();
+      const hasEncoding = options.encodingPriority !== undefined;
+      if (quality && !isSelectableBilibiliQuality(quality)) {
+        return { ok: false as const, status: 400, message: "不支持的画质档位" };
+      }
+      if (hasEncoding && !isValidBBDownEncodingPriority(options.encodingPriority)) {
         return { ok: false as const, status: 400, message: "编码顺序必须包含 HEVC、AVC、AV1 且各出现一次" };
+      }
+      if (!quality && !hasEncoding) {
+        return { ok: false as const, status: 400, message: "请选择画质或编码" };
       }
       if (this.recoveryJobLocks.has(jobId)) {
         return { ok: false as const, status: 409, message: "该画质重调任务正在被处理，请稍后刷新" };
@@ -5383,8 +5532,9 @@ export class SyncScheduler {
       this.recoveryJobLocks.add(jobId);
       try {
         return this.restartQualityRecovery(jobId, {
-          priority: normalizeBBDownEncodingPriority(options.encodingPriority),
-          strictEncoding: options.strict !== false,
+          priority: hasEncoding ? normalizeBBDownEncodingPriority(options.encodingPriority) : undefined,
+          strictEncoding: hasEncoding && options.strict !== false,
+          quality: quality || undefined,
         });
       } finally {
         this.recoveryJobLocks.delete(jobId);
@@ -5393,12 +5543,21 @@ export class SyncScheduler {
     if (scope === "quality" && action === "retry_quality_with_quality") {
       const quality = String(options.quality || "").trim().toUpperCase();
       if (!quality) return { ok: false as const, status: 400, message: "请选择新的画质档位" };
+      if (options.encodingPriority !== undefined && !isValidBBDownEncodingPriority(options.encodingPriority)) {
+        return { ok: false as const, status: 400, message: "编码顺序必须包含 HEVC、AVC、AV1 且各出现一次" };
+      }
       if (this.recoveryJobLocks.has(jobId)) {
         return { ok: false as const, status: 409, message: "该画质重调任务正在被处理，请稍后刷新" };
       }
       this.recoveryJobLocks.add(jobId);
       try {
-        return this.restartQualityRecovery(jobId, { quality });
+        return this.restartQualityRecovery(jobId, {
+          quality,
+          priority: isValidBBDownEncodingPriority(options.encodingPriority)
+            ? normalizeBBDownEncodingPriority(options.encodingPriority)
+            : undefined,
+          strictEncoding: options.strict !== false,
+        });
       } finally {
         this.recoveryJobLocks.delete(jobId);
       }
@@ -6946,8 +7105,15 @@ export class SyncScheduler {
       phase = disposition === "background" ? "background_wait" : "manual_action";
     }
 
+    const recoveryKind = String(assessment?.kind || "manual_review");
+    const retry = parseEncodingRetryContext(payload.encodingRetry);
     const detail = payload.awaitingManualRecovery
-      ? (assessment?.summary || "等待安全复核：系统会先自动检查远端状态")
+      ? this.uploadRecoverySummary(
+        recoveryKind,
+        assessment,
+        retry,
+        assessment?.summary || "等待安全复核：系统会先自动检查远端状态",
+      )
       : isVerification
         ? (job.status === "running" || job.status === "leased" ? "正在确认远端文件" : "已上传，等待远端确认")
         : String(payload.qualityStageLabel || payload.detail || job.lastError || "等待处理");
@@ -6965,7 +7131,7 @@ export class SyncScheduler {
       && !payload.historyOnly
       && !retryBusy
       && ["remote_size_limit", "remote_write_rejected", "encoding_retry_failed"].includes(String(assessment?.kind || ""))
-      ? [{ id: "redownload_with_encoding" as const, label: "换编码" }]
+      ? [{ id: "redownload_with_encoding" as const, label: "重新选择画质与编码" }]
       : undefined;
 
     return mapQueueBoardTask({
@@ -6997,6 +7163,7 @@ export class SyncScheduler {
       recoveryJobId: payload.awaitingManualRecovery ? String(job.id) : undefined,
       recoveryDisposition: disposition,
       recoveryIssueId: payload.awaitingManualRecovery ? `upload.${job.id}` : undefined,
+      recoveryKind: payload.awaitingManualRecovery ? recoveryKind : undefined,
       recoveryActions,
     });
   }

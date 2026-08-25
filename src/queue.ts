@@ -64,6 +64,7 @@ export interface QueueBoardItem {
   recoveryJobId?: string;
   recoveryDisposition?: "background" | "action_required" | "intentional_confirmation";
   recoveryIssueId?: string;
+  recoveryKind?: string;
   recoveryActions?: Array<{ id: QueueBoardAction; label: string }>;
   stage: QueueBoardStage;
 }

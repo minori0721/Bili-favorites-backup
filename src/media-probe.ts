@@ -8,7 +8,10 @@ import {
   type BBDownProbeTrack,
 } from "./downloader.js";
 import type { BiliUser } from "./users.js";
-import { normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
+import {
+  normalizeActualCodec,
+  normalizeBilibiliQualityLabel,
+} from "./media-metadata.js";
 import { safeErrorSummary } from "./diagnostics.js";
 
 export interface TargetMediaProfile {
@@ -18,8 +21,17 @@ export interface TargetMediaProfile {
 }
 
 export interface MediaProbeCombination extends BBDownProbeTrack {
+  quality?: string;
   encoding?: "HEVC" | "AVC" | "AV1";
   available: boolean;
+  pageCount?: number;
+  availablePageCount?: number;
+  totalVideoBytes?: number;
+  totalAudioBytes?: number;
+  totalBytes?: number;
+  totalBytesKind?: "final" | "video_only";
+  peakBytes?: number;
+  totalSizeSource?: BBDownProbeSizeSource | "mixed";
 }
 
 export interface MediaProbeResult {
@@ -64,6 +76,11 @@ type MediaProbeRunner = (
   target?: BBDownProbeTarget,
 ) => Promise<{ bvid: string; pages: BBDownProbePage[]; source: "bbdown" }>;
 
+type MediaAvailabilityProbe = (
+  cookie: BiliUser["cookie"],
+  bvid: string,
+) => Promise<{ available: boolean; pages?: unknown[] }>;
+
 function codec(value: unknown): MediaProbeCombination["encoding"] {
   const normalized = normalizeActualCodec(String(value || ""));
   return normalized === "HEVC" || normalized === "AVC" || normalized === "AV1" ? normalized : undefined;
@@ -72,11 +89,16 @@ function codec(value: unknown): MediaProbeCombination["encoding"] {
 function normalizePage(page: BBDownProbePage) {
   return {
     ...page,
-    tracks: page.tracks.map((track) => ({
-      ...track,
-      encoding: codec(track.codec),
-      available: true,
-    })),
+    tracks: page.tracks.map((track) => {
+      const quality = normalizeBilibiliQualityLabel(track.bilibiliQuality);
+      const encoding = codec(track.codec);
+      return {
+        ...track,
+        quality,
+        encoding,
+        available: Boolean(quality && encoding),
+      };
+    }),
   };
 }
 
@@ -92,7 +114,7 @@ function matchesStrictTarget(track: MediaProbeCombination, target?: TargetMediaP
 }
 
 function combinationKey(track: MediaProbeCombination) {
-  return `${normalizeBilibiliQualityLabel(track.bilibiliQuality)}:${track.encoding || ""}`;
+  return `${track.quality || normalizeBilibiliQualityLabel(track.bilibiliQuality)}:${track.encoding || ""}`;
 }
 
 function positiveBytes(value: unknown) {
@@ -116,6 +138,7 @@ export class MediaProbeService {
     private readonly probeRunner: MediaProbeRunner = (bvid, cookie, config, target) =>
       probeMediaWithBBDown(bvid, cookie, config, { target }),
     private readonly cacheCapacityProvider?: () => MediaProbeCacheCapacity | Promise<MediaProbeCacheCapacity>,
+    private readonly availabilityProbe?: MediaAvailabilityProbe,
   ) {}
 
   start(user: BiliUser, bvid: string, target?: TargetMediaProfile) {
@@ -136,7 +159,15 @@ export class MediaProbeService {
     const probeTarget = target?.strict
       ? { quality: target.quality, encoding: target.encoding }
       : undefined;
-    void this.probeRunner(normalized, user.cookie, this.configStore.get(), probeTarget)
+    void (async () => {
+      if (this.availabilityProbe) {
+        const availability = await this.availabilityProbe(user.cookie, normalized);
+        if (availability.available === false && (!Array.isArray(availability.pages) || availability.pages.length === 0)) {
+          throw new Error("B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小");
+        }
+      }
+      return this.probeRunner(normalized, user.cookie, this.configStore.get(), probeTarget);
+    })()
       .then(async (probe) => {
         const pages = probe.pages.map((page) => {
           const normalizedPage = normalizePage(page);
@@ -144,7 +175,7 @@ export class MediaProbeService {
             ...normalizedPage,
             tracks: normalizedPage.tracks.map((track) => ({
               ...track,
-              available: matchesStrictTarget(track, target),
+              available: track.available && matchesStrictTarget(track, target),
             })),
           };
         });
@@ -155,31 +186,55 @@ export class MediaProbeService {
             if (!combinationEntries.has(key)) combinationEntries.set(key, track);
           }
         }
-        const combinations = [...combinationEntries.entries()].map(([key, track]) => ({
-          ...track,
-          // A combination is usable only when every page exposes the same
-          // target. This keeps a multi-P strict retry from looking available
-          // because just its first page matched.
-          available: pages.every((page) => page.tracks.some((candidate) => {
-            const candidateKey = combinationKey(candidate);
-            return candidateKey === key && candidate.available;
-          })),
-          resolution: (() => {
-            const resolutions = new Set(pages.flatMap((page) => page.tracks
-              .filter((candidate) => combinationKey(candidate) === key)
-              .map((candidate) => String(candidate.resolution || "").trim())
-              .filter(Boolean)));
-            return resolutions.size > 1 ? "各分P不同" : [...resolutions][0] || track.resolution;
-          })(),
-        }));
-        const selected = pages.map((page) => page.tracks.find((track) => track.available));
-        const estimatedVideoBytes = selected.every((track) => positiveBytes(track?.estimatedBytes) > 0)
-          ? selected.reduce((sum, track) => sum + positiveBytes(track?.estimatedBytes), 0)
-          : 0;
         const hasV2AudioProof = pages.every((page) => page.version >= 2 && Object.prototype.hasOwnProperty.call(page, "selectedAudio"));
         const audioSizes = pages.map((page) => page.selectedAudio === null ? 0 : positiveBytes(page.selectedAudio?.estimatedBytes));
         const audioKnown = hasV2AudioProof && pages.every((page, index) => page.selectedAudio === null || audioSizes[index] > 0);
         const estimatedAudioBytes = audioKnown ? audioSizes.reduce((sum, bytes) => sum + bytes, 0) : 0;
+        const audioSources = audioKnown ? pages
+          .filter((page) => page.selectedAudio !== null)
+          .map((page) => page.selectedAudio?.sizeSource || "unknown" as const) : [];
+        const combinations = [...combinationEntries.entries()].map(([key, track]) => {
+          const matchingTracks = pages.map((page) => page.tracks.find((candidate) => (
+            combinationKey(candidate) === key && candidate.available
+          )));
+          const availablePageCount = matchingTracks.filter(Boolean).length;
+          const totalVideoBytes = availablePageCount === pages.length
+            && matchingTracks.every((candidate) => positiveBytes(candidate?.estimatedBytes) > 0)
+            ? matchingTracks.reduce((sum, candidate) => sum + positiveBytes(candidate?.estimatedBytes), 0)
+            : 0;
+          const totalFinalBytes = totalVideoBytes > 0 && audioKnown
+            ? Math.ceil((totalVideoBytes + estimatedAudioBytes) * 1.01)
+            : totalVideoBytes;
+          const resolutions = new Set(pages.flatMap((page) => page.tracks
+            .filter((candidate) => combinationKey(candidate) === key)
+            .map((candidate) => String(candidate.resolution || "").trim())
+            .filter(Boolean)));
+          return {
+            ...track,
+            // A combination is usable only when every page exposes the same
+            // target. This keeps a multi-P strict retry from looking available
+            // because just its first page matched.
+            available: availablePageCount === pages.length,
+            pageCount: pages.length,
+            availablePageCount,
+            totalVideoBytes: totalVideoBytes || undefined,
+            totalAudioBytes: audioKnown ? estimatedAudioBytes : undefined,
+            totalBytes: totalFinalBytes || undefined,
+            totalBytesKind: totalFinalBytes > 0 ? (audioKnown ? "final" : "video_only") : undefined,
+            peakBytes: totalVideoBytes > 0 && audioKnown
+              ? totalVideoBytes + estimatedAudioBytes + totalFinalBytes
+              : undefined,
+            totalSizeSource: mergeSizeSources([
+              ...matchingTracks.map((candidate) => candidate?.sizeSource || "unknown" as const),
+              ...audioSources,
+            ]),
+            resolution: resolutions.size > 1 ? "各分P不同" : [...resolutions][0] || track.resolution,
+          } as MediaProbeCombination;
+        });
+        const selected = pages.map((page) => page.tracks.find((track) => track.available));
+        const estimatedVideoBytes = selected.every((track) => positiveBytes(track?.estimatedBytes) > 0)
+          ? selected.reduce((sum, track) => sum + positiveBytes(track?.estimatedBytes), 0)
+          : 0;
         const estimatedFinalBytes = estimatedVideoBytes > 0 && audioKnown
           ? Math.ceil((estimatedVideoBytes + estimatedAudioBytes) * 1.01)
           : 0;
@@ -198,9 +253,7 @@ export class MediaProbeService {
           : undefined;
         const estimatedBytesSource = mergeSizeSources([
           ...selected.map((track) => track?.sizeSource || "unknown"),
-          ...(audioKnown ? pages
-            .filter((page) => page.selectedAudio !== null)
-            .map((page) => page.selectedAudio?.sizeSource || "unknown") : []),
+          ...audioSources,
         ]);
         Object.assign(result, {
           status: "complete",

@@ -50,6 +50,10 @@ export interface RecoveryIssueAction {
   description: string;
   danger?: boolean;
   choices?: RecoveryIssueActionChoice[];
+  mediaProfile?: {
+    quality: boolean;
+    encoding: boolean;
+  };
 }
 
 export type RecoveryIssueDisposition = "background" | "action_required" | "intentional_confirmation";
@@ -133,16 +137,20 @@ const actions = {
     label: "重新下载",
     description: "废弃失效补传任务并重新下载，不删除任何远端文件。",
   }),
-  redownloadWithEncoding: (): RecoveryIssueAction => ({
+  redownloadWithEncoding: (quality = false): RecoveryIssueAction => ({
     id: "redownload_with_encoding",
-    label: "换编码重新下载",
-    description: "按本次选择的编码在隔离目录重新下载并上传；原文件会保留到新文件完成远端确认。",
+    label: quality ? "重新选择画质与编码" : "换编码重新下载",
+    description: quality
+      ? "先探测当前可用组合和预计大小，再按选中的画质与编码严格下载；原文件会保留到新文件完成远端确认。"
+      : "按本次选择的编码在隔离目录重新下载并上传；原文件会保留到新文件完成远端确认。",
+    mediaProfile: { quality, encoding: true },
   }),
   redownloadWithQuality: (choices: RecoveryIssueActionChoice[]): RecoveryIssueAction => ({
     id: "redownload_with_quality",
     label: "换分辨率重新下载",
     description: "严格按选择的 B 站画质档位重新下载；无法提供该档位时会回到待处理，不会上传错误候选。",
     choices,
+    mediaProfile: { quality: true, encoding: false },
   }),
   retryDownload: (): RecoveryIssueAction => ({
     id: "retry_download",
@@ -175,16 +183,20 @@ const actions = {
     label: "重新尝试画质重调",
     description: "从已保存的安全阶段继续，已验证旧文件不会被直接删除。",
   }),
-  retryQualityWithEncoding: (): RecoveryIssueAction => ({
+  retryQualityWithEncoding: (quality = false): RecoveryIssueAction => ({
     id: "retry_quality_with_encoding",
-    label: "换编码重调画质",
-    description: "保持目标画质不变，以本次编码顺序生成新的隔离版本；现有归档继续保留。",
+    label: quality ? "重新选择画质与编码" : "换编码重调画质",
+    description: quality
+      ? "先探测当前可用组合和预计大小，再生成严格匹配的新隔离版本；现有归档继续保留。"
+      : "保持目标画质不变，以本次编码顺序生成新的隔离版本；现有归档继续保留。",
+    mediaProfile: { quality, encoding: true },
   }),
   retryQualityWithQuality: (choices: RecoveryIssueActionChoice[]): RecoveryIssueAction => ({
     id: "retry_quality_with_quality",
     label: "换分辨率重调画质",
     description: "选择一个新的 B 站画质档位严格重试；如果当前账号没有该档位，任务会回到待处理，现有归档继续保留。",
     choices,
+    mediaProfile: { quality: true, encoding: false },
   }),
   openSettings: (): RecoveryIssueAction => ({
     id: "open_settings",
@@ -231,10 +243,11 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
   if (context.domain === "download") {
     const alternate = context.alternateAccounts || [];
     const strict = [] as RecoveryIssueAction[];
-    if (context.downloadQualityEligible && context.downloadQualityChoices?.length) {
+    if (context.downloadEncodingEligible) {
+      strict.push(actions.redownloadWithEncoding(Boolean(context.downloadQualityEligible)));
+    } else if (context.downloadQualityEligible && context.downloadQualityChoices?.length) {
       strict.push(actions.redownloadWithQuality(context.downloadQualityChoices));
     }
-    if (context.downloadEncodingEligible) strict.push(actions.redownloadWithEncoding());
     if (context.downloadCategory === "account" && alternate.length > 0) {
       return [...strict, actions.retryDownloadWithAccount(alternate), actions.retryDownload(), actions.deferDownload()];
     }
@@ -246,10 +259,11 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
 
   if (context.domain === "quality") {
     const planned: RecoveryIssueAction[] = [];
-    if (context.qualityQualityEligible && context.qualityChoices?.length) {
+    if (context.qualityEncodingEligible) {
+      planned.push(actions.retryQualityWithEncoding(Boolean(context.qualityQualityEligible)));
+    } else if (context.qualityQualityEligible && context.qualityChoices?.length) {
       planned.push(actions.retryQualityWithQuality(context.qualityChoices));
     }
-    if (context.qualityEncodingEligible) planned.push(actions.retryQualityWithEncoding());
     planned.push(actions.retryQuality());
     return planned;
   }
@@ -267,12 +281,12 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
       return candidate ? [candidate, actions.recheck()] : [actions.recheck()];
     case "remote_size_limit":
       return context.jobKind === "upload" && !context.historyOnly
-        ? [actions.redownloadWithEncoding(), actions.openSettings(), actions.recheck()]
+        ? [actions.redownloadWithEncoding(true), actions.openSettings(), actions.recheck()]
         : [actions.openSettings(), actions.reupload(), actions.recheck()];
     case "encoding_retry_failed":
     case "remote_write_rejected":
       return context.jobKind === "upload" && !context.historyOnly
-        ? [actions.redownloadWithEncoding(), actions.openSettings(), actions.recheck()]
+        ? [actions.redownloadWithEncoding(true), actions.openSettings(), actions.recheck()]
         : [actions.openSettings(), actions.recheck()];
     case "remote_permission":
       return [actions.openSettings(), actions.recheck()];

@@ -5,7 +5,7 @@ import { SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
-test("eligible quality failures restart as a new isolated encoding artifact", async () => {
+test("eligible quality failures restart as one isolated strict quality and encoding artifact", async () => {
   const runtime = await createTestDir("quality-encoding-recovery");
   const manager = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite") });
   const now = new Date().toISOString();
@@ -44,13 +44,23 @@ test("eligible quality failures restart as a new isolated encoding artifact", as
       payload: {
         bvid: "BVQUALITY", artifactKey: "old-artifact", qualityProfile: profile,
         target, targets: [target], downloadUserId: "u1", awaitingManualRecovery: true,
-        qualityFailure: { stage: "download", category: "unknown", summary: "HEVC codec stream unavailable", encodingEligible: true },
+        qualityFailure: {
+          stage: "download",
+          category: "unknown",
+          summary: "requested media profile unavailable",
+          requestedQuality: "4K",
+          requestedEncoding: "HEVC",
+          encodingEligible: true,
+          qualityEligible: true,
+        },
       },
     });
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `quality.${failed.id}`);
     assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_quality_with_encoding", "retry_quality"]);
+    assert.deepEqual(issue.availableActions[0].mediaProfile, { quality: true, encoding: true });
 
     const result = await scheduler.resolveRecoveryIssue(`quality.${failed.id}`, "retry_quality_with_encoding", {
+      quality: "1080P",
       encodingPriority: ["AV1", "HEVC", "AVC"],
       strict: true,
     });
@@ -59,18 +69,24 @@ test("eligible quality failures restart as a new isolated encoding artifact", as
     const replacement = scheduler.jobStore.findById(result.jobId);
     assert.ok(replacement);
     assert.notEqual((replacement.payload as any).artifactKey, "old-artifact");
+    assert.equal((replacement.payload as any).qualityProfile.quality, "1080P");
+    assert.equal((replacement.payload as any).qualityProfile.encoding, "AV1");
     assert.deepEqual((replacement.payload as any).qualityEncodingOverride.priority, ["AV1", "HEVC", "AVC"]);
+    assert.equal((replacement.payload as any).qualityStageLabel, "等待按 1080P / AV1（仅此组合）下载新版");
     assert.equal((replacement.payload as any).downloadDir, undefined);
     assert.equal((replacement.payload as any).stageRemotePath, undefined);
 
     const control = scheduler.buildQualityUpgradeTask(replacement);
     let selectedEncoding = "";
+    let selectedQuality = "";
     control.downloadRunner = async (_bvid: string, _cookie: any, config: any) => {
       selectedEncoding = config.bbdownEncoding;
+      selectedQuality = config.bbdownQuality;
       return { downloadDir: path.join(runtime, "new-candidate"), files: [] };
     };
     await control.runDownloadPhase("test-run");
     assert.equal(selectedEncoding, "AV1");
+    assert.equal(selectedQuality, "1080P");
   } finally {
     scheduler.stop();
     manager.close();

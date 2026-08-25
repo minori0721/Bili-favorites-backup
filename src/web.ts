@@ -335,6 +335,27 @@ function getAppStyles() {
     .encoding-strict-option { margin-top:10px; }
     .encoding-retry-copy { margin:0 0 14px; color:#4D6862; line-height:1.65; }
     .encoding-retry-status { min-height:22px; margin-top:8px; color:#A53838; font-size:12px; }
+    .media-retry-probe { display:grid; gap:10px; }
+    .media-retry-probe-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .media-retry-probe-summary { min-width:0; color:#4D6862; font-size:12px; line-height:1.55; }
+    .media-retry-probe-summary.error { color:#9B2C2C; }
+    .media-retry-probe-head button { flex:0 0 auto; min-height:34px; padding:6px 11px; }
+    .media-retry-combinations { display:grid; gap:7px; max-height:286px; overflow:auto; padding:2px; }
+    .media-retry-combination { width:100%; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; align-items:center; padding:10px 12px; border:1px solid #D5E4E0; border-radius:8px; background:#FFF; color:#294A44; text-align:left; cursor:pointer; }
+    .media-retry-combination:hover,.media-retry-combination:focus-visible { border-color:#39C5BB; outline:2px solid rgba(57,197,187,.2); outline-offset:1px; }
+    .media-retry-combination[aria-checked="true"] { border-color:#178E84; background:#EFFAF8; box-shadow:0 0 0 1px rgba(23,142,132,.14); }
+    .media-retry-combination-main { min-width:0; font-weight:800; overflow-wrap:anywhere; }
+    .media-retry-combination-meta { color:#60736F; font-size:11px; font-weight:600; }
+    .media-retry-combination-size { color:#176F67; font-size:12px; font-weight:800; white-space:nowrap; }
+    .media-retry-combination:disabled { cursor:not-allowed; opacity:.58; background:#F5F7F6; }
+    .media-retry-combination:disabled:hover { border-color:#D5E4E0; outline:none; }
+    .media-retry-manual { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; padding:12px; border:1px solid #E7C990; border-radius:8px; background:#FFF9EE; }
+    .media-retry-manual[hidden] { display:none; }
+    .media-retry-manual label { display:grid; gap:5px; color:#5E5140; font-size:12px; font-weight:800; }
+    .media-retry-manual select { width:100%; min-height:40px; padding:8px 10px; border:1px solid #D9C49D; border-radius:7px; background:#FFF; color:#294A44; font:inherit; }
+    .media-retry-estimate { min-height:42px; padding:9px 11px; border:1px solid #DCEAE7; border-radius:7px; background:#F7FBFA; color:#526B66; font-size:12px; line-height:1.55; }
+    .media-retry-strict-note { margin:0; color:#526B66; font-size:12px; line-height:1.55; }
+    @media (max-width:600px) { .media-retry-manual { grid-template-columns:1fr; } .media-retry-combinations { max-height:238px; } }
     .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; padding:16px; z-index:100; opacity:0; pointer-events:none; transition:opacity .16s ease; }
     .modal.active { opacity:1; pointer-events:auto; }
     .modal.is-closing { opacity:0; pointer-events:none; }
@@ -1619,15 +1640,40 @@ function getModals() {
   </div>
 
   <div class="modal" id="encodingRetryModal" aria-labelledby="encodingRetryTitle">
-    <div class="panel panel-narrow">
-      <h2 id="encodingRetryTitle">换编码重新下载</h2>
+    <div class="panel panel-medium">
+      <h2 id="encodingRetryTitle">重新选择画质与编码</h2>
       <p id="encodingRetryCopy" class="encoding-retry-copy">系统会在隔离目录重新下载并上传。原文件会保留到新文件完成远端确认。</p>
-      <label>本次重试的编码顺序</label>
-      <div id="encodingRetryPriorityEditor" class="encoding-priority-editor" role="listbox" aria-label="本次重试编码顺序"></div>
-      <label class="checkbox-label encoding-strict-option"><input type="checkbox" id="encodingRetryStrict" checked /> 只使用第一项（推荐用于远端单文件限制）</label>
+      <div class="media-retry-probe">
+        <div class="media-retry-probe-head">
+          <div id="encodingRetryProbeSummary" class="media-retry-probe-summary" aria-live="polite">正在读取当前可用媒体组合...</div>
+          <button id="encodingRetryProbeBtn" class="ghost" type="button">重新探测</button>
+        </div>
+        <div id="encodingRetryCombinations" class="media-retry-combinations" role="radiogroup" aria-label="可用画质与编码组合"></div>
+        <div id="encodingRetryManual" class="media-retry-manual" hidden>
+          <label id="encodingRetryQualityField">画质档位
+            <select id="encodingRetryQuality">
+              <option value="">不限定画质（沿用任务设置）</option>
+              <option value="8K">8K</option><option value="杜比视界">杜比视界</option><option value="HDR">HDR</option>
+              <option value="4K">4K</option><option value="1080P60">1080P 60帧</option><option value="1080P+">1080P 高码率</option>
+              <option value="1080P">1080P</option><option value="720P60">720P 60帧</option><option value="720P">720P</option>
+              <option value="480P">480P</option><option value="360P">360P</option>
+            </select>
+          </label>
+          <label id="encodingRetryEncodingField">视频编码
+            <select id="encodingRetryEncoding">
+              <option value="">不限定编码（沿用当前偏好）</option>
+              <option value="HEVC">HEVC</option><option value="AVC">AVC</option><option value="AV1">AV1</option>
+            </select>
+          </label>
+        </div>
+        <div id="encodingRetryEstimate" class="media-retry-estimate">尚未取得大小信息。</div>
+        <p class="media-retry-strict-note">已选择的画质或编码会逐分P严格匹配；未选择的维度沿用当前任务设置或编码偏好。严格项不匹配时不会上传候选，原归档继续保留。</p>
+      </div>
+      <div id="encodingRetryPriorityEditor" class="encoding-priority-editor" role="listbox" aria-label="本次重试编码顺序" hidden></div>
+      <input type="checkbox" id="encodingRetryStrict" checked hidden />
       <div id="encodingRetryStatus" class="encoding-retry-status" role="alert" aria-live="polite"></div>
       <div class="row modal-actions split-actions">
-        <button id="encodingRetrySubmitBtn" type="button">开始替换下载</button>
+        <button id="encodingRetrySubmitBtn" type="button" disabled>开始严格重试</button>
         <button id="encodingRetryCancelBtn" class="ghost" type="button">取消</button>
       </div>
     </div>
@@ -2070,6 +2116,7 @@ function getAppScript() {
       }
       if (modal.id === 'encodingRetryModal' && encodingRetryDialogState) {
         const pending = encodingRetryDialogState;
+        cleanupEncodingRetryDialog(pending);
         encodingRetryDialogState = null;
         pending.resolve(null);
       }
@@ -7421,7 +7468,7 @@ function getAppScript() {
         unknown_same_size:'远端证明还未确认',
         legacy_conflict_interrupted:'旧冲突归档待复核',
         conflict_candidate_ready:'新候选等待选择',
-        encoding_retry_failed:'编码替换未完成',
+        encoding_retry_failed:'媒体替换未完成',
         download_retry_exhausted:'下载重试次数已用完',
         download_account_required:'下载账号需要更换',
         download_tool_failure:'本地下载工具异常',
@@ -7506,38 +7553,403 @@ function getAppScript() {
       host.appendChild(section);
     }
 
+    const MEDIA_RETRY_QUALITY_ORDER = ['8K','杜比视界','HDR','4K','1080P60','1080P+','1080P','720P60','720P','480P','360P'];
+    const MEDIA_RETRY_ENCODING_ORDER = ['HEVC','AVC','AV1'];
+
+    function recoveryActionMediaProfile(action) {
+      if (action?.mediaProfile) {
+        return {
+          quality:Boolean(action.mediaProfile.quality),
+          encoding:Boolean(action.mediaProfile.encoding),
+        };
+      }
+      const id = String(action?.id || '');
+      return {
+        quality:id === 'redownload_with_quality' || id === 'retry_quality_with_quality',
+        encoding:id === 'redownload_with_encoding' || id === 'retry_quality_with_encoding',
+      };
+    }
+
+    function cleanupEncodingRetryDialog(state = encodingRetryDialogState) {
+      if (!state) return;
+      state.probeToken = Number(state.probeToken || 0) + 1;
+      if (state.probeController) state.probeController.abort();
+      if (state.pollTimer) clearTimeout(state.pollTimer);
+      if (state.refineTimer) clearTimeout(state.refineTimer);
+      state.probeController = null;
+      state.pollTimer = null;
+      state.refineTimer = null;
+      state.activeProbe = null;
+      state.queuedRefineKey = null;
+    }
+
+    function mediaRetryCombinationKey(combination) {
+      return [String(combination?.quality || combination?.bilibiliQuality || '').trim(), String(combination?.encoding || '').trim()].join(':');
+    }
+
+    function mediaRetrySourceLabel(source) {
+      const labels = {
+        api:'接口大小',
+        bitrate_estimate:'码率估算',
+        head:'HEAD 精确大小',
+        range:'Range 精确大小',
+        mixed:'混合来源',
+      };
+      return labels[String(source || '')] || '大小来源未知';
+    }
+
+    function mediaRetryFpsLabel(value) {
+      const fps = Number.parseFloat(String(value || ''));
+      if (!Number.isFinite(fps) || fps <= 0) return '';
+      return (fps >= 49.5 ? Math.round(fps) : Math.round(fps * 100) / 100) + 'fps';
+    }
+
+    function mediaRetryCombinationBytes(combination) {
+      for (const value of [combination?.totalBytes, combination?.totalVideoBytes, combination?.estimatedBytes]) {
+        const bytes = Number(value || 0);
+        if (Number.isFinite(bytes) && bytes > 0) return bytes;
+      }
+      return 0;
+    }
+
+    function mediaRetryEncodingPriority(encoding) {
+      const selected = String(encoding || '').toUpperCase();
+      return [selected, ...MEDIA_RETRY_ENCODING_ORDER].filter((value, index, values) => value && values.indexOf(value) === index);
+    }
+
+    function currentEncodingRetrySelection() {
+      const state = encodingRetryDialogState;
+      if (!state) return null;
+      if (state.selected) {
+        return {
+          quality:state.allowQuality ? String(state.selected.quality || state.selected.bilibiliQuality || '') : '',
+          encoding:state.allowEncoding ? String(state.selected.encoding || '') : '',
+          strict:true,
+        };
+      }
+      if (!state.manual) return null;
+      return {
+        quality:state.allowQuality ? String(document.getElementById('encodingRetryQuality')?.value || '') : '',
+        encoding:state.allowEncoding ? String(document.getElementById('encodingRetryEncoding')?.value || '') : '',
+        strict:true,
+      };
+    }
+
+    function updateEncodingRetrySelectionState() {
+      const state = encodingRetryDialogState;
+      if (!state) return;
+      const selection = currentEncodingRetrySelection();
+      const valid = Boolean(selection && ((state.allowQuality && selection.quality) || (state.allowEncoding && selection.encoding)));
+      const submit = document.getElementById('encodingRetrySubmitBtn');
+      if (submit) submit.disabled = !valid;
+      const estimate = document.getElementById('encodingRetryEstimate');
+      if (!estimate) return;
+      if (!selection) {
+        estimate.textContent = state.combinations.length > 0
+          ? '请选择一个可用组合；系统随后会读取该组合的精确大小。'
+          : '尚未取得大小信息。';
+        return;
+      }
+      if (!state.selected) {
+        estimate.textContent = '当前源的可用性和大小尚未确认。提交后会严格尝试，不匹配时不会上传候选。';
+        return;
+      }
+      const combination = state.selected;
+      const bytes = mediaRetryCombinationBytes(combination);
+      const kind = combination.totalBytesKind === 'final' ? '预计成品' : '预计视频流';
+      const coverage = Number(combination.pageCount || 0) > 1
+        ? ' · 分P覆盖 ' + Number(combination.availablePageCount || 0) + '/' + Number(combination.pageCount || 0)
+        : '';
+      const source = mediaRetrySourceLabel(combination.totalSizeSource || combination.sizeSource);
+      const peakBytes = Number(combination.peakBytes || 0);
+      const availableBytes = Number(state.latestResult?.cacheAvailableBytes);
+      const peak = peakBytes > 0 ? ' · 本地峰值约 ' + formatBytes(peakBytes) : '';
+      const capacity = Number.isFinite(availableBytes) && availableBytes >= 0 ? ' · 缓存可用 ' + formatBytes(availableBytes) : '';
+      const warning = Number.isFinite(availableBytes) && peakBytes > availableBytes ? ' · 空间可能不足' : '';
+      estimate.textContent = (bytes > 0 ? kind + ' ' + formatBytes(bytes) : '大小仍待确认') + '（' + source + '）' + coverage + peak + capacity + warning;
+    }
+
+    function renderEncodingRetryCombinations() {
+      const state = encodingRetryDialogState;
+      if (!state) return;
+      const host = document.getElementById('encodingRetryCombinations');
+      const manual = document.getElementById('encodingRetryManual');
+      const summary = document.getElementById('encodingRetryProbeSummary');
+      if (!host || !manual || !summary) return;
+      summary.textContent = state.probeMessage || '正在读取当前可用媒体组合...';
+      summary.classList.toggle('error', Boolean(state.probeError));
+      host.innerHTML = '';
+      const fixedQuality = state.allowQuality ? '' : String(state.issue?.requestedQuality || '').trim().toUpperCase();
+      const fixedEncoding = state.allowEncoding ? '' : String(state.issue?.requestedEncoding || '').trim().toUpperCase();
+      const canBindExactCombination = (state.allowQuality || Boolean(fixedQuality)) && (state.allowEncoding || Boolean(fixedEncoding));
+      const combinations = (canBindExactCombination ? state.combinations.filter((combination) => {
+        const quality = String(combination.quality || combination.bilibiliQuality || '').trim().toUpperCase();
+        const encoding = String(combination.encoding || '').trim().toUpperCase();
+        return (!fixedQuality || quality === fixedQuality) && (!fixedEncoding || encoding === fixedEncoding);
+      }) : []).sort((left, right) => {
+        const leftQuality = MEDIA_RETRY_QUALITY_ORDER.indexOf(String(left.quality || left.bilibiliQuality || ''));
+        const rightQuality = MEDIA_RETRY_QUALITY_ORDER.indexOf(String(right.quality || right.bilibiliQuality || ''));
+        const qualityOrder = (leftQuality < 0 ? 999 : leftQuality) - (rightQuality < 0 ? 999 : rightQuality);
+        if (qualityOrder !== 0) return qualityOrder;
+        return MEDIA_RETRY_ENCODING_ORDER.indexOf(String(left.encoding || '')) - MEDIA_RETRY_ENCODING_ORDER.indexOf(String(right.encoding || ''));
+      });
+      combinations.forEach((combination) => {
+        const key = mediaRetryCombinationKey(combination);
+        const available = combination.available === true;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'media-retry-combination';
+        button.setAttribute('role', 'radio');
+        button.setAttribute('aria-checked', String(Boolean(state.selected && mediaRetryCombinationKey(state.selected) === key)));
+        button.disabled = !available;
+        const main = document.createElement('span');
+        main.className = 'media-retry-combination-main';
+        main.textContent = [combination.quality || combination.bilibiliQuality || '未知画质', combination.encoding || '未知编码'].join(' · ');
+        const meta = document.createElement('span');
+        meta.className = 'media-retry-combination-meta';
+        const pageCount = Number(combination.pageCount || 0);
+        const coverage = pageCount > 1
+          ? (available ? '全部 ' + pageCount + ' 个分P' : '仅 ' + Number(combination.availablePageCount || 0) + '/' + pageCount + ' 个分P')
+          : (available ? '可严格选择' : '当前不可用');
+        meta.textContent = [combination.resolution, mediaRetryFpsLabel(combination.frameRate), coverage, mediaRetrySourceLabel(combination.totalSizeSource || combination.sizeSource)].filter(Boolean).join(' · ');
+        const size = document.createElement('span');
+        size.className = 'media-retry-combination-size';
+        const bytes = mediaRetryCombinationBytes(combination);
+        size.textContent = bytes > 0 ? formatBytes(bytes) : '大小待确认';
+        const copy = document.createElement('span');
+        copy.append(main, document.createElement('br'), meta);
+        button.append(copy, size);
+        button.addEventListener('click', () => {
+          if (!encodingRetryDialogState || !available) return;
+          encodingRetryDialogState.selected = combination;
+          encodingRetryDialogState.manual = false;
+          renderEncodingRetryCombinations();
+          queueEncodingRetryRefinement();
+        });
+        host.appendChild(button);
+      });
+      const availableCount = combinations.filter((item) => item.available === true).length;
+      if (combinations.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.textContent = state.probeError ? '当前无法取得可用媒体组合。' : '正在等待探测结果。';
+        host.appendChild(empty);
+      }
+      state.manual = state.manual || (Boolean(state.catalogFinished) && availableCount === 0) || !canBindExactCombination;
+      manual.hidden = !state.manual;
+      const qualityField = document.getElementById('encodingRetryQualityField');
+      const encodingField = document.getElementById('encodingRetryEncodingField');
+      if (qualityField) qualityField.hidden = !state.allowQuality;
+      if (encodingField) encodingField.hidden = !state.allowEncoding;
+      updateEncodingRetrySelectionState();
+    }
+
+    function mergeEncodingRetryCombination(state, combination) {
+      const key = mediaRetryCombinationKey(combination);
+      const index = state.combinations.findIndex((item) => mediaRetryCombinationKey(item) === key);
+      if (index >= 0) state.combinations[index] = combination;
+      else state.combinations.push(combination);
+    }
+
+    function finishEncodingRetryProbeCycle(state, token) {
+      if (encodingRetryDialogState !== state || token !== state.probeToken) return;
+      if (state.probeController) state.probeController = null;
+      if (state.pollTimer) clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+      state.activeProbe = null;
+      const button = document.getElementById('encodingRetryProbeBtn');
+      if (button) button.disabled = false;
+      const queued = state.queuedRefineKey;
+      state.queuedRefineKey = null;
+      if (queued && state.selected && mediaRetryCombinationKey(state.selected) === queued) {
+        void startEncodingRetryProbe('refine');
+      }
+    }
+
+    async function pollEncodingRetryProbe(state, probeId, token, mode, targetKey) {
+      if (encodingRetryDialogState !== state || token !== state.probeToken) return;
+      try {
+        const result = await fetchJsonSilent('/api/media-probe/' + encodeURIComponent(probeId), { signal:state.probeController?.signal });
+        if (encodingRetryDialogState !== state || token !== state.probeToken) return;
+        if (result.status === 'running') {
+          state.pollTimer = setTimeout(() => void pollEncodingRetryProbe(state, probeId, token, mode, targetKey), 700);
+          return;
+        }
+        if (result.status === 'failed') {
+          state.probeError = true;
+          state.probeMessage = mode === 'refine'
+            ? '精确大小读取失败：' + (result.error || '当前仍可按已探测组合严格尝试。')
+            : (result.error || '媒体探测失败；仍可手动严格尝试，但当前可用性和大小未知。');
+          if (mode === 'catalog') {
+            state.catalogFinished = true;
+            state.manual = true;
+          }
+          renderEncodingRetryCombinations();
+          finishEncodingRetryProbeCycle(state, token);
+          return;
+        }
+        const combinations = Array.isArray(result.combinations) ? result.combinations : [];
+        state.latestResult = result;
+        state.probeError = false;
+        if (mode === 'catalog') {
+          state.catalogFinished = true;
+          state.combinations = combinations;
+          const availableCount = combinations.filter((item) => item.available === true).length;
+          state.probeMessage = '已读取 ' + Number(result.pages?.length || 0) + ' 个分P、' + availableCount + ' 个完整可用组合。选择后会再读取该组合的精确大小。';
+          state.manual = availableCount === 0;
+        } else {
+          const refined = combinations.find((item) => item.available === true && mediaRetryCombinationKey(item) === targetKey);
+          if (refined) {
+            mergeEncodingRetryCombination(state, refined);
+            if (state.selected && mediaRetryCombinationKey(state.selected) === targetKey) state.selected = refined;
+          }
+          state.probeMessage = refined
+            ? '已更新所选组合的大小信息；可以开始严格重试。'
+            : '所选组合没有覆盖全部分P，请重新选择或手动严格尝试。';
+          state.probeError = !refined;
+        }
+        renderEncodingRetryCombinations();
+        finishEncodingRetryProbeCycle(state, token);
+      } catch (error) {
+        if (error?.name === 'AbortError' || encodingRetryDialogState !== state || token !== state.probeToken) return;
+        state.probeError = true;
+        state.probeMessage = mode === 'refine'
+          ? '精确大小读取失败：' + (error?.message || '请稍后重试。')
+          : (error?.message || '媒体探测失败；仍可手动严格尝试。');
+        if (mode === 'catalog') {
+          state.catalogFinished = true;
+          state.manual = true;
+        }
+        renderEncodingRetryCombinations();
+        finishEncodingRetryProbeCycle(state, token);
+      }
+    }
+
+    async function startEncodingRetryProbe(mode = 'catalog') {
+      const state = encodingRetryDialogState;
+      if (!state) return;
+      if (state.activeProbe) {
+        if (mode === 'refine' && state.selected) state.queuedRefineKey = mediaRetryCombinationKey(state.selected);
+        return;
+      }
+      if (!state.issue?.userId || !state.issue?.bvid) {
+        state.probeError = true;
+        state.manual = true;
+        state.probeMessage = '当前待处理记录缺少账号或BV号，无法自动探测；可以手动严格尝试。';
+        renderEncodingRetryCombinations();
+        return;
+      }
+      const selection = mode === 'refine' ? currentEncodingRetrySelection() : null;
+      if (mode === 'refine' && !state.selected) return;
+      const targetKey = state.selected ? mediaRetryCombinationKey(state.selected) : '';
+      const controller = new AbortController();
+      const token = Number(state.probeToken || 0) + 1;
+      state.probeToken = token;
+      state.probeController = controller;
+      state.activeProbe = { mode, targetKey };
+      state.probeError = false;
+      state.probeMessage = mode === 'refine' ? '正在读取所选组合的精确大小...' : '正在读取当前可用画质、编码和大小...';
+      const button = document.getElementById('encodingRetryProbeBtn');
+      if (button) button.disabled = true;
+      renderEncodingRetryCombinations();
+      try {
+        const started = await fetchJsonSilent('/api/media-probe', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          signal:controller.signal,
+          body:JSON.stringify({
+            userId:state.issue.userId,
+            bvid:state.issue.bvid,
+            ...(mode === 'refine' && state.allowQuality && selection?.quality ? { quality:selection.quality } : {}),
+            ...(mode === 'refine' && state.allowEncoding && selection?.encoding ? { encoding:selection.encoding } : {}),
+            strict:mode === 'refine',
+          }),
+        });
+        if (encodingRetryDialogState !== state || token !== state.probeToken) return;
+        await pollEncodingRetryProbe(state, started.probeId, token, mode, targetKey);
+      } catch (error) {
+        if (error?.name === 'AbortError' || encodingRetryDialogState !== state || token !== state.probeToken) return;
+        state.probeError = true;
+        state.probeMessage = error?.message || '媒体探测启动失败；仍可手动严格尝试。';
+        if (mode === 'catalog') {
+          state.catalogFinished = true;
+          state.manual = true;
+        }
+        renderEncodingRetryCombinations();
+        finishEncodingRetryProbeCycle(state, token);
+      }
+    }
+
+    function queueEncodingRetryRefinement() {
+      const state = encodingRetryDialogState;
+      if (!state?.selected) return;
+      if (state.refineTimer) clearTimeout(state.refineTimer);
+      state.refineTimer = setTimeout(() => {
+        if (encodingRetryDialogState !== state || !state.selected) return;
+        state.refineTimer = null;
+        if (state.activeProbe) {
+          state.queuedRefineKey = mediaRetryCombinationKey(state.selected);
+          return;
+        }
+        void startEncodingRetryProbe('refine');
+      }, 320);
+    }
+
     function finishEncodingRetryDialog(result) {
       const pending = encodingRetryDialogState;
       if (!pending) return;
+      cleanupEncodingRetryDialog(pending);
       encodingRetryDialogState = null;
       closeModal('encodingRetryModal', { restoreFocus:true });
       pending.resolve(result);
     }
 
-    function openEncodingRetryDialog(issue, trigger, mode = 'upload') {
+    function openEncodingRetryDialog(issue, action, trigger, mode = 'upload') {
       if (encodingRetryDialogState) return Promise.resolve(null);
       return new Promise((resolve) => {
-        const priority = ['AV1', 'HEVC', 'AVC'];
-        encodingRetryDialogState = { resolve, issue, trigger, priority, strict:true, mode };
+        const profile = recoveryActionMediaProfile(action);
+        encodingRetryDialogState = {
+          resolve,
+          issue,
+          action,
+          trigger,
+          mode,
+          allowQuality:profile.quality,
+          allowEncoding:profile.encoding,
+          combinations:[],
+          selected:null,
+          manual:false,
+          latestResult:null,
+          probeMessage:'正在读取当前可用媒体组合...',
+          probeError:false,
+          catalogFinished:false,
+          probeToken:0,
+          probeController:null,
+          pollTimer:null,
+          refineTimer:null,
+          activeProbe:null,
+          queuedRefineKey:null,
+        };
         const title = document.getElementById('encodingRetryTitle');
         const copy = document.getElementById('encodingRetryCopy');
         const submit = document.getElementById('encodingRetrySubmitBtn');
-        if (title) title.textContent = mode === 'quality' ? '换编码重调画质' : '换编码重新下载';
+        if (title) title.textContent = '重新选择画质与编码';
         if (copy) copy.textContent = mode === 'quality'
-          ? '目标画质保持不变，新编码会使用独立版本重新下载。现有归档不会进入覆盖或删除流程。'
-          : '本次默认优先 AV1，以尽量避开单文件大小限制。原文件会保留到新文件完成远端确认。';
-        if (submit) submit.textContent = mode === 'quality' ? '开始新版本重调' : '开始替换下载';
+          ? '先读取当前可用媒体组合和大小，再生成独立的新版本。现有归档不会进入覆盖或删除流程。'
+          : '先读取当前可用媒体组合和大小，再在隔离目录严格下载。原文件会保留到新文件完成远端确认。';
+        if (submit) {
+          submit.textContent = mode === 'quality' ? '开始严格重调' : '开始严格重试';
+          submit.disabled = true;
+        }
+        document.getElementById('encodingRetryQuality').value = '';
+        document.getElementById('encodingRetryEncoding').value = '';
         const status = document.getElementById('encodingRetryStatus');
         if (status) status.textContent = '';
         const strict = document.getElementById('encodingRetryStrict');
         if (strict) strict.checked = true;
-        const renderDialogPriority = () => renderEncodingPriorityEditor('encodingRetryPriorityEditor', encodingRetryDialogState?.priority || priority, (next) => {
-          if (!encodingRetryDialogState) return;
-          encodingRetryDialogState.priority = next;
-          renderDialogPriority();
-        });
-        renderDialogPriority();
+        renderEncodingRetryCombinations();
         openModal('encodingRetryModal', trigger);
+        void startEncodingRetryProbe('catalog');
       });
     }
 
@@ -7580,18 +7992,12 @@ function getAppScript() {
         return;
       }
       let actionBody = undefined;
-      if (action.id === 'redownload_with_encoding' || action.id === 'retry_quality_with_encoding') {
-        const selected = await openEncodingRetryDialog(issue, trigger, action.id === 'retry_quality_with_encoding' ? 'quality' : 'upload');
+      if (['redownload_with_encoding','redownload_with_quality','retry_quality_with_encoding','retry_quality_with_quality'].includes(action.id)) {
+        const selected = await openEncodingRetryDialog(issue, action, trigger, action.id.startsWith('retry_quality_') ? 'quality' : 'upload');
         if (!selected) return;
-        actionBody = {
-          encodingPriority: selected.priority,
-          strict: selected.strict,
-        };
-      }
-      if (action.id === 'retry_quality_with_quality' || action.id === 'redownload_with_quality') {
-        const selectedQuality = await openRecoveryChoiceDialog(action, trigger);
-        if (!selectedQuality) return;
-        actionBody = { quality: selectedQuality };
+        actionBody = { strict:true };
+        if (selected.quality) actionBody.quality = selected.quality;
+        if (selected.encoding) actionBody.encodingPriority = mediaRetryEncodingPriority(selected.encoding);
       }
       if (action.id === 'retry_download_with_account') {
         const userId = await openRecoveryChoiceDialog(action, trigger);
@@ -7958,20 +8364,33 @@ function getAppScript() {
       if (!actions) {
         actions = document.createElement('div');
         actions.className = 'queue-recovery-actions';
-        const confirmButton = document.createElement('button');
-        confirmButton.type = 'button';
-        confirmButton.textContent = '重新确认';
-        confirmButton.title = '只检查正式远端文件，不重复上传';
-        const uploadButton = document.createElement('button');
-        uploadButton.type = 'button';
-        uploadButton.className = 'danger-action';
-        uploadButton.textContent = '继续上传';
-        uploadButton.title = '允许本次缺失文件重新PUT一次';
-        confirmButton.addEventListener('click', () => void recoverQueueUpload(String(item.recoveryJobId), false, confirmButton));
-        uploadButton.addEventListener('click', () => void recoverQueueUpload(String(item.recoveryJobId), true, uploadButton));
-        actions.append(confirmButton, uploadButton);
         info.appendChild(actions);
       }
+      const mediaProfileRecovery = ['remote_size_limit', 'remote_write_rejected', 'encoding_retry_failed'].includes(String(item.recoveryKind || ''));
+      let confirmButton = actions.querySelector('[data-recovery-action="recheck"]');
+      if (!confirmButton) {
+        confirmButton = document.createElement('button');
+        confirmButton.type = 'button';
+        confirmButton.dataset.recoveryAction = 'recheck';
+        actions.appendChild(confirmButton);
+      }
+      confirmButton.textContent = '重新确认';
+      confirmButton.title = '只检查正式远端文件，不重复上传';
+      confirmButton.onclick = () => void recoverQueueUpload(String(item.recoveryJobId), false, confirmButton);
+
+      let uploadButton = actions.querySelector('[data-recovery-action="reupload"]');
+      if (!uploadButton) {
+        uploadButton = document.createElement('button');
+        uploadButton.type = 'button';
+        uploadButton.className = 'danger-action';
+        uploadButton.dataset.recoveryAction = 'reupload';
+        actions.appendChild(uploadButton);
+      }
+      uploadButton.textContent = '继续上传';
+      uploadButton.title = '允许本次缺失文件重新PUT一次';
+      uploadButton.hidden = mediaProfileRecovery;
+      uploadButton.onclick = () => void recoverQueueUpload(String(item.recoveryJobId), true, uploadButton);
+
       const supportsEncodingRetry = Array.isArray(item.recoveryActions)
         && item.recoveryActions.some((action) => action.id === 'redownload_with_encoding')
         && item.recoveryIssueId;
@@ -7983,8 +8402,8 @@ function getAppScript() {
       const encodingButton = existingEncodingButton || document.createElement('button');
       encodingButton.type = 'button';
       encodingButton.dataset.recoveryAction = 'redownload_with_encoding';
-      encodingButton.textContent = '换编码';
-      encodingButton.title = '选择一次性编码顺序，隔离下载并确认新文件后再替换原文件';
+      encodingButton.textContent = '换规格';
+      encodingButton.title = '重新选择画质与编码，查看预计大小后在隔离目录严格下载';
       encodingButton.onclick = () => openRecoveryIssues(encodingButton, String(item.recoveryIssueId));
       if (!existingEncodingButton) actions.appendChild(encodingButton);
     }
@@ -8767,12 +9186,28 @@ function getAppScript() {
     document.getElementById('confirmActionCancelBtn').addEventListener('click', () => finishConfirmAction(false));
     document.getElementById('encodingRetrySubmitBtn').addEventListener('click', () => {
       if (!encodingRetryDialogState) return;
-      const priority = normalizeClientEncodingPriority(encodingRetryDialogState.priority);
-      if (priority.length !== 3) {
-        document.getElementById('encodingRetryStatus').textContent = '请保留 HEVC、AVC、AV1 三项，且每项只出现一次。';
+      const selected = currentEncodingRetrySelection();
+      if (!selected || (!selected.quality && !selected.encoding)) {
+        document.getElementById('encodingRetryStatus').textContent = '请选择一个可用组合，或明确选择要严格尝试的画质或编码。';
         return;
       }
-      finishEncodingRetryDialog({ priority, strict: document.getElementById('encodingRetryStrict').checked });
+      finishEncodingRetryDialog(selected);
+    });
+    document.getElementById('encodingRetryProbeBtn').addEventListener('click', () => {
+      if (!encodingRetryDialogState) return;
+      void startEncodingRetryProbe(encodingRetryDialogState.selected ? 'refine' : 'catalog');
+    });
+    document.getElementById('encodingRetryQuality').addEventListener('change', () => {
+      if (!encodingRetryDialogState) return;
+      encodingRetryDialogState.selected = null;
+      encodingRetryDialogState.manual = true;
+      updateEncodingRetrySelectionState();
+    });
+    document.getElementById('encodingRetryEncoding').addEventListener('change', () => {
+      if (!encodingRetryDialogState) return;
+      encodingRetryDialogState.selected = null;
+      encodingRetryDialogState.manual = true;
+      updateEncodingRetrySelectionState();
     });
     document.getElementById('encodingRetryCancelBtn').addEventListener('click', () => finishEncodingRetryDialog(null));
     document.getElementById('recoveryChoiceSubmitBtn').addEventListener('click', () => {

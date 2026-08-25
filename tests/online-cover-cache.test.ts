@@ -52,3 +52,26 @@ test("在线缩略图清理等待正在提升为归档封面的操作", async ()
   await Promise.all([promotion, clearPromise]);
   assert.equal(clearFinished, true);
 });
+
+test("在线缩略图并发槽位在等待任务之间交接后会完整释放", async () => {
+  const cache = isolatedCache();
+  let active = 0;
+  let maximum = 0;
+  const run = async () => {
+    await cache.acquireFetchSlot();
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    active -= 1;
+    cache.releaseFetchSlot();
+  };
+
+  await Promise.all(Array.from({ length: 12 }, run));
+  assert.equal(maximum, 4);
+  assert.equal(cache.runningFetches, 0);
+  assert.equal(cache.fetchWaiters.length, 0);
+
+  await Promise.all(Array.from({ length: 4 }, run));
+  assert.equal(cache.runningFetches, 0);
+  assert.equal(cache.fetchWaiters.length, 0);
+});

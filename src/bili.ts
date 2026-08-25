@@ -174,23 +174,39 @@ async function signedQuery(params: URLSearchParams) {
   return utils.WbiSign(Object.fromEntries(params.entries()));
 }
 
-function encodeHistoryCursor(cursor: Record<string, unknown>) {
+export function normalizeOnlineContentPageSize(
+  kind: OnlineContentKind,
+  requested: unknown,
+  hasQuery = false,
+) {
+  const value = Math.max(1, Math.floor(Number(requested || 50)));
+  const limit = kind === "favorite"
+    ? 40
+    : kind === "bangumi" || kind === "drama"
+      ? 30
+      : kind === "history"
+        ? (hasQuery ? 20 : 30)
+        : 50;
+  return Math.min(limit, value);
+}
+
+export function encodeHistoryCursor(cursor: Record<string, unknown>) {
   return Buffer.from(JSON.stringify({
     max: Number(cursor.max || 0) || 0,
     viewAt: Number(cursor.view_at ?? cursor.viewAt ?? 0) || 0,
-    business: String(cursor.business || "all"),
+    business: String(cursor.business ?? ""),
   }), "utf8").toString("base64url");
 }
 
-function decodeHistoryCursor(value: string | undefined) {
-  if (!value) return { max: 0, view_at: 0, business: "all" };
+export function decodeHistoryCursor(value: string | undefined) {
+  if (!value) return { max: 0, view_at: 0, business: "" };
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
     if (!parsed || typeof parsed !== "object") throw new Error("invalid history cursor");
     return {
       max: Number((parsed as any).max || 0) || 0,
       view_at: Number((parsed as any).viewAt ?? (parsed as any).view_at ?? 0) || 0,
-      business: String((parsed as any).business || "all").slice(0, 32),
+      business: String((parsed as any).business ?? "").slice(0, 32),
     };
   } catch {
     throw new Error("在线历史游标无效，请重新加载");
@@ -208,7 +224,8 @@ export async function listOnlineContentPage(
   options: { mediaId?: number; page?: number; pageSize?: number; cursor?: string; query?: string } = {}
 ): Promise<OnlineContentPage> {
   const page = Math.max(1, Math.floor(Number(options.page || 1)));
-  const pageSize = Math.min(50, Math.max(1, Math.floor(Number(options.pageSize || 50))));
+  const query = String(options.query || "").trim();
+  const pageSize = normalizeOnlineContentPageSize(kind, options.pageSize, Boolean(query));
   if (kind === "favorite") {
     if (!Number.isInteger(options.mediaId) || Number(options.mediaId) < 1) throw new Error("favorite mediaId is required");
     const result = await listFavoriteItemsPage(cookie, Number(options.mediaId), page, pageSize);
@@ -248,8 +265,8 @@ export async function listOnlineContentPage(
     params.set("need_split", "1");
     url = `https://api.bilibili.com/x/v2/history/toview/web?${await signedQuery(params)}`;
   } else {
-    if (options.query?.trim()) {
-      params.set("keyword", options.query.trim());
+    if (query) {
+      params.set("keyword", query);
       params.set("business", "archive");
       params.set("add_time_start", "0");
       params.set("add_time_end", "0");

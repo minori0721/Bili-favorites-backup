@@ -158,14 +158,21 @@ test("strict regular download recovery keeps the candidate isolated when changin
     });
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `download.${failed.id}`);
     assert.deepEqual(issue?.availableActions.map((action: any) => action.id), [
-      "redownload_with_quality", "redownload_with_encoding", "retry_download", "defer_download",
+      "redownload_with_encoding", "retry_download", "defer_download",
     ]);
+    assert.deepEqual(issue?.availableActions[0].mediaProfile, { quality: true, encoding: true });
 
-    const changed = await scheduler.resolveRecoveryIssue(`download.${failed.id}`, "redownload_with_quality", { quality: "1080P" });
+    const changed = await scheduler.resolveRecoveryIssue(`download.${failed.id}`, "redownload_with_encoding", {
+      quality: "1080P",
+      encodingPriority: ["AV1", "HEVC", "AVC"],
+      strict: true,
+    });
     assert.equal(changed.ok, true, JSON.stringify(changed));
     const resumed = scheduler.jobStore.findById(failed.id)!;
     assert.ok(["pending", "leased"].includes(resumed.status));
     assert.equal((resumed.payload as any).qualityProfile.quality, "1080P");
+    assert.equal((resumed.payload as any).qualityProfile.encoding, "AV1");
+    assert.deepEqual((resumed.payload as any).qualityEncodingOverride.priority, ["AV1", "HEVC", "AVC"]);
     assert.equal((resumed.payload as any).qualityStrict, true);
     assert.equal((resumed.payload as any).awaitingManualRecovery, false);
     assert.notEqual((resumed.payload as any).qualityArtifactKey, "old-artifact");

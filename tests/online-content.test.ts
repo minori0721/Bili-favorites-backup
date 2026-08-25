@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { OnlineContentService } from "../src/online-content.js";
-import type { OnlineContentPage } from "../src/bili.js";
+import {
+  decodeHistoryCursor,
+  encodeHistoryCursor,
+  normalizeOnlineContentPageSize,
+  type OnlineContentPage,
+} from "../src/bili.js";
 import type { BiliUser } from "../src/users.js";
 
 function user(): BiliUser {
@@ -15,6 +20,26 @@ function user(): BiliUser {
     lastLoginAt: new Date().toISOString(),
   };
 }
+
+test("online content clamps each Bilibili API to its real page-size limit", () => {
+  assert.equal(normalizeOnlineContentPageSize("favorite", 50), 40);
+  assert.equal(normalizeOnlineContentPageSize("collected", 50), 50);
+  assert.equal(normalizeOnlineContentPageSize("bangumi", 50), 30);
+  assert.equal(normalizeOnlineContentPageSize("drama", 50), 30);
+  assert.equal(normalizeOnlineContentPageSize("watch_later", 50), 50);
+  assert.equal(normalizeOnlineContentPageSize("history", 50), 30);
+  assert.equal(normalizeOnlineContentPageSize("history", 50, true), 20);
+  assert.equal(normalizeOnlineContentPageSize("favorite", 12), 12);
+  assert.equal(normalizeOnlineContentPageSize("history", 0), 30);
+});
+
+test("history cursor uses an empty business value for the all-history feed", () => {
+  assert.deepEqual(decodeHistoryCursor(undefined), { max: 0, view_at: 0, business: "" });
+  const cursor = encodeHistoryCursor({ max: 123, view_at: 456, business: "live" });
+  assert.deepEqual(decodeHistoryCursor(cursor), { max: 123, view_at: 456, business: "live" });
+  const allCursor = encodeHistoryCursor({ max: 0, view_at: 0, business: "" });
+  assert.equal(decodeHistoryCursor(allCursor).business, "");
+});
 
 test("online content keeps a short-lived BVID reference even when the cover is gone", async () => {
   const page: OnlineContentPage = {

@@ -77,7 +77,34 @@ test("strict media probe marks unavailable codec/quality combinations without fa
   assert.equal(result.pages?.[1].tracks[0].available, true);
   assert.equal(result.estimatedBytes, 3000);
   assert.equal(result.estimatedBytesSource, "mixed");
+  const av1 = result.combinations?.find((item) => item.quality === "4K" && item.encoding === "AV1");
+  assert.equal(av1?.available, true);
+  assert.equal(av1?.pageCount, 2);
+  assert.equal(av1?.availablePageCount, 2);
+  assert.equal(av1?.totalVideoBytes, 3000);
+  assert.equal(av1?.totalBytes, 3000);
+  assert.equal(av1?.totalBytesKind, "video_only");
+  const avc = result.combinations?.find((item) => item.encoding === "AVC");
+  assert.equal(avc?.available, false);
+  assert.equal(avc?.availablePageCount, 0);
   assert.deepEqual(forwardedTarget, { quality: "4K", encoding: "AV1" });
+});
+
+test("Bilibili visibility failure stops BBDown probing and returns a safe explanation", async () => {
+  let runnerCalls = 0;
+  const service = new MediaProbeService(
+    { get: () => testConfig() },
+    async (bvid) => {
+      runnerCalls += 1;
+      return { bvid, pages: pages(), source: "bbdown" };
+    },
+    undefined,
+    async () => ({ available: false, pages: [] }),
+  );
+  const result = await waitFor(service.start(user(), "BV1Probe00001"));
+  assert.equal(result.status, "failed");
+  assert.match(result.error || "", /稿件不可见.*无法确认可用画质、编码和大小/);
+  assert.equal(runnerCalls, 0);
 });
 
 test("non-strict media probe keeps all normalized combinations and does not overcount alternatives", async () => {
@@ -93,6 +120,25 @@ test("non-strict media probe keeps all normalized combinations and does not over
   assert.equal(result.target, undefined);
   assert.equal(result.pages?.flatMap((page) => page.tracks).every((track) => track.available), true);
   assert.equal(result.estimatedBytes, 3000);
+});
+
+test("catalog probe never exposes an unknown codec as an exact selectable combination", async () => {
+  const unknownCodecPages = pages().map((page) => ({
+    ...page,
+    tracks: [{
+      ...page.tracks[0],
+      codec: "future-codec",
+    }],
+  }));
+  const service = new MediaProbeService(
+    { get: () => testConfig() },
+    async (bvid) => ({ bvid, pages: unknownCodecPages, source: "bbdown" }),
+  );
+  const result = await waitFor(service.start(user(), "BV1Probe00001"));
+  assert.equal(result.status, "complete");
+  assert.equal(result.pages?.every((page) => page.tracks[0].available === false), true);
+  assert.equal(result.combinations?.every((item) => item.available === false), true);
+  assert.equal(result.estimatedBytes, undefined);
 });
 
 test("exact probe sources preserve HEAD and Range provenance", async () => {

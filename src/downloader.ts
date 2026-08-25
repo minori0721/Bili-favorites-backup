@@ -814,10 +814,16 @@ export function normalizeEncodingPriority(value: string) {
 export function normalizeQualityPriority(value: string) {
   const map: Record<string, string> = {
     "8K": "8K \u8d85\u9ad8\u6e05",
+    "\u675c\u6bd4\u89c6\u754c": "\u675c\u6bd4\u89c6\u754c",
+    "HDR": "HDR \u771f\u5f69",
     "4K": "4K \u8d85\u6e05",
     "1080P60": "1080P \u9ad8\u5e27\u7387",
+    "1080P+": "1080P \u9ad8\u7801\u7387",
     "1080P": "1080P \u9ad8\u6e05",
+    "720P60": "720P \u9ad8\u5e27\u7387",
     "720P": "720P \u9ad8\u6e05",
+    "480P": "480P \u6e05\u6670",
+    "360P": "360P \u6d41\u7545",
   };
   return map[value] || value;
 }

@@ -204,22 +204,70 @@ test("alternate-account download recovery submits only the selected account", as
   expect(state.lastRecoveryBody).toEqual({ userId: "user-2" });
 });
 
-test("quality recovery keeps target quality and submits an isolated encoding preference", async ({ page, browserProblems }, testInfo) => {
+test("quality recovery probes Bili23-style media combinations, refines size, and submits one strict profile", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop encoding dialog coverage");
   await openRecoveryCenter(page, "quality");
   await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "换编码重调画质" }).click();
+  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
   await expect(page.locator("#encodingRetryModal")).toHaveClass(/active/);
-  await expect(page.locator("#encodingRetryTitle")).toHaveText("换编码重调画质");
-  await expect(page.locator("#encodingRetryCopy")).toContainText("目标画质保持不变");
+  await expect(page.locator("#encodingRetryTitle")).toHaveText("重新选择画质与编码");
+  await expect(page.locator("#encodingRetryCopy")).toContainText("可用媒体组合和大小");
   await expect(page.locator("#encodingRetryCopy")).toContainText("现有归档不会进入覆盖或删除流程");
+  const hevc1080 = page.getByRole("radio", { name: /1080P · HEVC/ });
+  await expect(hevc1080).toBeEnabled();
+  await expect(hevc1080).toContainText("15.0 MB");
+  await hevc1080.click();
+  await expect(page.locator("#encodingRetryProbeSummary")).toContainText("已更新所选组合的大小信息");
+  await expect(page.locator("#encodingRetryEstimate")).toContainText("预计成品 15.0 MB");
+  await expect(page.locator("#encodingRetryEstimate")).toContainText("Range 精确大小");
   await page.locator("#encodingRetrySubmitBtn").click();
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
   expect(state.lastRecoveryAction).toBe("retry_quality_with_encoding");
-  expect(state.lastRecoveryBody).toEqual({ encodingPriority: ["AV1", "HEVC", "AVC"], strict: true });
+  expect(state.lastRecoveryBody).toEqual({ quality: "1080P", encodingPriority: ["HEVC", "AVC", "AV1"], strict: true });
+  expect(state.mediaProbeStartCount).toBe(2);
+  expect(state.mediaProbeBodies).toEqual([
+    { userId: "user-1", bvid: "BV1RECOVERY1", strict: false },
+    { userId: "user-1", bvid: "BV1RECOVERY1", quality: "1080P", encoding: "HEVC", strict: true },
+  ]);
+});
+
+test("an unavailable Bilibili item exposes an explicit unknown-size strict fallback without preselecting a codec", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop media fallback coverage");
+  await openRecoveryCenter(page, "quality", { mediaProbeMode: "failed" });
+  await page.locator(".recovery-issue-row").click();
+  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  await expect(page.locator("#encodingRetryProbeSummary")).toContainText("稿件不可见");
+  await expect(page.locator("#encodingRetryManual")).toBeVisible();
+  await expect(page.locator("#encodingRetryQuality").locator("option").first()).toHaveText("不限定画质（沿用任务设置）");
+  await expect(page.locator("#encodingRetryEncoding").locator("option").first()).toHaveText("不限定编码（沿用当前偏好）");
+  await expect(page.locator(".media-retry-strict-note")).toContainText("已选择的画质或编码会逐分P严格匹配");
+  await expect(page.locator("#encodingRetryEncoding")).toHaveValue("");
+  await expect(page.locator("#encodingRetrySubmitBtn")).toBeDisabled();
+  await page.locator("#encodingRetryQuality").selectOption("1080P");
+  await page.locator("#encodingRetryEncoding").selectOption("AV1");
+  await expect(page.locator("#encodingRetryEstimate")).toContainText("可用性和大小尚未确认");
+  await page.locator("#encodingRetrySubmitBtn").click();
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.lastRecoveryBody).toEqual({ quality: "1080P", encodingPriority: ["AV1", "HEVC", "AVC"], strict: true });
+  expect(state.mediaProbeStartCount).toBe(1);
+});
+
+test("size refinement never substitutes a different media combination", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop media refinement coverage");
+  await openRecoveryCenter(page, "quality", { mediaProbeMode: "refine_mismatch" });
+  await page.locator(".recovery-issue-row").click();
+  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  const selected = page.getByRole("radio", { name: /1080P · HEVC/ });
+  await selected.click();
+  await expect(page.locator("#encodingRetryProbeSummary")).toContainText("所选组合没有覆盖全部分P");
+  await expect(selected).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("radio", { name: /4K · AV1/ })).toHaveAttribute("aria-checked", "false");
 });
 
 test("storage recovery opens settings and performs exactly one read-only draft check", async ({ page, browserProblems }, testInfo) => {

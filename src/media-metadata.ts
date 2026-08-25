@@ -1,5 +1,25 @@
 import type { RemoteFileMediaMetadata } from "./state.js";
 
+export const selectableBilibiliQualities = [
+  "8K",
+  "杜比视界",
+  "HDR",
+  "4K",
+  "1080P60",
+  "1080P+",
+  "1080P",
+  "720P60",
+  "720P",
+  "480P",
+  "360P",
+] as const;
+
+export type SelectableBilibiliQuality = typeof selectableBilibiliQualities[number];
+
+export function isSelectableBilibiliQuality(value: unknown): value is SelectableBilibiliQuality {
+  return selectableBilibiliQualities.includes(String(value || "").trim().toUpperCase() as SelectableBilibiliQuality);
+}
+
 export function parseFrameRate(value: unknown) {
   const text = String(value || "").trim();
   if (!text) return undefined;
