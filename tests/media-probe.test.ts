@@ -279,6 +279,31 @@ test("protocol v2 includes audio, mux allowance, peak space, and current cache c
   assert.equal(result.cacheAvailableBytes, 8500);
   assert.equal(result.cacheLimitBytes, 10_000);
   assert.equal(result.estimatedBytesSource, "mixed");
+  assert.equal(result.combinations?.find((item) => item.encoding === "AV1")?.totalSizeConfidence, "estimate");
+});
+
+test("selected combinations expose exact confidence only when every final component has usable size evidence", async () => {
+  const exactPages = pages().map((page, index) => ({
+    ...page,
+    version: 2,
+    tracks: [{
+      ...page.tracks[0],
+      sizeSource: index === 0 ? "head" as const : "range" as const,
+      estimatedBytes: index === 0 ? 1100 : 2200,
+    }],
+    selectedAudio: {
+      codec: "AAC",
+      bitrateKbps: 128,
+      estimatedBytes: index === 0 ? 100 : 200,
+      sizeSource: "api" as const,
+    },
+  }));
+  const service = new MediaProbeService(
+    { get: () => testConfig() },
+    async (bvid) => ({ bvid, pages: exactPages, source: "bbdown" }),
+  );
+  const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: true }));
+  assert.equal(result.combinations?.find((item) => item.encoding === "AV1")?.totalSizeConfidence, "exact");
 });
 
 test("cache inspection failure does not discard a valid media probe", async () => {

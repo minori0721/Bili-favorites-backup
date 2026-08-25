@@ -33,7 +33,7 @@ export type QueueBoardPhase =
   | "remote_verifying"
   | "background_wait"
   | "manual_action";
-export type QueueBoardAction = "retry" | "verify" | "recheck" | "redownload_with_encoding";
+export type QueueBoardAction = "retry" | "verify" | "recheck" | "redownload_with_encoding" | "abandon_attempt";
 
 export interface QueueBoardItem {
   id: string;
@@ -66,6 +66,9 @@ export interface QueueBoardItem {
   recoveryIssueId?: string;
   recoveryKind?: string;
   recoveryActions?: Array<{ id: QueueBoardAction; label: string }>;
+  lifecycleState?: string;
+  verifiedPages?: number;
+  totalPages?: number;
   stage: QueueBoardStage;
 }
 

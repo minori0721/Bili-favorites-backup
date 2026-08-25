@@ -182,6 +182,7 @@ test("mobile archive panels expose only the visible page and keep touch targets 
   await expect(page.locator(".archive-library-shell")).toHaveClass(/show-content/);
   await expect(page.locator(".archive-library-sidebar")).toHaveAttribute("inert", "");
   await expect(page.locator(".archive-library-main")).not.toHaveAttribute("inert", "");
+  await expect(page.locator(".archive-library-card-more")).toHaveCount(2);
   const touchTargets = await page.locator("#archiveLibraryMobileBackBtn, .archive-library-card-more").evaluateAll((elements) => elements.map((element) => {
     const rect = element.getBoundingClientRect();
     return { width:rect.width, height:rect.height };

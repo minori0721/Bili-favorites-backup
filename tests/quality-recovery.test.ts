@@ -56,7 +56,7 @@ test("eligible quality failures restart as one isolated strict quality and encod
       },
     });
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `quality.${failed.id}`);
-    assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_quality_with_encoding", "retry_quality"]);
+    assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_quality_with_encoding", "retry_quality", "abandon_attempt"]);
     assert.deepEqual(issue.availableActions[0].mediaProfile, { quality: true, encoding: true });
 
     const result = await scheduler.resolveRecoveryIssue(`quality.${failed.id}`, "retry_quality_with_encoding", {
@@ -112,7 +112,7 @@ test("replace and cleanup failures never offer a new encoding artifact", async (
       payload: { awaitingManualRecovery: true, qualityFailure: { stage: "replace", encodingEligible: true } },
     });
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `quality.${job.id}`);
-    assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_quality"]);
+    assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_quality", "abandon_attempt"]);
     const retried = await scheduler.resolveRecoveryIssue(`quality.${job.id}`, "retry_quality");
     assert.equal(retried.ok, true);
     const resumed = scheduler.jobStore.findById(job.id)!;

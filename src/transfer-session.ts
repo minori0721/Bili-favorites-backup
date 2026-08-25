@@ -379,6 +379,10 @@ export class TransferSessionStore {
   }
 
   listRecoverable(limit = 100) {
+    return this.listRecoverablePage(Math.max(1, Math.min(1000, Math.floor(limit))), 0);
+  }
+
+  listRecoverablePage(limit = 100, offset = 0) {
     return (this.stateDatabase.db.prepare(`
       SELECT * FROM transfer_sessions
       WHERE phase NOT IN ('completed','superseded')
@@ -386,8 +390,11 @@ export class TransferSessionStore {
         WHEN 'uploading' THEN 1 WHEN 'awaiting_remote' THEN 2
         WHEN 'staging' THEN 3 WHEN 'promoting' THEN 4
         WHEN 'awaiting_stage' THEN 5 WHEN 'awaiting_final' THEN 6 ELSE 7 END, updated_at ASC
-      LIMIT ?
-    `).all(Math.max(1, Math.min(1000, Math.floor(limit)))) as any[]).map(sessionFromRow);
+      LIMIT ? OFFSET ?
+    `).all(
+      Math.max(1, Math.min(100, Math.floor(limit))),
+      Math.max(0, Math.floor(offset)),
+    ) as any[]).map(sessionFromRow);
   }
 
   summary() {

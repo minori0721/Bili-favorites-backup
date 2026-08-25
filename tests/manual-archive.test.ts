@@ -158,7 +158,7 @@ test("strict regular download recovery keeps the candidate isolated when changin
     });
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `download.${failed.id}`);
     assert.deepEqual(issue?.availableActions.map((action: any) => action.id), [
-      "redownload_with_encoding", "retry_download", "defer_download",
+      "redownload_with_encoding", "retry_download", "defer_download", "abandon_attempt",
     ]);
     assert.deepEqual(issue?.availableActions[0].mediaProfile, { quality: true, encoding: true });
 

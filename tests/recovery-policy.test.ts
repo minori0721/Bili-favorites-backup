@@ -36,8 +36,8 @@ test("candidate action is offered only after the complete local group is eligibl
     candidateEligible: true,
   });
 
-  assert.deepEqual(blocked.map((action) => action.id), ["recheck"]);
-  assert.deepEqual(allowed.map((action) => action.id), ["create_candidate", "recheck"]);
+  assert.deepEqual(blocked.map((action) => action.id), ["recheck", "abandon_attempt"]);
+  assert.deepEqual(allowed.map((action) => action.id), ["create_candidate", "recheck", "abandon_attempt"]);
 });
 
 test("download and quality policies expose bounded recovery choices", () => {
@@ -47,7 +47,7 @@ test("download and quality policies expose bounded recovery choices", () => {
     kind: "download_account_required",
     downloadCategory: "account",
     alternateAccounts: accounts,
-  }).map((action) => action.id), ["retry_download_with_account", "retry_download", "defer_download"]);
+  }).map((action) => action.id), ["retry_download_with_account", "retry_download", "defer_download", "abandon_attempt"]);
 
   const combinedDownload = planRecoveryActions({
     domain: "download",
@@ -56,14 +56,14 @@ test("download and quality policies expose bounded recovery choices", () => {
     downloadQualityChoices: [{ value: "1080P", label: "1080P" }],
     downloadEncodingEligible: true,
   });
-  assert.deepEqual(combinedDownload.map((action) => action.id), ["redownload_with_encoding", "retry_download", "defer_download"]);
+  assert.deepEqual(combinedDownload.map((action) => action.id), ["redownload_with_encoding", "retry_download", "defer_download", "abandon_attempt"]);
   assert.deepEqual(combinedDownload[0].mediaProfile, { quality: true, encoding: true });
 
   assert.deepEqual(planRecoveryActions({
     domain: "quality",
     kind: "quality_failed",
     qualityEncodingEligible: true,
-  }).map((action) => action.id), ["retry_quality_with_encoding", "retry_quality"]);
+  }).map((action) => action.id), ["retry_quality_with_encoding", "retry_quality", "abandon_attempt"]);
 
   const combinedQuality = planRecoveryActions({
     domain: "quality",
@@ -72,12 +72,12 @@ test("download and quality policies expose bounded recovery choices", () => {
     qualityChoices: [{ value: "4K", label: "4K" }],
     qualityEncodingEligible: true,
   });
-  assert.deepEqual(combinedQuality.map((action) => action.id), ["retry_quality_with_encoding", "retry_quality"]);
+  assert.deepEqual(combinedQuality.map((action) => action.id), ["retry_quality_with_encoding", "retry_quality", "abandon_attempt"]);
   assert.deepEqual(combinedQuality[0].mediaProfile, { quality: true, encoding: true });
 
   assert.deepEqual(planRecoveryActions({
     domain: "quality",
     kind: "quality_failed",
     qualityEncodingEligible: false,
-  }).map((action) => action.id), ["retry_quality"]);
+  }).map((action) => action.id), ["retry_quality", "abandon_attempt"]);
 });

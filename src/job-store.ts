@@ -100,12 +100,14 @@ export class PersistentJobStore {
       ) VALUES(@id,@kind,@dedupeKey,@bvid,@userId,@mediaId,@status,@priority,@payload,0,@maxAttempts,@notBefore,@now,@now)
       ON CONFLICT(dedupe_key) DO UPDATE SET
         status=CASE
+          WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN excluded.status
           WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.status
           WHEN jobs.status='failed' THEN excluded.status
           ELSE jobs.status
         END,
         priority=MIN(jobs.priority, excluded.priority),
         not_before=CASE
+          WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN excluded.not_before
           WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.not_before
           WHEN jobs.status='failed' THEN excluded.not_before
           ELSE MIN(jobs.not_before, excluded.not_before)
@@ -113,18 +115,20 @@ export class PersistentJobStore {
         -- Keep a manual-recovery payload authoritative until the administrator
         -- explicitly wakes it; a normal sync enqueue must not hide the action.
         payload_json=CASE
+          WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN excluded.payload_json
           WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.payload_json
           WHEN jobs.status IN ('pending','retry_wait','failed') THEN excluded.payload_json
           ELSE jobs.payload_json
         END,
         attempts=CASE
+          WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN 0
           WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.attempts
           WHEN jobs.status='failed' THEN 0
           ELSE jobs.attempts
         END,
-        lease_owner=CASE WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.lease_owner WHEN jobs.status='failed' THEN NULL ELSE jobs.lease_owner END,
-        lease_expires_at=CASE WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.lease_expires_at WHEN jobs.status='failed' THEN NULL ELSE jobs.lease_expires_at END,
-        last_error=CASE WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.last_error WHEN jobs.status='failed' THEN NULL ELSE jobs.last_error END,
+        lease_owner=CASE WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN NULL WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.lease_owner WHEN jobs.status='failed' THEN NULL ELSE jobs.lease_owner END,
+        lease_expires_at=CASE WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN NULL WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.lease_expires_at WHEN jobs.status='failed' THEN NULL ELSE jobs.lease_expires_at END,
+        last_error=CASE WHEN jobs.dedupe_key LIKE 'upload-session:%' AND jobs.status IN ('completed','failed') THEN NULL WHEN jobs.status='failed' AND json_extract(jobs.payload_json, '$.awaitingManualRecovery')=1 THEN jobs.last_error WHEN jobs.status='failed' THEN NULL ELSE jobs.last_error END,
         max_attempts=MAX(jobs.max_attempts, excluded.max_attempts),
         updated_at=excluded.updated_at
     `).run({
@@ -717,6 +721,42 @@ export class PersistentJobStore {
     return this.findById(id);
   }
 
+  /**
+   * Finish a manual recovery attempt without deleting its audit row. The
+   * failed technical status keeps the job out of normal queues while the
+   * payload-level lifecycle state records the user's explicit disposition.
+   */
+  abandonRecovery(id: string, reason = "用户已放弃本次候选。", payloadPatch: Record<string, unknown> = {}) {
+    const row = this.stateDatabase.db.prepare(
+      "SELECT status, payload_json FROM jobs WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')"
+    ).get(id) as any;
+    if (!row) return false;
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(String(row.payload_json || "{}"));
+    } catch {
+      payload = {};
+    }
+    if (payload.awaitingManualRecovery !== true) return false;
+    const nextPayload = {
+      ...payload,
+      ...payloadPatch,
+      awaitingManualRecovery: false,
+      resumeOnly: false,
+      allowReupload: false,
+      userDisposition: "abandoned",
+      lifecycleState: "abandoned",
+      abandonedAt: Date.now(),
+    };
+    const now = Date.now();
+    return this.stateDatabase.db.prepare(`
+      UPDATE jobs SET status='failed', lease_owner=NULL, lease_expires_at=NULL,
+        last_error=?, payload_json=?, updated_at=?
+      WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')
+        AND json_extract(payload_json, '$.awaitingManualRecovery')=1
+    `).run(reason.slice(0, 1000), JSON.stringify(nextPayload), now, id).changes === 1;
+  }
+
   counts() {
     const rows = this.stateDatabase.db.prepare(`
       SELECT kind, status, COUNT(*) AS count FROM jobs GROUP BY kind, status
@@ -753,6 +793,25 @@ export class PersistentJobStore {
     `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
   }
 
+  listLegacyDownloadRecovery(limit = 10_000) {
+    return (this.stateDatabase.db.prepare(`
+      SELECT * FROM jobs
+      WHERE kind='download'
+        AND json_type(payload_json, '$.legacyFailureKey')='text'
+      ORDER BY updated_at ASC, created_at ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.floor(limit))) as any[]).map(rowToJob);
+  }
+
+  findLegacyDownloadRecovery(issueKey: string) {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT * FROM jobs
+      WHERE kind='download' AND json_extract(payload_json, '$.legacyFailureKey')=?
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(String(issueKey || "")) as any;
+    return row ? rowToJob(row) : null;
+  }
+
   listBvids(kinds: PersistentJobKind[], limit = 100_000) {
     if (kinds.length === 0) return [];
     const placeholders = kinds.map(() => "?").join(",");
@@ -761,6 +820,39 @@ export class PersistentJobStore {
       WHERE kind IN (${placeholders}) AND bvid IS NOT NULL AND bvid != ''
       LIMIT ?
     `).all(...kinds, Math.max(1, Math.floor(limit))) as any[]).map((row) => String(row.bvid));
+  }
+
+  listActiveTransferSessionKeys(
+    kinds: PersistentJobKind[] = ["upload", "history_upload", "verify_upload", "quality_upload", "quality_replace"],
+  ) {
+    if (kinds.length === 0) return new Set<string>();
+    const placeholders = kinds.map(() => "?").join(",");
+    const statuses = ["pending", "retry_wait", "leased", "running", "manual_wait", "failed"];
+    const statusPlaceholders = statuses.map(() => "?").join(",");
+    const rows = this.stateDatabase.db.prepare(`
+      SELECT
+        json_extract(payload_json, '$.sessionId') AS session_id,
+        COALESCE(
+          json_extract(payload_json, '$.sessionGeneration'),
+          json_extract(payload_json, '$.session_generation'),
+          1
+        ) AS session_generation
+      FROM jobs
+      WHERE kind IN (${placeholders})
+        AND status IN (${statusPlaceholders})
+        AND (
+          status != 'failed'
+          OR json_extract(payload_json, '$.awaitingManualRecovery')=1
+        )
+        AND json_type(payload_json, '$.sessionId') IN ('text', 'integer')
+    `).all(...kinds, ...statuses) as any[];
+    return new Set(rows.flatMap((row) => {
+      const sessionId = String(row.session_id || "");
+      const generation = Number(row.session_generation || 1);
+      return sessionId && Number.isInteger(generation) && generation > 0
+        ? [`${sessionId}:g${generation}`]
+        : [];
+    }));
   }
 
   listManualRecovery(kinds: PersistentJobKind[], limit = 1000) {

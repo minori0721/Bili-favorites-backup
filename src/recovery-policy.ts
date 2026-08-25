@@ -37,6 +37,7 @@ export type RecoveryIssueActionId =
   | "retry_quality"
   | "retry_quality_with_encoding"
   | "retry_quality_with_quality"
+  | "abandon_attempt"
   | "open_settings";
 
 export interface RecoveryIssueActionChoice {
@@ -198,6 +199,11 @@ const actions = {
     choices,
     mediaProfile: { quality: true, encoding: false },
   }),
+  abandonAttempt: (): RecoveryIssueAction => ({
+    id: "abandon_attempt",
+    label: "放弃本次候选",
+    description: "结束当前候选并保留原归档；以后重新同步时仍可建立新的候选代次。",
+  }),
   openSettings: (): RecoveryIssueAction => ({
     id: "open_settings",
     label: "检查存储配置",
@@ -249,11 +255,11 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
       strict.push(actions.redownloadWithQuality(context.downloadQualityChoices));
     }
     if (context.downloadCategory === "account" && alternate.length > 0) {
-      return [...strict, actions.retryDownloadWithAccount(alternate), actions.retryDownload(), actions.deferDownload()];
+      return [...strict, actions.retryDownloadWithAccount(alternate), actions.retryDownload(), actions.deferDownload(), actions.abandonAttempt()];
     }
     const planned = [...strict, actions.retryDownload()];
     if (alternate.length > 0) planned.push(actions.retryDownloadWithAccount(alternate));
-    planned.push(actions.deferDownload());
+    planned.push(actions.deferDownload(), actions.abandonAttempt());
     return planned;
   }
 
@@ -264,7 +270,7 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
     } else if (context.qualityQualityEligible && context.qualityChoices?.length) {
       planned.push(actions.retryQualityWithQuality(context.qualityChoices));
     }
-    planned.push(actions.retryQuality());
+    planned.push(actions.retryQuality(), actions.abandonAttempt());
     return planned;
   }
 
@@ -272,33 +278,37 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
   switch (context.kind) {
     case "local_file_missing":
     case "local_file_changed":
-      return context.remoteStatus === "missing" ? [actions.redownload(), actions.recheck()] : [actions.recheck()];
+      return context.remoteStatus === "missing"
+        ? [actions.redownload(), actions.recheck(), actions.abandonAttempt()]
+        : [actions.recheck(), actions.abandonAttempt()];
     case "remote_size_conflict":
     case "partial_remote_state":
     case "unknown_same_size":
     case "legacy_conflict_interrupted":
     case "remote_visibility_stalled":
-      return candidate ? [candidate, actions.recheck()] : [actions.recheck()];
+      return candidate ? [candidate, actions.recheck(), actions.abandonAttempt()] : [actions.recheck(), actions.abandonAttempt()];
     case "remote_size_limit":
       return context.jobKind === "upload" && !context.historyOnly
-        ? [actions.redownloadWithEncoding(true), actions.openSettings(), actions.recheck()]
-        : [actions.openSettings(), actions.reupload(), actions.recheck()];
+        ? [actions.redownloadWithEncoding(true), actions.openSettings(), actions.recheck(), actions.abandonAttempt()]
+        : [actions.openSettings(), actions.reupload(), actions.recheck(), actions.abandonAttempt()];
     case "encoding_retry_failed":
     case "remote_write_rejected":
       return context.jobKind === "upload" && !context.historyOnly
-        ? [actions.redownloadWithEncoding(true), actions.openSettings(), actions.recheck()]
-        : [actions.openSettings(), actions.recheck()];
+        ? [actions.redownloadWithEncoding(true), actions.openSettings(), actions.recheck(), actions.abandonAttempt()]
+        : [actions.openSettings(), actions.recheck(), actions.abandonAttempt()];
     case "remote_permission":
-      return [actions.openSettings(), actions.recheck()];
+      return [actions.openSettings(), actions.recheck(), actions.abandonAttempt()];
     case "remote_unsupported":
     case "remote_unknown":
     case "manual_review":
-      return candidate ? [candidate, actions.recheck(), actions.openSettings()] : [actions.recheck(), actions.openSettings()];
+      return candidate
+        ? [candidate, actions.recheck(), actions.openSettings(), actions.abandonAttempt()]
+        : [actions.recheck(), actions.openSettings(), actions.abandonAttempt()];
     case "remote_connection":
     case "remote_visibility_timeout":
       return [actions.recheck()];
     case "conflict_candidate_ready":
-      return [actions.keepExisting(), actions.useCandidate(), actions.recheck()];
+      return [actions.keepExisting(), actions.useCandidate(), actions.recheck(), actions.abandonAttempt()];
     default:
       return [actions.recheck()];
   }

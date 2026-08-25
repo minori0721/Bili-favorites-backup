@@ -32,6 +32,8 @@ export interface MediaProbeCombination extends BBDownProbeTrack {
   totalBytesKind?: "final" | "video_only";
   peakBytes?: number;
   totalSizeSource?: BBDownProbeSizeSource | "mixed";
+  /** API/HEAD/Range are usable size evidence; bitrate-only or missing audio is not. */
+  totalSizeConfidence?: "exact" | "estimate" | "unknown";
 }
 
 export interface MediaProbeResult {
@@ -126,6 +128,20 @@ function mergeSizeSources(sources: Array<BBDownProbeSizeSource | undefined>): Me
   const normalized = sources.filter((source): source is BBDownProbeSizeSource => Boolean(source));
   if (normalized.length === 0) return "unknown";
   return new Set(normalized).size === 1 ? normalized[0] : "mixed";
+}
+
+function isUsableSizeSource(source: BBDownProbeSizeSource | undefined) {
+  return source === "api" || source === "head" || source === "range";
+}
+
+function sizeConfidence(
+  totalBytes: number,
+  totalBytesKind: MediaProbeCombination["totalBytesKind"],
+  sources: Array<BBDownProbeSizeSource | undefined>,
+) {
+  if (totalBytes <= 0) return "unknown" as const;
+  if (totalBytesKind !== "final" || sources.length === 0) return "estimate" as const;
+  return sources.every(isUsableSizeSource) ? "exact" as const : "estimate" as const;
 }
 
 export class MediaProbeService {
@@ -228,6 +244,14 @@ export class MediaProbeService {
               ...matchingTracks.map((candidate) => candidate?.sizeSource || "unknown" as const),
               ...audioSources,
             ]),
+            totalSizeConfidence: sizeConfidence(
+              totalFinalBytes,
+              totalFinalBytes > 0 ? (audioKnown ? "final" : "video_only") : undefined,
+              [
+                ...matchingTracks.map((candidate) => candidate?.sizeSource || "unknown" as const),
+                ...(audioKnown ? audioSources : []),
+              ],
+            ),
             resolution: resolutions.size > 1 ? "各分P不同" : [...resolutions][0] || track.resolution,
           } as MediaProbeCombination;
         });

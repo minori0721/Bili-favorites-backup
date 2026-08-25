@@ -26,7 +26,7 @@ type TestState = {
   storageCheckCount: number;
   storageCheckBody: unknown;
   storageCheckMode: "ok" | "path_error";
-  queueBoardMode: "empty" | "manual_wait" | "media_retry";
+  queueBoardMode: "empty" | "manual_wait" | "media_retry" | "partial_upload";
   onlineNavigationCount: number;
   onlineItemQueries: string[];
   mediaProbeStartCount: number;
@@ -166,6 +166,7 @@ app.post("/__test/reset", (request, response) => {
   if (request.body?.storageCheckMode === "path_error") state.storageCheckMode = "path_error";
   if (request.body?.queueBoardMode === "manual_wait") state.queueBoardMode = "manual_wait";
   if (request.body?.queueBoardMode === "media_retry") state.queueBoardMode = "media_retry";
+  if (request.body?.queueBoardMode === "partial_upload") state.queueBoardMode = "partial_upload";
   if (request.body?.mediaProbeMode === "failed") state.mediaProbeMode = "failed";
   if (request.body?.mediaProbeMode === "refine_mismatch") state.mediaProbeMode = "refine_mismatch";
   response.json(state);
@@ -239,6 +240,7 @@ app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({
 app.get("/api/queue/state", (_request, response) => {
   const manualWaitQueue = state.queueBoardMode === "manual_wait";
   const mediaRetryQueue = state.queueBoardMode === "media_retry";
+  const partialUploadQueue = state.queueBoardMode === "partial_upload";
   const queueItems = manualWaitQueue ? [{
     id: "job-remote-visibility",
     bvid: "BV1wzGP6jEPh",
@@ -281,6 +283,32 @@ app.get("/api/queue/state", (_request, response) => {
     recoveryIssueId: "upload.job-media-retry",
     recoveryKind: "encoding_retry_failed",
     recoveryActions: [{ id: "redownload_with_encoding", label: "重新选择画质与编码" }],
+  }] : partialUploadQueue ? [{
+    id: "job-partial-upload",
+    bvid: "BV1PARTIAL01",
+    title: "多分P部分上传",
+    upperName: "测试UP",
+    cover: "",
+    folderTitle: "当前收藏夹",
+    remotePath: "",
+    userId: "user-1",
+    mediaId: 101,
+    detail: "已确认 2/5 个分P，剩余 3 个等待处理；已确认分P不会重复上传。",
+    status: "manual_wait",
+    phase: "manual_action",
+    lifecycleState: "partial_upload",
+    verifiedPages: 2,
+    totalPages: 5,
+    nextAction: "recheck",
+    retries: 0,
+    maxRetries: 3,
+    actionRequired: true,
+    awaitingManualRecovery: true,
+    recoveryJobId: "job-partial-upload",
+    recoveryDisposition: "action_required",
+    recoveryIssueId: "upload.job-partial-upload",
+    recoveryKind: "remote_visibility_timeout",
+    recoveryActions: [{ id: "recheck", label: "重新确认" }],
   }] : [];
   const candidateIssue = state.recoveryIssueKind === "candidate";
   const issueByKind = {
@@ -302,6 +330,7 @@ app.get("/api/queue/state", (_request, response) => {
         { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" },
         { id: "use_candidate", label: "采用新候选", description: "将候选设为当前归档，正式旧路径仍保留。" },
         { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
+        { id: "abandon_attempt", label: "放弃本次候选", description: "结束当前候选并保留原归档。" },
       ],
     },
     create_candidate: {
@@ -411,7 +440,7 @@ app.get("/api/queue/state", (_request, response) => {
       intentional: candidateIssue ? 1 : 0,
       background: disposition === "background" ? 1 : 0,
     },
-    recovery: manualWaitQueue ? { pendingUploads: 1 } : {},
+    recovery: manualWaitQueue || partialUploadQueue ? { pendingUploads: 1 } : {},
     chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
   }));
 });

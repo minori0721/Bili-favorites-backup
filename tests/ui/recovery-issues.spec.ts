@@ -165,6 +165,25 @@ test("conflict candidate confirmation explains both retained copies and sends on
   expect(state.recoveryActionCount).toBe(1);
 });
 
+test("abandon candidate requires confirmation and is sent only once", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  await openRecoveryCenter(page, "candidate");
+  const row = page.locator(".recovery-issue-row");
+  if (testInfo.project.name === "desktop") await row.click();
+  else await row.tap();
+  await page.getByRole("button", { name: "放弃本次候选" }).click();
+  await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
+  await expect(page.locator("#confirmActionDetail")).toContainText("原归档不会被删除或覆盖");
+  await page.locator("#confirmActionOkBtn").evaluate((element: HTMLButtonElement) => {
+    element.click();
+    element.click();
+  });
+  await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
+  const state = await page.request.get("/__test/state").then((response) => response.json());
+  expect(state.recoveryActionCount).toBe(1);
+  expect(state.lastRecoveryAction).toBe("abandon_attempt");
+});
+
 test("complete local groups can create one isolated candidate without touching the official path", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop nested confirmation coverage");
@@ -251,10 +270,37 @@ test("an unavailable Bilibili item exposes an explicit unknown-size strict fallb
   await page.locator("#encodingRetryEncoding").selectOption("AV1");
   await expect(page.locator("#encodingRetryEstimate")).toContainText("可用性和大小尚未确认");
   await page.locator("#encodingRetrySubmitBtn").click();
+  await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
+  await expect(page.locator("#confirmActionMessage")).toContainText("只能提供估算");
+  await page.locator("#confirmActionOkBtn").click();
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.lastRecoveryBody).toEqual({ quality: "1080P", encodingPriority: ["AV1", "HEVC", "AVC"], strict: true });
   expect(state.mediaProbeStartCount).toBe(1);
+});
+
+test("strict retry cannot submit while the selected combination is being refined", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name !== "desktop", "desktop media refinement timing coverage");
+  await openRecoveryCenter(page, "quality");
+  await page.locator(".recovery-issue-row").click();
+  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  await expect(page.getByRole("radio", { name: /1080P · HEVC/ })).toBeEnabled();
+
+  let delayedRefinement = false;
+  await page.route("**/api/media-probe/probe-online-1", async (route) => {
+    if (route.request().method() === "GET" && !delayedRefinement) {
+      delayedRefinement = true;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("radio", { name: /1080P · HEVC/ }).click();
+  await expect(page.locator("#encodingRetrySubmitBtn")).toBeDisabled();
+  await expect(page.locator("#encodingRetrySubmitBtn")).toHaveText("正在读取大小...");
+  await expect(page.locator("#encodingRetryProbeSummary")).toContainText("已更新所选组合的大小信息");
+  await expect(page.locator("#encodingRetrySubmitBtn")).toBeEnabled();
 });
 
 test("size refinement never substitutes a different media combination", async ({ page, browserProblems }, testInfo) => {

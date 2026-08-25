@@ -217,8 +217,12 @@ test("archive search applies atomically and ignores slow obsolete responses", as
   await resetFixture(page);
   await openLibrary(page, testInfo);
   const search = page.locator("#archiveLibrarySearchInput");
-  await search.fill("alpha");
-  await page.locator('[data-archive-bvid="BV1BETA0002"] .archive-library-card-more').click();
+  await search.evaluate((input) => {
+    const field = input as HTMLInputElement;
+    field.value = "alpha";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    (document.querySelector('[data-archive-bvid="BV1BETA0002"] .archive-library-card-more') as HTMLButtonElement).click();
+  });
   await expect(page.locator("#archiveLibraryDetail")).toHaveClass(/open/);
   const duringDebounce = await page.request.get("/__test/state").then((response) => response.json());
   expect(duringDebounce.detailQueries.at(-1)).toBe("");

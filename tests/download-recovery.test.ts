@@ -93,7 +93,7 @@ test("manual download recovery can preflight an alternate account and preserve t
       },
     });
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `download.${job.id}`);
-    assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_download_with_account", "retry_download", "defer_download"]);
+    assert.deepEqual(issue.availableActions.map((action: any) => action.id), ["retry_download_with_account", "retry_download", "defer_download", "abandon_attempt"]);
     assert.equal(issue.availableActions[0].choices[0].value, "u2");
 
     const rejected = await scheduler.resolveRecoveryIssue(`download.${job.id}`, "retry_download_with_account", { userId: "u2" });
@@ -183,10 +183,11 @@ test("legacy permanent download failures become manual recovery items without au
   ) as any;
   scheduler.downloadQueue.setStartGate(() => false);
   try {
-    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === "legacy-download.u1:7:BVLEGACY");
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.bvid === "BVLEGACY");
     assert.ok(issue);
     assert.equal(issue.kind, "download_retry_exhausted");
     assert.ok(issue.summary.includes("旧版下载失败记录"));
+    assert.match(issue.id, /^download\./);
     assert.equal(scheduler.jobStore.findByDedupeKey("download:BVLEGACY"), null);
 
     const retried = await scheduler.resolveRecoveryIssue(issue.id, "retry_download", {});

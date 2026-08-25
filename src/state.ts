@@ -30,6 +30,8 @@ export interface FailedEntry {
   failedAt: string;
   reason: string;
   permanent: boolean;
+  userDisposition?: "abandoned";
+  abandonedAt?: string;
 }
 
 export type BackupStatus =
@@ -108,7 +110,7 @@ export interface RemoteConflictCandidateRecord {
   id: string;
   createdAt: string;
   resolvedAt?: string;
-  resolution?: "kept_existing" | "selected_candidate";
+  resolution?: "kept_existing" | "selected_candidate" | "abandoned";
   originalRemotePath: string;
   candidateRemotePath: string;
   reasonCode: string;
@@ -1671,7 +1673,7 @@ export class StateManager {
     userId: string | undefined,
     mediaId: number | undefined,
     candidateId: string,
-    resolution: "kept_existing" | "selected_candidate",
+    resolution: "kept_existing" | "selected_candidate" | "abandoned",
   ) {
     const relation = this.getRelation(userId, mediaId, bvid);
     if (!relation?.remoteConflictCandidates?.some((item) => item.id === candidateId)) return false;

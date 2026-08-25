@@ -40,6 +40,18 @@ async function openMediaRetryBoard(page: Page) {
   await expect(page.locator(".queue-card")).toHaveCount(1);
 }
 
+async function openPartialUploadBoard(page: Page) {
+  await page.request.post("/__test/reset", { data: { queueBoardMode: "partial_upload" } });
+  await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({
+    status: 200,
+    contentType: "text/css",
+    body: "",
+  }));
+  await page.goto("/");
+  await expect(page.locator("#queueBoard")).toBeVisible();
+  await expect(page.locator(".queue-card")).toHaveCount(1);
+}
+
 test("defaults to the board and keeps remote verification data separate from retries", async ({ page, browserProblems }) => {
   void browserProblems;
   await openBoard(page);
@@ -97,4 +109,14 @@ test("strict media retry card offers a specification picker without unsafe direc
   await expect(card.getByRole("button", { name: "换规格" })).toBeVisible();
   await expect(card.getByRole("button", { name: "重新确认" })).toBeVisible();
   await expect(card.getByRole("button", { name: "继续上传" })).toBeHidden();
+});
+
+test("partial multipart recovery shows progress and does not look like a completed upload", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await openPartialUploadBoard(page);
+  const card = page.locator(".queue-card");
+  await expect(card.locator(".queue-status")).toContainText("已确认 2/5 个分P");
+  await expect(card.locator(".queue-status")).toContainText("已确认分P不会重复上传");
+  await expect(card.locator(".queue-status")).not.toContainText("已完成");
+  await expect(card.getByRole("button", { name: "重新确认" })).toBeVisible();
 });

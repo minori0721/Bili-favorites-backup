@@ -5,6 +5,8 @@ import { computeTaskRetryDelayMs } from "../src/queue.js";
 import {
   classifyUploadError,
   captureUploadResponseBody,
+  extractRemoteErrorCode,
+  extractSafeUploadResponseHeaders,
   isSingleFileSizeLimitError,
   REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
   sanitizeUploadText,
@@ -83,6 +85,57 @@ test("ambiguous provider write evidence is carried without becoming a size-limit
   assert.equal(failure.remoteWriteEvidence, "target_missing_parent_visible");
   assert.equal(failure.remoteWriteStatus, 405);
   assert.equal(failure.remoteParentStatus, "visible");
+});
+
+test("405 evidence keeps safe provider headers and never carries authorization", () => {
+  const error = {
+    status: 405,
+    message: "Method Not Allowed",
+    responseBody: "Method Not Allowed",
+    headers: {
+      Allow: "PUT, OPTIONS",
+      "Retry-After": "60",
+      "Content-Type": "text/html",
+      "X-OpenList-Error-Code": "AccessUserMsgError",
+      Authorization: "Bearer should-not-appear",
+      Cookie: "SESSDATA=should-not-appear",
+    },
+  };
+  assert.equal(extractRemoteErrorCode(error), "AccessUserMsgError");
+  assert.deepEqual(extractSafeUploadResponseHeaders(error), {
+    allow: "PUT, OPTIONS",
+    "retry-after": "60",
+    "content-type": "text/html",
+    "x-openlist-error-code": "AccessUserMsgError",
+  });
+  const failure = classifyUploadError(error, "/private/remote/video.mp4");
+  assert.equal(failure.remoteErrorCode, "AccessUserMsgError");
+  assert.match(failure.responseSnippet || "", /Method Not Allowed/);
+  assert.equal(failure.responseHeaders?.authorization, undefined);
+  assert.doesNotMatch(JSON.stringify(failure.responseHeaders), /Bearer|SESSDATA/);
+  assert.match(failure.summary, /AccessUserMsgError/);
+  assert.doesNotMatch(`${failure.summary} ${failure.responseSnippet} ${JSON.stringify(failure.responseHeaders)}`, /private\/remote|Bearer|SESSDATA/);
+});
+
+test("response snippets are bounded and redact remote URLs", () => {
+  const failure = classifyUploadError({
+    status: 405,
+    responseBody: `PUT https://user:password@example.test/dav/secret.mp4?token=abc ${"x".repeat(2_000)}`,
+  }, "/dav/secret.mp4");
+  assert.ok(Buffer.byteLength(failure.responseSnippet || "", "utf8") <= 240);
+  assert.doesNotMatch(failure.responseSnippet || "", /password|token=abc|secret\.mp4/);
+});
+
+test("OpenList size-limit header is authoritative without reading provider logs", () => {
+  const failure = classifyUploadError({
+    status: 405,
+    headers: { "X-OpenList-Error-Code": "SingleFileSizeOverLimit" },
+    message: "Method Not Allowed",
+  }, "/target/video.mp4");
+  assert.equal(failure.code, REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE);
+  assert.equal(failure.category, "deterministic");
+  assert.equal(failure.remoteErrorCode, "SingleFileSizeOverLimit");
+  assert.equal(failure.summary, "远端拒绝上传：单文件超过存储限制");
 });
 
 test("retry delay uses exponential backoff, jitter and explicit Retry-After", () => {

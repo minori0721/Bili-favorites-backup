@@ -1823,6 +1823,7 @@ function getAppScript() {
       navigationTimer: null,
       navigationToken: 0,
       navigationController: null,
+      pendingReset: false,
       scrollPositions: {},
       trigger: null
     };
@@ -3806,6 +3807,7 @@ function getAppScript() {
       archiveLibraryState.navigationTimer = null;
       archiveLibraryState.navigationController = null;
       archiveLibraryState.loading = false;
+      archiveLibraryState.pendingReset = false;
       closeArchiveLibraryDetail({ restoreFocus:false });
     }
 
@@ -4588,18 +4590,16 @@ function getAppScript() {
     }
 
     async function loadArchiveLibraryItems(reset = false) {
+      if (archiveLibraryState.pendingReset && !reset) reset = true;
       if (archiveLibraryState.loading && !reset) return;
       if (reset) {
         archiveLibraryState.token += 1;
         if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
-        archiveLibraryState.items = [];
-        archiveLibraryState.nodes.clear();
+        archiveLibraryState.pendingReset = true;
         archiveLibraryState.nextCursor = null;
         archiveLibraryState.hasMore = true;
         archiveLibraryState.summary = null;
         archiveLibraryState.error = null;
-        document.getElementById('archiveLibraryGrid').replaceChildren();
-        document.getElementById('archiveLibraryResults').scrollTop = 0;
       }
       if (!archiveLibraryState.hasMore) return;
       const token = archiveLibraryState.token;
@@ -4612,6 +4612,13 @@ function getAppScript() {
         const data = await fetchJson('/api/archive-library/items?' + params.toString(), { signal:controller.signal });
         if (token !== archiveLibraryState.token) return;
         const incoming = Array.isArray(data.items) ? data.items : [];
+        const replace = archiveLibraryState.pendingReset;
+        if (replace) {
+          archiveLibraryState.items = [];
+          archiveLibraryState.nodes.clear();
+          document.getElementById('archiveLibraryGrid').replaceChildren();
+          document.getElementById('archiveLibraryResults').scrollTop = 0;
+        }
         const known = new Set(archiveLibraryState.items.map((item) => item.bvid));
         const fresh = incoming.filter((item) => item && item.bvid && !known.has(item.bvid));
         archiveLibraryState.items.push(...fresh);
@@ -4635,7 +4642,8 @@ function getAppScript() {
         }
         setArchiveLibraryHeading();
         setArchiveLibraryFooter(archiveLibraryState.hasMore ? '' : '已加载全部', null);
-        if (reset) {
+        archiveLibraryState.pendingReset = false;
+        if (replace) {
           const stored = Number(archiveLibraryState.scrollPositions[archiveContextKey()] || 0);
           requestAnimationFrame(() => { document.getElementById('archiveLibraryResults').scrollTop = stored; });
         }
@@ -4646,7 +4654,7 @@ function getAppScript() {
           return loadArchiveLibraryItems(true);
         }
         archiveLibraryState.error = error instanceof Error ? error.message : String(error);
-        setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(false));
+        setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(archiveLibraryState.pendingReset));
       } finally {
         if (token === archiveLibraryState.token) {
           archiveLibraryState.loading = false;
@@ -7581,6 +7589,9 @@ function getAppScript() {
       state.refineTimer = null;
       state.activeProbe = null;
       state.queuedRefineKey = null;
+      state.refinementPendingKey = null;
+      state.refinedKeys?.clear?.();
+      state.unknownSizeKeys?.clear?.();
     }
 
     function mediaRetryCombinationKey(combination) {
@@ -7612,6 +7623,13 @@ function getAppScript() {
       return 0;
     }
 
+    function mediaRetryCombinationHasExactSize(combination) {
+      if (!combination) return false;
+      if (combination.totalSizeConfidence === 'exact') return true;
+      return combination.totalBytesKind === 'final'
+        && ['api', 'head', 'range'].includes(String(combination.totalSizeSource || combination.sizeSource || ''));
+    }
+
     function mediaRetryEncodingPriority(encoding) {
       const selected = String(encoding || '').toUpperCase();
       return [selected, ...MEDIA_RETRY_ENCODING_ORDER].filter((value, index, values) => value && values.indexOf(value) === index);
@@ -7641,7 +7659,20 @@ function getAppScript() {
       const selection = currentEncodingRetrySelection();
       const valid = Boolean(selection && ((state.allowQuality && selection.quality) || (state.allowEncoding && selection.encoding)));
       const submit = document.getElementById('encodingRetrySubmitBtn');
-      if (submit) submit.disabled = !valid;
+      const selectedKey = state.selected ? mediaRetryCombinationKey(state.selected) : '';
+      const refinementPending = Boolean(
+        state.activeProbe
+        || state.refineTimer
+        || (selectedKey && state.refinementPendingKey === selectedKey),
+      );
+      if (submit) {
+        submit.disabled = !valid || refinementPending || Boolean(state.confirmingUnknownSize);
+        submit.textContent = refinementPending
+          ? '正在读取大小...'
+          : (selectedKey && state.unknownSizeKeys?.has(selectedKey)) || (state.manual && !state.selected)
+            ? '仍然严格尝试'
+            : (state.mode === 'quality' ? '开始严格重调' : '开始严格重试');
+      }
       const estimate = document.getElementById('encodingRetryEstimate');
       if (!estimate) return;
       if (!selection) {
@@ -7651,7 +7682,9 @@ function getAppScript() {
         return;
       }
       if (!state.selected) {
-        estimate.textContent = '当前源的可用性和大小尚未确认。提交后会严格尝试，不匹配时不会上传候选。';
+        estimate.textContent = state.manual
+          ? '当前组合的可用性和大小尚未确认；仍可严格尝试，但可能因源不存在或空间不足而进入待处理。'
+          : '请选择一个可用组合；系统随后会读取该组合的精确大小。';
         return;
       }
       const combination = state.selected;
@@ -7666,7 +7699,10 @@ function getAppScript() {
       const peak = peakBytes > 0 ? ' · 本地峰值约 ' + formatBytes(peakBytes) : '';
       const capacity = Number.isFinite(availableBytes) && availableBytes >= 0 ? ' · 缓存可用 ' + formatBytes(availableBytes) : '';
       const warning = Number.isFinite(availableBytes) && peakBytes > availableBytes ? ' · 空间可能不足' : '';
-      estimate.textContent = (bytes > 0 ? kind + ' ' + formatBytes(bytes) : '大小仍待确认') + '（' + source + '）' + coverage + peak + capacity + warning;
+      const confidence = mediaRetryCombinationHasExactSize(combination)
+        ? ''
+        : ' · 大小仍需人工确认';
+      estimate.textContent = (bytes > 0 ? kind + ' ' + formatBytes(bytes) : '大小仍待确认') + '（' + source + '）' + coverage + peak + capacity + warning + confidence;
     }
 
     function renderEncodingRetryCombinations() {
@@ -7719,13 +7755,15 @@ function getAppScript() {
         const copy = document.createElement('span');
         copy.append(main, document.createElement('br'), meta);
         button.append(copy, size);
-        button.addEventListener('click', () => {
-          if (!encodingRetryDialogState || !available) return;
-          encodingRetryDialogState.selected = combination;
-          encodingRetryDialogState.manual = false;
-          renderEncodingRetryCombinations();
-          queueEncodingRetryRefinement();
-        });
+         button.addEventListener('click', () => {
+           if (!encodingRetryDialogState || !available) return;
+           encodingRetryDialogState.selected = combination;
+           encodingRetryDialogState.manual = false;
+           encodingRetryDialogState.refinementPendingKey = key;
+           encodingRetryDialogState.sizeConfirmationKey = null;
+           renderEncodingRetryCombinations();
+           queueEncodingRetryRefinement();
+         });
         host.appendChild(button);
       });
       const availableCount = combinations.filter((item) => item.available === true).length;
@@ -7763,6 +7801,8 @@ function getAppScript() {
       state.queuedRefineKey = null;
       if (queued && state.selected && mediaRetryCombinationKey(state.selected) === queued) {
         void startEncodingRetryProbe('refine');
+      } else {
+        renderEncodingRetryCombinations();
       }
     }
 
@@ -7783,8 +7823,11 @@ function getAppScript() {
           if (mode === 'catalog') {
             state.catalogFinished = true;
             state.manual = true;
+          } else if (targetKey) {
+            state.refinementPendingKey = null;
+            state.unknownSizeKeys?.add(targetKey);
+            state.refinedKeys?.delete(targetKey);
           }
-          renderEncodingRetryCombinations();
           finishEncodingRetryProbeCycle(state, token);
           return;
         }
@@ -7802,13 +7845,20 @@ function getAppScript() {
           if (refined) {
             mergeEncodingRetryCombination(state, refined);
             if (state.selected && mediaRetryCombinationKey(state.selected) === targetKey) state.selected = refined;
+            state.refinementPendingKey = null;
+            state.refinedKeys?.add(targetKey);
+            if (mediaRetryCombinationHasExactSize(refined)) state.unknownSizeKeys?.delete(targetKey);
+            else state.unknownSizeKeys?.add(targetKey);
+          } else if (targetKey) {
+            state.refinementPendingKey = null;
+            state.refinedKeys?.delete(targetKey);
+            state.unknownSizeKeys?.add(targetKey);
           }
           state.probeMessage = refined
             ? '已更新所选组合的大小信息；可以开始严格重试。'
             : '所选组合没有覆盖全部分P，请重新选择或手动严格尝试。';
           state.probeError = !refined;
         }
-        renderEncodingRetryCombinations();
         finishEncodingRetryProbeCycle(state, token);
       } catch (error) {
         if (error?.name === 'AbortError' || encodingRetryDialogState !== state || token !== state.probeToken) return;
@@ -7819,8 +7869,11 @@ function getAppScript() {
         if (mode === 'catalog') {
           state.catalogFinished = true;
           state.manual = true;
+        } else if (targetKey) {
+          state.refinementPendingKey = null;
+          state.refinedKeys?.delete(targetKey);
+          state.unknownSizeKeys?.add(targetKey);
         }
-        renderEncodingRetryCombinations();
         finishEncodingRetryProbeCycle(state, token);
       }
     }
@@ -7842,6 +7895,11 @@ function getAppScript() {
       const selection = mode === 'refine' ? currentEncodingRetrySelection() : null;
       if (mode === 'refine' && !state.selected) return;
       const targetKey = state.selected ? mediaRetryCombinationKey(state.selected) : '';
+      if (mode === 'refine' && targetKey) {
+        state.refinedKeys?.delete(targetKey);
+        state.unknownSizeKeys?.delete(targetKey);
+        state.refinementPendingKey = targetKey;
+      }
       const controller = new AbortController();
       const token = Number(state.probeToken || 0) + 1;
       state.probeToken = token;
@@ -7884,6 +7942,7 @@ function getAppScript() {
       const state = encodingRetryDialogState;
       if (!state?.selected) return;
       if (state.refineTimer) clearTimeout(state.refineTimer);
+      state.refinementPendingKey = mediaRetryCombinationKey(state.selected);
       state.refineTimer = setTimeout(() => {
         if (encodingRetryDialogState !== state || !state.selected) return;
         state.refineTimer = null;
@@ -7927,9 +7986,14 @@ function getAppScript() {
           probeController:null,
           pollTimer:null,
           refineTimer:null,
-          activeProbe:null,
-          queuedRefineKey:null,
-        };
+           activeProbe:null,
+           queuedRefineKey:null,
+           refinementPendingKey:null,
+           refinedKeys:new Set(),
+           unknownSizeKeys:new Set(),
+           sizeConfirmationKey:null,
+           confirmingUnknownSize:false,
+         };
         const title = document.getElementById('encodingRetryTitle');
         const copy = document.getElementById('encodingRetryCopy');
         const submit = document.getElementById('encodingRetrySubmitBtn');
@@ -8022,6 +8086,17 @@ function getAppScript() {
           detail:'已有本地进度、收藏来源和远端目标保持不变；不会删除任何归档。',
           confirmText:'重新下载',
           danger:false,
+          trigger,
+        });
+        if (!confirmed) return;
+      }
+      if (action.id === 'abandon_attempt') {
+        const confirmed = await confirmAction({
+          title:'放弃本次候选',
+          message:'结束当前恢复尝试并从待处理中心移除。',
+          detail:'原归档不会被删除或覆盖；以后重新同步时仍可建立新的候选代次。当前候选的本地文件和远端隔离文件不会自动用于播放。',
+          confirmText:'放弃本次候选',
+          danger:true,
           trigger,
         });
         if (!confirmed) return;
@@ -8284,6 +8359,10 @@ function getAppScript() {
 
     function queuePhaseLabel(item) {
       const phase = item.phase || '';
+      if (item.lifecycleState === 'conflict_candidate') return '正在生成隔离候选';
+      if (item.lifecycleState === 'remote_visibility_wait') return '等待远端确认';
+      if (item.lifecycleState === 'partial_upload') return '部分分P';
+      if (item.lifecycleState === 'manual_required') return '等待处理';
       if (phase === 'running') return item.stage === 'download_running' ? '正在下载' : '正在上传';
       if (phase === 'remote_verifying') return '正在确认远端';
       if (phase === 'retry_wait') return '等待重试';
@@ -9185,13 +9264,49 @@ function getAppScript() {
     document.getElementById('confirmActionOkBtn').addEventListener('click', () => finishConfirmAction(true));
     document.getElementById('confirmActionCancelBtn').addEventListener('click', () => finishConfirmAction(false));
     document.getElementById('encodingRetrySubmitBtn').addEventListener('click', () => {
-      if (!encodingRetryDialogState) return;
+      const state = encodingRetryDialogState;
+      if (!state || state.confirmingUnknownSize) return;
       const selected = currentEncodingRetrySelection();
       if (!selected || (!selected.quality && !selected.encoding)) {
         document.getElementById('encodingRetryStatus').textContent = '请选择一个可用组合，或明确选择要严格尝试的画质或编码。';
         return;
       }
-      finishEncodingRetryDialog(selected);
+      const selectedKey = state.selected ? mediaRetryCombinationKey(state.selected) : '';
+      const refinementPending = Boolean(
+        state.activeProbe
+        || state.refineTimer
+        || (selectedKey && state.refinementPendingKey === selectedKey),
+      );
+      if (refinementPending) {
+        document.getElementById('encodingRetryStatus').textContent = '正在读取所选组合的精确大小，请稍候。';
+        return;
+      }
+      const unknownSize = state.manual && !state.selected
+        || Boolean(selectedKey && state.unknownSizeKeys?.has(selectedKey));
+      if (!unknownSize || state.sizeConfirmationKey === (selectedKey || JSON.stringify(selected))) {
+        finishEncodingRetryDialog(selected);
+        return;
+      }
+      const confirmationKey = selectedKey || JSON.stringify(selected);
+      state.confirmingUnknownSize = true;
+      updateEncodingRetrySelectionState();
+      void confirmAction({
+        title: '大小尚未精确取得',
+        message: '当前组合只能提供估算或大小读取失败，仍要严格尝试吗？',
+        detail: '系统仍会逐分P严格校验画质和编码；如果源不存在、空间不足或实际大小异常，任务会进入待处理，原归档不会被覆盖。',
+        confirmText: '仍然严格尝试',
+        danger: false,
+        trigger: document.getElementById('encodingRetrySubmitBtn'),
+      }).then((confirmed) => {
+        if (encodingRetryDialogState !== state) return;
+        state.confirmingUnknownSize = false;
+        if (!confirmed) {
+          updateEncodingRetrySelectionState();
+          return;
+        }
+        state.sizeConfirmationKey = confirmationKey;
+        finishEncodingRetryDialog(selected);
+      });
     });
     document.getElementById('encodingRetryProbeBtn').addEventListener('click', () => {
       if (!encodingRetryDialogState) return;

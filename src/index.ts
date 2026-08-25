@@ -1924,6 +1924,7 @@ app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, re
     "retry_quality",
     "retry_quality_with_encoding",
     "retry_quality_with_quality",
+    "abandon_attempt",
     "keep_existing",
     "use_candidate",
   ]);

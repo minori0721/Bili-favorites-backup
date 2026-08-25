@@ -14,6 +14,9 @@ export interface UploadFailureInfo {
   category: UploadFailureCategory;
   status?: number;
   code?: string;
+  remoteErrorCode?: string;
+  responseHeaders?: Record<string, string>;
+  responseSnippet?: string;
   summary: string;
   remotePath: string;
   retryable: boolean;
@@ -36,6 +39,17 @@ export interface UploadHealthSnapshot {
 }
 
 export const REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE = "REMOTE_SINGLE_FILE_SIZE_LIMIT";
+
+const SAFE_RESPONSE_HEADERS = [
+  "allow",
+  "retry-after",
+  "content-type",
+  "content-length",
+  "dav",
+  "x-openlist-error-code",
+  "x-alist-error-code",
+  "x-error-code",
+] as const;
 
 const NETWORK_CODES = new Set([
   "ECONNRESET",
@@ -70,6 +84,62 @@ export function sanitizeUploadText(value: unknown, maxLength = 500) {
   return text || "Unknown upload error";
 }
 
+function sanitizeResponseSnippet(value: unknown, remotePath: string) {
+  const raw = stringifyErrorDetail(value).replace(/https?:\/\/[^\s"'<>]+/gi, "<remote-url>");
+  const text = sanitizeUploadText(raw, 240)
+    .replace(String(remotePath || ""), "<remote>")
+    .replace(/<remote:[^>]+>/gi, "<remote>");
+  return text === "Unknown upload error" ? undefined : text;
+}
+
+function headerValue(headers: any, name: string) {
+  if (!headers) return undefined;
+  if (typeof headers.get === "function") return headers.get(name) ?? headers.get(name.toLowerCase());
+  if (typeof headers === "object") {
+    const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    return key ? headers[key] : undefined;
+  }
+  return undefined;
+}
+
+function responseHeaders(error: any) {
+  return error?.response?.headers || error?.headers;
+}
+
+function safeHeaderValue(value: unknown) {
+  const text = sanitizeDiagnosticText(stringifyErrorDetail(value), 180)
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  return text || undefined;
+}
+
+export function extractSafeUploadResponseHeaders(error: any) {
+  const headers = responseHeaders(error);
+  const result: Record<string, string> = {};
+  for (const name of SAFE_RESPONSE_HEADERS) {
+    const value = safeHeaderValue(headerValue(headers, name));
+    if (value) result[name] = value;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function isSafeProviderCode(value: unknown) {
+  const code = String(value || "").trim();
+  return /^[A-Za-z][A-Za-z0-9_.-]{1,80}$/.test(code)
+    && !NETWORK_CODES.has(code.toUpperCase());
+}
+
+export function extractRemoteErrorCode(error: any) {
+  const headers = responseHeaders(error);
+  const headerCode = ["x-openlist-error-code", "x-alist-error-code", "x-error-code"]
+    .map((name) => headerValue(headers, name))
+    .find((value) => isSafeProviderCode(value));
+  const carriedCode = [error?.remoteErrorCode, error?.providerErrorCode, error?.errorCode]
+    .find((value) => isSafeProviderCode(value));
+  const value = headerCode ?? carriedCode;
+  return value ? String(value).trim().slice(0, 81) : undefined;
+}
+
 function uploadErrorDetails(error: any) {
   return [
     error?.code,
@@ -78,6 +148,7 @@ function uploadErrorDetails(error: any) {
     error?.body,
     error?.response?.body,
     error?.data,
+    extractRemoteErrorCode(error),
     error?.message,
   ].map(stringifyErrorDetail).filter(Boolean).join(" ");
 }
@@ -159,6 +230,8 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
       String(error?.code || error?.cause?.code || "").toUpperCase(),
     );
   const sizeLimit = isSingleFileSizeLimitError(error);
+  const remoteErrorCode = extractRemoteErrorCode(error);
+  const capturedHeaders = extractSafeUploadResponseHeaders(error);
   const code = strictEncodingFailure
     ? String(error?.code || error?.cause?.code || "BFB_ENCODING_MISMATCH").toUpperCase()
     : sizeLimit
@@ -169,6 +242,9 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
     ? responseDetail
     : undefined;
   const detail = usableResponseDetail ?? error?.data ?? error?.message ?? error;
+  const responseSnippet = usableResponseDetail
+    ? sanitizeResponseSnippet(usableResponseDetail, remotePath)
+    : undefined;
   const remoteWriteEvidence = error?.remoteWriteEvidence || error?.cause?.remoteWriteEvidence;
   const remoteWriteStatus = Number(error?.remoteWriteStatus ?? error?.cause?.remoteWriteStatus);
   const remoteParentStatus = error?.remoteParentStatus || error?.cause?.remoteParentStatus;
@@ -176,6 +252,8 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
     ? sanitizeUploadText(error?.message || "严格编码校验未通过")
     : sizeLimit
     ? "远端拒绝上传：单文件超过存储限制"
+    : remoteErrorCode
+      ? `远端拒绝写入（${remoteErrorCode}）`
     : sanitizeUploadText(detail);
   const networkLike = Boolean(code && NETWORK_CODES.has(code)) || /ECONNRESET|ETIMEDOUT|timeout|socket hang up|network/i.test(summary);
   let category: UploadFailureCategory = "unknown";
@@ -205,6 +283,9 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
     category,
     status,
     code,
+    ...(remoteErrorCode ? { remoteErrorCode } : {}),
+    ...(capturedHeaders ? { responseHeaders: capturedHeaders } : {}),
+    ...(responseSnippet ? { responseSnippet } : {}),
     summary,
     remotePath,
     retryable,

@@ -70,7 +70,7 @@ import {
 import { DownloadApiHealth } from "./download-api-health.js";
 import { classifyDownloadRecoveryFailure } from "./download-recovery.js";
 import { cancelActiveDownloadsForAccount } from "./downloader.js";
-import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
+import { redactRemotePathForDisplay, safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
 import { isSelectableBilibiliQuality } from "./media-metadata.js";
 import {
   isAuthRefreshAttemptBlocked,
@@ -222,6 +222,9 @@ export interface RecoveryIssue {
   fileName?: string;
   expectedSize?: number;
   observedSize?: number;
+  remoteErrorCode?: string;
+  responseHeaders?: Record<string, string>;
+  responseSnippet?: string;
   requestedEncoding?: BBDownEncoding;
   actualEncodings?: string[];
   encodingMismatch?: boolean;
@@ -229,6 +232,9 @@ export interface RecoveryIssue {
   actualQualities?: string[];
   qualityMismatch?: boolean;
   verifiedPages?: number;
+  totalPages?: number;
+  lifecycleState?: string;
+  attemptKey?: string;
   occurredAt: number;
   checkedAt?: number;
   nextAutomaticCheckAt?: number;
@@ -247,6 +253,9 @@ interface RecoveryAssessment {
   expectedSize?: number;
   observedSize?: number;
   writeStatus?: number;
+  remoteErrorCode?: string;
+  responseHeaders?: Record<string, string>;
+  responseSnippet?: string;
   writeEvidence?: RemoteWriteEvidence | "repeated_missing_parent_visible";
   uploadAttempts?: number;
   firstObservedAt?: number;
@@ -423,6 +432,7 @@ export class SyncScheduler {
   private recoveryAutomationTimer: NodeJS.Timeout | null = null;
   private recoveryAutomationStartupTimer: NodeJS.Timeout | null = null;
   private recoveryAutomationPromise: Promise<void> | null = null;
+  private transferSessionRecoveryReconciledAt = 0;
   private readonly recoveryJobLocks = new Set<string>();
   private readonly recoveryJobPromises = new Map<string, Promise<any>>();
   private readonly recoveryAutomationIntervalMs = 5 * 60_000;
@@ -691,6 +701,19 @@ export class SyncScheduler {
         return;
       }
       const failure = this.recordUploadFailure(task, error);
+      if (task.persistentJobId && (failure.remoteErrorCode || failure.responseHeaders || failure.responseSnippet || failure.remoteWriteStatus || failure.remoteParentStatus)) {
+        const current = this.jobStore.findById(task.persistentJobId);
+        if (current) {
+          this.jobStore.updatePayload(task.persistentJobId, {
+            ...current.payload,
+            ...(failure.remoteErrorCode ? { remoteErrorCode: failure.remoteErrorCode } : {}),
+            ...(failure.responseHeaders ? { responseHeaders: failure.responseHeaders } : {}),
+            ...(failure.responseSnippet ? { responseSnippet: failure.responseSnippet } : {}),
+            ...(failure.remoteWriteStatus ? { remoteWriteStatus: failure.remoteWriteStatus } : {}),
+            ...(failure.remoteParentStatus ? { remoteParentStatus: failure.remoteParentStatus } : {}),
+          });
+        }
+      }
       const strictEncodingFailure = Boolean(error?.encodingValidation);
       const strictQualityFailure = Boolean(error?.qualityValidation);
       const manualConflict = !isQualityUploadPhaseTask(task)
@@ -713,6 +736,9 @@ export class SyncScheduler {
             code: failure.code,
             status: failure.status,
             summary: failure.summary,
+            ...(failure.remoteErrorCode ? { remoteErrorCode: failure.remoteErrorCode } : {}),
+            ...(failure.responseHeaders ? { responseHeaders: failure.responseHeaders } : {}),
+            ...(failure.responseSnippet ? { responseSnippet: failure.responseSnippet } : {}),
             encodingEligible: task instanceof QualityUpgradeUploadReplaceTask
               && (failure.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
                 || failure.remoteWriteEvidence === "target_missing_parent_visible"
@@ -776,6 +802,9 @@ export class SyncScheduler {
               checkedAt: Date.now(),
               localStatus: "available" as const,
               remoteStatus: "size_limit" as const,
+              remoteErrorCode: failure.remoteErrorCode,
+              responseHeaders: failure.responseHeaders,
+              responseSnippet: failure.responseSnippet,
               summary: failure.summary,
             }
             : remoteWriteRejected
@@ -786,17 +815,33 @@ export class SyncScheduler {
                 remoteStatus: "missing" as const,
                 writeStatus: failure.remoteWriteStatus || failure.status,
                 writeEvidence: failure.remoteWriteEvidence,
-                summary: "远端拒绝了写入，但目标文件仍不可见、父目录可见；WebDAV没有返回足够信息确定是大小限制、驱动限制还是最终一致性问题。可尝试一次换编码，不代表已确认是大小限制。",
+                remoteErrorCode: failure.remoteErrorCode,
+                responseHeaders: failure.responseHeaders,
+                responseSnippet: failure.responseSnippet,
+                summary: `远端拒绝了写入，但目标文件仍不可见、父目录可见；WebDAV没有返回足够信息确定是大小限制、驱动限制还是最终一致性问题${failure.remoteErrorCode ? `（远端错误码 ${failure.remoteErrorCode}）` : ""}。可尝试一次换编码，不代表已确认是大小限制。`,
               }
-            : undefined;
+            : manualConflict
+              ? {
+                kind: "remote_size_conflict" as const,
+                checkedAt: Date.now(),
+                localStatus: "available" as const,
+                remoteStatus: "mismatch" as const,
+                summary: "正式远端路径存在冲突文件；系统会把当前完整候选放入隔离目录，不覆盖原文件。",
+              }
+              : undefined;
           const parked = this.jobStore.parkManualRecovery(task.persistentJobId, this.leaseOwner, failure.summary, {
             awaitingManualRecovery: true,
             allowReupload: false,
             resumeOnly: true,
             manualRecoveryReason: failure.summary,
+            ...(failure.remoteErrorCode ? { remoteErrorCode: failure.remoteErrorCode } : {}),
+            ...(failure.responseHeaders ? { responseHeaders: failure.responseHeaders } : {}),
+            ...(failure.responseSnippet ? { responseSnippet: failure.responseSnippet } : {}),
+            ...(failure.remoteWriteStatus ? { remoteWriteStatus: failure.remoteWriteStatus } : {}),
+            ...(failure.remoteParentStatus ? { remoteParentStatus: failure.remoteParentStatus } : {}),
             ...(assessment ? { recoveryAssessment: assessment } : {}),
           });
-          if (parked) {
+            if (parked) {
             if (!task.historyOnly) {
               this.markUploadTaskFailed(task, failure.summary);
             }
@@ -815,6 +860,9 @@ export class SyncScheduler {
               bvid: task.bvid,
               simpleVisible: true,
             });
+            if (manualConflict && !task.conflictCandidateAttempted && !task.persistentJob?.payload?.conflictCandidateOnly && task.persistentJobId) {
+              this.startConflictCandidate(task.persistentJobId, true);
+            }
             this.dispatchPersistentJobs();
             return;
           }
@@ -1456,6 +1504,12 @@ export class SyncScheduler {
     const pendingFiles = files.filter((file) => file.verificationStatus === "awaiting_verification" && typeof file.size === "number");
     const historySegment = task.historyOnly ? `history:${task.historySnapshotAt || "unknown"}` : "main";
     const sessionGeneration = task.result?.sessionGeneration ?? task.sessionGeneration;
+    const totalPages = Math.max(1, task.files?.length || files.length);
+    const verifiedPages = files.filter((file) => file.verificationStatus === "verified").length;
+    const recoveryLifecycleState = verifiedPages > 0 && verifiedPages < totalPages
+      ? "partial_upload"
+      : "remote_visibility_wait";
+    const attemptKey = task.sessionId ? `${task.sessionId}:g${sessionGeneration || 1}` : undefined;
 
     // A transfer session owns the whole file set. One session-level check is
     // enough to resume all files atomically and prevents one verify job per
@@ -1499,6 +1553,10 @@ export class SyncScheduler {
           sessionVerification: true,
           encodingRetry: task.encodingRetry,
           strictMediaTarget: task.strictMediaTarget,
+          lifecycleState: recoveryLifecycleState,
+          verifiedPages,
+          totalPages,
+          attemptKey,
         },
       });
       createdJobIds.push(created.id);
@@ -1540,6 +1598,10 @@ export class SyncScheduler {
            sessionGeneration,
            encodingRetry: task.encodingRetry,
            strictMediaTarget: task.strictMediaTarget,
+           lifecycleState: recoveryLifecycleState,
+           verifiedPages,
+           totalPages,
+           attemptKey,
          },
       });
       createdJobIds.push(created.id);
@@ -2457,7 +2519,7 @@ export class SyncScheduler {
       if (!payload.historyOnly) {
         this.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
       }
-      logManager.push({ timestamp: new Date().toISOString(), type: "upload", level: "error", summary: reason, raw: `[UploadVerify] mismatch ${task.remoteFile}`, bvid: task.bvid, simpleVisible: true });
+      logManager.push({ timestamp: new Date().toISOString(), type: "upload", level: "error", summary: reason, raw: `[UploadVerify] mismatch ${redactRemotePathForDisplay(task.remoteFile)}`, bvid: task.bvid, simpleVisible: true });
       return;
     }
 
@@ -2543,6 +2605,10 @@ export class SyncScheduler {
       priority: false,
       awaitingManualRecovery: true,
       resumeOnly: true,
+      lifecycleState: "manual_required",
+      attemptKey: payload.sessionId && payload.sessionGeneration
+        ? `${payload.sessionId}:g${payload.sessionGeneration}`
+        : undefined,
       strictMediaTarget: payload.strictMediaTarget,
     });
     if (manualRecovery) {
@@ -2596,6 +2662,10 @@ export class SyncScheduler {
       priority: false,
       awaitingManualRecovery: true,
       resumeOnly: true,
+      lifecycleState: "manual_required",
+      attemptKey: session?.id && sessionGeneration !== undefined
+        ? `${session.id}:g${sessionGeneration}`
+        : undefined,
       strictMediaTarget: payload.strictMediaTarget,
     });
     if (manualRecovery) {
@@ -2619,7 +2689,7 @@ export class SyncScheduler {
       type: "upload",
       level: "error",
       summary: `${task.historyOnly ? "历史分P" : "上传"}确认发现远端文件冲突，已暂停 ${task.bvid}：请处理后重新确认或继续上传`,
-      raw: `[UploadVerify] conflict parked path=${conflictRemotePath}`,
+      raw: `[UploadVerify] conflict parked path=${redactRemotePathForDisplay(conflictRemotePath)}`,
       bvid: task.bvid,
       simpleVisible: true,
     });
@@ -3251,7 +3321,13 @@ export class SyncScheduler {
 
   private formatUploadFailureLog(task: UploadTask | QualityUploadPhaseTask, failure: UploadFailureInfo) {
     const nextRetryAt = task.retryAt ? new Date(task.retryAt).toISOString() : "next-cycle";
-    return `[Upload] status=${failure.status || "unknown"} category=${failure.category} retryable=${failure.retryable} attempt=${task.retries}/${task.maxRetries} next=${nextRetryAt} path=${failure.remotePath}: ${failure.summary}`;
+    const evidence = [
+      failure.remoteErrorCode ? `remoteCode=${failure.remoteErrorCode}` : "",
+      failure.remoteWriteStatus ? `writeStatus=${failure.remoteWriteStatus}` : "",
+      failure.remoteParentStatus ? `parent=${failure.remoteParentStatus}` : "",
+      failure.responseSnippet ? `snippet=${failure.responseSnippet}` : "",
+    ].filter(Boolean).join(" ");
+    return `[Upload] status=${failure.status || "unknown"} category=${failure.category} retryable=${failure.retryable} attempt=${task.retries}/${task.maxRetries} next=${nextRetryAt} remote=<redacted>${evidence ? ` ${evidence}` : ""}: ${failure.summary}`;
   }
 
   private clearUploadProbeTimer() {
@@ -3452,15 +3528,38 @@ export class SyncScheduler {
       };
     }
     if (!item.historyOnly) {
-      uploadTask.onUploading = () => this.stateManager.markUploading(item.bvid, item.userId, item.mediaId);
+      uploadTask.onUploading = () => {
+        this.stateManager.markUploading(item.bvid, item.userId, item.mediaId);
+        if (!uploadTask.persistentJobId) return;
+        const current = this.jobStore.findById(uploadTask.persistentJobId);
+        if (!current) return;
+        this.jobStore.updatePayload(uploadTask.persistentJobId, {
+          ...current.payload,
+          lifecycleState: "uploading",
+          userDisposition: undefined,
+        });
+      };
     }
     uploadTask.onTransferSession = (task, sessionId, sessionGeneration) => {
       if (!task.persistentJobId) return;
       const current = this.jobStore.findById(task.persistentJobId)?.payload || task.persistentJob?.payload || {};
-      this.jobStore.updatePayload(task.persistentJobId, { ...current, sessionId, sessionGeneration });
+      this.jobStore.updatePayload(task.persistentJobId, {
+        ...current,
+        sessionId,
+        sessionGeneration,
+        attemptKey: `${sessionId}:g${sessionGeneration}`,
+        lifecycleState: current.conflictCandidateOnly ? "conflict_candidate" : "uploading",
+      });
     };
     uploadTask.onConflictCandidateUploading = (task) => {
       this.restoreConflictCandidateExistingArchive(task);
+      if (!task.persistentJobId) return;
+      const current = this.jobStore.findById(task.persistentJobId);
+      if (!current) return;
+      this.jobStore.updatePayload(task.persistentJobId, {
+        ...current.payload,
+        lifecycleState: "conflict_candidate",
+      });
     };
     return uploadTask;
   }
@@ -3488,9 +3587,12 @@ export class SyncScheduler {
     return `${userId}:${mediaId}:${bvid}`;
   }
 
-  private legacyDownloadFailureIssues() {
+  private eligibleLegacyDownloadFailures(limit = 1_000) {
     const jobsByBvid = new Set(
-      this.jobStore.listBvids(["download"]),
+      this.jobStore.list(["download"], 100_000)
+        .filter((job) => !(job.payload as any)?.legacyFailureKey)
+        .map((job) => String(job.bvid || ""))
+        .filter(Boolean),
     );
     const legacyClassificationBvids = new Set(
       this.jobStore.list(["access_probe"], 10_000)
@@ -3499,8 +3601,16 @@ export class SyncScheduler {
         .filter(Boolean),
     );
     const seen = new Set<string>();
-    const issues: RecoveryIssue[] = [];
-    for (const record of this.stateManager.getDatabase().listPermanentFailureRecoveryRelations(1_000)) {
+    const eligible: Array<{
+      record: any;
+      relation: any;
+      bvid: string;
+      issueKey: string;
+      category: DownloadRecoveryCategory;
+      kind: Extract<RecoveryIssueKind, "download_retry_exhausted" | "download_account_required" | "download_tool_failure">;
+      alternateAccounts: Array<{ value: string; label: string }>;
+    }> = [];
+    for (const record of this.stateManager.getDatabase().listPermanentFailureRecoveryRelations(limit)) {
       const relation = record.relation;
       const bvid = String(relation.bvid || record.failure.bvid || "");
       if (!bvid || jobsByBvid.has(bvid) || legacyClassificationBvids.has(bvid)) continue;
@@ -3513,55 +3623,85 @@ export class SyncScheduler {
       if (!resolved) continue;
 
       const failure = classifyDownloadRecoveryFailure({ message: record.failure.reason || "" });
+      if (record.failure.userDisposition === "abandoned") continue;
       const category: DownloadRecoveryCategory = failure.category === "source_unavailable" ? "unknown" : failure.category;
       const alternateAccounts = this.userStore.list()
         .filter((user) => user.id !== relation.userId && this.isUserSyncEligible(user))
         .sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.id.localeCompare(right.id))
         .map((user) => ({ value: user.id, label: `${user.name}（UID ${user.uid}）` }));
-      const kind = failure.kind || "download_retry_exhausted";
-      const actions = planRecoveryActions({
-        domain: "download",
-        kind,
-        jobKind: "download",
-        downloadCategory: category,
-        alternateAccounts,
-      });
-      const meta = this.stateManager.getVideoMeta(bvid);
       const issueKey = this.legacyDownloadFailureIssueKey(relation.userId, relation.mediaId, bvid);
       seen.add(issueKey);
-      issues.push({
-        id: `legacy-download.${issueKey}`,
-        kind,
-        severity: recoveryIssueSeverity(kind),
-        title: "旧版下载失败记录待处理",
-        summary: `这是旧版下载失败记录，系统不会自动重复下载。${sanitizeUploadText(record.failure.reason || "可手动重新尝试一次。", 220)}`,
-        protectedFacts: [
-          "当前收藏关系仍保留",
-          "不会删除或覆盖任何远端文件",
-          "只有点击重新下载后才会建立新的持久化任务",
-        ],
-        recommendedAction: actions[0],
-        availableActions: actions,
+      eligible.push({
+        record,
+        relation,
         bvid,
-        videoTitle: meta?.title || undefined,
-        upperName: meta?.upperName || undefined,
-        userId: relation.userId,
-        mediaId: relation.mediaId,
-        folderTitle: relation.folderTitle,
-        occurredAt: Date.parse(record.failure.failedAt) || this.now(),
-        safeDiagnostic: JSON.stringify({
-          issue: "legacy_download_failure",
-          bvid,
-          userId: relation.userId,
-          mediaId: relation.mediaId,
-          category,
-          permanent: true,
-          failureAt: record.failure.failedAt,
-        }, null, 2),
-        disposition: "action_required",
+        issueKey,
+        category,
+        kind: failure.kind || "download_retry_exhausted",
+        alternateAccounts,
       });
     }
-    return issues;
+    return eligible;
+  }
+
+  private reconcileLegacyDownloadRecoveryJobs() {
+    const eligible = this.eligibleLegacyDownloadFailures();
+    const eligibleByKey = new Map(eligible.map((item) => [item.issueKey, item]));
+    let changed = 0;
+    for (const job of this.jobStore.listLegacyDownloadRecovery()) {
+      const key = String((job.payload as any)?.legacyFailureKey || "");
+      if (key && !eligibleByKey.has(key) && (job.payload as any)?.userDisposition !== "abandoned") {
+        if (this.jobStore.complete(job.id)) changed += 1;
+      }
+    }
+    for (const item of eligible) {
+      const existing = this.jobStore.findLegacyDownloadRecovery(item.issueKey);
+      const record = item.record;
+      const payload = {
+        legacyFailureKey: item.issueKey,
+        legacyFailureAt: record.failure.failedAt,
+        primaryUserId: item.relation.userId,
+        primaryMediaId: item.relation.mediaId,
+        downloadUserId: item.relation.userId,
+        detachedTargets: [{
+          userId: item.relation.userId,
+          mediaId: item.relation.mediaId,
+          folderTitle: item.relation.folderTitle,
+          remotePath: item.relation.remotePath || "",
+        }],
+        downloadRecovery: {
+          category: item.category,
+          kind: item.kind,
+          summary: `这是旧版下载失败记录，系统不会自动重复下载。${sanitizeUploadText(record.failure.reason || "可手动重新尝试一次。", 220)}`,
+        },
+      };
+      if (existing) {
+        if ((existing.payload as any)?.userDisposition !== "abandoned"
+          && (existing.payload as any)?.legacyFailureAt !== record.failure.failedAt) {
+          this.jobStore.updatePayload(existing.id, { ...existing.payload, ...payload, awaitingManualRecovery: true });
+          changed += 1;
+        }
+        continue;
+      }
+      this.jobStore.enqueue({
+        kind: "download",
+        dedupeKey: `download-recovery:${item.issueKey}`,
+        bvid: item.bvid,
+        userId: item.relation.userId,
+        mediaId: item.relation.mediaId,
+        priority: 30,
+        maxAttempts: this.configStore.get().maxRetries + 1,
+        initialStatus: "manual_wait",
+        payload: {
+          bvid: item.bvid,
+          ...payload,
+          awaitingManualRecovery: true,
+          manualRecoveryReason: record.failure.reason || "旧版下载失败记录待处理",
+        },
+      });
+      changed += 1;
+    }
+    return changed;
   }
 
   private recoveryAssessment(payload: any): RecoveryAssessment | null {
@@ -3580,6 +3720,18 @@ export class SyncScheduler {
       observedSize: Number.isFinite(Number(value.observedSize)) ? Number(value.observedSize) : undefined,
       writeStatus: Number.isInteger(Number(value.writeStatus)) && Number(value.writeStatus) >= 100 && Number(value.writeStatus) <= 599
         ? Number(value.writeStatus)
+        : undefined,
+      remoteErrorCode: typeof value.remoteErrorCode === "string" && /^[A-Za-z][A-Za-z0-9_.-]{1,80}$/.test(value.remoteErrorCode)
+        ? value.remoteErrorCode
+        : undefined,
+      responseHeaders: value.responseHeaders && typeof value.responseHeaders === "object"
+        ? Object.fromEntries(Object.entries(value.responseHeaders).filter(([key, item]) =>
+          ["allow", "retry-after", "content-type", "content-length", "dav", "x-openlist-error-code", "x-alist-error-code", "x-error-code"].includes(key)
+          && typeof item === "string",
+        ).map(([key, item]) => [key, sanitizeUploadText(item, 180)]))
+        : undefined,
+      responseSnippet: typeof value.responseSnippet === "string"
+        ? sanitizeUploadText(value.responseSnippet, 240)
         : undefined,
       writeEvidence: ["target_missing_parent_visible", "repeated_missing_parent_visible"].includes(String(value.writeEvidence || ""))
         ? String(value.writeEvidence) as RecoveryAssessment["writeEvidence"]
@@ -4130,6 +4282,10 @@ export class SyncScheduler {
           summary: "远端文件与本地文件同大小，但缺少本次Session的PUT证明，系统没有把它标记为本次上传成功。",
         };
         this.updateRecoveryAssessment(job.id, assessment);
+        if (options.allowAutomatic && payload.conflictCandidateOnly !== true && assessment.candidateEligible !== false) {
+          const candidate = this.startConflictCandidate(job.id, true);
+          if (candidate.ok) return { changed: true, candidateStarted: true };
+        }
         return { changed: true, assessment };
       }
 
@@ -4181,6 +4337,10 @@ export class SyncScheduler {
             : "多分P远端状态不一致，系统没有重复上传或删除任何文件。",
         };
         this.updateRecoveryAssessment(job.id, assessment);
+        if (options.allowAutomatic && payload.conflictCandidateOnly !== true && assessment.candidateEligible !== false) {
+          const candidate = this.startConflictCandidate(job.id, true);
+          if (candidate.ok) return { changed: true, candidateStarted: true };
+        }
         return { changed: true, assessment };
       }
 
@@ -4242,6 +4402,10 @@ export class SyncScheduler {
             : "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
         };
         this.updateRecoveryAssessment(job.id, assessment);
+        if (options.allowAutomatic && payload.conflictCandidateOnly !== true && assessment.kind === "remote_visibility_stalled" && assessment.candidateEligible !== false) {
+          const candidate = this.startConflictCandidate(job.id, true);
+          if (candidate.ok) return { changed: true, candidateStarted: true };
+        }
         return { changed: true, assessment };
       }
 
@@ -4254,6 +4418,7 @@ export class SyncScheduler {
   runRecoveryAutomationNow() {
     if (this.recoveryAutomationPromise) return this.recoveryAutomationPromise;
     this.recoveryAutomationPromise = (async () => {
+      this.reconcileTransferSessionRecoveryJobs();
       const jobs = this.jobStore.listDueManualRecovery(["upload", "history_upload"], this.now(), 25);
       for (const job of jobs) {
         if (!this.acceptingJobs) break;
@@ -4311,12 +4476,17 @@ export class SyncScheduler {
       ? this.stateManager.getVideoMeta(String(job.bvid))
       : null;
     const assessment = this.recoveryAssessment(payload);
+    const remoteErrorCode = assessment?.remoteErrorCode || payload.remoteErrorCode;
+    const responseHeaders = assessment?.responseHeaders || payload.responseHeaders;
+    const responseSnippet = assessment?.responseSnippet || payload.responseSnippet;
     const retry = parseEncodingRetryContext(payload.encodingRetry);
     const retryBusy = Boolean(payload.encodingRetry && ["running", "uploading", "verifying"].includes(String(payload.encodingRetry.state || "")));
     const kind = assessment?.kind || (payload.conflictRelativePath ? "remote_size_conflict" : "manual_review");
     const candidateEligible = typeof assessment?.candidateEligible === "boolean"
       ? assessment.candidateEligible
-      : this.inspectConflictCandidateEligibility(job, assessment).eligible;
+      : payload.recoveryProjection === true
+        ? false
+        : this.inspectConflictCandidateEligibility(job, assessment).eligible;
     const actions = retryBusy ? [] : this.uploadRecoveryActions(assessment, job, candidateEligible);
     const disposition = recoveryIssueDisposition(kind);
     const severity = recoveryIssueSeverity(kind);
@@ -4357,6 +4527,9 @@ export class SyncScheduler {
       localStatus: assessment?.localStatus || "unknown",
       remoteStatus: assessment?.remoteStatus || "unknown",
       writeStatus: assessment?.writeStatus,
+      remoteErrorCode,
+      responseHeaders,
+      responseSnippet,
       writeEvidence: assessment?.writeEvidence,
       uploadAttempts: assessment?.uploadAttempts,
       requestedEncoding: assessment?.requestedEncoding,
@@ -4393,6 +4566,9 @@ export class SyncScheduler {
       fileName: assessment?.fileName || (payload.conflictRelativePath ? path.basename(String(payload.conflictRelativePath)) : undefined),
       expectedSize: assessment?.expectedSize,
       observedSize: assessment?.observedSize,
+      remoteErrorCode,
+      responseHeaders,
+      responseSnippet,
       requestedEncoding: assessment?.requestedEncoding,
       actualEncodings: assessment?.actualEncodings,
       encodingMismatch: assessment?.encodingMismatch,
@@ -4400,6 +4576,9 @@ export class SyncScheduler {
       actualQualities: assessment?.actualQualities,
       qualityMismatch: assessment?.qualityMismatch,
       verifiedPages: assessment?.verifiedPages,
+      totalPages: Number.isInteger(Number(payload.totalPages)) ? Number(payload.totalPages) : undefined,
+      lifecycleState: payload.lifecycleState ? String(payload.lifecycleState) : undefined,
+      attemptKey: payload.attemptKey ? String(payload.attemptKey) : undefined,
       occurredAt: job.updatedAt || job.createdAt || this.now(),
       checkedAt: assessment?.checkedAt,
       nextAutomaticCheckAt: assessment?.nextCheckAt,
@@ -4538,10 +4717,10 @@ export class SyncScheduler {
   }
 
   getRecoveryIssues() {
+    this.reconcileLegacyDownloadRecoveryJobs();
     const issues: RecoveryIssue[] = [
       ...this.manualRecoveryJobs().map((job) => this.buildUploadRecoveryIssue(job)),
       ...this.manualDownloadRecoveryJobs().map((job) => this.buildDownloadRecoveryIssue(job)),
-      ...this.legacyDownloadFailureIssues(),
     ];
     const qualityJobs = new Map<string, any>();
     for (const job of this.jobStore.listFailed(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"], 1_000)) {
@@ -4630,6 +4809,7 @@ export class SyncScheduler {
   }
 
   getRecoveryIssueSnapshot() {
+    this.reconcileTransferSessionRecoveryJobs();
     const allIssues = this.getRecoveryIssues();
     const backgroundRecoveries = allIssues.filter((issue) => issue.disposition === "background");
     const actionRequiredIssues = allIssues.filter((issue) => issue.disposition === "action_required");
@@ -4774,6 +4954,83 @@ export class SyncScheduler {
     return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
   }
 
+  private abandonRecoveryJob(jobId: string, expectedKinds: string[]) {
+    const lockKey = `abandon:${jobId}`;
+    if (this.recoveryJobLocks.has(lockKey)) {
+      return { ok: false as const, status: 409, message: "该待处理项正在被其他操作处理，请稍后刷新" };
+    }
+    this.recoveryJobLocks.add(lockKey);
+    try {
+      const job = this.jobStore.findById(jobId);
+      if (!job || !expectedKinds.includes(String(job.kind))) {
+        return { ok: false as const, status: 404, message: "待处理项不存在或已自动解决" };
+      }
+      const payload = job.payload as any;
+      if (payload.userDisposition === "abandoned" || payload.lifecycleState === "abandoned") {
+        return { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues };
+      }
+      if (payload.awaitingManualRecovery !== true) {
+        return { ok: false as const, status: 409, message: "该待处理项已经不再等待人工处理" };
+      }
+      if (payload.encodingRetry && ["running", "uploading", "verifying"].includes(String(payload.encodingRetry?.state || ""))) {
+        return { ok: false as const, status: 409, message: "编码替换仍在运行，请等待当前候选结束" };
+      }
+      if (payload.sessionId) {
+        const session = this.transferSessions.get(String(payload.sessionId));
+        if (session) {
+          const generation = Number.isInteger(payload.sessionGeneration)
+            ? Number(payload.sessionGeneration)
+            : session.generation;
+          if (session.generation !== generation) {
+            return { ok: false as const, status: 409, message: "当前候选已经产生新的代次，请刷新待处理项" };
+          }
+          if (!["completed", "superseded"].includes(session.phase)) {
+            this.transferSessions.supersede(session.id, generation);
+          }
+        }
+      }
+      const candidate = payload.conflictCandidate;
+      if (candidate?.id && job.userId && Number.isInteger(job.mediaId)) {
+        const relation = this.stateManager.getRelationStatus(job.userId, Number(job.mediaId), String(job.bvid || ""));
+        if (relation?.remoteConflictCandidates?.some((item) => item.id === String(candidate.id) && !item.resolution)) {
+          this.stateManager.resolveRemoteConflictCandidate(
+            String(job.bvid || ""),
+            job.userId,
+            job.mediaId,
+            String(candidate.id),
+            "abandoned",
+          );
+        }
+      }
+      const abandoned = this.jobStore.abandonRecovery(job.id, "用户已放弃本次候选，原归档保持不变。", {
+        attemptKey: payload.attemptKey || (payload.sessionId && payload.sessionGeneration
+          ? `${payload.sessionId}:g${payload.sessionGeneration}`
+          : undefined),
+        recoveryReason: "user_abandoned",
+      });
+      if (!abandoned) {
+        const current = this.jobStore.findById(job.id);
+        return current?.payload && (current.payload as any).userDisposition === "abandoned"
+          ? { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues }
+          : { ok: false as const, status: 409, message: "待处理项状态已经变化，请刷新后重试" };
+      }
+      logManager.push({
+        timestamp: new Date(this.now()).toISOString(),
+        type: "system",
+        level: "info",
+        summary: `用户已放弃本次恢复候选 ${job.bvid || ""}`,
+        raw: `[Recovery] attempt abandoned kind=${job.kind}`,
+        bvid: job.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      this.dispatchPersistentJobs();
+      return { ok: true as const, idempotent: false, issues: this.getRecoveryIssueSnapshot().issues };
+    } finally {
+      this.recoveryJobLocks.delete(lockKey);
+    }
+  }
+
   private async startEncodingRetry(jobId: string, priority: BBDownEncoding[], strict: boolean, requestedQuality?: string) {
     const job = this.jobStore.findById(jobId);
     if (!job || job.kind !== "upload" || !(job.payload as any)?.awaitingManualRecovery || (job.payload as any)?.historyOnly) {
@@ -4884,15 +5141,19 @@ export class SyncScheduler {
     return { ok: true as const, idempotent: Boolean(started.idempotent), childJobId: started.child.id };
   }
 
-  private startConflictCandidate(jobId: string) {
-    if (this.recoveryJobLocks.has(jobId)) {
+  private startConflictCandidate(jobId: string, automatic = false) {
+    const ownsLock = !this.recoveryJobLocks.has(jobId);
+    if (!ownsLock && !automatic) {
       return { ok: false as const, status: 409, message: "该待处理任务正在被其他操作处理，请稍后刷新" };
     }
-    this.recoveryJobLocks.add(jobId);
+    if (ownsLock) this.recoveryJobLocks.add(jobId);
     try {
       const job = this.jobStore.findById(jobId);
       if (!job || job.kind !== "upload" || !(job.payload as any)?.awaitingManualRecovery) {
         return { ok: false as const, status: 404, message: "待处理任务不存在或已经恢复" };
+      }
+      if ((job.payload as any)?.conflictCandidateOnly === true) {
+        return { ok: false as const, status: 409, message: "当前任务已经是隔离候选，请先处理现有候选" };
       }
       const assessment = this.recoveryAssessment(job.payload);
       const eligibility = this.inspectConflictCandidateEligibility(job, assessment);
@@ -4919,6 +5180,8 @@ export class SyncScheduler {
         conflictCandidateReasonCode: `RECOVERY_${String(assessment?.kind || "MANUAL_REVIEW").toUpperCase()}`,
         conflictCandidateReasonSummary: sanitizeUploadText(assessment?.summary || "用户确认生成隔离候选", 300),
         candidateStartedAt: this.now(),
+        lifecycleState: "conflict_candidate",
+        userDisposition: automatic ? "automatic_candidate" : "create_candidate",
         ...(observedExistingArchiveProof ? { existingArchiveProof: observedExistingArchiveProof } : {}),
       });
       if (!woken) {
@@ -4937,7 +5200,7 @@ export class SyncScheduler {
       this.dispatchPersistentJobs();
       return { ok: true as const, jobId: job.id };
     } finally {
-      this.recoveryJobLocks.delete(jobId);
+      if (ownsLock) this.recoveryJobLocks.delete(jobId);
     }
   }
 
@@ -4991,7 +5254,7 @@ export class SyncScheduler {
     action: RecoveryIssueActionId,
     options: { userId?: unknown },
   ) {
-    if (!["retry_download", "retry_download_with_account", "defer_download"].includes(action)) {
+    if (!["retry_download", "retry_download_with_account", "defer_download", "abandon_attempt"].includes(action)) {
       return { ok: false as const, status: 400, message: "该下载待处理项不支持此操作" };
     }
     const lockKey = `legacy-download.${issueKey}`;
@@ -5007,6 +5270,27 @@ export class SyncScheduler {
       const relation = this.stateManager.getRelationStatus(target.userId, target.mediaId, target.bvid);
       if (!failure?.permanent || !relation?.activeInFavorite || relation.accountDetachedAt) {
         return { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues };
+      }
+      if (failure.userDisposition === "abandoned") {
+        return { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues };
+      }
+      if (action === "abandon_attempt") {
+        database.upsertFailure(target.userId, {
+          ...failure,
+          userDisposition: "abandoned",
+          abandonedAt: new Date(this.now()).toISOString(),
+        });
+        logManager.push({
+          timestamp: new Date(this.now()).toISOString(),
+          type: "download",
+          level: "info",
+          summary: `用户已放弃旧版失败下载 ${target.bvid}`,
+          raw: "[Recovery] legacy download abandoned",
+          bvid: target.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+        return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
       }
       if (relation.favoriteUnavailable && !relation.selfVisible) {
         return { ok: false as const, status: 409, message: "当前视频仍被确认不可用，暂不能重新下载" };
@@ -5177,6 +5461,9 @@ export class SyncScheduler {
     action: RecoveryIssueActionId,
     options: { userId?: unknown; encodingPriority?: unknown; strict?: unknown; quality?: unknown },
   ) {
+    if (action === "abandon_attempt") {
+      return this.abandonRecoveryJob(jobId, ["download"]);
+    }
     if (["redownload_with_encoding", "redownload_with_quality"].includes(action)) {
       return this.restartStrictDownloadRecovery(jobId, action, options);
     }
@@ -5199,6 +5486,13 @@ export class SyncScheduler {
       }
 
       const payload = job.payload as any;
+      const legacyFailureKey = String(payload.legacyFailureKey || "");
+      if (legacyFailureKey && ["retry_download", "retry_download_with_account", "defer_download"].includes(action)) {
+        const migrated = await this.resolveLegacyDownloadFailureIssue(legacyFailureKey, action, options);
+        if (!migrated.ok) return migrated;
+        this.jobStore.complete(job.id);
+        return { ...migrated, issues: this.getRecoveryIssueSnapshot().issues };
+      }
       let selectedUserId = String(payload.downloadUserId || payload.primaryUserId || job.userId || "");
       if (action === "retry_download_with_account") {
         const requestedUserId = String(options.userId || "");
@@ -5408,6 +5702,9 @@ export class SyncScheduler {
         && action !== "redownload_with_encoding") {
         return { ok: false as const, status: 409, message: "编码替换正在进行，请等待替换下载、上传和远端确认完成" };
       }
+      if (action === "abandon_attempt") {
+        return this.abandonRecoveryJob(jobId, ["upload", "history_upload"]);
+      }
       if (action === "recheck") {
         await this.assessManualRecoveryJob(jobId, { force: true, allowAutomatic: false });
         return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
@@ -5480,6 +5777,9 @@ export class SyncScheduler {
       if (action === "keep_existing" || action === "use_candidate") {
         return this.resolveConflictCandidate(jobId, action);
       }
+    }
+    if (scope === "quality" && action === "abandon_attempt") {
+      return this.abandonRecoveryJob(jobId, ["quality_download", "quality_upload", "quality_replace", "quality_cleanup"]);
     }
     if (scope === "quality" && action === "retry_quality") {
       if (this.recoveryJobLocks.has(jobId)) {
@@ -5661,8 +5961,150 @@ export class SyncScheduler {
     };
   }
 
+  private reconcileTransferSessionRecoveryJobs(force = false) {
+    const now = this.now();
+    if (!force && now - this.transferSessionRecoveryReconciledAt < 30_000) return 0;
+    this.transferSessionRecoveryReconciledAt = now;
+
+    const activeKeys = this.jobStore.listActiveTransferSessionKeys();
+    const inputs: EnqueuePersistentJob[] = [];
+    const pageSize = 100;
+    const maxProjected = 100;
+    let offset = 0;
+    for (;;) {
+      const page = this.transferSessions.listRecoverablePage(pageSize, offset);
+      if (page.length === 0) break;
+      offset += page.length;
+      for (const session of page) {
+        const generation = Math.max(1, Number(session.generation || 1));
+        const attemptKey = `${session.id}:g${generation}`;
+        if (activeKeys.has(attemptKey)) continue;
+
+        const files = this.transferSessions.listFiles(session.id, generation);
+        if (files.length === 0) continue;
+        const verifiedPages = files.filter((file) => file.status === "verified").length;
+        // Do not stat every output while serving the recovery HTTP endpoint.
+        // The worker performs the authoritative local-file check before any
+        // upload or candidate operation.
+        const localStatus = "unknown" as const;
+        const waitingRemote = session.phase === "awaiting_remote"
+          || files.some((file) => file.status === "awaiting_remote");
+        const partialUpload = verifiedPages > 0 && verifiedPages < files.length;
+        const failed = session.phase === "failed";
+        const classified = session.lastError
+          ? classifyUploadError({ message: session.lastError }, "<remote>")
+          : null;
+        const errorText = String(session.lastError || "");
+        const kind: RecoveryIssueKind = classified?.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
+          ? "remote_size_limit"
+          : /编码|画质|BFB_ENCODING/i.test(errorText)
+            ? "encoding_retry_failed"
+            : /远端拒绝|写入结果|WebDAV|\b405\b/i.test(errorText)
+              ? "remote_write_rejected"
+            : "manual_review";
+        const lifecycleState = failed
+          ? "manual_required"
+          : partialUpload
+            ? "partial_upload"
+            : waitingRemote
+              ? "remote_visibility_wait"
+              : "uploading";
+        const assessment: RecoveryAssessment = {
+          kind,
+          checkedAt: now,
+          localStatus,
+          remoteStatus: waitingRemote ? "unknown" : "error",
+          verifiedPages,
+          summary: failed
+            ? sanitizeUploadText(session.lastError || "上传候选没有对应的恢复任务，已安全暂停。", 300)
+            : `上传候选已恢复到${verifiedPages}/${files.length}个分P；本地文件将在实际恢复前检查。`,
+          ...(waitingRemote ? { nextCheckAt: now + 2_000 } : {}),
+        };
+        let filenameMetadataByPath: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>> | undefined;
+        try {
+          filenameMetadataByPath = buildUploadFileMetadataFromSession(session.localDir, files.map((file) => file.relativePath));
+        } catch {
+          filenameMetadataByPath = undefined;
+        }
+        const meta = this.stateManager.getVideoMeta(session.bvid);
+        const relation = session.userId && session.mediaId !== undefined && Number.isInteger(session.mediaId)
+          ? this.stateManager.getRelationStatus(session.userId, session.mediaId, session.bvid)
+          : null;
+        let existingArchiveProof: ExistingArchiveProof | undefined;
+        if (!session.historyOnly && session.userId && Number.isInteger(session.mediaId)) {
+          try {
+            existingArchiveProof = this.captureExistingArchiveProof(session.userId, session.mediaId, session.bvid);
+          } catch {
+            existingArchiveProof = undefined;
+          }
+        }
+        inputs.push({
+          kind: session.historyOnly ? "history_upload" : "upload",
+          dedupeKey: `upload-session:${attemptKey}`,
+          bvid: session.bvid,
+          userId: session.userId,
+          mediaId: session.mediaId,
+          priority: failed ? 20 : 25,
+          maxAttempts: this.configStore.get().maxRetries + 1,
+          initialStatus: failed ? "manual_wait" : "pending",
+          payload: {
+            bvid: session.bvid,
+            localDir: session.localDir,
+            remotePath: session.remotePath,
+            userId: session.userId,
+            mediaId: session.mediaId,
+            files: files.map((file) => file.relativePath),
+            filenameMetadataByPath,
+            folderTitle: relation?.folderTitle || "",
+            videoTitle: meta?.title || session.bvid,
+            upperName: meta?.upperName || "",
+            cover: meta?.cover || "",
+            historyOnly: session.historyOnly,
+            historySnapshotAt: session.historySnapshotAt,
+            uploadIntent: session.historyOnly ? "history_upload" : "normal_backup",
+            existingArchiveProof,
+            sessionId: session.id,
+            sessionGeneration: generation,
+            sessionDedupeKey: session.dedupeKey,
+            attemptKey,
+            recoveryProjection: true,
+            lifecycleState,
+            recoveryReason: session.lastError || undefined,
+            recoveryAssessment: assessment,
+            awaitingManualRecovery: failed,
+            resumeOnly: waitingRemote,
+            partialBackup: partialUpload,
+            verifiedPages,
+            totalPages: files.length,
+          },
+        });
+        activeKeys.add(attemptKey);
+        if (inputs.length >= maxProjected) break;
+      }
+      if (inputs.length >= maxProjected || page.length < pageSize) break;
+    }
+    if (inputs.length === 0) return 0;
+    try {
+      this.jobStore.enqueueBatch(inputs);
+      logManager.push({
+        timestamp: new Date(now).toISOString(),
+        type: "system",
+        level: "info",
+        summary: `已补齐 ${inputs.length} 个上传候选恢复入口`,
+        raw: `[Recovery] transfer session projection repaired count=${inputs.length}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      return inputs.length;
+    } catch (error) {
+      console.warn(`[Recovery] Failed to project transfer sessions: ${safeErrorSummary(error)}`);
+      return 0;
+    }
+  }
+
   resumePersistedWorkOnStartup() {
     this.jobStore.recoverExpiredLeases();
+    this.reconcileTransferSessionRecoveryJobs(true);
     const normalizedUploadRecoveries = this.jobStore.normalizeTerminalUploadRecovery();
     if (normalizedUploadRecoveries > 0) {
       logManager.push({
@@ -6776,6 +7218,7 @@ export class SyncScheduler {
   reloadStateDatabase() {
     this.jobStore.rebind(this.stateManager.getDatabase());
     this.transferSessions.rebind(this.stateManager.getDatabase());
+    this.reconcileTransferSessionRecoveryJobs(true);
   }
 
   recheckLegacyRecoveryAfterImport(
@@ -7070,6 +7513,9 @@ export class SyncScheduler {
         ? (task.status === "running" ? "正在确认远端文件" : "已上传，等待远端确认")
         : ""),
       persistentJobId: task.persistentJobId ? String(task.persistentJobId) : undefined,
+      lifecycleState: payload.lifecycleState ? String(payload.lifecycleState) : undefined,
+      verifiedPages: Number.isInteger(Number(payload.verifiedPages)) ? Number(payload.verifiedPages) : undefined,
+      totalPages: Number.isInteger(Number(payload.totalPages)) ? Number(payload.totalPages) : undefined,
     });
     if (isVerification) {
       item.phase = task.status === "running" ? "remote_verifying" : task.status === "retry_wait" ? "retry_wait" : "queued";
@@ -7107,6 +7553,13 @@ export class SyncScheduler {
 
     const recoveryKind = String(assessment?.kind || "manual_review");
     const retry = parseEncodingRetryContext(payload.encodingRetry);
+    const lifecycleDetail = payload.lifecycleState === "conflict_candidate"
+      ? `正在生成隔离候选${Number.isInteger(Number(payload.verifiedPages)) && Number.isInteger(Number(payload.totalPages)) ? ` · 已确认 ${Number(payload.verifiedPages)}/${Number(payload.totalPages)} 个分P` : ""}`
+      : payload.lifecycleState === "remote_visibility_wait"
+        ? `等待远端确认${Number.isInteger(Number(payload.verifiedPages)) && Number.isInteger(Number(payload.totalPages)) ? ` · 已确认 ${Number(payload.verifiedPages)}/${Number(payload.totalPages)} 个分P` : ""}`
+        : payload.lifecycleState === "partial_upload"
+          ? `部分分P已完成 · ${Number(payload.verifiedPages || 0)}/${Number(payload.totalPages || 0)}`
+          : undefined;
     const detail = payload.awaitingManualRecovery
       ? this.uploadRecoverySummary(
         recoveryKind,
@@ -7114,9 +7567,9 @@ export class SyncScheduler {
         retry,
         assessment?.summary || "等待安全复核：系统会先自动检查远端状态",
       )
-      : isVerification
+      : lifecycleDetail || (isVerification
         ? (job.status === "running" || job.status === "leased" ? "正在确认远端文件" : "已上传，等待远端确认")
-        : String(payload.qualityStageLabel || payload.detail || job.lastError || "等待处理");
+        : String(payload.qualityStageLabel || payload.detail || job.lastError || "等待处理"));
     const nextAction: QueueBoardAction | undefined = payload.awaitingManualRecovery
       ? "recheck"
       : job.status === "retry_wait"
@@ -7165,6 +7618,9 @@ export class SyncScheduler {
       recoveryIssueId: payload.awaitingManualRecovery ? `upload.${job.id}` : undefined,
       recoveryKind: payload.awaitingManualRecovery ? recoveryKind : undefined,
       recoveryActions,
+      lifecycleState: payload.lifecycleState ? String(payload.lifecycleState) : undefined,
+      verifiedPages: Number.isInteger(Number(payload.verifiedPages)) ? Number(payload.verifiedPages) : undefined,
+      totalPages: Number.isInteger(Number(payload.totalPages)) ? Number(payload.totalPages) : undefined,
     });
   }
 
@@ -7181,6 +7637,7 @@ export class SyncScheduler {
   }
 
   getQueueSnapshot() {
+    this.reconcileTransferSessionRecoveryJobs();
     const downloadPending: QueueBoardItem[] = [];
     const downloadRunning: QueueBoardItem[] = [];
     const uploadPending: QueueBoardItem[] = [];
@@ -8963,6 +9420,11 @@ interface RecoveryUploadItem {
   reuploadAuthorizedFiles?: string[];
   resumeOnly?: boolean;
   awaitingManualRecovery?: boolean;
+  lifecycleState?: string;
+  attemptKey?: string;
+  userDisposition?: string;
+  verifiedPages?: number;
+  totalPages?: number;
   automaticRecoveryAttempts?: number;
   notBefore?: number;
   priority?: boolean;
