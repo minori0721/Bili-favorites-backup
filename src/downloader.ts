@@ -153,6 +153,7 @@ export interface BBDownProbeOptions {
   commandArgsPrefix?: string[];
   timeoutMs?: number;
   target?: BBDownProbeTarget;
+  workingRoot?: string;
 }
 
 export interface BBDownProbePage {
@@ -317,7 +318,9 @@ export async function probeMediaWithBBDown(
   options: BBDownProbeOptions = {},
 ): Promise<{ bvid: string; pages: BBDownProbePage[]; source: "bbdown" }> {
   const command = options.command || process.env.BBDOWN_PATH || "BBDown";
-  const probeDir = await fs.promises.mkdtemp(path.join(tempDir, `media-probe-${bvid}-`));
+  const workingRoot = path.resolve(options.workingRoot || tempDir);
+  await fs.promises.mkdir(workingRoot, { recursive: true });
+  const probeDir = await fs.promises.mkdtemp(path.join(workingRoot, `media-probe-${bvid}-`));
   const credential = await createBBDownCredentialConfig(
     buildCookieString(cookie),
     config.bbdownApiMode === "app" ? String(cookie.accessToken || "") : "",

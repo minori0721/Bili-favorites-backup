@@ -179,7 +179,12 @@ test("structured probe output cap waits for the BBDown process to exit", { timeo
       "BV1Probe00001",
       user().cookie,
       testConfig(),
-      { command: process.execPath, commandArgsPrefix: [fakeScript, pidFile], timeoutMs: 20_000 },
+      {
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript, pidFile],
+        timeoutMs: 20_000,
+        workingRoot: path.join(runtime, "missing-probe-root"),
+      },
     ).then(() => null, (caught) => caught);
     assert.equal(error?.code, "BBDOWN_PROBE_OUTPUT_TOO_LARGE");
     const pid = Number(await fs.promises.readFile(pidFile, "utf8"));

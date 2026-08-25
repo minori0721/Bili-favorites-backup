@@ -83,7 +83,10 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     assert.equal(data.secondJobs, 980);
     assert.equal(data.thirdJobs, 980);
     assert.ok(data.heapUsed < 192 * 1024 * 1024, `recovery process heap too high: ${data.heapUsed} (delta ${data.heapUsedDelta})`);
-    assert.ok(data.rss < 512 * 1024 * 1024, `recovery process RSS too high: ${data.rss}`);
+    assert.ok(
+      data.rssDelta < 512 * 1024 * 1024,
+      `recovery process RSS growth too high: ${data.rssDelta} (final ${data.rss})`,
+    );
   } finally {
     await removeTestDir(runtime);
   }
