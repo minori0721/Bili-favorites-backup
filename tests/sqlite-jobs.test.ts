@@ -796,7 +796,7 @@ test("schema 9 to 10 adds upload generations and preserves the previous attempt"
 
     const upgraded = new StateDatabase(dbPath);
     try {
-      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 10);
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
       const session = upgraded.db.prepare("SELECT generation, phase FROM transfer_sessions WHERE id='session-schema10'").get() as any;
       assert.deepEqual(session, { generation: 1, phase: "completed" });
       const file = upgraded.db.prepare("SELECT generation, relative_path FROM transfer_session_files WHERE session_id='session-schema10'").get() as any;
@@ -806,7 +806,7 @@ test("schema 9 to 10 adds upload generations and preserves the previous attempt"
       upgraded.close();
     }
     const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
-      .filter((name) => name.includes("before-schema-10-v9") && name.endsWith(".sqlite"));
+      .filter((name) => name.includes(`before-schema-${DATABASE_SCHEMA_VERSION}-v9`) && name.endsWith(".sqlite"));
     assert.equal(backups.length, 1);
   } finally {
     await removeTestDir(runtime);
@@ -853,7 +853,7 @@ test("schema 9 atomically builds and preserves the archive library projection fr
     }
     assert.ok(upgraded);
     try {
-      assert.equal(upgraded.db.pragma("user_version", { simple: true }), 10);
+      assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
       const rows = upgraded.db.prepare(`
         SELECT scope_type, scope_id, visibility, bvid, status_group
         FROM archive_library_projection ORDER BY scope_type, scope_id
@@ -869,11 +869,11 @@ test("schema 9 atomically builds and preserves the archive library projection fr
     assert.equal(migrationLogs.length, 2);
     assert.match(
       migrationLogs[0],
-      /^\[Database\] Starting SQLite schema migration 7 -> 10; creating and verifying a backup before changes\.$/,
+      new RegExp(`^\\[Database\\] Starting SQLite schema migration 7 -> ${DATABASE_SCHEMA_VERSION}; creating and verifying a backup before changes\\.$`),
     );
     assert.match(
       migrationLogs[1],
-      /^\[Database\] Completed SQLite schema migration 7 -> 10 in \d+ ms\.$/,
+      new RegExp(`^\\[Database\\] Completed SQLite schema migration 7 -> ${DATABASE_SCHEMA_VERSION} in \\d+ ms\\.$`),
     );
     assert.equal(migrationLogs.some((message) => message.includes(dbPath)), false);
 
@@ -884,7 +884,7 @@ test("schema 9 atomically builds and preserves the archive library projection fr
       reopened.close();
     }
     const backups = (await fs.promises.readdir(path.join(runtime, "backups")))
-      .filter((name) => name.includes("before-schema-10-v7") && name.endsWith(".sqlite"));
+      .filter((name) => name.includes(`before-schema-${DATABASE_SCHEMA_VERSION}-v7`) && name.endsWith(".sqlite"));
     assert.equal(backups.length, 1);
     const backupPath = path.join(runtime, "backups", backups[0]);
     const checksum = (await fs.promises.readFile(`${backupPath}.sha256`, "utf8")).split(/\s+/, 1)[0];
@@ -935,12 +935,12 @@ test("schema 9 projection rebuild rolls back the whole upgrade when projection i
     assert.equal(migrationLogs.length, 1);
     assert.match(
       migrationLogs[0],
-      /^\[Database\] Starting SQLite schema migration 7 -> 10; creating and verifying a backup before changes\.$/,
+      new RegExp(`^\\[Database\\] Starting SQLite schema migration 7 -> ${DATABASE_SCHEMA_VERSION}; creating and verifying a backup before changes\\.$`),
     );
     assert.equal(migrationErrors.length, 1);
     assert.match(
       migrationErrors[0],
-      /^\[Database\] SQLite schema migration 7 -> 10 failed after \d+ ms; no database changes were committed\.$/,
+      new RegExp(`^\\[Database\\] SQLite schema migration 7 -> ${DATABASE_SCHEMA_VERSION} failed after \\d+ ms; no database changes were committed\\.$`),
     );
     assert.equal([...migrationLogs, ...migrationErrors].some((message) => (
       message.includes(dbPath) || message.includes("projection blocked")
@@ -954,7 +954,7 @@ test("schema 9 projection rebuild rolls back the whole upgrade when projection i
       raw.close();
     }
     const upgraded = new StateDatabase(dbPath);
-    assert.equal(upgraded.db.pragma("user_version", { simple: true }), 10);
+    assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
     upgraded.close();
   } finally {
     await removeTestDir(runtime);

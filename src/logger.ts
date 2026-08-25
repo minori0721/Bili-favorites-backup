@@ -124,6 +124,11 @@ export interface BBDownSelectedVideoDiagnostics {
   estimatedSize?: string;
 }
 
+export interface BBDownSelectedVideoObservation {
+  selection: BBDownSelectedVideoSelection;
+  diagnostics: BBDownSelectedVideoDiagnostics;
+}
+
 export function parseBBDownSelectedVideoLine(line: string): BBDownSelectedVideoDiagnostics | null {
   const normalized = stripTimestampPrefix(String(line || ""));
   if (!/^\[视频\]\s*\[/.test(normalized)) return null;
@@ -149,15 +154,22 @@ export function createBBDownSelectionTracker(defaultPageIndex?: number) {
   let currentPageIndex = Number.isInteger(defaultPageIndex) && Number(defaultPageIndex) > 0
     ? Number(defaultPageIndex)
     : undefined;
+  const consumeWithDiagnostics = (line: string): BBDownSelectedVideoObservation | null => {
+    const normalized = stripTimestampPrefix(String(line || ""));
+    const pageMatch = /开始解析P0*(\d+)/i.exec(normalized);
+    if (pageMatch) currentPageIndex = Number(pageMatch[1]);
+    const selected = parseBBDownSelectedVideoLine(normalized);
+    if (!selected || !currentPageIndex) return null;
+    return {
+      selection: { pageIndex: currentPageIndex, bilibiliQuality: selected.bilibiliQuality },
+      diagnostics: selected,
+    };
+  };
   return {
     consume(line: string): BBDownSelectedVideoSelection | null {
-      const normalized = stripTimestampPrefix(String(line || ""));
-      const pageMatch = /开始解析P0*(\d+)/i.exec(normalized);
-      if (pageMatch) currentPageIndex = Number(pageMatch[1]);
-      const selected = parseBBDownSelectedVideoLine(normalized);
-      if (!selected || !currentPageIndex) return null;
-      return { pageIndex: currentPageIndex, bilibiliQuality: selected.bilibiliQuality };
+      return consumeWithDiagnostics(line)?.selection || null;
     },
+    consumeWithDiagnostics,
   };
 }
 

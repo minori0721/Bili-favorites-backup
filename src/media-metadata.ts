@@ -11,7 +11,7 @@ export function parseFrameRate(value: unknown) {
 export function normalizeActualCodec(value: unknown) {
   const codec = String(value || "").trim().toLowerCase();
   if (!codec || codec === "unknown") return undefined;
-  if (["h264", "avc", "avc1"].includes(codec)) return "AVC";
+  if (["h264", "h.264", "avc", "avc1"].includes(codec)) return "AVC";
   if (["hevc", "h265", "h.265", "hev1", "hvc1"].includes(codec)) return "HEVC";
   if (["av1", "av01"].includes(codec)) return "AV1";
   if (["vp9", "vp09"].includes(codec)) return "VP9";

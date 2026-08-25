@@ -5,6 +5,9 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
+  BBDOWN_SOURCE_COMMIT,
+  assessStrictEncoding,
+  assessStrictQuality,
   buildUploadFileMetadataFromSession,
   buildSelectPageArgument,
   cleanupDownloadRecoveryArtifacts,
@@ -43,13 +46,13 @@ function configureFfprobe() {
   }
 }
 
-async function createVideo(filePath: string, seconds = 2) {
+async function createVideo(filePath: string, seconds = 2, videoCodec = "mpeg4") {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   const args = [
     "-y", "-hide_banner", "-loglevel", "error",
     "-f", "lavfi", "-i", `color=c=black:s=320x180:d=${seconds}`,
     "-f", "lavfi", "-i", `sine=frequency=1000:duration=${seconds}`,
-    "-shortest", "-c:v", "mpeg4", "-c:a", "aac", filePath,
+    "-shortest", "-c:v", videoCodec, "-c:a", "aac", filePath,
   ];
   await new Promise<void>((resolve, reject) => {
     const child = spawn(localFfmpeg(), args, { windowsHide: true });
@@ -58,6 +61,15 @@ async function createVideo(filePath: string, seconds = 2) {
     child.on("error", reject);
     child.on("close", (code) => code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited ${code}`)));
   });
+}
+
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function uploadMetadataManifest(overrides: Partial<DownloadSessionManifest> = {}): DownloadSessionManifest {
@@ -181,6 +193,80 @@ test("strict upload metadata preflight rejects incomplete quality-upgrade artifa
       () => buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], { requireVerifiedMediaMetadata: true }),
       /lack verified ffprobe dimensions/
     );
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict encoding assessment is based on every ffprobe output, not the BBDown log", async () => {
+  const runtime = await createTestDir("strict-encoding-assessment");
+  try {
+    const base = uploadMetadataManifest();
+    writeDownloadSession(runtime, {
+      ...base,
+      pages: [
+        base.pages[0],
+        { index: 2, cid: 502, title: "P2", duration: 30 },
+      ],
+      outputs: [
+        base.outputs[0],
+        { ...base.outputs[0], pageIndex: 2, cid: 502, relativePath: "parts/second.mp4", videoCodec: "h264" },
+      ],
+    });
+
+    const mismatch = assessStrictEncoding(runtime, "AV1", ["parts/sample.mp4", "parts/second.mp4"]);
+    assert.equal(mismatch.status, "mismatch");
+    assert.equal(mismatch.encodingMismatch, true);
+    assert.deepEqual(mismatch.actualEncodings, ["AVC", "HEVC"]);
+    assert.equal(mismatch.verifiedPages, 2);
+    assert.match(mismatch.summary, /请求 AV1/);
+
+    writeDownloadSession(runtime, {
+      ...base,
+      outputs: [{ ...base.outputs[0], videoCodec: "h264" }],
+    });
+    const matched = assessStrictEncoding(runtime, "AVC");
+    assert.equal(matched.status, "matched");
+    assert.equal(matched.encodingMismatch, false);
+    assert.deepEqual(matched.actualEncodings, ["AVC"]);
+
+    writeDownloadSession(runtime, {
+      ...base,
+      outputs: [{ ...base.outputs[0], videoCodec: "unknown" }],
+    });
+    const unknown = assessStrictEncoding(runtime, "AVC");
+    assert.equal(unknown.status, "unknown");
+    assert.equal(unknown.verifiedPages, 0);
+    assert.deepEqual(unknown.actualEncodings, ["UNKNOWN"]);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict quality assessment requires every page's persisted BBDown selection", async () => {
+  const runtime = await createTestDir("strict-quality-assessment");
+  try {
+    const base = uploadMetadataManifest();
+    writeDownloadSession(runtime, base);
+    const matched = assessStrictQuality(runtime, "4K");
+    assert.equal(matched.status, "matched");
+    assert.equal(matched.qualityMismatch, false);
+    assert.deepEqual(matched.actualQualities, ["4K"]);
+
+    writeDownloadSession(runtime, {
+      ...base,
+      selectedStreams: [{ ...base.selectedStreams![0], bilibiliQuality: "1080P" }],
+    });
+    const mismatch = assessStrictQuality(runtime, "4K");
+    assert.equal(mismatch.status, "mismatch");
+    assert.equal(mismatch.qualityMismatch, true);
+    assert.match(mismatch.summary, /实际画质为 1080P/);
+
+    writeDownloadSession(runtime, { ...base, selectedStreams: undefined });
+    const unknown = assessStrictQuality(runtime, "4K");
+    assert.equal(unknown.status, "unknown");
+    assert.equal(unknown.verifiedPages, 0);
+    assert.deepEqual(unknown.actualQualities, ["UNKNOWN"]);
   } finally {
     await removeTestDir(runtime);
   }
@@ -571,7 +657,7 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
-test("BBDown 2.0.2 adopts 2.0.1 Web resume tracks when runtime settings are unchanged", async () => {
+test("BBDown 2.0.4 keeps 2.0.3 Web resume tracks when runtime settings are unchanged", async () => {
   const runtime = await createTestDir("download-session-compatible-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1BBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -584,7 +670,7 @@ test("BBDown 2.0.2 adopts 2.0.1 Web resume tracks when runtime settings are unch
       pages,
     });
     const previous = readDownloadSession(downloadDir)!;
-    previous.bbdownCommit = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
+    previous.bbdownCommit = "76c1a802825efd9761699d42955fd0553a9dfa9d";
     previous.configFingerprint = "previous-bbdown";
     writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
     await fs.promises.writeFile(path.join(downloadDir, "video-track.mp4.aria2"), "resume");
@@ -598,13 +684,46 @@ test("BBDown 2.0.2 adopts 2.0.1 Web resume tracks when runtime settings are unch
     });
     assert.equal(upgraded.incompatibleFragmentsMoved, 0);
     assert.equal(fs.existsSync(path.join(downloadDir, "video-track.mp4.aria2")), true);
-    assert.equal(upgraded.manifest.bbdownCommit, "bd532f51f41da4cc63b991e431add7f84b28db2a");
+    assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
   } finally {
     await removeTestDir(runtime);
   }
 });
 
-test("BBDown 2.0.2 keeps 2.0.0 Web resume tracks when runtime settings are unchanged", async () => {
+test("BBDown 2.0.4 keeps 2.0.3 APP resume tracks because download behavior is unchanged", async () => {
+  const runtime = await createTestDir("download-session-compatible-app-bbdown-upgrade");
+  const downloadDir = path.join(runtime, "BV1BBDOWNAPPUPGRADE");
+  const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
+  try {
+    await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1BBDOWNAPPUPGRADE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    const previous = readDownloadSession(downloadDir)!;
+    previous.bbdownCommit = "76c1a802825efd9761699d42955fd0553a9dfa9d";
+    previous.configFingerprint = "previous-bbdown";
+    writeJsonFile(path.join(downloadDir, ".bfb-download.json"), previous);
+    await fs.promises.writeFile(path.join(downloadDir, "app-video-track.mp4.aria2"), "resume");
+
+    const upgraded = await prepareDownloadSession({
+      downloadDir,
+      bvid: "BV1BBDOWNAPPUPGRADE",
+      accountUid: 1,
+      config: testConfig({ bbdownApiMode: "app" }),
+      pages,
+    });
+    assert.equal(upgraded.incompatibleFragmentsMoved, 0);
+    assert.equal(fs.existsSync(path.join(downloadDir, "app-video-track.mp4.aria2")), true);
+    assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("BBDown 2.0.4 keeps historic Web resume tracks when runtime settings are unchanged", async () => {
   const runtime = await createTestDir("download-session-legacy-web-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1LEGACYBBDOWN");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -631,13 +750,13 @@ test("BBDown 2.0.2 keeps 2.0.0 Web resume tracks when runtime settings are uncha
     });
     assert.equal(upgraded.incompatibleFragmentsMoved, 0);
     assert.equal(fs.existsSync(path.join(downloadDir, "legacy-track.mp4.aria2")), true);
-    assert.equal(upgraded.manifest.bbdownCommit, "bd532f51f41da4cc63b991e431add7f84b28db2a");
+    assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
   } finally {
     await removeTestDir(runtime);
   }
 });
 
-test("BBDown 2.0.2 isolates 2.0.1 APP resume tracks before PlayerUnite redownload", async () => {
+test("BBDown 2.0.4 still isolates older APP resume tracks before redownload", async () => {
   const runtime = await createTestDir("download-session-app-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1APPBBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -668,7 +787,7 @@ test("BBDown 2.0.2 isolates 2.0.1 APP resume tracks before PlayerUnite redownloa
     assert.equal(upgraded.incompatibleFragmentsMoved, 2);
     assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4")), false);
     assert.equal(fs.existsSync(path.join(rawTrackDir, "123456.P1.101.mp4.aria2")), false);
-    assert.equal(upgraded.manifest.bbdownCommit, "bd532f51f41da4cc63b991e431add7f84b28db2a");
+    assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
   } finally {
     await removeTestDir(runtime);
   }
@@ -791,6 +910,138 @@ test("download diagnostics redact signed URLs and credential values", () => {
   );
   assert.doesNotMatch(sanitized, /secret|sign=abc|private|token=plain/);
   assert.match(sanitized, /REDACTED/);
+});
+
+test("strict encoding retry stops before download when BBDown explicitly selects another codec", { timeout: 30_000 }, async () => {
+  const runtime = await createTestDir("strict-encoding-early-stop");
+  const downloadDir = path.join(runtime, "BVSTRICTEARLY");
+  const fakeScript = path.join(runtime, "fake-bbdown-wrong-selection.mjs");
+  const pidFile = path.join(runtime, "fake-bbdown.pid");
+  try {
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      fs.writeFileSync(process.argv[2], String(process.pid));
+      console.log('开始解析P1');
+      console.log('[视频] [4K 超清] [AVC] [1000 kbps]');
+      setInterval(() => {}, 1000);
+    `, "utf8");
+    const error: any = await downloadWithBBDown(
+      "BVSTRICTEARLY",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      testConfig(),
+      {
+        downloadDir,
+        expectedEncoding: "AV1",
+        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript, pidFile],
+      },
+    ).then(() => null, (caught) => caught);
+    assert.equal(error?.code, "BFB_ENCODING_SELECTED_MISMATCH");
+    assert.equal(error?.source, "selected_stream");
+    assert.equal(error?.encodingAssessment?.actualEncodings?.[0], "AVC");
+    assert.equal(readDownloadSession(downloadDir)?.status, "failed");
+    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 0);
+    assert.equal(isProcessAlive(Number(await fs.promises.readFile(pidFile, "utf8"))), false);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict quality retry stops before download when BBDown explicitly selects another tier", { timeout: 30_000 }, async () => {
+  const runtime = await createTestDir("strict-quality-early-stop");
+  const downloadDir = path.join(runtime, "BVSTRICTQUALITY");
+  const fakeScript = path.join(runtime, "fake-bbdown-wrong-quality.mjs");
+  try {
+    await fs.promises.writeFile(fakeScript, `
+      console.log('开始解析P1');
+      console.log('[视频] [1080P 高清] [AV1] [1000 kbps]');
+      setInterval(() => {}, 1000);
+    `, "utf8");
+    const error: any = await downloadWithBBDown(
+      "BVSTRICTQUALITY",
+      { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+      testConfig(),
+      {
+        downloadDir,
+        expectedQuality: "4K",
+        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        command: process.execPath,
+        commandArgsPrefix: [fakeScript],
+      },
+    ).then(() => null, (caught) => caught);
+    assert.equal(error?.code, "BFB_QUALITY_MISMATCH");
+    assert.equal(error?.source, "selected_stream");
+    assert.equal(error?.qualityAssessment?.actualQualities?.[0], "1080P");
+    assert.equal(readDownloadSession(downloadDir)?.status, "failed");
+    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 0);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict encoding retry uses ffprobe as the final gate and allows a matching codec", { timeout: 60_000 }, async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("strict-encoding-ffprobe-gate");
+  const fixture = path.join(runtime, "fixture.mp4");
+  const fakeScript = path.join(runtime, "fake-bbdown-no-diagnostic.mjs");
+  const previousFfprobe = process.env.FFPROBE_PATH;
+  try {
+    await createVideo(fixture, 2, "libx264");
+    await fs.promises.writeFile(fakeScript, `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const args = process.argv.slice(2);
+      const bvid = /video\\/(BV[0-9A-Za-z]+)/.exec(args[0])?.[1] || 'BVSTRICTFFPROBE';
+      fs.copyFileSync(process.env.FAKE_MEDIA_SOURCE, path.join(process.cwd(), 'video-' + bvid + '.mp4'));
+      console.log('任务完成');
+    `, "utf8");
+    const previousSource = process.env.FAKE_MEDIA_SOURCE;
+    process.env.FAKE_MEDIA_SOURCE = fixture;
+    try {
+      const mismatchDir = path.join(runtime, "BVSTRICTFFPROBE-MISMATCH");
+      const mismatch: any = await downloadWithBBDown(
+        "BVSTRICTFFPROBE",
+        { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+        testConfig(),
+        {
+          downloadDir: mismatchDir,
+          expectedEncoding: "AV1",
+          pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+          command: process.execPath,
+          commandArgsPrefix: [fakeScript],
+        },
+      ).then(() => null, (caught) => caught);
+      assert.equal(mismatch?.code, "BFB_ENCODING_MISMATCH");
+      assert.equal(mismatch?.source, "ffprobe");
+      assert.deepEqual(mismatch?.encodingAssessment?.actualEncodings, ["AVC"]);
+      assert.equal(readDownloadSession(mismatchDir)?.status, "failed");
+      assert.equal(readDownloadSession(mismatchDir)?.outputs.length, 1);
+
+      const matchedDir = path.join(runtime, "BVSTRICTFFPROBE-MATCH");
+      const matched = await downloadWithBBDown(
+        "BVSTRICTFFPROBE",
+        { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
+        testConfig(),
+        {
+          downloadDir: matchedDir,
+          expectedEncoding: "AVC",
+          pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+          command: process.execPath,
+          commandArgsPrefix: [fakeScript],
+        },
+      );
+      assert.equal(matched.files.length, 1);
+      assert.equal(readDownloadSession(matchedDir)?.status, "complete");
+    } finally {
+      if (previousSource === undefined) delete process.env.FAKE_MEDIA_SOURCE;
+      else process.env.FAKE_MEDIA_SOURCE = previousSource;
+    }
+  } finally {
+    if (previousFfprobe === undefined) delete process.env.FFPROBE_PATH;
+    else process.env.FFPROBE_PATH = previousFfprobe;
+    await removeTestDir(runtime);
+  }
 });
 
 test("downloader invokes BBDown with aria2 once and reuses the verified session", async () => {

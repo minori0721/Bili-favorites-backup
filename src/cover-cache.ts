@@ -43,8 +43,33 @@ function safeBvid(value: string) {
   return String(value || "").replace(/[^0-9A-Za-z]/g, "");
 }
 
-function coverPathForBvid(bvid: string) {
+export function coverPathForBvid(bvid: string) {
   return path.join(coversDir, `${safeBvid(bvid)}.webp`);
+}
+
+export function hasArchiveCover(bvid: string) {
+  const normalizedBvid = safeBvid(bvid);
+  return Boolean(normalizedBvid && fs.existsSync(coverPathForBvid(normalizedBvid)));
+}
+
+export async function promoteOnlineCoverToArchive(bvid: string, onlinePath: string) {
+  const normalizedBvid = safeBvid(bvid);
+  if (!normalizedBvid || !onlinePath) return null;
+  const finalPath = coverPathForBvid(normalizedBvid);
+  await fs.promises.mkdir(coversDir, { recursive: true });
+  if (await fs.promises.access(finalPath, fs.constants.R_OK).then(() => true).catch(() => false)) {
+    return coverRelativePathForBvid(normalizedBvid);
+  }
+  await fs.promises.mkdir(tempDir, { recursive: true });
+  const tempRoot = await fs.promises.mkdtemp(path.join(tempDir, `cover-promote-${normalizedBvid}-`));
+  const tempPath = path.join(tempRoot, "cover.webp");
+  try {
+    await fs.promises.copyFile(onlinePath, tempPath);
+    await moveAcrossMounts(tempPath, finalPath);
+    return coverRelativePathForBvid(normalizedBvid);
+  } finally {
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
+  }
 }
 
 export function coverRelativePathForBvid(bvid: string) {
@@ -58,7 +83,7 @@ function ffmpegPath() {
 export function runCoverFfmpeg(
   inputPath: string,
   outputPath: string,
-  options: { timeoutMs?: number; spawnImpl?: typeof spawn } = {}
+  options: { timeoutMs?: number; spawnImpl?: typeof spawn; videoFilter?: string } = {}
 ) {
   return new Promise<void>((resolve, reject) => {
     const args = [
@@ -69,7 +94,7 @@ export function runCoverFfmpeg(
       "-i",
       inputPath,
       "-vf",
-      "scale=trunc(iw/2/2)*2:trunc(ih/2/2)*2",
+      options.videoFilter || "scale=trunc(iw/2/2)*2:trunc(ih/2/2)*2",
       "-c:v",
       "libwebp",
       "-quality",

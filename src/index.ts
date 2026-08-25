@@ -7,10 +7,10 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import QRCode from "qrcode";
-import { authSessionDatabasePath, backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, tempDir } from "./paths.js";
-import { type AppConfig, ConfigStore, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
+import { authSessionDatabasePath, backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, onlineCoversDir, tempDir } from "./paths.js";
+import { type AppConfig, ConfigStore, normalizeBBDownEncodingPriority, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
 import { downloadCredentialsForUser, type BiliUser, UserStore } from "./users.js";
-import { FolderDetailFilter, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
+import { FolderDetailFilter, MANUAL_ARCHIVE_MEDIA_ID, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import { mergeLiveFavoriteDetailItem, selectFavoriteDetailSource } from "./favorite-detail.js";
 import {
   BiliRiskOrLoginError,
@@ -78,6 +78,9 @@ import {
 } from "./playback.js";
 import { actualQualityLabel, validBrowserMediaMetadata } from "./media-metadata.js";
 import { UnavailableCoverBackfill, waitForCoverCacheIdle } from "./cover-cache.js";
+import { OnlineCoverCache } from "./online-cover-cache.js";
+import { OnlineContentService, sendOnlineCover, type OnlineArchiveStateResolver } from "./online-content.js";
+import { MediaProbeBusyError, MediaProbeService } from "./media-probe.js";
 import {
   ADMIN_REMEMBER_TTL_MS,
   ADMIN_SESSION_COOKIE_NAME,
@@ -108,6 +111,13 @@ const userStore = new UserStore();
 const stateManager = new StateManager();
 const scheduler = new SyncScheduler(configStore, userStore, stateManager);
 const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
+const onlineCoverCache = new OnlineCoverCache(configStore.get().onlineCoverCacheLimitMB);
+const onlineContent = new OnlineContentService(onlineCoverCache);
+const mediaProbe = new MediaProbeService(configStore, undefined, () => scheduler.getLocalCacheCapacity());
+
+function isPlaybackMediaId(mediaId: number) {
+  return Number.isInteger(mediaId) && (mediaId >= 1 || mediaId === MANUAL_ARCHIVE_MEDIA_ID);
+}
 const pathMigration = new PathMigrationService(stateManager.getDatabase(), configStore, {
   isSchedulerIdle: () => !scheduler.hasRunningTransferTasks()
     && !scheduler.hasPersistentTransferWork()
@@ -149,7 +159,7 @@ if (process.env.NODE_ENV !== "test") {
   backfillStart.unref?.();
 }
 
-type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "exports" | "backups" | "state" | "users" | "config";
+type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "online-covers" | "exports" | "backups" | "state" | "users" | "config";
 
 const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
   "memory-cache": { label: "页面缓存", important: false },
@@ -157,7 +167,8 @@ const cleanupItems: Record<CleanupItem, { label: string; important: boolean; pat
   "orphan-fragments": { label: "无法续传的下载残片", important: true },
   logs: { label: "网页日志", important: false, path: logsPath },
   "debug-logs": { label: "Debug 日志", important: false, path: path.join(dataDir, "debug") },
-  covers: { label: "封面缓存", important: false, path: coversDir },
+  covers: { label: "归档封面（永久保存）", important: true, path: coversDir },
+  "online-covers": { label: "在线缩略图缓存", important: false, path: onlineCoversDir },
   exports: { label: "导出压缩包", important: false, path: exportsDir },
   backups: { label: "导入前备份", important: false, path: backupsDir },
   state: { label: "备份状态与持久化任务", important: true, path: databasePath },
@@ -172,6 +183,9 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 async function startAfterRecovery() {
+  await onlineCoverCache.initialize().catch((error) => {
+    console.warn(`[OnlineCoverCache] 初始化失败: ${safeErrorSummary(error)}`);
+  });
   await rotateDebugLogs().catch((error) => {
     console.warn(`[DebugLog] 启动轮转失败: ${safeErrorSummary(error)}`);
   });
@@ -488,6 +502,12 @@ function requireSameOrigin(req: express.Request, res: express.Response, next: ex
 app.use("/covers", requireAuth, express.static(coversDir, {
   maxAge: "30d",
   immutable: true,
+}));
+
+app.use("/online-covers", requireAuth, express.static(onlineCoversDir, {
+  maxAge: "1d",
+  immutable: false,
+  setHeaders: (res) => res.setHeader("Cache-Control", "private, max-age=86400"),
 }));
 
 app.get("/assets/vendor/artplayer-5.4.0.js", requireAuth, (req, res, next) => {
@@ -930,6 +950,7 @@ app.put("/api/config", (req, res) => {
     return;
   }
   const updated = configStore.update(req.body);
+  onlineCoverCache.setLimitMb(updated.onlineCoverCacheLimitMB);
   scheduler.applyConfigUpdate(previous, updated);
   res.json({ success: true, data: updated });
 });
@@ -1145,6 +1166,168 @@ app.get("/api/users/login/status", (req, res) => {
   res.json({ success: true, data: { status: current.status, message: current.message } });
 });
 
+const onlineArchiveStates: OnlineArchiveStateResolver = (items) => {
+  const bvids = [...new Set(items.map((item) => item.bvid).filter((bvid): bvid is string => Boolean(bvid)))];
+  const relations = stateManager.listRelationsForBvids(bvids);
+  const byBvid = new Map<string, typeof relations>();
+  for (const relation of relations) {
+    const current = byBvid.get(relation.bvid) || [];
+    current.push(relation);
+    byBvid.set(relation.bvid, current);
+  }
+  const states = new Map<string, "archived" | "processing" | "unarchived">();
+  for (const bvid of bvids) {
+    const currentRelations = byBvid.get(bvid) || [];
+    const state = currentRelations.some((relation) => ["verified", "partial_verified"].includes(String(relation.backupStatus || ""))
+      && (relation.remoteFiles || []).some((file) => file.verificationStatus === "verified" || file.verificationStatus === undefined))
+      ? "archived" as const
+      : currentRelations.some((relation) => ["discovered", "queued", "downloading", "downloaded", "uploading", "uploaded"].includes(String(relation.backupStatus || "")))
+        ? "processing" as const
+        : "unarchived" as const;
+    states.set(bvid, state);
+  }
+  return states;
+};
+
+app.get("/api/online-content/navigation", asyncHandler(async (_req, res) => {
+  const data = await onlineContent.getNavigation(userStore.list().filter((user) => user.enabled));
+  res.setHeader("Cache-Control", "private, max-age=30");
+  res.json({ success: true, data });
+}));
+
+app.get("/api/online-content/items", asyncHandler(async (req, res) => {
+  const userId = String(req.query.userId || "").trim();
+  const user = userStore.getById(userId);
+  if (!user || !user.enabled) {
+    res.status(404).json({ success: false, message: "在线内容账号不存在" });
+    return;
+  }
+  const rawKind = String(req.query.kind || "favorite");
+  const allowedKinds = ["favorite", "collected", "bangumi", "drama", "watch_later", "history"];
+  if (!allowedKinds.includes(rawKind)) {
+    res.status(400).json({ success: false, message: "在线内容分类无效" });
+    return;
+  }
+  const mediaId = req.query.mediaId === undefined || req.query.mediaId === "" ? undefined : Number(req.query.mediaId);
+  const page = req.query.page === undefined ? 1 : Number(req.query.page);
+  const pageSize = req.query.pageSize === undefined ? 50 : Number(req.query.pageSize);
+  const query = String(req.query.q || "").trim();
+  const cursor = String(req.query.cursor || "").trim();
+  if ((mediaId !== undefined && (!Number.isInteger(mediaId) || mediaId < 1))
+    || !Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50
+    || query.length > 80 || cursor.length > 256 || query.includes("\0") || cursor.includes("\0")) {
+    res.status(400).json({ success: false, message: "在线内容分页参数无效" });
+    return;
+  }
+  const data = await onlineContent.list(user, {
+    kind: rawKind as any,
+    mediaId,
+    page,
+    pageSize,
+    cursor: cursor || undefined,
+    query: query || undefined,
+  }, onlineArchiveStates);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data });
+}));
+
+app.get("/api/online-content/covers/:token", asyncHandler(async (req, res) => {
+  const filePath = await onlineContent.resolveCover(String(req.params.token || ""));
+  sendOnlineCover(res, filePath);
+}));
+
+app.post("/api/online-content/manual-archive", asyncHandler(async (req, res) => {
+  const userId = String(req.body?.userId || "").trim();
+  const token = String(req.body?.token || "").trim();
+  const user = userStore.getById(userId);
+  const reference = onlineContent.getItem(token);
+  const bvid = reference?.item.bvid;
+  if (!user || !user.enabled || !reference || reference.userId !== userId || !bvid) {
+    res.status(400).json({ success: false, message: "在线条目已过期，请重新打开当前页面" });
+    return;
+  }
+  const item = reference.item;
+  const requestedQuality = String(req.body?.quality || "").trim().toUpperCase();
+  const requestedEncoding = String(req.body?.encoding || "").trim().toUpperCase();
+  const allowedQualities = new Set(["8K", "4K", "1080P60", "1080P", "720P"]);
+  const allowedEncodings = new Set(["HEVC", "AVC", "AV1"]);
+  if ((requestedQuality && !allowedQualities.has(requestedQuality))
+    || (requestedEncoding && !allowedEncodings.has(requestedEncoding))) {
+    res.status(400).json({ success: false, message: "手动归档的画质或编码选项无效" });
+    return;
+  }
+  const exactRequest = Boolean(requestedQuality || requestedEncoding);
+  const currentProfile = qualityArtifactProfileFromConfig(configStore.get());
+  const qualityProfile = exactRequest
+    ? normalizeQualityArtifactProfile({
+      ...currentProfile,
+      quality: requestedQuality || currentProfile.quality,
+      encoding: requestedEncoding || currentProfile.encoding,
+    })
+    : undefined;
+  const qualityEncodingOverride = requestedEncoding
+    ? {
+      generation: 1,
+      priority: normalizeBBDownEncodingPriority(undefined, requestedEncoding),
+      strict: true,
+    }
+    : undefined;
+  const result = scheduler.enqueueManualArchive(userId, {
+    bvid,
+    title: item.title,
+    upperName: item.upperName || "Unknown",
+    upperMid: item.upperMid,
+    cover: item.cover,
+    qualityProfile,
+    qualityStrict: Boolean(requestedQuality),
+    qualityEncodingOverride,
+  });
+  await onlineContent.promoteCover(token).catch(() => undefined);
+  res.status(result.status === "queued" ? 202 : 200).json({ success: true, data: result });
+}));
+
+app.post("/api/media-probe", asyncHandler(async (req, res) => {
+  const userId = String(req.body?.userId || "").trim();
+  const bvid = String(req.body?.bvid || "").trim();
+  const user = userStore.getById(userId);
+  if (!user || !user.enabled || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
+    res.status(400).json({ success: false, message: "媒体探测参数无效" });
+    return;
+  }
+  const requestedQuality = String(req.body?.quality || "").trim().toUpperCase();
+  const requestedEncoding = String(req.body?.encoding || "").trim().toUpperCase();
+  if ((requestedQuality && !["8K", "4K", "1080P60", "1080P", "720P"].includes(requestedQuality))
+    || (requestedEncoding && !["HEVC", "AVC", "AV1"].includes(requestedEncoding))) {
+    res.status(400).json({ success: false, message: "媒体探测的画质或编码无效" });
+    return;
+  }
+  let result;
+  try {
+    result = mediaProbe.start(user, bvid, {
+      quality: requestedQuality || undefined,
+      encoding: ["HEVC", "AVC", "AV1"].includes(requestedEncoding) ? requestedEncoding as "HEVC" | "AVC" | "AV1" : undefined,
+      strict: Boolean(req.body?.strict || requestedQuality || requestedEncoding),
+    });
+  } catch (error) {
+    if (error instanceof MediaProbeBusyError) {
+      res.status(409).json({ success: false, code: error.code, message: error.message });
+      return;
+    }
+    throw error;
+  }
+  res.status(202).json({ success: true, data: { probeId: result.probeId, status: result.status, bvid } });
+}));
+
+app.get("/api/media-probe/:id", (req, res) => {
+  const result = mediaProbe.get(String(req.params.id || ""));
+  if (!result) {
+    res.status(404).json({ success: false, message: "媒体探测不存在或已过期" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: result });
+});
+
 app.get("/api/archive-library/navigation", (req, res) => {
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
@@ -1187,7 +1370,7 @@ app.post("/api/archive-library/items/:bvid/deletion-preview", asyncHandler(async
   const bvid = String(req.params.bvid || "").trim();
   const userId = String(req.body?.userId || "").trim();
   const mediaId = Number(req.body?.mediaId);
-  if (!/^BV[0-9A-Za-z]+$/.test(bvid) || !userId || !Number.isInteger(mediaId) || mediaId < 1) {
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid) || !userId || !Number.isInteger(mediaId) || (mediaId < 1 && mediaId !== -1)) {
     res.status(400).json({ success: false, message: "归档来源参数无效" });
     return;
   }
@@ -1361,7 +1544,7 @@ app.get("/api/users/:id/favorites/:mediaId/playback-queue", (req, res) => {
     return;
   }
   const mediaId = Number(req.params.mediaId);
-  if (!Number.isInteger(mediaId) || mediaId < 1) {
+  if (!isPlaybackMediaId(mediaId)) {
     res.status(400).json({ success: false, message: "Invalid mediaId" });
     return;
   }
@@ -1399,7 +1582,7 @@ app.get("/api/users/:id/favorites/:mediaId/playback-search", (req, res) => {
   const page = req.query.page === undefined ? 1 : Number(req.query.page);
   const pageSize = req.query.pageSize === undefined ? 50 : Number(req.query.pageSize);
   const query = String(req.query.q || "").trim();
-  if (!Number.isInteger(mediaId) || mediaId < 1
+  if (!isPlaybackMediaId(mediaId)
     || !Number.isInteger(page) || page < 1
     || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50
     || !query || query.length > 80 || query.includes("\0")) {
@@ -1428,7 +1611,7 @@ app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  if (!Number.isInteger(mediaId) || mediaId < 1 || !Number.isInteger(fileId) || fileId < 1
+  if (!isPlaybackMediaId(mediaId) || !Number.isInteger(fileId) || fileId < 1
     || !metadata || !fingerprint || fingerprint.length > 160 || fingerprint.includes("\0")) {
     res.status(400).json({ success: false, message: "Invalid playback media metadata" });
     return;
@@ -1464,7 +1647,7 @@ app.get("/api/users/:id/favorites/:mediaId/playback/delivery/:attemptId", (req, 
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  if (!Number.isInteger(mediaId) || mediaId < 1 || !/^[0-9a-f]{32}$/i.test(attemptId)) {
+  if (!isPlaybackMediaId(mediaId) || !/^[0-9a-f]{32}$/i.test(attemptId)) {
     res.status(400).json({ success: false, message: "Invalid playback delivery attempt" });
     return;
   }
@@ -1480,7 +1663,7 @@ app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId/open-in-alist"
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  if (!Number.isInteger(mediaId) || mediaId < 1 || !Number.isInteger(fileId) || fileId < 1) {
+  if (!isPlaybackMediaId(mediaId) || !Number.isInteger(fileId) || fileId < 1) {
     res.status(400).json({ success: false, message: "Invalid playback file" });
     return;
   }
@@ -1509,7 +1692,7 @@ const playbackFileHandler = asyncHandler(async (req, res) => {
   }
   const mediaId = Number(req.params.mediaId);
   const fileId = Number(req.params.fileId);
-  if (!Number.isInteger(mediaId) || mediaId < 1 || !Number.isInteger(fileId) || fileId < 1) {
+  if (!isPlaybackMediaId(mediaId) || !Number.isInteger(fileId) || fileId < 1) {
     res.status(400).json({ success: false, message: "Invalid playback file" });
     return;
   }
@@ -1729,11 +1912,13 @@ app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, re
     "create_candidate",
     "redownload",
     "redownload_with_encoding",
+    "redownload_with_quality",
     "retry_download",
     "retry_download_with_account",
     "defer_download",
     "retry_quality",
     "retry_quality_with_encoding",
+    "retry_quality_with_quality",
     "keep_existing",
     "use_candidate",
   ]);
@@ -1782,6 +1967,7 @@ function cleanupRequiresIdle(items: CleanupItem[]) {
 }
 
 function cleanupConfirmationRequired(items: CleanupItem[]) {
+  if (items.length === 1 && items[0] === "covers") return "DELETE ARCHIVE COVERS";
   const important = items.some((item) => cleanupItems[item].important);
   const full = allCleanupKeys.every((key) => items.includes(key));
   if (full) return "DELETE ALL PROJECT DATA";
@@ -1796,6 +1982,10 @@ async function removeCleanupTarget(item: CleanupItem) {
   }
   if (item === "logs") {
     logManager.clear();
+    return;
+  }
+  if (item === "online-covers") {
+    await onlineCoverCache.clear();
     return;
   }
   if (item === "orphan-fragments") {
@@ -1817,6 +2007,7 @@ async function removeCleanupTarget(item: CleanupItem) {
   await fs.promises.rm(targetPath, { recursive: true, force: true });
   if (item === "covers") {
     await fs.promises.mkdir(coversDir, { recursive: true });
+    stateManager.clearCoverCachePaths();
     stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
   } else if (item === "exports") {
     await fs.promises.mkdir(exportsDir, { recursive: true });
@@ -1826,6 +2017,7 @@ async function removeCleanupTarget(item: CleanupItem) {
     userStore.clear();
   } else if (item === "config") {
     configStore.reset();
+    onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
     scheduler.updateInterval();
   }
 }
@@ -1843,6 +2035,8 @@ app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
         ? cacheInspection.usedBytes
       : key === "state"
         ? (await Promise.all(sqlitePaths(databasePath).map((file) => pathSize(file)))).reduce((sum, value) => sum + value, 0)
+      : key === "online-covers"
+        ? (await onlineCoverCache.inspect()).bytes
       : cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
   })));
   res.json({
@@ -1969,6 +2163,7 @@ function parseBooleanOption(value: unknown, fallback: boolean) {
 
 function reloadStoresAfterImport() {
   configStore.reload();
+  onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
   userStore.reload();
   stateManager.reload();
   scheduler.reloadStateDatabase();

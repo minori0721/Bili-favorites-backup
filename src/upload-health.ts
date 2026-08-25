@@ -154,8 +154,14 @@ function buildFingerprint(category: UploadFailureCategory, status: number | unde
 
 export function classifyUploadError(error: any, remotePath: string): UploadFailureInfo {
   const status = extractStatus(error);
+  const strictEncodingFailure = Boolean(error?.encodingValidation)
+    || ["BFB_ENCODING_SELECTED_MISMATCH", "BFB_ENCODING_MISMATCH", "BFB_ENCODING_UNVERIFIED"].includes(
+      String(error?.code || error?.cause?.code || "").toUpperCase(),
+    );
   const sizeLimit = isSingleFileSizeLimitError(error);
-  const code = sizeLimit
+  const code = strictEncodingFailure
+    ? String(error?.code || error?.cause?.code || "BFB_ENCODING_MISMATCH").toUpperCase()
+    : sizeLimit
     ? REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
     : (String(error?.code || error?.cause?.code || "").toUpperCase() || undefined);
   const responseDetail = error?.responseBody ?? error?.body ?? error?.response?.body;
@@ -166,14 +172,19 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
   const remoteWriteEvidence = error?.remoteWriteEvidence || error?.cause?.remoteWriteEvidence;
   const remoteWriteStatus = Number(error?.remoteWriteStatus ?? error?.cause?.remoteWriteStatus);
   const remoteParentStatus = error?.remoteParentStatus || error?.cause?.remoteParentStatus;
-  const summary = sizeLimit
+  const summary = strictEncodingFailure
+    ? sanitizeUploadText(error?.message || "严格编码校验未通过")
+    : sizeLimit
     ? "远端拒绝上传：单文件超过存储限制"
     : sanitizeUploadText(detail);
   const networkLike = Boolean(code && NETWORK_CODES.has(code)) || /ECONNRESET|ETIMEDOUT|timeout|socket hang up|network/i.test(summary);
   let category: UploadFailureCategory = "unknown";
   let retryable = true;
 
-  if (sizeLimit) {
+  if (strictEncodingFailure) {
+    category = "deterministic";
+    retryable = false;
+  } else if (sizeLimit) {
     category = "deterministic";
     retryable = false;
   } else if (status === 401 || status === 403) {

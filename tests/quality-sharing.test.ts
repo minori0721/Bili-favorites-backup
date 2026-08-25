@@ -805,3 +805,51 @@ test("quality-upgrade preflight stops before remote upload when ffprobe proof is
     await removeTestDir(runtime);
   }
 });
+
+test("strict quality encoding preflight stops before staged upload when the actual codec differs", async () => {
+  const runtime = await createTestDir("quality-encoding-preflight");
+  try {
+    writeQualityMetadataSession(runtime, { outputs: [qualityMetadataOutput({ videoCodec: "avc" })] });
+    const task = new QualityUpgradeTask("BVQUALITYMETADATA", {}, testConfig(), target("u1", 1), {
+      qualityEncodingOverride: { generation: 1, priority: ["AV1", "HEVC", "AVC"], strict: true },
+    });
+    task.downloadDir = runtime;
+    task.outputFiles = ["new.mp4"];
+    let uploadCalls = 0;
+    task.uploadRunner = async () => {
+      uploadCalls += 1;
+      throw new Error("remote upload must not start");
+    };
+    const error: any = await task.runUploadStagePhase("run").then(() => null, (caught) => caught);
+    assert.equal(error?.code, "BFB_ENCODING_MISMATCH");
+    assert.equal(error?.source, "upload_preflight");
+    assert.equal(uploadCalls, 0);
+    assert.equal(task.stageRemotePath, undefined);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict quality download passes the first requested encoding to the downloader", async () => {
+  const runtime = await createTestDir("quality-encoding-download-option");
+  try {
+    const task = new QualityUpgradeTask("BVQUALITYMETADATA", {}, testConfig(), target("u1", 1), {
+      qualityEncodingOverride: { generation: 1, priority: ["AV1", "HEVC", "AVC"], strict: true },
+    });
+    let expectedEncoding: string | undefined;
+    task.downloadRunner = async (_bvid, _cookie, _config, options: any) => {
+      expectedEncoding = options.expectedEncoding;
+      return {
+        downloadDir: runtime,
+        files: [],
+        recoveredPages: 0,
+        totalPages: 0,
+        partial: false,
+      };
+    };
+    await task.runDownloadPhase("run");
+    assert.equal(expectedEncoding, "AV1");
+  } finally {
+    await removeTestDir(runtime);
+  }
+});

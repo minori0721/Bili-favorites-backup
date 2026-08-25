@@ -1,14 +1,25 @@
 # Dev 测试说明
 
+## v2.5.1 在线内容与媒体探测专项
+
+- 目标版本：BFB `2.5.1`，BBDown fork `bfb-2.0.4`；SQLite `user_version 11`，JSON状态schema `13`，迁移包schema `3`。
+- 在线内容只在工作区打开时读取B站，页面和导航使用有界进程内缓存；在线缩略图单独位于`data/online-covers`并受默认256MB上限约束，`data/covers`仍是永久归档封面。
+- 手动归档来源使用`source_kind=manual`和`media_id=-1`，不伪造收藏关系，远端目录含`__BFB_MANUAL_<UID>`保留段；重复请求和重启复用现有任务。
+- 结构化媒体探测只返回BVID、CID、分P、档位、编码、尺寸、帧率、时长、码率和估算字节，不返回签名播放地址。严格目标要求所有分P匹配；不存在匹配组合时不生成上传候选。
+- 本地已补充媒体探测服务测试，覆盖严格AV1匹配、不可用编码、多分P空间估算、严格目标参数转发、HEAD/Range来源、分块JSON、畸形/重复分P整批拒绝及持久上传任务重建。BBDown在 WSL2 Ubuntu 使用 .NET 9 SDK 完成41项测试、主程序构建和Native AOT `linux-x64`发布验证。
+- BBDown `bfb-2.0.4`已发布：精确大小只探测排序后首个目标视频及其音频，畸形`206`不再把`Content-Length: 1`当作总大小。BFB解析器同时兼容探测协议v1/v2；Docker固定已发布标签、源码提交和ZIP摘要。
+
 ## 当前基线
 
-- 基准版本：`v2.5.0`。
-- 发布提交：`efa9a4b`（`发布 v2.5.0 OpenList 与上传恢复增强`）。
-- SQLite：`user_version 10`；JSON 状态：schema 13；迁移包：schema 3。
-- 当前 dev 固定 BBDown fork Release `bfb-2.0.2`，源码提交 `bd532f51f41da4cc63b991e431add7f84b28db2a`，Linux x64 ZIP SHA256 `bd7327f9aae88279b5b89dfec3118aad6488d21c5d527fe54917aca53f12874c`。
-- 当前 dev 在发布基线外包含 BBDown 2.0.2 更新及本轮远端路径、上传安全和画质升级恢复修复。
+- 目标版本：`v2.5.1`，本轮为 `dev` 发布候选，尚未发布或部署。
+- SQLite：`user_version 11`；JSON 状态：schema 13；迁移包：schema 3。
+- BBDown fork `bfb-2.0.4` 已发布，固定源码提交 `0ea9463202e8a57e0d673f29166e54f4ed770255`，Linux x64 ZIP SHA256 为 `74a944d25f5e29528b93e0bfebadbae7d0cc7cc1567cda531a26ed4d4e8dfa9a`；Dockerfile 已同步固定值，BFB 发布候选尚未发布或部署。
+- BFB 媒体探测已把严格目标传给 BBDown；普通探测不带目标参数，不增加精确大小请求。`head`、`range`大小来源会保留到结果和前端提示；结构化输出只解析 stdout，并通过连续字符串处理跨chunk JSON。
+- 本轮新增在线内容、手动归档来源、分层封面和结构化媒体探测；普通收藏夹同步仍不主动读取在线内容。
+- 本轮本地完整 `npm test`：465 项，463 项通过，2 项跳过（缺少 `aria2c`、Windows 不允许创建软链接或 junction），0 项失败；`npm run test:ui`为56项通过、31项按项目条件跳过；应用构建和文档站构建通过。根项目生产依赖审计仍为11项既有风险，文档站为0项。
+- WSL2 Docker 已完整构建 `bbdown` 阶段：GitHub Release ZIP 通过 Dockerfile 固定 SHA256 校验，生成镜像中的 Native AOT 二进制可执行并报告 `BBDown version 2.0.4`。
 
-## 发布验证（v2.5.0基线）
+## 历史发布验证（v2.5.0）
 
 ```text
 npm ci
@@ -131,6 +142,7 @@ npm --prefix docs audit --omit=dev
 - `npm test`：`388` 项，`386` 通过，`2` 项按环境跳过（缺少 `aria2c`、Windows 不允许创建软链接或 junction），`0` 失败、`0` 挂起。
 - `npm run test:ui`：`45` 项，`27` 通过，`18` 按环境条件跳过，`0` 失败；覆盖桌面 `1280×720`、手机竖屏 `390×844` 和横屏 `844×390`。仅使用本地隔离假API和CLI Playwright，不调用浏览器插件。
 - `npm run build`、`npm --prefix docs ci`、`npm --prefix docs run docs:build`、`git diff --check`：通过。
+- WSL2 Docker `bbdown` 目标构建通过；Release ZIP 摘要校验成功，隔离镜像内 `BBDown --help` 报告版本 `2.0.4`。
 - `npm audit --omit=dev`：根项目 `11` 项（2低、3中、6高，部分暂无修复）；`npm --prefix docs audit --omit=dev`：`0` 项。本轮没有修改依赖版本或执行破坏性审计修复。
 - 本轮未提交、未push、未更新 Aliyun，未访问真实 AList/OpenList 文件；应用仍保持 `2.5.0`、SQLite schema `10`、状态 schema `13`、迁移包 schema `3`。
 
@@ -160,3 +172,21 @@ npm --prefix docs audit --omit=dev
 - 设置页只读存储检查使用未保存草稿，15秒超时，只执行WebDAV `stat/PROPFIND`，不保存配置、不写测试文件，也不把读取成功表述为写入能力已验证。
 
 最终验证：`npm ci`、`npm run build`、`npm --prefix docs ci`、文档站构建和`git diff --check`通过；`npm test`共430项，428项通过，2项按环境跳过（缺少`aria2c`、Windows不允许创建测试软链接或junction），0失败、0挂起；CLI Playwright共78项，47项通过、31项按视口条件跳过，覆盖`1280x720`、`390x844`和`844x390`。根项目生产依赖审计仍为11项（2低、3中、6高），文档站生产依赖为0项。本轮未连接真实B站、AList/OpenList或服务器，未部署；应用仍为`2.5.0`，SQLite schema 10、状态schema 13、迁移包schema 3均未改变。
+
+### 本轮严格编码重试真实落盘保护（未发布）
+
+- 严格编码只取 `encodingRetry.priority[0]` 或 `qualityEncodingOverride.priority[0]` 作为请求编码；普通下载和非严格编码优先级继续保留 BBDown 的自动回退语义。
+- BBDown 选择流解析仍只负责诊断和提前终止：当严格请求与明确选择行冲突时会尽早停止，格式变化或缺少编码时不会猜测，最终结果以每个分P的 `ffprobe` `videoCodec` 为准。
+- 下载清单在严格会话中先保持 `prepared`，待所有输出完成且实际编码全部匹配后才写入 `complete`。任一分P编码未知、不完整或不匹配都会写入安全失败摘要，记录 `requestedEncoding`、`actualEncodings`、`encodingMismatch` 和 `verifiedPages`。
+- 调度器创建上传任务前、`UploadTask` 发出首个 `PUT/COPY/MOVE` 前各有一次独立预检，覆盖重启恢复和旧版本残留任务；失败时不调用远端上传，不写 `remote_files`，不修改旧归档证明或收藏关系。
+- 诊断状态复用 `encoding_retry_failed`，不会把 AVC 冒充 AV1/HEVC 成功，也不会因为编码不匹配进入普通自动重试循环。管理员可重新探测可用编码、换编码重试或暂不处理。
+- 专项验证覆盖严格AV1提前拦截、日志与 ffprobe 不一致、混合多分P、未知编码、严格匹配、旧上传任务上传前拦截和无网络上传请求；使用隔离临时目录、Fake BBDown/Fake WebDAV 与本地 ffprobe，不访问服务器或真实远端文件。
+- 严格编码专项验证：严格 AV1 提前拦截、ffprobe 最终校验、混合分P、未知编码、旧任务上传前拦截和严格恢复均通过；随后已在 WSL2 的 .NET 9 SDK 环境完成 BBDown 测试、主程序构建和 Native AOT `linux-x64` 发布验证。
+
+### 本轮最终验证（2026-08-25）
+
+- 版本与边界：BFB `2.5.1`、BBDown fork `bfb-2.0.4`，SQLite `user_version 11`，JSON 状态 schema `13`，迁移包 schema `3`；发布候选只在本地和隔离假服务验证，未部署、未访问真实 B站/AList/OpenList。
+- `npm test`：465 项，463 项通过，2 项按环境跳过（缺少 `aria2c`、Windows 不允许创建软链接或 junction），0 失败、0 挂起；编码候选异步清理断言已改为有界最终一致等待，连续专项重跑与最终整套测试均通过。
+- `npm run test:ui`：87 项，56 项通过，31 项按项目条件跳过；使用 CLI Playwright 覆盖桌面 `1280×720`、手机竖屏 `390×844` 和横屏 `844×390`，未使用浏览器插件；在线内容专项 9/9 通过。
+- `npm run build`、`npm --prefix docs ci`、`npm --prefix docs run docs:build`、`git diff --check`：通过。
+- `npm audit --omit=dev`：根项目 11 项现有风险（部分上游依赖暂无修复）；`npm --prefix docs audit --omit=dev`：0 项。本轮未执行自动依赖升级。

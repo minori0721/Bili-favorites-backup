@@ -56,6 +56,7 @@ export interface AppConfig {
   concurrentUploads: number;
   uploadFileIntervalSeconds: number;
   localCacheLimitGB: number;
+  onlineCoverCacheLimitMB: number;
   queuePrefetchLimit: number;
   bbdownEncoding: string;
   bbdownEncodingPriority: BBDownEncoding[];
@@ -88,6 +89,7 @@ const defaultConfig: AppConfig = {
   concurrentUploads: 2,
   uploadFileIntervalSeconds: 10,
   localCacheLimitGB: 10,
+  onlineCoverCacheLimitMB: 256,
   queuePrefetchLimit: 25,
   bbdownEncoding: "",
   bbdownEncodingPriority: cloneEncodingPriority(DEFAULT_BBDOWN_ENCODING_PRIORITY),
@@ -203,6 +205,7 @@ const allowedKeys = new Set<keyof AppConfig>([
   "concurrentUploads",
   "uploadFileIntervalSeconds",
   "localCacheLimitGB",
+  "onlineCoverCacheLimitMB",
   "queuePrefetchLimit",
   "bbdownEncoding",
   "bbdownEncodingPriority",
@@ -289,6 +292,14 @@ export function validateConfig(input: Partial<AppConfig>) {
       parseStorageBaseUrl(input.alistUrl);
     } catch {
       return "alistUrl must be a valid HTTP(S) URL without credentials, query, or fragment";
+    }
+  }
+
+  if (input.onlineCoverCacheLimitMB !== undefined) {
+    if (!Number.isInteger(input.onlineCoverCacheLimitMB)
+      || input.onlineCoverCacheLimitMB < 64
+      || input.onlineCoverCacheLimitMB > 2048) {
+      return "onlineCoverCacheLimitMB must be an integer between 64 and 2048";
     }
   }
 

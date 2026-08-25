@@ -340,14 +340,17 @@ function getAppStyles() {
     .modal.is-closing { opacity:0; pointer-events:none; }
     .modal > .panel,
     .modal > .archive-library-shell,
+    .modal > .online-content-shell,
     .modal > .playback-shell,
     .modal > .recovery-issues-shell { opacity:0; transform:translateY(6px) scale(.995); transition:opacity .18s cubic-bezier(.16,1,.3,1),transform .18s cubic-bezier(.16,1,.3,1); }
     .modal.active:not(.is-closing) > .panel,
     .modal.active:not(.is-closing) > .archive-library-shell,
+    .modal.active:not(.is-closing) > .online-content-shell,
     .modal.active:not(.is-closing) > .playback-shell,
     .modal.active:not(.is-closing) > .recovery-issues-shell { opacity:1; transform:none; }
     .modal.active.is-closing > .panel,
     .modal.active.is-closing > .archive-library-shell,
+    .modal.active.is-closing > .online-content-shell,
     .modal.active.is-closing > .playback-shell,
     .modal.active.is-closing > .recovery-issues-shell { opacity:0; transform:translateY(3px) scale(.998); transition-duration:.13s; }
     .modal .panel { background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); padding:30px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(26,47,45,0.14), inset 0 1px 0 rgba(255,255,255,0.82); border:1px solid var(--glass-border); max-height:90vh; overflow-y:auto; overflow-x:hidden; }
@@ -405,8 +408,8 @@ function getAppStyles() {
     }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
     .archive-library-modal { padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
-    .archive-library-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:#F5F9F8; color:var(--ink); }
-    .archive-library-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:#EEF5F3; }
+    .archive-library-shell,.online-content-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:#F5F9F8; color:var(--ink); }
+    .archive-library-sidebar,.online-content-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:#EEF5F3; }
     .archive-library-brand { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid #DCE8E6; }
     .archive-library-brand h2 { margin:0; font-size:18px; color:#21413D; letter-spacing:0; }
     .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close { width:36px; height:36px; display:inline-grid; place-items:center; border:1px solid #CADAD7; border-radius:50%; background:#FFFFFF; color:#38534F; padding:0; font-size:21px; cursor:pointer; }
@@ -433,7 +436,7 @@ function getAppStyles() {
     .archive-nav-deletion { margin:7px 8px 3px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:8px 9px; color:#526B66; font-size:10px; line-height:1.55; }
     .archive-nav-deletion button { margin-top:6px; border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:5px 8px; font:inherit; font-weight:700; cursor:pointer; }
     .archive-nav-deletion button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
-    .archive-library-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#F8FBFA; }
+    .archive-library-main,.online-content-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#F8FBFA; }
     .archive-library-topbar { flex:0 0 auto; min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); }
     .archive-library-heading { min-width:0; }
     .archive-library-heading h2 { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:18px; letter-spacing:0; }
@@ -494,18 +497,28 @@ function getAppStyles() {
     .archive-library-source-actions button { border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:6px 10px; font:inherit; font-size:11px; font-weight:700; cursor:pointer; }
     .archive-library-source-actions button.danger-action { border-color:#E5AAA4; background:#FFF3F2; color:#A13D35; }
     .archive-library-source-actions button:disabled { cursor:not-allowed; opacity:.58; }
-    .archive-library-source-actions button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
-    .archive-library-source-reason { color:var(--archive-muted)!important; font-size:10px!important; }
+ .archive-library-source-actions button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
+ .archive-library-source-reason { color:var(--archive-muted)!important; font-size:10px!important; }
+ .manual-archive-options { display:grid; gap:16px; }
+ .manual-archive-options h3 { margin:0; color:#21413D; font-size:20px; }
+ .manual-archive-options .option-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+ .manual-archive-options label { display:grid; gap:6px; color:#36534E; font-size:13px; font-weight:700; }
+ .manual-archive-options select { width:100%; min-height:42px; padding:9px 11px; border:1px solid #D6E2DF; border-radius:7px; background:#FFFFFF; color:#21413D; font:inherit; }
+ .manual-archive-options select:focus-visible { outline:2px solid rgba(57,197,187,.34); outline-offset:2px; border-color:#39C5BB; }
+ .manual-archive-options .probe-result { min-height:44px; padding:10px 12px; border:1px solid #DCEAE7; border-radius:7px; background:#F7FBFA; color:#526B66; font-size:12px; line-height:1.6; }
+ .manual-archive-options .probe-result.error { border-color:#E5AAA4; background:#FFF5F4; color:#A13D35; }
+ .manual-archive-options .modal-actions { margin-top:0; }
+ @media (max-width:600px) { .manual-archive-options .option-grid { grid-template-columns:1fr; } }
     .archive-deletion-progress { margin-top:10px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:9px 10px; color:#526B66; font-size:11px; line-height:1.65; }
     .archive-library-detail-retry { margin-top:12px; border:1px solid #63BFB7; border-radius:5px; background:#EDF8F6; color:#176E66; padding:7px 12px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
     .archive-library-detail-retry:focus-visible { outline:2px solid rgba(57,197,187,0.30); outline-offset:2px; }
     @media (max-width:720px), (max-height:480px) and (pointer:coarse) {
-      .archive-library-shell { display:block; }
-      .archive-library-sidebar,.archive-library-main { position:absolute; inset:0; width:100%; height:100%; border:0; transition:transform .16s ease; }
-      .archive-library-sidebar { z-index:2; background:#F4F8F7; }
-      .archive-library-main { z-index:3; transform:translateX(100%); }
-      .archive-library-shell.show-content .archive-library-sidebar { transform:translateX(-22%); visibility:hidden; }
-      .archive-library-shell.show-content .archive-library-main { transform:translateX(0); }
+      .archive-library-shell,.online-content-shell { display:block; }
+      .archive-library-sidebar,.online-content-sidebar,.archive-library-main,.online-content-main { position:absolute; inset:0; width:100%; height:100%; border:0; transition:transform .16s ease; }
+      .archive-library-sidebar,.online-content-sidebar { z-index:2; background:#F4F8F7; }
+      .archive-library-main,.online-content-main { z-index:3; transform:translateX(100%); }
+      .archive-library-shell.show-content .archive-library-sidebar,.online-content-shell.show-content .online-content-sidebar { transform:translateX(-22%); visibility:hidden; }
+      .archive-library-shell.show-content .archive-library-main,.online-content-shell.show-content .online-content-main { transform:translateX(0); }
       .archive-library-brand { min-height:62px; }
       .archive-library-nav { padding:10px 12px 24px; }
       .archive-nav-account { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:14px; }
@@ -548,7 +561,7 @@ function getAppStyles() {
       .playback-search-clear { top:0; right:0; }
     }
     @media (prefers-reduced-motion:reduce) {
-      .archive-library-card,.archive-library-detail,.archive-library-sidebar,.archive-library-main { transition:none!important; }
+      .archive-library-card,.archive-library-detail,.archive-library-sidebar,.online-content-sidebar,.archive-library-main,.online-content-main { transition:none!important; }
     }
     .account-removal-options { display:grid; gap:9px; margin:14px 0; }
     .account-removal-option { display:grid; grid-template-columns:auto minmax(0,1fr); gap:10px; align-items:start; border:1px solid #D8E3E0; border-radius:7px; background:#F8FBFA; padding:11px; cursor:pointer; }
@@ -974,9 +987,9 @@ function getAppStyles() {
       .playback-queue-head { padding:11px; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .modal,.modal > .panel,.modal > .archive-library-shell,.modal > .playback-shell,.modal > .recovery-issues-shell,
+      .modal,.modal > .panel,.modal > .archive-library-shell,.modal > .online-content-shell,.modal > .playback-shell,.modal > .recovery-issues-shell,
       .playback-shell,.video-item.playable,.video-play-affordance,.playback-queue-item,.playback-art,.playback-queue,.playback-drawer-backdrop { animation:none; transition:none!important; }
-      .modal > .panel,.modal > .archive-library-shell,.modal > .playback-shell,.modal > .recovery-issues-shell { transform:none!important; }
+      .modal > .panel,.modal > .archive-library-shell,.modal > .online-content-shell,.modal > .playback-shell,.modal > .recovery-issues-shell { transform:none!important; }
     }
   </style>`;
 }
@@ -1004,6 +1017,7 @@ function getAccountSection() {
         <button class="ghost" id="reconcileRemoteBtn">状态对账（仅远端存储）</button>
         <button class="ghost" id="reconcileBtn">全量扫描并对账</button>
         <button class="ghost" id="archiveLibraryBtn">归档库</button>
+        <button class="ghost" id="onlineContentBtn">在线内容</button>
         <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明" aria-label="查看同步按钮说明">?</button>
       </div>
       <div class="user-list" id="userList"></div>
@@ -1104,6 +1118,7 @@ function getSettingsSection() {
         <div><label for="concurrentUploads">同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
         <div class="field-full"><label for="uploadFileIntervalSeconds">远端文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" aria-describedby="uploadFileIntervalHint" /><p class="muted field-hint" id="uploadFileIntervalHint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
         <div class="field-full"><label for="localCacheLimitGB">本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
+        <div class="field-full"><label for="onlineCoverCacheLimitMB">在线缩略图缓存上限 (MB，64-2048)</label><input id="onlineCoverCacheLimitMB" type="number" min="64" max="2048" step="1" /></div>
         <div class="field-full"><label for="queuePrefetchLimit">任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
         <div><label for="remoteVerifyConcurrency">远端对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
         <div><label for="remoteVerifyRateLimitPerSecond">远端对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
@@ -1218,6 +1233,60 @@ function getModals() {
         <div class="archive-library-detail-body" id="archiveLibraryDetailBody"></div>
       </aside>
     </section>
+  </div>
+  <div class="modal archive-library-modal" id="onlineContentModal" aria-labelledby="onlineContentDialogTitle">
+    <section class="online-content-shell" aria-labelledby="onlineContentTitle">
+      <aside class="online-content-sidebar">
+        <div class="archive-library-brand"><div><strong id="onlineContentDialogTitle">在线内容</strong><span>只在打开时读取 B 站</span></div>
+          <button id="closeOnlineContentBtn" class="archive-library-close" type="button" aria-label="关闭在线内容" title="关闭">×</button>
+        </div>
+        <nav class="archive-library-nav" id="onlineContentNav"></nav>
+      </aside>
+      <section class="online-content-main">
+        <div class="archive-library-topbar">
+          <button id="onlineContentMobileBackBtn" class="archive-library-mobile-back" type="button" aria-label="返回在线目录" title="返回">←</button>
+          <div class="archive-library-heading"><h2 id="onlineContentTitle">在线收藏夹</h2><span id="onlineContentSummary">0 项</span></div>
+          <button id="onlineContentRefreshBtn" class="archive-library-detail-close" type="button" aria-label="刷新当前分类" title="刷新">↻</button>
+          <button id="onlineContentCloseMainBtn" class="archive-library-detail-close" type="button" aria-label="关闭在线内容" title="关闭">×</button>
+        </div>
+        <div class="archive-library-toolbar">
+          <label class="archive-library-search"><span class="sr-only">搜索在线内容</span><input id="onlineContentSearchInput" type="search" maxlength="80" placeholder="搜索当前分类" /></label>
+        </div>
+        <div class="archive-library-results" id="onlineContentResults" tabindex="-1"><div class="archive-library-grid" id="onlineContentGrid"></div><div class="archive-library-footer" id="onlineContentFooter" aria-live="polite"></div></div>
+      </section>
+    </section>
+  </div>
+  <div class="modal" id="manualArchiveOptionsModal" aria-labelledby="manualArchiveOptionsTitle">
+    <div class="panel panel-medium manual-archive-options">
+      <h2 id="manualArchiveOptionsTitle">手动归档选项</h2>
+      <p id="manualArchiveOptionsVideo" class="muted">选择本次归档使用的 B 站画质和编码。</p>
+      <div class="option-grid">
+        <label for="manualArchiveQuality">画质档位
+          <select id="manualArchiveQuality">
+            <option value="">按默认偏好</option>
+            <option value="8K">8K</option>
+            <option value="4K">4K</option>
+            <option value="1080P60">1080P 60帧</option>
+            <option value="1080P">1080P</option>
+            <option value="720P">720P</option>
+          </select>
+        </label>
+        <label for="manualArchiveEncoding">编码
+          <select id="manualArchiveEncoding">
+            <option value="">按默认偏好</option>
+            <option value="HEVC">HEVC</option>
+            <option value="AVC">AVC</option>
+            <option value="AV1">AV1</option>
+          </select>
+        </label>
+      </div>
+      <div id="manualArchiveProbeResult" class="probe-result" aria-live="polite">默认偏好会允许正常回退。选择画质或编码后，可先探测可用组合和预计大小。</div>
+      <div class="row modal-actions">
+        <button id="manualArchiveProbeBtn" class="ghost" type="button">探测可用组合</button>
+        <button id="manualArchiveStartBtn" type="button">开始手动归档</button>
+        <button id="manualArchiveCancelBtn" class="ghost" type="button">取消</button>
+      </div>
+    </div>
   </div>
 
   <div class="modal" id="videoDetailModal" aria-labelledby="videoDetailTitle">
@@ -1713,6 +1782,33 @@ function getAppScript() {
     };
     let accountRemovalToken = 0;
     let accountRemovalState = { userId:null, preview:null, operationId:null, pollTimer:null, trigger:null, controller:null, token:0, loading:false };
+    let onlineContentState = {
+      navigation:null,
+      userId:null,
+      kind:'favorite',
+      mediaId:null,
+      title:'在线收藏夹',
+      query:'',
+      items:[],
+      page:0,
+      cursor:null,
+      hasMore:false,
+      loading:false,
+      token:0,
+      controller:null,
+      searchTimer:null,
+      navigationToken:0,
+      navigationController:null,
+      trigger:null
+    };
+    let manualArchiveState = {
+      item:null,
+      probeId:null,
+      probeController:null,
+      pollTimer:null,
+      token:0,
+      trigger:null
+    };
     const PLAYBACK_STORAGE_KEY = 'bfb-playback-v1';
     let artplayerLoader = null;
     let playbackState = {
@@ -2000,6 +2096,12 @@ function getAppScript() {
       if (modal.id === 'archiveLibraryModal') {
         cleanupArchiveLibrary();
       }
+      if (modal.id === 'onlineContentModal') {
+        cleanupOnlineContent();
+      }
+      if (modal.id === 'manualArchiveOptionsModal') {
+        cleanupManualArchiveOptions();
+      }
       if (modal.id === 'recoveryIssuesModal') {
         if (recoveryIssueState.controller) recoveryIssueState.controller.abort();
         recoveryIssueState.controller = null;
@@ -2246,6 +2348,7 @@ function getAppScript() {
       document.getElementById('concurrentUploads').value = d.concurrentUploads ?? 2;
       document.getElementById('uploadFileIntervalSeconds').value = d.uploadFileIntervalSeconds ?? 10;
       document.getElementById('localCacheLimitGB').value = d.localCacheLimitGB ?? 10;
+      document.getElementById('onlineCoverCacheLimitMB').value = d.onlineCoverCacheLimitMB ?? 256;
       document.getElementById('queuePrefetchLimit').value = d.queuePrefetchLimit ?? 25;
       document.getElementById('remoteVerifyConcurrency').value = d.remoteVerifyConcurrency ?? 3;
       document.getElementById('remoteVerifyRateLimitPerSecond').value = d.remoteVerifyRateLimitPerSecond ?? 2;
@@ -2315,6 +2418,7 @@ function getAppScript() {
         concurrentUploads: Number(document.getElementById('concurrentUploads').value),
         uploadFileIntervalSeconds: Number(document.getElementById('uploadFileIntervalSeconds').value),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value),
+        onlineCoverCacheLimitMB: Number(document.getElementById('onlineCoverCacheLimitMB').value),
         queuePrefetchLimit: Number(document.getElementById('queuePrefetchLimit').value),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value),
         remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value),
@@ -2544,6 +2648,7 @@ function getAppScript() {
         concurrentUploads: Number(document.getElementById('concurrentUploads').value || 2),
         uploadFileIntervalSeconds: Number(document.getElementById('uploadFileIntervalSeconds').value || 0),
         localCacheLimitGB: Number(document.getElementById('localCacheLimitGB').value || 0),
+        onlineCoverCacheLimitMB: Number(document.getElementById('onlineCoverCacheLimitMB').value || 256),
         queuePrefetchLimit: Number(document.getElementById('queuePrefetchLimit').value || 25),
         remoteVerifyConcurrency: Number(document.getElementById('remoteVerifyConcurrency').value || 3),
         remoteVerifyRateLimitPerSecond: Number(document.getElementById('remoteVerifyRateLimitPerSecond').value || 2),
@@ -2615,7 +2720,8 @@ function getAppScript() {
       'orphan-fragments': '清掉会话中已确认无效的 _invalid/_incompatible 内容，以及没有会话清单、无法确认来源的 aria2/tmp/vclip/aclip 等残片；不会删除已验证成品或可续传轨道。此项已包含在“全部临时下载文件”中。',
       logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
       'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
-      covers: '清掉本地压缩封面缓存。视频下架后可能只能显示占位封面，但备份状态不受影响。',
+      covers: '清掉永久归档封面。视频下架后可能只能显示占位封面；不会自动清理，必须输入 DELETE ARCHIVE COVERS。',
+      'online-covers': '清掉可重新下载的在线缩略图，不影响归档封面、视频和归档状态。',
       exports: '清掉已经生成过的数据迁移导出压缩包。不影响当前项目运行。',
       backups: '清掉导入前自动保存的本地备份包。导入回滚余地会少一点。',
       state: '清掉备份状态、收藏夹索引、远端文件记录和重试记录。项目会忘记自己备份过什么。',
@@ -2626,6 +2732,7 @@ function getAppScript() {
     function cleanupRequiredConfirmation(selected) {
       const all = cleanupState.items.length > 0 && cleanupState.items.every((item) => selected.includes(item.key));
       if (all) return 'DELETE ALL PROJECT DATA';
+      if (selected.length === 1 && selected[0] === 'covers') return 'DELETE ARCHIVE COVERS';
       if (cleanupState.items.some((item) => selected.includes(item.key) && item.important)) return 'DELETE';
       return '';
     }
@@ -2830,6 +2937,8 @@ function getAppScript() {
       setHidden(block, false);
       hint.textContent = required === 'DELETE ALL PROJECT DATA'
         ? '你选择了完全清除。请输入 DELETE ALL PROJECT DATA，小扫帚才会认真开工。'
+        : required === 'DELETE ARCHIVE COVERS'
+          ? '你选择了永久归档封面。请输入 DELETE ARCHIVE COVERS，确认允许重新回填封面。'
         : '你选择了重要数据。请输入 DELETE 确认，避免手滑把小仓库钥匙丢掉。';
       if (selected.includes('temp') && selected.includes('orphan-fragments')) {
         hint.textContent += ' 无法续传的残片已包含在全部临时下载文件中，不会重复清理。';
@@ -4023,6 +4132,312 @@ function getAppScript() {
       return labels[item.backupStatus] || (item.statusGroup === 'pending' ? '待处理' : '异常');
     }
 
+    // ---- Online content workspace ----
+    function cleanupOnlineContent() {
+      onlineContentState.token += 1;
+      if (onlineContentState.controller) onlineContentState.controller.abort();
+      onlineContentState.navigationToken += 1;
+      if (onlineContentState.navigationController) onlineContentState.navigationController.abort();
+      if (onlineContentState.searchTimer) clearTimeout(onlineContentState.searchTimer);
+      onlineContentState.controller = null;
+      onlineContentState.navigationController = null;
+      onlineContentState.searchTimer = null;
+      onlineContentState.loading = false;
+      cleanupManualArchiveOptions();
+    }
+
+    function cleanupManualArchiveOptions() {
+      manualArchiveState.token += 1;
+      if (manualArchiveState.probeController) manualArchiveState.probeController.abort();
+      if (manualArchiveState.pollTimer) clearTimeout(manualArchiveState.pollTimer);
+      manualArchiveState.probeController = null;
+      manualArchiveState.pollTimer = null;
+      manualArchiveState.probeId = null;
+      manualArchiveState.item = null;
+    }
+
+    function manualArchiveSelection() {
+      const quality = document.getElementById('manualArchiveQuality')?.value || '';
+      const encoding = document.getElementById('manualArchiveEncoding')?.value || '';
+      return { quality, encoding, strict: Boolean(quality || encoding) };
+    }
+
+    function setManualArchiveProbeMessage(message, isError = false) {
+      const host = document.getElementById('manualArchiveProbeResult');
+      if (!host) return;
+      host.classList.toggle('error', isError);
+      host.textContent = message;
+    }
+
+    function manualArchiveProbeSummary(result) {
+      if (!result || result.status === 'running') return '正在读取 B 站媒体组合，请稍候...';
+      if (result.status === 'failed') return result.error || '媒体探测失败；仍可严格尝试，但可能因源不存在而进入待处理。';
+      const pages = Array.isArray(result.pages) ? result.pages : [];
+      const combinations = Array.isArray(result.combinations) ? result.combinations : [];
+      const available = combinations.filter((item) => item.available);
+      const source = result.estimatedBytesSource === 'api'
+        ? '接口大小'
+        : result.estimatedBytesSource === 'bitrate_estimate' ? '码率估算'
+        : result.estimatedBytesSource === 'head' ? 'HEAD 精确大小'
+        : result.estimatedBytesSource === 'range' ? 'Range 精确大小'
+        : result.estimatedBytesSource === 'mixed' ? '混合来源' : '未知来源';
+      const bytes = Number(result.estimatedBytes || 0);
+      const sizeLabel = result.estimatedBytesKind === 'final' ? '预计成品' : '预计视频流';
+      const size = bytes > 0 ? ' · ' + sizeLabel + ' ' + formatBytes(bytes) + '（' + source + '）' : '';
+      const peak = Number(result.estimatedPeakBytes || 0) > 0 ? ' · 本地峰值约 ' + formatBytes(result.estimatedPeakBytes) : '';
+      const availableBytes = Number(result.cacheAvailableBytes);
+      const hasAvailable = Number.isFinite(availableBytes) && availableBytes >= 0;
+      const availableText = hasAvailable ? ' · 缓存可用 ' + formatBytes(availableBytes) : '';
+      const warning = hasAvailable && Number(result.estimatedPeakBytes || 0) > availableBytes ? ' · 空间可能不足' : '';
+      const legacy = result.estimatedBytesKind === 'video_only' ? ' · 当前BBDown未提供音频大小' : '';
+      return '已探测 ' + pages.length + ' 个分P · 可用组合 ' + available.length + '/' + combinations.length + size + peak + availableText + warning + legacy;
+    }
+
+    async function pollManualArchiveProbe(probeId, token) {
+      if (token !== manualArchiveState.token) return;
+      try {
+        const result = await fetchJsonSilent('/api/media-probe/' + encodeURIComponent(probeId), { signal:manualArchiveState.probeController?.signal });
+        if (token !== manualArchiveState.token) return;
+        setManualArchiveProbeMessage(manualArchiveProbeSummary(result), result.status === 'failed');
+        if (result.status === 'running') {
+          manualArchiveState.pollTimer = setTimeout(() => void pollManualArchiveProbe(probeId, token), 700);
+        } else {
+          manualArchiveState.probeController = null;
+          manualArchiveState.pollTimer = null;
+        }
+      } catch (error) {
+        if (error?.name !== 'AbortError' && token === manualArchiveState.token) setManualArchiveProbeMessage(error?.message || '探测状态读取失败', true);
+      }
+    }
+
+    async function startManualArchiveProbe() {
+      const item = manualArchiveState.item;
+      if (!item?.bvid || !onlineContentState.userId) return;
+      if (manualArchiveState.probeController) manualArchiveState.probeController.abort();
+      const controller = new AbortController();
+      const token = ++manualArchiveState.token;
+      manualArchiveState.probeController = controller;
+      const selection = manualArchiveSelection();
+      const button = document.getElementById('manualArchiveProbeBtn');
+      if (button) button.disabled = true;
+      setManualArchiveProbeMessage('正在启动媒体探测...');
+      try {
+        const started = await fetchJsonSilent('/api/media-probe', {
+          method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
+          body:JSON.stringify({ userId:onlineContentState.userId, bvid:item.bvid, quality:selection.quality || undefined, encoding:selection.encoding || undefined, strict:selection.strict })
+        });
+        if (token !== manualArchiveState.token) return;
+        manualArchiveState.probeId = started.probeId;
+        await pollManualArchiveProbe(started.probeId, token);
+      } catch (error) {
+        if (error?.name !== 'AbortError' && token === manualArchiveState.token) setManualArchiveProbeMessage(error?.message || '媒体探测失败', true);
+      } finally {
+        if (token === manualArchiveState.token && button) button.disabled = false;
+      }
+    }
+
+    function openManualArchiveOptions(item, trigger) {
+      cleanupManualArchiveOptions();
+      manualArchiveState.item = item;
+      manualArchiveState.trigger = trigger;
+      document.getElementById('manualArchiveOptionsVideo').textContent = (item.title || item.bvid || '在线条目') + (item.bvid ? ' · ' + item.bvid : '');
+      document.getElementById('manualArchiveQuality').value = '';
+      document.getElementById('manualArchiveEncoding').value = '';
+      setManualArchiveProbeMessage('默认偏好会允许正常回退。选择画质或编码后，可先探测可用组合和预计大小。');
+      openModal('manualArchiveOptionsModal', trigger);
+    }
+
+    async function startManualArchive() {
+      const item = manualArchiveState.item;
+      if (!item?.bvid || !onlineContentState.userId) return;
+      const selection = manualArchiveSelection();
+      const button = document.getElementById('manualArchiveStartBtn');
+      if (button) button.disabled = true;
+      try {
+        const result = await fetchJson('/api/online-content/manual-archive', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ userId:onlineContentState.userId, token:item.coverToken, quality:selection.quality || undefined, encoding:selection.encoding || undefined, strict:selection.strict })
+        });
+        item.archiveState = result.status === 'already_archived' ? 'archived' : 'processing';
+        closeModal('manualArchiveOptionsModal');
+        renderOnlineCards(false);
+        setStatus('onlineContentFooter', item.archiveState === 'archived' ? '该视频已经在归档库中。' : '已进入手动归档队列。', 'success');
+      } catch (error) {
+        if (button) button.disabled = false;
+      }
+    }
+
+    function onlineContentCurrent(token) {
+      return token === onlineContentState.token && document.getElementById('onlineContentModal')?.classList.contains('active');
+    }
+
+    function renderOnlineNavigation() {
+      const host = document.getElementById('onlineContentNav');
+      if (!host) return;
+      host.replaceChildren();
+      const accounts = onlineContentState.navigation?.accounts || [];
+      if (!accounts.length) { host.textContent = '暂无可用账号'; return; }
+      accounts.forEach((account) => {
+        const group = document.createElement('div');
+        group.className = 'archive-nav-group';
+        const heading = document.createElement('div');
+        heading.className = 'archive-nav-group-title';
+        heading.textContent = safeText(account.name, account.userId);
+        group.appendChild(heading);
+        (account.sources || []).forEach((source) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'archive-nav-item';
+          button.innerHTML = '<strong>' + escapeHtml(source.title || '在线内容') + '</strong><span>打开时加载</span>';
+          button.addEventListener('click', () => selectOnlineSource({ userId:account.userId, kind:source.kind, mediaId:source.mediaId || null, title:source.title }));
+          group.appendChild(button);
+        });
+        host.appendChild(group);
+      });
+    }
+
+    function renderOnlineCards(append) {
+      const grid = document.getElementById('onlineContentGrid');
+      if (!grid) return;
+      if (!append) grid.replaceChildren();
+      const existing = new Set(Array.from(grid.children).map((node) => node.dataset.onlineId));
+      onlineContentState.items.forEach((item) => {
+        if (existing.has(item.id)) return;
+        const card = document.createElement('article');
+        card.className = 'archive-library-card online-content-card';
+        card.dataset.onlineId = item.id;
+        const cover = document.createElement('div');
+        cover.className = 'archive-library-cover';
+        if (item.coverUrl) {
+          const image = document.createElement('img');
+          image.src = item.coverUrl;
+          image.alt = '';
+          image.loading = 'lazy';
+          image.referrerPolicy = 'same-origin';
+          image.addEventListener('error', () => { image.remove(); cover.insertAdjacentHTML('beforeend','<span class="archive-library-placeholder">B</span>'); }, { once:true });
+          cover.appendChild(image);
+        } else cover.innerHTML = '<span class="archive-library-placeholder">B</span>';
+        const copy = document.createElement('div');
+        copy.className = 'archive-library-card-copy';
+        const title = document.createElement('div');
+        title.className = 'archive-library-title';
+        title.textContent = safeText(item.title, '未命名条目');
+        copy.appendChild(title);
+        const meta = document.createElement('div');
+        meta.className = 'archive-library-meta';
+        meta.textContent = [item.upperName || '未知UP主', item.bvid || '非视频条目'].join(' · ');
+        copy.appendChild(meta);
+        const status = document.createElement('span');
+        status.className = 'archive-library-status ' + (item.archiveState === 'archived' ? 'playable' : item.archiveState === 'processing' ? 'pending' : 'issue');
+        status.textContent = item.archiveState === 'archived' ? '已归档' : item.archiveState === 'processing' ? '处理中' : item.archiveState === 'unavailable' ? '不可归档' : '未归档';
+        copy.appendChild(status);
+        const actions = document.createElement('div');
+        actions.className = 'archive-library-source-actions';
+        if (item.bvid && item.archiveState === 'unarchived') {
+          const archiveButton = document.createElement('button');
+          archiveButton.type = 'button';
+          archiveButton.textContent = '手动归档';
+          archiveButton.addEventListener('click', () => openManualArchiveOptions(item, archiveButton));
+          actions.appendChild(archiveButton);
+        }
+        if (item.bvid || item.openUrl) {
+          const openButton = document.createElement('button');
+          openButton.type = 'button';
+          openButton.textContent = item.archiveState === 'archived' && item.bvid ? '打开归档库' : '打开 B 站';
+          openButton.addEventListener('click', () => {
+            if (item.archiveState === 'archived' && item.bvid) { closeModal('onlineContentModal'); openArchiveLibrary(null); return; }
+            if (item.openUrl) window.open(item.openUrl, '_blank', 'noopener,noreferrer');
+          });
+          actions.appendChild(openButton);
+        }
+        copy.appendChild(actions);
+        card.append(cover, copy);
+        grid.appendChild(card);
+      });
+      document.getElementById('onlineContentSummary').textContent = onlineContentState.items.length + ' 项';
+    }
+
+    async function loadOnlineContentItems(append = false) {
+      if (!onlineContentState.userId || onlineContentState.loading || (append && !onlineContentState.hasMore)) return;
+      onlineContentState.loading = true;
+      const token = ++onlineContentState.token;
+      if (onlineContentState.controller) onlineContentState.controller.abort();
+      const controller = new AbortController();
+      onlineContentState.controller = controller;
+      const requestedPage = append ? onlineContentState.page + 1 : 1;
+      const params = new URLSearchParams({ userId:onlineContentState.userId, kind:onlineContentState.kind, pageSize:'50', page:String(requestedPage) });
+      if (onlineContentState.mediaId) params.set('mediaId', String(onlineContentState.mediaId));
+      if (onlineContentState.query) params.set('q', onlineContentState.query);
+      if (append && onlineContentState.cursor) params.set('cursor', onlineContentState.cursor);
+      try {
+        const data = await fetchJson('/api/online-content/items?' + params.toString(), { signal:controller.signal });
+        if (!onlineContentCurrent(token)) return;
+        const incoming = data.items || data.page?.items || [];
+        onlineContentState.items = append ? onlineContentState.items.concat(incoming) : incoming;
+        onlineContentState.page = Number(data.page?.page || requestedPage);
+        onlineContentState.cursor = data.page?.nextCursor || data.nextCursor || null;
+        onlineContentState.hasMore = Boolean(data.page?.hasMore ?? data.hasMore);
+        renderOnlineCards(append);
+        document.getElementById('onlineContentFooter').textContent = onlineContentState.hasMore ? '继续滚动加载更多' : (onlineContentState.items.length ? '已加载全部' : '当前分类没有内容');
+      } catch (error) {
+        if (error?.name !== 'AbortError' && onlineContentCurrent(token)) setStatus('onlineContentFooter', error?.message || '在线内容读取失败', 'error');
+      } finally {
+        if (onlineContentState.controller === controller) onlineContentState.controller = null;
+        if (onlineContentCurrent(token)) onlineContentState.loading = false;
+      }
+    }
+
+    async function selectOnlineSource(context) {
+      cleanupOnlineContent();
+      onlineContentState.userId = context.userId;
+      onlineContentState.kind = context.kind;
+      onlineContentState.mediaId = context.mediaId || null;
+      onlineContentState.title = context.title || '在线内容';
+      onlineContentState.query = '';
+      onlineContentState.items = [];
+      onlineContentState.page = 0;
+      onlineContentState.cursor = null;
+      onlineContentState.hasMore = false;
+      document.getElementById('onlineContentTitle').textContent = onlineContentState.title;
+      document.getElementById('onlineContentSearchInput').value = '';
+      document.querySelector('.online-content-shell').classList.add('show-content');
+      syncOnlineContentPanels();
+      await loadOnlineContentItems(false);
+    }
+
+    function syncOnlineContentPanels() {
+      const shell = document.querySelector('.online-content-shell');
+      const sidebar = shell?.querySelector('.online-content-sidebar');
+      const main = shell?.querySelector('.online-content-main');
+      if (!isArchiveLibraryMobileLayout()) { setArchiveLibraryLayerAvailability(sidebar, true); setArchiveLibraryLayerAvailability(main, true); return; }
+      const show = Boolean(shell?.classList.contains('show-content'));
+      setArchiveLibraryLayerAvailability(sidebar, !show);
+      setArchiveLibraryLayerAvailability(main, show);
+    }
+
+    async function openOnlineContent(trigger) {
+      openModal('onlineContentModal', trigger);
+      cleanupOnlineContent();
+      const navigationToken = ++onlineContentState.navigationToken;
+      const navigationController = new AbortController();
+      onlineContentState.navigationController = navigationController;
+      try {
+        onlineContentState.navigation = await fetchJson('/api/online-content/navigation', { signal:navigationController.signal });
+        if (navigationToken !== onlineContentState.navigationToken || !document.getElementById('onlineContentModal').classList.contains('active')) return;
+        renderOnlineNavigation();
+        const firstAccount = onlineContentState.navigation?.accounts?.[0];
+        const first = firstAccount?.sources?.[0];
+        if (first) await selectOnlineSource({ userId:firstAccount.userId, kind:first.kind, mediaId:first.mediaId, title:first.title });
+      } catch (error) {
+        if (error?.name !== 'AbortError' && navigationToken === onlineContentState.navigationToken) {
+          setStatus('onlineContentFooter', error?.message || '在线目录读取失败', 'error');
+        }
+      } finally {
+        if (onlineContentState.navigationController === navigationController) onlineContentState.navigationController = null;
+      }
+    }
+
+    document.getElementById('archiveMembershipTextPlaceholder')?.remove();
     function archiveMembershipText(item) {
       const labels = (item.memberships || []).map((membership) => safeText(membership.folderTitle, '收藏夹'));
       const more = Math.max(0, Number(item.membershipCount || 0) - labels.length);
@@ -7173,6 +7588,11 @@ function getAppScript() {
           strict: selected.strict,
         };
       }
+      if (action.id === 'retry_quality_with_quality' || action.id === 'redownload_with_quality') {
+        const selectedQuality = await openRecoveryChoiceDialog(action, trigger);
+        if (!selectedQuality) return;
+        actionBody = { quality: selectedQuality };
+      }
       if (action.id === 'retry_download_with_account') {
         const userId = await openRecoveryChoiceDialog(action, trigger);
         if (!userId) return;
@@ -7359,6 +7779,10 @@ function getAppScript() {
         ['问题类型', recoveryIssueTypeLabel(issue)],
         ['最近复核', issue.checkedAt ? formatDateTime(issue.checkedAt) : '尚未复核'],
         ['下次自动复核', issue.nextAutomaticCheckAt ? formatDateTime(issue.nextAutomaticCheckAt) : '按需复核'],
+        ...(issue.requestedQuality ? [['请求画质', issue.requestedQuality + (issue.qualityMismatch ? '（未满足）' : '')]] : []),
+        ...(issue.actualQualities?.length ? [['实际画质', issue.actualQualities.join('、')]] : []),
+        ...(issue.requestedEncoding ? [['请求编码', issue.requestedEncoding + (issue.encodingMismatch ? '（未满足）' : '')]] : []),
+        ...(issue.actualEncodings?.length ? [['实际编码', issue.actualEncodings.join('、')]] : []),
         ['文件', issue.fileName || '未指定'],
         ['期望大小', Number.isFinite(Number(issue.expectedSize)) ? formatBytes(Number(issue.expectedSize)) : '未知'],
         ['远端大小', Number.isFinite(Number(issue.observedSize)) ? formatBytes(Number(issue.observedSize)) : '未知'],
@@ -8100,6 +8524,38 @@ function getAppScript() {
     document.getElementById('closeVideoDetailBtn').addEventListener('click', () => closeModal('videoDetailModal'));
     document.getElementById('archiveLibraryBtn').addEventListener('click', (event) => openArchiveLibrary(event.currentTarget));
     document.getElementById('closeArchiveLibraryBtn').addEventListener('click', () => closeModal('archiveLibraryModal'));
+    document.getElementById('onlineContentBtn').addEventListener('click', (event) => void openOnlineContent(event.currentTarget));
+    document.getElementById('closeOnlineContentBtn').addEventListener('click', () => { cleanupOnlineContent(); closeModal('onlineContentModal'); });
+    document.getElementById('onlineContentCloseMainBtn').addEventListener('click', () => { cleanupOnlineContent(); closeModal('onlineContentModal'); });
+    document.getElementById('manualArchiveProbeBtn').addEventListener('click', () => void startManualArchiveProbe());
+    document.getElementById('manualArchiveStartBtn').addEventListener('click', () => void startManualArchive());
+    document.getElementById('manualArchiveCancelBtn').addEventListener('click', () => closeModal('manualArchiveOptionsModal'));
+    document.getElementById('onlineContentMobileBackBtn').addEventListener('click', () => {
+      document.querySelector('.online-content-shell')?.classList.remove('show-content');
+      syncOnlineContentPanels();
+      document.getElementById('onlineContentNav')?.querySelector('button')?.focus({ preventScroll:true });
+    });
+    document.getElementById('onlineContentRefreshBtn').addEventListener('click', () => { onlineContentState.items = []; onlineContentState.page = 0; onlineContentState.cursor = null; onlineContentState.hasMore = true; void loadOnlineContentItems(false); });
+    document.getElementById('onlineContentSearchInput').addEventListener('input', (event) => {
+      const value = String(event.target.value || '').trim().slice(0, 80);
+      if (onlineContentState.searchTimer) clearTimeout(onlineContentState.searchTimer);
+      const searchToken = onlineContentState.token;
+      onlineContentState.searchTimer = setTimeout(() => {
+        onlineContentState.searchTimer = null;
+        if (searchToken !== onlineContentState.token || !document.getElementById('onlineContentModal')?.classList.contains('active')) return;
+        onlineContentState.query = value;
+        onlineContentState.items = [];
+        onlineContentState.page = 0;
+        onlineContentState.cursor = null;
+        onlineContentState.hasMore = true;
+        void loadOnlineContentItems(false);
+      }, 300);
+    });
+    document.getElementById('onlineContentResults').addEventListener('scroll', (event) => {
+      const node = event.currentTarget;
+      if (node.scrollTop + node.clientHeight >= node.scrollHeight - 500) void loadOnlineContentItems(true);
+    });
+    archiveLibraryLayoutMedia.addEventListener('change', syncOnlineContentPanels);
     document.getElementById('archiveLibraryMobileBackBtn').addEventListener('click', () => {
       saveArchiveLibraryScroll();
       closeArchiveLibraryDetail({ restoreFocus:false });

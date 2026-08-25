@@ -18,6 +18,11 @@ export function classifyDownloadRecoveryFailure(error: any): DownloadFailureAsse
   const message = safeMessage(error);
   const code = String(error?.code || error?.cause?.code || "").toUpperCase();
 
+  if (Boolean(error?.encodingValidation)
+    || ["BFB_ENCODING_SELECTED_MISMATCH", "BFB_ENCODING_MISMATCH", "BFB_ENCODING_UNVERIFIED"].includes(code)) {
+    return { category: "tool", kind: "download_tool_failure", recoverable: true, summary: message };
+  }
+
   if (explicit === "source_unavailable"
     || code === "BILI_VIDEO_UNAVAILABLE"
     || /video is unavailable|视频不存在|稿件不可见|已失效|资源不可用|已删除|下架/i.test(message)) {

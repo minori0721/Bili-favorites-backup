@@ -1,4 +1,4 @@
-import { Client, Auth, TvQrcodeLogin } from "@renmu/bili-api";
+import { Client, Auth, TvQrcodeLogin, utils } from "@renmu/bili-api";
 import { BiliCookie, biliWebCookieValues } from "./users.js";
 import { delay } from "./utils.js";
 import { safeErrorSummary } from "./diagnostics.js";
@@ -36,6 +36,33 @@ export interface FavoriteItemsPage {
   total?: number;
 }
 
+export type OnlineContentKind = "favorite" | "collected" | "bangumi" | "drama" | "watch_later" | "history";
+
+export interface OnlineContentItem {
+  id: string;
+  kind: OnlineContentKind;
+  bvid?: string;
+  title: string;
+  upperName?: string;
+  upperMid?: number;
+  cover?: string;
+  duration?: number;
+  publishedAt?: number;
+  playable: boolean;
+  openUrl?: string;
+  rawType?: string;
+}
+
+export interface OnlineContentPage {
+  items: OnlineContentItem[];
+  kind: OnlineContentKind;
+  page: number;
+  pageSize: number;
+  nextCursor?: string;
+  hasMore: boolean;
+  total?: number;
+}
+
 export class BiliRiskOrLoginError extends Error {
   constructor(message: string) {
     super(message);
@@ -59,6 +86,198 @@ function createBiliClient(cookie: BiliCookie, uid: number, accessToken?: string)
     accessToken || undefined
   );
   return new Client(auth);
+}
+
+async function requestBiliJson(cookie: BiliCookie, url: string, referer = "https://www.bilibili.com/") {
+  const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
+  let responseBody: unknown;
+  try {
+    responseBody = await client.video.request.get(url, {
+      headers: { referer },
+      extra: { rawResponse: true },
+    });
+  } catch (error: any) {
+    const statusCode = Number(error?.statusCode || error?.response?.status || 0);
+    const message = String(error?.message || error);
+    if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(0, message)) {
+      throw new BiliRiskOrLoginError(`Bili API error (status ${statusCode || "unknown"})`);
+    }
+    throw error;
+  }
+  const envelope = (responseBody as Record<string, any>)?.data ?? {};
+  const apiCode = Number(envelope?.code ?? 0);
+  if (apiCode !== 0) {
+    const message = String(envelope?.message || `Bili API returned code ${apiCode}`);
+    if (isRiskOrLoginApiError(apiCode, message)) throw new BiliRiskOrLoginError(`Bili API code ${apiCode}`);
+    throw new Error(message);
+  }
+  return envelope?.data ?? envelope;
+}
+
+function onlineItemFromRaw(raw: any, kind: OnlineContentKind, index: number): OnlineContentItem | null {
+  const archive = raw?.arc || raw?.archive || raw?.history || raw?.video || raw;
+  const bvid = String(raw?.bvid || archive?.bvid || "").trim() || undefined;
+  const stableId = raw?.season_id || raw?.seasonId || raw?.ep_id || raw?.epid || raw?.id || raw?.aid;
+  const id = String(bvid || stableId || `${kind}-${index}`).trim();
+  const title = String(raw?.title || archive?.title || raw?.show_name || raw?.season_title || raw?.name || id).trim();
+  const cover = String(raw?.pic || raw?.cover || archive?.pic || archive?.cover || raw?.season?.cover || raw?.ogv_info?.cover || "").trim() || undefined;
+  const upper = raw?.owner || archive?.owner || raw?.upper || {};
+  const upperName = String(upper?.name || raw?.author || raw?.up_name || "").trim() || undefined;
+  const upperMid = Number(upper?.mid || raw?.mid || raw?.up_mid || 0) || undefined;
+  const duration = Number(raw?.duration || archive?.duration || 0) || undefined;
+  const publishedAt = Number(raw?.pubdate || archive?.pubdate || raw?.ctime || 0) > 0
+    ? Number(raw?.pubdate || archive?.pubdate || raw?.ctime) * 1000
+    : undefined;
+  const seasonId = Number(raw?.season_id || raw?.seasonId || raw?.season?.season_id || 0);
+  const episodeId = Number(raw?.ep_id || raw?.epid || raw?.episode_id || 0);
+  const collectionId = Number(raw?.id || raw?.season_id || 0);
+  const collectionMid = Number(raw?.mid || raw?.upper?.mid || raw?.owner?.mid || 0);
+  const rawUrl = String(raw?.uri || raw?.url || raw?.link || "").trim();
+  let openUrl: string | undefined;
+  if (bvid) {
+    openUrl = `https://www.bilibili.com/video/${encodeURIComponent(bvid)}`;
+  } else if ((kind === "bangumi" || kind === "drama") && episodeId > 0) {
+    openUrl = `https://www.bilibili.com/bangumi/play/ep${episodeId}`;
+  } else if ((kind === "bangumi" || kind === "drama") && seasonId > 0) {
+    openUrl = `https://www.bilibili.com/bangumi/play/ss${seasonId}`;
+  } else if (kind === "collected" && collectionId > 0 && collectionMid > 0) {
+    openUrl = `https://space.bilibili.com/${collectionMid}/lists/${collectionId}?type=season`;
+  } else {
+    try {
+      const candidate = new URL(rawUrl);
+      if (candidate.protocol === "https:" && ["bilibili.com", "www.bilibili.com", "space.bilibili.com", "m.bilibili.com"].includes(candidate.hostname)) {
+        candidate.username = "";
+        candidate.password = "";
+        openUrl = candidate.toString();
+      }
+    } catch {
+      openUrl = undefined;
+    }
+  }
+  return {
+    id,
+    kind,
+    bvid,
+    title: title || id,
+    upperName,
+    upperMid,
+    cover,
+    duration,
+    publishedAt,
+    playable: Boolean(bvid),
+    openUrl,
+    rawType: String(raw?.business || raw?.type || kind),
+  };
+}
+
+async function signedQuery(params: URLSearchParams) {
+  return utils.WbiSign(Object.fromEntries(params.entries()));
+}
+
+function encodeHistoryCursor(cursor: Record<string, unknown>) {
+  return Buffer.from(JSON.stringify({
+    max: Number(cursor.max || 0) || 0,
+    viewAt: Number(cursor.view_at ?? cursor.viewAt ?? 0) || 0,
+    business: String(cursor.business || "all"),
+  }), "utf8").toString("base64url");
+}
+
+function decodeHistoryCursor(value: string | undefined) {
+  if (!value) return { max: 0, view_at: 0, business: "all" };
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid history cursor");
+    return {
+      max: Number((parsed as any).max || 0) || 0,
+      view_at: Number((parsed as any).viewAt ?? (parsed as any).view_at ?? 0) || 0,
+      business: String((parsed as any).business || "all").slice(0, 32),
+    };
+  } catch {
+    throw new Error("在线历史游标无效，请重新加载");
+  }
+}
+
+function onlineArray(data: any) {
+  const candidates = [data?.medias, data?.list, data?.items, data?.archives, data?.result, data?.history, data?.data?.list];
+  return candidates.find((value) => Array.isArray(value)) || [];
+}
+
+export async function listOnlineContentPage(
+  cookie: BiliCookie,
+  kind: OnlineContentKind,
+  options: { mediaId?: number; page?: number; pageSize?: number; cursor?: string; query?: string } = {}
+): Promise<OnlineContentPage> {
+  const page = Math.max(1, Math.floor(Number(options.page || 1)));
+  const pageSize = Math.min(50, Math.max(1, Math.floor(Number(options.pageSize || 50))));
+  if (kind === "favorite") {
+    if (!Number.isInteger(options.mediaId) || Number(options.mediaId) < 1) throw new Error("favorite mediaId is required");
+    const result = await listFavoriteItemsPage(cookie, Number(options.mediaId), page, pageSize);
+    return {
+      items: result.items.map((item) => ({
+        id: item.bvid,
+        kind,
+        bvid: item.bvid,
+        title: item.title,
+        upperName: item.upperName,
+        upperMid: item.upperMid,
+        cover: item.cover,
+        playable: true,
+      })),
+      kind,
+      page,
+      pageSize,
+      hasMore: result.hasMore,
+      total: result.total,
+    };
+  }
+  const uid = Number(cookie.DedeUserID || 0);
+  const params = new URLSearchParams({ pn: String(page), ps: String(pageSize), web_location: "333.1387" });
+  let url: string;
+  if (kind === "collected") {
+    params.set("up_mid", String(uid));
+    params.set("platform", "web");
+    url = `https://api.bilibili.com/x/v3/fav/folder/collected/list?${params}`;
+  } else if (kind === "bangumi" || kind === "drama") {
+    params.set("vmid", String(uid));
+    params.set("type", kind === "bangumi" ? "1" : "2");
+    params.set("follow_status", "0");
+    url = `https://api.bilibili.com/x/space/bangumi/follow/list?${await signedQuery(params)}`;
+  } else if (kind === "watch_later") {
+    params.set("viewed", "0");
+    params.set("asc", "0");
+    params.set("need_split", "1");
+    url = `https://api.bilibili.com/x/v2/history/toview/web?${await signedQuery(params)}`;
+  } else {
+    if (options.query?.trim()) {
+      params.set("keyword", options.query.trim());
+      params.set("business", "archive");
+      params.set("add_time_start", "0");
+      params.set("add_time_end", "0");
+      params.set("arc_max_duration", "0");
+      params.set("arc_min_duration", "0");
+      params.set("device_type", "0");
+      params.set("web_location", "333.1391");
+      url = `https://api.bilibili.com/x/web-interface/history/search?${params}`;
+    } else {
+      const cursor = decodeHistoryCursor(options.cursor);
+      params.set("max", String(cursor.max));
+      params.set("view_at", String(cursor.view_at));
+      params.set("business", cursor.business);
+      url = `https://api.bilibili.com/x/web-interface/history/cursor?${params}`;
+    }
+  }
+  const data = await requestBiliJson(cookie, url);
+  const rawItems = onlineArray(data);
+  const items = rawItems.map((raw: any, index: number) => onlineItemFromRaw(raw, kind, index)).filter((item): item is OnlineContentItem => Boolean(item));
+  const total = Number(data?.total || data?.info?.media_count || data?.page?.count || 0) || undefined;
+  const nextCursor = data?.cursor && typeof data.cursor === "object"
+    ? encodeHistoryCursor(data.cursor)
+    : String(data?.next_cursor ?? data?.cursor?.next ?? "").trim() || undefined;
+  const explicitHasMore = data?.has_more ?? data?.hasMore;
+  const hasMore = typeof explicitHasMore === "boolean" || typeof explicitHasMore === "number"
+    ? Boolean(explicitHasMore)
+    : Boolean(nextCursor) || (total ? page * pageSize < total : items.length >= pageSize);
+  return { items, kind, page, pageSize, nextCursor, hasMore, total };
 }
 
 export interface NormalizedTvAuth {

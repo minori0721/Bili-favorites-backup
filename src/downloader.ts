@@ -4,15 +4,20 @@ import { spawn } from "node:child_process";
 import { tempDir } from "./paths.js";
 import { createBBDownCredentialDirectory } from "./credential-temp.js";
 import { buildCookieString, BiliCookie } from "./users.js";
-import { AppConfig, DEFAULT_BBDOWN_ENCODING_PRIORITY, type BBDownApiMode } from "./config.js";
+import { AppConfig, DEFAULT_BBDOWN_ENCODING_PRIORITY, type BBDownApiMode, type BBDownEncoding } from "./config.js";
 import { createBBDownSelectionTracker, logManager, parseBBDownOutput, type BBDownSelectedVideoSelection } from "./logger.js";
+import { normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import { createDebugLogPath, writeDebugLogAtomic } from "./debug-log-retention.js";
 import {
   buildSelectPageArgument,
+  assessStrictEncoding,
+  assessStrictQuality,
   currentSessionFiles,
+  createStrictEncodingValidationError,
+  StrictQualityValidationError,
   findLegacyCover,
   markDownloadSessionStatus,
   prepareDownloadSession,
@@ -119,6 +124,285 @@ export interface WindowsTaskkillResult {
   error?: string;
 }
 
+export interface BBDownProbeTrack {
+  bilibiliQuality?: string;
+  codec?: string;
+  resolution?: string;
+  frameRate?: string | number;
+  bitrateKbps?: number;
+  estimatedBytes?: number;
+  sizeSource?: BBDownProbeSizeSource;
+}
+
+export type BBDownProbeSizeSource = "api" | "bitrate_estimate" | "head" | "range" | "unknown";
+
+export interface BBDownProbeAudio {
+  codec?: string;
+  bitrateKbps?: number;
+  estimatedBytes?: number;
+  sizeSource?: BBDownProbeSizeSource;
+}
+
+export interface BBDownProbeTarget {
+  quality?: string;
+  encoding?: "HEVC" | "AVC" | "AV1";
+}
+
+export interface BBDownProbeOptions {
+  command?: string;
+  commandArgsPrefix?: string[];
+  timeoutMs?: number;
+  target?: BBDownProbeTarget;
+}
+
+export interface BBDownProbePage {
+  version: number;
+  bvid: string;
+  cid: string;
+  pageIndex: number;
+  pageTitle: string;
+  publishedAt?: number;
+  durationSeconds?: number;
+  api?: string;
+  /** Protocol v2. Missing means a v1 producer; null means the page has no audio track. */
+  selectedAudio?: BBDownProbeAudio | null;
+  tracks: BBDownProbeTrack[];
+}
+
+const MAX_BBDOWN_PROBE_OUTPUT_BYTES = 4 * 1024 * 1024;
+const supportedProbeVersions = new Set([1, 2]);
+const supportedProbeSizeSources = new Set<BBDownProbeSizeSource>(["api", "bitrate_estimate", "head", "range", "unknown"]);
+
+interface BBDownSelectionTarget {
+  quality?: string;
+  encoding?: BBDownEncoding;
+}
+
+export function buildBBDownTrackSelectionArgs(config: AppConfig, target?: BBDownSelectionTarget) {
+  const targetConfig: AppConfig = {
+    ...config,
+    ...(target?.quality ? { bbdownQuality: target.quality } : {}),
+    ...(target?.encoding ? { bbdownEncoding: target.encoding } : {}),
+  };
+  const encodingPriority = buildEncodingPriority(targetConfig);
+  const dfnPriority = buildDfnPriority(targetConfig);
+  const encodingArgs = encodingPriority ? ["--encoding-priority", encodingPriority] : [];
+  const qualityArgs = dfnPriority ? ["--dfn-priority", dfnPriority] : [];
+
+  // Exact-quality work must not lose to the global codec preference. Ordinary
+  // downloads intentionally retain BFB's user-configured codec-first policy.
+  return target?.quality
+    ? [...qualityArgs, ...encodingArgs]
+    : [...encodingArgs, ...qualityArgs];
+}
+
+export function buildBBDownProbeArgs(
+  bvid: string,
+  credentialPath: string,
+  probeDir: string,
+  config: AppConfig,
+  target?: BBDownProbeTarget,
+) {
+  const args = [
+    `https://www.bilibili.com/video/${bvid}`,
+    "--config-file", credentialPath,
+    "--work-dir", probeDir,
+    "--only-show-info",
+    "--hide-streams",
+    "--bfb-probe-json",
+  ];
+  args.push(...buildBBDownTrackSelectionArgs(config, target));
+  if (target?.quality) args.push("--bfb-probe-quality", target.quality);
+  if (target?.encoding) args.push("--bfb-probe-encoding", target.encoding);
+  if (config.bbdownApiMode === "app") args.push("-app");
+  return args;
+}
+
+function validProbeNumber(value: unknown, integer = false) {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= Number.MAX_SAFE_INTEGER
+    && (!integer || Number.isInteger(value));
+}
+
+function validOptionalProbeNumber(value: unknown, integer = false) {
+  return value === undefined || value === null || validProbeNumber(value, integer);
+}
+
+function validProbeString(value: unknown, maxLength = 256) {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength;
+}
+
+function validProbeSizeSource(value: unknown) {
+  return value === undefined || supportedProbeSizeSources.has(value as BBDownProbeSizeSource);
+}
+
+function validProbeTrack(value: unknown): value is BBDownProbeTrack {
+  if (!value || typeof value !== "object") return false;
+  const track = value as BBDownProbeTrack;
+  return validProbeString(track.bilibiliQuality, 128)
+    && validProbeString(track.codec, 64)
+    && (track.resolution === undefined || validProbeString(track.resolution, 64))
+    && (track.frameRate === undefined
+      || validProbeString(track.frameRate, 64)
+      || validProbeNumber(track.frameRate))
+    && validOptionalProbeNumber(track.bitrateKbps)
+    && validOptionalProbeNumber(track.estimatedBytes, true)
+    && validProbeSizeSource(track.sizeSource);
+}
+
+function validProbeAudio(value: unknown) {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "object") return false;
+  const audio = value as BBDownProbeAudio;
+  return validProbeString(audio.codec, 64)
+    && validOptionalProbeNumber(audio.bitrateKbps)
+    && validOptionalProbeNumber(audio.estimatedBytes, true)
+    && validProbeSizeSource(audio.sizeSource);
+}
+
+function validProbePage(value: unknown, expectedBvid?: string): value is BBDownProbePage {
+  if (!value || typeof value !== "object") return false;
+  const page = value as BBDownProbePage;
+  return validProbeNumber(page.version, true)
+    && supportedProbeVersions.has(page.version)
+    && validProbeString(page.bvid, 32)
+    && (!expectedBvid || page.bvid === expectedBvid)
+    && validProbeString(page.cid, 64)
+    && validProbeNumber(page.pageIndex, true)
+    && page.pageIndex > 0
+    && validProbeString(page.pageTitle, 1_000)
+    && validOptionalProbeNumber(page.publishedAt, true)
+    && validOptionalProbeNumber(page.durationSeconds)
+    && (page.api === undefined || validProbeString(page.api, 32))
+    && validProbeAudio(page.selectedAudio)
+    && Array.isArray(page.tracks)
+    && page.tracks.length <= 256
+    && page.tracks.every(validProbeTrack);
+}
+
+export function parseBBDownProbeOutput(output: string, expectedBvid?: string): BBDownProbePage[] {
+  const records = output.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("BFB_PROBE_JSON:"));
+  if (records.length === 0) return [];
+
+  const pages: BBDownProbePage[] = [];
+  const pageIndexes = new Set<number>();
+  const cids = new Set<string>();
+  for (const line of records) {
+    let page: BBDownProbePage;
+    try {
+      page = JSON.parse(line.slice("BFB_PROBE_JSON:".length)) as BBDownProbePage;
+    } catch {
+      return [];
+    }
+    if (!validProbePage(page, expectedBvid)
+      || pageIndexes.has(page.pageIndex)
+      || cids.has(page.cid)) {
+      return [];
+    }
+    pageIndexes.add(page.pageIndex);
+    cids.add(page.cid);
+    pages.push(page);
+  }
+  return pages.sort((left, right) => left.pageIndex - right.pageIndex);
+}
+
+export async function probeMediaWithBBDown(
+  bvid: string,
+  cookie: BiliCookie,
+  config: AppConfig,
+  options: BBDownProbeOptions = {},
+): Promise<{ bvid: string; pages: BBDownProbePage[]; source: "bbdown" }> {
+  const command = options.command || process.env.BBDOWN_PATH || "BBDown";
+  const probeDir = await fs.promises.mkdtemp(path.join(tempDir, `media-probe-${bvid}-`));
+  const credential = await createBBDownCredentialConfig(
+    buildCookieString(cookie),
+    config.bbdownApiMode === "app" ? String(cookie.accessToken || "") : "",
+    config.bbdownApiMode === "app" ? String(cookie.appBuvid || "") : "",
+  );
+  const args = buildBBDownProbeArgs(bvid, credential.configPath, probeDir, config, options.target);
+  // A probe must expose all combinations. Applying the configured download
+  // preference here would hide alternatives needed by exact retries.
+  const spawnArgs = [...(options.commandArgsPrefix || []), ...args];
+  const sensitive = credential.sensitiveValues;
+  let stdoutOutput = "";
+  let stdoutBytes = 0;
+  const timeoutMs = Math.max(5_000, Math.min(120_000, Number(options.timeoutMs || 45_000)));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(command, spawnArgs, { cwd: probeDir, windowsHide: true, detached: process.platform !== "win32" });
+      activeDownloadChildren.set(child, String(cookie.DedeUserID || ""));
+      let settled = false;
+      let outputLimitExceeded = false;
+      let terminationError: Error | undefined;
+      let forceTimer: NodeJS.Timeout | null = null;
+      const requestTermination = (error: Error, force = false) => {
+        if (settled || terminationError) return;
+        terminationError = error;
+        clearTimeout(timer);
+        void terminateDownloadProcessTree(child, force);
+        if (!force) {
+          forceTimer = setTimeout(() => {
+            if (activeDownloadChildren.has(child)) void terminateDownloadProcessTree(child, true);
+          }, 5_000);
+          forceTimer.unref?.();
+        }
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        requestTermination(new Error("媒体探测超时"));
+      }, timeoutMs);
+      timer.unref?.();
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (forceTimer) clearTimeout(forceTimer);
+        activeDownloadChildren.delete(child);
+        if (error) reject(error); else resolve();
+      };
+      child.stdout.on("data", (chunk) => {
+        if (outputLimitExceeded) return;
+        stdoutBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+        if (stdoutBytes > MAX_BBDOWN_PROBE_OUTPUT_BYTES && !outputLimitExceeded) {
+          outputLimitExceeded = true;
+          const error: any = new Error("BBDown媒体探测输出异常，已停止读取");
+          error.code = "BBDOWN_PROBE_OUTPUT_TOO_LARGE";
+          requestTermination(error, true);
+          return;
+        }
+        stdoutOutput += redactSensitiveOutput(String(chunk), sensitive);
+      });
+      child.stderr.on("data", () => { /* Drain diagnostics; structured output is stdout-only. */ });
+      child.once("error", (error) => finish(terminationError || error));
+      child.once("close", (code) => {
+        if (terminationError) {
+          finish(terminationError);
+          return;
+        }
+        if (code === 0) finish();
+        else finish(new Error(`BBDown 探测失败（退出码 ${code ?? "unknown"}）`));
+      });
+    });
+  } finally {
+    await credential.cleanup().catch(() => undefined);
+    await fs.promises.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+  const pages = parseBBDownProbeOutput(stdoutOutput, bvid);
+  if (pages.length === 0) {
+    const hasStructuredOutput = stdoutOutput.split(/\r?\n/).some((line) => line.trim().startsWith("BFB_PROBE_JSON:"));
+    const error: any = new Error(hasStructuredOutput
+      ? "BBDown返回的媒体探测数据无效或版本不兼容"
+      : "当前 BBDown 不支持结构化媒体探测，请先更新 BBDown");
+    error.code = hasStructuredOutput ? "BBDOWN_PROBE_INVALID" : "BBDOWN_PROBE_UNSUPPORTED";
+    throw error;
+  }
+  return { bvid, pages, source: "bbdown" };
+}
+
 export async function runWindowsTaskkill(
   pid: number,
   force: boolean,
@@ -186,6 +470,10 @@ export async function downloadWithBBDown(
     apiModeOverride?: BBDownApiMode;
     onApiReady?: (mode: BBDownApiMode) => void;
     accessRecheck?: (cookie: BiliCookie, bvid: string) => Promise<VideoPageSnapshotResult>;
+    /** Only strict retries set this. The normal BBDown preference remains best-effort. */
+    expectedEncoding?: BBDownEncoding;
+    /** Only exact-quality retries set this. Normal quality preferences remain best-effort. */
+    expectedQuality?: string;
   } = {}
 ): Promise<DownloadResult> {
   if (shutdownRequested) throw new Error("Application is shutting down");
@@ -215,6 +503,7 @@ export async function downloadWithBBDown(
     publishedAt: snapshot.publishedAt,
     unavailable: !snapshot.available,
     qualityUpgrade: options.qualityUpgrade,
+    deferCompleteStatus: Boolean(options.expectedEncoding || options.expectedQuality),
   });
   options.onPrepared?.(downloadDir, prepared.manifest);
   const legacyCover = findLegacyCover(downloadDir);
@@ -225,6 +514,23 @@ export async function downloadWithBBDown(
   }
 
   if (prepared.missingPages.length === 0 && prepared.manifest.outputs.length > 0) {
+    if (options.expectedEncoding) {
+      const assessment = assessStrictEncoding(downloadDir, options.expectedEncoding);
+      if (assessment.status !== "matched") {
+        const error = createStrictEncodingValidationError(assessment);
+        markDownloadSessionStatus(downloadDir, "failed", error.message);
+        throw error;
+      }
+    }
+    if (options.expectedQuality) {
+      const assessment = assessStrictQuality(downloadDir, options.expectedQuality);
+      if (assessment.status !== "matched") {
+        const error = new StrictQualityValidationError(assessment);
+        markDownloadSessionStatus(downloadDir, "failed", error.message);
+        throw error;
+      }
+    }
+    if (options.expectedEncoding || options.expectedQuality) markDownloadSessionStatus(downloadDir, "complete");
     return {
       downloadDir,
       files: currentSessionFiles(downloadDir),
@@ -232,6 +538,18 @@ export async function downloadWithBBDown(
       totalPages: prepared.manifest.pages.length,
       partial: prepared.manifest.status === "partial",
     };
+  }
+  if (options.expectedEncoding && prepared.manifest.outputs.length > 0 && !snapshot.available) {
+    const assessment = assessStrictEncoding(downloadDir, options.expectedEncoding);
+    const error = createStrictEncodingValidationError(assessment);
+    markDownloadSessionStatus(downloadDir, "failed", error.message);
+    throw error;
+  }
+  if (options.expectedQuality && prepared.manifest.outputs.length > 0 && !snapshot.available) {
+    const assessment = assessStrictQuality(downloadDir, options.expectedQuality);
+    const error = new StrictQualityValidationError(assessment);
+    markDownloadSessionStatus(downloadDir, "failed", error.message);
+    throw error;
   }
   if (!snapshot.available) {
     if (prepared.manifest.outputs.length > 0) {
@@ -285,14 +603,10 @@ export async function downloadWithBBDown(
     const selectedPages = buildSelectPageArgument(prepared.missingPages);
     if (selectedPages) args.push("--select-page", selectedPages);
 
-    const encodingPriority = buildEncodingPriority(config);
-    if (encodingPriority) {
-      args.push("--encoding-priority", encodingPriority);
-    }
-    const dfnPriority = buildDfnPriority(config);
-    if (dfnPriority) {
-      args.push("--dfn-priority", dfnPriority);
-    }
+    args.push(...buildBBDownTrackSelectionArgs(config, {
+      quality: options.expectedQuality,
+      encoding: options.expectedEncoding,
+    }));
     if (config.perVideoDelaySeconds > 0) {
       args.push("--delay-per-page", String(config.perVideoDelaySeconds));
     }
@@ -334,6 +648,8 @@ export async function downloadWithBBDown(
             accountUid: String(cookie.DedeUserID || ""),
             defaultPageIndex: selectedPageFallback(runArgs),
             onSelectedStream: persistSelectedStream,
+            strictEncoding: options.expectedEncoding,
+            strictQuality: options.expectedQuality,
           }
         );
       } catch (error: any) {
@@ -361,6 +677,8 @@ export async function downloadWithBBDown(
             accountUid: String(cookie.DedeUserID || ""),
             defaultPageIndex: selectedPageFallback(commandArgs),
             onSelectedStream: persistSelectedStream,
+            strictEncoding: options.expectedEncoding,
+            strictQuality: options.expectedQuality,
           }
         );
       }
@@ -404,7 +722,9 @@ export async function downloadWithBBDown(
       }
     }
 
-    const refreshed = await refreshDownloadSessionOutputs(downloadDir);
+    const refreshed = await refreshDownloadSessionOutputs(downloadDir, {
+      deferCompleteStatus: Boolean(options.expectedEncoding || options.expectedQuality),
+    });
     if (refreshed.missingPages.length > 0) {
       const latestSnapshot = snapshot.access?.classification === "unknown"
         ? await (options.accessRecheck || getVideoPageSnapshot)(cookie, bvid).catch(() => undefined)
@@ -418,6 +738,22 @@ export async function downloadWithBBDown(
       (err as any).downloadFailureCategory = "transient";
       markDownloadSessionStatus(downloadDir, "failed", err.message);
       throw err;
+    }
+    if (options.expectedEncoding) {
+      const assessment = assessStrictEncoding(downloadDir, options.expectedEncoding, refreshed.manifest.outputs.map((file) => file.relativePath));
+      if (assessment.status !== "matched") {
+        const error = createStrictEncodingValidationError(assessment);
+        markDownloadSessionStatus(downloadDir, "failed", error.message);
+        throw error;
+      }
+    }
+    if (options.expectedQuality) {
+      const assessment = assessStrictQuality(downloadDir, options.expectedQuality, refreshed.manifest.outputs.map((file) => file.relativePath));
+      if (assessment.status !== "matched") {
+        const error = new StrictQualityValidationError(assessment);
+        markDownloadSessionStatus(downloadDir, "failed", error.message);
+        throw error;
+      }
     }
     const mediaFiles = refreshed.manifest.outputs;
     logManager.push({
@@ -807,6 +1143,8 @@ function runCommand(
     accountUid?: string;
     defaultPageIndex?: number;
     onSelectedStream?: (stream: BBDownSelectedVideoSelection) => void;
+    strictEncoding?: BBDownEncoding;
+    strictQuality?: string;
   }
 ) {
   return new Promise<void>((resolve, reject) => {
@@ -832,6 +1170,8 @@ function runCommand(
     let riskSignalSeen = false;
     let appNoVideoInfoSeen = false;
     let readySignalSeen = false;
+    let strictSelectionError: Error | null = null;
+    let strictStopForceTimer: NodeJS.Timeout | null = null;
     const selectionTracker = createBBDownSelectionTracker(options.defaultPageIndex);
 
     const rawSimpleHiddenPatterns = [
@@ -875,10 +1215,29 @@ function runCommand(
       }
     };
 
+    const cleanupStrictStopTimer = () => {
+      if (strictStopForceTimer) {
+        clearTimeout(strictStopForceTimer);
+        strictStopForceTimer = null;
+      }
+    };
+
+    const stopForStrictSelection = (error: Error) => {
+      if (settled || strictSelectionError) return;
+      strictSelectionError = error;
+      cleanupWatchdog();
+      void terminateDownloadProcessTree(child, false);
+      strictStopForceTimer = setTimeout(() => {
+        if (activeDownloadChildren.has(child)) void terminateDownloadProcessTree(child, true);
+      }, 5_000);
+      strictStopForceTimer.unref?.();
+    };
+
     const rejectOnce = (error: Error) => {
       if (settled) return;
       settled = true;
       cleanupWatchdog();
+      cleanupStrictStopTimer();
       reject(error);
     };
 
@@ -886,6 +1245,7 @@ function runCommand(
       if (settled) return;
       settled = true;
       cleanupWatchdog();
+      cleanupStrictStopTimer();
       resolve();
     };
 
@@ -950,6 +1310,10 @@ function runCommand(
     };
 
     const flushStdoutBuffer = (force = false) => {
+      if (settled || strictSelectionError) {
+        stdoutPending = "";
+        return;
+      }
       const combined = stdoutPending;
       const normalized = combined.replace(/\r/g, "\n");
       const lines = normalized.split("\n");
@@ -966,9 +1330,44 @@ function runCommand(
       const visibleLines = lines.filter((line) => !consumeSignal(line));
       if (visibleLines.length === 0) return;
       for (const line of visibleLines) {
-        const selected = selectionTracker.consume(line);
-        if (selected) options.onSelectedStream?.(selected);
+        const observation = selectionTracker.consumeWithDiagnostics(line);
+        if (!observation) continue;
+        options.onSelectedStream?.(observation.selection);
+        const actual = normalizeActualCodec(observation.diagnostics.codec);
+        if (options.strictEncoding && actual && actual !== options.strictEncoding) {
+          const error = createStrictEncodingValidationError({
+            status: "mismatch",
+            requestedEncoding: options.strictEncoding,
+            actualEncodings: [actual],
+            encodingMismatch: true,
+            verifiedPages: 0,
+            totalPages: 0,
+            mismatchedFiles: [],
+            unknownFiles: [],
+            summary: `请求 ${options.strictEncoding}，BBDown已选择 ${actual}；下载已停止，未上传候选，原归档已保留。`,
+          }, "selected_stream");
+          stopForStrictSelection(error);
+          return;
+        }
+        const actualQuality = normalizeBilibiliQualityLabel(observation.selection.bilibiliQuality);
+        const requestedQuality = normalizeBilibiliQualityLabel(options.strictQuality);
+        if (requestedQuality && actualQuality && actualQuality !== requestedQuality) {
+          const error = new StrictQualityValidationError({
+            status: "mismatch",
+            requestedQuality,
+            actualQualities: [actualQuality],
+            qualityMismatch: true,
+            verifiedPages: 0,
+            totalPages: 0,
+            mismatchedFiles: [],
+            unknownFiles: [],
+            summary: `请求 ${requestedQuality}，BBDown已选择 ${actualQuality}；下载已停止，未上传候选，原归档已保留。`,
+          }, "selected_stream");
+          stopForStrictSelection(error);
+          return;
+        }
       }
+      if (settled) return;
       const visibleText = visibleLines.join("\n");
       stdoutAll += `${visibleText}\n`;
       process.stdout.write(`${visibleText}\n`);
@@ -993,6 +1392,10 @@ function runCommand(
     };
 
     const flushStderrBuffer = (force = false) => {
+      if (settled || strictSelectionError) {
+        stderrPending = "";
+        return;
+      }
       const normalized = stderrPending.replace(/\r/g, "\n");
       const lines = normalized.split("\n");
       if (!force) {
@@ -1033,7 +1436,7 @@ function runCommand(
 
     child.on("error", (error) => {
       activeDownloadChildren.delete(child);
-      rejectOnce(error);
+      rejectOnce(strictSelectionError || error);
     });
 
     child.on("close", (code) => {
@@ -1041,6 +1444,10 @@ function runCommand(
       flushStdoutBuffer(true);
       flushStderrBuffer(true);
       cleanupWatchdog();
+      if (strictSelectionError) {
+        rejectOnce(strictSelectionError);
+        return;
+      }
       if (killedByWatchdog) {
         rejectOnce(new Error("下载运行超过30分钟且最近10分钟平均速度低于10KB/s，自动重试"));
         return;

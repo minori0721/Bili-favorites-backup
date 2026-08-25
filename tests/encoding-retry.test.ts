@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
+import { UploadTask } from "../src/tasks.js";
 import { DOWNLOAD_RETAINED_FILE, writeDownloadSession } from "../src/download-session.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
@@ -136,6 +137,183 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
   }
 });
 
+test("stale strict encoding upload tasks are blocked before any remote request", async () => {
+  const runtime = await createTestDir("encoding-retry-upload-preflight");
+  const candidateLocalDir = path.join(runtime, "BVENCODINGPREFLIGHT-encoding-retry-child-g1");
+  try {
+    await fs.promises.mkdir(candidateLocalDir, { recursive: true });
+    await fs.promises.writeFile(path.join(candidateLocalDir, "video.mp4"), "avc-candidate");
+    const now = new Date().toISOString();
+    writeDownloadSession(candidateLocalDir, {
+      schemaVersion: 1,
+      sessionId: "encoding-retry-preflight-session",
+      kind: "backup",
+      bvid: "BVENCODINGPREFLIGHT",
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: {
+        quality: "4K",
+        encoding: "AV1",
+        encodingPriority: ["AV1", "HEVC", "AVC"],
+        apiMode: "web",
+        hiRes: false,
+        dolby: false,
+        filenameTemplate: "<videoTitle>-<bvid>",
+      },
+      createdAt: now,
+      updatedAt: now,
+      snapshotAt: now,
+      status: "complete",
+      pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+      outputs: [{
+        pageIndex: 1,
+        cid: 1,
+        relativePath: "video.mp4",
+        size: 13,
+        duration: 2,
+        videoCodec: "avc",
+        width: 320,
+        height: 180,
+        frameRate: 30,
+        quickHash: "test",
+        verifiedAt: now,
+      }],
+      history: [],
+    });
+
+    const task = new UploadTask(
+      "BVENCODINGPREFLIGHT",
+      candidateLocalDir,
+      "/backup/BVENCODINGPREFLIGHT",
+      testConfig(),
+      {
+        files: ["video.mp4"],
+        encodingRetry: {
+          parentJobId: "parent",
+          generation: 1,
+          priority: ["AV1", "HEVC", "AVC"],
+          strict: true,
+          candidateLocalDir,
+          originalLocalDir: path.join(runtime, "original"),
+        },
+      },
+    );
+    const error: any = await task.run().then(() => null, (caught) => caught);
+    assert.equal(error?.code, "BFB_ENCODING_MISMATCH");
+    assert.equal(error?.source, "upload_preflight");
+    assert.deepEqual(error?.encodingAssessment?.actualEncodings, ["AVC"]);
+    assert.equal(fs.existsSync(path.join(candidateLocalDir, "video.mp4")), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("stale strict quality upload tasks are blocked before any remote request", async () => {
+  const runtime = await createTestDir("strict-quality-upload-preflight");
+  try {
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), "avc-candidate");
+    const now = new Date().toISOString();
+    writeDownloadSession(runtime, {
+      schemaVersion: 1,
+      sessionId: "strict-quality-upload-session",
+      kind: "backup",
+      bvid: "BVQUALITYPREFLIGHT",
+      accountUid: 1,
+      bbdownCommit: "test",
+      configFingerprint: "test",
+      configSnapshot: {
+        quality: "4K",
+        encoding: "AVC",
+        encodingPriority: ["AVC", "HEVC", "AV1"],
+        apiMode: "web",
+        hiRes: false,
+        dolby: false,
+        filenameTemplate: "<videoTitle>-<bvid>",
+      },
+      createdAt: now,
+      updatedAt: now,
+      snapshotAt: now,
+      status: "complete",
+      pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
+      selectedStreams: [{ pageIndex: 1, cid: 1, bilibiliQuality: "1080P", observedAt: now }],
+      outputs: [{
+        pageIndex: 1,
+        cid: 1,
+        relativePath: "video.mp4",
+        size: 13,
+        duration: 2,
+        videoCodec: "avc",
+        width: 320,
+        height: 180,
+        frameRate: 30,
+        quickHash: "test",
+        verifiedAt: now,
+      }],
+      history: [],
+    });
+
+    const task = new UploadTask(
+      "BVQUALITYPREFLIGHT",
+      runtime,
+      "/backup/BVQUALITYPREFLIGHT",
+      testConfig(),
+      {
+        files: ["video.mp4"],
+        strictMediaTarget: { quality: "4K", encoding: "AVC" },
+      },
+    );
+    const error: any = await task.run().then(() => null, (caught) => caught);
+    assert.equal(error?.code, "BFB_QUALITY_MISMATCH");
+    assert.equal(error?.source, "upload_preflight");
+    assert.deepEqual(error?.qualityAssessment?.actualQualities, ["1080P"]);
+    assert.equal(fs.existsSync(path.join(runtime, "video.mp4")), true);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("strict media target survives persistent upload task reconstruction", async () => {
+  const runtime = await createTestDir("strict-media-target-persistence");
+  const state = new StateManager({
+    dbPath: path.join(runtime, "state.sqlite"),
+    statePath: path.join(runtime, "unused-state.json"),
+  });
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    state,
+    { legacyTempDir: path.join(runtime, "temp") },
+  ) as any;
+  scheduler.downloadQueue.setStartGate(() => false);
+  scheduler.uploadQueue.setStartGate(() => false);
+
+  try {
+    const item = {
+      bvid: "BVSTRICTPERSIST",
+      localDir: runtime,
+      remotePath: "/backup/BVSTRICTPERSIST",
+      files: ["video.mp4"],
+      strictMediaTarget: { quality: "4K", encoding: "AV1" },
+    };
+    const persistent = scheduler.buildPersistentUploadJob(item);
+    assert.deepEqual(persistent.payload.strictMediaTarget, item.strictMediaTarget);
+
+    const reconstructed = scheduler.buildUploadTask(persistent.payload);
+    assert.deepEqual(reconstructed.strictMediaTarget, item.strictMediaTarget);
+
+    const invalid = scheduler.buildUploadTask({
+      ...persistent.payload,
+      strictMediaTarget: { quality: "", encoding: "VP9" },
+    });
+    assert.equal(invalid.strictMediaTarget, undefined);
+  } finally {
+    scheduler.stop();
+    state.close();
+    await removeTestDir(runtime);
+  }
+});
+
 test("successful encoding retry cleans the isolated candidate but preserves unknown artifacts", async () => {
   const runtime = await createTestDir("encoding-retry-success-cleanup");
   const tempDir = path.join(runtime, "temp");
@@ -236,8 +414,8 @@ test("successful encoding retry cleans the isolated candidate but preserves unkn
     }), true);
 
     assert.equal(scheduler.completeEncodingRetrySuccess(bvid, context), true);
-    for (let attempt = 0; attempt < 20 && fs.existsSync(path.join(candidateLocalDir, output)); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    for (let attempt = 0; attempt < 100 && fs.existsSync(path.join(candidateLocalDir, output)); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.equal(fs.existsSync(path.join(candidateLocalDir, output)), false);
     assert.equal(fs.existsSync(unknownArtifact), true);

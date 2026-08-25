@@ -2,10 +2,10 @@
 
 | 组件 | 当前范围 | 说明 |
 | --- | --- | --- |
-| 应用版本 | v2.5.0 | 文档只维护当前main稳定版 |
+| 应用版本 | v2.5.1 | 文档只维护当前main稳定版 |
 | Node.js | 24 | 源码运行要求`>=24 <25` |
 | Docker平台 | `linux/amd64` | 当前工作流不发布ARM64 |
-| BBDown | fork Release `bfb-2.0.2` | 固定源码提交，不跟随master |
+| BBDown | fork Release `bfb-2.0.4` | 固定源码提交，不跟随master；支持BFB结构化媒体探测 |
 | FFmpeg | 固定Linux x64静态构建 | 镜像内同时提供ffprobe |
 | aria2 | 镜像内安装 | 断点续传始终启用 |
 | AList | Compose固定`v3.61.0` | 内置服务仍是 AList；外接实例不会自动升级，路径迁移依赖 WebDAV COPY |
@@ -40,7 +40,7 @@ BFB依赖标准 WebDAV 行为，但不同网盘驱动在 PUT、MOVE、DELETE、�
 
 网页和APP播放接口都可能受账号权限、风控或上游变化影响。BFB只根据明确字段和稳定信号分类，不通过标题或错误文案猜测付费权限，也不会绕过B站限制。
 
-`v2.5.0`固定BBDown fork `bfb-2.0.2`，将普通UGC APP解析迁移到PlayerUnite，并在APP视频档位异常偏低时仅择优合并更高的WEB视频，APP音频继续保留。每个账号使用独立稳定的APP设备标识。
+`v2.5.1`固定BBDown fork `bfb-2.0.4`。除既有PlayerUnite兼容外，BBDown提供BFB专用结构化媒体探测输出；BFB只把它作为可用组合和空间估算输入，最终下载仍以ffprobe实际媒体为准。
 
 ## 归档播放器
 

@@ -7,7 +7,7 @@ import {
   type PlaybackQueuePage,
   type PlaybackQueueSource,
 } from "./playback.js";
-import type { BackupStatus, FavoriteRelation, VideoArchiveEntry } from "./state.js";
+import { MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, type BackupStatus, type FavoriteRelation, type VideoArchiveEntry } from "./state.js";
 import type { BiliUser } from "./users.js";
 
 export type ArchiveLibraryScope = "global" | "account" | "folder";
@@ -31,6 +31,7 @@ export interface ArchiveLibraryMembership {
   userId: string;
   userName: string;
   mediaId: number;
+  sourceKind: "favorite" | "manual";
   folderTitle: string;
   activeInFavorite: boolean;
   selectedFolder: boolean;
@@ -252,14 +253,14 @@ function normalizeQuery(users: BiliUser[], input: Partial<ArchiveLibraryQuery>):
   }
   const hasMediaId = input.mediaId !== undefined && input.mediaId !== null;
   const parsedMediaId = Number(input.mediaId);
-  if (hasMediaId && (!Number.isInteger(parsedMediaId) || parsedMediaId < 1)) {
+  if (hasMediaId && (!Number.isInteger(parsedMediaId) || (parsedMediaId < 1 && parsedMediaId !== MANUAL_ARCHIVE_MEDIA_ID))) {
     throw new ArchiveLibraryQueryError("Invalid archive folder");
   }
   const mediaId = hasMediaId ? parsedMediaId : undefined;
   if (scope !== "global" && (!userId || !allowedUserIds.includes(userId))) {
     throw new ArchiveLibraryQueryError("Unknown archive account");
   }
-  if (scope === "folder" && (!Number.isInteger(mediaId) || Number(mediaId) < 1)) {
+  if (scope === "folder" && (!Number.isInteger(mediaId) || (Number(mediaId) < 1 && Number(mediaId) !== MANUAL_ARCHIVE_MEDIA_ID))) {
     throw new ArchiveLibraryQueryError("Invalid archive folder");
   }
   const query = String(input.query || "").trim();
@@ -741,11 +742,12 @@ function choosePagePlaybackSources(
 function membershipFromRecord(record: HydratedRecord, users: Map<string, LibraryUser>, selected: Set<string>, includeError: boolean): ArchiveLibraryMembership {
   const { relation, video } = record;
   const user = users.get(relation.userId);
-  const selectedFolder = selected.has(`${relation.userId}:${relation.mediaId}`);
+  const sourceKind = relation.sourceKind === "manual" ? "manual" : "favorite";
+  const selectedFolder = sourceKind === "favorite" && selected.has(`${relation.userId}:${relation.mediaId}`);
   const ownerRemoved = Boolean(user?.archiveRemoved);
   const deletionInProgress = Boolean(record.deletionStatus && record.deletionStatus !== "completed");
   const alreadyDeleted = record.deletionStatus === "completed";
-  const eligibleRelationship = ownerRemoved || !selectedFolder || !relation.activeInFavorite;
+  const eligibleRelationship = sourceKind === "manual" || ownerRemoved || !selectedFolder || !relation.activeInFavorite;
   const deletable = !record.deletionStatus && record.fileCount > 0 && eligibleRelationship;
   const deletionReason = alreadyDeleted
     ? "该来源的远端归档已删除"
@@ -755,11 +757,14 @@ function membershipFromRecord(record: HydratedRecord, users: Map<string, Library
         ? "该来源没有可删除的已验证归档文件"
       : deletable
         ? undefined
-        : "仍在同步，删除后会被重新归档";
+        : sourceKind === "manual"
+          ? "手动归档来源"
+          : "仍在同步，删除后会被重新归档";
   return {
     userId: relation.userId,
     userName: user?.name || "未知账号",
     mediaId: relation.mediaId,
+    sourceKind,
     folderTitle: relation.folderTitle || `收藏夹 ${relation.mediaId}`,
     activeInFavorite: relation.activeInFavorite,
     selectedFolder,
@@ -822,7 +827,7 @@ function itemFromRecords(
     backupStatus: chooseStatus(records, best),
     statusGroup,
     unavailable: records.some(({ relation, video: entry }) => relationUnavailable(relation, entry)),
-    activeInFavorite: records.some(({ relation }) => relation.activeInFavorite),
+    activeInFavorite: records.some(({ relation }) => relation.sourceKind !== "manual" && relation.activeInFavorite),
     lastSeenAt: records.map(({ relation }) => relation.lastSeenAt).sort().reverse()[0] || video.lastSeenAt,
     membershipCount: memberships.length,
     memberships: limitedMemberships,
@@ -1189,7 +1194,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
   }
   const accountData = libraryUsers.map((user) => {
     const accountRows = folderRows.filter((row) => row.user_id === user.id);
-    const activeFolders = user.favorites.map((folder) => {
+    const activeFolders: any[] = user.favorites.map((folder) => {
       const row = indexedFolders.get(`${user.id}:${folder.mediaId}`) as any;
       return {
         mediaId: folder.mediaId,
@@ -1204,10 +1209,29 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         lastSyncedAt: isoFromMs(row?.last_synced_at),
         coverLocalPath: row?.cover_local_path || undefined,
         cover: row?.cover || undefined,
+        sourceKind: "favorite" as const,
       };
     });
+    const manualRow = indexedFolders.get(`${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`) as any;
+    if (manualRow) {
+      activeFolders.push({
+        mediaId: MANUAL_ARCHIVE_MEDIA_ID,
+        title: MANUAL_ARCHIVE_FOLDER_TITLE,
+        selected: false,
+        inactive: false,
+        total: Number(manualRow.total || 0),
+        playable: Number(manualRow.playable || 0),
+        pending: Number(manualRow.pending || 0),
+        issue: Number(manualRow.issue || 0),
+        deleted: Number(manualRow.deleted || 0),
+        lastSyncedAt: isoFromMs(manualRow.last_synced_at || manualRow.last_seen_at),
+        coverLocalPath: manualRow.cover_local_path || undefined,
+        cover: manualRow.cover || undefined,
+        sourceKind: "manual" as const,
+      });
+    }
     const inactiveFolders = folderRows
-      .filter((row) => row.user_id === user.id && !selected.has(`${user.id}:${row.media_id}`))
+      .filter((row) => row.user_id === user.id && Number(row.media_id) !== MANUAL_ARCHIVE_MEDIA_ID && !selected.has(`${user.id}:${row.media_id}`))
       .map((row) => ({
         mediaId: Number(row.media_id),
         title: String(row.folder_title || `收藏夹 ${row.media_id}`),
@@ -1221,6 +1245,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         lastSyncedAt: isoFromMs(row.last_synced_at || row.last_seen_at),
         coverLocalPath: row.cover_local_path || undefined,
         cover: row.cover || undefined,
+        sourceKind: "favorite" as const,
       }));
     return {
       id: user.id,

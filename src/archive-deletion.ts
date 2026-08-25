@@ -332,7 +332,7 @@ export class ArchiveDeletionService {
 
   previewSource(userId: string, mediaId: number, bvid: string) {
     if (!this.isKnownOwner(userId)) throw archiveDeletionError("归档账号不存在", 404);
-    if (!Number.isInteger(mediaId) || mediaId < 1 || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
+    if (!Number.isInteger(mediaId) || (mediaId < 1 && mediaId !== -1) || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
       throw archiveDeletionError("归档来源参数无效", 400);
     }
     return this.createPreview("source", userId, mediaId, bvid);
@@ -368,7 +368,7 @@ export class ArchiveDeletionService {
           ORDER BY r.media_id, r.bvid
         `).all(userId) as any[]
       : this.db.db.prepare(`
-          SELECT r.user_id, r.media_id, r.bvid, r.active_in_favorite
+           SELECT r.user_id, r.media_id, r.bvid, r.active_in_favorite, r.source_kind
           FROM favorite_relations r
           WHERE r.user_id=? AND r.media_id=? AND r.bvid=? AND EXISTS(
             SELECT 1 FROM remote_files rf
@@ -379,7 +379,7 @@ export class ArchiveDeletionService {
     if (scope === "source") {
       const live = this.userStore.getById(userId);
       const selected = Boolean(live?.favorites.some((folder) => folder.mediaId === mediaId));
-      if (selected && Number(relationRows[0].active_in_favorite) === 1) {
+       if (String(relationRows[0].source_kind || "favorite") !== "manual" && selected && Number(relationRows[0].active_in_favorite) === 1) {
         throw archiveDeletionError("该视频仍在当前同步收藏夹中，不能直接删除归档", 409);
       }
     }

@@ -20,6 +20,11 @@ test("BBDown selected streams keep the Bilibili tier and bind to the current pag
     pageIndex: 1,
     bilibiliQuality: "1080P",
   });
+
+  const diagnosticTracker = createBBDownSelectionTracker(1);
+  const observation = diagnosticTracker.consumeWithDiagnostics("[视频] [4K 超清] [HEVC] [3321 kbps]");
+  assert.deepEqual(observation?.selection, { pageIndex: 1, bilibiliQuality: "4K" });
+  assert.equal(observation?.diagnostics.codec, "HEVC");
 });
 
 test("single-page BBDown selection can use the explicit fallback page", () => {

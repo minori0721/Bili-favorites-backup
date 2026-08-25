@@ -28,6 +28,7 @@ export type RecoveryIssueActionId =
   | "create_candidate"
   | "redownload"
   | "redownload_with_encoding"
+  | "redownload_with_quality"
   | "retry_download"
   | "retry_download_with_account"
   | "defer_download"
@@ -35,6 +36,7 @@ export type RecoveryIssueActionId =
   | "use_candidate"
   | "retry_quality"
   | "retry_quality_with_encoding"
+  | "retry_quality_with_quality"
   | "open_settings";
 
 export interface RecoveryIssueActionChoice {
@@ -101,7 +103,12 @@ export interface RecoveryPolicyContext {
   candidateEligible?: boolean;
   downloadCategory?: DownloadRecoveryCategory;
   alternateAccounts?: RecoveryIssueActionChoice[];
+  downloadEncodingEligible?: boolean;
+  downloadQualityEligible?: boolean;
+  downloadQualityChoices?: RecoveryIssueActionChoice[];
   qualityEncodingEligible?: boolean;
+  qualityQualityEligible?: boolean;
+  qualityChoices?: RecoveryIssueActionChoice[];
 }
 
 const actions = {
@@ -130,6 +137,12 @@ const actions = {
     id: "redownload_with_encoding",
     label: "换编码重新下载",
     description: "按本次选择的编码在隔离目录重新下载并上传；原文件会保留到新文件完成远端确认。",
+  }),
+  redownloadWithQuality: (choices: RecoveryIssueActionChoice[]): RecoveryIssueAction => ({
+    id: "redownload_with_quality",
+    label: "换分辨率重新下载",
+    description: "严格按选择的 B 站画质档位重新下载；无法提供该档位时会回到待处理，不会上传错误候选。",
+    choices,
   }),
   retryDownload: (): RecoveryIssueAction => ({
     id: "retry_download",
@@ -166,6 +179,12 @@ const actions = {
     id: "retry_quality_with_encoding",
     label: "换编码重调画质",
     description: "保持目标画质不变，以本次编码顺序生成新的隔离版本；现有归档继续保留。",
+  }),
+  retryQualityWithQuality: (choices: RecoveryIssueActionChoice[]): RecoveryIssueAction => ({
+    id: "retry_quality_with_quality",
+    label: "换分辨率重调画质",
+    description: "选择一个新的 B 站画质档位严格重试；如果当前账号没有该档位，任务会回到待处理，现有归档继续保留。",
+    choices,
   }),
   openSettings: (): RecoveryIssueAction => ({
     id: "open_settings",
@@ -211,19 +230,28 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
 
   if (context.domain === "download") {
     const alternate = context.alternateAccounts || [];
-    if (context.downloadCategory === "account" && alternate.length > 0) {
-      return [actions.retryDownloadWithAccount(alternate), actions.retryDownload(), actions.deferDownload()];
+    const strict = [] as RecoveryIssueAction[];
+    if (context.downloadQualityEligible && context.downloadQualityChoices?.length) {
+      strict.push(actions.redownloadWithQuality(context.downloadQualityChoices));
     }
-    const planned = [actions.retryDownload()];
+    if (context.downloadEncodingEligible) strict.push(actions.redownloadWithEncoding());
+    if (context.downloadCategory === "account" && alternate.length > 0) {
+      return [...strict, actions.retryDownloadWithAccount(alternate), actions.retryDownload(), actions.deferDownload()];
+    }
+    const planned = [...strict, actions.retryDownload()];
     if (alternate.length > 0) planned.push(actions.retryDownloadWithAccount(alternate));
     planned.push(actions.deferDownload());
     return planned;
   }
 
   if (context.domain === "quality") {
-    return context.qualityEncodingEligible
-      ? [actions.retryQualityWithEncoding(), actions.retryQuality()]
-      : [actions.retryQuality()];
+    const planned: RecoveryIssueAction[] = [];
+    if (context.qualityQualityEligible && context.qualityChoices?.length) {
+      planned.push(actions.retryQualityWithQuality(context.qualityChoices));
+    }
+    if (context.qualityEncodingEligible) planned.push(actions.retryQualityWithEncoding());
+    planned.push(actions.retryQuality());
+    return planned;
   }
 
   const candidate = context.candidateEligible ? actions.createCandidate() : undefined;

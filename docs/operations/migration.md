@@ -47,7 +47,7 @@ BFB提供轻量迁移包和完整迁移包。两者都使用schema 3清单、逐
 
 ## 回滚旧镜像
 
-当前`v2.5.0`运行数据库使用SQLite schema 10，`v2.4.6`使用schema 7，`v2.4.5`使用schema 6，但迁移包格式仍是schema 3，这些版本彼此独立。schema 7数据库首次升级到schema 8前会在`data/backups`生成一致性SQLite备份和SHA256摘要；schema 9增加持久上传会话与逐文件状态，schema 10再增加上传代际并保留旧尝试明细，任一步失败都会整次回滚。回滚到`v2.4.6`或更早镜像时，应恢复升级前备份，不能让旧镜像直接打开schema 10数据库。
+当前`v2.5.1`运行数据库使用SQLite schema 11，`v2.5.0`使用schema 10，`v2.4.6`使用schema 7，`v2.4.5`使用schema 6，但迁移包格式仍是schema 3，这些版本彼此独立。schema 11只增加`favorite_relations.source_kind`及手动来源索引，不批量读取B站在线内容；已有收藏关系不会被重建成手动来源。迁移失败会回滚并保留升级前数据库，回滚到`v2.5.0`或更早镜像时应先恢复schema 10升级备份。
 
 旧版若仍读取`state.json`，应在当前程序停止后导出兼容快照：
 

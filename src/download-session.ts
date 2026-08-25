@@ -21,13 +21,117 @@ import {
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "bd532f51f41da4cc63b991e431add7f84b28db2a";
-const PREVIOUS_BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
-const LEGACY_BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
-const HISTORIC_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
+export const BBDOWN_SOURCE_COMMIT = "0ea9463202e8a57e0d673f29166e54f4ed770255";
+const PREVIOUS_BBDOWN_SOURCE_COMMIT = "76c1a802825efd9761699d42955fd0553a9dfa9d";
+const PREVIOUS_BBDOWN_PROBE_COMMIT = "d34b69482d3cdf3af3aea12cf1123142609b5c07";
+const LEGACY_BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
+const HISTORIC_BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
+const OLDEST_HISTORIC_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
 
 export type DownloadSessionKind = "backup" | "quality_upgrade";
 export type DownloadSessionStatus = "prepared" | "downloading" | "complete" | "partial" | "failed";
+
+export type StrictEncodingAssessmentStatus = "matched" | "mismatch" | "unknown";
+
+export interface StrictEncodingAssessment {
+  status: StrictEncodingAssessmentStatus;
+  requestedEncoding: BBDownEncoding;
+  actualEncodings: string[];
+  encodingMismatch: boolean;
+  verifiedPages: number;
+  totalPages: number;
+  mismatchedFiles: string[];
+  unknownFiles: string[];
+  summary: string;
+}
+
+export type StrictQualityAssessmentStatus = "matched" | "mismatch" | "unknown";
+
+export interface StrictQualityAssessment {
+  status: StrictQualityAssessmentStatus;
+  requestedQuality: string;
+  actualQualities: string[];
+  qualityMismatch: boolean;
+  verifiedPages: number;
+  totalPages: number;
+  mismatchedFiles: string[];
+  unknownFiles: string[];
+  summary: string;
+}
+
+export type StrictEncodingValidationSource = "selected_stream" | "ffprobe" | "upload_preflight";
+
+/**
+ * A strict encoding retry is a safety boundary, not a best-effort preference.
+ * Keep the assessment on the error so the scheduler can park the job without
+ * re-reading or guessing from BBDown's human-readable output.
+ */
+export class StrictEncodingValidationError extends Error {
+  readonly code: string;
+  readonly permanent = true;
+  readonly deferToNextCycle = false;
+  readonly downloadFailureCategory = "tool" as const;
+  readonly encodingValidation = true as const;
+  readonly encodingAssessment: StrictEncodingAssessment;
+  readonly source: StrictEncodingValidationSource;
+
+  constructor(assessment: StrictEncodingAssessment, source: StrictEncodingValidationSource = "ffprobe") {
+    const code = source === "selected_stream"
+      ? "BFB_ENCODING_SELECTED_MISMATCH"
+      : assessment.status === "unknown"
+        ? "BFB_ENCODING_UNVERIFIED"
+        : "BFB_ENCODING_MISMATCH";
+    super(assessment.summary);
+    this.name = "StrictEncodingValidationError";
+    this.code = code;
+    this.encodingAssessment = assessment;
+    this.source = source;
+  }
+}
+
+export class StrictQualityValidationError extends Error {
+  readonly code: string;
+  readonly permanent = true;
+  readonly deferToNextCycle = false;
+  readonly downloadFailureCategory = "tool" as const;
+  readonly qualityValidation = true as const;
+  readonly qualityAssessment: StrictQualityAssessment;
+  readonly source: StrictEncodingValidationSource;
+
+  constructor(assessment: StrictQualityAssessment, source: StrictEncodingValidationSource = "selected_stream") {
+    const code = assessment.status === "unknown" ? "BFB_QUALITY_UNVERIFIED" : "BFB_QUALITY_MISMATCH";
+    super(assessment.summary);
+    this.name = "StrictQualityValidationError";
+    this.code = code;
+    this.qualityAssessment = assessment;
+    this.source = source;
+  }
+}
+
+export function createStrictEncodingValidationError(
+  assessment: StrictEncodingAssessment,
+  source: StrictEncodingValidationSource = "ffprobe",
+) {
+  return new StrictEncodingValidationError(assessment, source);
+}
+
+export function strictEncodingDiagnosticPatch(assessment: StrictEncodingAssessment) {
+  return {
+    requestedEncoding: assessment.requestedEncoding,
+    actualEncodings: [...assessment.actualEncodings],
+    encodingMismatch: assessment.encodingMismatch,
+    verifiedPages: assessment.verifiedPages,
+  };
+}
+
+export function strictQualityDiagnosticPatch(assessment: StrictQualityAssessment) {
+  return {
+    requestedQuality: assessment.requestedQuality,
+    actualQualities: [...assessment.actualQualities],
+    qualityMismatch: assessment.qualityMismatch,
+    verifiedPages: assessment.verifiedPages,
+  };
+}
 
 export interface DownloadPageSnapshot {
   index: number;
@@ -328,6 +432,186 @@ export function buildUploadFileMetadataFromSession(
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizedSessionPath(value: string) {
+  return String(value || "").replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+export function assessStrictEncoding(
+  downloadDir: string,
+  requestedEncoding: BBDownEncoding,
+  files?: string[],
+): StrictEncodingAssessment {
+  const manifest = readDownloadSession(downloadDir);
+  const requested = requestedEncoding;
+  if (!manifest) {
+    return {
+      status: "unknown",
+      requestedEncoding: requested,
+      actualEncodings: ["UNKNOWN"],
+      encodingMismatch: true,
+      verifiedPages: 0,
+      totalPages: 0,
+      mismatchedFiles: [],
+      unknownFiles: [],
+      summary: `请求 ${requested}，下载清单缺失，无法取得已验证编码；未上传候选，原归档已保留。`,
+    };
+  }
+
+  const outputs = [...manifest.outputs];
+  const outputPaths = outputs.map((output) => normalizedSessionPath(output.relativePath));
+  const selectedPaths = files && files.length > 0
+    ? [...new Set(files.map(normalizedSessionPath).filter(Boolean))]
+    : outputPaths;
+  const selectedSet = new Set(selectedPaths);
+  const outputSet = new Set(outputPaths);
+  const fileListMatchesManifest = selectedPaths.length === outputPaths.length
+    && outputPaths.every((relativePath) => selectedSet.has(relativePath));
+  const fileListMismatchPaths = [
+    ...outputPaths.filter((relativePath) => !selectedSet.has(relativePath)),
+    ...selectedPaths.filter((relativePath) => !outputSet.has(relativePath)),
+  ];
+  const actualEncodings = new Set<string>();
+  const mismatchedFiles: string[] = [];
+  const unknownFiles: string[] = [];
+  let verifiedPages = 0;
+
+  for (const output of outputs) {
+    const relativePath = normalizedSessionPath(output.relativePath);
+    const codec = normalizeActualCodec(output.videoCodec);
+    const verifiedAt = String(output.verifiedAt || "");
+    if (!codec || !Number.isFinite(Date.parse(verifiedAt))) {
+      unknownFiles.push(relativePath);
+      continue;
+    }
+    verifiedPages += 1;
+    actualEncodings.add(codec);
+    if (codec !== requested) mismatchedFiles.push(relativePath);
+  }
+
+  const pageCids = new Set(manifest.pages.map((page) => page.cid));
+  const outputCids = new Set(outputs.map((output) => output.cid));
+  const allPagesPresent = manifest.pages.length > 0
+    && [...pageCids].every((cid) => outputCids.has(cid));
+  const hasUnknownState = unknownFiles.length > 0 || !fileListMatchesManifest || !allPagesPresent;
+  const status: StrictEncodingAssessmentStatus = mismatchedFiles.length > 0
+    ? "mismatch"
+    : hasUnknownState
+      ? "unknown"
+      : "matched";
+  const actual = [...actualEncodings].sort();
+  const displayActual = actual.length > 0 ? actual.join("、") : "未知";
+  const missingPageCount = Math.max(0, manifest.pages.length - outputCids.size);
+  const summary = status === "mismatch"
+    ? `请求 ${requested}，但实际文件编码为 ${displayActual}；未上传候选，原归档已保留。`
+    : status === "unknown"
+      ? !fileListMatchesManifest
+        ? `请求 ${requested}，下载输出与待上传文件清单不一致，无法确认全部分P编码；未上传候选，原归档已保留。`
+        : `请求 ${requested}，有 ${Math.max(unknownFiles.length, missingPageCount)} 个分P未取得可验证编码（已验证 ${verifiedPages}/${manifest.pages.length}）；未上传候选，原归档已保留。`
+      : `请求 ${requested}，全部 ${verifiedPages} 个分P已验证为 ${displayActual}。`;
+
+  return {
+    status,
+    requestedEncoding: requested,
+    actualEncodings: actual.length > 0 ? actual : ["UNKNOWN"],
+    encodingMismatch: status !== "matched",
+    verifiedPages,
+    totalPages: manifest.pages.length,
+    mismatchedFiles,
+    unknownFiles: [
+      ...unknownFiles,
+      ...fileListMismatchPaths,
+    ],
+    summary,
+  };
+}
+
+export function assessStrictQuality(
+  downloadDir: string,
+  requestedQuality: string,
+  files?: string[],
+): StrictQualityAssessment {
+  const manifest = readDownloadSession(downloadDir);
+  const requested = normalizeBilibiliQualityLabel(requestedQuality) || String(requestedQuality || "").trim().toUpperCase();
+  if (!manifest || !requested) {
+    return {
+      status: "unknown",
+      requestedQuality: requested || String(requestedQuality || "").trim(),
+      actualQualities: ["UNKNOWN"],
+      qualityMismatch: true,
+      verifiedPages: 0,
+      totalPages: manifest?.pages.length || 0,
+      mismatchedFiles: [],
+      unknownFiles: [],
+      summary: `请求 ${requested || "未知画质"}，下载清单或画质证明缺失；未上传候选，原归档已保留。`,
+    };
+  }
+
+  const outputs = [...manifest.outputs];
+  const outputPaths = outputs.map((output) => normalizedSessionPath(output.relativePath));
+  const selectedPaths = files && files.length > 0
+    ? [...new Set(files.map(normalizedSessionPath).filter(Boolean))]
+    : outputPaths;
+  const selectedSet = new Set(selectedPaths);
+  const outputSet = new Set(outputPaths);
+  const fileListMatchesManifest = selectedPaths.length === outputPaths.length
+    && outputPaths.every((relativePath) => selectedSet.has(relativePath));
+  const fileListMismatchPaths = [
+    ...outputPaths.filter((relativePath) => !selectedSet.has(relativePath)),
+    ...selectedPaths.filter((relativePath) => !outputSet.has(relativePath)),
+  ];
+  const selectedStreams = new Map((manifest.selectedStreams || []).map((item) => [item.cid, item] as const));
+  const actualQualities = new Set<string>();
+  const mismatchedFiles: string[] = [];
+  const unknownFiles: string[] = [];
+  let verifiedPages = 0;
+
+  for (const output of outputs) {
+    const relativePath = normalizedSessionPath(output.relativePath);
+    const selected = selectedStreams.get(output.cid);
+    const actual = normalizeBilibiliQualityLabel(selected?.bilibiliQuality);
+    if (!selected || !actual || !Number.isFinite(Date.parse(String(selected.observedAt || "")))) {
+      unknownFiles.push(relativePath);
+      continue;
+    }
+    verifiedPages += 1;
+    actualQualities.add(actual);
+    if (actual !== requested) mismatchedFiles.push(relativePath);
+  }
+
+  const pageCids = new Set(manifest.pages.map((page) => page.cid));
+  const outputCids = new Set(outputs.map((output) => output.cid));
+  const allPagesPresent = manifest.pages.length > 0
+    && [...pageCids].every((cid) => outputCids.has(cid));
+  const hasUnknownState = unknownFiles.length > 0 || !fileListMatchesManifest || !allPagesPresent;
+  const status: StrictQualityAssessmentStatus = mismatchedFiles.length > 0
+    ? "mismatch"
+    : hasUnknownState
+      ? "unknown"
+      : "matched";
+  const actual = [...actualQualities].sort();
+  const displayActual = actual.length > 0 ? actual.join("、") : "未知";
+  const missingPageCount = Math.max(0, manifest.pages.length - outputCids.size);
+  const summary = status === "mismatch"
+    ? `请求 ${requested}，但 BBDown 选择的实际画质为 ${displayActual}；未上传候选，原归档已保留。`
+    : status === "unknown"
+      ? !fileListMatchesManifest
+        ? `请求 ${requested}，下载输出与待上传文件清单不一致，无法确认全部分P画质；未上传候选，原归档已保留。`
+        : `请求 ${requested}，有 ${Math.max(unknownFiles.length, missingPageCount)} 个分P未取得可验证画质（已验证 ${verifiedPages}/${manifest.pages.length}）；未上传候选，原归档已保留。`
+      : `请求 ${requested}，全部 ${verifiedPages} 个分P已验证为 ${displayActual}。`;
+
+  return {
+    status,
+    requestedQuality: requested,
+    actualQualities: actual.length > 0 ? actual : ["UNKNOWN"],
+    qualityMismatch: status !== "matched",
+    verifiedPages,
+    totalPages: manifest.pages.length,
+    mismatchedFiles,
+    unknownFiles: [...unknownFiles, ...fileListMismatchPaths],
+    summary,
+  };
 }
 
 function ffprobePath() {
@@ -686,6 +970,8 @@ export async function prepareDownloadSession(options: {
   publishedAt?: number;
   unavailable?: boolean;
   qualityUpgrade?: DownloadSessionManifest["qualityUpgrade"];
+  /** Keep a strict encoding candidate out of the complete state until ffprobe is checked. */
+  deferCompleteStatus?: boolean;
 }) : Promise<PreparedDownloadSession> {
   const { downloadDir, bvid, accountUid, config } = options;
   await fs.promises.mkdir(downloadDir, { recursive: true });
@@ -731,21 +1017,29 @@ export async function prepareDownloadSession(options: {
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
-      const compatibleBbdownUpgrade = [
-        PREVIOUS_BBDOWN_SOURCE_COMMIT,
-        LEGACY_BBDOWN_SOURCE_COMMIT,
-      ].includes(manifest.bbdownCommit)
+      const probeOnlyBbdownUpgrade = manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
+        && previousSnapshot.apiMode === nextSnapshot.apiMode
+        && sameRuntimeConfig;
+      const compatibleBbdownUpgrade = probeOnlyBbdownUpgrade || (
+        [
+          PREVIOUS_BBDOWN_PROBE_COMMIT,
+          LEGACY_BBDOWN_SOURCE_COMMIT,
+          HISTORIC_BBDOWN_SOURCE_COMMIT,
+        ].includes(manifest.bbdownCommit)
         && previousSnapshot.apiMode === nextSnapshot.apiMode
         && nextSnapshot.apiMode !== "app"
-        && sameRuntimeConfig;
+        && sameRuntimeConfig
+      );
       const legacyWebUpgrade = !previousSnapshot.apiMode
         && nextSnapshot.apiMode === "web"
         && sameRuntimeConfig
         && (
           manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === PREVIOUS_BBDOWN_PROBE_COMMIT
           || manifest.bbdownCommit === LEGACY_BBDOWN_SOURCE_COMMIT
           || manifest.bbdownCommit === HISTORIC_BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === OLDEST_HISTORIC_BBDOWN_SOURCE_COMMIT
         );
       if (!legacyWebUpgrade && !compatibleBbdownUpgrade) {
         incompatibleFragmentsMoved = await quarantineIncompatibleFragments(downloadDir);
@@ -770,7 +1064,7 @@ export async function prepareDownloadSession(options: {
   const completedCids = new Set(manifest.outputs.map((output) => output.cid));
   const missingPages = manifest.pages.filter((page) => !completedCids.has(page.cid));
   manifest.status = missingPages.length === 0 && manifest.pages.length > 0
-    ? "complete"
+    ? options.deferCompleteStatus ? "prepared" : "complete"
     : options.unavailable && manifest.outputs.length > 0
       ? "partial"
       : "prepared";
@@ -785,13 +1079,18 @@ export async function prepareDownloadSession(options: {
   };
 }
 
-export async function refreshDownloadSessionOutputs(downloadDir: string) {
+export async function refreshDownloadSessionOutputs(
+  downloadDir: string,
+  options: { deferCompleteStatus?: boolean } = {},
+) {
   const manifest = readDownloadSession(downloadDir);
   if (!manifest) throw new Error(`Download session manifest is missing: ${downloadDir}`);
   await scanAndValidateOutputs(downloadDir, manifest);
   const completedCids = new Set(manifest.outputs.map((output) => output.cid));
   const missingPages = manifest.pages.filter((page) => !completedCids.has(page.cid));
-  manifest.status = missingPages.length === 0 && manifest.pages.length > 0 ? "complete" : "prepared";
+  manifest.status = missingPages.length === 0 && manifest.pages.length > 0 && !options.deferCompleteStatus
+    ? "complete"
+    : "prepared";
   writeDownloadSession(downloadDir, manifest);
   return { manifest, missingPages };
 }

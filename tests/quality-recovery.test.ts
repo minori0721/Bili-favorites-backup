@@ -109,3 +109,61 @@ test("replace and cleanup failures never offer a new encoding artifact", async (
     await removeTestDir(runtime);
   }
 });
+
+test("quality recovery can restart an isolated strict resolution artifact", async () => {
+  const runtime = await createTestDir("quality-resolution-recovery");
+  const manager = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite") });
+  const now = new Date().toISOString();
+  manager.replaceStateSnapshot({
+    schemaVersion: 13,
+    processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
+    videos: { BVQUALITY2: { bvid: "BVQUALITY2", title: "Quality 2", upperName: "Tester", firstSeenAt: now, lastSeenAt: now, biliStatus: "available", backupStatus: "verified" } },
+    relations: {
+      "u1:1:BVQUALITY2": {
+        userId: "u1", mediaId: 1, bvid: "BVQUALITY2", folderTitle: "Fav", firstSeenAt: now, lastSeenAt: now,
+        activeInFavorite: true, backupStatus: "verified", remotePath: "/backup/BVQUALITY2",
+        remoteFiles: [{ name: "old.mp4", path: "/backup/BVQUALITY2/old.mp4", size: 100, verificationStatus: "verified" }],
+      },
+    },
+  } as any);
+  const user = { id: "u1", uid: 1, name: "Tester", cookie: { SESSDATA: "a", bili_jct: "a", DedeUserID: "1" }, favorites: [{ mediaId: 1, title: "Fav" }], enabled: true, lastLoginAt: now };
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig({ bbdownQuality: "4K" }) } as any,
+    { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
+    manager,
+  ) as any;
+  scheduler.downloadQueue.setStartGate(() => false);
+  try {
+    const target = {
+      userId: "u1", mediaId: 1, folderTitle: "Fav", remotePath: "/backup/BVQUALITY2",
+      oldFiles: [{ name: "old.mp4", path: "/backup/BVQUALITY2/old.mp4", size: 100, verificationStatus: "verified" }],
+    };
+    const failed = scheduler.jobStore.enqueue({
+      kind: "quality_download",
+      dedupeKey: "quality-download:BVQUALITY2:old-artifact",
+      bvid: "BVQUALITY2",
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "manual_wait",
+      payload: {
+        bvid: "BVQUALITY2", artifactKey: "old-artifact",
+        qualityProfile: { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false, filenameTemplate: "<videoTitle>-<bvid>" },
+        target, targets: [target], downloadUserId: "u1", awaitingManualRecovery: true,
+        qualityFailure: { stage: "download", category: "tool", summary: "请求画质不可用", qualityEligible: true },
+      },
+    });
+    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `quality.${failed.id}`);
+    assert.equal(issue.availableActions[0].id, "retry_quality_with_quality");
+    const result = await scheduler.resolveRecoveryIssue(`quality.${failed.id}`, "retry_quality_with_quality", { quality: "1080P" });
+    assert.equal(result.ok, true);
+    const replacement = scheduler.jobStore.findById(result.jobId);
+    assert.ok(replacement);
+    assert.equal((replacement.payload as any).qualityProfile.quality, "1080P");
+    assert.equal((replacement.payload as any).qualityStrict, true);
+    assert.equal((replacement.payload as any).qualityStageLabel, "等待按 1080P（仅此画质）下载新版");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});

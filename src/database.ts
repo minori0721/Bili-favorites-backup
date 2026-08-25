@@ -13,7 +13,7 @@ import type {
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 10;
+export const DATABASE_SCHEMA_VERSION = 11;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 export const LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
@@ -99,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_videos_local_cleanup ON videos(backup_status, loc
 CREATE TABLE IF NOT EXISTS favorite_relations (
   user_id TEXT NOT NULL,
   media_id INTEGER NOT NULL,
+  source_kind TEXT NOT NULL DEFAULT 'favorite',
   bvid TEXT NOT NULL REFERENCES videos(bvid) ON DELETE CASCADE,
   backup_status TEXT NOT NULL,
   active_in_favorite INTEGER NOT NULL,
@@ -859,6 +860,21 @@ export class StateDatabase {
             this.db.exec("DROP TABLE transfer_session_files_v9");
           }
         }
+        if (currentVersion < 11) {
+          const relationColumns = new Set((this.db.pragma("table_info(favorite_relations)") as any[]).map((row) => String(row.name)));
+          if (!relationColumns.has("source_kind")) {
+            this.db.exec("ALTER TABLE favorite_relations ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'favorite'");
+          }
+          this.db.exec(`
+            UPDATE favorite_relations
+            SET source_kind=CASE
+              WHEN json_extract(payload_json, '$.sourceKind')='manual' THEN 'manual'
+              ELSE 'favorite'
+            END
+            WHERE COALESCE(source_kind, '')=''
+              OR source_kind NOT IN ('favorite','manual')
+          `);
+        }
         const remoteScheduleIndex = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_relations_remote_schedule'").get() as any;
         if (remoteScheduleIndex && !/ON favorite_relations\s*\(backup_status,/i.test(String(remoteScheduleIndex.sql || ""))) {
           this.db.exec("DROP INDEX idx_relations_remote_schedule");
@@ -884,6 +900,7 @@ export class StateDatabase {
           CREATE INDEX IF NOT EXISTS idx_videos_access_restriction ON videos(access_restriction_type, access_last_checked_at DESC, bvid);
           CREATE INDEX IF NOT EXISTS idx_relations_remote_schedule
             ON favorite_relations(backup_status, COALESCE(next_remote_check_at, last_remote_check_at, 0), bvid);
+          CREATE INDEX IF NOT EXISTS idx_relations_source ON favorite_relations(source_kind, user_id, media_id, last_seen_at DESC, bvid);
           CREATE UNIQUE INDEX idx_archive_deletions_active
             ON archive_deletions((1))
             WHERE status IN ('preparing','config_removing','pending','running','retry_wait');
@@ -2114,13 +2131,13 @@ export class StateDatabase {
     `);
     const deleteVideo = this.db.prepare("DELETE FROM videos WHERE bvid=?");
     const upsertRelation = this.db.prepare(`
-      INSERT INTO favorite_relations(user_id, media_id, bvid, backup_status, active_in_favorite, folder_title,
+      INSERT INTO favorite_relations(user_id, media_id, source_kind, bvid, backup_status, active_in_favorite, folder_title,
         fav_order, last_seen_at, favorite_unavailable, self_visible, last_remote_check_at,
         next_remote_check_at, account_detached_at, payload_json, updated_at)
-      VALUES(@userId, @mediaId, @bvid, @backupStatus, @active, @folderTitle, @favOrder, @lastSeenAt,
+      VALUES(@userId, @mediaId, @sourceKind, @bvid, @backupStatus, @active, @folderTitle, @favOrder, @lastSeenAt,
         @favoriteUnavailable, @selfVisible, @lastRemoteCheckAt, @nextRemoteCheckAt, @accountDetachedAt,
         @payload, @updatedAt)
-      ON CONFLICT(user_id, media_id, bvid) DO UPDATE SET backup_status=excluded.backup_status,
+      ON CONFLICT(user_id, media_id, bvid) DO UPDATE SET source_kind=excluded.source_kind, backup_status=excluded.backup_status,
         active_in_favorite=excluded.active_in_favorite, folder_title=excluded.folder_title,
         fav_order=excluded.fav_order, last_seen_at=excluded.last_seen_at,
         favorite_unavailable=excluded.favorite_unavailable, self_visible=excluded.self_visible,
@@ -2168,6 +2185,7 @@ export class StateDatabase {
         }
         upsertRelation.run({
           ...parts,
+          sourceKind: relation.sourceKind === "manual" ? "manual" : "favorite",
           backupStatus: relation.backupStatus || "discovered",
           active: relation.activeInFavorite ? 1 : 0,
           folderTitle: relation.folderTitle || "",

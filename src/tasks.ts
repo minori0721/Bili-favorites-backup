@@ -9,8 +9,12 @@ import type { RemoteFileRecord, UploadFileMetadata } from "./state.js";
 import { tempDir } from "./paths.js";
 import { joinRemotePath } from "./utils.js";
 import {
+  assessStrictEncoding,
+  assessStrictQuality,
   buildUploadFileMetadataFromSession,
   cleanupUploadedSessionFiles,
+  createStrictEncodingValidationError,
+  StrictQualityValidationError,
   type DownloadSessionManifest,
 } from "./download-session.js";
 import { sanitizeUploadText } from "./upload-health.js";
@@ -51,6 +55,11 @@ export interface QualityEncodingOverride {
   strict: boolean;
 }
 
+export interface StrictMediaTarget {
+  quality?: string;
+  encoding?: BBDownEncoding;
+}
+
 export class DownloadTask extends Task {
   bvid: string;
   cookie: BiliCookie;
@@ -58,6 +67,10 @@ export class DownloadTask extends Task {
   downloadDir?: string;
   downloadDirOverride?: string;
   encodingRetry?: EncodingRetryContext;
+  /** Manual/archive exact requests keep their target separate from the global preference. */
+  qualityProfile?: QualityArtifactProfile;
+  qualityStrict = false;
+  qualityEncodingOverride?: QualityEncodingOverride;
   videoTitle?: string;
   upperName?: string;
   cover?: string;
@@ -100,6 +113,12 @@ export class DownloadTask extends Task {
         this.onPrepared?.(this, downloadDir, manifest);
       },
       apiModeOverride: this.apiModeOverride,
+      expectedEncoding: this.encodingRetry?.strict
+        ? this.encodingRetry.priority[0]
+        : this.qualityEncodingOverride?.strict
+          ? this.qualityEncodingOverride.priority[0]
+          : undefined,
+      expectedQuality: this.qualityStrict ? this.qualityProfile?.quality : undefined,
       onApiReady: (mode) => this.onApiReady?.(this, mode),
     });
     this.downloadDir = result.downloadDir;
@@ -139,6 +158,7 @@ export class QualityUpgradeTask extends Task {
   targets: QualityUpgradeTarget[];
   artifactKey: string;
   qualityProfile: QualityArtifactProfile;
+  qualityStrict = false;
   qualityEncodingOverride?: QualityEncodingOverride;
   downloadUserId?: string;
   downloadRunner = downloadWithBBDown;
@@ -190,6 +210,7 @@ export class QualityUpgradeTask extends Task {
       targets?: QualityUpgradeTarget[];
       artifactKey?: string;
       qualityProfile?: QualityArtifactProfile;
+      qualityStrict?: boolean;
       qualityEncodingOverride?: QualityEncodingOverride;
     } = {}
   ) {
@@ -198,6 +219,7 @@ export class QualityUpgradeTask extends Task {
     this.cookie = cookie;
     this.qualityProfile = normalizeQualityArtifactProfile(shared.qualityProfile || qualityArtifactProfileFromConfig(config));
     this.config = applyQualityArtifactProfile(config, this.qualityProfile);
+    this.qualityStrict = Boolean(shared.qualityStrict);
     this.qualityEncodingOverride = shared.qualityEncodingOverride;
     this.targets = uniqueQualityUpgradeTargets([target, ...(shared.targets || [])]);
     this.target = this.targets[0];
@@ -243,6 +265,10 @@ export class QualityUpgradeTask extends Task {
         targets: this.targets,
       },
       apiModeOverride: this.apiModeOverride,
+      expectedEncoding: this.qualityEncodingOverride?.strict
+        ? this.qualityEncodingOverride.priority[0]
+        : undefined,
+      expectedQuality: this.qualityStrict ? this.qualityProfile.quality : undefined,
       onApiReady: (mode) => this.onApiReady?.(this, mode),
     });
     this.downloadDir = result.downloadDir;
@@ -262,6 +288,22 @@ export class QualityUpgradeTask extends Task {
     console.log(`[Task] Starting quality-upgrade staged upload for ${this.bvid}`);
     this.qualityStage = "upload";
     this.qualityStageLabel = "上传新版到临时目录";
+    if (this.qualityEncodingOverride?.strict) {
+      const assessment = assessStrictEncoding(
+        this.downloadDir,
+        this.qualityEncodingOverride.priority[0],
+        this.outputFiles,
+      );
+      if (assessment.status !== "matched") {
+        throw createStrictEncodingValidationError(assessment, "upload_preflight");
+      }
+    }
+    if (this.qualityStrict) {
+      const assessment = assessStrictQuality(this.downloadDir, this.qualityProfile.quality, this.outputFiles);
+      if (assessment.status !== "matched") {
+        throw new StrictQualityValidationError(assessment, "upload_preflight");
+      }
+    }
     const filenameMetadataByPath = buildUploadFileMetadataFromSession(this.downloadDir, this.outputFiles, {
       requireVerifiedMediaMetadata: true,
     });
@@ -542,6 +584,7 @@ export class UploadTask extends Task {
   reuploadPermissionUsed = false;
   resumeOnly = false;
   encodingRetry?: EncodingRetryContext;
+  strictMediaTarget?: StrictMediaTarget;
   onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
 
   constructor(
@@ -579,6 +622,7 @@ export class UploadTask extends Task {
       consumeReuploadPermission?: (relativePath: string) => boolean;
       resumeOnly?: boolean;
       encodingRetry?: EncodingRetryContext;
+      strictMediaTarget?: StrictMediaTarget;
       onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
       onConflictCandidateUploading?: (task: UploadTask) => void;
     } = {}
@@ -617,6 +661,7 @@ export class UploadTask extends Task {
     this.consumeReuploadPermission = options.consumeReuploadPermission;
     this.resumeOnly = Boolean(options.resumeOnly);
     this.encodingRetry = options.encodingRetry;
+    this.strictMediaTarget = options.strictMediaTarget;
     this.onTransferSession = options.onTransferSession;
     this.onConflictCandidateUploading = options.onConflictCandidateUploading;
   }
@@ -627,6 +672,20 @@ export class UploadTask extends Task {
       throw new Error("Upload file whitelist is missing; local cache must be adopted before upload");
     }
     this.allowReupload = false;
+    const strictEncoding = this.strictMediaTarget?.encoding
+      || (this.encodingRetry?.strict ? this.encodingRetry.priority[0] : undefined);
+    if (strictEncoding) {
+      const assessment = assessStrictEncoding(this.downloadDir, strictEncoding, this.files);
+      if (assessment.status !== "matched") {
+        throw createStrictEncodingValidationError(assessment, "upload_preflight");
+      }
+    }
+    if (this.strictMediaTarget?.quality) {
+      const assessment = assessStrictQuality(this.downloadDir, this.strictMediaTarget.quality, this.files);
+      if (assessment.status !== "matched") {
+        throw new StrictQualityValidationError(assessment, "upload_preflight");
+      }
+    }
     if (this.conflictCandidateOnly) {
       this.result = await this.runConflictCandidate(
         this.conflictCandidateReasonCode || "UPLOAD_MANUAL_CONFLICT_CANDIDATE",

@@ -342,6 +342,31 @@ test("playback queue uses favorite order, focus pagination, stable parts, and hi
   }
 });
 
+test("manual archive sources use the same verified playback path with mediaId -1", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const state = playbackState();
+    const original = state.relations!["u1:10:BVPLAY001"];
+    const manual = {
+      ...original,
+      mediaId: -1,
+      sourceKind: "manual" as const,
+      folderTitle: "手动归档",
+      activeInFavorite: true,
+    };
+    state.relations = {
+      "u1:-1:BVPLAY001": manual,
+    };
+    database.replaceState(state);
+    const queue = getPlaybackQueue(database, "u1", -1, { focusBvid: "BVPLAY001" });
+    assert.ok(queue);
+    assert.equal(queue.items[0].source.mediaId, -1);
+    assert.match(queue.items[0].parts[0].streamUrl, /\/favorites\/-1\/playback\/files\/\d+$/);
+  } finally {
+    database.close();
+  }
+});
+
 test("playback excludes sources throughout archive deletion preparation and execution", () => {
   const database = new StateDatabase(":memory:");
   try {

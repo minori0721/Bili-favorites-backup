@@ -27,6 +27,10 @@ type TestState = {
   storageCheckBody: unknown;
   storageCheckMode: "ok" | "path_error";
   queueBoardMode: "empty" | "manual_wait";
+  onlineNavigationCount: number;
+  onlineItemQueries: string[];
+  mediaProbeStartCount: number;
+  manualArchiveCount: number;
 };
 
 function initialState(): TestState {
@@ -52,6 +56,10 @@ function initialState(): TestState {
     storageCheckBody: null,
     storageCheckMode: "ok",
     queueBoardMode: "empty",
+    onlineNavigationCount: 0,
+    onlineItemQueries: [],
+    mediaProbeStartCount: 0,
+    manualArchiveCount: 0,
   };
 }
 
@@ -412,6 +420,54 @@ app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, respons
 app.get("/api/archive-library/playback-queue", (_request, response) => response.json(ok({
   mode: "library", page: 1, pageSize: 50, total: 0, focusIndex: -1, items: [],
 })));
+
+app.get("/api/online-content/navigation", (_request, response) => {
+  state.onlineNavigationCount += 1;
+  response.json(ok({
+    accounts: [{
+      userId: "user-1",
+      name: "测试账号",
+      sources: [{ kind: "favorite", mediaId: 101, title: "在线收藏夹" }],
+    }],
+  }));
+});
+app.get("/api/online-content/items", (request, response) => {
+  const query = String(request.query.q || "");
+  state.onlineItemQueries.push(query);
+  response.json(ok({
+    items: [{
+      id: "online-item-1",
+      userId: "user-1",
+      kind: "favorite",
+      bvid: "BV1ONLINE001",
+      title: query ? `在线搜索 ${query}` : "在线待归档视频",
+      upperName: "在线UP主",
+      archiveState: "unarchived",
+      openUrl: "https://www.bilibili.com/video/BV1ONLINE001",
+    }],
+    page: { page: 1, pageSize: 50, hasMore: false, nextCursor: null },
+  }));
+});
+app.post("/api/media-probe", (_request, response) => {
+  state.mediaProbeStartCount += 1;
+  response.status(202).json(ok({ probeId: "probe-online-1", status: "running", bvid: "BV1ONLINE001" }));
+});
+app.get("/api/media-probe/:id", (_request, response) => response.json(ok({
+  probeId: "probe-online-1",
+  bvid: "BV1ONLINE001",
+  status: "complete",
+  pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [{ bilibiliQuality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true }] }],
+  combinations: [{ bilibiliQuality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true }],
+  estimatedBytes: 24 * 1024 * 1024,
+  estimatedBytesKind: "final",
+  estimatedPeakBytes: 50 * 1024 * 1024,
+  cacheAvailableBytes: 512 * 1024 * 1024,
+  estimatedBytesSource: "api",
+})));
+app.post("/api/online-content/manual-archive", (_request, response) => {
+  state.manualArchiveCount += 1;
+  response.status(202).json(ok({ status: "queued", bvid: "BV1ONLINE001" }));
+});
 
 app.post("/api/users/:id/removal-preview", (_request, response) => response.json(ok({
   previewId: "account-preview", relationCount: 2, sourceCount: 1, fileCount: 2,

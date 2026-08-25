@@ -83,6 +83,7 @@ export default defineConfig({
           items: [
             { text: "整体运行流程", link: "/features/workflow" },
             { text: "本地归档库", link: "/features/archive-library" },
+            { text: "在线内容与封面", link: "/features/online-content" },
             { text: "归档播放器", link: "/features/player" },
             { text: "四列任务队列", link: "/features/queue" },
             { text: "上传确认", link: "/features/upload-verification" },

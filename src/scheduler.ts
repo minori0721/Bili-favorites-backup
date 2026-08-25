@@ -10,7 +10,7 @@ import {
   type BBDownApiMode,
   type BBDownEncoding,
 } from "./config.js";
-import { FavoriteRelation, StateManager, VideoArchiveEntry, type RemoteFileRecord } from "./state.js";
+import { FavoriteRelation, MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, StateManager, VideoArchiveEntry, type RemoteFileRecord } from "./state.js";
 import { BiliUser, downloadCredentialsForUser, UserStore } from "./users.js";
 import {
   BiliRiskOrLoginError,
@@ -35,14 +35,21 @@ import {
 } from "./queue.js";
 import { queueCoverCache } from "./cover-cache.js";
 import {
+  assessStrictEncoding,
+  assessStrictQuality,
   buildUploadFileMetadataFromSession,
   cleanupUploadedSessionFiles,
+  createStrictEncodingValidationError,
+  StrictQualityValidationError,
   DOWNLOAD_RETAINED_FILE,
   historySessionGroups,
   inspectDownloadCache,
+  markDownloadSessionStatus,
   markHistoryGroupUploaded,
   readDownloadSession,
   readDownloadSessionAsync,
+  strictEncodingDiagnosticPatch,
+  strictQualityDiagnosticPatch,
   type DownloadCacheInspection,
   type DownloadRecoverySummary,
   writeDownloadSession,
@@ -91,6 +98,7 @@ import {
   UploadVerificationTask,
   type EncodingRetryContext,
   type QualityEncodingOverride,
+  type StrictMediaTarget,
 } from "./tasks.js";
 import {
   applyQualityArtifactProfile,
@@ -213,6 +221,13 @@ export interface RecoveryIssue {
   fileName?: string;
   expectedSize?: number;
   observedSize?: number;
+  requestedEncoding?: BBDownEncoding;
+  actualEncodings?: string[];
+  encodingMismatch?: boolean;
+  requestedQuality?: string;
+  actualQualities?: string[];
+  qualityMismatch?: boolean;
+  verifiedPages?: number;
   occurredAt: number;
   checkedAt?: number;
   nextAutomaticCheckAt?: number;
@@ -240,6 +255,10 @@ interface RecoveryAssessment {
   candidateEligible?: boolean;
   failureCategory?: RemoteFailureCategory;
   operation?: "inspect" | "put";
+  requestedEncoding?: BBDownEncoding;
+  actualEncodings?: string[];
+  encodingMismatch?: boolean;
+  verifiedPages?: number;
   summary: string;
 }
 
@@ -301,6 +320,15 @@ function parseQualityEncodingOverride(value: unknown): QualityEncodingOverride |
     priority: normalizeBBDownEncodingPriority(item.priority),
     strict: item.strict !== false,
   };
+}
+
+function parseStrictMediaTarget(value: unknown): StrictMediaTarget | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  const quality = typeof item.quality === "string" ? item.quality.trim().slice(0, 64) : "";
+  const normalizedEncoding = typeof item.encoding === "string" ? item.encoding.trim().toUpperCase() : "";
+  const encoding = (["HEVC", "AVC", "AV1"] as const).find((candidate) => candidate === normalizedEncoding);
+  return quality || encoding ? { quality: quality || undefined, encoding } : undefined;
 }
 
 export class SyncScheduler {
@@ -502,7 +530,10 @@ export class SyncScheduler {
             summary: downloadFailure.summary,
             encodingEligible: downloadFailure.recoverable
               && /(?:codec|encoding|编码|hevc|av1|avc|视频流|video\s*stream|no available video)/i.test(downloadFailure.summary),
+            qualityEligible: Boolean(error?.qualityValidation),
             occurredAt: this.now(),
+            ...(error?.encodingAssessment ? strictEncodingDiagnosticPatch(error.encodingAssessment) : {}),
+            ...(error?.qualityAssessment ? strictQualityDiagnosticPatch(error.qualityAssessment) : {}),
           };
           const qualityPayload = { ...this.serializeQualityUpgrade(task.control), qualityFailure };
           this.jobStore.updatePayload(task.persistentJobId, qualityPayload);
@@ -576,6 +607,20 @@ export class SyncScheduler {
             downloadUserId: task.downloadUserId || task.userId,
             targets: targets.map((target) => ({ ...target })),
           },
+          ...(task.qualityStrict || task.qualityEncodingOverride?.strict
+            ? {
+              qualityFailure: {
+                stage: "download",
+                category: downloadFailure.category,
+                summary: downloadFailure.summary,
+                qualityEligible: Boolean(task.qualityStrict && error?.qualityValidation),
+                encodingEligible: Boolean(task.qualityEncodingOverride?.strict && error?.encodingValidation),
+                ...(error?.qualityAssessment ? strictQualityDiagnosticPatch(error.qualityAssessment) : {}),
+                ...(error?.encodingAssessment ? strictEncodingDiagnosticPatch(error.encodingAssessment) : {}),
+                occurredAt: this.now(),
+              },
+            }
+            : {}),
         };
         if (error?.permanent && !downloadFailure.recoverable) {
           this.jobStore.complete(task.persistentJobId, this.leaseOwner);
@@ -641,6 +686,8 @@ export class SyncScheduler {
         return;
       }
       const failure = this.recordUploadFailure(task, error);
+      const strictEncodingFailure = Boolean(error?.encodingValidation);
+      const strictQualityFailure = Boolean(error?.qualityValidation);
       const manualConflict = !isQualityUploadPhaseTask(task)
         && failure.category === "deterministic"
         && failure.status === 409;
@@ -665,12 +712,28 @@ export class SyncScheduler {
               && (failure.code === REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
                 || failure.remoteWriteEvidence === "target_missing_parent_visible"
                 || /(?:codec|encoding|编码|hevc|av1|avc)/i.test(failure.summary)),
+            qualityEligible: strictQualityFailure || (task instanceof QualityUpgradeUploadReplaceTask
+              && /(?:quality|画质|分辨率|清晰度)/i.test(failure.summary)),
             occurredAt: this.now(),
+            ...(error?.encodingAssessment ? strictEncodingDiagnosticPatch(error.encodingAssessment) : {}),
+            ...(error?.qualityAssessment ? strictQualityDiagnosticPatch(error.qualityAssessment) : {}),
           };
-          this.jobStore.updatePayload(task.persistentJobId, {
+          const qualityPayload = {
             ...this.serializeQualityUpgrade(task.control),
             qualityFailure,
-          });
+          };
+          if (strictEncodingFailure || strictQualityFailure) {
+            this.jobStore.parkManualRecovery(task.persistentJobId, this.leaseOwner, failure.summary, {
+              ...qualityPayload,
+              awaitingManualRecovery: true,
+            });
+            task.control.qualityStageLabel = strictQualityFailure ? "画质不可用，等待选择" : "编码不可用，等待选择";
+            this.syncQualityUpgradeControl(task, "error");
+            task.control.onFailed?.(task.control, error);
+            this.dispatchPersistentJobs();
+            return;
+          }
+          this.jobStore.updatePayload(task.persistentJobId, qualityPayload);
           if (task instanceof QualityUpgradeCleanupTask) {
             const attempts = Number((task.persistentJob as any)?.attempts || 0);
             const circuitRetryAt = this.uploadCircuit.getRetryAt();
@@ -811,6 +874,68 @@ export class SyncScheduler {
       }
       this.refreshLocalCacheState();
       if (task instanceof QualityUpgradeDownloadTask) {
+        const strictEncoding = task.control.qualityEncodingOverride?.strict
+          ? task.control.qualityEncodingOverride.priority[0]
+          : undefined;
+        if (strictEncoding && task.control.downloadDir) {
+          const assessment = assessStrictEncoding(task.control.downloadDir, strictEncoding, task.control.outputFiles);
+          if (assessment.status !== "matched") {
+            const error = createStrictEncodingValidationError(assessment, "upload_preflight");
+            markDownloadSessionStatus(task.control.downloadDir, "failed", error.message);
+            task.control.error = error;
+            const qualityPayload = {
+              ...this.serializeQualityUpgrade(task.control),
+              awaitingManualRecovery: true,
+              qualityFailure: {
+                stage: "download",
+                category: "tool",
+                code: error.code,
+                summary: assessment.summary,
+                encodingEligible: true,
+                occurredAt: this.now(),
+                ...strictEncodingDiagnosticPatch(assessment),
+              },
+            };
+            if (task.persistentJobId) {
+              this.jobStore.parkManualRecovery(task.persistentJobId, this.leaseOwner, assessment.summary, qualityPayload);
+            }
+            task.control.qualityStageLabel = "编码不可用，等待选择";
+            this.syncQualityUpgradeControl(task, "error");
+            task.control.onFailed?.(task.control, error);
+            this.dispatchPersistentJobs();
+            return;
+          }
+        }
+        const strictQuality = task.control.qualityStrict ? task.control.qualityProfile.quality : undefined;
+        if (strictQuality && task.control.downloadDir) {
+          const assessment = assessStrictQuality(task.control.downloadDir, strictQuality, task.control.outputFiles);
+          if (assessment.status !== "matched") {
+            const error = new StrictQualityValidationError(assessment, "upload_preflight");
+            markDownloadSessionStatus(task.control.downloadDir, "failed", error.message);
+            task.control.error = error;
+            const qualityPayload = {
+              ...this.serializeQualityUpgrade(task.control),
+              awaitingManualRecovery: true,
+              qualityFailure: {
+                stage: "download",
+                category: "tool",
+                code: error.code,
+                summary: assessment.summary,
+                qualityEligible: true,
+                occurredAt: this.now(),
+                ...strictQualityDiagnosticPatch(assessment),
+              },
+            };
+            if (task.persistentJobId) {
+              this.jobStore.parkManualRecovery(task.persistentJobId, this.leaseOwner, assessment.summary, qualityPayload);
+            }
+            task.control.qualityStageLabel = "画质不可用，等待选择";
+            this.syncQualityUpgradeControl(task, "error");
+            task.control.onFailed?.(task.control, error);
+            this.dispatchPersistentJobs();
+            return;
+          }
+        }
         task.control.qualityStage = "upload";
         task.control.qualityStageLabel = "等待上传替换";
         const persisted = task.persistentJobId ? this.jobStore.findById(task.persistentJobId) : null;
@@ -855,7 +980,31 @@ export class SyncScheduler {
       }
       const targets = this.collectUploadTargets(task.bvid, task.targets || this.makeSingleTarget(task));
       const encodingRetry = task.encodingRetry;
+      if (encodingRetry?.strict) {
+        const assessment = assessStrictEncoding(task.downloadDir, encodingRetry.priority[0], task.outputFiles);
+        if (assessment.status !== "matched") {
+          const error = createStrictEncodingValidationError(assessment, "upload_preflight");
+          markDownloadSessionStatus(task.downloadDir, "failed", error.message);
+          this.finishEncodingRetryFailure(
+            task.bvid,
+            encodingRetry,
+            assessment.summary,
+            assessment.status === "mismatch" ? "mismatch" : "unknown",
+            task.persistentJobId,
+            "encoding_retry_failed",
+            strictEncodingDiagnosticPatch(assessment),
+          );
+          return;
+        }
+      }
       const historyGroups = encodingRetry ? [] : historySessionGroups(task.downloadDir);
+      const strictMediaTarget: StrictMediaTarget = {
+        quality: task.qualityStrict ? task.qualityProfile?.quality : undefined,
+        encoding: task.qualityEncodingOverride?.strict ? task.qualityEncodingOverride.priority[0] : undefined,
+      };
+      const persistedStrictMediaTarget = strictMediaTarget.quality || strictMediaTarget.encoding
+        ? strictMediaTarget
+        : undefined;
       targets.forEach((target) => {
         const uploadItem: RecoveryUploadItem = {
           bvid: task.bvid,
@@ -872,6 +1021,7 @@ export class SyncScheduler {
           partialBackup: task.partialBackup,
           automaticRecoveryAttempts: Math.max(0, Number(task.automaticRecoveryAttempts || 0)),
           encodingRetry,
+          strictMediaTarget: persistedStrictMediaTarget,
         };
         const uploadJobId = this.queueUploadWork(uploadItem, false);
         if (encodingRetry && uploadJobId) {
@@ -1326,6 +1476,7 @@ export class SyncScheduler {
            sessionGeneration,
           sessionVerification: true,
           encodingRetry: task.encodingRetry,
+          strictMediaTarget: task.strictMediaTarget,
         },
       });
       createdJobIds.push(created.id);
@@ -1366,6 +1517,7 @@ export class SyncScheduler {
            sessionId: task.sessionId,
            sessionGeneration,
            encodingRetry: task.encodingRetry,
+           strictMediaTarget: task.strictMediaTarget,
          },
       });
       createdJobIds.push(created.id);
@@ -1425,19 +1577,28 @@ export class SyncScheduler {
         userId: relation.userId,
         mediaId: relation.mediaId,
         folderTitle: resolved.folderTitle,
-        remotePath: relation.remotePath || resolveRemotePath({
-          destination: baseConfig.alistDest,
-          layout: baseConfig.uploadLayout,
-          userName: resolved.user.name,
-          folderName: resolved.folderTitle,
-        }),
+        remotePath: relation.remotePath || this.resolveRelationRemotePath(resolved.user, relation.mediaId, resolved.folderTitle, baseConfig),
       });
     }
     const targets = [...targetsByRelation.values()];
     if (targets.length === 0) return null;
-    const taskConfig = encodingRetry
-      ? applyBBDownEncodingPreference(baseConfig, encodingRetry.priority, encodingRetry.strict)
+    const payloadQualityProfile = payload.qualityProfile && typeof payload.qualityProfile === "object"
+      ? normalizeQualityArtifactProfile(payload.qualityProfile)
+      : undefined;
+    const qualityStrict = Boolean(payload.qualityStrict && payloadQualityProfile);
+    const qualityEncodingOverride = parseQualityEncodingOverride(payload.qualityEncodingOverride);
+    let taskConfig = payloadQualityProfile
+      ? applyQualityArtifactProfile(baseConfig, payloadQualityProfile)
       : baseConfig;
+    if (encodingRetry) {
+      taskConfig = applyBBDownEncodingPreference(taskConfig, encodingRetry.priority, encodingRetry.strict);
+    } else if (qualityEncodingOverride) {
+      taskConfig = applyBBDownEncodingPreference(
+        taskConfig,
+        qualityEncodingOverride.priority,
+        qualityEncodingOverride.strict,
+      );
+    }
     const task = new DownloadTask(bvid, downloadCredentialsForUser(downloadUser), taskConfig);
     task.maxRetries = 0;
     task.persistentJobId = job.id;
@@ -1449,7 +1610,14 @@ export class SyncScheduler {
     task.remotePath = targets[0]?.remotePath;
     task.targets = targets;
     task.encodingRetry = encodingRetry || undefined;
-    task.downloadDirOverride = encodingRetry?.candidateLocalDir;
+    task.qualityProfile = payloadQualityProfile;
+    task.qualityStrict = qualityStrict;
+    task.qualityEncodingOverride = qualityEncodingOverride || undefined;
+    const exactArtifact = payloadQualityProfile && (qualityStrict || qualityEncodingOverride?.strict)
+      ? String(payload.qualityArtifactKey || buildQualityArtifactKey(bvid, payloadQualityProfile))
+      : "";
+    task.downloadDirOverride = encodingRetry?.candidateLocalDir
+      || (exactArtifact ? path.join(tempDir, `manual-${bvid}-${exactArtifact.slice(0, 16)}`) : undefined);
     task.automaticRecoveryAttempts = Math.max(0, Number(payload.automaticRecoveryAttempts || 0));
     const meta = this.stateManager.getVideoMeta(bvid);
     task.videoTitle = meta?.title || bvid;
@@ -1578,6 +1746,7 @@ export class SyncScheduler {
       targetCount: normalizedTargets.length,
       artifactKey: task.artifactKey,
       qualityProfile: task.qualityProfile,
+      qualityStrict: task.qualityStrict,
       qualityEncodingOverride: task.qualityEncodingOverride,
       qualityStageLabel: task.qualityStageLabel,
       runId: task.runId,
@@ -1646,7 +1815,13 @@ export class SyncScheduler {
       SESSDATA: "",
       bili_jct: "",
       DedeUserID: "",
-    }, taskConfig, target, { targets, artifactKey: resolvedArtifactKey, qualityProfile, qualityEncodingOverride: qualityEncodingOverride || undefined });
+    }, taskConfig, target, {
+      targets,
+      artifactKey: resolvedArtifactKey,
+      qualityProfile,
+      qualityStrict: Boolean(payload.qualityStrict),
+      qualityEncodingOverride: qualityEncodingOverride || undefined,
+    });
     task.runId = payload.runId;
     task.downloadDir = payload.downloadDir;
     task.outputFiles = Array.isArray(payload.outputFiles) ? payload.outputFiles : [];
@@ -2346,6 +2521,7 @@ export class SyncScheduler {
       priority: false,
       awaitingManualRecovery: true,
       resumeOnly: true,
+      strictMediaTarget: payload.strictMediaTarget,
     });
     if (manualRecovery) {
       const recovery = this.jobStore.findByDedupeKey(`upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || ""}:${payload.historyOnly ? payload.historySnapshotAt || "history" : "main"}`);
@@ -2398,6 +2574,7 @@ export class SyncScheduler {
       priority: false,
       awaitingManualRecovery: true,
       resumeOnly: true,
+      strictMediaTarget: payload.strictMediaTarget,
     });
     if (manualRecovery) {
       const recoveryKey = `upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || session?.remotePath || ""}:${payload.historyOnly ? payload.historySnapshotAt || "history" : "main"}`;
@@ -2779,12 +2956,23 @@ export class SyncScheduler {
     payloadPatch: Record<string, unknown> = {},
   ) {
     const summary = sanitizeUploadText(reason, 300);
+    const encodingDiagnostic = payloadPatch.requestedEncoding
+      ? {
+        requestedEncoding: payloadPatch.requestedEncoding as BBDownEncoding,
+        actualEncodings: Array.isArray(payloadPatch.actualEncodings)
+          ? payloadPatch.actualEncodings.map(String).filter(Boolean)
+          : [],
+        encodingMismatch: payloadPatch.encodingMismatch !== false,
+        verifiedPages: Math.max(0, Number(payloadPatch.verifiedPages || 0)),
+      }
+      : {};
     const assessment: RecoveryAssessment = {
       kind: assessmentKind,
       checkedAt: this.now(),
       localStatus: fs.existsSync(context.originalLocalDir) ? "available" : "missing",
       remoteStatus,
       summary,
+      ...encodingDiagnostic,
     };
     const updated = this.jobStore.finishEncodingRetry(context.parentJobId, context.generation, {
       recoveryAssessment: assessment,
@@ -2846,6 +3034,19 @@ export class SyncScheduler {
       return;
     }
     const summary = sanitizeUploadText(error?.message || error || "编码替换下载失败", 500);
+    if (error?.encodingValidation) {
+      const assessment = error.encodingAssessment;
+      this.finishEncodingRetryFailure(
+        task.bvid,
+        context,
+        assessment?.summary || summary,
+        assessment?.status === "mismatch" ? "mismatch" : "unknown",
+        task.persistentJobId,
+        "encoding_retry_failed",
+        assessment ? strictEncodingDiagnosticPatch(assessment) : {},
+      );
+      return;
+    }
     const apiRetryAt = this.handleDownloadApiFailure(task, error);
     const job = task.persistentJob as any;
     if (!error?.permanent && apiRetryAt) {
@@ -2882,6 +3083,19 @@ export class SyncScheduler {
     if (!this.isEncodingRetryParentActive(context)) {
       this.jobStore.complete(task.persistentJobId, this.leaseOwner);
       this.dispatchPersistentJobs();
+      return;
+    }
+    if (error?.encodingValidation) {
+      const assessment = error.encodingAssessment;
+      this.finishEncodingRetryFailure(
+        task.bvid,
+        context,
+        assessment?.summary || sanitizeUploadText(error?.message || error, 500),
+        assessment?.status === "mismatch" ? "mismatch" : "unknown",
+        task.persistentJobId,
+        "encoding_retry_failed",
+        assessment ? strictEncodingDiagnosticPatch(assessment) : {},
+      );
       return;
     }
     const failure = this.recordUploadFailure(task, error);
@@ -3141,6 +3355,7 @@ export class SyncScheduler {
       reuploadAuthorizedFiles,
       resumeOnly: Boolean(item.resumeOnly || item.allowReupload || reuploadAuthorizedFiles.length > 0),
       encodingRetry: item.encodingRetry,
+      strictMediaTarget: parseStrictMediaTarget(item.strictMediaTarget),
     });
     uploadTask.consumeReuploadPermission = (relativePath) => {
       if (uploadTask.persistentJobId) {
@@ -4064,6 +4279,10 @@ export class SyncScheduler {
       writeStatus: assessment?.writeStatus,
       writeEvidence: assessment?.writeEvidence,
       uploadAttempts: assessment?.uploadAttempts,
+      requestedEncoding: assessment?.requestedEncoding,
+      actualEncodings: assessment?.actualEncodings,
+      encodingMismatch: assessment?.encodingMismatch,
+      verifiedPages: assessment?.verifiedPages,
       firstObservedAt: assessment?.firstObservedAt,
       consecutiveObservations: assessment?.consecutiveObservations,
       candidateEligible,
@@ -4089,6 +4308,10 @@ export class SyncScheduler {
       fileName: assessment?.fileName || (payload.conflictRelativePath ? path.basename(String(payload.conflictRelativePath)) : undefined),
       expectedSize: assessment?.expectedSize,
       observedSize: assessment?.observedSize,
+      requestedEncoding: assessment?.requestedEncoding,
+      actualEncodings: assessment?.actualEncodings,
+      encodingMismatch: assessment?.encodingMismatch,
+      verifiedPages: assessment?.verifiedPages,
       occurredAt: job.updatedAt || job.createdAt || this.now(),
       checkedAt: assessment?.checkedAt,
       nextAutomaticCheckAt: assessment?.nextCheckAt,
@@ -4127,6 +4350,9 @@ export class SyncScheduler {
       jobKind: job.kind,
       downloadCategory: category,
       alternateAccounts,
+      downloadEncodingEligible: payload.qualityFailure?.encodingEligible === true,
+      downloadQualityEligible: payload.qualityFailure?.qualityEligible === true,
+      downloadQualityChoices: this.qualityRetryChoices(payload.qualityProfile?.quality),
     });
     const meta = job.bvid ? this.stateManager.getVideoMeta(String(job.bvid)) : null;
     const titleByKind: Record<string, string> = {
@@ -4135,11 +4361,14 @@ export class SyncScheduler {
       download_tool_failure: "本地下载工具需要处理",
     };
     const local = job.bvid ? this.stateManager.getCompletedLocalDownload(String(job.bvid)) : null;
+    const strictMediaTarget = payload.qualityStrict === true || payload.qualityEncodingOverride?.strict === true;
     return {
       id: `download.${job.id}`,
       kind,
       severity: recoveryIssueSeverity(kind),
-      title: titleByKind[kind] || titleByKind.download_retry_exhausted,
+      title: strictMediaTarget && payload.qualityFailure
+        ? "严格媒体目标未满足"
+        : (titleByKind[kind] || titleByKind.download_retry_exhausted),
       summary: sanitizeUploadText(stored.summary || job.lastError || "下载任务已安全暂停，等待选择恢复方式。", 300),
       protectedFacts: [
         "收藏来源和远端目标保持不变",
@@ -4152,6 +4381,13 @@ export class SyncScheduler {
       videoTitle: meta?.title || undefined,
       upperName: meta?.upperName || undefined,
       userId: currentDownloadUserId || undefined,
+      requestedQuality: payload.qualityFailure?.requestedQuality || payload.qualityProfile?.quality || undefined,
+      actualQualities: payload.qualityFailure?.actualQualities,
+      qualityMismatch: payload.qualityFailure?.qualityMismatch,
+      requestedEncoding: payload.qualityFailure?.requestedEncoding || payload.qualityEncodingOverride?.priority?.[0],
+      actualEncodings: payload.qualityFailure?.actualEncodings,
+      encodingMismatch: payload.qualityFailure?.encodingMismatch,
+      verifiedPages: payload.qualityFailure?.verifiedPages,
       occurredAt: Number(stored.occurredAt || job.updatedAt || job.createdAt || this.now()),
       safeDiagnostic: JSON.stringify({
         issue: kind,
@@ -4163,18 +4399,23 @@ export class SyncScheduler {
         downloadUserId: currentDownloadUserId || undefined,
         alternateAccountCount: alternateAccounts.length,
         localDownloadRetained: Boolean(local),
+        strictMediaTarget,
+        requestedQuality: payload.qualityFailure?.requestedQuality || payload.qualityProfile?.quality,
+        actualQualities: payload.qualityFailure?.actualQualities,
+        requestedEncoding: payload.qualityFailure?.requestedEncoding || payload.qualityEncodingOverride?.priority?.[0],
+        actualEncodings: payload.qualityFailure?.actualEncodings,
       }, null, 2),
       disposition: "action_required",
     };
   }
 
-  private qualityEncodingRetryEligibility(job: any) {
+  private qualityArtifactRetryEligibility(job: any, evidenceField: "encodingEligible" | "qualityEligible", label: string) {
     if (!job || !["quality_download", "quality_upload"].includes(job.kind)) {
-      return { eligible: false, reason: "当前阶段不能安全地更换编码" };
+      return { eligible: false, reason: `当前阶段不能安全地更换${label}` };
     }
     const payload = job.payload as any;
-    if (payload?.qualityFailure?.encodingEligible !== true) {
-      return { eligible: false, reason: "失败证据不能明确指向编码或单文件限制" };
+    if (payload?.qualityFailure?.[evidenceField] !== true) {
+      return { eligible: false, reason: `失败证据不能明确指向${label}` };
     }
     if ((Array.isArray(payload.backupFiles) && payload.backupFiles.length > 0)
       || (Array.isArray(payload.finalFiles) && payload.finalFiles.length > 0)) {
@@ -4190,6 +4431,22 @@ export class SyncScheduler {
       if (proof) return { eligible: false, reason: "远端替换证明已经建立，只能恢复原阶段" };
     }
     return { eligible: true, reason: "旧归档尚未进入替换阶段" };
+  }
+
+  private qualityEncodingRetryEligibility(job: any) {
+    return this.qualityArtifactRetryEligibility(job, "encodingEligible", "编码或单文件限制");
+  }
+
+  private qualityQualityRetryEligibility(job: any) {
+    return this.qualityArtifactRetryEligibility(job, "qualityEligible", "画质档位");
+  }
+
+  private qualityRetryChoices(currentQuality: unknown) {
+    const current = String(currentQuality || "").trim().toUpperCase();
+    const values = ["8K", "4K", "1080P60", "1080P", "720P"];
+    return values
+      .filter((value) => value !== current)
+      .map((value) => ({ value, label: value }));
   }
 
   getRecoveryIssues() {
@@ -4211,11 +4468,14 @@ export class SyncScheduler {
         ? this.stateManager.getVideoMeta(String(job.bvid))
         : null;
       const encodingEligibility = this.qualityEncodingRetryEligibility(job);
+      const qualityEligibility = this.qualityQualityRetryEligibility(job);
       const actions = planRecoveryActions({
         domain: "quality",
         kind: "quality_failed",
         jobKind: job.kind,
         qualityEncodingEligible: encodingEligibility.eligible,
+        qualityQualityEligible: qualityEligibility.eligible,
+        qualityChoices: this.qualityRetryChoices(payload.qualityProfile?.quality),
       });
       issues.push({
         id: `quality.${job.id}`,
@@ -4241,6 +4501,10 @@ export class SyncScheduler {
            failureCategory: payload.qualityFailure?.category,
            encodingRetryEligible: encodingEligibility.eligible,
            encodingRetryReason: encodingEligibility.reason,
+           qualityRetryEligible: qualityEligibility.eligible,
+           qualityRetryReason: qualityEligibility.reason,
+           requestedQuality: payload.qualityFailure?.requestedQuality || payload.qualityProfile?.quality,
+           actualQualities: payload.qualityFailure?.actualQualities,
          }, null, 2),
          disposition: "action_required",
        });
@@ -4711,11 +4975,93 @@ export class SyncScheduler {
     }
   }
 
+  private restartStrictDownloadRecovery(
+    jobId: string,
+    action: RecoveryIssueActionId,
+    options: { encodingPriority?: unknown; strict?: unknown; quality?: unknown },
+  ) {
+    const job = this.jobStore.findById(jobId);
+    if (!job || job.kind !== "download") {
+      return { ok: false as const, status: 404, message: "下载待处理项不存在或已恢复" };
+    }
+    const payload = job.payload as any;
+    if (!payload.awaitingManualRecovery) {
+      return ["pending", "retry_wait", "leased", "running"].includes(job.status)
+        ? { ok: true as const, idempotent: true, issues: this.getRecoveryIssueSnapshot().issues }
+        : { ok: false as const, status: 409, message: "下载任务状态已经变化，请刷新后重试" };
+    }
+    const qualityMode = action === "redownload_with_quality";
+    const quality = String(options.quality || "").trim().toUpperCase();
+    const qualityEligible = payload.qualityFailure?.qualityEligible === true;
+    const encodingEligible = payload.qualityFailure?.encodingEligible === true;
+    if (qualityMode) {
+      if (!qualityEligible) return { ok: false as const, status: 409, message: "当前失败证据不能安全更换画质档位" };
+      if (!["8K", "4K", "1080P60", "1080P", "720P"].includes(quality)) {
+        return { ok: false as const, status: 400, message: "不支持的画质档位" };
+      }
+    } else {
+      if (!encodingEligible) return { ok: false as const, status: 409, message: "当前失败证据不能安全更换编码" };
+      if (!isValidBBDownEncodingPriority(options.encodingPriority)) {
+        return { ok: false as const, status: 400, message: "编码顺序必须包含 HEVC、AVC、AV1 且各出现一次" };
+      }
+    }
+    const bvid = String(job.bvid || payload.bvid || "");
+    const currentProfile = normalizeQualityArtifactProfile(
+      payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()),
+    );
+    const nextProfile = qualityMode ? { ...currentProfile, quality } : currentProfile;
+    const generation = Math.max(0, Number(payload.qualityRetryGeneration || 0), Number(payload.qualityEncodingOverride?.generation || 0)) + 1;
+    const priority = isValidBBDownEncodingPriority(options.encodingPriority)
+      ? normalizeBBDownEncodingPriority(options.encodingPriority)
+      : undefined;
+    const artifactKey = crypto.createHash("sha256").update(JSON.stringify({
+      sourceArtifactKey: String(payload.qualityArtifactKey || buildQualityArtifactKey(bvid, currentProfile)),
+      generation,
+      quality: qualityMode ? quality : undefined,
+      priority,
+    })).digest("hex");
+    const nextPayload: Record<string, any> = {
+      ...payload,
+      bvid,
+      qualityProfile: nextProfile,
+      qualityStrict: qualityMode || payload.qualityStrict === true,
+      qualityEncodingOverride: qualityMode
+        ? payload.qualityEncodingOverride
+        : { generation, priority, strict: options.strict !== false },
+      qualityArtifactKey: artifactKey,
+      qualityRetryGeneration: generation,
+      awaitingManualRecovery: false,
+      downloadRecovery: undefined,
+      qualityFailure: undefined,
+      manualRecoveryReason: undefined,
+      lastRecoveryAction: action,
+    };
+    for (const key of ["downloadDir", "outputFiles", "error"]) delete nextPayload[key];
+    const woken = this.jobStore.wakeManualJob(job.id, nextPayload);
+    if (!woken) return { ok: false as const, status: 409, message: "下载任务正在被其他操作处理，请刷新后重试" };
+    this.resumeDownloadRecoveryRelations(job, qualityMode ? `已按 ${quality} 严格重新下载。` : `已按 ${priority![0]} 编码严格重新下载。`);
+    logManager.push({
+      timestamp: new Date(this.now()).toISOString(),
+      type: "download",
+      level: "info",
+      summary: qualityMode ? `已按 ${quality} 严格重新下载 ${bvid}` : `已按 ${priority![0]} 编码严格重新下载 ${bvid}`,
+      raw: `[Recovery] strict-download action=${action} generation=${generation}`,
+      bvid,
+      simpleVisible: true,
+      debugVisible: true,
+    });
+    this.dispatchPersistentJobs();
+    return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
+  }
+
   private async resolveDownloadRecoveryIssue(
     jobId: string,
     action: RecoveryIssueActionId,
-    options: { userId?: unknown },
+    options: { userId?: unknown; encodingPriority?: unknown; strict?: unknown; quality?: unknown },
   ) {
+    if (["redownload_with_encoding", "redownload_with_quality"].includes(action)) {
+      return this.restartStrictDownloadRecovery(jobId, action, options);
+    }
     if (!["retry_download", "retry_download_with_account", "defer_download"].includes(action)) {
       return { ok: false as const, status: 400, message: "该下载待处理项不支持此操作" };
     }
@@ -4791,16 +5137,25 @@ export class SyncScheduler {
     }
   }
 
-  private restartQualityRecoveryWithEncoding(
+  private restartQualityRecovery(
     jobId: string,
-    priority: BBDownEncoding[],
-    strict: boolean,
+    options: { priority?: BBDownEncoding[]; strictEncoding?: boolean; quality?: string },
   ) {
     const job = this.jobStore.findById(jobId);
     if (!job) return { ok: false as const, status: 404, message: "画质重调任务不存在或已恢复" };
-    const eligibility = this.qualityEncodingRetryEligibility(job);
+    const qualityRetry = String(options.quality || "").trim().toUpperCase();
+    const encodingMode = !qualityRetry;
+    const eligibility = encodingMode
+      ? this.qualityEncodingRetryEligibility(job)
+      : this.qualityQualityRetryEligibility(job);
     if (!eligibility.eligible) {
-      return { ok: false as const, status: 409, message: `当前不能换编码重调：${eligibility.reason}` };
+      return { ok: false as const, status: 409, message: `当前不能${encodingMode ? "换编码" : "换分辨率"}重调：${eligibility.reason}` };
+    }
+    if (!encodingMode && !["8K", "4K", "1080P60", "1080P", "720P"].includes(qualityRetry)) {
+      return { ok: false as const, status: 400, message: "不支持的画质档位" };
+    }
+    if (encodingMode && (!options.priority || options.priority.length !== 3)) {
+      return { ok: false as const, status: 400, message: "编码顺序无效" };
     }
     const payload = job.payload as any;
     const bvid = String(job.bvid || payload.bvid || "");
@@ -4810,13 +5165,21 @@ export class SyncScheduler {
     if (!bvid || targets.length === 0) {
       return { ok: false as const, status: 409, message: "画质重调目标已经变化，请刷新后重试" };
     }
-    const generation = Math.max(0, Number(payload.qualityEncodingOverride?.generation || 0)) + 1;
-    const qualityProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
+    const generation = Math.max(
+      0,
+      Number(payload.qualityEncodingOverride?.generation || 0),
+      Number(payload.qualityRetryGeneration || 0),
+    ) + 1;
+    const currentProfile = normalizeQualityArtifactProfile(payload.qualityProfile || qualityArtifactProfileFromConfig(this.configStore.get()));
+    const qualityProfile = qualityRetry ? { ...currentProfile, quality: qualityRetry } : currentProfile;
+    const priority = options.priority;
+    const strictEncoding = Boolean(options.strictEncoding);
     const artifactKey = crypto.createHash("sha256").update(JSON.stringify({
       sourceArtifactKey: String(payload.artifactKey || buildQualityArtifactKey(bvid, qualityProfile)),
       generation,
       priority,
-      strict,
+      strictEncoding,
+      quality: qualityRetry || undefined,
       jobId,
     })).digest("hex");
     const target = targets[0];
@@ -4831,8 +5194,14 @@ export class SyncScheduler {
       targetCount: targets.length,
       artifactKey,
       qualityProfile,
-      qualityEncodingOverride: { generation, priority, strict },
-      qualityStageLabel: `等待按 ${priority[0]}${strict ? "（仅此编码）" : "优先"}下载新版`,
+      qualityStrict: Boolean(qualityRetry) || Boolean(payload.qualityStrict),
+      qualityEncodingOverride: encodingMode
+        ? { generation, priority, strict: strictEncoding }
+        : payload.qualityEncodingOverride,
+      qualityRetryGeneration: generation,
+      qualityStageLabel: qualityRetry
+        ? `等待按 ${qualityRetry}（仅此画质）下载新版`
+        : `等待按 ${priority![0]}${strictEncoding ? "（仅此编码）" : "优先"}下载新版`,
       awaitingManualRecovery: false,
       automaticQualityRecoveryAttempts: 0,
       supersededQualityArtifactKey: payload.artifactKey,
@@ -4856,7 +5225,7 @@ export class SyncScheduler {
     const downloadUserId = String(payload.downloadUserId || target.userId || "");
     const downloadUser = this.userStore.getById(downloadUserId);
     if (!this.isUserSyncEligible(downloadUser)) {
-      return { ok: false as const, status: 409, message: "原下载账号当前不可用，请先恢复账号后再换编码重调" };
+      return { ok: false as const, status: 409, message: "原下载账号当前不可用，请先恢复账号后再重调" };
     }
     nextPayload.downloadUserId = downloadUser.id;
     const replacement = this.jobStore.restartFailedQualityAsDownload(job.id, {
@@ -4876,8 +5245,10 @@ export class SyncScheduler {
       timestamp: new Date(this.now()).toISOString(),
       type: "download",
       level: "info",
-      summary: `已按 ${priority[0]}${strict ? " 单编码" : " 优先"}重新建立画质重调 ${bvid}`,
-      raw: `[QualityRecovery] encoding restart generation=${generation} strict=${strict} targets=${targets.length}`,
+      summary: qualityRetry
+        ? `已按 ${qualityRetry} 严格重新建立画质重调 ${bvid}`
+        : `已按 ${priority![0]}${strictEncoding ? " 单编码" : " 优先"}重新建立画质重调 ${bvid}`,
+      raw: `[QualityRecovery] restart mode=${qualityRetry ? "quality" : "encoding"} generation=${generation} strict=${qualityRetry ? "quality" : strictEncoding} targets=${targets.length}`,
       bvid,
       simpleVisible: true,
       debugVisible: true,
@@ -4889,7 +5260,7 @@ export class SyncScheduler {
   async resolveRecoveryIssue(
     issueId: string,
     action: RecoveryIssueActionId,
-    options: { encodingPriority?: unknown; strict?: unknown; userId?: unknown } = {},
+    options: { encodingPriority?: unknown; strict?: unknown; userId?: unknown; quality?: unknown } = {},
   ) {
     if (issueId === "storage-backend") {
       return { ok: false as const, status: 409, message: "请在设置中检查 AList / OpenList 配置" };
@@ -5011,11 +5382,23 @@ export class SyncScheduler {
       }
       this.recoveryJobLocks.add(jobId);
       try {
-        return this.restartQualityRecoveryWithEncoding(
-          jobId,
-          normalizeBBDownEncodingPriority(options.encodingPriority),
-          options.strict !== false,
-        );
+        return this.restartQualityRecovery(jobId, {
+          priority: normalizeBBDownEncodingPriority(options.encodingPriority),
+          strictEncoding: options.strict !== false,
+        });
+      } finally {
+        this.recoveryJobLocks.delete(jobId);
+      }
+    }
+    if (scope === "quality" && action === "retry_quality_with_quality") {
+      const quality = String(options.quality || "").trim().toUpperCase();
+      if (!quality) return { ok: false as const, status: 400, message: "请选择新的画质档位" };
+      if (this.recoveryJobLocks.has(jobId)) {
+        return { ok: false as const, status: 409, message: "该画质重调任务正在被处理，请稍后刷新" };
+      }
+      this.recoveryJobLocks.add(jobId);
+      try {
+        return this.restartQualityRecovery(jobId, { quality });
       } finally {
         this.recoveryJobLocks.delete(jobId);
       }
@@ -5297,12 +5680,7 @@ export class SyncScheduler {
         userId: relation.userId,
         mediaId: relation.mediaId,
         folderTitle,
-        remotePath: relation.remotePath || resolveRemotePath({
-          destination: config.alistDest,
-          layout: config.uploadLayout,
-          userName: relationUser.name,
-          folderName: folderTitle,
-        }),
+        remotePath: relation.remotePath || this.resolveRelationRemotePath(relationUser, relation.mediaId, folderTitle, config),
       });
     }
     return [...targets.values()];
@@ -6224,6 +6602,15 @@ export class SyncScheduler {
     return {
       quality: database.getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER),
       temp: database.getMeta(LEGACY_TEMP_CACHE_MARKER),
+    };
+  }
+
+  async getLocalCacheCapacity() {
+    const snapshot = await this.refreshLocalCacheSnapshot();
+    return {
+      limitBytes: snapshot.limitBytes,
+      usedBytes: snapshot.usedBytes,
+      reserveBytes: snapshot.reserveBytes,
     };
   }
 
@@ -7267,7 +7654,16 @@ export class SyncScheduler {
     mediaId: number,
     folderTitle: string,
     bvid: string,
-    options: { persisted?: boolean; notBefore?: number; downloadUserId?: string; recoveryAttempt?: number } = {}
+    options: {
+      persisted?: boolean;
+      notBefore?: number;
+      downloadUserId?: string;
+      recoveryAttempt?: number;
+      dedupeKey?: string;
+      qualityProfile?: QualityArtifactProfile;
+      qualityStrict?: boolean;
+      qualityEncodingOverride?: QualityEncodingOverride;
+    } = {}
   ) {
     if (!this.isUserSyncEligible(user)) {
       return false;
@@ -7275,7 +7671,11 @@ export class SyncScheduler {
     if (this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(user.id, mediaId, bvid)) {
       return false;
     }
-    const local = this.stateManager.getCompletedLocalDownload(bvid);
+    const exactTarget = Boolean(options.qualityProfile && (options.qualityStrict || options.qualityEncodingOverride?.strict));
+    // A strict request must never silently reuse a completed artifact produced
+    // for another profile. It gets its own manifest directory and is checked
+    // again before the upload task is created.
+    const local = exactTarget ? null : this.stateManager.getCompletedLocalDownload(bvid);
     const chargingRestriction = this.stateManager.getChargingRestriction(bvid);
     if (chargingRestriction && !local) {
       const nextCheckAt = Date.parse(chargingRestriction.nextCheckAt || "");
@@ -7300,12 +7700,8 @@ export class SyncScheduler {
       return false;
     }
     const config = this.configStore.get();
-    const remotePath = resolveRemotePath({
-      destination: config.alistDest,
-      layout: config.uploadLayout,
-      userName: user.name,
-      folderName: folderTitle,
-    });
+    const existingRelation = this.stateManager.getRelationStatus(user.id, mediaId, bvid);
+    const remotePath = existingRelation?.remotePath || this.resolveRelationRemotePath(user, mediaId, folderTitle, config);
     const existingArchiveProof = this.captureExistingArchiveProof(user.id, mediaId, bvid);
     this.stateManager.markQueued(bvid, remotePath, user.id, mediaId);
     if (local) {
@@ -7347,7 +7743,7 @@ export class SyncScheduler {
     }
     this.jobStore.enqueue({
       kind: "download",
-      dedupeKey: `download:${bvid}`,
+      dedupeKey: options.dedupeKey || `download:${bvid}`,
       bvid,
       priority: 40,
       maxAttempts: config.maxRetries + 1,
@@ -7358,6 +7754,12 @@ export class SyncScheduler {
         primaryFolderTitle: folderTitle,
         downloadUserId: options.downloadUserId || user.id,
         automaticRecoveryAttempts: Math.max(0, Number(options.recoveryAttempt || 0)),
+        qualityProfile: options.qualityProfile,
+        qualityStrict: options.qualityStrict === true,
+        qualityEncodingOverride: options.qualityEncodingOverride,
+        qualityArtifactKey: exactTarget
+          ? buildQualityArtifactKey(bvid, normalizeQualityArtifactProfile(options.qualityProfile!))
+          : undefined,
       },
     });
     this.dispatchPersistentJobs();
@@ -7596,17 +7998,12 @@ export class SyncScheduler {
       return null;
     }
     const config = this.configStore.get();
-    const userSegment = sanitizeSegment(resolvedRelation.user.name) || "user";
-    const folderSegment = sanitizeSegment(resolvedRelation.folderTitle) || "favorites";
-    switch (config.uploadLayout) {
-      case "user-folder-video":
-        return joinRemotePath(config.alistDest, userSegment, folderSegment);
-      case "folder-video":
-        return joinRemotePath(config.alistDest, folderSegment);
-      case "video-only":
-      default:
-        return joinRemotePath(config.alistDest);
-    }
+    return this.resolveRelationRemotePath(
+      resolvedRelation.user,
+      resolvedRelation.mediaId,
+      resolvedRelation.folderTitle,
+      config,
+    );
   }
 
   private async getRemoteDirListing(pathToUse: string) {
@@ -7658,12 +8055,7 @@ export class SyncScheduler {
             this.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid, { persisted: true });
             continue;
           }
-          const remotePath = relation.remotePath || item.video.remotePath || resolveRemotePath({
-            destination: this.configStore.get().alistDest,
-            layout: this.configStore.get().uploadLayout,
-            userName: resolved.user.name,
-            folderName: resolved.folderTitle,
-          });
+          const remotePath = relation.remotePath || item.video.remotePath || this.resolveRelationRemotePath(resolved.user, relation.mediaId, resolved.folderTitle);
           this.stateManager.markUploadFailed(relation.bvid, localDir, relation.userId, relation.mediaId, "Stale upload retained locally and queued for upload retry.");
           const historyTargetKey = `${relation.userId}:${relation.mediaId}`;
           const historyGroups = historySessionGroups(localDir)
@@ -7781,6 +8173,78 @@ export class SyncScheduler {
       });
   }
 
+  enqueueManualArchive(userId: string, item: {
+    bvid: string;
+    title: string;
+    upperName: string;
+    upperMid?: number;
+    cover?: string;
+    description?: string;
+    qualityProfile?: QualityArtifactProfile;
+    qualityStrict?: boolean;
+    qualityEncodingOverride?: QualityEncodingOverride;
+  }) {
+    const user = this.userStore.getById(userId);
+    const bvid = String(item.bvid || "").trim();
+    if (!user || !this.isUserSyncEligible(user)) {
+      return { ok: false as const, status: 409, message: "该账号当前不可用于手动归档" };
+    }
+    if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
+      return { ok: false as const, status: 400, message: "在线条目缺少有效BVID" };
+    }
+    const existing = this.stateManager.listRelationsForBvid(bvid)
+      .find((relation) => ["verified", "partial_verified", "uploaded"].includes(String(relation.backupStatus || ""))
+        && (relation.remoteFiles || []).some((file) => file.verificationStatus === "verified" || file.verificationStatus === undefined));
+    if (existing) {
+      return { ok: true as const, status: "already_archived" as const, bvid, relation: existing };
+    }
+    const exactTarget = Boolean(item.qualityProfile && (item.qualityStrict || item.qualityEncodingOverride?.strict));
+    const artifactKey = exactTarget
+      ? buildQualityArtifactKey(bvid, normalizeQualityArtifactProfile(item.qualityProfile!))
+      : "";
+    const dedupeKey = exactTarget ? `download:${bvid}:manual:${artifactKey}` : `download:${bvid}`;
+    const existingJob = this.jobStore.findByDedupeKey(dedupeKey);
+    if (existingJob && ["pending", "leased", "running", "retry_wait", "manual_wait"].includes(existingJob.status)) {
+      return {
+        ok: true as const,
+        status: "already_pending" as const,
+        bvid,
+        userId,
+        mediaId: MANUAL_ARCHIVE_MEDIA_ID,
+        jobId: existingJob.id,
+      };
+    }
+    const current = this.stateManager.getRelationStatus(userId, MANUAL_ARCHIVE_MEDIA_ID, bvid);
+    if (!current) {
+      this.stateManager.recordManualArchiveItem(userId, {
+        bvid,
+        title: String(item.title || bvid),
+        upperName: String(item.upperName || "Unknown"),
+        upperMid: item.upperMid,
+        cover: item.cover,
+        description: item.description,
+      });
+    }
+    const queued = this.enqueueIfNeeded(user, MANUAL_ARCHIVE_MEDIA_ID, MANUAL_ARCHIVE_FOLDER_TITLE, bvid, {
+      persisted: true,
+      downloadUserId: user.id,
+      dedupeKey,
+      qualityProfile: item.qualityProfile,
+      qualityStrict: item.qualityStrict,
+      qualityEncodingOverride: item.qualityEncodingOverride,
+    });
+    return {
+      ok: true as const,
+      status: queued ? "queued" as const : "already_pending" as const,
+      bvid,
+      userId,
+      mediaId: MANUAL_ARCHIVE_MEDIA_ID,
+      qualityProfile: item.qualityProfile,
+      qualityStrict: item.qualityStrict === true,
+      qualityEncoding: item.qualityEncodingOverride?.priority?.[0],
+    };
+  }
+
   private async recoverLegacyDownloadDirs() {
     let entries: fs.Dirent[];
     try {
@@ -7871,12 +8335,7 @@ export class SyncScheduler {
       const hasLocalDir = Boolean(localDir && fs.existsSync(localDir));
       if (!resolved) continue;
       const config = this.configStore.get();
-      const remotePath = relation?.remotePath || entry.remotePath || resolveRemotePath({
-        destination: config.alistDest,
-        layout: config.uploadLayout,
-        userName: resolved.user.name,
-        folderName: resolved.folderTitle,
-      });
+      const remotePath = relation?.remotePath || entry.remotePath || this.resolveRelationRemotePath(resolved.user, relation?.mediaId || 0, resolved.folderTitle, config);
       if (["verified", "partial_verified"].includes(status) && hasLocalDir && localDir && relation) {
         const targetKey = `${relation.userId}:${relation.mediaId}`;
         const pendingHistory = historySessionGroups(localDir)
@@ -8094,12 +8553,7 @@ export class SyncScheduler {
           skipped.account += 1;
           continue;
         }
-        const remotePath = item.relation.remotePath || item.video.remotePath || resolveRemotePath({
-          destination: this.configStore.get().alistDest,
-          layout: this.configStore.get().uploadLayout,
-          userName: resolved.user.name,
-          folderName: resolved.folderTitle,
-        });
+        const remotePath = item.relation.remotePath || item.video.remotePath || this.resolveRelationRemotePath(resolved.user, item.relation.mediaId, resolved.folderTitle);
         const files = manifest.outputs.map((output) => output.relativePath);
         jobs.push(this.buildPersistentUploadJob({
           bvid: item.video.bvid,
@@ -8156,6 +8610,23 @@ export class SyncScheduler {
       mediaId: folder?.mediaId ?? relation.mediaId,
       folderTitle: folder?.title ?? relation.folderTitle,
     };
+  }
+
+  private resolveRelationRemotePath(
+    user: BiliUser,
+    mediaId: number,
+    folderTitle: string,
+    config = this.configStore.get()
+  ) {
+    const folderName = mediaId === MANUAL_ARCHIVE_MEDIA_ID
+      ? `__BFB_MANUAL_${sanitizeSegment(String(user.uid || user.cookie?.DedeUserID || user.id)).slice(0, 48) || "ACCOUNT"}`
+      : folderTitle;
+    return resolveRemotePath({
+      destination: config.alistDest,
+      layout: config.uploadLayout,
+      userName: user.name,
+      folderName,
+    });
   }
 
   private findBestRelationForBvid(bvid: string) {
@@ -8329,6 +8800,7 @@ interface RecoveryUploadItem {
   notBefore?: number;
   priority?: boolean;
   encodingRetry?: EncodingRetryContext;
+  strictMediaTarget?: StrictMediaTarget;
 }
 
 interface LocalCacheSnapshot {

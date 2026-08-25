@@ -49,6 +49,9 @@ export type BackupStatus =
 
 export type BiliStatus = "available" | "unavailable" | "unknown";
 
+export const MANUAL_ARCHIVE_MEDIA_ID = -1;
+export const MANUAL_ARCHIVE_FOLDER_TITLE = "手动归档";
+
 export interface RemoteFileQualityProfile {
   quality: string;
   encoding: string;
@@ -195,6 +198,7 @@ export interface FavoriteRelation {
   userId: string;
   mediaId: number;
   bvid: string;
+  sourceKind?: "favorite" | "manual";
   folderTitle: string;
   firstSeenAt: string;
   lastSeenAt: string;
@@ -1541,6 +1545,53 @@ export class StateManager {
     this.save();
   }
 
+  recordManualArchiveItem(
+    userId: string,
+    item: ObservedFavoriteItem,
+    seenAt = nowIso(),
+  ) {
+    if (this.database.isArchiveSourceDeletionActive(userId, MANUAL_ARCHIVE_MEDIA_ID, item.bvid)) {
+      return {
+        wasKnown: Boolean(this.state.videos?.[item.bvid]),
+        entry: this.state.videos?.[item.bvid],
+      };
+    }
+    const result = this.recordFavoriteItem(
+      userId,
+      MANUAL_ARCHIVE_MEDIA_ID,
+      MANUAL_ARCHIVE_FOLDER_TITLE,
+      item,
+      undefined,
+      seenAt,
+    );
+    const relation = this.state.relations?.[relationKey(userId, MANUAL_ARCHIVE_MEDIA_ID, item.bvid)];
+    if (relation) {
+      relation.sourceKind = "manual";
+      relation.activeInFavorite = true;
+      relation.folderTitle = MANUAL_ARCHIVE_FOLDER_TITLE;
+      relation.favOrder = undefined;
+      relation.favPage = undefined;
+      relation.favIndexInPage = undefined;
+      relation.favOrderUpdatedAt = undefined;
+      this.save();
+    }
+    return { ...result, relation: relation ? { ...relation } : undefined };
+  }
+
+  clearCoverCachePaths() {
+    let changed = false;
+    const videos = this.lazyState ? this.database.listVideos() : Object.values(this.state.videos || {});
+    this.runBatch(() => {
+      for (const video of videos) {
+        const tracked = this.state.videos?.[video.bvid];
+        if (!tracked?.originalMeta?.coverLocalPath) continue;
+        tracked.originalMeta = { ...tracked.originalMeta, coverLocalPath: undefined };
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
   restoreExistingArchiveProof(
     bvid: string,
     userId: string | undefined,
@@ -2626,6 +2677,16 @@ export class StateManager {
     const relations = this.lazyState ? this.database.listRelationsForBvid(bvid) : Object.values(this.state.relations || {});
     return relations
       .filter((item) => item.bvid === bvid)
+      .map((item) => ({ ...item }));
+  }
+
+  listRelationsForBvids(bvids: string[]) {
+    const unique = [...new Set(bvids.map((bvid) => String(bvid || "").trim()).filter(Boolean))];
+    if (unique.length === 0) return [];
+    const relations = this.lazyState ? this.database.listRelationsForBvids(unique) : Object.values(this.state.relations || {});
+    const wanted = new Set(unique);
+    return relations
+      .filter((item) => wanted.has(item.bvid))
       .map((item) => ({ ...item }));
   }
 

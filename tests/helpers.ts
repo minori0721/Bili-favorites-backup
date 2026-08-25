@@ -19,6 +19,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     concurrentUploads: 2,
     uploadFileIntervalSeconds: 0,
     localCacheLimitGB: 0,
+    onlineCoverCacheLimitMB: 256,
     queuePrefetchLimit: 25,
     bbdownEncoding: "",
     bbdownEncodingPriority: ["HEVC", "AVC", "AV1"],
