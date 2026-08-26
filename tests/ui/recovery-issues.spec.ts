@@ -84,7 +84,7 @@ test("problem center keeps focus contained and uses a two-level mobile flow", as
   await expect(modal).not.toHaveClass(/active/);
 });
 
-test("problem center uses one compact empty state when no issues exist", async ({ page, browserProblems }) => {
+test("problem center uses one compact empty state when no issues exist", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   await page.request.post("/__test/reset", { data: { recoveryIssueEmpty: true } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
@@ -96,9 +96,34 @@ test("problem center uses one compact empty state when no issues exist", async (
   await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
   await expect(page.locator("#recoveryIssuesEmptyMessage")).toContainText("新的异常会出现在这里");
   await expect(page.locator(".recovery-issues-layout")).toHaveClass(/is-empty/);
+  await expect(page.locator("#recoveryIssuesSummary")).toBeHidden();
   await expect(page.locator(".recovery-issues-list-pane")).toBeHidden();
   await expect(page.locator("#recoveryIssuesDetail")).toBeHidden();
   await expect(page.getByText("当前没有需要处理的问题", { exact:true })).toHaveCount(1);
+  if (testInfo.project.name === "desktop") {
+    const metrics = await page.locator(".recovery-issues-shell").evaluate((shell) => {
+      const layout = shell.querySelector<HTMLElement>(".recovery-issues-layout")!;
+      const empty = shell.querySelector<HTMLElement>(".recovery-issues-empty-state")!;
+      const shellRect = shell.getBoundingClientRect();
+      const layoutRect = layout.getBoundingClientRect();
+      const emptyRect = empty.getBoundingClientRect();
+      return {
+        shellLeft: shellRect.left,
+        shellRight: shellRect.right,
+        viewportWidth: innerWidth,
+        layoutGridRow: getComputedStyle(layout).gridRowStart,
+        layoutHeight: layoutRect.height,
+        emptyHeight: emptyRect.height,
+        emptyBottom: emptyRect.bottom,
+        layoutBottom: layoutRect.bottom,
+      };
+    });
+    expect(metrics.shellLeft).toBeGreaterThan(0);
+    expect(metrics.shellRight).toBeLessThan(metrics.viewportWidth);
+    expect(metrics.layoutGridRow).toBe("3");
+    expect(metrics.emptyHeight).toBeGreaterThan(metrics.layoutHeight - 1);
+    expect(Math.abs(metrics.emptyBottom - metrics.layoutBottom)).toBeLessThan(1);
+  }
   await expect(page.locator("#closeRecoveryIssuesBtn")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.locator("#recoveryIssuesModal")).not.toHaveClass(/active/);

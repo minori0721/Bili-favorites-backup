@@ -30,16 +30,48 @@ async function openOnlineContent(page: Page) {
   await expect(page.locator(".online-content-card")).toContainText("在线待归档视频");
 }
 
-test("online content loads on demand and keeps its layers isolated from archive library", async ({ page, browserProblems }) => {
+test("online content loads on demand and keeps its layers isolated from archive library", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   await openOnlineContent(page);
   await expect(page.locator(".archive-library-main")).toHaveCount(1);
   await expect(page.locator(".online-content-main")).toHaveCount(1);
   await expect(page.locator(".archive-library-sidebar")).toHaveCount(1);
   await expect(page.locator(".online-content-sidebar")).toHaveCount(1);
+  await expect(page.locator("#onlineContentNav .archive-nav-item").first()).toContainText("11 个视频");
+  await expect(page.locator("#onlineContentSummary")).toHaveText("共 1 项");
+  const closeButtons = await page.evaluate(() => ({
+    sidebarDisplay: getComputedStyle(document.getElementById("closeOnlineContentBtn")!).display,
+    mainDisplay: getComputedStyle(document.getElementById("onlineContentCloseMainBtn")!).display,
+    sidebarVisibility: getComputedStyle(document.querySelector(".online-content-sidebar")!).visibility,
+    showContent: document.querySelector(".online-content-shell")!.classList.contains("show-content"),
+  }));
+  if (testInfo.project.name === "desktop") {
+    expect(closeButtons.sidebarDisplay).toBe("none");
+    expect(closeButtons.mainDisplay).not.toBe("none");
+  } else {
+    expect(closeButtons.sidebarDisplay).not.toBe("none");
+    expect(closeButtons.sidebarVisibility).toBe("hidden");
+    expect(closeButtons.showContent).toBe(true);
+  }
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.onlineNavigationCount).toBe(1);
   expect(state.onlineItemQueries).toEqual([""]);
+});
+
+test("mobile online content exposes the directory close only after returning to the directory", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name === "desktop", "mobile directory controls coverage");
+  await openOnlineContent(page);
+  await page.locator("#onlineContentMobileBackBtn").tap();
+  await expect(page.locator(".online-content-shell")).not.toHaveClass(/show-content/);
+  const controls = await page.evaluate(() => ({
+    sidebarDisplay: getComputedStyle(document.getElementById("closeOnlineContentBtn")!).display,
+    sidebarVisibility: getComputedStyle(document.querySelector(".online-content-sidebar")!).visibility,
+    mainTransform: getComputedStyle(document.querySelector(".online-content-main")!).transform,
+  }));
+  expect(controls.sidebarDisplay).not.toBe("none");
+  expect(controls.sidebarVisibility).toBe("visible");
+  expect(controls.mainTransform).not.toBe("none");
 });
 
 test("online manual archive probes a strict target before queueing it", async ({ page, browserProblems }) => {

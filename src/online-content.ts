@@ -115,7 +115,16 @@ export class OnlineContentService {
         name: user.name,
         avatar: user.avatar,
         sources: [
-          ...folders.map((folder: any) => ({ kind: "favorite", mediaId: Number(folder.mediaId), title: String(folder.title || "收藏夹") })),
+          ...folders.map((folder: any) => {
+            const count = Number(folder.mediaCount);
+            return {
+              kind: "favorite",
+              mediaId: Number(folder.mediaId),
+              title: String(folder.title || "收藏夹"),
+              count: Number.isInteger(count) && count >= 0 ? count : undefined,
+              countLabel: "个视频",
+            };
+          }),
           { kind: "collected", title: "订阅合集" },
           { kind: "bangumi", title: "追番" },
           { kind: "drama", title: "追剧" },

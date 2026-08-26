@@ -47,6 +47,12 @@ test("main workspace and every standard dialog use the shared visual system", as
         homeControlRadius: root.getPropertyValue("--radius-home-control").trim(),
         dialogRadius: root.getPropertyValue("--radius-dialog").trim(),
         controlRadius: root.getPropertyValue("--radius-control").trim(),
+        legacyCardRadius: root.getPropertyValue("--radius-legacy-card").trim(),
+        legacyCardMobileRadius: root.getPropertyValue("--radius-legacy-card-mobile").trim(),
+        legacyControlRadius: root.getPropertyValue("--radius-legacy-control").trim(),
+        legacyActionRadius: root.getPropertyValue("--radius-legacy-action").trim(),
+        legacyPanelRadius: root.getPropertyValue("--radius-legacy-panel").trim(),
+        legacyDialogRadius: root.getPropertyValue("--radius-legacy-dialog").trim(),
       },
       cards: cards.map((card) => ({
         radius: style(card).borderRadius,
@@ -79,24 +85,36 @@ test("main workspace and every standard dialog use the shared visual system", as
       },
       emptySettingsStatusDisplay: [...document.querySelectorAll<HTMLElement>(".settings-actions ~ .status-line")]
         .map((element) => getComputedStyle(element).display),
-      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    };
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        mainGap: style(document.querySelector("body > main")!).rowGap,
+      };
   });
 
-  expect(audit.tokens).toEqual({ panelRadius: "8px", homeRadius: "10px", homeControlRadius: "8px", dialogRadius: "10px", controlRadius: "6px" });
+  expect(audit.tokens).toEqual({
+    panelRadius: "8px",
+    homeRadius: "10px",
+    homeControlRadius: "8px",
+    dialogRadius: "10px",
+    controlRadius: "6px",
+    legacyCardRadius: "20px",
+    legacyCardMobileRadius: "18px",
+    legacyControlRadius: "12px",
+    legacyActionRadius: "14px",
+    legacyPanelRadius: "16px",
+    legacyDialogRadius: "24px",
+  });
   expect(audit.cards).toHaveLength(3);
-  expect(audit.cards[0].radius).toBe("10px 10px 0px 0px");
-  expect(audit.cards[1].radius).toBe("0px");
-  expect(audit.cards[2].radius).toBe("0px 0px 10px 10px");
+  expect(audit.cards.every((card) => card.radius === "20px" && card.bottomBorder === "1px")).toBe(true);
+  expect(audit.mainGap).toBe("22px");
   expect(audit.cards.every((card) => card.background.startsWith("rgba(") && card.backdrop.includes("blur") && card.shadow !== "none")).toBe(true);
   expect(audit.dialogs.length).toBeGreaterThanOrEqual(16);
-  expect(audit.dialogs.every((dialog) => dialog.sizeClass && dialog.radius === "10px")).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.sizeClass && dialog.radius === "24px")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.background.startsWith("rgba(") && dialog.background !== "rgba(0, 0, 0, 0)")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === "sticky")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === "sticky")).toBe(true);
-  expect(audit.controls.primaryRadius).toBe("8px");
-  expect(audit.controls.secondaryRadius).toBe("8px");
-  expect(audit.controls.helpRadius).toBe("8px");
+  expect(audit.controls.primaryRadius).toBe("14px");
+  expect(audit.controls.secondaryRadius).toBe("14px");
+  expect(audit.controls.helpRadius).toBe("50%");
   expect(audit.controls.helpWidth).toBe(32);
   expect(audit.controls.primaryBackground).not.toBe(audit.controls.secondaryBackground);
   expect(audit.emptySettingsStatusDisplay).toEqual(["none", "none", "none"]);
@@ -145,6 +163,7 @@ test("mobile standard dialogs stay inside the viewport with a reachable sticky f
       titlePosition: getComputedStyle(title).position,
       footerPosition: getComputedStyle(footer).position,
       footerBottom: footerRect.bottom,
+      isMobileSheet: innerWidth <= 760 || (innerHeight <= 480 && matchMedia("(pointer:coarse)").matches),
     };
   });
 
@@ -156,7 +175,7 @@ test("mobile standard dialogs stay inside the viewport with a reachable sticky f
   expect(metrics.footerBottom).toBeLessThanOrEqual(metrics.viewportHeight);
   expect(metrics.titlePosition).toBe("sticky");
   expect(metrics.footerPosition).toBe("sticky");
-  expect(metrics.panelRadius).toMatch(/^10px 10px 0px 0px|10px$/);
+  expect(metrics.panelRadius).toBe(metrics.isMobileSheet ? "20px 20px 0px 0px" : "24px");
 });
 
 test("full-screen workspaces share glass chrome while the player keeps its immersive theme", async ({ page, browserProblems }, testInfo) => {

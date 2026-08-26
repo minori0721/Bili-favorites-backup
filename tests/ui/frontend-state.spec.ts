@@ -143,7 +143,7 @@ test("manual archive controls reset when the reusable dialog opens again", async
   await page.locator("#manualArchiveStartBtn").click();
   await expect(page.locator("#manualArchiveOptionsModal")).not.toHaveClass(/active/);
 
-  await page.locator("#closeOnlineContentBtn").click();
+  await page.locator("#onlineContentCloseMainBtn").click();
   await page.locator("#onlineContentBtn").click();
   await page.getByRole("button", { name: "手动归档" }).click();
   await expect(page.locator("#manualArchiveProbeBtn")).toBeEnabled();

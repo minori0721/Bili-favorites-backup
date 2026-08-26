@@ -612,7 +612,7 @@ app.get("/api/archive-library/playback-queue", (_request, response) => response.
 
 app.get("/api/online-content/navigation", (_request, response) => {
   state.onlineNavigationCount += 1;
-  const sources = [{ kind: "favorite", mediaId: 101, title: "在线收藏夹" }];
+  const sources = [{ kind: "favorite", mediaId: 101, title: "在线收藏夹", count: 11, countLabel: "个视频" }];
   if (state.onlineSourceRace) sources.push({ kind: "favorite", mediaId: 202, title: "第二在线收藏夹" });
   response.json(ok({
     accounts: [{
@@ -645,7 +645,7 @@ app.get("/api/online-content/items", async (request, response) => {
   };
   response.json(ok({
     items: state.onlineDuplicateMode ? [item, { ...item }] : [item],
-    page: { page: 1, pageSize: 50, hasMore: false, nextCursor: null },
+    page: { page: 1, pageSize: 50, total: 1, hasMore: false, nextCursor: null },
   }));
 });
 app.post("/api/media-probe", (request, response) => {

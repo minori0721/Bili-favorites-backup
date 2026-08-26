@@ -128,3 +128,17 @@ test("在线内容页缓存和导航缓存保持有界", async () => {
   assert.equal((service as any).navigation.size, 128);
   assert.ok((service as any).coverRefs.size <= 128 * 50);
 });
+
+test("在线导航保留收藏夹的服务端视频总数", async () => {
+  const service = new OnlineContentService({} as any, {
+    listFolders: async () => [{ mediaId: 9, title: "我的收藏", mediaCount: 42 }],
+  });
+  const navigation = await service.getNavigation([user()]);
+  assert.deepEqual(navigation.accounts[0].sources[0], {
+    kind: "favorite",
+    mediaId: 9,
+    title: "我的收藏",
+    count: 42,
+    countLabel: "个视频",
+  });
+});
