@@ -39,6 +39,7 @@ type TestState = {
   userFailuresRemaining: number;
   usersMode: "single" | "double";
   favoriteQueries: string[];
+  favoriteCoverQueries: string[];
   favoriteRace: boolean;
   favoriteSaveCount: number;
   favoriteSaveFailuresRemaining: number;
@@ -87,6 +88,7 @@ function initialState(): TestState {
     userFailuresRemaining: 0,
     usersMode: "single",
     favoriteQueries: [],
+    favoriteCoverQueries: [],
     favoriteRace: false,
     favoriteSaveCount: 0,
     favoriteSaveFailuresRemaining: 0,
@@ -309,6 +311,10 @@ app.get("/api/users/:id/favorites", async (request, response) => {
     selected: true,
     cover: "",
   }]));
+});
+app.get("/api/users/:id/favorites/:mediaId/cover", (request, response) => {
+  state.favoriteCoverQueries.push(`${request.params.id}:${request.params.mediaId}`);
+  response.type("gif").send(Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64"));
 });
 app.put("/api/users/:id/favorites", (request, response) => {
   state.favoriteSaveCount += 1;

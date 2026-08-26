@@ -28,6 +28,8 @@ async function openOnlineContent(page: Page) {
   await expect(page.locator("#onlineContentModal")).toHaveClass(/active/);
   await expect(page.locator(".online-content-card")).toHaveCount(1);
   await expect(page.locator(".online-content-card")).toContainText("在线待归档视频");
+  await expect(page.locator("#onlineContentDialogTitle")).toHaveText("在线内容");
+  await expect(page.locator("#onlineContentDialogTitle").locator("xpath=..").locator("span")).toHaveCount(0);
 }
 
 test("online content loads on demand and keeps its layers isolated from archive library", async ({ page, browserProblems }, testInfo) => {
@@ -48,6 +50,22 @@ test("online content loads on demand and keeps its layers isolated from archive 
   if (testInfo.project.name === "desktop") {
     expect(closeButtons.sidebarDisplay).toBe("none");
     expect(closeButtons.mainDisplay).not.toBe("none");
+    const toolbar = await page.evaluate(() => {
+      const heading = document.querySelector<HTMLElement>(".online-content-topbar .archive-library-heading")!;
+      const refresh = document.getElementById("onlineContentRefreshBtn")!;
+      const close = document.getElementById("onlineContentCloseMainBtn")!;
+      const headingRect = heading.getBoundingClientRect();
+      const refreshRect = refresh.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      return {
+        refreshAfterHeading: refreshRect.left >= headingRect.right,
+        closeAfterRefresh: closeRect.left >= refreshRect.right,
+        controlGap: closeRect.left - refreshRect.right,
+      };
+    });
+    expect(toolbar.refreshAfterHeading).toBe(true);
+    expect(toolbar.closeAfterRefresh).toBe(true);
+    expect(toolbar.controlGap).toBeLessThan(32);
   } else {
     expect(closeButtons.sidebarDisplay).not.toBe("none");
     expect(closeButtons.sidebarVisibility).toBe("hidden");

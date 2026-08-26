@@ -430,13 +430,13 @@ function getAppStyles() {
     .modal .panel.panel-medium { max-width:680px; }
     .modal .panel.panel-large { max-width:840px; }
     .modal .panel.panel-wide,.modal .panel.panel-wider,.modal .panel.panel-max { max-width:980px; }
-    .modal .panel > h2,.modal .panel > .section-title-row:first-child { position:sticky; z-index:3; top:0; min-height:64px; margin:0; padding:19px var(--dialog-inline) 16px; border-bottom:1px solid var(--glass-border); background:rgba(255,255,255,.92); backdrop-filter:var(--glass-blur); }
+    .modal .panel > h2,.modal .panel > .section-title-row:first-child { position:sticky; z-index:3; top:0; min-height:64px; margin:0; padding:19px var(--dialog-inline) 16px; border-bottom:1px solid var(--glass-border); background:transparent; backdrop-filter:none; }
     .modal .panel > h2 { color:var(--ink); font-size:20px; line-height:1.35; }
     .modal .panel > .section-title-row:first-child { justify-content:space-between; }
     .modal .panel > .section-title-row:first-child h2 { color:var(--ink); font-size:20px; }
     .modal .panel > :not(h2):not(.section-title-row):not(.modal-actions) { margin-left:var(--dialog-inline); margin-right:var(--dialog-inline); }
     .modal .panel > h2 + .muted,.modal .panel > .section-title-row + .muted { margin-top:18px; }
-    .modal .panel > .modal-actions { position:sticky; z-index:3; bottom:0; align-items:center; justify-content:flex-end; margin:20px 0 0; padding:14px var(--dialog-inline); border-top:1px solid var(--glass-border); background:rgba(255,255,255,.92); backdrop-filter:var(--glass-blur); }
+    .modal .panel > .modal-actions { position:sticky; z-index:3; bottom:0; align-items:center; justify-content:flex-end; margin:20px 0 0; padding:14px var(--dialog-inline); border-top:1px solid var(--glass-border); background:transparent; backdrop-filter:none; }
     .modal .panel > .modal-actions .ghost { order:-1; }
     .modal .panel > .modal-actions .full-width { width:auto; min-width:120px; }
     .modal .panel > .status-line:not(:empty),.modal .panel > [role="alert"]:not(:empty) { padding:10px 12px; border-left:3px solid var(--accent); border-radius:var(--radius-legacy-control); background:var(--accent-soft); color:#315B55; line-height:1.55; text-align:left; }
@@ -445,6 +445,7 @@ function getAppStyles() {
     .fav-label { font-weight:500; display:flex; gap:12px; align-items:center; margin:0; padding:11px; border-radius:var(--radius-legacy-control); transition:background 0.16s; cursor:pointer; }
     .fav-label:hover { background:rgba(57,197,187,0.1); }
     .fav-cover { width:64px; height:40px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
+    .fav-cover-placeholder { display:grid; place-items:center; color:var(--muted); font-size:11px; }
     .fav-content { flex:1; min-width:0; }
     .fav-title { font-weight:600; }
     .fav-count { font-size:12px; color:var(--muted); }
@@ -520,6 +521,8 @@ function getAppStyles() {
     .archive-nav-deletion button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
     .archive-library-main,.online-content-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:rgba(248,251,250,0.76); }
     .archive-library-topbar { flex:0 0 auto; min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); backdrop-filter:blur(18px); }
+    .online-content-topbar { justify-content:flex-start; }
+    .online-content-topbar .archive-library-heading { flex:1 1 auto; }
     .archive-library-heading { min-width:0; }
     .archive-library-heading h2 { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:18px; letter-spacing:0; }
     .archive-library-heading span { display:block; margin-top:3px; color:var(--archive-muted); font-size:11px; }
@@ -1338,13 +1341,13 @@ function getModals() {
   <div class="modal archive-library-modal" id="onlineContentModal" aria-labelledby="onlineContentDialogTitle">
     <section class="online-content-shell" aria-labelledby="onlineContentTitle">
       <aside class="online-content-sidebar">
-        <div class="archive-library-brand"><div><strong id="onlineContentDialogTitle">在线内容</strong><span>只在打开时读取 B 站</span></div>
+        <div class="archive-library-brand"><div><strong id="onlineContentDialogTitle">在线内容</strong></div>
           <button id="closeOnlineContentBtn" class="archive-library-close" type="button" aria-label="关闭在线内容" title="关闭">×</button>
         </div>
         <nav class="archive-library-nav" id="onlineContentNav"></nav>
       </aside>
       <section class="online-content-main">
-        <div class="archive-library-topbar">
+        <div class="archive-library-topbar online-content-topbar">
           <button id="onlineContentMobileBackBtn" class="archive-library-mobile-back" type="button" aria-label="返回在线目录" title="返回">←</button>
           <div class="archive-library-heading"><h2 id="onlineContentTitle">在线收藏夹</h2><span id="onlineContentSummary">0 项</span></div>
           <button id="onlineContentRefreshBtn" class="archive-library-detail-close" type="button" aria-label="刷新当前分类" title="刷新">↻</button>
@@ -1820,7 +1823,7 @@ function getAppScript() {
     const actionLocks = new Set();
     const configLoadState = { token:0, controller:null, loaded:false };
     const usersLoadState = { token:0, controller:null, loaded:false };
-    const favoritesState = { userId:null, token:0, controller:null, loaded:false };
+    const favoritesState = { userId:null, token:0, controller:null, coverObserver:null, loaded:false };
     const loginState = { generation:0, loginId:null, startController:null, pollController:null, pollTimer:null, closeTimer:null };
     let logMode = 'queue';
     let logEntries = [];
@@ -3933,6 +3936,8 @@ function getAppScript() {
       favoritesState.token += 1;
       favoritesState.controller?.abort();
       favoritesState.controller = null;
+      favoritesState.coverObserver?.disconnect();
+      favoritesState.coverObserver = null;
       favoritesState.userId = null;
       favoritesState.loaded = false;
     }
@@ -3942,8 +3947,39 @@ function getAppScript() {
         && document.getElementById('favoritesModal').classList.contains('active');
     }
 
+    function favoriteFolderCoverUrl(userId, mediaId) {
+      return '/api/users/' + encodeURIComponent(userId) + '/favorites/' + encodeURIComponent(mediaId) + '/cover';
+    }
+
+    function createFavoriteFolderCoverPlaceholder() {
+      const cover = document.createElement('div');
+      cover.className = 'fav-cover fav-cover-placeholder';
+      cover.textContent = '封面';
+      cover.setAttribute('aria-hidden', 'true');
+      return cover;
+    }
+
+    function loadFavoriteFolderCover(placeholder, userId, folder, token) {
+      if (!favoritesRequestCurrent(token, userId) || !placeholder.isConnected) return;
+      const image = document.createElement('img');
+      image.className = 'fav-cover';
+      image.alt = safeText(folder.title, '收藏夹封面');
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.referrerPolicy = 'same-origin';
+      image.addEventListener('error', () => {
+        if (favoritesRequestCurrent(token, userId) && image.isConnected) {
+          image.replaceWith(createFavoriteFolderCoverPlaceholder());
+        }
+      }, { once:true });
+      placeholder.replaceWith(image);
+      image.src = favoriteFolderCoverUrl(userId, folder.mediaId);
+    }
+
     async function openFavorites(userId, trigger) {
       favoritesState.controller?.abort();
+      favoritesState.coverObserver?.disconnect();
+      favoritesState.coverObserver = null;
       const controller = new AbortController();
       const token = ++favoritesState.token;
       favoritesState.controller = controller;
@@ -3962,28 +3998,29 @@ function getAppScript() {
       const data = await fetchJsonSilent('/api/users/'+encodeURIComponent(userId)+'/favorites', { signal:controller.signal });
       if (!favoritesRequestCurrent(token, userId)) return;
       list.innerHTML = '';
+      const coverObserver = typeof IntersectionObserver === 'function'
+        ? new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            coverObserver.unobserve(entry.target);
+            const placeholder = entry.target;
+            loadFavoriteFolderCover(placeholder, userId, placeholder._favoriteFolder, token);
+          }
+        }, { root:list, rootMargin:'120px' })
+        : null;
+      favoritesState.coverObserver = coverObserver;
       data.forEach(folder => {
         const lbl = document.createElement('label');
         lbl.className = 'fav-label';
-        const coverUrl = folder.cover ? folder.cover.replace('http://','https://') : '';
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.value = String(folder.mediaId);
         checkbox.checked = Boolean(folder.selected);
         lbl.appendChild(checkbox);
 
-        if (coverUrl) {
-          const img = document.createElement('img');
-          img.className = 'fav-cover';
-          img.src = coverUrl;
-          img.referrerPolicy = 'no-referrer';
-          img.loading = 'lazy';
-          lbl.appendChild(img);
-        } else {
-          const cover = document.createElement('div');
-          cover.className = 'fav-cover';
-          lbl.appendChild(cover);
-        }
+        const cover = createFavoriteFolderCoverPlaceholder();
+        cover._favoriteFolder = folder;
+        lbl.appendChild(cover);
 
         const content = document.createElement('div');
         content.className = 'fav-content';
@@ -4007,6 +4044,8 @@ function getAppScript() {
         detail.textContent = '查看详情';
         lbl.appendChild(detail);
         list.appendChild(lbl);
+        if (coverObserver) coverObserver.observe(cover);
+        else loadFavoriteFolderCover(cover, userId, folder, token);
       });
       favoritesState.loaded = true;
       document.getElementById('saveFavoritesBtn').disabled = false;
@@ -4897,15 +4936,16 @@ function getAppScript() {
     async function selectOnlineSource(context) {
       if (onlineContentState.searchTimer) clearTimeout(onlineContentState.searchTimer);
       onlineContentState.searchTimer = null;
+      const query = String(context.query || '').trim().slice(0, 80);
       const requested = {
         userId:context.userId,
         kind:context.kind,
         mediaId:Number(context.mediaId || 0) || null,
         title:context.title || '在线内容',
-        query:''
+        query
       };
-      onlineContentState.draftQuery = '';
-      document.getElementById('onlineContentSearchInput').value = '';
+      onlineContentState.draftQuery = query;
+      document.getElementById('onlineContentSearchInput').value = query;
       document.getElementById('onlineContentTitle').textContent = requested.title;
       document.querySelector('.online-content-shell').classList.add('show-content');
       syncOnlineContentPanels();
@@ -4935,7 +4975,13 @@ function getAppScript() {
         renderOnlineNavigation();
         const firstAccount = onlineContentState.navigation?.accounts?.[0];
         const first = firstAccount?.sources?.[0];
-        if (first) await selectOnlineSource({ userId:firstAccount.userId, kind:first.kind, mediaId:first.mediaId, title:first.title });
+        if (first) await selectOnlineSource({
+          userId:firstAccount.userId,
+          kind:first.kind,
+          mediaId:first.mediaId,
+          title:first.title,
+          query:onlineContentState.draftQuery
+        });
       } catch (error) {
         if (error?.name !== 'AbortError' && navigationToken === onlineContentState.navigationToken && sessionToken === onlineContentState.sessionToken) {
           setOnlineContentFooter('在线目录读取失败：' + (error?.message || String(error)), 'error', () => void openOnlineContent(trigger));

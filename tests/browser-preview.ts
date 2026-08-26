@@ -7,6 +7,7 @@ const runtimeDir = path.resolve(process.env.BFB_PREVIEW_RUNTIME || path.join(pro
 const requestedMode = process.env.BFB_PREVIEW_MODE;
 const mode = requestedMode === "degraded" || requestedMode === "risk" || requestedMode === "confirm" || requestedMode === "charging" || requestedMode === "quality" || requestedMode === "detail" || requestedMode === "playback" || requestedMode === "archive" ? requestedMode : "healthy";
 const port = Number(process.env.PORT || 3188);
+const previewGif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 
 await fs.promises.mkdir(path.join(runtimeDir, "data"), { recursive: true });
 await fs.promises.mkdir(path.join(runtimeDir, "temp"), { recursive: true });
@@ -561,10 +562,23 @@ process.env.NODE_ENV = mode === "detail" || mode === "playback" || mode === "arc
 process.env.ADMIN_PASS = process.env.ADMIN_PASS || "preview-pass";
 process.env.PORT = String(port);
 const appModule = await import("../src/index.js");
+let appServer: http.Server | undefined;
 let previewServer: http.Server | undefined;
 if (mode === "detail" || mode === "playback" || mode === "archive") {
-  previewServer = appModule.app.listen(port, "127.0.0.1");
-  await new Promise<void>((resolve) => previewServer!.once("listening", resolve));
+  if (mode === "archive") {
+    appServer = appModule.app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => appServer!.once("listening", resolve));
+    const address = appServer.address();
+    if (!address || typeof address === "string") throw new Error("Failed to start archive preview app");
+    const appPort = address.port;
+    previewServer = http.createServer((req, res) => {
+      void handleArchivePreviewRequest(req, res, appPort);
+    });
+    await new Promise<void>((resolve) => previewServer!.listen(port, "127.0.0.1", resolve));
+  } else {
+    previewServer = appModule.app.listen(port, "127.0.0.1");
+  }
+  if (mode !== "archive") await new Promise<void>((resolve) => previewServer!.once("listening", resolve));
 }
 
 console.log(`Browser preview (${mode}) listening on http://127.0.0.1:${port}`);
@@ -572,7 +586,109 @@ console.log(`Browser preview (${mode}) listening on http://127.0.0.1:${port}`);
 const shutdown = () => {
   fakeDav?.close();
   previewServer?.close();
+  appServer?.close();
   process.exit(0);
 };
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
+
+function sendPreviewJson(res: http.ServerResponse, statusCode: number, body: unknown) {
+  const payload = JSON.stringify(body);
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Length", Buffer.byteLength(payload));
+  res.end(payload);
+}
+
+function hasPreviewSession(req: http.IncomingMessage) {
+  return /(?:^|;\s*)bfb\.sid=/.test(String(req.headers.cookie || ""));
+}
+
+async function readPreviewBody(req: http.IncomingMessage) {
+  let body = "";
+  for await (const chunk of req) {
+    body += String(chunk);
+    if (body.length > 64 * 1024) throw new Error("preview request body too large");
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+function previewFolders(userId: string) {
+  if (userId === "preview-user") {
+    return [
+      { mediaId: 1, title: "查看详情脱敏预览", mediaCount: 5, selected: true, cover: "" },
+      { mediaId: 2, title: "尚未扫描的空收藏夹", mediaCount: 0, selected: true, cover: "" },
+    ];
+  }
+  if (userId === "preview-user-2") {
+    return [{ mediaId: 20, title: "第二账号收藏夹", mediaCount: 1, selected: true, cover: "" }];
+  }
+  return null;
+}
+
+function forwardArchivePreviewRequest(req: http.IncomingMessage, res: http.ServerResponse, appPort: number) {
+  const upstream = http.request({
+    host: "127.0.0.1",
+    port: appPort,
+    method: req.method,
+    path: req.url,
+    headers: { ...req.headers, host: req.headers.host || `127.0.0.1:${port}` },
+  }, (upstreamResponse) => {
+    res.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.statusMessage, upstreamResponse.headers);
+    upstreamResponse.pipe(res);
+  });
+  upstream.on("error", () => {
+    if (!res.headersSent) sendPreviewJson(res, 502, { success: false, message: "隔离预览服务不可用" });
+    else res.destroy();
+  });
+  req.pipe(upstream);
+}
+
+async function handleArchivePreviewRequest(req: http.IncomingMessage, res: http.ServerResponse, appPort: number) {
+  const requestUrl = new URL(req.url || "/", `http://127.0.0.1:${port}`);
+  const folderMatch = requestUrl.pathname.match(/^\/api\/users\/([^/]+)\/favorites$/);
+  const coverMatch = requestUrl.pathname.match(/^\/api\/users\/([^/]+)\/favorites\/(\d+)\/cover$/);
+  const itemsMatch = requestUrl.pathname.match(/^\/api\/users\/([^/]+)\/favorites\/(\d+)\/(?:items|detail-items|state-items)$/);
+  const saveMatch = folderMatch && req.method === "PUT" ? folderMatch : null;
+  if ((folderMatch || coverMatch || itemsMatch || saveMatch) && !hasPreviewSession(req)) {
+    sendPreviewJson(res, 401, { success: false, message: "请先登录隔离预览" });
+    return;
+  }
+  if (folderMatch && req.method === "GET") {
+    const folders = previewFolders(decodeURIComponent(folderMatch[1]));
+    if (!folders) {
+      sendPreviewJson(res, 404, { success: false, message: "Preview user not found" });
+      return;
+    }
+    sendPreviewJson(res, 200, { success: true, data: folders });
+    return;
+  }
+  if (coverMatch && req.method === "GET") {
+    const folders = previewFolders(decodeURIComponent(coverMatch[1]));
+    if (!folders || !folders.some((folder) => folder.mediaId === Number(coverMatch[2]))) {
+      sendPreviewJson(res, 404, { success: false, message: "Preview cover not found" });
+      return;
+    }
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "image/gif");
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.setHeader("Content-Length", previewGif.length);
+    res.end(previewGif);
+    return;
+  }
+  if (itemsMatch && req.method === "GET") {
+    sendPreviewJson(res, 200, { success: true, data: { items: [], page: 1, pageSize: 20, hasMore: false, total: 0 } });
+    return;
+  }
+  if (saveMatch) {
+    try {
+      const body = await readPreviewBody(req);
+      sendPreviewJson(res, 200, { success: true, data: Array.isArray(body.mediaIds) ? body.mediaIds : [] });
+    } catch {
+      sendPreviewJson(res, 400, { success: false, message: "隔离预览请求无效" });
+    }
+    return;
+  }
+  forwardArchivePreviewRequest(req, res, appPort);
+}

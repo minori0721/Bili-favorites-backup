@@ -13,7 +13,9 @@ import { downloadCredentialsForUser, type BiliUser, UserStore } from "./users.js
 import { FolderDetailFilter, MANUAL_ARCHIVE_MEDIA_ID, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
 import { mergeLiveFavoriteDetailItem, selectFavoriteDetailSource } from "./favorite-detail.js";
 import {
+  BiliFavoriteFolderResponseError,
   BiliRiskOrLoginError,
+  getFavoriteFolderCover,
   getVideoPageSnapshot,
   getUserInfo,
   listFavoriteFolders,
@@ -81,6 +83,8 @@ import { actualQualityLabel, isSelectableBilibiliQuality, validBrowserMediaMetad
 import { UnavailableCoverBackfill, waitForCoverCacheIdle } from "./cover-cache.js";
 import { OnlineCoverCache } from "./online-cover-cache.js";
 import { OnlineContentService, sendOnlineCover, type OnlineArchiveStateResolver } from "./online-content.js";
+import { FavoriteFolderCoverService } from "./favorite-folder-cover.js";
+import { FavoriteFolderListCache } from "./favorite-folder-cache.js";
 import { MediaProbeBusyError, MediaProbeService } from "./media-probe.js";
 import {
   ADMIN_REMEMBER_TTL_MS,
@@ -114,6 +118,13 @@ const scheduler = new SyncScheduler(configStore, userStore, stateManager);
 const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
 const onlineCoverCache = new OnlineCoverCache(configStore.get().onlineCoverCacheLimitMB);
 const onlineContent = new OnlineContentService(onlineCoverCache);
+const favoriteFolderCover = new FavoriteFolderCoverService(onlineCoverCache, getFavoriteFolderCover);
+const favoriteFolderListCache = new FavoriteFolderListCache(
+  async (user) => listFavoriteFolders(user.cookie),
+  (user, folders) => {
+    for (const folder of folders) favoriteFolderCover.prime(user, folder.mediaId, folder.cover);
+  },
+);
 const mediaProbe = new MediaProbeService(
   configStore,
   undefined,
@@ -638,6 +649,9 @@ async function recordFavoritePageMetadata(
 function getBiliListErrorMessage(error: unknown) {
   if (error instanceof BiliRiskOrLoginError) {
     return "B 站返回了风控/登录异常响应，请稍后重试；如持续失败请重新扫码登录。";
+  }
+  if (error instanceof BiliFavoriteFolderResponseError) {
+    return error.message;
   }
   return error instanceof Error && error.message ? error.message : "Failed to list items";
 }
@@ -1469,13 +1483,34 @@ app.get("/api/users/:id/favorites", asyncHandler(async (req, res) => {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  const folders = await listFavoriteFolders(user.cookie);
-  const selected = new Set(user.favorites.map((fav) => fav.mediaId));
-  const data = folders.map((folder) => ({
-    ...folder,
-    selected: selected.has(folder.mediaId),
-  }));
-  res.json({ success: true, data });
+  try {
+    const folders = await favoriteFolderListCache.get(user);
+    const selected = new Set(user.favorites.map((fav) => fav.mediaId));
+    const data = folders.map((folder) => ({
+      ...folder,
+      selected: selected.has(folder.mediaId),
+    }));
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(502).json({ success: false, message: getBiliListErrorMessage(error) });
+  }
+}));
+
+app.get("/api/users/:id/favorites/:mediaId/cover", asyncHandler(async (req, res) => {
+  const user = userStore.getById(req.params.id);
+  if (!user) {
+    res.status(404).json({ success: false, message: "User not found" });
+    return;
+  }
+  const mediaId = Number(req.params.mediaId);
+  if (!Number.isInteger(mediaId) || mediaId < 1) {
+    res.status(400).json({ success: false, message: "Invalid mediaId" });
+    return;
+  }
+  const coverHint = favoriteFolderListCache.peek(user.id, mediaId)?.cover;
+  const filePath = await favoriteFolderCover.resolve(user, mediaId, coverHint);
+  sendOnlineCover(res, filePath);
 }));
 
 app.get("/api/users/:id/favorites/:mediaId/items", asyncHandler(async (req, res) => {
@@ -1768,9 +1803,16 @@ app.put("/api/users/:id/favorites", asyncHandler(async (req, res) => {
         .map((value: unknown) => Number(value))
       .filter((value: number) => Number.isInteger(value) && value > 0)
     : [];
-  const folders = await listFavoriteFolders(user.cookie);
+  let folders;
+  try {
+    folders = await listFavoriteFolders(user.cookie);
+  } catch (error) {
+    res.status(502).json({ success: false, message: getBiliListErrorMessage(error) });
+    return;
+  }
   const selected = folders.filter((folder) => mediaIds.includes(folder.mediaId));
   userStore.updateFavorites(user.id, selected.map((folder) => ({ mediaId: folder.mediaId, title: folder.title })));
+  favoriteFolderListCache.set(user, folders);
   res.json({ success: true, data: selected });
 }));
 
@@ -1989,6 +2031,7 @@ function cleanupConfirmationRequired(items: CleanupItem[]) {
 async function removeCleanupTarget(item: CleanupItem) {
   if (item === "memory-cache") {
     favoriteItemsCache.clear();
+    favoriteFolderListCache.clear();
     return;
   }
   if (item === "logs") {
@@ -2175,6 +2218,7 @@ function parseBooleanOption(value: unknown, fallback: boolean) {
 function reloadStoresAfterImport() {
   configStore.reload();
   onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
+  favoriteFolderListCache.clear();
   userStore.reload();
   stateManager.reload();
   scheduler.reloadStateDatabase();

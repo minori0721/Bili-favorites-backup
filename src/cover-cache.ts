@@ -49,7 +49,16 @@ export function coverPathForBvid(bvid: string) {
 
 export function hasArchiveCover(bvid: string) {
   const normalizedBvid = safeBvid(bvid);
-  return Boolean(normalizedBvid && fs.existsSync(coverPathForBvid(normalizedBvid)));
+  if (!normalizedBvid) return false;
+  const filePath = coverPathForBvid(normalizedBvid);
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0) return false;
+    fs.accessSync(filePath, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function promoteOnlineCoverToArchive(bvid: string, onlinePath: string) {
@@ -57,7 +66,7 @@ export async function promoteOnlineCoverToArchive(bvid: string, onlinePath: stri
   if (!normalizedBvid || !onlinePath) return null;
   const finalPath = coverPathForBvid(normalizedBvid);
   await fs.promises.mkdir(coversDir, { recursive: true });
-  if (await fs.promises.access(finalPath, fs.constants.R_OK).then(() => true).catch(() => false)) {
+  if (hasArchiveCover(normalizedBvid)) {
     return coverRelativePathForBvid(normalizedBvid);
   }
   await fs.promises.mkdir(tempDir, { recursive: true });
@@ -265,7 +274,7 @@ async function cacheCoverInternal(bvid: string, coverUrl: string) {
   }
   await fs.promises.mkdir(coversDir, { recursive: true });
   const finalPath = coverPathForBvid(normalizedBvid);
-  if (fs.existsSync(finalPath)) {
+  if (hasArchiveCover(normalizedBvid)) {
     return coverRelativePathForBvid(normalizedBvid);
   }
 
@@ -288,7 +297,7 @@ export async function cacheLocalCover(bvid: string, sourcePath: string) {
   if (!normalizedBvid || !sourcePath || !fs.existsSync(sourcePath)) return null;
   await fs.promises.mkdir(coversDir, { recursive: true });
   const finalPath = coverPathForBvid(normalizedBvid);
-  if (fs.existsSync(finalPath)) return coverRelativePathForBvid(normalizedBvid);
+  if (hasArchiveCover(normalizedBvid)) return coverRelativePathForBvid(normalizedBvid);
   await fs.promises.mkdir(tempDir, { recursive: true });
   const tempRoot = await fs.promises.mkdtemp(path.join(tempDir, `cover-local-${normalizedBvid}-`));
   const tempWebp = path.join(tempRoot, "cover.webp");
@@ -313,7 +322,7 @@ function enqueueCoverCache(bvid: string, coverUrl: string, background: boolean):
   if (!normalizedBvid || !coverUrl) {
     return Promise.resolve({ path: null } satisfies CoverJobResult);
   }
-  if (fs.existsSync(coverPathForBvid(normalizedBvid))) {
+  if (hasArchiveCover(normalizedBvid)) {
     return Promise.resolve({ path: coverRelativePathForBvid(normalizedBvid) } satisfies CoverJobResult);
   }
   const active = activeCoverJobs.get(normalizedBvid);
@@ -504,7 +513,7 @@ export class UnavailableCoverBackfill {
       try {
         const exists = this.options.coverExists
           ? await this.options.coverExists(bvid)
-          : await fs.promises.access(coverPathForBvid(bvid), fs.constants.R_OK).then(() => true);
+          : hasArchiveCover(bvid);
         if (this.stopped) return;
         if (!exists) throw new Error("cover missing");
         if (video.originalMeta?.coverLocalPath !== relativePath) {

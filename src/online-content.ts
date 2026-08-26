@@ -57,7 +57,10 @@ const MAX_PAGES = 128;
 const MAX_NAVIGATION_ENTRIES = 128;
 const MAX_FAILURE_ENTRIES = 128;
 const MAX_COVER_REFS = MAX_PAGES * 50;
-const TOKEN_TTL_MS = 15 * 60_000;
+const ONLINE_COVER_MAX_AGE_SECONDS = 24 * 60 * 60;
+// Lazy images can remain off-screen for a long time. Keep the server-side
+// reference valid for at least as long as the browser may reuse the response.
+const TOKEN_TTL_MS = (ONLINE_COVER_MAX_AGE_SECONDS + 60) * 1000;
 
 function pageKey(userId: string, query: OnlineContentQuery) {
   return JSON.stringify([
@@ -281,6 +284,6 @@ export function sendOnlineCover(res: Response, filePath: string | null) {
     res.status(404).json({ success: false, message: "在线缩略图不可用" });
     return;
   }
-  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.setHeader("Cache-Control", `private, max-age=${ONLINE_COVER_MAX_AGE_SECONDS}`);
   res.sendFile(filePath);
 }

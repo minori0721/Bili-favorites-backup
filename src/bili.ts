@@ -70,6 +70,19 @@ export class BiliRiskOrLoginError extends Error {
   }
 }
 
+export class BiliFavoriteFolderResponseError extends Error {
+  constructor() {
+    super("B站收藏夹接口返回异常，请重试；如持续失败请重新登录。");
+    this.name = "BiliFavoriteFolderResponseError";
+  }
+}
+
+export function normalizeFavoriteFolderListResponse(value: unknown): Array<Record<string, any>> {
+  const list = (value as { list?: unknown } | null | undefined)?.list;
+  if (!Array.isArray(list)) throw new BiliFavoriteFolderResponseError();
+  return list as Array<Record<string, any>>;
+}
+
 // ---------- helpers ----------
 
 /** build a biliAPI Client from stored cookies — same pattern as biliLive-tools */
@@ -386,13 +399,31 @@ export function normalizeTvAuthResult(result: any): NormalizedTvAuth {
 export async function listFavoriteFolders(cookie: BiliCookie): Promise<FavoriteFolderInfo[]> {
   const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
   const res = await client.video.listFavoriteBox({ aid: 0, type: 2 });
-  const list = res.list || [];
+  const list = normalizeFavoriteFolderListResponse(res);
   return list.map((item) => ({
     mediaId: item.id,
     title: item.title,
     mediaCount: item.media_count,
     cover: (item as any).cover || undefined,
   }));
+}
+
+/**
+ * The folder list endpoint does not consistently include a cover URL. Bilibili's
+ * folder metadata endpoint is the authoritative, lightweight fallback used by
+ * clients such as Bili23 for lazy cover loading.
+ */
+export async function getFavoriteFolderCover(cookie: BiliCookie, mediaId: number): Promise<string | undefined> {
+  if (!Number.isInteger(mediaId) || mediaId < 1) {
+    throw new Error("favorite mediaId is invalid");
+  }
+  const params = new URLSearchParams({ media_id: String(mediaId) });
+  const data = await requestBiliJson(
+    cookie,
+    `https://api.bilibili.com/x/v3/fav/folder/info?${params.toString()}`,
+  );
+  const cover = typeof data?.cover === "string" ? data.cover.trim() : "";
+  return cover || undefined;
 }
 
 export async function listFavoriteItemsPage(

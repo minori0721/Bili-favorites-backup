@@ -66,6 +66,19 @@ test("closing one favorites request prevents it from overwriting another account
   await expect(page.locator("#favoritesList")).not.toContainText("第一账号收藏夹");
 });
 
+test("favorite folder covers use the cached same-origin image endpoint", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  desktopOnly(testInfo);
+  await boot(page);
+  await expect(page.locator(".user-item")).toHaveCount(1);
+  await page.getByRole("button", { name: "选择同步收藏夹" }).click();
+  await expect(page.locator("#favoritesList")).toContainText("第一账号收藏夹");
+  await expect.poll(async () => (await page.request.get("/__test/state").then((response) => response.json())).favoriteCoverQueries)
+    .toEqual(["user-1:101"]);
+  await expect(page.locator("#favoritesList img.fav-cover")).toHaveCount(1);
+  await expect(page.locator("#favoritesList img.fav-cover")).toHaveAttribute("src", /\/api\/users\/user-1\/favorites\/101\/cover$/);
+});
+
 test("favorites save failure keeps the dialog usable and a retry succeeds", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);

@@ -69,8 +69,12 @@ test("main workspace and every standard dialog use the shared visual system", as
           sizeClass: [...panel.classList].find((name) => /^panel-(sm|md|lg|xl)$/.test(name)) || "",
           radius: style(panel).borderRadius,
           background: style(panel).backgroundColor,
+          titleBackground: title ? style(title).backgroundColor : "missing",
+          titleBackdrop: title ? style(title).backdropFilter : "missing",
           titleBorder: title ? style(title).borderBottomWidth : "missing",
           titlePosition: title ? style(title).position : "missing",
+          actionsBackground: actions ? style(actions).backgroundColor : "missing",
+          actionsBackdrop: actions ? style(actions).backdropFilter : "missing",
           actionsBorder: actions ? style(actions).borderTopWidth : "missing",
           actionsPosition: actions ? style(actions).position : "missing",
         };
@@ -110,6 +114,8 @@ test("main workspace and every standard dialog use the shared visual system", as
   expect(audit.dialogs.length).toBeGreaterThanOrEqual(16);
   expect(audit.dialogs.every((dialog) => dialog.sizeClass && dialog.radius === "24px")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.background.startsWith("rgba(") && dialog.background !== "rgba(0, 0, 0, 0)")).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.titleBackground === "rgba(0, 0, 0, 0)" && dialog.actionsBackground === "rgba(0, 0, 0, 0)")).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.titleBackdrop === "none" && dialog.actionsBackdrop === "none")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === "sticky")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === "sticky")).toBe(true);
   expect(audit.controls.primaryRadius).toBe("14px");

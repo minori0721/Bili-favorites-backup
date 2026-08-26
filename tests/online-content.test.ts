@@ -67,6 +67,7 @@ test("online content keeps a short-lived BVID reference even when the cover is g
   assert.equal(reference?.userId, "online-user");
   assert.equal(reference?.item.bvid, "BV1NOIMAGE01");
   assert.equal(reference?.item.cover, undefined);
+  assert.ok((reference?.expiresAt || 0) - Date.now() > 23 * 60 * 60 * 1000);
 });
 
 test("online favorite items always expose a canonical safe Bilibili URL", async () => {
