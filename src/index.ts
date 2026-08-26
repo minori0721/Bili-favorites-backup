@@ -1780,8 +1780,13 @@ app.patch("/api/users/:id", (req, res) => {
     res.status(404).json({ success: false, message: "User not found" });
     return;
   }
-  if (req.body.toggle) {
-    const updated = userStore.updatePartial(user.id, { enabled: !user.enabled });
+  const requestedEnabled = typeof req.body.enabled === "boolean"
+    ? req.body.enabled
+    : req.body.toggle
+      ? !user.enabled
+      : null;
+  if (requestedEnabled !== null) {
+    const updated = userStore.updatePartial(user.id, { enabled: requestedEnabled });
     if (updated?.enabled) scheduler.wakeChargingAccessProbes();
     res.json({ success: true, data: updated });
     return;

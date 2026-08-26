@@ -38,7 +38,9 @@ async function openLibrary(page: Page, testInfo: TestInfo) {
   if (testInfo.project.name !== "desktop") {
     await page.locator('.archive-nav-item[data-archive-scope="global"]').tap();
     await expect(page.locator(".archive-library-shell")).toHaveClass(/show-content/);
+    await page.waitForTimeout(220);
   }
+  await expect(page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-cover')).toBeVisible();
   const cardGeometry = await page.locator('[data-archive-bvid="BV1ALPHA001"]').evaluate((card) => {
     const cover = card.querySelector<HTMLElement>(".archive-library-cover")!;
     const title = card.querySelector<HTMLElement>(".archive-library-title")!;

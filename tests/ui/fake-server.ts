@@ -33,6 +33,23 @@ type TestState = {
   mediaProbeBodies: unknown[];
   mediaProbeMode: "complete" | "failed" | "refine_mismatch";
   manualArchiveCount: number;
+  configRequests: number;
+  configFailuresRemaining: number;
+  userRequests: number;
+  userFailuresRemaining: number;
+  usersMode: "single" | "double";
+  favoriteQueries: string[];
+  favoriteRace: boolean;
+  favoriteSaveCount: number;
+  favoriteSaveFailuresRemaining: number;
+  userPatchCount: number;
+  userPatchBodies: unknown[];
+  syncNowCount: number;
+  loginStartCount: number;
+  loginStatusQueries: string[];
+  loginMode: "pending" | "first_complete_then_pending";
+  onlineSourceRace: boolean;
+  onlineDuplicateMode: boolean;
 };
 
 function initialState(): TestState {
@@ -64,6 +81,23 @@ function initialState(): TestState {
     mediaProbeBodies: [],
     mediaProbeMode: "complete",
     manualArchiveCount: 0,
+    configRequests: 0,
+    configFailuresRemaining: 0,
+    userRequests: 0,
+    userFailuresRemaining: 0,
+    usersMode: "single",
+    favoriteQueries: [],
+    favoriteRace: false,
+    favoriteSaveCount: 0,
+    favoriteSaveFailuresRemaining: 0,
+    userPatchCount: 0,
+    userPatchBodies: [],
+    syncNowCount: 0,
+    loginStartCount: 0,
+    loginStatusQueries: [],
+    loginMode: "pending",
+    onlineSourceRace: false,
+    onlineDuplicateMode: false,
   };
 }
 
@@ -169,12 +203,27 @@ app.post("/__test/reset", (request, response) => {
   if (request.body?.queueBoardMode === "partial_upload") state.queueBoardMode = "partial_upload";
   if (request.body?.mediaProbeMode === "failed") state.mediaProbeMode = "failed";
   if (request.body?.mediaProbeMode === "refine_mismatch") state.mediaProbeMode = "refine_mismatch";
+  state.configFailuresRemaining = request.body?.configErrorOnce === true ? 1 : 0;
+  state.userFailuresRemaining = request.body?.usersErrorOnce === true ? 1 : 0;
+  if (request.body?.usersMode === "double") state.usersMode = "double";
+  state.favoriteRace = request.body?.favoriteRace === true;
+  state.favoriteSaveFailuresRemaining = request.body?.favoriteSaveErrorOnce === true ? 1 : 0;
+  if (request.body?.loginMode === "first_complete_then_pending") state.loginMode = "first_complete_then_pending";
+  state.onlineSourceRace = request.body?.onlineSourceRace === true;
+  state.onlineDuplicateMode = request.body?.onlineDuplicateMode === true;
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
 
 app.get("/", (_request, response) => response.type("html").send(renderAppPage()));
-app.get("/api/config", (_request, response) => response.json(ok({
+app.get("/api/config", (_request, response) => {
+  state.configRequests += 1;
+  if (state.configFailuresRemaining > 0) {
+    state.configFailuresRemaining -= 1;
+    response.json({ success: false, message: "隔离设置读取失败" });
+    return;
+  }
+  response.json(ok({
   pollIntervalMinutes: 5,
   perVideoDelaySeconds: 0,
   uploadLayout: "user-folder-video",
@@ -201,7 +250,8 @@ app.get("/api/config", (_request, response) => response.json(ok({
   remoteRequeueLimitPerCycle: 20,
   filenameTemplate: "<videoTitle>-<bvid>",
   renameScanMaxFiles: 10_000,
-})));
+  }));
+});
 app.post("/api/storage/check", (request, response) => {
   state.storageCheckCount += 1;
   state.storageCheckBody = request.body;
@@ -226,16 +276,77 @@ app.post("/api/storage/check", (request, response) => {
     writeVerified: false,
   }));
 });
-app.get("/api/users", (_request, response) => response.json(ok([{
-  id: "user-1",
-  uid: "10001",
-  name: "测试账号",
-  favoritesCount: 1,
-  expiresText: "测试会话",
-  enabled: true,
-  favorites: [{ mediaId: 101, title: "当前收藏夹" }],
-  authHealth: { level: "ok", summary: "测试授权正常", detail: "隔离测试数据" },
-}])));
+app.get("/api/users", (_request, response) => {
+  state.userRequests += 1;
+  if (state.userFailuresRemaining > 0) {
+    state.userFailuresRemaining -= 1;
+    response.json({ success: false, message: "隔离账号读取失败" });
+    return;
+  }
+  const users = [{
+    id: "user-1", uid: "10001", name: "测试账号", favoritesCount: 1,
+    expiresText: "测试会话", enabled: true,
+    favorites: [{ mediaId: 101, title: "当前收藏夹" }],
+    authHealth: { level: "ok", summary: "测试授权正常", detail: "隔离测试数据" },
+  }];
+  if (state.usersMode === "double") users.push({
+    id: "user-2", uid: "10002", name: "第二账号", favoritesCount: 1,
+    expiresText: "测试会话", enabled: false,
+    favorites: [{ mediaId: 202, title: "第二收藏夹" }],
+    authHealth: { level: "ok", summary: "测试授权正常", detail: "隔离测试数据" },
+  });
+  response.json(ok(users));
+});
+app.get("/api/users/:id/favorites", async (request, response) => {
+  const userId = String(request.params.id || "");
+  state.favoriteQueries.push(userId);
+  if (state.favoriteRace && userId === "user-1") await wait(650);
+  const second = userId === "user-2";
+  response.json(ok([{
+    mediaId: second ? 202 : 101,
+    title: second ? "第二账号收藏夹" : "第一账号收藏夹",
+    mediaCount: second ? 22 : 11,
+    selected: true,
+    cover: "",
+  }]));
+});
+app.put("/api/users/:id/favorites", (request, response) => {
+  state.favoriteSaveCount += 1;
+  if (state.favoriteSaveFailuresRemaining > 0) {
+    state.favoriteSaveFailuresRemaining -= 1;
+    response.json({ success: false, message: "隔离收藏夹保存失败" });
+    return;
+  }
+  response.json(ok(request.body?.mediaIds || []));
+});
+app.patch("/api/users/:id", async (request, response) => {
+  state.userPatchCount += 1;
+  state.userPatchBodies.push(request.body ?? null);
+  await wait(180);
+  response.json(ok({ id:request.params.id, enabled:Boolean(request.body?.enabled) }));
+});
+app.post("/api/users/:id/refresh-info", (_request, response) => response.json(ok({ refreshed: true })));
+app.post("/api/users/:id/refresh-auth", (_request, response) => response.json(ok({ refreshed: true })));
+app.post("/api/users/login/start", (_request, response) => {
+  state.loginStartCount += 1;
+  response.json(ok({
+    loginId:`login-${state.loginStartCount}`,
+    qrDataUrl:"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+  }));
+});
+app.get("/api/users/login/status", (request, response) => {
+  const loginId = String(request.query.loginId || "");
+  state.loginStatusQueries.push(loginId);
+  const completed = state.loginMode === "first_complete_then_pending" && loginId === "login-1";
+  response.json(ok({ status:completed ? "completed" : "pending" }));
+});
+app.post("/api/sync/now", async (_request, response) => {
+  state.syncNowCount += 1;
+  await wait(180);
+  response.json(ok({ queued:true }));
+});
+app.post("/api/sync/reconcile-remote", (_request, response) => response.json(ok({ queued:true })));
+app.post("/api/sync/reconcile", (_request, response) => response.json(ok({ queued:true })));
 app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({ running: [], completed: [] })));
 app.get("/api/queue/state", (_request, response) => {
   const manualWaitQueue = state.queueBoardMode === "manual_wait";
@@ -466,7 +577,14 @@ app.get("/api/archive-library/items", async (request, response) => {
   const query = String(request.query.q || "");
   state.itemQueries.push(query);
   if (query === "slow") await wait(700);
-  const items = archiveItems(query);
+  if (query === "broken") {
+    await wait(300);
+    response.json({ success:false, message:"隔离归档读取失败" });
+    return;
+  }
+  const items = query === "duplicates"
+    ? [{ ...baseItems[0] }, { ...baseItems[0] }]
+    : archiveItems(query);
   response.json(ok({
     items,
     pageSize: 50,
@@ -494,28 +612,39 @@ app.get("/api/archive-library/playback-queue", (_request, response) => response.
 
 app.get("/api/online-content/navigation", (_request, response) => {
   state.onlineNavigationCount += 1;
+  const sources = [{ kind: "favorite", mediaId: 101, title: "在线收藏夹" }];
+  if (state.onlineSourceRace) sources.push({ kind: "favorite", mediaId: 202, title: "第二在线收藏夹" });
   response.json(ok({
     accounts: [{
       userId: "user-1",
       name: "测试账号",
-      sources: [{ kind: "favorite", mediaId: 101, title: "在线收藏夹" }],
+      sources,
     }],
   }));
 });
-app.get("/api/online-content/items", (request, response) => {
+app.get("/api/online-content/items", async (request, response) => {
   const query = String(request.query.q || "");
+  const mediaId = Number(request.query.mediaId || 0);
   state.onlineItemQueries.push(query);
+  if (query === "slow" || (state.onlineSourceRace && mediaId === 101)) await wait(650);
+  if (query === "broken") {
+    response.json({ success:false, message:"隔离在线内容读取失败" });
+    return;
+  }
+  const suffix = mediaId === 202 ? "SECOND" : "001";
+  const title = mediaId === 202 ? "第二在线来源" : query ? `在线搜索 ${query}` : "在线待归档视频";
+  const item = {
+    id: `online-item-${suffix}`,
+    userId: "user-1",
+    kind: "favorite",
+    bvid: mediaId === 202 ? "BV1ONLINE002" : "BV1ONLINE001",
+    title,
+    upperName: "在线UP主",
+    archiveState: "unarchived",
+    openUrl: mediaId === 202 ? "https://www.bilibili.com/video/BV1ONLINE002" : "https://www.bilibili.com/video/BV1ONLINE001",
+  };
   response.json(ok({
-    items: [{
-      id: "online-item-1",
-      userId: "user-1",
-      kind: "favorite",
-      bvid: "BV1ONLINE001",
-      title: query ? `在线搜索 ${query}` : "在线待归档视频",
-      upperName: "在线UP主",
-      archiveState: "unarchived",
-      openUrl: "https://www.bilibili.com/video/BV1ONLINE001",
-    }],
+    items: state.onlineDuplicateMode ? [item, { ...item }] : [item],
     page: { page: 1, pageSize: 50, hasMore: false, nextCursor: null },
   }));
 });

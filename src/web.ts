@@ -54,22 +54,27 @@ export function renderLoginPage() {
     :root {
       color-scheme: light;
       --bg: #F4FDFB;
-      --panel: #ffffff;
+      --panel: #FFFFFF;
+      --surface: #F8FBFA;
       --accent: #39C5BB;
       --accent-hover: #2BA9A0;
+      --accent-soft: rgba(57, 197, 187, 0.1);
       --ink: #1A2F2D;
       --muted: #6A7A78;
-      --shadow: 0 20px 60px rgba(57, 197, 187, 0.15);
       --border: #D6F0ED;
+      --focus: rgba(57, 197, 187, 0.22);
+      --shadow: 0 20px 60px rgba(57, 197, 187, 0.15);
+      --radius-control: 6px;
+      --radius-panel: 10px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: "Noto Sans SC", sans-serif;
       background:
-        radial-gradient(circle at 18% 0%, rgba(57, 197, 187, 0.16), transparent 34%),
-        radial-gradient(circle at 86% 10%, rgba(224, 247, 250, 0.72), transparent 30%),
-        linear-gradient(180deg, #ffffff 0%, var(--bg) 66%);
+        radial-gradient(circle at 10% -10%, rgba(57, 197, 187, 0.18) 0%, transparent 30%),
+        radial-gradient(circle at 86% 4%, rgba(224, 247, 250, 0.68) 0%, transparent 28%),
+        linear-gradient(180deg, #FFFFFF 0%, var(--bg) 52%);
       color: var(--ink);
       display: flex;
       align-items: center;
@@ -81,11 +86,11 @@ export function renderLoginPage() {
       width: min(420px, 100%);
       background: rgba(255, 255, 255, 0.82);
       backdrop-filter: blur(18px);
-      border-radius: 20px;
-      padding: 36px;
-      box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.8);
-      animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-      border: 1px solid rgba(214, 240, 237, 0.82);
+      border-radius: var(--radius-panel);
+      padding: 34px;
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+      animation: fadeUp 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+      border: 1px solid var(--border);
     }
     h1 { margin: 0 0 8px; font-size: 26px; font-weight: 700; color: var(--accent); }
     p { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
@@ -93,17 +98,18 @@ export function renderLoginPage() {
     input:not([type="checkbox"]) {
       width: 100%;
       padding: 14px 16px;
-      border-radius: 12px;
-      border: 1px solid rgba(214, 240, 237, 0.95);
+      border-radius: var(--radius-control);
+      border: 1px solid var(--border);
       margin-bottom: 20px;
       font-size: 15px;
       transition: all 0.2s;
       outline: none;
-      background: rgba(255, 255, 255, 0.9);
+      background: rgba(255, 255, 255, 0.78);
     }
     input:not([type="checkbox"]):focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 4px rgba(57, 197, 187, 0.16);
+      box-shadow: 0 0 0 3px var(--focus);
+      background: rgba(255, 255, 255, 0.92);
     }
     .remember-option {
       display: flex;
@@ -130,23 +136,23 @@ export function renderLoginPage() {
       width: 100%;
       padding: 14px 16px;
       border: none;
-      border-radius: 12px;
+      border-radius: var(--radius-control);
       background: var(--accent);
       color: white;
       font-weight: 700;
       font-size: 16px;
       cursor: pointer;
       transition: all 0.2s;
-      box-shadow: 0 10px 22px rgba(57, 197, 187, 0.24);
+      box-shadow: 0 8px 20px rgba(57, 197, 187, 0.18);
     }
     button:hover {
       background: var(--accent-hover);
+      box-shadow: 0 10px 24px rgba(57, 197, 187, 0.24);
       transform: translateY(-1px);
-      box-shadow: 0 12px 28px rgba(57, 197, 187, 0.30);
     }
     button:active {
-      transform: translateY(1px);
-      box-shadow: 0 5px 14px rgba(57, 197, 187, 0.22);
+      box-shadow: inset 0 1px 2px rgba(11, 65, 59, 0.18);
+      transform: translateY(0);
     }
     .error { color: #E57373; margin-top: 16px; min-height: 20px; text-align: center; font-weight: 500; }
     .login-meta { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px 12px; margin-top:20px; font-size:12px; }
@@ -238,9 +244,34 @@ function getAppStyles() {
   return `<style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
     :root {
-      --bg: #F4FDFB; --panel: #ffffff; --accent: #39C5BB; --accent-hover: #2BA9A0;
-      --ink: #1A2F2D; --muted: #6A7A78; --border: #D6F0ED;
-      --shadow: 0 18px 45px rgba(57,197,187,0.08);
+      --bg: #F4FDFB;
+      --panel: #FFFFFF;
+      --surface: rgba(250,253,252,0.72);
+      --surface-strong: rgba(238,245,243,0.88);
+      --accent: #39C5BB;
+      --accent-hover: #2BA9A0;
+      --accent-soft: rgba(57,197,187,0.10);
+      --ink: #1A2F2D;
+      --muted: #6A7A78;
+      --border: #D6F0ED;
+      --border-strong: rgba(214,240,237,0.95);
+      --focus-ring: 0 0 0 3px rgba(57,197,187,0.22);
+      --danger: #B94747;
+      --danger-hover: #9F3939;
+      --warning: #A9681F;
+      --shadow-panel: 0 18px 48px rgba(57,197,187,0.09), inset 0 1px 0 rgba(255,255,255,0.78);
+      --shadow-dialog: 0 24px 80px rgba(26,47,45,0.14), inset 0 1px 0 rgba(255,255,255,0.82);
+      --radius-control: 6px;
+      --radius-panel: 8px;
+      --radius-home: 10px;
+      --radius-home-control: 8px;
+      --radius-dialog: 10px;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
       --glass-panel: rgba(255,255,255,0.80);
       --glass-panel-strong: rgba(255,255,255,0.88);
       --glass-surface: rgba(250,253,252,0.72);
@@ -248,47 +279,61 @@ function getAppStyles() {
       --glass-border: rgba(214,240,237,0.84);
       --glass-border-strong: rgba(214,240,237,0.95);
       --glass-blur: blur(18px);
-      --glass-shadow: 0 18px 48px rgba(57,197,187,0.09), inset 0 1px 0 rgba(255,255,255,0.78);
-      --success: #4CAF50; --success-bg: #E8F5E9;
-      --archive-muted: #526B66; --archive-muted-soft: #5A716D;
+      --glass-shadow: var(--shadow-panel);
+      --success: #4CAF50;
+      --success-bg: #E8F5E9;
+      --archive-muted: #526B66;
+      --archive-muted-soft: #5A716D;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at 10% -10%,rgba(57,197,187,0.18) 0%,transparent 30%),radial-gradient(circle at 86% 4%,rgba(224,247,250,0.68) 0%,transparent 28%),linear-gradient(180deg,#ffffff 0%,var(--bg) 52%); color:var(--ink); }
+    body { margin:0; font-family:"Noto Sans SC",sans-serif; background:radial-gradient(circle at 10% -10%,rgba(57,197,187,.18) 0%,transparent 30%),radial-gradient(circle at 86% 4%,rgba(224,247,250,.68) 0%,transparent 28%),linear-gradient(180deg,#fff 0%,var(--bg) 52%); color:var(--ink); }
     html.modal-open,body.modal-open { overflow:hidden; overscroll-behavior:none; }
-    header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px 20px; padding:20px 32px; background:rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); border-bottom:1px solid rgba(214,240,237,0.76); position:sticky; top:0; z-index:10; box-shadow:0 8px 30px rgba(57,197,187,0.05); }
+    header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px 20px; padding:14px 28px; background:rgba(255,255,255,0.72); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:10; box-shadow:0 8px 30px rgba(57,197,187,0.05); backdrop-filter:var(--glass-blur); }
     header h1 { margin:0; font-size:24px; color:var(--accent); font-weight:700; }
     .app-brand,.header-actions { display:flex; align-items:center; min-width:0; }
     .app-brand { gap:10px; flex:1 1 260px; }
     .header-actions { gap:10px; flex:0 0 auto; }
     .version-link,.github-link { color:var(--muted); text-decoration:none; white-space:nowrap; transition:color .2s,border-color .2s,background .2s; }
-    .version-link { max-width:220px; overflow:hidden; text-overflow:ellipsis; padding:4px 7px; border:1px solid rgba(214,240,237,0.95); border-radius:7px; background:rgba(255,255,255,0.66); font-size:12px; font-weight:600; }
+    .version-link { max-width:220px; overflow:hidden; text-overflow:ellipsis; padding:4px 7px; border:1px solid var(--border); border-radius:var(--radius-control); background:var(--surface); font-size:12px; font-weight:600; }
     .github-link { padding:7px 4px; font-size:14px; font-weight:600; }
     .version-link:hover,.version-link:focus-visible,.github-link:hover,.github-link:focus-visible { color:var(--accent); border-color:var(--accent); outline:none; }
-    header button { background:rgba(255,255,255,0.82); border:1px solid rgba(214,240,237,0.95); border-radius:999px; padding:8px 20px; cursor:pointer; font-weight:600; color:var(--ink); transition:all 0.2s; box-shadow:0 4px 16px rgba(57,197,187,0.08); }
-    header button:hover { border-color:var(--accent); color:var(--accent); box-shadow:0 6px 20px rgba(57,197,187,0.12); }
-    main { padding:28px 32px 40px; display:grid; gap:22px; grid-template-columns:1fr; max-width:1200px; min-width:0; margin:0 auto; }
-    .card { min-width:0; background:var(--glass-panel); backdrop-filter:var(--glass-blur); border-radius:20px; padding:24px; box-shadow:var(--glass-shadow); border:1px solid var(--glass-border); animation:fadeUp 0.6s cubic-bezier(0.16,1,0.3,1); }
-    .card h2 { margin:0 0 14px; font-size:20px; color:var(--accent); display:flex; align-items:center; gap:8px; }
-    .card h2::before { content:''; display:block; width:4px; height:18px; background:var(--accent); border-radius:4px; }
+    header button { min-height:36px; background:rgba(255,255,255,0.68); border:1px solid rgba(214,240,237,0.95); border-radius:var(--radius-home-control); padding:7px 14px; cursor:pointer; font-weight:650; color:var(--ink); transition:background .16s,border-color .16s,color .16s,box-shadow .16s; box-shadow:0 5px 14px rgba(57,197,187,0.06); }
+    header button:hover,header button:focus-visible { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); box-shadow:var(--focus-ring); outline:none; }
+    main { padding:24px 28px 36px; display:grid; gap:0; grid-template-columns:1fr; max-width:1240px; min-width:0; margin:0 auto; }
+    .card { min-width:0; background:var(--glass-panel); border-radius:0; padding:24px 28px; box-shadow:var(--glass-shadow); border:1px solid var(--glass-border); border-bottom:0; animation:none; backdrop-filter:var(--glass-blur); }
+    .card:first-child { border-radius:var(--radius-panel) var(--radius-panel) 0 0; }
+    .card:last-child { border-bottom:1px solid var(--border); border-radius:0 0 var(--radius-panel) var(--radius-panel); }
+    .card:only-child { border-radius:var(--radius-panel); border-bottom:1px solid var(--border); }
+    main > .card:first-child { border-radius:var(--radius-home) var(--radius-home) 0 0; }
+    main > .card:last-child { border-radius:0 0 var(--radius-home) var(--radius-home); }
+    main > .card:only-child { border-radius:var(--radius-home); }
+    .card h2 { margin:0 0 14px; font-size:18px; color:var(--accent); display:flex; align-items:center; gap:9px; }
+    .card h2::before { content:''; display:block; width:4px; height:18px; background:var(--accent); border-radius:3px; }
     .muted { color:var(--muted); font-size:14px; margin-bottom:14px; line-height:1.65; }
     .row { display:flex; gap:10px; flex-wrap:wrap; }
     .account-actions { margin-bottom:20px; align-items:center; }
     .settings-actions,.modal-actions { margin-top:24px; }
-    .modal-actions { justify-content:center; }
+    .settings-actions { align-items:center; padding-top:18px; border-top:1px solid var(--border); }
+    .settings-actions #saveConfigBtn { margin-right:auto; }
+    .settings-actions button:not(#saveConfigBtn) { border-color:var(--border-strong); background:var(--panel); color:var(--ink); }
+    .settings-actions button:not(#saveConfigBtn):hover,.settings-actions button:not(#saveConfigBtn):focus-visible { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+    .settings-actions ~ .status-line:empty { display:none; }
+    .modal-actions { justify-content:flex-end; }
     .preview-actions { margin:8px 0 12px; }
-    .split-actions button { flex:1; }
-    .row button { border:none; background:var(--accent); color:white; padding:9px 15px; border-radius:14px; cursor:pointer; font-weight:600; transition:all 0.2s; box-shadow:0 8px 20px rgba(57,197,187,0.18); }
-    .row button:hover { background:var(--accent-hover); transform:translateY(-1px); box-shadow:0 10px 24px rgba(57,197,187,0.24); }
+    .split-actions button { flex:0 1 auto; min-width:120px; }
+    .row button { min-height:38px; border:1px solid var(--accent); background:var(--accent); color:white; padding:8px 14px; border-radius:var(--radius-control); cursor:pointer; font-weight:650; transition:background .16s,border-color .16s,color .16s,box-shadow .16s,transform .16s; box-shadow:0 8px 20px rgba(57,197,187,0.18); }
+    .row button:hover,.row button:focus-visible { background:var(--accent-hover); border-color:var(--accent-hover); box-shadow:0 10px 24px rgba(57,197,187,0.24); transform:translateY(-1px); outline:none; }
     .row button:disabled { opacity:.56; cursor:not-allowed; transform:none; box-shadow:none; }
     .row button:disabled:hover { transform:none; box-shadow:none; }
     .row .ghost { background:rgba(255,255,255,0.66); color:var(--accent); border:1px solid rgba(57,197,187,0.45); box-shadow:none; }
-    .row .ghost:hover { background:rgba(57,197,187,0.08); border-color:var(--accent); }
-    .row .danger-ghost { border-color:#E57373; color:#E57373; }
-    .row button.danger-action { background:#E57373; box-shadow:0 8px 20px rgba(229,115,115,0.20); }
-    .row button.danger-action:hover { background:#D85C5C; box-shadow:0 10px 24px rgba(229,115,115,0.26); }
+    .row .ghost:hover,.row .ghost:focus-visible { background:rgba(57,197,187,0.08); border-color:var(--accent); color:var(--accent); box-shadow:0 6px 16px rgba(57,197,187,0.10); }
+    .row .danger-ghost { border-color:#D6A2A2; color:var(--danger); }
+    .row button.danger-action { background:var(--danger); border-color:var(--danger); box-shadow:none; }
+    .row button.danger-action:hover,.row button.danger-action:focus-visible { background:var(--danger-hover); border-color:var(--danger-hover); box-shadow:0 0 0 3px rgba(185,71,71,.18); }
     .row .compact-button { padding:4px 12px; font-size:12px; flex-shrink:0; }
-    .user-list { display:grid; gap:16px; }
-    .user-item { border:1px solid var(--glass-border); border-radius:16px; padding:15px; display:grid; gap:12px; background:var(--glass-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
+    main button:not(.favorite-chip) { border-radius:var(--radius-home-control); }
+    .user-list { display:grid; gap:12px; }
+    .user-item { border:1px solid var(--border); border-radius:var(--radius-panel); padding:15px; display:grid; gap:12px; background:var(--glass-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); }
     .user-name { font-size:16px; color:var(--accent); }
     .user-meta { margin:0; }
     .user-actions { margin-top:4px; }
@@ -296,7 +341,7 @@ function getAppStyles() {
     .favorite-chip { display:inline-block; padding:4px 10px; background:rgba(57,197,187,0.1); color:var(--ink); border:1px solid transparent; border-radius:999px; font:inherit; font-size:12px; margin:2px; }
     button.favorite-chip { cursor:pointer; }
     button.favorite-chip:hover,button.favorite-chip:focus-visible { border-color:var(--accent); color:var(--accent); outline:none; background:rgba(57,197,187,0.16); }
-    .auth-health { border:1px solid var(--glass-border); border-radius:12px; padding:10px 12px; background:rgba(255,255,255,0.76); font-size:12px; line-height:1.7; }
+    .auth-health { border:1px solid var(--border); border-radius:var(--radius-panel); padding:10px 12px; background:rgba(255,255,255,0.68); backdrop-filter:var(--glass-blur); font-size:12px; line-height:1.7; }
     .auth-health.ok { border-color:var(--success); background:var(--success-bg); }
     .auth-health.warn { border-color:#FFB74D; background:#FFF8E1; }
     .auth-health.error { border-color:#E57373; background:#FFEBEE; }
@@ -316,11 +361,11 @@ function getAppStyles() {
     .row .field-hint { width:100%; margin-bottom:0; }
     .template-note { margin-bottom:8px; }
     .template-label { margin-top:12px; }
-    input[type="text"],input[type="url"],input[type="number"],input[type="password"],select { width:100%; padding:11px 13px; border-radius:12px; border:1px solid var(--glass-border-strong); font-size:14px; outline:none; transition:all 0.2s; background:var(--glass-input); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
-    input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 4px rgba(57,197,187,0.14), inset 0 1px 0 rgba(255,255,255,0.8); background:white; }
+    input[type="text"],input[type="url"],input[type="number"],input[type="password"],select { width:100%; min-height:40px; padding:9px 11px; border-radius:var(--radius-control); border:1px solid var(--glass-border-strong); font-size:14px; outline:none; transition:background .16s,border-color .16s,box-shadow .16s; background:var(--glass-input); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); }
+    input:focus,select:focus { border-color:var(--accent); box-shadow:var(--focus-ring); background:rgba(255,255,255,0.94); }
     .checkbox-label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; margin:0; }
     .checkbox-label input { width:auto; margin:0; }
-    .encoding-priority-editor { display:grid; gap:7px; padding:8px; border:1px solid var(--glass-border-strong); border-radius:12px; background:rgba(255,255,255,0.62); }
+    .encoding-priority-editor { display:grid; gap:7px; padding:8px; border:1px solid var(--glass-border); border-radius:var(--radius-panel); background:var(--glass-surface); backdrop-filter:var(--glass-blur); }
     .encoding-priority-item { display:grid; grid-template-columns:28px minmax(0,1fr) auto; gap:9px; align-items:center; min-height:46px; padding:7px 9px; border:1px solid rgba(214,240,237,0.95); border-radius:9px; background:#fff; cursor:grab; }
     .encoding-priority-item:active { cursor:grabbing; }
     .encoding-priority-item.dragging { opacity:.55; border-color:var(--accent); }
@@ -356,7 +401,8 @@ function getAppStyles() {
     .media-retry-estimate { min-height:42px; padding:9px 11px; border:1px solid #DCEAE7; border-radius:7px; background:#F7FBFA; color:#526B66; font-size:12px; line-height:1.55; }
     .media-retry-strict-note { margin:0; color:#526B66; font-size:12px; line-height:1.55; }
     @media (max-width:600px) { .media-retry-manual { grid-template-columns:1fr; } .media-retry-combinations { max-height:238px; } }
-    .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; padding:16px; z-index:100; opacity:0; pointer-events:none; transition:opacity .16s ease; }
+    .modal { position:fixed; inset:0; background:rgba(26,47,45,0.50); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; padding:18px; z-index:100; opacity:0; pointer-events:none; transition:opacity .16s ease; }
+    .modal[hidden] { display:none !important; }
     .modal.active { opacity:1; pointer-events:auto; }
     .modal.is-closing { opacity:0; pointer-events:none; }
     .modal > .panel,
@@ -374,15 +420,28 @@ function getAppStyles() {
     .modal.active.is-closing > .online-content-shell,
     .modal.active.is-closing > .playback-shell,
     .modal.active.is-closing > .recovery-issues-shell { opacity:0; transform:translateY(3px) scale(.998); transition-duration:.13s; }
-    .modal .panel { background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); padding:30px; border-radius:24px; max-width:700px; width:100%; box-shadow:0 24px 80px rgba(26,47,45,0.14), inset 0 1px 0 rgba(255,255,255,0.82); border:1px solid var(--glass-border); max-height:90vh; overflow-y:auto; overflow-x:hidden; }
-    .modal .panel.panel-narrow { max-width:760px; }
-    .modal .panel.panel-medium { max-width:800px; }
-    .modal .panel.panel-large { max-width:860px; }
-    .modal .panel.panel-wide { max-width:900px; }
-    .modal .panel.panel-wider { max-width:920px; }
-    .modal .panel.panel-max { max-width:980px; }
-    .favorites-list { max-height:400px; overflow:auto; border:1px solid var(--glass-border); border-radius:16px; padding:10px; background:var(--glass-surface); }
-    .fav-label { font-weight:500; display:flex; gap:12px; align-items:center; margin:0; padding:12px; border-radius:12px; transition:background 0.2s; cursor:pointer; }
+    .modal .panel { --dialog-inline:24px; width:100%; max-width:640px; max-height:min(90vh,820px); overflow-y:auto; overflow-x:hidden; scrollbar-gutter:stable; background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); border:1px solid var(--glass-border); border-radius:var(--radius-dialog); box-shadow:var(--shadow-dialog); }
+    .modal .panel.panel-sm { max-width:480px; }
+    .modal .panel.panel-md { max-width:680px; }
+    .modal .panel.panel-lg { max-width:840px; }
+    .modal .panel.panel-xl { max-width:980px; }
+    .modal .panel.panel-narrow { max-width:520px; }
+    .modal .panel.panel-medium { max-width:680px; }
+    .modal .panel.panel-large { max-width:840px; }
+    .modal .panel.panel-wide,.modal .panel.panel-wider,.modal .panel.panel-max { max-width:980px; }
+    .modal .panel > h2,.modal .panel > .section-title-row:first-child { position:sticky; z-index:3; top:0; min-height:64px; margin:0; padding:19px var(--dialog-inline) 16px; border-bottom:1px solid var(--glass-border); background:rgba(255,255,255,.92); backdrop-filter:var(--glass-blur); }
+    .modal .panel > h2 { color:var(--ink); font-size:20px; line-height:1.35; }
+    .modal .panel > .section-title-row:first-child { justify-content:space-between; }
+    .modal .panel > .section-title-row:first-child h2 { color:var(--ink); font-size:20px; }
+    .modal .panel > :not(h2):not(.section-title-row):not(.modal-actions) { margin-left:var(--dialog-inline); margin-right:var(--dialog-inline); }
+    .modal .panel > h2 + .muted,.modal .panel > .section-title-row + .muted { margin-top:18px; }
+    .modal .panel > .modal-actions { position:sticky; z-index:3; bottom:0; align-items:center; justify-content:flex-end; margin:20px 0 0; padding:14px var(--dialog-inline); border-top:1px solid var(--glass-border); background:rgba(255,255,255,.92); backdrop-filter:var(--glass-blur); }
+    .modal .panel > .modal-actions .ghost { order:-1; }
+    .modal .panel > .modal-actions .full-width { width:auto; min-width:120px; }
+    .modal .panel > .status-line:not(:empty),.modal .panel > [role="alert"]:not(:empty) { padding:10px 12px; border-left:3px solid var(--accent); border-radius:var(--radius-control); background:var(--accent-soft); color:#315B55; line-height:1.55; text-align:left; }
+    .modal .panel > .status-error:not(:empty),.modal .panel > [role="alert"].status-error:not(:empty) { border-left-color:var(--danger); background:#FFF0F0; color:#8E3434; }
+    .favorites-list { max-height:400px; overflow:auto; border:1px solid var(--glass-border); border-radius:var(--radius-panel); padding:8px; background:var(--glass-surface); backdrop-filter:var(--glass-blur); }
+    .fav-label { font-weight:500; display:flex; gap:12px; align-items:center; margin:0; padding:11px; border-radius:var(--radius-control); transition:background 0.16s; cursor:pointer; }
     .fav-label:hover { background:rgba(57,197,187,0.1); }
     .fav-cover { width:64px; height:40px; object-fit:cover; border-radius:8px; background:#eee; flex-shrink:0; }
     .fav-content { flex:1; min-width:0; }
@@ -390,7 +449,7 @@ function getAppStyles() {
     .fav-count { font-size:12px; color:var(--muted); }
     /* Video items in detail modal */
     .video-grid { display:grid; gap:12px; max-height:min(500px, calc(90vh - 250px)); overflow-y:auto; overflow-x:hidden; }
-    .video-item { min-width:0; max-width:100%; overflow:hidden; display:flex; gap:12px; padding:11px; border-radius:12px; border:1px solid var(--glass-border); align-items:center; transition:all 0.2s; background:rgba(255,255,255,0.62); }
+    .video-item { min-width:0; max-width:100%; overflow:hidden; display:flex; gap:12px; padding:11px; border-radius:var(--radius-panel); border:1px solid var(--glass-border); align-items:center; transition:background .16s,border-color .16s,box-shadow .16s; background:rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); }
     .video-detail-status { text-align:center; padding:10px; color:var(--muted); font-size:13px; }
     .video-detail-status.error { color:#E57373; }
     .video-detail-status .retry-button { margin-left:8px; padding:5px 10px; min-height:30px; border:1px solid rgba(57,197,187,0.45); border-radius:8px; background:rgba(255,255,255,0.78); color:var(--accent); cursor:pointer; font-weight:650; }
@@ -429,11 +488,11 @@ function getAppStyles() {
     }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
     .archive-library-modal { padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
-    .archive-library-shell,.online-content-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:#F5F9F8; color:var(--ink); }
-    .archive-library-sidebar,.online-content-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:#EEF5F3; }
-    .archive-library-brand { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid #DCE8E6; }
+    .archive-library-shell,.online-content-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:rgba(245,249,248,0.92); backdrop-filter:blur(18px); color:var(--ink); }
+    .archive-library-sidebar,.online-content-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:rgba(238,245,243,0.90); backdrop-filter:blur(18px); }
+    .archive-library-brand { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border); }
     .archive-library-brand h2 { margin:0; font-size:18px; color:#21413D; letter-spacing:0; }
-    .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close { width:36px; height:36px; display:inline-grid; place-items:center; border:1px solid #CADAD7; border-radius:50%; background:#FFFFFF; color:#38534F; padding:0; font-size:21px; cursor:pointer; }
+    .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close { width:36px; height:36px; display:inline-grid; place-items:center; border:1px solid var(--border-strong); border-radius:var(--radius-control); background:var(--panel); color:#38534F; padding:0; font-size:21px; cursor:pointer; }
     .archive-library-close:hover,.archive-library-close:focus-visible,.archive-library-mobile-back:hover,.archive-library-mobile-back:focus-visible,.archive-library-detail-close:hover,.archive-library-detail-close:focus-visible { border-color:var(--accent); color:var(--accent); outline:2px solid rgba(57,197,187,0.18); outline-offset:2px; }
     .archive-library-nav { min-height:0; flex:1 1 auto; overflow:auto; padding:10px; overscroll-behavior:contain; }
     .archive-nav-account { margin-top:12px; }
@@ -457,13 +516,13 @@ function getAppStyles() {
     .archive-nav-deletion { margin:7px 8px 3px; border-left:3px solid #39C5BB; background:#F0F8F6; padding:8px 9px; color:#526B66; font-size:10px; line-height:1.55; }
     .archive-nav-deletion button { margin-top:6px; border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#526B66; padding:5px 8px; font:inherit; font-weight:700; cursor:pointer; }
     .archive-nav-deletion button:focus-visible { outline:2px solid rgba(57,197,187,.30); outline-offset:2px; }
-    .archive-library-main,.online-content-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:#F8FBFA; }
-    .archive-library-topbar { flex:0 0 auto; min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); }
+    .archive-library-main,.online-content-main { min-width:0; min-height:0; display:flex; flex-direction:column; background:rgba(248,251,250,0.76); }
+    .archive-library-topbar { flex:0 0 auto; min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #E0EAE8; background:rgba(255,255,255,0.92); backdrop-filter:blur(18px); }
     .archive-library-heading { min-width:0; }
     .archive-library-heading h2 { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:18px; letter-spacing:0; }
     .archive-library-heading span { display:block; margin-top:3px; color:var(--archive-muted); font-size:11px; }
     .archive-library-mobile-back { display:none; flex:0 0 auto; font-size:19px; }
-    .archive-library-toolbar { flex:0 0 auto; display:grid; grid-template-columns:minmax(220px,1fr) auto auto; gap:10px; align-items:center; padding:12px 20px; border-bottom:1px solid #E5EDEA; background:#FFFFFF; }
+    .archive-library-toolbar { flex:0 0 auto; display:grid; grid-template-columns:minmax(220px,1fr) auto auto; gap:10px; align-items:center; padding:12px 20px; border-bottom:1px solid #E5EDEA; background:rgba(255,255,255,0.82); backdrop-filter:blur(18px); }
     .archive-library-search { position:relative; min-width:0; }
     .archive-library-search input { width:100%; height:40px; border:1px solid #CCDAD7; border-radius:6px; background:#F8FBFA; padding:8px 38px 8px 12px; font:inherit; font-size:13px; }
     .archive-library-search input:focus { border-color:var(--accent); outline:none; box-shadow:0 0 0 3px rgba(57,197,187,0.13); }
@@ -474,7 +533,7 @@ function getAppStyles() {
     .archive-library-segment button.active { background:#FFFFFF; color:#176E66; box-shadow:0 1px 4px rgba(31,65,61,0.10); }
     .archive-library-segment button:focus-visible { outline:2px solid rgba(57,197,187,0.30); outline-offset:1px; }
     .archive-library-sort { width:auto; min-width:118px; height:38px; border-radius:6px; padding:7px 28px 7px 10px; font-size:12px; background:#FFFFFF; }
-    .archive-library-filterbar { flex:0 0 auto; display:flex; align-items:center; gap:7px; padding:10px 20px; overflow-x:auto; border-bottom:1px solid #E7EFED; background:#F8FBFA; scrollbar-width:thin; }
+    .archive-library-filterbar { flex:0 0 auto; display:flex; align-items:center; gap:7px; padding:10px 20px; overflow-x:auto; border-bottom:1px solid #E7EFED; background:rgba(248,251,250,0.74); backdrop-filter:blur(18px); scrollbar-width:thin; }
     .archive-library-filterbar button { flex:0 0 auto; border:1px solid #D6E2DF; border-radius:5px; background:#FFFFFF; color:#607672; padding:6px 11px; font:inherit; font-size:11px; font-weight:680; cursor:pointer; }
     .archive-library-filterbar button.active { border-color:#52BDB4; background:#E4F5F2; color:#176E66; }
     .archive-library-filterbar button:focus-visible { outline:2px solid rgba(57,197,187,0.28); outline-offset:2px; }
@@ -503,7 +562,7 @@ function getAppStyles() {
     .archive-library-footer { min-height:38px; display:flex; justify-content:center; align-items:center; padding:10px; color:var(--archive-muted); font-size:11px; text-align:center; }
     .archive-library-footer button { margin-left:7px; border:0; background:transparent; color:#16877D; padding:4px; font:inherit; font-weight:700; cursor:pointer; }
     .archive-library-empty { grid-column:1/-1; min-height:220px; display:grid; place-items:center; color:var(--archive-muted); font-size:13px; text-align:center; }
-    .archive-library-detail { position:absolute; z-index:4; top:0; right:0; bottom:0; width:min(440px,100%); display:flex; flex-direction:column; border-left:1px solid #D8E3E0; background:#FFFFFF; box-shadow:-20px 0 50px rgba(25,52,48,0.14); transform:translateX(102%); visibility:hidden; transition:transform .16s ease,visibility 0s linear .16s; }
+    .archive-library-detail { position:absolute; z-index:4; top:0; right:0; bottom:0; width:min(440px,100%); display:flex; flex-direction:column; border-left:1px solid var(--border); background:rgba(255,255,255,0.90); backdrop-filter:blur(18px); box-shadow:-18px 0 44px rgba(57,197,187,0.13); transform:translateX(102%); visibility:hidden; transition:transform .16s ease,visibility 0s linear .16s; }
     .archive-library-detail.open { transform:translateX(0); visibility:visible; transition-delay:0s; }
     .archive-library-detail-head { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:64px; padding:12px 16px; border-bottom:1px solid #E0EAE8; }
     .archive-library-detail-head h3 { margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#21413D; font-size:16px; }
@@ -662,12 +721,12 @@ function getAppStyles() {
     .playback-queue-feedback { display:flex; justify-content:center; align-items:center; min-height:28px; padding:4px 8px; color:#82908D; font-size:11px; text-align:center; overflow-anchor:none; }
     .playback-queue-feedback button { border:0; background:transparent; color:#69D9D0; padding:4px 6px; cursor:pointer; font:inherit; font-weight:650; }
     @keyframes playbackEnter { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-    .filter-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-    .filter-toggle button { padding:6px 16px; border-radius:999px; border:1px solid var(--glass-border-strong); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
-    .filter-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
+    .filter-toggle { display:flex; gap:2px; width:max-content; max-width:100%; margin-bottom:12px; padding:3px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--surface-strong); flex-wrap:wrap; }
+    .filter-toggle button { padding:6px 13px; border-radius:var(--radius-control); border:0; background:transparent; color:var(--muted); cursor:pointer; font-weight:650; font-size:12px; transition:background .16s,color .16s,box-shadow .16s; }
+    .filter-toggle button.active { background:var(--panel); color:var(--accent); box-shadow:0 1px 4px rgba(24,51,48,.12); }
     /* Template tags */
     .template-tags { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
-    .selected-tags { min-height:40px; border:1px dashed var(--glass-border-strong); border-radius:12px; padding:8px; background:rgba(255,255,255,0.42); }
+    .selected-tags { min-height:40px; border:1px dashed var(--border-strong); border-radius:var(--radius-panel); padding:8px; background:var(--surface); }
     .template-empty-hint { color:var(--muted); font-size:13px; padding:4px; }
     .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all 0.2s; user-select:none; }
     .template-tag:hover { border-color:var(--accent); }
@@ -678,21 +737,22 @@ function getAppStyles() {
     .template-tag.drag-over { border-color:var(--accent); transform:scale(1.05); }
     .template-tag .remove-x { margin-left:4px; font-size:14px; opacity:0.7; }
     .template-tag .remove-x:hover { opacity:1; }
-    .template-preview { padding:11px 12px; background:rgba(255,255,255,0.64); border:1px solid rgba(214,240,237,0.72); border-radius:12px; font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
-    .segmented-control { display:inline-grid; grid-template-columns:repeat(2,minmax(110px,1fr)); gap:3px; padding:3px; border:1px solid var(--glass-border); border-radius:10px; background:rgba(255,255,255,0.56); }
+    .template-preview { padding:11px 12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-panel); font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
+    .segmented-control { display:inline-grid; grid-template-columns:repeat(2,minmax(110px,1fr)); gap:3px; padding:3px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--surface-strong); }
     .segmented-control label { margin:0; cursor:pointer; }
     .segmented-control input { position:absolute; opacity:0; pointer-events:none; }
     .segmented-control span { display:block; min-height:34px; padding:8px 14px; border-radius:7px; text-align:center; color:var(--muted); font-size:13px; font-weight:700; }
-    .segmented-control input:checked + span { background:var(--accent); color:white; box-shadow:0 1px 4px rgba(57,197,187,0.22); }
+    .segmented-control input:checked + span { background:var(--panel); color:var(--accent); box-shadow:0 1px 4px rgba(24,51,48,.12); }
     /* Log console */
-    .log-console { background:#1a1a2e; color:#eee; border-radius:12px; padding:16px; font-family:'Courier New',monospace; font-size:12px; max-height:400px; overflow-y:auto; line-height:1.8; }
+    .log-console { background:#1a1a2e; color:#E7EFED; border-radius:var(--radius-panel); padding:16px; font-family:'Courier New',monospace; font-size:12px; max-height:400px; overflow-y:auto; line-height:1.8; }
     .log-console .log-info { color:#39C5BB; }
     .log-console .log-error { color:#E57373; }
     .log-console .log-warn { color:#FFB74D; }
-    .log-toggle { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-    .log-toggle button { padding:6px 16px; border-radius:999px; border:1px solid rgba(214,240,237,0.95); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:all 0.2s; }
-    .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); }
-    .scheduler-status { border:1px solid var(--glass-border); border-radius:14px; background:var(--glass-surface); padding:11px 12px; margin-bottom:12px; font-size:13px; }
+    .log-toggle { display:flex; width:max-content; max-width:100%; gap:2px; margin-bottom:12px; padding:3px; border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--surface-strong); overflow-x:auto; }
+    .log-toggle button { flex:0 0 auto; min-height:34px; padding:6px 13px; border-radius:var(--radius-control); border:0; background:transparent; color:var(--muted); cursor:pointer; font-weight:650; font-size:12px; transition:background .16s,color .16s,box-shadow .16s; }
+    .log-toggle button:hover,.log-toggle button:focus-visible { background:var(--panel); color:var(--ink); outline:none; }
+    .log-toggle button.active { background:var(--panel); color:var(--accent); box-shadow:0 1px 4px rgba(24,51,48,.12); }
+    .scheduler-status { border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--surface); padding:11px 12px; margin-bottom:12px; font-size:13px; }
     .scheduler-status-main { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
     .scheduler-status-title { font-weight:800; color:var(--accent); }
     .scheduler-status-detail { color:var(--muted); margin-top:4px; }
@@ -700,22 +760,22 @@ function getAppStyles() {
     .scheduler-status.queued,.scheduler-status.cooldown { border-color:#FFB74D; background:#FFF8E1; }
     .scheduler-status-grid { display:grid; gap:6px 14px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); margin-top:10px; color:var(--muted); }
     .scheduler-status-grid strong { color:var(--ink); }
-    .local-cache-status { border:1px solid var(--glass-border); border-radius:14px; padding:10px 12px; margin:0 0 10px; background:rgba(248,251,250,0.76); font-size:12px; color:var(--muted); }
+    .local-cache-status { border:1px solid var(--border); border-radius:var(--radius-panel); padding:10px 12px; margin:0 0 10px; background:var(--surface); font-size:12px; color:var(--muted); }
     .local-cache-status.paused { border-color:#FFB74D; background:#FFF8E1; color:#8D6E00; }
-    .upload-health-status { border:1px solid #E57373; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF1F1; font-size:12px; color:#9B2C2C; }
-    .download-api-health-status { border:1px solid #FFB74D; border-radius:14px; padding:10px 12px; margin:0 0 10px; background:#FFF8E1; font-size:12px; color:#8D6E00; }
+    .upload-health-status { border:1px solid #D9A3A3; border-radius:var(--radius-panel); padding:10px 12px; margin:0 0 10px; background:#FFF1F1; font-size:12px; color:#8E3434; }
+    .download-api-health-status { border:1px solid #DEB77C; border-radius:var(--radius-panel); padding:10px 12px; margin:0 0 10px; background:#FFF8E9; font-size:12px; color:#865411; }
     .queue-board-notice { border:1px solid rgba(255,183,77,0.75); border-radius:10px; background:#FFF8E1; color:#8D6E00; padding:8px 10px; margin:0 0 10px; font-size:12px; }
     .queue-board-notice.error { border-color:rgba(214,90,90,0.5); background:#FFF1F1; color:#9B2C2C; }
     .queue-board { display:grid; grid-template-columns:repeat(4,minmax(260px,1fr)); gap:12px; width:100%; max-width:100%; min-width:0; max-height:430px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; align-items:stretch; }
-    .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:16px; background:var(--glass-surface); padding:10px; height:clamp(280px,42vh,420px); display:flex; flex-direction:column; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,0.7); }
+    .queue-col { min-width:0; border:1px solid var(--glass-border); border-radius:var(--radius-panel); background:var(--glass-surface); padding:10px; height:clamp(280px,42vh,420px); display:flex; flex-direction:column; overflow:hidden; box-shadow:var(--glass-shadow); backdrop-filter:var(--glass-blur); }
     .queue-col-title { font-size:13px; font-weight:700; color:var(--accent); margin:0 0 8px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
     .queue-col-count { min-width:28px; text-align:right; }
     .queue-list { display:grid; gap:8px; overflow-y:auto; padding-right:4px; min-height:0; align-content:start; flex:1; }
     .queue-more { color:var(--muted); font-size:12px; text-align:center; padding:8px 4px; border:1px dashed var(--border); border-radius:10px; background:rgba(57,197,187,0.04); }
     .queue-empty,.empty-state { color:var(--muted); font-size:12px; text-align:center; padding:24px 4px; align-self:center; opacity:0.72; }
-    .empty-state { border:1px dashed var(--glass-border); border-radius:14px; background:rgba(255,255,255,0.46); }
+    .empty-state { border:1px dashed var(--border); border-radius:var(--radius-panel); background:var(--surface); }
     .loading-state { color:var(--accent); opacity:1; }
-    .queue-card { min-width:0; max-width:100%; display:flex; gap:8px; padding:8px; border-radius:12px; border:1px solid var(--glass-border); background:var(--glass-input); transition:box-shadow .18s ease, opacity .2s ease, border-color .2s ease; will-change:transform; }
+    .queue-card { min-width:0; max-width:100%; display:flex; gap:8px; padding:8px; border-radius:var(--radius-panel); border:1px solid var(--glass-border); background:rgba(255,255,255,0.74); backdrop-filter:var(--glass-blur); transition:box-shadow .18s ease,opacity .2s ease,border-color .2s ease; will-change:transform; }
     .queue-card.entering { animation:queueCardIn .22s cubic-bezier(0.16,1,0.3,1); }
     .queue-card.leaving { opacity:0; transform:scale(.98); }
     .queue-card:hover { box-shadow:0 6px 16px rgba(57,197,187,0.12); border-color:var(--accent); }
@@ -735,15 +795,15 @@ function getAppStyles() {
     .recovery-issues-entry.has-issues { border-color:#D98B36; color:#8D4D08; background:#FFF7EA; }
     .recovery-issues-entry.has-danger { border-color:#C94F4F; color:#9B2C2C; background:#FFF0F0; }
     .recovery-issues-modal { padding:0; align-items:stretch; }
-    .recovery-issues-shell { width:min(1220px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:#F4F8F7; border:1px solid #D8E3E0; border-radius:10px; box-shadow:0 24px 80px rgba(18,38,35,.22); }
+    .recovery-issues-shell { width:min(1220px,100%); height:min(820px,100dvh); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:rgba(244,248,247,0.92); border:1px solid var(--glass-border); border-radius:var(--radius-dialog); box-shadow:var(--shadow-dialog); backdrop-filter:var(--glass-blur); }
     .recovery-issues-shell.is-empty { height:min(520px,100dvh); }
-    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid #D8E3E0; background:#FFF; }
+    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid var(--glass-border); background:rgba(255,255,255,0.92); backdrop-filter:var(--glass-blur); }
     .recovery-issues-heading { min-width:0; }
     .recovery-issues-heading h2 { margin:0; font-size:18px; }
     .recovery-issues-heading p { margin:4px 0 0; color:#60736F; font-size:12px; line-height:1.45; }
     .recovery-issues-summary { min-width:132px; padding:7px 10px; border:1px solid #D7E5E1; border-radius:7px; background:#F4F9F7; color:#3D5D57; font-size:12px; font-weight:800; text-align:center; }
     .recovery-issues-summary:empty { visibility:hidden; }
-    .recovery-issues-close,.recovery-issues-back { width:44px; height:44px; border:1px solid #C9D8D5; border-radius:50%; background:#FFF; color:#28443F; font-size:21px; cursor:pointer; flex:0 0 auto; }
+    .recovery-issues-close,.recovery-issues-back { width:40px; height:40px; border:1px solid var(--border-strong); border-radius:var(--radius-control); background:var(--panel); color:#28443F; font-size:21px; cursor:pointer; flex:0 0 auto; }
     .recovery-issues-back { display:none; font-size:18px; }
     .recovery-issues-status { display:flex; align-items:center; gap:12px; min-height:48px; padding:9px 18px; border-bottom:1px solid #E8D6B8; background:#FFF7EA; color:#8D4D08; font-size:13px; line-height:1.45; }
     .recovery-issues-status[hidden] { display:none; }
@@ -753,7 +813,7 @@ function getAppStyles() {
     .recovery-issues-status button:disabled { cursor:wait; opacity:.58; }
     .recovery-issues-layout { min-height:0; display:grid; grid-template-columns:minmax(280px,350px) minmax(0,1fr); }
     .recovery-issues-layout.is-empty { grid-template-columns:minmax(0,1fr); }
-    .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:#EEF4F2; padding:14px; }
+    .recovery-issues-list-pane { min-height:0; overflow:auto; border-right:1px solid #D8E3E0; background:rgba(238,244,242,0.86); backdrop-filter:var(--glass-blur); padding:14px; }
     .recovery-issues-list-pane[hidden],.recovery-issues-detail[hidden] { display:none!important; }
     .recovery-issues-list-header { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:0 2px 9px; color:#28443F; font-size:13px; }
     .recovery-issues-list-header span { color:#6B817B; font-size:11px; font-weight:700; }
@@ -771,7 +831,7 @@ function getAppStyles() {
     .recovery-issue-row-problem { display:block; overflow:hidden; color:#4D6862; font-size:11px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
     .recovery-issue-row-meta { display:block; overflow:hidden; color:#71837F; font-size:11px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
     .recovery-issue-row-arrow { align-self:center; color:#6B817B; font-size:18px; line-height:1; }
-    .recovery-issues-detail { min-width:0; min-height:0; overflow:auto; background:#FFF; padding:24px clamp(18px,3vw,38px) 36px; }
+    .recovery-issues-detail { min-width:0; min-height:0; overflow:auto; background:rgba(255,255,255,0.84); backdrop-filter:var(--glass-blur); padding:24px clamp(18px,3vw,38px) 36px; }
     .recovery-issues-detail:focus { outline:none; }
     .recovery-detail-kicker { width:max-content; max-width:100%; padding:3px 8px; border-radius:999px; background:#EAF5F2; color:#27736A; font-size:11px; font-weight:800; }
     .recovery-detail-kicker.warning { background:#FFF3DF; color:#99601C; }
@@ -814,53 +874,56 @@ function getAppStyles() {
     .recovery-issues-empty-retry:disabled { cursor:wait; opacity:.58; }
     .recovery-issues-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     @keyframes queueCardIn { from{opacity:0;transform:translateY(6px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
-    .help-icon-btn { width:32px; height:32px; border-radius:50%; border:1px solid rgba(57,197,187,0.55); background:linear-gradient(180deg,rgba(255,255,255,0.86),rgba(244,253,251,0.72)); color:var(--accent); font-size:15px; font-weight:900; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:all .2s; flex:0 0 auto; box-shadow:inset 0 1px 0 rgba(255,255,255,0.9),0 5px 14px rgba(57,197,187,0.10); }
-    .help-icon-btn:hover,.help-icon-btn:focus-visible { background:rgba(57,197,187,0.1); border-color:var(--accent); transform:translateY(-1px); box-shadow:0 8px 18px rgba(57,197,187,0.18); outline:none; }
+    .help-icon-btn { width:32px; height:32px; border-radius:var(--radius-control); border:1px solid var(--border-strong); background:var(--panel); color:var(--accent); font-size:15px; font-weight:900; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:background .16s,border-color .16s,box-shadow .16s; flex:0 0 auto; box-shadow:none; }
+    .help-icon-btn:hover,.help-icon-btn:focus-visible { background:var(--accent-soft); border-color:var(--accent); box-shadow:var(--focus-ring); outline:none; }
+    .row .help-icon-btn { width:32px; min-width:32px; height:32px; min-height:32px; padding:0; border:1px solid var(--border-strong); border-radius:var(--radius-control); background:var(--panel); color:var(--accent); box-shadow:none; }
+    main .row .help-icon-btn { border-radius:var(--radius-home-control); }
+    .row .help-icon-btn:hover,.row .help-icon-btn:focus-visible { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); box-shadow:var(--focus-ring); }
     .section-title-row { display:flex; align-items:center; gap:8px; margin:0 0 16px; }
     .section-title-row h2 { margin:0; }
     .section-title-row .help-icon-btn { width:28px; height:28px; font-size:14px; }
     .help-tabs { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 16px; }
-    .help-tabs button { padding:7px 14px; border-radius:999px; border:1px solid rgba(214,240,237,0.95); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:700; }
-    .help-tabs button.active { border-color:var(--accent); background:rgba(57,197,187,0.12); color:var(--accent); }
+    .help-tabs button { padding:7px 12px; border-radius:var(--radius-control); border:1px solid var(--border); background:var(--panel); color:var(--ink); cursor:pointer; font-weight:700; }
+    .help-tabs button.active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
     .help-card-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
-    .help-card { border:1px solid var(--glass-border); border-radius:16px; padding:14px; background:var(--glass-surface); }
+    .help-card { border:1px solid var(--border); border-radius:var(--radius-panel); padding:14px; background:var(--surface); }
     .help-card strong { color:var(--accent); display:block; margin-bottom:6px; }
     .help-card ul { margin:8px 0 0 18px; padding:0; color:var(--muted); font-size:13px; line-height:1.7; }
     .flow-visual { display:grid; gap:10px; margin:12px 0; }
-    .flow-step { display:grid; grid-template-columns:92px 1fr; gap:12px; align-items:center; border:1px solid var(--glass-border); border-radius:18px; padding:12px; background:linear-gradient(135deg,rgba(255,255,255,0.82),rgba(242,251,250,0.78)); }
-    .flow-step .badge { border-radius:999px; padding:8px 10px; background:var(--accent); color:white; text-align:center; font-weight:800; font-size:12px; }
+    .flow-step { display:grid; grid-template-columns:92px 1fr; gap:12px; align-items:center; border:1px solid var(--border); border-radius:var(--radius-panel); padding:12px; background:var(--surface); }
+    .flow-step .badge { border-radius:var(--radius-control); padding:8px 10px; background:var(--accent); color:white; text-align:center; font-weight:800; font-size:12px; }
     .flow-step .desc { color:var(--ink); font-size:14px; line-height:1.6; }
     .effect-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-top:14px; }
-    .effect-group { border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
+    .effect-group { border:1px solid var(--border); border-radius:var(--radius-panel); padding:12px; background:var(--surface); }
     .effect-group strong { color:var(--accent); display:block; margin-bottom:6px; }
     .effect-group div { color:var(--muted); font-size:13px; line-height:1.7; }
     .row button.rename-btn { background:#FF7043; }
     .row button.rename-btn:hover { background:#F4511E; }
     .rename-list { display:grid; gap:10px; max-height:360px; overflow:auto; padding-right:4px; }
-    .rename-item { display:grid; grid-template-columns:auto 1fr; gap:10px; border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
+    .rename-item { display:grid; grid-template-columns:auto 1fr; gap:10px; border:1px solid var(--border); border-radius:var(--radius-panel); padding:12px; background:var(--surface); }
     .rename-item input { margin-top:4px; }
     .rename-title { font-weight:700; color:var(--ink); word-break:break-word; }
     .rename-path { color:var(--muted); font-size:12px; line-height:1.6; word-break:break-all; }
     .rename-arrow { color:var(--accent); font-weight:800; }
-    .rename-skip-list { max-height:180px; overflow:auto; border:1px dashed var(--border); border-radius:12px; padding:10px; background:#fffaf5; color:var(--muted); font-size:12px; line-height:1.7; word-break:break-all; }
-    .rename-result { border-radius:12px; padding:10px; background:rgba(245,251,250,0.78); border:1px solid var(--glass-border); color:var(--muted); font-size:13px; line-height:1.7; max-height:160px; overflow:auto; }
+    .rename-skip-list { max-height:180px; overflow:auto; border:1px dashed var(--border-strong); border-radius:var(--radius-panel); padding:10px; background:#FFF9EF; color:var(--muted); font-size:12px; line-height:1.7; word-break:break-all; }
+    .rename-result { border-radius:var(--radius-panel); padding:10px; background:var(--surface); border:1px solid var(--border); color:var(--muted); font-size:13px; line-height:1.7; max-height:160px; overflow:auto; }
     .cleanup-list { display:grid; gap:10px; margin:12px 0; }
-    .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:var(--glass-surface); }
+    .cleanup-item { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; border:1px solid var(--border); border-radius:var(--radius-panel); padding:12px; background:var(--surface); }
     .cleanup-item.important { border-color:#FFB74D; background:#FFF8E1; }
     .cleanup-item.disabled { opacity:.58; cursor:not-allowed; }
     .cleanup-item-title { font-weight:800; color:var(--ink); }
     .cleanup-item-desc { color:var(--muted); font-size:12px; line-height:1.6; margin-top:3px; }
     .cleanup-size { color:var(--accent); font-size:12px; font-weight:800; white-space:nowrap; }
-    .cleanup-confirm { border:1px dashed #FFB74D; border-radius:14px; padding:12px; background:#FFFDF5; margin-top:12px; }
+    .cleanup-confirm { border:1px dashed #D9A85D; border-radius:var(--radius-panel); padding:12px; background:#FFF9EF; margin-top:12px; }
     .cleanup-help-list { display:grid; gap:10px; margin-top:12px; }
-    .cleanup-help-item { border:1px solid var(--glass-border); border-radius:14px; padding:12px; background:linear-gradient(135deg,rgba(255,255,255,0.84),rgba(246,255,253,0.78)); color:var(--muted); font-size:13px; line-height:1.7; }
+    .cleanup-help-item { border:1px solid var(--border); border-radius:var(--radius-panel); padding:12px; background:var(--surface); color:var(--muted); font-size:13px; line-height:1.7; }
     .cleanup-help-item strong { color:var(--accent); display:block; margin-bottom:4px; }
-    .status-line { margin-top:8px; }
+    .status-line { margin-top:8px; min-height:1.4em; }
     .status-line.primary { margin-top:12px; color:var(--accent); }
     .center-status { text-align:center; }
     .login-status { text-align:center; font-weight:500; font-size:16px; }
     .qr-wrap { text-align:center; margin:24px 0; }
-    .login-qr { width:200px; height:200px; border-radius:16px; border:1px solid var(--glass-border-strong); background:white; padding:3px; }
+    .login-qr { width:200px; height:200px; border-radius:var(--radius-panel); border:1px solid var(--border-strong); background:white; padding:3px; }
     .full-width { width:100%; }
     .skipped-block { margin-top:14px; }
     .block-title { color:var(--ink); display:block; margin-bottom:8px; }
@@ -872,20 +935,23 @@ function getAppStyles() {
     .status-muted { color:var(--muted)!important; }
     .status-error { color:#E57373!important; }
     .confirm-action-message { color:var(--ink); line-height:1.7; margin:10px 0 0; }
-    .confirm-action-detail { border:1px solid var(--glass-border); border-radius:14px; background:rgba(255,255,255,0.62); color:var(--muted); line-height:1.7; padding:12px; margin-top:12px; font-size:13px; }
+    .confirm-action-detail { border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--surface); color:var(--muted); line-height:1.7; padding:12px; margin-top:12px; font-size:13px; }
     .confirm-action-input-wrap { margin-top:14px; }
     .confirm-action-input-wrap label { color:var(--ink); }
     .confirm-action-input-hint { margin-top:6px; font-size:12px; }
     .clipboard-fallback-input { position:fixed; left:-9999px; top:0; width:1px; height:1px; opacity:0; }
     .toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:12px; pointer-events:none; }
     .toast-container[aria-hidden="true"] { visibility:hidden; }
-    .toast { background:white; color:var(--ink); padding:14px 14px 14px 18px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.1); border-left:4px solid #E57373; display:flex; align-items:flex-start; gap:12px; animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1); max-width:420px; word-break:break-word; pointer-events:auto; }
+    .toast { background:white; color:var(--ink); padding:14px 14px 14px 18px; border-radius:var(--radius-panel); box-shadow:0 14px 40px rgba(18,43,39,.16); border:1px solid var(--border); border-left:4px solid var(--danger); display:flex; align-items:flex-start; gap:12px; animation:toastIn 0.2s cubic-bezier(0.16,1,0.3,1); max-width:420px; word-break:break-word; pointer-events:auto; }
     .toast-message { flex:1; min-width:0; line-height:1.55; }
     .toast-close { width:26px; height:26px; border:1px solid var(--glass-border); border-radius:50%; background:rgba(255,255,255,0.72); color:var(--muted); cursor:pointer; font-size:16px; line-height:1; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
     .toast-close:hover { border-color:var(--accent); color:var(--accent); }
     .toast.success { border-left-color:var(--success); }
     .toast.info { border-left-color:var(--accent); }
     .toast.fade-out { animation:toastOut 0.3s cubic-bezier(0.16,1,0.3,1) forwards; }
+    .modal .panel > .section-title-row:first-child { margin:0; }
+    .modal .panel.manual-archive-options > .modal-actions { margin:20px 0 0; }
+    button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
     @keyframes toastIn { from{opacity:0;transform:translateX(40px) scale(0.9)} to{opacity:1;transform:translateX(0) scale(1)} }
     @keyframes toastOut { from{opacity:1;transform:translateX(0) scale(1)} to{opacity:0;transform:translateX(40px) scale(0.9)} }
@@ -903,18 +969,24 @@ function getAppStyles() {
       .app-brand { flex-basis:100%; }
       .header-actions { width:100%; justify-content:flex-end; }
       .version-link { max-width:min(210px,calc(100vw - 190px)); }
-      main { padding:18px 12px 28px; gap:16px; }
-      .card { padding:18px; border-radius:18px; }
+      main { padding:14px 10px 24px; gap:0; }
+      .card { padding:18px 16px; border-radius:0; }
+      .card:first-child { border-radius:var(--radius-panel) var(--radius-panel) 0 0; }
+      .card:last-child { border-radius:0 0 var(--radius-panel) var(--radius-panel); }
       .settings-grid { grid-template-columns:1fr; gap:13px; }
       .storage-check-row { grid-template-columns:1fr; }
       .storage-check-row button { width:100%; }
       .row { gap:8px; }
-      .account-actions,.settings-actions,.modal-actions,.preview-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
+      .account-actions,.settings-actions,.modal-actions,.preview-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
       .account-actions button,.settings-actions button,.modal-actions button,.preview-actions button { min-height:40px; }
       .modal-actions .full-width { grid-column:1/-1; }
-      .modal { padding:10px; align-items:flex-start; }
+      .settings-actions #saveConfigBtn { grid-column:1/-1; margin-right:0; }
+      .modal { padding:10px; align-items:flex-end; }
       .archive-library-modal { padding:0; align-items:stretch; }
-      .modal .panel { padding:20px; border-radius:20px; max-height:calc(100vh - 20px); }
+      .modal .panel { --dialog-inline:16px; max-height:calc(100dvh - 16px); border-radius:var(--radius-dialog) var(--radius-dialog) 0 0; border-bottom:0; }
+      .modal .panel > h2,.modal .panel > .section-title-row:first-child { min-height:58px; padding-top:16px; padding-bottom:14px; }
+      .modal .panel > .modal-actions { padding-top:12px; padding-bottom:max(12px,env(safe-area-inset-bottom)); }
+      .modal .panel > .modal-actions button { width:100%; min-width:0; }
       .video-item { align-items:flex-start; flex-wrap:wrap; }
       .video-cover { width:96px; height:60px; }
       .video-cover-wrap { width:96px; height:60px; }
@@ -992,6 +1064,10 @@ function getAppStyles() {
       .playback-shell.is-mobile-immersive .playback-queue-list { min-height:0; max-height:none; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
       .playback-shell.is-mobile-immersive .playback-queue-close { display:inline-flex; width:30px; height:30px; align-items:center; justify-content:center; border:0; border-radius:50%; background:#27312F; color:#DDE5E3; padding:0; font-size:19px; cursor:pointer; }
     }
+    @media (max-height:480px) and (pointer:coarse) {
+      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) { align-items:flex-end; padding:8px; }
+      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) .panel { --dialog-inline:16px; max-height:calc(100dvh - 8px); border-radius:var(--radius-dialog) var(--radius-dialog) 0 0; border-bottom:0; }
+    }
     @media (max-width: 420px) {
       .playback-art .art-video-player { --art-control-icon-size:28px; --art-control-height:34px; --art-padding:10px; }
       .playback-art .art-control-volume { display:none!important; }
@@ -1041,6 +1117,7 @@ function getAccountSection() {
         <button class="ghost" id="onlineContentBtn">在线内容</button>
         <button class="help-icon-btn" id="syncHelpBtn" type="button" title="查看同步按钮说明" aria-label="查看同步按钮说明">?</button>
       </div>
+      <div class="muted status-line" id="userListStatus" aria-live="polite"></div>
       <div class="user-list" id="userList"></div>
     </section>`;
 }
@@ -1118,7 +1195,7 @@ function getSettingsSection() {
           <p class="muted field-hint">Hi-Res / Dolby 需要扫码登录获得 APP token；旧账号如果没有 token，请重新登录后再启用。</p>
         </div>
 
-        <div class="settings-group"><div class="settings-group-title">📌 视频命名模板</div></div>
+        <div class="settings-group"><div class="settings-group-title">视频命名模板</div></div>
         <div class="field-full">
           <p class="muted template-note">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
           <label>可用变量</label>
@@ -1176,7 +1253,7 @@ function getLogSection() {
 function getModals() {
   return `
   <div class="modal" id="loginModal" aria-labelledby="loginModalTitle">
-    <div class="panel">
+    <div class="panel panel-sm">
       <h2 id="loginModalTitle">扫码登录</h2>
       <p class="muted">请使用B站APP扫码登录（TV端接口）。</p>
       <div class="qr-wrap">
@@ -1190,15 +1267,15 @@ function getModals() {
   </div>
 
   <div class="modal" id="favoritesModal" aria-labelledby="favoritesModalTitle">
-    <div class="panel">
+    <div class="panel panel-md">
       <h2 id="favoritesModalTitle">选择同步收藏夹</h2>
       <p class="muted">勾选你需要自动备份的收藏夹。点击收藏夹名称可查看内部视频详情。</p>
       <div class="favorites-list" id="favoritesList"></div>
+      <div class="muted status-line center-status" id="favoritesStatus"></div>
       <div class="row modal-actions split-actions">
         <button id="saveFavoritesBtn">保存选择</button>
         <button id="closeFavoritesBtn" class="ghost">取消</button>
       </div>
-      <div class="muted status-line center-status" id="favoritesStatus"></div>
     </div>
   </div>
 
@@ -1278,7 +1355,7 @@ function getModals() {
     </section>
   </div>
   <div class="modal" id="manualArchiveOptionsModal" aria-labelledby="manualArchiveOptionsTitle">
-    <div class="panel panel-medium manual-archive-options">
+    <div class="panel panel-md manual-archive-options">
       <h2 id="manualArchiveOptionsTitle">手动归档选项</h2>
       <p id="manualArchiveOptionsVideo" class="muted">选择本次归档使用的 B 站画质和编码。</p>
       <div class="option-grid">
@@ -1311,7 +1388,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="videoDetailModal" aria-labelledby="videoDetailTitle">
-    <div class="panel panel-medium">
+    <div class="panel panel-lg">
       <h2 id="videoDetailTitle">收藏夹详情</h2>
       <div class="filter-toggle" id="videoDetailFilterBar">
         <button id="vdFilterAllBtn" class="active">全部 (0)</button>
@@ -1403,7 +1480,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="unavailableModal" aria-labelledby="unavailableModalTitle">
-    <div class="panel panel-wide">
+    <div class="panel panel-xl">
       <h2 id="unavailableModalTitle">下架视频清单</h2>
       <div class="filter-toggle">
         <button id="filterMissingBtn" class="active">下架未上传</button>
@@ -1417,7 +1494,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="syncHelpModal" aria-labelledby="syncHelpModalTitle">
-    <div class="panel panel-large">
+    <div class="panel panel-lg">
       <h2 id="syncHelpModalTitle">同步与对账说明</h2>
       <div class="help-tabs">
         <button id="syncHelpSimpleBtn" class="active" type="button">简要介绍</button>
@@ -1431,7 +1508,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="settingsHelpModal" aria-labelledby="settingsHelpModalTitle">
-    <div class="panel panel-wider">
+    <div class="panel panel-xl">
       <h2 id="settingsHelpModalTitle">当前设置执行流程</h2>
       <p class="muted">这里不会保存设置，也不会触发同步，只按当前表单里的值生成说明。</p>
       <div id="settingsFlowContent"></div>
@@ -1442,7 +1519,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="renamePreviewModal" aria-labelledby="renamePreviewModalTitle">
-    <div class="panel panel-max">
+    <div class="panel panel-xl">
       <h2 id="renamePreviewModalTitle">检查旧命名文件</h2>
       <p class="muted">先预览会改哪些远端文件。只有勾选并二次确认后，才会真正修改 AList / OpenList 网盘文件名。</p>
       <div id="renamePreviewSummary" class="muted"></div>
@@ -1465,7 +1542,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="qualityUpgradeModal" aria-labelledby="qualityUpgradeModalTitle">
-    <div class="panel panel-max">
+    <div class="panel panel-xl">
       <h2 id="qualityUpgradeModalTitle">检查可升级画质</h2>
       <p class="muted">按当前 BBDown 画质、编码、Hi-Res、杜比设置重新下载。新版文件上传并验证成功后，才会删除旧远端文件。</p>
       <div id="qualityUpgradeSummary" class="muted"></div>
@@ -1488,7 +1565,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="cleanupDataModal" aria-labelledby="cleanupDataModalTitle">
-    <div class="panel panel-large">
+    <div class="panel panel-lg">
       <div class="section-title-row">
         <h2 id="cleanupDataModalTitle">清理数据</h2>
         <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么" aria-label="查看清理项目说明">?</button>
@@ -1514,7 +1591,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="migrationModal" aria-labelledby="migrationModalTitle">
-    <div class="panel panel-large">
+    <div class="panel panel-lg">
       <h2 id="migrationModalTitle">数据迁移</h2>
       <p class="muted">导出会打包本地持久化数据；包含账号登录信息时，请把压缩包当作敏感文件保管。</p>
       <div class="segmented-control" id="migrationModeControl">
@@ -1550,7 +1627,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="pathMigrationModal" aria-labelledby="pathMigrationModalTitle">
-    <div class="panel panel-large">
+    <div class="panel panel-lg">
       <h2 id="pathMigrationModalTitle">迁移归档路径</h2>
       <p class="muted">系统会在同一 AList / OpenList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。开始前会用隔离临时文件探测 COPY 和 MOVE；复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
       <div class="settings-grid">
@@ -1574,7 +1651,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="cleanupHelpModal" aria-labelledby="cleanupHelpModalTitle">
-    <div class="panel panel-narrow">
+    <div class="panel panel-md">
       <h2 id="cleanupHelpModalTitle">清理小贴士</h2>
       <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
       <div id="cleanupHelpContent" class="cleanup-help-list"></div>
@@ -1623,7 +1700,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="confirmActionModal" aria-labelledby="confirmActionTitle">
-    <div class="panel panel-narrow">
+    <div class="panel panel-sm">
       <h2 id="confirmActionTitle">确认操作</h2>
       <div id="confirmActionMessage" class="confirm-action-message"></div>
       <div id="confirmActionDetail" class="confirm-action-detail is-hidden"></div>
@@ -1640,7 +1717,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="encodingRetryModal" aria-labelledby="encodingRetryTitle">
-    <div class="panel panel-medium">
+    <div class="panel panel-md">
       <h2 id="encodingRetryTitle">重新选择画质与编码</h2>
       <p id="encodingRetryCopy" class="encoding-retry-copy">系统会在隔离目录重新下载并上传。原文件会保留到新文件完成远端确认。</p>
       <div class="media-retry-probe">
@@ -1680,7 +1757,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="recoveryChoiceModal" aria-labelledby="recoveryChoiceTitle">
-    <div class="panel panel-narrow">
+    <div class="panel panel-sm">
       <h2 id="recoveryChoiceTitle">选择恢复方式</h2>
       <p id="recoveryChoiceCopy" class="muted"></p>
       <label id="recoveryChoiceLabel" for="recoveryChoiceSelect">可用选项</label>
@@ -1694,7 +1771,7 @@ function getModals() {
   </div>
 
   <div class="modal" id="accountRemovalModal" aria-labelledby="accountRemovalTitle">
-    <div class="panel panel-narrow">
+    <div class="panel panel-md">
       <h2 id="accountRemovalTitle">删除账号</h2>
       <p class="muted">请选择账号登录信息和远端归档的处理方式。</p>
       <div class="account-removal-options" role="radiogroup" aria-label="账号删除方式">
@@ -1737,8 +1814,11 @@ function getAppScript() {
     ];
     const SEP = '-';
 
-    let currentLoginId = null;
-    let favoritesUserId = null;
+    const actionLocks = new Set();
+    const configLoadState = { token:0, controller:null, loaded:false };
+    const usersLoadState = { token:0, controller:null, loaded:false };
+    const favoritesState = { userId:null, token:0, controller:null, loaded:false };
+    const loginState = { generation:0, loginId:null, startController:null, pollController:null, pollTimer:null, closeTimer:null };
     let logMode = 'queue';
     let logEntries = [];
     let queueBoardPollTimer = null;
@@ -1789,6 +1869,7 @@ function getAppScript() {
       pageSize: 20,
       hasMore: true,
       loading: false,
+      keys: new Set(),
       token: 0,
       controller: null
     };
@@ -1824,6 +1905,9 @@ function getAppScript() {
       navigationToken: 0,
       navigationController: null,
       pendingReset: false,
+      appliedContext: null,
+      pendingContext: null,
+      pendingViewState: null,
       scrollPositions: {},
       trigger: null
     };
@@ -1836,6 +1920,7 @@ function getAppScript() {
       mediaId:null,
       title:'在线收藏夹',
       query:'',
+      draftQuery:'',
       items:[],
       page:0,
       cursor:null,
@@ -1846,6 +1931,9 @@ function getAppScript() {
       searchTimer:null,
       navigationToken:0,
       navigationController:null,
+      sessionToken:0,
+      appliedContext:null,
+      pendingContext:null,
       trigger:null
     };
     let manualArchiveState = {
@@ -1854,6 +1942,7 @@ function getAppScript() {
       probeController:null,
       pollTimer:null,
       token:0,
+      context:null,
       trigger:null
     };
     const PLAYBACK_STORAGE_KEY = 'bfb-playback-v1';
@@ -1960,6 +2049,54 @@ function getAppScript() {
       el.textContent = text || '';
       el.classList.remove('status-success', 'status-muted', 'status-error');
       if (type) el.classList.add('status-' + type);
+    }
+
+    function renderRequestStatus(elOrId, text, type = '', retry) {
+      const el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
+      if (!el) return;
+      setStatus(el, '', type);
+      if (text) el.appendChild(document.createTextNode(text));
+      if (typeof retry === 'function') {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'retry-button';
+        button.textContent = '重试';
+        button.addEventListener('click', retry);
+        el.appendChild(document.createTextNode(' '));
+        el.appendChild(button);
+      }
+    }
+
+    async function runExclusive(key, button, action) {
+      if (actionLocks.has(key)) return undefined;
+      actionLocks.add(key);
+      const control = button instanceof HTMLButtonElement ? button : null;
+      const wasDisabled = Boolean(control?.disabled);
+      if (control) {
+        control.disabled = true;
+        control.setAttribute('aria-busy', 'true');
+      }
+      try {
+        return await action();
+      } finally {
+        actionLocks.delete(key);
+        if (control?.isConnected) {
+          control.disabled = wasDisabled;
+          control.removeAttribute('aria-busy');
+        }
+      }
+    }
+
+    function appendUniqueItems(target, incoming, keyOf) {
+      const known = new Set(target.map((item) => keyOf(item)).filter(Boolean));
+      const fresh = [];
+      for (const item of incoming) {
+        const key = keyOf(item);
+        if (!key || known.has(key)) continue;
+        known.add(key);
+        fresh.push(item);
+      }
+      return fresh;
     }
 
     async function copyTextToClipboard(text) {
@@ -2093,7 +2230,7 @@ function getAppScript() {
         if (index < 0) {
           const isClosing = modalAnimationState.has(modal);
           if (!isClosing) modal.style.removeProperty('z-index');
-          modal.inert = isClosing;
+          modal.inert = true;
           modal.setAttribute('aria-hidden', 'true');
           modal.setAttribute('aria-modal', 'false');
           return;
@@ -2127,7 +2264,10 @@ function getAppScript() {
         pending.resolve(null);
       }
       if (modal.id === 'loginModal') {
-        currentLoginId = null;
+        cleanupLoginSession();
+      }
+      if (modal.id === 'favoritesModal') {
+        cleanupFavorites();
       }
       if (modal.id === 'videoDetailModal') {
         if (videoDetailState.controller) videoDetailState.controller.abort();
@@ -2191,7 +2331,8 @@ function getAppScript() {
         modalAnimationState.delete(modal);
         modal.classList.remove('active', 'is-closing');
         modal.setAttribute('aria-hidden', 'true');
-        modal.inert = false;
+        modal.inert = true;
+        modal.hidden = true;
         modal.style.removeProperty('z-index');
         syncModalStack();
         if (options.restoreFocus !== false) restoreFocusAfterModal(entry);
@@ -2214,6 +2355,10 @@ function getAppScript() {
       if (existingIndex >= 0) return existingIndex === modalStack.length - 1;
       ensureModalAccessibleName(modal);
       const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      modal.hidden = false;
+      modal.inert = true;
+      modal.classList.remove('active', 'is-closing');
+      void modal.offsetWidth;
       modalStack.push({ modal, trigger:trigger instanceof HTMLElement ? trigger : previousFocus, previousFocus });
       modal.classList.add('active');
       modal.setAttribute('role', 'dialog');
@@ -2336,7 +2481,12 @@ function getAppScript() {
     async function fetchJsonSilent(url, options) {
       const res = await fetch(url, options);
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '请求失败');
+      if (!data.success) {
+        const error = new Error(data.message || '请求失败');
+        error.code = data.code;
+        error.details = data.data;
+        throw error;
+      }
       return data.data;
     }
 
@@ -2362,7 +2512,18 @@ function getAppScript() {
 
     // ---- Config ----
     async function loadConfig() {
-      const d = await fetchJson('/api/config');
+      if (configLoadState.controller) configLoadState.controller.abort();
+      const controller = new AbortController();
+      const token = ++configLoadState.token;
+      configLoadState.controller = controller;
+      const saveButton = document.getElementById('saveConfigBtn');
+      if (!configLoadState.loaded) {
+        saveButton.disabled = true;
+        renderRequestStatus('configStatus', '正在读取设置...', 'muted');
+      }
+      try {
+      const d = await fetchJsonSilent('/api/config', { signal:controller.signal });
+      if (token !== configLoadState.token) return;
       document.getElementById('pollInterval').value = d.pollIntervalMinutes;
       document.getElementById('delaySeconds').value = d.perVideoDelaySeconds;
       document.getElementById('uploadLayout').value = d.uploadLayout;
@@ -2404,6 +2565,18 @@ function getAppScript() {
       document.getElementById('filenameTemplate').value = d.filenameTemplate || '<videoTitle>-<bvid>';
       document.getElementById('renameScanMaxFiles').value = d.renameScanMaxFiles ?? 10000;
       updateTemplatePreview();
+      configLoadState.loaded = true;
+      renderRequestStatus('configStatus', '');
+      } catch (error) {
+        if (error?.name === 'AbortError' || token !== configLoadState.token) return;
+        const prefix = configLoadState.loaded ? '设置刷新失败，已保留当前内容：' : '设置加载失败：';
+        renderRequestStatus('configStatus', prefix + (error?.message || String(error)), 'error', () => void loadConfig());
+      } finally {
+        if (token === configLoadState.token) {
+          if (configLoadState.controller === controller) configLoadState.controller = null;
+          saveButton.disabled = !configLoadState.loaded;
+        }
+      }
     }
 
     async function checkStorageConnection() {
@@ -2441,6 +2614,7 @@ function getAppScript() {
     async function saveConfig() {
       const btn = document.getElementById('saveConfigBtn');
       const st = document.getElementById('configStatus');
+      return runExclusive('config:save', btn, async () => {
       btn.textContent = '保存中...'; st.textContent = '';
       const payload = {
         pollIntervalMinutes: Number(document.getElementById('pollInterval').value),
@@ -2488,6 +2662,7 @@ function getAppScript() {
         btn.textContent = '保存设置并生效';
         setTimeout(()=>{ if(!st.classList.contains('status-error')) setStatus(st, ''); },3000);
       }
+      });
     }
 
     function getBBDownApiMode() {
@@ -3537,9 +3712,16 @@ function getAppScript() {
 
     // ---- Users ----
     async function loadUsers() {
-      const users = await fetchJson('/api/users');
+      if (usersLoadState.controller) usersLoadState.controller.abort();
+      const controller = new AbortController();
+      const token = ++usersLoadState.token;
+      usersLoadState.controller = controller;
       const el = document.getElementById('userList');
-      el.innerHTML = '';
+      if (!usersLoadState.loaded) renderRequestStatus('userListStatus', '正在读取账号...', 'muted');
+      try {
+      const users = await fetchJsonSilent('/api/users', { signal:controller.signal });
+      if (token !== usersLoadState.token) return;
+      const fragment = document.createDocumentFragment();
       users.forEach(user => {
         const item = document.createElement('div');
         item.className = 'user-item';
@@ -3602,6 +3784,7 @@ function getAppScript() {
         toggleBtn.className = 'ghost';
         toggleBtn.dataset.action = 'toggle';
         toggleBtn.dataset.id = String(user.id || '');
+        toggleBtn.dataset.enabled = String(Boolean(user.enabled));
         toggleBtn.textContent = user.enabled ? '暂停同步' : '启用同步';
 
         const removeBtn = document.createElement('button');
@@ -3647,51 +3830,133 @@ function getAppScript() {
         item.appendChild(authHealth);
         item.appendChild(favoritesWrap);
         item.appendChild(actions);
-        el.appendChild(item);
+        fragment.appendChild(item);
       });
+      el.replaceChildren(fragment);
+      usersLoadState.loaded = true;
+      renderRequestStatus('userListStatus', users.length ? '' : '暂无账号，请先添加 B站账号。', users.length ? '' : 'muted');
+      } catch (error) {
+        if (error?.name === 'AbortError' || token !== usersLoadState.token) return;
+        const prefix = usersLoadState.loaded ? '账号刷新失败，已保留当前列表：' : '账号加载失败：';
+        renderRequestStatus('userListStatus', prefix + (error?.message || String(error)), 'error', () => void loadUsers());
+      } finally {
+        if (token === usersLoadState.token && usersLoadState.controller === controller) usersLoadState.controller = null;
+      }
     }
 
     // ---- Login ----
-    async function startLogin() {
-      document.getElementById('loginStatus').textContent = '正在生成二维码...';
-      const data = await fetchJson('/api/users/login/start', { method:'POST' });
-      currentLoginId = data.loginId;
-      document.getElementById('loginQr').src = data.qrDataUrl;
-      openModal('loginModal', document.getElementById('addUserBtn'));
-      pollLoginStatus();
+    function cleanupLoginSession() {
+      loginState.generation += 1;
+      loginState.startController?.abort();
+      loginState.pollController?.abort();
+      if (loginState.pollTimer) clearTimeout(loginState.pollTimer);
+      if (loginState.closeTimer) clearTimeout(loginState.closeTimer);
+      loginState.loginId = null;
+      loginState.startController = null;
+      loginState.pollController = null;
+      loginState.pollTimer = null;
+      loginState.closeTimer = null;
     }
-    async function pollLoginStatus() {
-      if (!currentLoginId) return;
+
+    async function startLogin() {
+      const trigger = document.getElementById('addUserBtn');
+      return runExclusive('login:start', trigger, async () => {
+        cleanupLoginSession();
+        const generation = loginState.generation;
+        const controller = new AbortController();
+        loginState.startController = controller;
+        document.getElementById('loginQr').removeAttribute('src');
+        document.getElementById('loginStatus').textContent = '正在生成二维码...';
+        openModal('loginModal', trigger);
+        try {
+          const data = await fetchJsonSilent('/api/users/login/start', { method:'POST', signal:controller.signal });
+          if (generation !== loginState.generation || activeModal()?.id !== 'loginModal') return;
+          loginState.loginId = data.loginId;
+          document.getElementById('loginQr').src = data.qrDataUrl;
+          void pollLoginStatus(data.loginId, generation);
+        } catch (error) {
+          if (error?.name !== 'AbortError' && generation === loginState.generation) {
+            document.getElementById('loginStatus').textContent = '二维码生成失败：' + (error?.message || String(error));
+          }
+        } finally {
+          if (loginState.startController === controller) loginState.startController = null;
+        }
+      });
+    }
+
+    async function pollLoginStatus(loginId, generation) {
+      if (!loginId || generation !== loginState.generation || loginState.loginId !== loginId) return;
+      const controller = new AbortController();
+      loginState.pollController?.abort();
+      loginState.pollController = controller;
       try {
-        const res = await fetch('/api/users/login/status?loginId=' + currentLoginId);
+        const res = await fetch('/api/users/login/status?loginId=' + encodeURIComponent(loginId), { signal:controller.signal });
         const json = await res.json();
-        if (!res.ok || !json.success) { document.getElementById('loginStatus').textContent = json.message||'失败'; currentLoginId=null; return; }
+        if (generation !== loginState.generation || loginState.loginId !== loginId) return;
+        if (!res.ok || !json.success) {
+          document.getElementById('loginStatus').textContent = json.message || '登录状态读取失败';
+          loginState.loginId = null;
+          return;
+        }
         const d = json.data;
         if (d.status==='completed') {
           document.getElementById('loginStatus').textContent = '登录成功';
-          currentLoginId=null;
-          setTimeout(()=>{ closeModal('loginModal'); loadUsers(); },1000);
+          loginState.loginId = null;
+          loginState.closeTimer = setTimeout(() => {
+            if (generation !== loginState.generation || activeModal()?.id !== 'loginModal') return;
+            closeModal('loginModal');
+            void loadUsers();
+          }, 1000);
         } else if (d.status==='error') {
-          document.getElementById('loginStatus').textContent = d.message||'异常'; currentLoginId=null;
+          document.getElementById('loginStatus').textContent = d.message || '登录异常';
+          loginState.loginId = null;
         } else {
           document.getElementById('loginStatus').textContent = '等待扫码中...';
-          setTimeout(pollLoginStatus, 1500);
+          loginState.pollTimer = setTimeout(() => void pollLoginStatus(loginId, generation), 1500);
         }
-      } catch(e) { document.getElementById('loginStatus').textContent = e.message; currentLoginId=null; }
+      } catch(error) {
+        if (error?.name !== 'AbortError' && generation === loginState.generation && loginState.loginId === loginId) {
+          document.getElementById('loginStatus').textContent = error?.message || String(error);
+          loginState.loginId = null;
+        }
+      } finally {
+        if (loginState.pollController === controller) loginState.pollController = null;
+      }
     }
 
     // ---- Favorites (with thumbnails) ----
-    async function openFavorites(userId) {
-      favoritesUserId = userId;
-      document.getElementById('favoritesStatus').textContent = '';
+    function cleanupFavorites() {
+      favoritesState.token += 1;
+      favoritesState.controller?.abort();
+      favoritesState.controller = null;
+      favoritesState.userId = null;
+      favoritesState.loaded = false;
+    }
+
+    function favoritesRequestCurrent(token, userId) {
+      return token === favoritesState.token && favoritesState.userId === userId
+        && document.getElementById('favoritesModal').classList.contains('active');
+    }
+
+    async function openFavorites(userId, trigger) {
+      favoritesState.controller?.abort();
+      const controller = new AbortController();
+      const token = ++favoritesState.token;
+      favoritesState.controller = controller;
+      favoritesState.userId = userId;
+      favoritesState.loaded = false;
+      setStatus('favoritesStatus', '');
+      document.getElementById('saveFavoritesBtn').disabled = true;
       const list = document.getElementById('favoritesList');
       list.innerHTML = '';
       const loading = document.createElement('div');
       loading.className = 'empty-state loading-state';
       loading.textContent = '加载中...';
       list.appendChild(loading);
-      openModal('favoritesModal');
-      const data = await fetchJson('/api/users/'+userId+'/favorites');
+      openModal('favoritesModal', trigger);
+      try {
+      const data = await fetchJsonSilent('/api/users/'+encodeURIComponent(userId)+'/favorites', { signal:controller.signal });
+      if (!favoritesRequestCurrent(token, userId)) return;
       list.innerHTML = '';
       data.forEach(folder => {
         const lbl = document.createElement('label');
@@ -3739,6 +4004,24 @@ function getAppScript() {
         lbl.appendChild(detail);
         list.appendChild(lbl);
       });
+      favoritesState.loaded = true;
+      document.getElementById('saveFavoritesBtn').disabled = false;
+      } catch (error) {
+        if (error?.name === 'AbortError' || !favoritesRequestCurrent(token, userId)) return;
+        list.replaceChildren();
+        const failure = document.createElement('div');
+        failure.className = 'empty-state video-detail-status error';
+        failure.appendChild(document.createTextNode('收藏夹加载失败：' + (error?.message || String(error)) + ' '));
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'retry-button';
+        retry.textContent = '重试';
+        retry.addEventListener('click', () => void openFavorites(userId, trigger));
+        failure.appendChild(retry);
+        list.appendChild(failure);
+      } finally {
+        if (favoritesState.controller === controller) favoritesState.controller = null;
+      }
     }
 
     // ---- Local Archive Library ----
@@ -3808,6 +4091,9 @@ function getAppScript() {
       archiveLibraryState.navigationController = null;
       archiveLibraryState.loading = false;
       archiveLibraryState.pendingReset = false;
+      archiveLibraryState.pendingContext = null;
+      archiveLibraryState.pendingViewState = null;
+      setArchiveLibraryResultsBusy(false);
       closeArchiveLibraryDetail({ restoreFocus:false });
     }
 
@@ -3831,17 +4117,17 @@ function getAppScript() {
       }
     }
 
-    function archiveLibraryQueryParams(options = {}) {
+    function archiveLibraryQueryParams(options = {}, context = archiveLibraryContextSnapshot()) {
       const params = new URLSearchParams({
-        scope:archiveLibraryState.scope,
-        q:archiveLibraryState.query,
-        searchScope:archiveLibraryState.searchScope,
-        filter:archiveLibraryState.filter,
-        sort:archiveLibraryState.sort,
+        scope:context.scope,
+        q:context.query,
+        searchScope:context.searchScope,
+        filter:context.filter,
+        sort:context.sort,
         pageSize:String(archiveLibraryState.pageSize || 50)
       });
-      if (archiveLibraryState.userId) params.set('userId', archiveLibraryState.userId);
-      if (archiveLibraryState.mediaId) params.set('mediaId', String(archiveLibraryState.mediaId));
+      if (context.userId) params.set('userId', context.userId);
+      if (context.mediaId) params.set('mediaId', String(context.mediaId));
       if (options.cursor) params.set('cursor', options.cursor);
       return params;
     }
@@ -3851,11 +4137,36 @@ function getAppScript() {
         scope:archiveLibraryState.scope,
         userId:archiveLibraryState.userId,
         mediaId:archiveLibraryState.mediaId,
+        title:archiveLibraryState.title,
         query:archiveLibraryState.query,
         searchScope:archiveLibraryState.searchScope,
         filter:archiveLibraryState.filter,
         sort:archiveLibraryState.sort
       };
+    }
+
+    function applyArchiveLibraryContext(context) {
+      if (!context) return;
+      archiveLibraryState.scope = context.scope;
+      archiveLibraryState.userId = context.userId || null;
+      archiveLibraryState.mediaId = Number(context.mediaId || 0) || null;
+      archiveLibraryState.title = context.title || '全部归档';
+      archiveLibraryState.query = context.query || '';
+      archiveLibraryState.draftQuery = context.query || '';
+      archiveLibraryState.searchScope = context.searchScope || 'current';
+      archiveLibraryState.filter = context.filter || 'all';
+      archiveLibraryState.sort = context.sort || 'context';
+      document.getElementById('archiveLibrarySearchInput').value = archiveLibraryState.query;
+      syncArchiveLibraryNavigationSelection();
+      setArchiveLibraryHeading();
+    }
+
+    function setArchiveLibraryResultsBusy(busy) {
+      const results = document.getElementById('archiveLibraryResults');
+      if (!results) return;
+      results.inert = Boolean(busy);
+      if (busy) results.setAttribute('aria-busy', 'true');
+      else results.removeAttribute('aria-busy');
     }
 
     function isArchiveLibraryMobileLayout() {
@@ -4149,7 +4460,6 @@ function getAppScript() {
       archiveLibraryState.searchScope = 'current';
       document.getElementById('archiveLibrarySearchInput').value = '';
       closeArchiveLibraryDetail({ restoreFocus:false });
-      persistArchiveLibraryPreference();
       syncArchiveLibraryNavigationSelection();
       setArchiveLibraryHeading();
       document.querySelector('.archive-library-shell').classList.add('show-content');
@@ -4182,16 +4492,81 @@ function getAppScript() {
     }
 
     // ---- Online content workspace ----
-    function cleanupOnlineContent() {
+    function onlineContentContextSnapshot(source = onlineContentState) {
+      return {
+        userId:source.userId || null,
+        kind:source.kind || 'favorite',
+        mediaId:Number(source.mediaId || 0) || null,
+        title:source.title || '在线内容',
+        query:String(source.query || '').trim().slice(0, 80)
+      };
+    }
+
+    function onlineContentContextsEqual(left, right) {
+      return Boolean(left && right)
+        && left.userId === right.userId
+        && left.kind === right.kind
+        && Number(left.mediaId || 0) === Number(right.mediaId || 0)
+        && left.query === right.query;
+    }
+
+    function applyOnlineContentContext(context) {
+      if (!context) return;
+      onlineContentState.userId = context.userId;
+      onlineContentState.kind = context.kind;
+      onlineContentState.mediaId = context.mediaId;
+      onlineContentState.title = context.title;
+      onlineContentState.query = context.query;
+      onlineContentState.draftQuery = context.query;
+      document.getElementById('onlineContentTitle').textContent = context.title;
+      document.getElementById('onlineContentSearchInput').value = context.query;
+    }
+
+    function setOnlineContentResultsBusy(busy) {
+      const results = document.getElementById('onlineContentResults');
+      if (!results) return;
+      results.inert = Boolean(busy);
+      if (busy) results.setAttribute('aria-busy', 'true');
+      else results.removeAttribute('aria-busy');
+    }
+
+    function setOnlineContentFooter(text, type = '', retry) {
+      renderRequestStatus('onlineContentFooter', text, type, retry);
+    }
+
+    function cancelOnlineContentItems() {
       onlineContentState.token += 1;
-      if (onlineContentState.controller) onlineContentState.controller.abort();
+      onlineContentState.controller?.abort();
+      onlineContentState.controller = null;
+      onlineContentState.loading = false;
+      onlineContentState.pendingContext = null;
+      setOnlineContentResultsBusy(false);
+    }
+
+    function cleanupOnlineContent() {
+      cancelOnlineContentItems();
+      onlineContentState.sessionToken += 1;
       onlineContentState.navigationToken += 1;
       if (onlineContentState.navigationController) onlineContentState.navigationController.abort();
       if (onlineContentState.searchTimer) clearTimeout(onlineContentState.searchTimer);
-      onlineContentState.controller = null;
       onlineContentState.navigationController = null;
       onlineContentState.searchTimer = null;
-      onlineContentState.loading = false;
+      onlineContentState.navigation = null;
+      onlineContentState.userId = null;
+      onlineContentState.mediaId = null;
+      onlineContentState.query = '';
+      onlineContentState.draftQuery = '';
+      onlineContentState.items = [];
+      onlineContentState.page = 0;
+      onlineContentState.cursor = null;
+      onlineContentState.hasMore = false;
+      onlineContentState.appliedContext = null;
+      onlineContentState.pendingContext = null;
+      document.getElementById('onlineContentNav')?.replaceChildren();
+      document.getElementById('onlineContentGrid')?.replaceChildren();
+      document.getElementById('onlineContentSearchInput').value = '';
+      document.querySelector('.online-content-shell')?.classList.remove('show-content');
+      setOnlineContentFooter('');
       cleanupManualArchiveOptions();
     }
 
@@ -4203,6 +4578,8 @@ function getAppScript() {
       manualArchiveState.pollTimer = null;
       manualArchiveState.probeId = null;
       manualArchiveState.item = null;
+      manualArchiveState.context = null;
+      manualArchiveState.trigger = null;
     }
 
     function manualArchiveSelection() {
@@ -4261,7 +4638,8 @@ function getAppScript() {
 
     async function startManualArchiveProbe() {
       const item = manualArchiveState.item;
-      if (!item?.bvid || !onlineContentState.userId) return;
+      const context = manualArchiveState.context;
+      if (!item?.bvid || !context?.userId) return;
       if (manualArchiveState.probeController) manualArchiveState.probeController.abort();
       const controller = new AbortController();
       const token = ++manualArchiveState.token;
@@ -4273,7 +4651,7 @@ function getAppScript() {
       try {
         const started = await fetchJsonSilent('/api/media-probe', {
           method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
-          body:JSON.stringify({ userId:onlineContentState.userId, bvid:item.bvid, quality:selection.quality || undefined, encoding:selection.encoding || undefined, strict:selection.strict })
+          body:JSON.stringify({ userId:context.userId, bvid:item.bvid, quality:selection.quality || undefined, encoding:selection.encoding || undefined, strict:selection.strict })
         });
         if (token !== manualArchiveState.token) return;
         manualArchiveState.probeId = started.probeId;
@@ -4288,36 +4666,43 @@ function getAppScript() {
     function openManualArchiveOptions(item, trigger) {
       cleanupManualArchiveOptions();
       manualArchiveState.item = item;
+      const sourceContext = onlineContentState.appliedContext || onlineContentContextSnapshot();
+      manualArchiveState.context = { ...sourceContext, itemId:item.id, bvid:item.bvid };
       manualArchiveState.trigger = trigger;
       document.getElementById('manualArchiveOptionsVideo').textContent = (item.title || item.bvid || '在线条目') + (item.bvid ? ' · ' + item.bvid : '');
       document.getElementById('manualArchiveQuality').value = '';
       document.getElementById('manualArchiveEncoding').value = '';
+      document.getElementById('manualArchiveProbeBtn').disabled = false;
+      document.getElementById('manualArchiveStartBtn').disabled = false;
       setManualArchiveProbeMessage('默认偏好会允许正常回退。选择画质或编码后，可先探测可用组合和预计大小。');
       openModal('manualArchiveOptionsModal', trigger);
     }
 
     async function startManualArchive() {
       const item = manualArchiveState.item;
-      if (!item?.bvid || !onlineContentState.userId) return;
+      const context = manualArchiveState.context;
+      if (!item?.bvid || !context?.userId) return;
       const selection = manualArchiveSelection();
       const button = document.getElementById('manualArchiveStartBtn');
       if (button) button.disabled = true;
       try {
         const result = await fetchJson('/api/online-content/manual-archive', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({ userId:onlineContentState.userId, token:item.coverToken, quality:selection.quality || undefined, encoding:selection.encoding || undefined, strict:selection.strict })
+          body:JSON.stringify({ userId:context.userId, token:item.coverToken, quality:selection.quality || undefined, encoding:selection.encoding || undefined, strict:selection.strict })
         });
         item.archiveState = result.status === 'already_archived' ? 'archived' : 'processing';
         closeModal('manualArchiveOptionsModal');
-        renderOnlineCards(false);
+        if (onlineContentState.items.includes(item) && onlineContentContextsEqual(onlineContentState.appliedContext, context)) renderOnlineCards(false);
         setStatus('onlineContentFooter', item.archiveState === 'archived' ? '该视频已经在归档库中。' : '已进入手动归档队列。', 'success');
       } catch (error) {
+        if (manualArchiveState.context === context) setManualArchiveProbeMessage('归档提交失败：' + (error?.message || String(error)), true);
         if (button) button.disabled = false;
       }
     }
 
-    function onlineContentCurrent(token) {
-      return token === onlineContentState.token && document.getElementById('onlineContentModal')?.classList.contains('active');
+    function onlineContentCurrent(token, sessionToken = onlineContentState.sessionToken) {
+      return token === onlineContentState.token && sessionToken === onlineContentState.sessionToken
+        && document.getElementById('onlineContentModal')?.classList.contains('active');
     }
 
     function renderOnlineNavigation() {
@@ -4337,11 +4722,24 @@ function getAppScript() {
           const button = document.createElement('button');
           button.type = 'button';
           button.className = 'archive-nav-item';
+          button.dataset.onlineUserId = account.userId;
+          button.dataset.onlineKind = source.kind;
+          button.dataset.onlineMediaId = String(source.mediaId || '');
           button.innerHTML = '<strong>' + escapeHtml(source.title || '在线内容') + '</strong><span>打开时加载</span>';
           button.addEventListener('click', () => selectOnlineSource({ userId:account.userId, kind:source.kind, mediaId:source.mediaId || null, title:source.title }));
           group.appendChild(button);
         });
         host.appendChild(group);
+      });
+      const active = onlineContentState.pendingContext || onlineContentState.appliedContext;
+      host.querySelectorAll('.archive-nav-item').forEach((button) => {
+        const selected = Boolean(active)
+          && button.dataset.onlineUserId === active.userId
+          && button.dataset.onlineKind === active.kind
+          && Number(button.dataset.onlineMediaId || 0) === Number(active.mediaId || 0);
+        button.classList.toggle('active', selected);
+        if (selected) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
       });
     }
 
@@ -4352,6 +4750,7 @@ function getAppScript() {
       const existing = new Set(Array.from(grid.children).map((node) => node.dataset.onlineId));
       onlineContentState.items.forEach((item) => {
         if (existing.has(item.id)) return;
+        existing.add(item.id);
         const card = document.createElement('article');
         card.className = 'archive-library-card online-content-card';
         card.dataset.onlineId = item.id;
@@ -4406,52 +4805,80 @@ function getAppScript() {
       document.getElementById('onlineContentSummary').textContent = onlineContentState.items.length + ' 项';
     }
 
-    async function loadOnlineContentItems(append = false) {
-      if (!onlineContentState.userId || onlineContentState.loading || (append && !onlineContentState.hasMore)) return;
+    async function loadOnlineContentItems(append = false, requestedContext = null) {
+      const context = requestedContext || (append
+        ? onlineContentState.appliedContext
+        : onlineContentState.pendingContext || onlineContentState.appliedContext || onlineContentContextSnapshot());
+      if (!context?.userId || (append && (onlineContentState.loading || !onlineContentState.hasMore))) return;
+      if (!append) {
+        onlineContentState.controller?.abort();
+        onlineContentState.pendingContext = { ...context };
+        setOnlineContentResultsBusy(true);
+        renderOnlineNavigation();
+      }
       onlineContentState.loading = true;
       const token = ++onlineContentState.token;
-      if (onlineContentState.controller) onlineContentState.controller.abort();
+      const sessionToken = onlineContentState.sessionToken;
       const controller = new AbortController();
       onlineContentState.controller = controller;
       const requestedPage = append ? onlineContentState.page + 1 : 1;
-      const params = new URLSearchParams({ userId:onlineContentState.userId, kind:onlineContentState.kind, pageSize:'50', page:String(requestedPage) });
-      if (onlineContentState.mediaId) params.set('mediaId', String(onlineContentState.mediaId));
-      if (onlineContentState.query) params.set('q', onlineContentState.query);
+      const params = new URLSearchParams({ userId:context.userId, kind:context.kind, pageSize:'50', page:String(requestedPage) });
+      if (context.mediaId) params.set('mediaId', String(context.mediaId));
+      if (context.query) params.set('q', context.query);
       if (append && onlineContentState.cursor) params.set('cursor', onlineContentState.cursor);
+      setOnlineContentFooter(append ? '正在加载更多...' : '正在读取在线内容...', 'muted');
       try {
-        const data = await fetchJson('/api/online-content/items?' + params.toString(), { signal:controller.signal });
-        if (!onlineContentCurrent(token)) return;
-        const incoming = data.items || data.page?.items || [];
-        onlineContentState.items = append ? onlineContentState.items.concat(incoming) : incoming;
+        const data = await fetchJsonSilent('/api/online-content/items?' + params.toString(), { signal:controller.signal });
+        if (!onlineContentCurrent(token, sessionToken)) return;
+        const incoming = Array.isArray(data.items) ? data.items : Array.isArray(data.page?.items) ? data.page.items : [];
+        if (append) {
+          if (!onlineContentContextsEqual(onlineContentState.appliedContext, context)) return;
+          onlineContentState.items.push(...appendUniqueItems(onlineContentState.items, incoming, (item) => item?.id));
+        } else {
+          onlineContentState.items = appendUniqueItems([], incoming, (item) => item?.id);
+          applyOnlineContentContext(context);
+          onlineContentState.appliedContext = { ...context };
+          onlineContentState.pendingContext = null;
+        }
         onlineContentState.page = Number(data.page?.page || requestedPage);
         onlineContentState.cursor = data.page?.nextCursor || data.nextCursor || null;
         onlineContentState.hasMore = Boolean(data.page?.hasMore ?? data.hasMore);
         renderOnlineCards(append);
-        document.getElementById('onlineContentFooter').textContent = onlineContentState.hasMore ? '继续滚动加载更多' : (onlineContentState.items.length ? '已加载全部' : '当前分类没有内容');
+        renderOnlineNavigation();
+        setOnlineContentFooter(onlineContentState.hasMore ? '继续滚动加载更多' : (onlineContentState.items.length ? '已加载全部' : '当前分类没有内容'));
       } catch (error) {
-        if (error?.name !== 'AbortError' && onlineContentCurrent(token)) setStatus('onlineContentFooter', error?.message || '在线内容读取失败', 'error');
+        if (error?.name === 'AbortError' || !onlineContentCurrent(token, sessionToken)) return;
+        if (!append) {
+          onlineContentState.pendingContext = null;
+          if (onlineContentState.appliedContext) applyOnlineContentContext(onlineContentState.appliedContext);
+          renderOnlineNavigation();
+        }
+        setOnlineContentFooter('在线内容读取失败：' + (error?.message || String(error)), 'error', () => void loadOnlineContentItems(false, context));
       } finally {
         if (onlineContentState.controller === controller) onlineContentState.controller = null;
-        if (onlineContentCurrent(token)) onlineContentState.loading = false;
+        if (onlineContentCurrent(token, sessionToken)) {
+          onlineContentState.loading = false;
+          setOnlineContentResultsBusy(false);
+        }
       }
     }
 
     async function selectOnlineSource(context) {
-      cleanupOnlineContent();
-      onlineContentState.userId = context.userId;
-      onlineContentState.kind = context.kind;
-      onlineContentState.mediaId = context.mediaId || null;
-      onlineContentState.title = context.title || '在线内容';
-      onlineContentState.query = '';
-      onlineContentState.items = [];
-      onlineContentState.page = 0;
-      onlineContentState.cursor = null;
-      onlineContentState.hasMore = false;
-      document.getElementById('onlineContentTitle').textContent = onlineContentState.title;
+      if (onlineContentState.searchTimer) clearTimeout(onlineContentState.searchTimer);
+      onlineContentState.searchTimer = null;
+      const requested = {
+        userId:context.userId,
+        kind:context.kind,
+        mediaId:Number(context.mediaId || 0) || null,
+        title:context.title || '在线内容',
+        query:''
+      };
+      onlineContentState.draftQuery = '';
       document.getElementById('onlineContentSearchInput').value = '';
+      document.getElementById('onlineContentTitle').textContent = requested.title;
       document.querySelector('.online-content-shell').classList.add('show-content');
       syncOnlineContentPanels();
-      await loadOnlineContentItems(false);
+      await loadOnlineContentItems(false, requested);
     }
 
     function syncOnlineContentPanels() {
@@ -4465,21 +4892,22 @@ function getAppScript() {
     }
 
     async function openOnlineContent(trigger) {
-      openModal('onlineContentModal', trigger);
       cleanupOnlineContent();
+      openModal('onlineContentModal', trigger);
+      const sessionToken = onlineContentState.sessionToken;
       const navigationToken = ++onlineContentState.navigationToken;
       const navigationController = new AbortController();
       onlineContentState.navigationController = navigationController;
       try {
         onlineContentState.navigation = await fetchJson('/api/online-content/navigation', { signal:navigationController.signal });
-        if (navigationToken !== onlineContentState.navigationToken || !document.getElementById('onlineContentModal').classList.contains('active')) return;
+        if (navigationToken !== onlineContentState.navigationToken || sessionToken !== onlineContentState.sessionToken || !document.getElementById('onlineContentModal').classList.contains('active')) return;
         renderOnlineNavigation();
         const firstAccount = onlineContentState.navigation?.accounts?.[0];
         const first = firstAccount?.sources?.[0];
         if (first) await selectOnlineSource({ userId:firstAccount.userId, kind:first.kind, mediaId:first.mediaId, title:first.title });
       } catch (error) {
-        if (error?.name !== 'AbortError' && navigationToken === onlineContentState.navigationToken) {
-          setStatus('onlineContentFooter', error?.message || '在线目录读取失败', 'error');
+        if (error?.name !== 'AbortError' && navigationToken === onlineContentState.navigationToken && sessionToken === onlineContentState.sessionToken) {
+          setOnlineContentFooter('在线目录读取失败：' + (error?.message || String(error)), 'error', () => void openOnlineContent(trigger));
         }
       } finally {
         if (onlineContentState.navigationController === navigationController) onlineContentState.navigationController = null;
@@ -4592,14 +5020,24 @@ function getAppScript() {
     async function loadArchiveLibraryItems(reset = false) {
       if (archiveLibraryState.pendingReset && !reset) reset = true;
       if (archiveLibraryState.loading && !reset) return;
+      const requestedContext = archiveLibraryContextSnapshot();
       if (reset) {
         archiveLibraryState.token += 1;
         if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
         archiveLibraryState.pendingReset = true;
+        archiveLibraryState.pendingContext = requestedContext;
+        if (!archiveLibraryState.pendingViewState) {
+          archiveLibraryState.pendingViewState = {
+            nextCursor:archiveLibraryState.nextCursor,
+            hasMore:archiveLibraryState.hasMore,
+            summary:archiveLibraryState.summary,
+            error:archiveLibraryState.error
+          };
+        }
         archiveLibraryState.nextCursor = null;
         archiveLibraryState.hasMore = true;
-        archiveLibraryState.summary = null;
         archiveLibraryState.error = null;
+        setArchiveLibraryResultsBusy(true);
       }
       if (!archiveLibraryState.hasMore) return;
       const token = archiveLibraryState.token;
@@ -4608,20 +5046,19 @@ function getAppScript() {
       archiveLibraryState.loading = true;
       setArchiveLibraryFooter(reset ? '正在读取本地归档...' : '正在加载更多...', null);
       try {
-        const params = archiveLibraryQueryParams({ cursor:archiveLibraryState.nextCursor });
-        const data = await fetchJson('/api/archive-library/items?' + params.toString(), { signal:controller.signal });
+        const params = archiveLibraryQueryParams({ cursor:archiveLibraryState.nextCursor }, requestedContext);
+        const data = await fetchJsonSilent('/api/archive-library/items?' + params.toString(), { signal:controller.signal });
         if (token !== archiveLibraryState.token) return;
         const incoming = Array.isArray(data.items) ? data.items : [];
-        const replace = archiveLibraryState.pendingReset;
+        const replace = reset;
+        const target = replace ? [] : archiveLibraryState.items;
+        const fresh = appendUniqueItems(target, incoming, (item) => item?.bvid);
         if (replace) {
-          archiveLibraryState.items = [];
+          archiveLibraryState.items = fresh.slice();
           archiveLibraryState.nodes.clear();
-          document.getElementById('archiveLibraryGrid').replaceChildren();
-          document.getElementById('archiveLibraryResults').scrollTop = 0;
+        } else {
+          archiveLibraryState.items.push(...fresh);
         }
-        const known = new Set(archiveLibraryState.items.map((item) => item.bvid));
-        const fresh = incoming.filter((item) => item && item.bvid && !known.has(item.bvid));
-        archiveLibraryState.items.push(...fresh);
         archiveLibraryState.nextCursor = data.nextCursor || null;
         archiveLibraryState.hasMore = Boolean(data.hasMore);
         if (data.summary) archiveLibraryState.summary = data.summary;
@@ -4633,7 +5070,12 @@ function getAppScript() {
           archiveLibraryState.nodes.set(item.bvid, node);
           fragment.appendChild(node);
         });
-        grid.appendChild(fragment);
+        if (replace) {
+          grid.replaceChildren(fragment);
+          document.getElementById('archiveLibraryResults').scrollTop = 0;
+        } else {
+          grid.appendChild(fragment);
+        }
         if (!archiveLibraryState.items.length) {
           const empty = document.createElement('div');
           empty.className = 'archive-library-empty';
@@ -4643,6 +5085,11 @@ function getAppScript() {
         setArchiveLibraryHeading();
         setArchiveLibraryFooter(archiveLibraryState.hasMore ? '' : '已加载全部', null);
         archiveLibraryState.pendingReset = false;
+        archiveLibraryState.pendingContext = null;
+        archiveLibraryState.pendingViewState = null;
+        archiveLibraryState.appliedContext = requestedContext;
+        persistArchiveLibraryPreference();
+        setArchiveLibraryResultsBusy(false);
         if (replace) {
           const stored = Number(archiveLibraryState.scrollPositions[archiveContextKey()] || 0);
           requestAnimationFrame(() => { document.getElementById('archiveLibraryResults').scrollTop = stored; });
@@ -4654,11 +5101,29 @@ function getAppScript() {
           return loadArchiveLibraryItems(true);
         }
         archiveLibraryState.error = error instanceof Error ? error.message : String(error);
-        setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(archiveLibraryState.pendingReset));
+        if (reset) {
+          const previousView = archiveLibraryState.pendingViewState;
+          archiveLibraryState.pendingReset = false;
+          archiveLibraryState.pendingContext = null;
+          archiveLibraryState.pendingViewState = null;
+          if (previousView) {
+            archiveLibraryState.nextCursor = previousView.nextCursor;
+            archiveLibraryState.hasMore = previousView.hasMore;
+            archiveLibraryState.summary = previousView.summary;
+            archiveLibraryState.error = previousView.error;
+          }
+          if (archiveLibraryState.appliedContext) {
+            applyArchiveLibraryContext(archiveLibraryState.appliedContext);
+            persistArchiveLibraryPreference();
+          }
+          setArchiveLibraryResultsBusy(false);
+        }
+        setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(Boolean(reset)));
       } finally {
         if (token === archiveLibraryState.token) {
           archiveLibraryState.loading = false;
           if (archiveLibraryState.controller === controller) archiveLibraryState.controller = null;
+          if (!archiveLibraryState.pendingReset) setArchiveLibraryResultsBusy(false);
         }
       }
     }
@@ -5313,6 +5778,7 @@ function getAppScript() {
       videoDetailState.page = 0;
       videoDetailState.hasMore = true;
       videoDetailState.loading = false;
+      videoDetailState.keys = new Set();
       setVideoDetailFilterActive(filter);
       const grid = document.getElementById('videoGrid');
       grid.innerHTML = '';
@@ -5357,7 +5823,12 @@ function getAppScript() {
         } else if (Array.isArray(data.items)) {
           const oldStatus = grid.querySelector('[data-status-marker="video-detail"]');
           if (oldStatus) oldStatus.remove();
-          items.forEach(item => grid.appendChild(renderVideoDetailItem(item)));
+          items.forEach((item) => {
+            const key = String(item?.bvid || item?.id || '');
+            if (!key || videoDetailState.keys.has(key)) return;
+            videoDetailState.keys.add(key);
+            grid.appendChild(renderVideoDetailItem(item));
+          });
           videoDetailState.page = data.page || nextPage;
           videoDetailState.hasMore = Boolean(data.hasMore);
           setVideoDetailStatus(videoDetailState.hasMore ? '' : '已加载全部');
@@ -5400,6 +5871,7 @@ function getAppScript() {
         pageSize: 20,
         hasMore: true,
         loading: false,
+        keys: new Set(),
         token: videoDetailState.token,
         controller: null
       };
@@ -6841,12 +7313,11 @@ function getAppScript() {
         const incoming = Array.isArray(data.items) ? data.items : [];
         const canAppend = append && search.shownQuery === normalizedQuery;
         if (canAppend) {
-          const known = new Set(search.items.map((item) => item.bvid));
-          const fresh = incoming.filter((item) => !known.has(item.bvid));
+          const fresh = appendUniqueItems(search.items, incoming, (item) => item?.bvid);
           search.items.push(...fresh);
           appendPlaybackSearchItems(fresh);
         } else {
-          search.items = incoming;
+          search.items = appendUniqueItems([], incoming, (item) => item?.bvid);
           search.nodes.clear();
         }
         search.shownQuery = normalizedQuery;
@@ -7268,15 +7739,28 @@ function getAppScript() {
     }
 
     async function saveFavorites() {
-      document.getElementById('saveFavoritesBtn').textContent = '保存中...';
+      const button = document.getElementById('saveFavoritesBtn');
+      const userId = favoritesState.userId;
+      const token = favoritesState.token;
+      if (!userId || !favoritesState.loaded) return;
       const selected = Array.from(document.getElementById('favoritesList').querySelectorAll('input:checked')).map(i=>Number(i.value));
-      await fetchJson('/api/users/'+favoritesUserId+'/favorites', {
-        method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mediaIds:selected})
+      return runExclusive('favorites:save:' + userId, button, async () => {
+        button.textContent = '保存中...';
+        setStatus('favoritesStatus', '');
+        try {
+          await fetchJson('/api/users/'+encodeURIComponent(userId)+'/favorites', {
+            method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mediaIds:selected})
+          });
+          if (!favoritesRequestCurrent(token, userId)) return;
+          setStatus('favoritesStatus', '已保存', 'success');
+          closeModal('favoritesModal');
+          await loadUsers();
+        } catch (error) {
+          if (favoritesRequestCurrent(token, userId)) setStatus('favoritesStatus', '保存失败：' + (error?.message || String(error)), 'error');
+        } finally {
+          if (button.isConnected) button.textContent = '保存选择';
+        }
       });
-      document.getElementById('saveFavoritesBtn').textContent = '保存选择';
-      document.getElementById('favoritesStatus').textContent = '已保存';
-      setTimeout(()=>closeModal('favoritesModal'),500);
-      await loadUsers();
     }
 
     // ---- Dual-Mode Log ----
@@ -9023,8 +9507,8 @@ function getAppScript() {
     document.getElementById('archiveLibraryBtn').addEventListener('click', (event) => openArchiveLibrary(event.currentTarget));
     document.getElementById('closeArchiveLibraryBtn').addEventListener('click', () => closeModal('archiveLibraryModal'));
     document.getElementById('onlineContentBtn').addEventListener('click', (event) => void openOnlineContent(event.currentTarget));
-    document.getElementById('closeOnlineContentBtn').addEventListener('click', () => { cleanupOnlineContent(); closeModal('onlineContentModal'); });
-    document.getElementById('onlineContentCloseMainBtn').addEventListener('click', () => { cleanupOnlineContent(); closeModal('onlineContentModal'); });
+    document.getElementById('closeOnlineContentBtn').addEventListener('click', () => closeModal('onlineContentModal'));
+    document.getElementById('onlineContentCloseMainBtn').addEventListener('click', () => closeModal('onlineContentModal'));
     document.getElementById('manualArchiveProbeBtn').addEventListener('click', () => void startManualArchiveProbe());
     document.getElementById('manualArchiveStartBtn').addEventListener('click', () => void startManualArchive());
     document.getElementById('manualArchiveCancelBtn').addEventListener('click', () => closeModal('manualArchiveOptionsModal'));
@@ -9033,20 +9517,21 @@ function getAppScript() {
       syncOnlineContentPanels();
       document.getElementById('onlineContentNav')?.querySelector('button')?.focus({ preventScroll:true });
     });
-    document.getElementById('onlineContentRefreshBtn').addEventListener('click', () => { onlineContentState.items = []; onlineContentState.page = 0; onlineContentState.cursor = null; onlineContentState.hasMore = true; void loadOnlineContentItems(false); });
+    document.getElementById('onlineContentRefreshBtn').addEventListener('click', () => {
+      const context = onlineContentState.appliedContext;
+      if (context) void loadOnlineContentItems(false, context);
+    });
     document.getElementById('onlineContentSearchInput').addEventListener('input', (event) => {
       const value = String(event.target.value || '').trim().slice(0, 80);
+      onlineContentState.draftQuery = value;
       if (onlineContentState.searchTimer) clearTimeout(onlineContentState.searchTimer);
-      const searchToken = onlineContentState.token;
+      const sessionToken = onlineContentState.sessionToken;
       onlineContentState.searchTimer = setTimeout(() => {
         onlineContentState.searchTimer = null;
-        if (searchToken !== onlineContentState.token || !document.getElementById('onlineContentModal')?.classList.contains('active')) return;
-        onlineContentState.query = value;
-        onlineContentState.items = [];
-        onlineContentState.page = 0;
-        onlineContentState.cursor = null;
-        onlineContentState.hasMore = true;
-        void loadOnlineContentItems(false);
+        if (sessionToken !== onlineContentState.sessionToken || !document.getElementById('onlineContentModal')?.classList.contains('active')) return;
+        const base = onlineContentState.pendingContext || onlineContentState.appliedContext;
+        if (!base || base.query === value) return;
+        void loadOnlineContentItems(false, { ...base, query:value });
       }, 300);
     });
     document.getElementById('onlineContentResults').addEventListener('scroll', (event) => {
@@ -9212,7 +9697,10 @@ function getAppScript() {
     document.getElementById('vdFilterPendingUnavailableBtn').addEventListener('click', () => applyVideoDetailFilter('pending_unavailable'));
     document.getElementById('vdFilterUploadedUnavailableBtn').addEventListener('click', () => applyVideoDetailFilter('uploaded_unavailable'));
     document.querySelectorAll('.modal').forEach((modal) => {
+      modal.hidden = true;
+      modal.inert = true;
       modal.setAttribute('aria-hidden', 'true');
+      modal.setAttribute('aria-modal', 'false');
       modal.addEventListener('click', (event) => {
         if (event.target === modal) closeModal(modal);
       });
@@ -9556,7 +10044,7 @@ function getAppScript() {
       const t = event.target;
       if (!(t instanceof HTMLElement)) return;
       const action = t.dataset.action, userId = t.dataset.id;
-      if (action === 'favorites') await openFavorites(userId);
+      if (action === 'favorites') await openFavorites(userId, t);
       if (action === 'favorite_detail' && t.dataset.mediaId) {
         await openVideoDetail(userId, t.dataset.mediaId, t.dataset.title || '收藏夹详情');
       }
@@ -9564,16 +10052,32 @@ function getAppScript() {
       if (action === 'remove') {
         await openAccountRemoval(userId, t.dataset.name || userId, t);
       }
-      if (action === 'toggle') { await fetchJson('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})}); await loadUsers(); }
+      if (action === 'toggle') {
+        try {
+          await runExclusive('user:toggle:' + userId, t, async () => {
+            const enabled = t.dataset.enabled !== 'true';
+            await fetchJson('/api/users/'+encodeURIComponent(userId),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+            await loadUsers();
+          });
+        } catch (_) {}
+      }
       if (action === 'refresh_info') {
-        await fetchJson('/api/users/'+userId+'/refresh-info',{method:'POST'});
-        showToast('账号信息已刷新', 'success');
-        await loadUsers();
+        try {
+          await runExclusive('user:refresh-info:' + userId, t, async () => {
+            await fetchJson('/api/users/'+encodeURIComponent(userId)+'/refresh-info',{method:'POST'});
+            showToast('账号信息已刷新', 'success');
+            await loadUsers();
+          });
+        } catch (_) {}
       }
       if (action === 'refresh_auth') {
-        await fetchJson('/api/users/'+userId+'/refresh-auth',{method:'POST'});
-        showToast('授权已更新', 'success');
-        await loadUsers();
+        try {
+          await runExclusive('user:refresh-auth:' + userId, t, async () => {
+            await fetchJson('/api/users/'+encodeURIComponent(userId)+'/refresh-auth',{method:'POST'});
+            showToast('授权已更新', 'success');
+            await loadUsers();
+          });
+        } catch (_) {}
       }
       if (action === 'copy_cookie') {
         const confirmed = await confirmAction({
@@ -9606,10 +10110,10 @@ function getAppScript() {
       if (!(t instanceof HTMLElement)) return;
       const mediaId = t.dataset.detailMedia;
       const title = t.dataset.detailTitle;
-      if (mediaId && favoritesUserId) {
+      if (mediaId && favoritesState.userId && favoritesState.loaded) {
         event.preventDefault();
         event.stopPropagation();
-        openVideoDetail(favoritesUserId, mediaId, title);
+        openVideoDetail(favoritesState.userId, mediaId, title);
       }
     });
 
@@ -9619,6 +10123,7 @@ function getAppScript() {
 
     document.getElementById('syncNowBtn').addEventListener('click', async () => {
       const btn = document.getElementById('syncNowBtn');
+      await runExclusive('sync:now', btn, async () => {
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u7acb\u5373\u540c\u6b65';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u540c\u6b65\u4e2d...';
@@ -9629,9 +10134,11 @@ function getAppScript() {
         btn.textContent = '\u89e6\u53d1\u5931\u8d25';
       }
       setTimeout(() => btn.textContent = defaultText, 2000);
+      });
     });
     document.getElementById('reconcileRemoteBtn').addEventListener('click', async () => {
       const btn = document.getElementById('reconcileRemoteBtn');
+      await runExclusive('sync:remote', btn, async () => {
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u72b6\u6001\u5bf9\u8d26\uff08\u4ec5\u8fdc\u7aef\u5b58\u50a8\uff09';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u5bf9\u8d26\u4e2d...';
@@ -9642,6 +10149,7 @@ function getAppScript() {
         btn.textContent = '\u89e6\u53d1\u5931\u8d25';
       }
       setTimeout(() => btn.textContent = defaultText, 2000);
+      });
     });
     document.getElementById('reconcileBtn').addEventListener('click', async () => {
       const ok = await confirmAction({
@@ -9653,6 +10161,7 @@ function getAppScript() {
       });
       if (!ok) return;
       const btn = document.getElementById('reconcileBtn');
+      await runExclusive('sync:full', btn, async () => {
       const defaultText = btn.dataset.defaultText || btn.textContent || '\u5168\u91cf\u626b\u63cf\u5e76\u5bf9\u8d26';
       btn.dataset.defaultText = defaultText;
       btn.textContent = '\u5168\u91cf\u626b\u63cf\u4e2d...';
@@ -9663,6 +10172,7 @@ function getAppScript() {
         btn.textContent = '\u89e6\u53d1\u5931\u8d25';
       }
       setTimeout(() => btn.textContent = defaultText, 2000);
+      });
     });
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       await fetchJson('/api/logout', { method:'POST' });
@@ -9715,8 +10225,7 @@ function getAppScript() {
     document.getElementById('closePathMigrationBtn').addEventListener('click', () => { stopPathMigrationPolling(); closeModal('pathMigrationModal'); });
 
     // Init
-    loadConfig();
-    loadUsers();
+    void Promise.allSettled([loadConfig(), loadUsers()]);
     initTemplateEditor();
     initLogStream();
     loadQualityUpgradeState();
