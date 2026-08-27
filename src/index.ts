@@ -44,7 +44,6 @@ import {
   deleteRemoteFiles,
   listRemoteFilesRecursive,
   isRemoteNotFoundError,
-  remotePathExists,
 } from "./uploader.js";
 import { joinRemotePath, sanitizeSegment } from "./utils.js";
 import { sanitizeUploadText } from "./upload-health.js";
@@ -68,7 +67,10 @@ import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
 import { createRemoteReplacementRunner } from "./remote-operations.js";
 import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
-import { isRemotePathWithin, normalizeRemotePath, remoteDirname } from "./remote-path.js";
+import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
+import { remoteNameMatches } from "./remote-file-resolver.js";
+import { resolveQualityUpgradeRemoteTarget } from "./quality-upgrade-target.js";
+import { resolveRenameLogicalFile } from "./rename-proof.js";
 import {
   closePlaybackDeliveryTracker,
   getPlaybackDeliveryStatus,
@@ -2588,11 +2590,10 @@ function buildQualityUpgradePreview() {
     folderTitle: string; remotePath: string; oldFiles: RemoteFileRecord[]; reason: string; matchStatus: "unknown";
   }> = [];
   const skipped: Array<{ bvid?: string; title?: string; folderTitle?: string; reason: string }> = [];
+  const remoteRoot = config.alistDest || "/bili-backup/videos";
 
   for (const record of records) {
     for (const relation of record.relations) {
-      const oldFiles = relation.remoteFiles?.length ? relation.remoteFiles : [];
-      const remotePath = relation.remotePath || remoteDirname(oldFiles[0]?.path || "");
       if (relation.hasInterruptedQualityUpgrade) {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
         continue;
@@ -2601,10 +2602,12 @@ function buildQualityUpgradePreview() {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: relation.backupStatus === "uploaded" ? "远端文件仍在确认中" : "只有最终确认的视频才能重调画质" });
         continue;
       }
-      if (!oldFiles.length || !remotePath) {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "没有可替换的远端文件记录" });
+      const remoteTarget = resolveQualityUpgradeRemoteTarget(remoteRoot, relation);
+      if (!remoteTarget.ok) {
+        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: remoteTarget.reason });
         continue;
       }
+      const { oldFiles, remotePath } = remoteTarget;
       const key = relationKey(relation.userId, relation.mediaId, record.bvid);
       if (scheduler.hasQualityUpgrade(relation.userId, relation.mediaId, record.bvid)) {
         skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
@@ -2723,67 +2726,104 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
     oldPath: string;
     newPath: string;
     reason: string;
+    sourceAccessPath: string;
   }> = [];
   const skipped = [...scanned.skipped];
-  const existingPaths = new Set(scanned.files.map((file) => normalizeRemotePath(file.path)));
+  const resolvedFiles: Array<{
+    file: typeof scanned.files[number];
+    bvid: string;
+    record: ReturnType<typeof stateManager.getRemoteFilePreviewRecords>[number];
+    knownFiles: RemoteFileRecord[];
+    logicalPath: string;
+    logicalDir: string;
+    logicalName: string;
+    recorded?: RemoteFileRecord;
+  }> = [];
 
   for (const file of scanned.files) {
-    if (!isRemotePathUnder(root, file.path)) {
-        skipped.push({ path: file.path, reason: "路径不在当前 AList / OpenList 目标路径下" });
-      continue;
-    }
     const bvid = extractBvid(file.name);
     if (!bvid) {
-      skipped.push({ path: file.path, reason: "文件名没有 BV 号" });
+      skipped.push({ path: file.strictPath || root, reason: "文件名没有 BV 号" });
       continue;
     }
     const record = records.get(bvid);
     if (!record) {
-      skipped.push({ path: file.path, reason: "BV 号在本地状态中找不到" });
+      skipped.push({ path: file.strictPath || root, reason: "BV 号在本地状态中找不到" });
       continue;
     }
     const knownFiles = [...record.remoteFiles, ...record.relations.flatMap((relation) => relation.remoteFiles || [])];
-    const recordedByPath = knownFiles.find((item) => normalizeRemotePath(item.path) === normalizeRemotePath(file.path));
-    const recordedByName = knownFiles.filter((item) => item.name === file.name);
-    const recorded = recordedByPath || (recordedByName.length === 1 ? recordedByName[0] : undefined);
+    const resolved = resolveRenameLogicalFile(file, knownFiles);
+    if (!resolved.ok) {
+      skipped.push({ path: file.strictPath || root, reason: resolved.reason });
+      continue;
+    }
+    if (!isRemotePathUnder(root, resolved.logicalPath)) {
+      skipped.push({ path: resolved.logicalPath, reason: "路径不在当前 AList / OpenList 目标路径下" });
+      continue;
+    }
+    resolvedFiles.push({ file, bvid, record, knownFiles, ...resolved });
+  }
+
+  const logicalPathCounts = new Map<string, number>();
+  for (const item of resolvedFiles) {
+    logicalPathCounts.set(item.logicalPath, (logicalPathCounts.get(item.logicalPath) || 0) + 1);
+  }
+
+  for (const resolved of resolvedFiles) {
+    const { file, bvid, record, knownFiles, logicalPath, logicalDir, logicalName, recorded } = resolved;
+    if ((logicalPathCounts.get(logicalPath) || 0) > 1) {
+      skipped.push({ path: logicalPath, reason: "远端目录存在多个可映射到同一本地证明的文件，不能自动处理" });
+      continue;
+    }
     const mediaCount = new Set(knownFiles.filter((item) => isMediaRemoteFile(item)).map((item) => item.path)).size;
-    const suffixPage = Number(file.name.replace(/\.[^.]+$/, "").match(/_P(\d+)$/i)?.[1] || 0) || undefined;
+    const suffixPage = Number(logicalName.replace(/\.[^.]+$/, "").match(/_P(\d+)$/i)?.[1] || 0) || undefined;
     const pageIndex = recorded?.filenameMetadata?.pageIndex || suffixPage;
     const rendered = renderArchivedFilename(config.filenameTemplate, record, recorded?.filenameMetadata, pageIndex, mediaCount > 1);
     const baseName = rendered.name;
     if (!baseName) {
-      skipped.push({ path: file.path, reason: rendered.reason || "无法根据当前模板生成目标文件名" });
+      skipped.push({ path: logicalPath, reason: rendered.reason || "无法根据当前模板生成目标文件名" });
       continue;
     }
-    const ext = file.name.match(/\.[^.]+$/)?.[0] || ".mp4";
+    const ext = logicalName.match(/\.[^.]+$/)?.[0] || ".mp4";
     const newName = `${baseName}${ext}`;
-    if (newName === file.name) {
-      skipped.push({ path: file.path, reason: "当前文件名已经符合模板" });
+    if (newName === logicalName) {
+      skipped.push({ path: logicalPath, reason: "当前文件名已经符合模板" });
       continue;
     }
     proposed.push({
       bvid,
       title: record.title,
       ownerName: record.upperName,
-      remoteDir: file.dir,
-      oldName: file.name,
+      remoteDir: logicalDir,
+      oldName: logicalName,
       newName,
-      oldPath: file.path,
-      newPath: `${file.dir.replace(/\/$/, "")}/${newName}`,
+      oldPath: logicalPath,
+      newPath: joinRemotePath(logicalDir, newName),
       reason: "同目录内按当前命名模板重命名",
+      sourceAccessPath: file.accessPath,
     });
   }
 
   const targetCounts = new Map<string, number>();
   for (const item of proposed) targetCounts.set(item.newPath, (targetCounts.get(item.newPath) || 0) + 1);
-  const sourcePaths = new Set(proposed.map((item) => normalizeRemotePath(item.oldPath)));
+  const sourceAccessPaths = new Set(proposed.map((item) => item.sourceAccessPath));
   const candidates = proposed.filter((item) => {
     if ((targetCounts.get(item.newPath) || 0) > 1) {
       skipped.push({ path: item.oldPath, reason: `多个文件会重命名为同一目标：${item.newName}` });
       return false;
     }
-    const normalizedTarget = normalizeRemotePath(item.newPath);
-    if (existingPaths.has(normalizedTarget) && !sourcePaths.has(normalizedTarget)) {
+    const targetExists = scanned.files.some((file) => {
+      let observedDir: string;
+      try {
+        observedDir = normalizeRemotePath(file.accessDir, { allowTrailingSlash: true });
+      } catch {
+        return false;
+      }
+      return observedDir === item.remoteDir
+        && remoteNameMatches(item.newName, file.name)
+        && !sourceAccessPaths.has(file.accessPath);
+    });
+    if (targetExists) {
       skipped.push({ path: item.oldPath, reason: `目标文件已存在：${item.newName}` });
       return false;
     }
@@ -2791,7 +2831,8 @@ app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
   });
   const complete = scanned.complete;
   if (!complete) skipped.unshift({ path: root, reason: `远端文件达到扫描上限 ${scanLimit}，预览不完整，已禁止执行` });
-  res.json({ success: true, data: { candidates: complete ? candidates : [], skipped, complete, scannedFiles: scanned.files.length, scanLimit } });
+  const publicCandidates = candidates.map(({ sourceAccessPath: _sourceAccessPath, ...item }) => item);
+  res.json({ success: true, data: { candidates: complete ? publicCandidates : [], skipped, complete, scannedFiles: scanned.files.length, scanLimit } });
 }));
 
 app.post("/api/rename", asyncHandler(async (req, res) => {
@@ -2811,8 +2852,7 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
     const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
     const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
     const requestedTargets = new Set<string>();
-    const requestedSources = new Set(items.map((item) => normalizeRemotePath(item.oldPath)));
-    const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string }> = [];
+    const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string; expectedSize?: number }> = [];
     for (const item of items) {
       const oldPath = normalizeRemotePath(item.oldPath);
       const newPath = normalizeRemotePath(item.newPath);
@@ -2833,8 +2873,21 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
         res.status(400).json({ success: false, message: "each rename item must include a BV id" });
         return;
       }
-      if (!records.has(bvid)) {
+      const record = records.get(bvid);
+      if (!record) {
         res.status(400).json({ success: false, message: `local state does not contain ${bvid}` });
+        return;
+      }
+      const knownFiles = [...record.remoteFiles, ...record.relations.flatMap((relation) => relation.remoteFiles || [])];
+      const proof = resolveRenameLogicalFile({
+        name: remoteBasename(oldPath),
+        accessPath: oldPath,
+        accessDir: remoteDirname(oldPath),
+        strictPath: oldPath,
+        strictDir: remoteDirname(oldPath),
+      }, knownFiles);
+      if (!proof.ok) {
+        res.status(409).json({ success: false, message: "rename source no longer has a safe logical mapping" });
         return;
       }
       if (requestedTargets.has(newPath)) {
@@ -2842,11 +2895,7 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
         return;
       }
       requestedTargets.add(newPath);
-      if (!requestedSources.has(newPath) && await remotePathExists(config, newPath)) {
-        res.status(400).json({ success: false, message: "target exists" });
-        return;
-      }
-      safeItems.push({ bvid, oldPath, newPath });
+      safeItems.push({ bvid, oldPath, newPath, expectedSize: proof.recorded?.size });
     }
     const result = await batchRenameRemotePaths(config, safeItems);
     const stateRenames = new Map<string, Array<{ oldPath: string; newPath: string }>>();

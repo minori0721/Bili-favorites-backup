@@ -59,9 +59,12 @@ import {
 import {
   createRemoteFileResolver,
   ensureRemoteDirectory,
+  isLikelyEncodedFilename,
   isRemoteNotFoundError as isResolvedRemoteNotFoundError,
   RemoteFileResolutionConflictError,
   normalizeRemoteDirectoryEntry,
+  normalizeObservedRemoteAccessPath,
+  remoteLookupDirname,
   type RemoteFileResolver,
   type RemoteFailureInfo,
 } from "./remote-file-resolver.js";
@@ -1407,8 +1410,10 @@ export async function inspectRemoteFileSize(
 /** Batch rename files on remote storage via WebDAV MOVE */
 export interface RemoteListedFile {
   name: string;
-  path: string;
-  dir: string;
+  accessPath: string;
+  accessDir: string;
+  strictPath?: string;
+  strictDir?: string;
   size?: number;
 }
 
@@ -1416,6 +1421,7 @@ export interface RenameRemoteItem {
   bvid?: string;
   oldPath: string;
   newPath: string;
+  expectedSize?: number;
 }
 
 /** List remote directory contents */
@@ -1485,9 +1491,17 @@ export async function listRemoteFilesRecursive(
       const name = normalized.name;
       if (!name) continue;
       if (normalized.type === "directory") {
+        let strictDirectory: string;
+        try {
+          strictDirectory = normalizeRemotePath(itemPath, { allowTrailingSlash: true });
+        } catch {
+          complete = false;
+          skipped.push({ path: dir, reason: "特殊目录名无法安全映射，已跳过该目录" });
+          continue;
+        }
         if (depth >= maxDepth) {
           complete = false;
-          skipped.push({ path: itemPath, reason: `超过最大扫描深度 ${maxDepth}` });
+          skipped.push({ path: strictDirectory, reason: `超过最大扫描深度 ${maxDepth}` });
           continue;
         }
         await walk(itemPath, depth + 1);
@@ -1501,10 +1515,17 @@ export async function listRemoteFilesRecursive(
         skipped.push({ path: itemPath, reason: "临时下载文件" });
         continue;
       }
+      let strictPath: string | undefined;
+      try {
+        strictPath = normalizeRemotePath(itemPath);
+      } catch {
+        strictPath = undefined;
+      }
       files.push({
         name,
-        path: itemPath,
-        dir: remoteDirname(itemPath),
+        accessPath: itemPath,
+        accessDir: remoteLookupDirname(itemPath),
+        ...(strictPath ? { strictPath, strictDir: remoteDirname(strictPath) } : {}),
         size: normalized.size,
       });
     }
@@ -1532,6 +1553,10 @@ export async function batchRenameRemotePaths(
   }>;
 }> {
   const client = clientOverride || buildDavClient(config);
+  const resolver = typeof (client as any).stat === "function"
+    && typeof (client as any).getDirectoryContents === "function"
+    ? createRemoteFileResolver(client as any, getRemoteBackendProfile(config))
+    : undefined;
   const operationId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
   const prepared = items.map((item, index) => {
@@ -1542,10 +1567,17 @@ export async function batchRenameRemotePaths(
       newPath,
       tempPath: `${remoteDirname(oldPath)}/__bfb_rename_${operationId}_${index}_${remoteBasename(oldPath)}`,
       oldSize: undefined as number | undefined,
+      sourceAccessPath: oldPath,
+      expectedSize: Number.isFinite(item.expectedSize) ? item.expectedSize : undefined,
     };
   });
 
   const pathExists = async (target: string) => {
+    if (resolver) {
+      const observed = await resolver.inspect(target, { fallback: "always" });
+      if (observed.status === "unknown") throw new Error("远端文件状态无法确认");
+      return observed.status === "exists";
+    }
     if (typeof (client as any).exists === "function") return Boolean(await (client as any).exists(target));
     if (typeof (client as any).stat === "function") {
       try {
@@ -1561,6 +1593,7 @@ export async function batchRenameRemotePaths(
   const observe = async (item: typeof prepared[number]) => {
     let observedPaths: string[] = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      for (const target of [item.oldPath, item.tempPath, item.newPath]) resolver?.invalidatePath(target);
       observedPaths = [];
       for (const target of [item.oldPath, item.tempPath, item.newPath]) {
         if (await pathExists(target)) observedPaths.push(target);
@@ -1593,32 +1626,77 @@ export async function batchRenameRemotePaths(
       preflight.set(item, { status: "conflict", error: "批次包含重复目标路径" });
       continue;
     }
-    if (!await pathExists(item.oldPath)) {
-      preflight.set(item, { status: "missing", error: "源文件不存在" });
-      continue;
-    }
-    if (typeof (client as any).stat === "function") {
-      const stat = await (client as any).stat(item.oldPath);
-      const size = Number(stat?.size);
-      if (!Number.isFinite(size)) {
-        preflight.set(item, { status: "conflict", error: "无法确认源文件大小" });
+    if (resolver) {
+      let source;
+      try {
+        source = isLikelyEncodedFilename(remoteBasename(item.oldPath))
+          ? await resolver.inspectUnique(item.oldPath)
+          : await resolver.inspect(item.oldPath, { fallback: "always" });
+      } catch (error) {
+        if (error instanceof RemoteFileResolutionConflictError) {
+          preflight.set(item, { status: "conflict", error: "远端源文件存在多个无法唯一确认的名称" });
+          continue;
+        }
+        throw error;
+      }
+      if (source.status === "missing") {
+        preflight.set(item, { status: "missing", error: "源文件不存在" });
         continue;
       }
-      item.oldSize = size;
+      if (source.status === "unknown" || source.directory || !Number.isFinite(source.size)) {
+        preflight.set(item, { status: "conflict", error: "无法唯一确认源文件类型和大小" });
+        continue;
+      }
+      if (item.expectedSize !== undefined && source.size !== item.expectedSize) {
+        preflight.set(item, { status: "conflict", error: "源文件大小与本地证明不一致" });
+        continue;
+      }
+      item.sourceAccessPath = source.path;
+      item.oldSize = source.size;
+    } else {
+      if (!await pathExists(item.oldPath)) {
+        preflight.set(item, { status: "missing", error: "源文件不存在" });
+        continue;
+      }
+      if (typeof (client as any).stat === "function") {
+        const stat = await (client as any).stat(item.oldPath);
+        const size = Number(stat?.size);
+        if (!Number.isFinite(size)) {
+          preflight.set(item, { status: "conflict", error: "无法确认源文件大小" });
+          continue;
+        }
+        if (item.expectedSize !== undefined && size !== item.expectedSize) {
+          preflight.set(item, { status: "conflict", error: "源文件大小与本地证明不一致" });
+          continue;
+        }
+        item.oldSize = size;
+      }
     }
-    if (!sourcePaths.has(item.newPath) && await pathExists(item.newPath)) {
-      preflight.set(item, { status: "conflict", error: "目标文件已存在" });
-      continue;
-    }
-    if (await pathExists(item.tempPath)) {
-      preflight.set(item, { status: "conflict", error: "临时重命名路径已存在" });
+    try {
+      if (!sourcePaths.has(item.newPath) && await pathExists(item.newPath)) {
+        preflight.set(item, { status: "conflict", error: "目标文件已存在" });
+        continue;
+      }
+      if (await pathExists(item.tempPath)) {
+        preflight.set(item, { status: "conflict", error: "临时重命名路径已存在" });
+      }
+    } catch (error) {
+      if (error instanceof RemoteFileResolutionConflictError) {
+        preflight.set(item, { status: "conflict", error: "远端目标路径存在多个无法唯一确认的名称" });
+        continue;
+      }
+      throw error;
     }
   }
   if (preflight.size > 0) {
     const results = [];
     for (const item of prepared) {
       const issue = preflight.get(item);
-      const observed = await observe(item);
+      const observed = await observe(item).catch(() => ({
+        status: issue?.status || "conflict" as const,
+        actualPath: undefined,
+        observedPaths: [] as string[],
+      }));
       results.push({
         oldPath: item.oldPath,
         newPath: item.newPath,
@@ -1637,8 +1715,11 @@ export async function batchRenameRemotePaths(
       || typeof (clientOverride as any).putFileContents !== "function"
       || typeof (clientOverride as any).deleteFile !== "function"
       || typeof (clientOverride as any).stat !== "function")
-    ? async (_config, oldPath, newPath) => {
-      await client.moveFile(oldPath, newPath, { overwrite: false });
+    ? async (_config, oldPath, newPath, _expectedSize, attempt) => {
+      const source = attempt?.sourceAccessPath
+        ? normalizeObservedRemoteAccessPath(oldPath, attempt.sourceAccessPath)
+        : normalizeRemotePath(oldPath);
+      await client.moveFile(source, normalizeRemotePath(newPath), { overwrite: false });
     }
     : await createRemoteReplacementRunner(config, {
       client: asRemoteOperationsClient(client),
@@ -1649,11 +1730,17 @@ export async function batchRenameRemotePaths(
   let operationError = "";
   try {
     for (const item of prepared) {
-      await replacementRunner(config, item.oldPath, item.tempPath, item.oldSize);
+      await replacementRunner(config, item.oldPath, item.tempPath, item.oldSize, {
+        sourceAccessPath: item.sourceAccessPath,
+      });
+      resolver?.invalidatePath(item.oldPath);
+      resolver?.invalidatePath(item.tempPath);
       staged.push(item);
     }
     for (const item of prepared) {
       await replacementRunner(config, item.tempPath, item.newPath, item.oldSize);
+      resolver?.invalidatePath(item.tempPath);
+      resolver?.invalidatePath(item.newPath);
       completed.push(item);
     }
   } catch (error: any) {

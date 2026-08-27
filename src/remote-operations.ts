@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import type { WebDAVClient } from "webdav";
 import type { AppConfig } from "./config.js";
 import { joinRemotePath, normalizeRemotePath, remoteDirname } from "./remote-path.js";
-import { ensureRemoteDirectory, isRemoteNotFoundError as isResolvedRemoteNotFoundError } from "./remote-file-resolver.js";
+import {
+  ensureRemoteDirectory,
+  isRemoteNotFoundError as isResolvedRemoteNotFoundError,
+  normalizeObservedRemoteAccessPath,
+} from "./remote-file-resolver.js";
 import { getRemoteBackendProfile, type RemoteBackendProfile, type RemoteCapability as SharedRemoteCapability } from "./remote-storage.js";
 
 export type RemoteCapability = SharedRemoteCapability;
@@ -25,6 +29,8 @@ export interface RemoteOperationsClient {
 export interface RemoteReplacementAttempt {
   targetPreviouslyVerified?: boolean;
   onTargetVerified?: () => void | Promise<void>;
+  /** Server-observed source spelling, validated against oldPath before use. */
+  sourceAccessPath?: string;
 }
 
 export type RemoteReplacementRunner = (
@@ -257,9 +263,12 @@ async function replaceWithCapabilities(
   attempt: RemoteReplacementAttempt = {},
   profile?: RemoteBackendProfile,
 ) {
-  const source = normalizeRemotePath(oldPathValue);
+  const logicalSource = normalizeRemotePath(oldPathValue);
+  const source = attempt.sourceAccessPath
+    ? normalizeObservedRemoteAccessPath(logicalSource, attempt.sourceAccessPath)
+    : logicalSource;
   const target = normalizeRemotePath(newPathValue);
-  if (source === target) return;
+  if (logicalSource === target) return;
   await ensureRemoteDirectory(client, remoteDirname(target), profile);
 
   const hintedSize = Number.isFinite(expectedSizeHint) ? expectedSizeHint : undefined;

@@ -1,4 +1,4 @@
-import { joinRemotePath, normalizeRemotePath, remoteBasename } from "./remote-path.js";
+import { joinRemotePath, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
 import type { RemoteBackendProfile } from "./remote-storage.js";
 
 export interface RemoteDirectoryClient {
@@ -213,6 +213,16 @@ function normalizeListedPath(value: string) {
   return `/${parts.join("/")}`;
 }
 
+export function normalizeObservedRemoteAccessPath(logicalPathValue: string, observedPathValue: string) {
+  const logicalPath = normalizeRemotePath(logicalPathValue, { allowRoot: false });
+  const observedPath = normalizeListedPath(observedPathValue);
+  if (remoteLookupDirname(observedPath) !== remoteDirname(logicalPath)
+    || !remoteNameMatches(remoteBasename(logicalPath), remoteLookupBasename(observedPath))) {
+    throw new RemoteFileResolutionConflictError("远端访问路径与本地逻辑路径不一致");
+  }
+  return observedPath;
+}
+
 function decodeHrefPath(value: string) {
   const raw = String(value || "");
   let url: URL;
@@ -402,6 +412,79 @@ export class RemoteFileResolver {
     return pending;
   }
 
+  private async inspectDirectory(expectedPath: string): Promise<RemoteFileObservation> {
+    const expectedName = remoteLookupBasename(expectedPath);
+    let entries: any[];
+    try {
+      entries = await this.listDirectory(remoteLookupDirname(expectedPath));
+    } catch (listError) {
+      const listFailure = classifyRemoteFailure(listError);
+      if (listFailure.category === "not_found") {
+        return {
+          status: "missing",
+          path: expectedPath,
+          directory: false,
+          source: "directory",
+          name: expectedName,
+          parentStatus: "missing",
+        };
+      }
+      return {
+        status: "unknown",
+        path: expectedPath,
+        directory: false,
+        source: "directory",
+        name: expectedName,
+        parentStatus: "unknown",
+        failure: listFailure,
+      };
+    }
+
+    const parent = remoteLookupDirname(expectedPath);
+    const matches: NormalizedRemoteDirectoryEntry[] = [];
+    for (const entry of entries) {
+      let normalized: NormalizedRemoteDirectoryEntry;
+      try {
+        normalized = normalizeRemoteDirectoryEntry(parent, entry);
+      } catch (entryError) {
+        if (entryMayMatchName(expectedName, entry)) {
+          throw new RemoteFileResolutionConflictError("远端目录中存在无法安全解析的同名条目");
+        }
+        continue;
+      }
+      if (isDirectChild(parent, normalized.path) && remoteNameMatches(expectedName, normalized.name)) {
+        matches.push(normalized);
+      }
+    }
+    if (matches.length > 1) {
+      throw new RemoteFileResolutionConflictError("远端目录中存在多个无法唯一确认的同名文件");
+    }
+    const match = matches[0];
+    if (!match) {
+      return {
+        status: "missing",
+        path: expectedPath,
+        directory: false,
+        source: "directory",
+        name: expectedName,
+        parentStatus: "visible",
+      };
+    }
+    return {
+      status: "exists",
+      path: match.path,
+      name: match.name,
+      size: match.size,
+      directory: match.type === "directory",
+      source: "directory",
+      parentStatus: "visible",
+    };
+  }
+
+  inspectUnique(remotePath: string) {
+    return this.inspectDirectory(normalizeRemoteLookupPath(remotePath));
+  }
+
   async inspect(
     remotePath: string,
     options: { fallback?: RemoteLookupFallback } = {},
@@ -441,71 +524,7 @@ export class RemoteFileResolver {
         return { status: "unknown", path: expectedPath, directory: false, source: "stat", name: expectedName, failure };
       }
 
-      let entries: any[];
-      try {
-        entries = await this.listDirectory(remoteLookupDirname(expectedPath));
-      } catch (listError) {
-        const listFailure = classifyRemoteFailure(listError);
-        if (listFailure.category === "not_found") {
-          return {
-            status: "missing",
-            path: expectedPath,
-            directory: false,
-            source: "directory",
-            name: expectedName,
-            parentStatus: "missing",
-          };
-        }
-        return {
-          status: "unknown",
-          path: expectedPath,
-          directory: false,
-          source: "directory",
-          name: expectedName,
-          parentStatus: "unknown",
-          failure: listFailure,
-        };
-      }
-
-      const parent = remoteLookupDirname(expectedPath);
-      const matches: NormalizedRemoteDirectoryEntry[] = [];
-      for (const entry of entries) {
-        let normalized: NormalizedRemoteDirectoryEntry;
-        try {
-          normalized = normalizeRemoteDirectoryEntry(parent, entry);
-        } catch (entryError) {
-          if (entryMayMatchName(expectedName, entry)) {
-            throw new RemoteFileResolutionConflictError("远端目录中存在无法安全解析的同名条目");
-          }
-          continue;
-        }
-        if (isDirectChild(parent, normalized.path) && remoteNameMatches(expectedName, normalized.name)) {
-          matches.push(normalized);
-        }
-      }
-      if (matches.length > 1) {
-        throw new RemoteFileResolutionConflictError("远端目录中存在多个无法唯一确认的同名文件");
-      }
-      const match = matches[0];
-      if (!match) {
-        return {
-          status: "missing",
-          path: expectedPath,
-          directory: false,
-          source: "directory",
-          name: expectedName,
-          parentStatus: "visible",
-        };
-      }
-      return {
-        status: "exists",
-        path: match.path,
-        name: match.name,
-        size: match.size,
-        directory: match.type === "directory",
-        source: "directory",
-        parentStatus: "visible",
-      };
+      return this.inspectDirectory(expectedPath);
     }
   }
 }

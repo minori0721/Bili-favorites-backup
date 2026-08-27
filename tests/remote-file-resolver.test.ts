@@ -7,6 +7,7 @@ import {
   ensureRemoteDirectory,
   isLikelyEncodedFilename,
   normalizeRemoteDirectoryEntry,
+  normalizeObservedRemoteAccessPath,
   remoteNameMatches,
 } from "../src/remote-file-resolver.js";
 
@@ -205,6 +206,39 @@ test("multiple normalized candidates fail closed", async () => {
   await assert.rejects(
     resolver.inspect("/target/video'name.mp4", { fallback: "always" }),
     RemoteFileResolutionConflictError,
+  );
+});
+
+test("unique directory inspection catches aliases even when direct stat succeeds", async () => {
+  const resolver = new RemoteFileResolver({
+    stat: async () => ({ type: "file", size: 10 }),
+    getDirectoryContents: async () => [
+      { filename: "/target/video\\'name.mp4", basename: "video\\'name.mp4", type: "file", size: 10 },
+      { filename: "/target/video'name.mp4", basename: "video'name.mp4", type: "file", size: 10 },
+    ],
+  });
+
+  await assert.rejects(
+    resolver.inspectUnique("/target/video'name.mp4"),
+    RemoteFileResolutionConflictError,
+  );
+});
+
+test("observed OpenList access paths are accepted only as aliases of one logical file", () => {
+  assert.equal(
+    normalizeObservedRemoteAccessPath(
+      "/target/旅谣'米砂.mp4",
+      "/target/旅谣\\'米砂.mp4",
+    ),
+    "/target/旅谣\\'米砂.mp4",
+  );
+  assert.throws(
+    () => normalizeObservedRemoteAccessPath("/target/video.mp4", "/other/video.mp4"),
+    RemoteFileResolutionConflictError,
+  );
+  assert.throws(
+    () => normalizeObservedRemoteAccessPath("/target/video.mp4", "/target/bad\\name.mp4"),
+    /非法字符/,
   );
 });
 

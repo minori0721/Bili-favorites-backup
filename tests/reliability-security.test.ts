@@ -184,6 +184,74 @@ test("rename supports path swaps and reports a file stranded at its temporary pa
   assert.deepEqual(stranded.results[0].observedPaths, [stranded.results[0].actualPath]);
 });
 
+test("rename re-resolves an OpenList escaped source before the first MOVE", async () => {
+  const logicalPath = "/target/旅谣'米砂-BV1TEST.mp4";
+  const accessPath = "/target/旅谣\\'米砂-BV1TEST.mp4";
+  const targetPath = "/target/renamed-BV1TEST.mp4";
+  const files = new Map<string, number>([[accessPath, 99]]);
+  const moves: Array<[string, string]> = [];
+  const missing = () => Object.assign(new Error("not found"), { status: 404 });
+  const client = {
+    stat: async (target: string) => {
+      const size = files.get(target);
+      if (size === undefined) throw missing();
+      return { type: "file", size };
+    },
+    getDirectoryContents: async (directory: string) => [...files.entries()]
+      .filter(([target]) => target.slice(0, target.lastIndexOf("/")) === directory)
+      .map(([target, size]) => ({
+        filename: target,
+        basename: target.slice(target.lastIndexOf("/") + 1),
+        type: "file",
+        size,
+      })),
+    moveFile: async (source: string, target: string) => {
+      const size = files.get(source);
+      if (size === undefined) throw missing();
+      if (files.has(target)) throw Object.assign(new Error("conflict"), { status: 409 });
+      files.delete(source);
+      files.set(target, size);
+      moves.push([source, target]);
+    },
+  } as any;
+
+  const result = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [{
+    oldPath: logicalPath,
+    newPath: targetPath,
+    expectedSize: 99,
+  }], client);
+
+  assert.equal(result.success, 1);
+  assert.equal(moves[0][0], accessPath);
+  assert.equal(files.has(accessPath), false);
+  assert.equal(files.has(targetPath), true);
+  assert.equal(result.results[0].actualPath, targetPath);
+});
+
+test("rename reports an OpenList alias ambiguity without issuing MOVE", async () => {
+  const moves: Array<[string, string]> = [];
+  const client = {
+    stat: async () => ({ type: "file", size: 99 }),
+    getDirectoryContents: async () => [
+      { filename: "/target/旅谣\\'米砂-BV1TEST.mp4", basename: "旅谣\\'米砂-BV1TEST.mp4", type: "file", size: 99 },
+      { filename: "/target/旅谣'米砂-BV1TEST.mp4", basename: "旅谣'米砂-BV1TEST.mp4", type: "file", size: 99 },
+    ],
+    moveFile: async (source: string, target: string) => { moves.push([source, target]); },
+  } as any;
+
+  const result = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [{
+    oldPath: "/target/旅谣'米砂-BV1TEST.mp4",
+    newPath: "/target/renamed-BV1TEST.mp4",
+    expectedSize: 99,
+  }], client);
+
+  assert.equal(result.success, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(result.results[0].status, "conflict");
+  assert.match(result.results[0].error || "", /无法唯一确认/);
+  assert.deepEqual(moves, []);
+});
+
 test("SQLite rename writeback applies swaps from the original path snapshot", async () => {
   const runtime = await createTestDir("rename-state-swap");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });

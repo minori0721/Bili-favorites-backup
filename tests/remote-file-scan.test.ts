@@ -22,9 +22,35 @@ test("recursive scan accepts literal #/? names from structured directory fields"
   assert.equal(result.complete, true);
   assert.deepEqual(result.files, [{
     name: "clip#one?.mp4",
-    path: "/target/clip#one?.mp4",
-    dir: "/target",
+    accessPath: "/target/clip#one?.mp4",
+    accessDir: "/target",
+    strictPath: "/target/clip#one?.mp4",
+    strictDir: "/target",
     size: 42,
+  }]);
+});
+
+test("recursive scan keeps OpenList escaped spelling separate from strict paths", async () => {
+  const result = await listRemoteFilesRecursive(
+    testConfig(),
+    "/target",
+    { maxDepth: 1, maxFiles: 10 },
+    {
+      getDirectoryContents: async () => [{
+        filename: "/target/旅谣\\'米砂-BV1TEST.mp4",
+        basename: "旅谣\\'米砂-BV1TEST.mp4",
+        type: "file",
+        size: 99,
+      }],
+    } as any,
+  );
+
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.files, [{
+    name: "旅谣\\'米砂-BV1TEST.mp4",
+    accessPath: "/target/旅谣\\'米砂-BV1TEST.mp4",
+    accessDir: "/target",
+    size: 99,
   }]);
 });
 
