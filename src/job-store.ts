@@ -46,6 +46,15 @@ function qualityTargetKey(target: any) {
   return userId && Number.isInteger(mediaId) ? `${userId}:${mediaId}` : "";
 }
 
+export function qualityTargetIdentityKey(userId: unknown, mediaId: unknown, bvid: unknown) {
+  const normalizedUserId = String(userId || "");
+  const normalizedMediaId = Number(mediaId);
+  const normalizedBvid = String(bvid || "");
+  return normalizedUserId && normalizedBvid && Number.isInteger(normalizedMediaId)
+    ? `${normalizedUserId}:${normalizedMediaId}:${normalizedBvid}`
+    : "";
+}
+
 function qualityTargetsFromPayload(payload: Record<string, any>) {
   const targets = Array.isArray(payload.targets) ? payload.targets : [];
   const candidates = payload.target ? [payload.target, ...targets] : targets;
@@ -996,6 +1005,30 @@ export class PersistentJobStore {
       ) LIMIT 1
     `).get(bvid, userId, mediaId, userId, mediaId, userId, mediaId);
     return Boolean(row);
+  }
+
+  listQualityTargetKeys() {
+    const rows = this.stateDatabase.db.prepare(`
+      SELECT kind, bvid, user_id, media_id, payload_json FROM jobs
+      WHERE kind IN ('quality_download','quality_upload','quality_replace','quality_cleanup')
+    `).all() as any[];
+    const keys = new Set<string>();
+    for (const row of rows) {
+      const bvid = String(row.bvid || "");
+      if (!bvid) continue;
+      if (row.kind === "quality_download") {
+        let payload: Record<string, any> = {};
+        try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { payload = {}; }
+        for (const target of qualityTargetsFromPayload(payload)) {
+          const key = qualityTargetIdentityKey(target?.userId, target?.mediaId, bvid);
+          if (key) keys.add(key);
+        }
+        continue;
+      }
+      const key = qualityTargetIdentityKey(row.user_id, row.media_id, bvid);
+      if (key) keys.add(key);
+    }
+    return keys;
   }
 
   hasDedupePrefix(prefix: string) {

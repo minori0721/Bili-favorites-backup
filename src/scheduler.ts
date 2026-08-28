@@ -7248,6 +7248,10 @@ export class SyncScheduler {
     return this.jobStore.hasQualityTarget(userId, mediaId, bvid);
   }
 
+  getQualityUpgradeTargetKeys() {
+    return this.jobStore.listQualityTargetKeys();
+  }
+
   getQualityUpgradeState() {
     const running = this.jobStore.list(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"], 100).map((job) => {
       const payload = job.payload as any;

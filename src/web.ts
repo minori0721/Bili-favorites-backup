@@ -2018,7 +2018,10 @@ function getAppScript() {
       }
     };
     let syncHelpMode = 'simple';
-    let renamePreviewState = { candidates: [], skipped: [] };
+    let renamePreviewState = { candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
+    let renamePreviewPollTimer = null;
+    let renamePreviewRequestController = null;
+    let renamePreviewRequestToken = 0;
     let qualityUpgradePreviewState = { candidates: [], uncertain: [], skipped: [], target: {} };
     let cleanupState = { items: [], runningTransfers: false, activeScheduler: false };
     let migrationSelectedFile = null;
@@ -2315,6 +2318,7 @@ function getAppScript() {
         Object.values(unavailableStates).forEach((state) => { state.loading = false; });
       }
       if (modal.id === 'pathMigrationModal') stopPathMigrationPolling();
+      if (modal.id === 'renamePreviewModal') stopRenamePreviewPolling();
       if (modal.id === 'accountRemovalModal') {
         if (accountRemovalState.pollTimer) clearTimeout(accountRemovalState.pollTimer);
         if (accountRemovalState.controller) accountRemovalState.controller.abort();
@@ -3382,26 +3386,92 @@ function getAppScript() {
       if (ok) await pathMigrationAction('cleanup-old', { confirmation:'DELETE OLD ARCHIVE' });
     }
 
-    async function loadRenamePreview() {
+    function stopRenamePreviewPolling() {
+      renamePreviewRequestToken += 1;
+      if (renamePreviewPollTimer) {
+        clearTimeout(renamePreviewPollTimer);
+        renamePreviewPollTimer = null;
+      }
+      if (renamePreviewRequestController) renamePreviewRequestController.abort();
+      renamePreviewRequestController = null;
+    }
+
+    function renamePreviewSkippedTotal() {
+      const value = Number(renamePreviewState.skippedTotal);
+      return Number.isFinite(value) && value >= 0 ? Math.floor(value) : (Array.isArray(renamePreviewState.skipped) ? renamePreviewState.skipped.length : 0);
+    }
+
+    function scheduleRenamePreviewPolling(scanId, token) {
+      if (!scanId || token !== renamePreviewRequestToken) return;
+      if (renamePreviewPollTimer) clearTimeout(renamePreviewPollTimer);
+      renamePreviewPollTimer = window.setTimeout(async () => {
+        renamePreviewPollTimer = null;
+        const modal = document.getElementById('renamePreviewModal');
+        if (token !== renamePreviewRequestToken || !modal?.classList.contains('active')) return;
+        const controller = new AbortController();
+        renamePreviewRequestController = controller;
+        try {
+          const next = await fetchJsonSilent('/api/rename/preview/status?scanId=' + encodeURIComponent(scanId) + '&detailLimit=50', { signal:controller.signal });
+          if (token !== renamePreviewRequestToken) return;
+          renamePreviewState = next || { candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
+          renderRenamePreview();
+          const scan = renamePreviewState.remoteScan || {};
+          if (scan.status === 'scanning') {
+            setStatus('renameStatus', '远端深扫进行中，当前先显示本地索引结果。', 'muted');
+            scheduleRenamePreviewPolling(scan.id, token);
+          } else if (scan.status === 'failed') {
+            setStatus('renameStatus', '远端深扫失败，当前保留本地索引结果：' + safeText(scan.error, '未知错误'), 'error');
+          } else if (scan.status === 'ready') {
+            setStatus('renameStatus', '远端深扫完成，已补充本地索引之外的文件。', 'muted');
+          }
+        } catch (error) {
+          if (error?.name !== 'AbortError' && token === renamePreviewRequestToken) {
+            setStatus('renameStatus', '远端深扫状态读取失败：' + (error.message || error), 'error');
+          }
+        } finally {
+          if (renamePreviewRequestController === controller) renamePreviewRequestController = null;
+        }
+      }, 1000);
+    }
+
+    async function loadRenamePreview(options = {}) {
       const btn = document.getElementById('renameBtn');
       const st = document.getElementById('renameStatus');
       const summary = document.getElementById('renamePreviewSummary');
       const list = document.getElementById('renamePreviewList');
       const resultBlock = document.getElementById('renameResultBlock');
+      stopRenamePreviewPolling();
+      const token = renamePreviewRequestToken;
+      const controller = new AbortController();
+      renamePreviewRequestController = controller;
       btn.textContent = '检查中...';
       st.textContent = '';
-      summary.textContent = '正在扫描 AList / OpenList 远端文件...';
+      summary.textContent = '正在读取本地索引...';
       list.innerHTML = '';
       setHidden(resultBlock, true);
       try {
-        renamePreviewState = await fetchJson('/api/rename/preview', { method:'POST' });
+        const data = await fetchJson('/api/rename/preview', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ detailLimit:50, refresh:Boolean(options.refresh) }),
+          signal:controller.signal
+        });
+        if (token !== renamePreviewRequestToken) return;
+        renamePreviewState = data || { candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
         renderRenamePreview();
-        setStatus(st, '已生成重命名预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewState.skipped.length + ' 个跳过。', 'muted');
+        const scan = renamePreviewState.remoteScan || {};
+        setStatus(st, scan.status === 'scanning'
+          ? '已生成本地预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewSkippedTotal() + ' 个跳过；远端深扫在后台进行。'
+          : '已生成重命名预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewSkippedTotal() + ' 个跳过。', 'muted');
+        if (scan.status === 'scanning') scheduleRenamePreviewPolling(scan.id, token);
       } catch(e) {
-        summary.textContent = '预览失败：' + e.message;
-        setStatus(st, '预览失败: ' + e.message, 'error');
+        if (e?.name !== 'AbortError' && token === renamePreviewRequestToken) {
+          summary.textContent = '预览失败：' + e.message;
+          setStatus(st, '预览失败: ' + e.message, 'error');
+        }
       } finally {
-        btn.textContent = '检查旧命名文件';
+        if (renamePreviewRequestController === controller) renamePreviewRequestController = null;
+        if (token === renamePreviewRequestToken) btn.textContent = '检查旧命名文件';
       }
     }
 
@@ -3412,7 +3482,16 @@ function getAppScript() {
       const list = document.getElementById('renamePreviewList');
       const skippedBlock = document.getElementById('renameSkippedBlock');
       const skippedList = document.getElementById('renameSkippedList');
-      summary.textContent = '发现 ' + candidates.length + ' 个可安全重命名的远端文件，' + skipped.length + ' 个文件已跳过。';
+      const skippedTotal = renamePreviewSkippedTotal();
+      const scan = renamePreviewState.remoteScan || {};
+      const scanHint = scan.status === 'scanning'
+        ? '远端深扫进行中，完成后会补充遗漏项。'
+        : (scan.status === 'failed'
+          ? '远端深扫失败，当前显示本地索引结果。'
+          : (scan.status === 'ready' && scan.complete === false
+            ? '远端深扫未完整覆盖，当前保留本地索引结果，执行时仍会逐项复核。'
+            : (scan.status === 'ready' ? '远端深扫已完成。' : '')));
+      summary.textContent = '发现 ' + candidates.length + ' 个可安全重命名的远端文件，' + skippedTotal + ' 个文件已跳过。' + (scanHint ? ' ' + scanHint : '');
       list.innerHTML = '';
       if (!candidates.length) {
         const empty = document.createElement('div');
@@ -3448,7 +3527,7 @@ function getAppScript() {
         row.appendChild(body);
         list.appendChild(row);
       });
-      if (skipped.length) {
+      if (skipped.length || skippedTotal > 0) {
         setHidden(skippedBlock, false);
         skippedList.innerHTML = '';
         skipped.forEach((item) => {
@@ -3456,6 +3535,12 @@ function getAppScript() {
           div.textContent = safeText(item.path, '<未知路径>') + '：' + safeText(item.reason, '已跳过');
           skippedList.appendChild(div);
         });
+        if (skippedTotal > skipped.length) {
+          const more = document.createElement('div');
+          more.className = 'muted';
+          more.textContent = '其余 ' + (skippedTotal - skipped.length) + ' 个跳过项已汇总，未全部展开。';
+          skippedList.appendChild(more);
+        }
       } else {
         setHidden(skippedBlock, true);
         skippedList.innerHTML = '';
@@ -3550,9 +3635,10 @@ function getAppScript() {
       list.innerHTML = '';
       setHidden(resultBlock, true);
       try {
-        qualityUpgradePreviewState = await fetchJson('/api/quality-upgrade/preview', { method:'POST' });
+        qualityUpgradePreviewState = await fetchJson('/api/quality-upgrade/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ detailLimit:50 }) });
         renderQualityUpgradePreview();
-        setStatus(st, '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + (qualityUpgradePreviewState.uncertain || []).length + ' 个需人工确认，' + qualityUpgradePreviewState.skipped.length + ' 个跳过。', 'muted');
+        const skippedTotal = Number.isFinite(Number(qualityUpgradePreviewState.skippedTotal)) ? Number(qualityUpgradePreviewState.skippedTotal) : qualityUpgradePreviewState.skipped.length;
+        setStatus(st, '已生成画质重调预览：' + qualityUpgradePreviewState.candidates.length + ' 个可处理，' + (qualityUpgradePreviewState.uncertain || []).length + ' 个需人工确认，' + skippedTotal + ' 个跳过。', 'muted');
       } catch(e) {
         summary.textContent = '预览失败：' + e.message;
         setStatus(st, '预览失败: ' + e.message, 'error');
@@ -3572,7 +3658,8 @@ function getAppScript() {
       const skippedBlock = document.getElementById('qualityUpgradeSkippedBlock');
       const skippedList = document.getElementById('qualityUpgradeSkippedList');
       const targetText = [target.quality ? '清晰度 ' + target.quality : '', target.encoding ? '编码 ' + target.encoding : '', target.hiRes ? 'Hi-Res' : '', target.dolby ? '杜比' : ''].filter(Boolean).join(' / ') || '当前默认画质设置';
-      summary.textContent = '目标：' + targetText + '。明确需升级 ' + candidates.length + ' 个，无法判断 ' + uncertain.length + ' 个，跳过 ' + skipped.length + ' 个。';
+      const skippedTotal = Number.isFinite(Number(qualityUpgradePreviewState.skippedTotal)) ? Number(qualityUpgradePreviewState.skippedTotal) : skipped.length;
+      summary.textContent = '目标：' + targetText + '。明确需升级 ' + candidates.length + ' 个，无法判断 ' + uncertain.length + ' 个，跳过 ' + skippedTotal + ' 个。';
       list.innerHTML = '';
       if (!displayItems.length) {
         const empty = document.createElement('div');
@@ -3609,7 +3696,7 @@ function getAppScript() {
         row.appendChild(body);
         list.appendChild(row);
       });
-      if (skipped.length) {
+      if (skipped.length || skippedTotal > 0) {
         setHidden(skippedBlock, false);
         skippedList.innerHTML = '';
         skipped.forEach((item) => {
@@ -3617,6 +3704,12 @@ function getAppScript() {
           div.textContent = safeText(item.title || item.bvid || item.folderTitle, '<未知项目>') + '：' + safeText(item.reason, '已跳过');
           skippedList.appendChild(div);
         });
+        if (skippedTotal > skipped.length) {
+          const more = document.createElement('div');
+          more.className = 'muted';
+          more.textContent = '其余 ' + (skippedTotal - skipped.length) + ' 个跳过项已汇总，未全部展开。';
+          skippedList.appendChild(more);
+        }
       } else {
         setHidden(skippedBlock, true);
         skippedList.innerHTML = '';
@@ -9735,7 +9828,7 @@ function getAppScript() {
     document.getElementById('closeRenamePreviewBtn').addEventListener('click', () => closeModal('renamePreviewModal'));
     document.getElementById('renameSelectAllBtn').addEventListener('click', () => setRenameSelection(true));
     document.getElementById('renameSelectNoneBtn').addEventListener('click', () => setRenameSelection(false));
-    document.getElementById('refreshRenamePreviewBtn').addEventListener('click', loadRenamePreview);
+    document.getElementById('refreshRenamePreviewBtn').addEventListener('click', () => loadRenamePreview({ refresh:true }));
     document.getElementById('executeRenameBtn').addEventListener('click', executeSelectedRename);
     document.getElementById('closeQualityUpgradeBtn').addEventListener('click', () => closeModal('qualityUpgradeModal'));
     document.getElementById('migrationBtn').addEventListener('click', openMigration);

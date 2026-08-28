@@ -55,7 +55,6 @@ import {
   isAuthRefreshAttemptBlocked,
   nextAuthRefreshFailureState,
 } from "./auth-refresh.js";
-import { renderArchivedFilename } from "./filename.js";
 import {
   applyMigrationPackageFile,
   createMigrationExport,
@@ -68,7 +67,6 @@ import { PathMigrationService } from "./path-migration.js";
 import { createRemoteReplacementRunner } from "./remote-operations.js";
 import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
 import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
-import { remoteNameMatches } from "./remote-file-resolver.js";
 import { resolveQualityUpgradeRemoteTarget } from "./quality-upgrade-target.js";
 import { resolveRenameLogicalFile } from "./rename-proof.js";
 import {
@@ -110,6 +108,9 @@ import {
 } from "./archive-library.js";
 import { ArchiveDeletionService } from "./archive-deletion.js";
 import { executeAccountRemoval } from "./account-removal.js";
+import { BackgroundPreviewCache, type BackgroundPreviewSnapshot } from "./preview-cache.js";
+import { SkippedPreviewCollector } from "./preview-summary.js";
+import { buildIndexedRemoteFiles, buildRenamePreview, mergeRenamePreviews, type RenamePreviewData } from "./rename-preview.js";
 
 ensureAppDirs();
 
@@ -172,6 +173,8 @@ const favoriteItemsCache = new Map<
 const favoriteItemsCacheTtlMs = 60 * 1000;
 const loginSessionTtlMs = 10 * 60 * 1000;
 const artplayerAssetPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/artplayer/dist/artplayer.js");
+type RemoteRenameScan = Awaited<ReturnType<typeof listRemoteFilesRecursive>>;
+const renamePreviewScans = new BackgroundPreviewCache<RemoteRenameScan>({ ttlMs: 5 * 60_000, failedTtlMs: 30_000, maxEntries: 32 });
 
 if (process.env.NODE_ENV !== "test") {
   const backfillStart = setImmediate(() => { void unavailableCoverBackfill.start(); });
@@ -2368,6 +2371,102 @@ function extractBvid(value: string) {
   return String(value || "").match(/BV[0-9A-Za-z]+/)?.[0] || "";
 }
 
+function renameRemoteScanKey(config: AppConfig, root: string, scanLimit: number) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    url: config.alistUrl,
+    username: config.alistUsername,
+    password: config.alistPassword,
+    root,
+    scanLimit,
+    maxDepth: 8,
+  })).digest("hex");
+}
+
+function previewDetailLimit(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(0, Math.min(200, Math.floor(parsed)));
+}
+
+function buildLocalRenamePreview(
+  config: AppConfig,
+  root: string,
+  scanLimit: number,
+  detailLimit: number | undefined,
+  records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
+) {
+  const indexedFiles = buildIndexedRemoteFiles(records, root);
+  return buildRenamePreview({
+    config,
+    root,
+    records,
+    scanned: { files: indexedFiles, skipped: [], skippedTotal: 0, skippedByReason: {}, complete: true },
+    scanLimit,
+    detailLimit,
+    indexedFiles: indexedFiles.length,
+    coverage: "local",
+  });
+}
+
+function buildRemoteRenamePreview(
+  config: AppConfig,
+  root: string,
+  scanLimit: number,
+  detailLimit: number | undefined,
+  records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
+  scanned: RemoteRenameScan,
+) {
+  return buildRenamePreview({
+    config,
+    root,
+    records,
+    scanned,
+    scanLimit,
+    detailLimit,
+    coverage: "remote",
+  });
+}
+
+function renameScanMetadata(snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>) {
+  const result = snapshot.result;
+  return {
+    id: snapshot.id,
+    status: snapshot.status,
+    startedAt: snapshot.startedAt,
+    ...(snapshot.completedAt === undefined ? {} : { completedAt: snapshot.completedAt }),
+    ...(snapshot.expiresAt === undefined ? {} : { expiresAt: snapshot.expiresAt }),
+    ...(snapshot.error ? { error: snapshot.error } : {}),
+    ...(result ? {
+      complete: result.complete,
+      scannedFiles: result.files.length,
+      skippedTotal: result.skippedTotal,
+    } : {}),
+  };
+}
+
+function buildRenamePreviewResponse(
+  config: AppConfig,
+  root: string,
+  scanLimit: number,
+  detailLimit: number | undefined,
+  snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>,
+): RenamePreviewData & { remoteScan: ReturnType<typeof renameScanMetadata> } {
+  const records = stateManager.getRemoteFilePreviewRecords();
+  const local = buildLocalRenamePreview(config, root, scanLimit, detailLimit, records);
+  if (snapshot.status === "ready" && snapshot.result) {
+    return {
+      ...mergeRenamePreviews(
+        local,
+        buildRemoteRenamePreview(config, root, scanLimit, detailLimit, records, snapshot.result),
+        detailLimit,
+      ),
+      remoteScan: renameScanMetadata(snapshot),
+    };
+  }
+  return { ...local, remoteScan: renameScanMetadata(snapshot) };
+}
+
 async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManager["listInterruptedQualityUpgrades"]>[number]) {
   const operation = relation.qualityUpgrade;
   const config = configStore.get();
@@ -2568,10 +2667,11 @@ function getQualityUpgradeMatchStatus(files: RemoteFileRecord[], bvid: string, c
   return qualityFilenameMatchStatus(files, bvid, config);
 }
 
-function buildQualityUpgradePreview() {
+function buildQualityUpgradePreview(detailLimit?: number) {
   const config = configStore.get();
   const reason = describeUpgradeReason(config);
   const records = stateManager.getRemoteFilePreviewRecords();
+  const qualityTargetKeys = scheduler.getQualityUpgradeTargetKeys();
   const candidates: Array<{
     key: string;
     bvid: string;
@@ -2589,33 +2689,33 @@ function buildQualityUpgradePreview() {
     key: string; bvid: string; title: string; ownerName: string; userId: string; mediaId: number;
     folderTitle: string; remotePath: string; oldFiles: RemoteFileRecord[]; reason: string; matchStatus: "unknown";
   }> = [];
-  const skipped: Array<{ bvid?: string; title?: string; folderTitle?: string; reason: string }> = [];
+  const skipped = new SkippedPreviewCollector<{ bvid?: string; title?: string; folderTitle?: string; reason: string }>(detailLimit);
   const remoteRoot = config.alistDest || "/bili-backup/videos";
 
   for (const record of records) {
     for (const relation of record.relations) {
       if (relation.hasInterruptedQualityUpgrade) {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
+        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
         continue;
       }
       if (relation.backupStatus !== "verified" && relation.backupStatus !== "partial_verified") {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: relation.backupStatus === "uploaded" ? "远端文件仍在确认中" : "只有最终确认的视频才能重调画质" });
+        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: relation.backupStatus === "uploaded" ? "远端文件仍在确认中" : "只有最终确认的视频才能重调画质" });
         continue;
       }
       const remoteTarget = resolveQualityUpgradeRemoteTarget(remoteRoot, relation);
       if (!remoteTarget.ok) {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: remoteTarget.reason });
+        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: remoteTarget.reason });
         continue;
       }
       const { oldFiles, remotePath } = remoteTarget;
       const key = relationKey(relation.userId, relation.mediaId, record.bvid);
-      if (scheduler.hasQualityUpgrade(relation.userId, relation.mediaId, record.bvid)) {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
+      if (qualityTargetKeys.has(`${relation.userId}:${relation.mediaId}:${record.bvid}`)) {
+        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
         continue;
       }
       const matchStatus = getQualityUpgradeMatchStatus(oldFiles, record.bvid, config);
       if (matchStatus === "same") {
-        skipped.push({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "远端文件已符合当前画质设置" });
+        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "远端文件已符合当前画质设置" });
         continue;
       }
       const previewItem = {
@@ -2635,7 +2735,7 @@ function buildQualityUpgradePreview() {
     }
   }
 
-  return { candidates, uncertain, skipped, target: {
+  return { candidates, uncertain, ...skipped.snapshot(), target: {
     quality: config.bbdownQuality,
     encoding: config.bbdownEncoding,
     hiRes: config.bbdownHiRes,
@@ -2643,8 +2743,8 @@ function buildQualityUpgradePreview() {
   } };
 }
 
-app.post("/api/quality-upgrade/preview", asyncHandler(async (_req, res) => {
-  res.json({ success: true, data: buildQualityUpgradePreview() });
+app.post("/api/quality-upgrade/preview", asyncHandler(async (req, res) => {
+  res.json({ success: true, data: buildQualityUpgradePreview(previewDetailLimit(req.body?.detailLimit)) });
 }));
 
 app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
@@ -2706,133 +2806,52 @@ app.get("/api/quality-upgrade/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQualityUpgradeState() });
 });
 
-app.post("/api/rename/preview", asyncHandler(async (_req, res) => {
+app.post("/api/rename/preview", asyncHandler(async (req, res) => {
   if (archiveDeletion.hasUnfinishedOperation()) {
     res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能扫描远端重命名候选" });
     return;
   }
+  const body = req.body && typeof req.body === "object" ? req.body as { detailLimit?: unknown; refresh?: unknown } : {};
   const config = configStore.get();
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
-  const scanLimit = Math.max(100, Math.min(100_000, Number(config.renameScanMaxFiles || 10_000)));
-  const scanned = await listRemoteFilesRecursive(config, root, { maxDepth: 8, maxFiles: scanLimit });
-  const proposed: Array<{
-    bvid: string;
-    title: string;
-    ownerName: string;
-    remoteDir: string;
-    oldName: string;
-    newName: string;
-    oldPath: string;
-    newPath: string;
-    reason: string;
-    sourceAccessPath: string;
-  }> = [];
-  const skipped = [...scanned.skipped];
-  const resolvedFiles: Array<{
-    file: typeof scanned.files[number];
-    bvid: string;
-    record: ReturnType<typeof stateManager.getRemoteFilePreviewRecords>[number];
-    knownFiles: RemoteFileRecord[];
-    logicalPath: string;
-    logicalDir: string;
-    logicalName: string;
-    recorded?: RemoteFileRecord;
-  }> = [];
+  const configuredLimit = Number(config.renameScanMaxFiles || 10_000);
+  const scanLimit = Number.isFinite(configuredLimit)
+    ? Math.max(100, Math.min(100_000, Math.floor(configuredLimit)))
+    : 10_000;
+  const detailLimit = previewDetailLimit(body.detailLimit);
+  const scanKey = renameRemoteScanKey(config, root, scanLimit);
+  const snapshot = renamePreviewScans.start(
+    scanKey,
+    () => listRemoteFilesRecursive(config, root, {
+      maxDepth: 8,
+      maxFiles: scanLimit,
+      concurrency: 2,
+      skippedLimit: 50,
+    }),
+    { force: body.refresh === true },
+  );
+  res.json({ success: true, data: buildRenamePreviewResponse(config, root, scanLimit, detailLimit, snapshot) });
+}));
 
-  for (const file of scanned.files) {
-    const bvid = extractBvid(file.name);
-    if (!bvid) {
-      skipped.push({ path: file.strictPath || root, reason: "文件名没有 BV 号" });
-      continue;
-    }
-    const record = records.get(bvid);
-    if (!record) {
-      skipped.push({ path: file.strictPath || root, reason: "BV 号在本地状态中找不到" });
-      continue;
-    }
-    const knownFiles = [...record.remoteFiles, ...record.relations.flatMap((relation) => relation.remoteFiles || [])];
-    const resolved = resolveRenameLogicalFile(file, knownFiles);
-    if (!resolved.ok) {
-      skipped.push({ path: file.strictPath || root, reason: resolved.reason });
-      continue;
-    }
-    if (!isRemotePathUnder(root, resolved.logicalPath)) {
-      skipped.push({ path: resolved.logicalPath, reason: "路径不在当前 AList / OpenList 目标路径下" });
-      continue;
-    }
-    resolvedFiles.push({ file, bvid, record, knownFiles, ...resolved });
+app.get("/api/rename/preview/status", asyncHandler(async (req, res) => {
+  const scanId = String(req.query.scanId || "");
+  const snapshot = renamePreviewScans.get(scanId);
+  if (!snapshot) {
+    res.status(404).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
+    return;
   }
-
-  const logicalPathCounts = new Map<string, number>();
-  for (const item of resolvedFiles) {
-    logicalPathCounts.set(item.logicalPath, (logicalPathCounts.get(item.logicalPath) || 0) + 1);
+  const config = configStore.get();
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
+  const configuredLimit = Number(config.renameScanMaxFiles || 10_000);
+  const scanLimit = Number.isFinite(configuredLimit)
+    ? Math.max(100, Math.min(100_000, Math.floor(configuredLimit)))
+    : 10_000;
+  if (snapshot.key !== renameRemoteScanKey(config, root, scanLimit)) {
+    res.status(409).json({ success: false, message: "远端配置或扫描范围已变化，请重新预览" });
+    return;
   }
-
-  for (const resolved of resolvedFiles) {
-    const { file, bvid, record, knownFiles, logicalPath, logicalDir, logicalName, recorded } = resolved;
-    if ((logicalPathCounts.get(logicalPath) || 0) > 1) {
-      skipped.push({ path: logicalPath, reason: "远端目录存在多个可映射到同一本地证明的文件，不能自动处理" });
-      continue;
-    }
-    const mediaCount = new Set(knownFiles.filter((item) => isMediaRemoteFile(item)).map((item) => item.path)).size;
-    const suffixPage = Number(logicalName.replace(/\.[^.]+$/, "").match(/_P(\d+)$/i)?.[1] || 0) || undefined;
-    const pageIndex = recorded?.filenameMetadata?.pageIndex || suffixPage;
-    const rendered = renderArchivedFilename(config.filenameTemplate, record, recorded?.filenameMetadata, pageIndex, mediaCount > 1);
-    const baseName = rendered.name;
-    if (!baseName) {
-      skipped.push({ path: logicalPath, reason: rendered.reason || "无法根据当前模板生成目标文件名" });
-      continue;
-    }
-    const ext = logicalName.match(/\.[^.]+$/)?.[0] || ".mp4";
-    const newName = `${baseName}${ext}`;
-    if (newName === logicalName) {
-      skipped.push({ path: logicalPath, reason: "当前文件名已经符合模板" });
-      continue;
-    }
-    proposed.push({
-      bvid,
-      title: record.title,
-      ownerName: record.upperName,
-      remoteDir: logicalDir,
-      oldName: logicalName,
-      newName,
-      oldPath: logicalPath,
-      newPath: joinRemotePath(logicalDir, newName),
-      reason: "同目录内按当前命名模板重命名",
-      sourceAccessPath: file.accessPath,
-    });
-  }
-
-  const targetCounts = new Map<string, number>();
-  for (const item of proposed) targetCounts.set(item.newPath, (targetCounts.get(item.newPath) || 0) + 1);
-  const sourceAccessPaths = new Set(proposed.map((item) => item.sourceAccessPath));
-  const candidates = proposed.filter((item) => {
-    if ((targetCounts.get(item.newPath) || 0) > 1) {
-      skipped.push({ path: item.oldPath, reason: `多个文件会重命名为同一目标：${item.newName}` });
-      return false;
-    }
-    const targetExists = scanned.files.some((file) => {
-      let observedDir: string;
-      try {
-        observedDir = normalizeRemotePath(file.accessDir, { allowTrailingSlash: true });
-      } catch {
-        return false;
-      }
-      return observedDir === item.remoteDir
-        && remoteNameMatches(item.newName, file.name)
-        && !sourceAccessPaths.has(file.accessPath);
-    });
-    if (targetExists) {
-      skipped.push({ path: item.oldPath, reason: `目标文件已存在：${item.newName}` });
-      return false;
-    }
-    return true;
-  });
-  const complete = scanned.complete;
-  if (!complete) skipped.unshift({ path: root, reason: `远端文件达到扫描上限 ${scanLimit}，预览不完整，已禁止执行` });
-  const publicCandidates = candidates.map(({ sourceAccessPath: _sourceAccessPath, ...item }) => item);
-  res.json({ success: true, data: { candidates: complete ? publicCandidates : [], skipped, complete, scannedFiles: scanned.files.length, scanLimit } });
+  const detailLimit = previewDetailLimit(req.query.detailLimit);
+  res.json({ success: true, data: buildRenamePreviewResponse(config, root, scanLimit, detailLimit, snapshot) });
 }));
 
 app.post("/api/rename", asyncHandler(async (req, res) => {
@@ -2946,10 +2965,12 @@ export async function closeAppResources() {
   scheduler.beginShutdown();
   const pathMigrationStopped = pathMigration.stop(5_000);
   const archiveDeletionStopped = archiveDeletion.stop(5_000);
+  const renamePreviewStopped = renamePreviewScans.stop(5_000);
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000);
   if (!await pathMigrationStopped) throw new Error("Path migration did not stop before closing the state database");
   if (!await archiveDeletionStopped) throw new Error("Archive deletion did not stop before closing the state database");
+  if (!await renamePreviewStopped) throw new Error("Rename preview scan did not stop before closing the state database");
   const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000);
   const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
   if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
@@ -2984,6 +3005,7 @@ if (process.env.NODE_ENV !== "test") {
     scheduler.beginShutdown();
     const pathMigrationStopped = pathMigration.stop(20_000);
     const archiveDeletionStopped = archiveDeletion.stop(20_000);
+    const renamePreviewStopped = renamePreviewScans.stop(20_000);
     server.close();
     await shutdownActiveDownloads(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
@@ -2998,6 +3020,10 @@ if (process.env.NODE_ENV !== "test") {
     if (!archiveDeletionQuiesced) {
       console.warn("[Shutdown] Archive deletion worker did not stop before the shutdown deadline");
     }
+    const renamePreviewQuiesced = await renamePreviewStopped;
+    if (!renamePreviewQuiesced) {
+      console.warn("[Shutdown] Rename preview scan did not stop before the shutdown deadline");
+    }
     await cleanupBBDownCredentialResidue().catch((error) => {
       console.warn(`[Shutdown] Failed to clean BBDown credential directories: ${safeErrorSummary(error)}`);
     });
@@ -3008,7 +3034,7 @@ if (process.env.NODE_ENV !== "test") {
     const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
     closePlaybackDeliveryTracker();
     adminSessionStore.close();
-    if (await pathMigrationStopped && archiveDeletionQuiesced && coverBackfillStopped && coverQueueIdle) {
+    if (await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle) {
       stateManager.close();
     } else {
       console.warn("[Shutdown] Skipped explicit state database close because background work did not quiesce");

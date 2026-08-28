@@ -70,6 +70,7 @@ import {
 } from "./remote-file-resolver.js";
 import { buildDavClient as buildSharedDavClient, getRemoteBackendProfile, type RemoteBackendProfile } from "./remote-storage.js";
 import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
+import { SkippedPreviewCollector } from "./preview-summary.js";
 
 export const buildDavClient = buildSharedDavClient;
 
@@ -1446,32 +1447,41 @@ export async function listRemoteDir(config: AppConfig, remotePath: string): Prom
 export async function listRemoteFilesRecursive(
   config: AppConfig,
   rootPath: string,
-  options: { maxDepth?: number; maxFiles?: number } = {},
+  options: { maxDepth?: number; maxFiles?: number; concurrency?: number; skippedLimit?: number } = {},
   clientOverride?: Pick<WebDAVClient, "getDirectoryContents">
-): Promise<{ files: RemoteListedFile[]; skipped: Array<{ path: string; reason: string }>; complete: boolean }> {
+): Promise<{
+  files: RemoteListedFile[];
+  skipped: Array<{ path: string; reason: string }>;
+  skippedTotal: number;
+  skippedByReason: Record<string, number>;
+  complete: boolean;
+}> {
   const client = clientOverride || buildDavClient(config);
   const root = normalizeRemotePath(rootPath, { allowTrailingSlash: true });
   const maxDepth = Math.max(0, Math.floor(options.maxDepth ?? 4));
   const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 2000));
   const files: RemoteListedFile[] = [];
-  const skipped: Array<{ path: string; reason: string }> = [];
+  const skipped = new SkippedPreviewCollector<{ path: string; reason: string }>(options.skippedLimit);
   let complete = true;
   const videoExt = /\.(mp4|mkv|flv|mov|m4v)$/i;
   const tempExt = /\.(part|tmp|download)$/i;
 
-  async function walk(dir: string, depth: number) {
-    if (files.length >= maxFiles) {
-      complete = false;
-      return;
-    }
-    let items: any[];
+  type DirectoryTask = { dir: string; depth: number };
+
+  async function readDirectory(dir: string) {
     try {
-      items = await client.getDirectoryContents(dir) as any[];
+      const items = await client.getDirectoryContents(dir) as any[];
+      if (!Array.isArray(items)) throw new Error("远端目录响应格式无效");
+      return items;
     } catch (error: any) {
       complete = false;
-      skipped.push({ path: dir, reason: `远端目录读取失败：${error?.message || error}` });
-      return;
+      skipped.add({ path: dir, reason: `远端目录读取失败：${error?.message || error}` });
+      return null;
     }
+  }
+
+  function processDirectoryItems(dir: string, depth: number, items: any[]) {
+    const children: DirectoryTask[] = [];
     for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
       const item = items[itemIndex];
       let normalized;
@@ -1479,13 +1489,13 @@ export async function listRemoteFilesRecursive(
         normalized = normalizeRemoteDirectoryEntry(dir, item);
       } catch (error) {
         complete = false;
-        skipped.push({ path: dir, reason: `远端条目解析失败：${error instanceof Error ? error.message : String(error)}` });
+        skipped.add({ path: dir, reason: `远端条目解析失败：${error instanceof Error ? error.message : String(error)}` });
         continue;
       }
       if (files.length >= maxFiles) {
         complete = false;
-        skipped.push({ path: dir, reason: `扫描数量超过上限 ${maxFiles}` });
-        return;
+        skipped.add({ path: dir, reason: `扫描数量超过上限 ${maxFiles}` });
+        return children;
       }
       const itemPath = normalized.path;
       const name = normalized.name;
@@ -1496,23 +1506,23 @@ export async function listRemoteFilesRecursive(
           strictDirectory = normalizeRemotePath(itemPath, { allowTrailingSlash: true });
         } catch {
           complete = false;
-          skipped.push({ path: dir, reason: "特殊目录名无法安全映射，已跳过该目录" });
+          skipped.add({ path: dir, reason: "特殊目录名无法安全映射，已跳过该目录" });
           continue;
         }
         if (depth >= maxDepth) {
           complete = false;
-          skipped.push({ path: strictDirectory, reason: `超过最大扫描深度 ${maxDepth}` });
+          skipped.add({ path: strictDirectory, reason: `超过最大扫描深度 ${maxDepth}` });
           continue;
         }
-        await walk(itemPath, depth + 1);
+        children.push({ dir: itemPath, depth: depth + 1 });
         continue;
       }
       if (!videoExt.test(name)) {
-        skipped.push({ path: itemPath, reason: "不是支持的视频文件" });
+        skipped.add({ path: itemPath, reason: "不是支持的视频文件" });
         continue;
       }
       if (tempExt.test(name)) {
-        skipped.push({ path: itemPath, reason: "临时下载文件" });
+        skipped.add({ path: itemPath, reason: "临时下载文件" });
         continue;
       }
       let strictPath: string | undefined;
@@ -1529,10 +1539,40 @@ export async function listRemoteFilesRecursive(
         size: normalized.size,
       });
     }
+    return children;
   }
 
-  await walk(root, 0);
-  return { files, skipped, complete };
+  async function walk(dir: string, depth: number) {
+    if (files.length >= maxFiles) {
+      complete = false;
+      return;
+    }
+    const items = await readDirectory(dir);
+    if (!items) return;
+    const children = processDirectoryItems(dir, depth, items);
+    for (const child of children) await walk(child.dir, child.depth);
+  }
+
+  async function walkConcurrent() {
+    const concurrency = Math.max(2, Math.min(8, Math.floor(options.concurrency || 2)));
+    let frontier: DirectoryTask[] = [{ dir: root, depth: 0 }];
+    while (frontier.length > 0 && files.length < maxFiles) {
+      const next: DirectoryTask[] = [];
+      for (let offset = 0; offset < frontier.length && files.length < maxFiles; offset += concurrency) {
+        const batch = frontier.slice(offset, offset + concurrency);
+        const results = await Promise.all(batch.map(async (task) => ({ task, items: await readDirectory(task.dir) })));
+        for (const result of results) {
+          if (result.items) next.push(...processDirectoryItems(result.task.dir, result.task.depth, result.items));
+        }
+      }
+      frontier = next;
+    }
+    if (frontier.length > 0 && files.length >= maxFiles) complete = false;
+  }
+
+  if (Number(options.concurrency || 1) > 1) await walkConcurrent();
+  else await walk(root, 0);
+  return { files, ...skipped.snapshot(), complete };
 }
 
 export async function batchRenameRemotePaths(
