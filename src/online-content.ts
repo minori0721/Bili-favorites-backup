@@ -29,9 +29,12 @@ export interface PublicOnlineContentItem extends Omit<OnlineContentItem, "cover"
   archiveState: "archived" | "processing" | "unarchived" | "unavailable";
 }
 
+type CachedOnlineContentItem = Omit<PublicOnlineContentItem, "archiveState">;
+
 interface CachedPage {
   expiresAt: number;
-  value: { page: OnlineContentPage; items: PublicOnlineContentItem[] };
+  page: OnlineContentPage;
+  items: CachedOnlineContentItem[];
 }
 
 interface CoverReference {
@@ -152,7 +155,10 @@ export class OnlineContentService {
     if (cached && cached.expiresAt > now) {
       this.pages.delete(key);
       this.pages.set(key, cached);
-      return cached.value;
+      // Bilibili pages are cacheable; archive state is not.  Re-project it
+      // from SQLite on every cache hit so a manual archive or a queue update
+      // is visible immediately without another Bilibili request.
+      return this.materializePage(cached.page, cached.items, archiveStates);
     }
     const failure = this.failures.get(key);
     if (failure && failure.expiresAt > now) {
@@ -165,16 +171,14 @@ export class OnlineContentService {
     this.activeByUser.set(user.id, active + 1);
     try {
       const page = await (this.loaders.listPage || listOnlineContentPage)(user.cookie, normalized.kind, normalized);
-      const states = archiveStates(page.items);
       this.pruneTokens();
-      const items = page.items.map((item) => {
+      const cachedItems = page.items.map((item): CachedOnlineContentItem => {
         const token = this.createCoverToken(user.id, item);
         const openUrl = item.openUrl || (item.bvid
           ? `https://www.bilibili.com/video/${encodeURIComponent(item.bvid)}`
           : undefined);
         return {
           ...item,
-          cover: undefined,
           openUrl,
           coverToken: token || undefined,
           // Keep the local endpoint for every BVID, even after Bilibili stops
@@ -183,19 +187,12 @@ export class OnlineContentService {
           coverUrl: token && (item.cover || item.bvid || hasArchiveCover(item.bvid || ""))
             ? `/api/online-content/covers/${token}`
             : undefined,
-          archiveState: item.bvid
-            ? (states.get(item.bvid) || "unarchived")
-            : "unavailable",
         };
       });
-      const value = {
-        page: { ...page, items },
-        items,
-      };
-      this.pages.set(key, { expiresAt: now + PAGE_TTL_MS, value });
+      this.pages.set(key, { expiresAt: now + PAGE_TTL_MS, page, items: cachedItems });
       this.trimPages();
       this.failures.delete(key);
-      return value;
+      return this.materializePage(page, cachedItems, archiveStates);
     } catch (error) {
       const message = safeErrorSummary(error, "在线内容读取失败");
       this.failures.set(key, { expiresAt: now + FAILURE_TTL_MS, message });
@@ -271,6 +268,24 @@ export class OnlineContentService {
       if (!first) break;
       this.pages.delete(first);
     }
+  }
+
+  private materializePage(
+    page: OnlineContentPage,
+    cachedItems: CachedOnlineContentItem[],
+    archiveStates: OnlineArchiveStateResolver,
+  ) {
+    const states = archiveStates(page.items);
+    const items: PublicOnlineContentItem[] = cachedItems.map((item) => ({
+      ...item,
+      archiveState: item.bvid
+        ? (states.get(item.bvid) || "unarchived")
+        : "unavailable",
+    }));
+    return {
+      page: { ...page, items } as unknown as OnlineContentPage,
+      items,
+    };
   }
 
   private pruneTokens() {

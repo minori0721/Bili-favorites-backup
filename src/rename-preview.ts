@@ -24,9 +24,10 @@ export interface RenamePreviewCandidate {
   newPath: string;
   reason: string;
   sourceAccessPath: string;
+  expectedSize?: number;
 }
 
-export type PublicRenamePreviewCandidate = Omit<RenamePreviewCandidate, "sourceAccessPath">;
+export type PublicRenamePreviewCandidate = Omit<RenamePreviewCandidate, "sourceAccessPath" | "expectedSize">;
 
 export interface RenamePreviewData extends PreviewSkippedSummary<RenamePreviewSkipped> {
   candidates: PublicRenamePreviewCandidate[];
@@ -35,6 +36,15 @@ export interface RenamePreviewData extends PreviewSkippedSummary<RenamePreviewSk
   scanLimit: number;
   indexedFiles?: number;
   coverage?: "local" | "remote" | "merged";
+}
+
+/**
+ * The server keeps the access spelling returned by a WebDAV directory scan
+ * private.  It is needed for OpenList escaped names during the actual MOVE or
+ * COPY, but must never become an API-controlled path.
+ */
+export interface InternalRenamePreviewData extends Omit<RenamePreviewData, "candidates"> {
+  candidates: RenamePreviewCandidate[];
 }
 
 export interface RenamePreviewScanInput {
@@ -100,7 +110,7 @@ function addScanSkipped(collector: SkippedPreviewCollector<RenamePreviewSkipped>
   }
 }
 
-export function buildRenamePreview(options: {
+export function buildRenamePreviewInternal(options: {
   config: AppConfig;
   root: string;
   records: RemoteFilePreviewVideoRecord[];
@@ -109,7 +119,7 @@ export function buildRenamePreview(options: {
   detailLimit?: number;
   indexedFiles?: number;
   coverage?: "local" | "remote" | "merged";
-}): RenamePreviewData {
+}): InternalRenamePreviewData {
   const { config, root, records, scanned, scanLimit } = options;
   const collector = new SkippedPreviewCollector<RenamePreviewSkipped>(options.detailLimit);
   addScanSkipped(collector, scanned);
@@ -188,6 +198,9 @@ export function buildRenamePreview(options: {
       newPath: joinRemotePath(logicalDir, newName),
       reason: "同目录内按当前命名模板重命名",
       sourceAccessPath: file.accessPath,
+      ...(Number.isFinite(file.size)
+        ? { expectedSize: file.size }
+        : (Number.isFinite(recorded?.size) ? { expectedSize: recorded?.size } : {})),
     });
   }
 
@@ -223,7 +236,7 @@ export function buildRenamePreview(options: {
   if (!scanned.complete) collector.add({ path: root, reason: `远端文件达到扫描上限 ${scanLimit}，预览不完整，已禁止执行` });
   const skipped = collector.snapshot();
   return {
-    candidates: scanned.complete ? candidates.map(({ sourceAccessPath: _sourceAccessPath, ...item }) => item) : [],
+    candidates: scanned.complete ? candidates : [],
     ...skipped,
     complete: scanned.complete,
     scannedFiles: scanned.files.length,
@@ -233,18 +246,41 @@ export function buildRenamePreview(options: {
   };
 }
 
-export function mergeRenamePreviews(local: RenamePreviewData, remote: RenamePreviewData, detailLimit?: number): RenamePreviewData {
-  const candidateByPath = new Map<string, PublicRenamePreviewCandidate>();
-  for (const item of local.candidates) candidateByPath.set(item.oldPath, item);
-  if (remote.complete) for (const item of remote.candidates) candidateByPath.set(item.oldPath, item);
+function toPublicRenamePreview(data: InternalRenamePreviewData): RenamePreviewData {
+  return {
+    ...data,
+    candidates: data.candidates.map(({ sourceAccessPath: _sourceAccessPath, expectedSize: _expectedSize, ...item }) => item),
+  };
+}
+
+export function buildRenamePreview(options: {
+  config: AppConfig;
+  root: string;
+  records: RemoteFilePreviewVideoRecord[];
+  scanned: RenamePreviewScanInput;
+  scanLimit: number;
+  detailLimit?: number;
+  indexedFiles?: number;
+  coverage?: "local" | "remote" | "merged";
+}): RenamePreviewData {
+  return toPublicRenamePreview(buildRenamePreviewInternal(options));
+}
+
+export function mergeRenamePreviewInternals(
+  local: InternalRenamePreviewData,
+  remote: InternalRenamePreviewData,
+  detailLimit?: number,
+): InternalRenamePreviewData {
+  // A complete remote scan is authoritative.  A partial scan must never
+  // replace or augment the local proof set with an incomplete view of the
+  // directory tree.
+  const candidates = remote.complete ? remote.candidates : local.candidates;
   const collector = new SkippedPreviewCollector<RenamePreviewSkipped>(detailLimit);
-  // A complete remote scan covers the same files as the local index. Prefer its
-  // summary so a known file is not counted twice after the background pass.
   if (remote.complete) collector.addSummary(remote);
   else collector.addSummary(local);
   const skipped = collector.snapshot();
   return {
-    candidates: [...candidateByPath.values()],
+    candidates: [...candidates],
     ...skipped,
     complete: true,
     scannedFiles: remote.scannedFiles,
@@ -252,4 +288,10 @@ export function mergeRenamePreviews(local: RenamePreviewData, remote: RenamePrev
     indexedFiles: local.indexedFiles,
     coverage: remote.complete ? "merged" : "local",
   };
+}
+
+export function mergeRenamePreviews(local: RenamePreviewData, remote: RenamePreviewData, detailLimit?: number): RenamePreviewData {
+  const internalLocal: InternalRenamePreviewData = { ...local, candidates: local.candidates.map((item) => ({ ...item, sourceAccessPath: item.oldPath })) };
+  const internalRemote: InternalRenamePreviewData = { ...remote, candidates: remote.candidates.map((item) => ({ ...item, sourceAccessPath: item.oldPath })) };
+  return toPublicRenamePreview(mergeRenamePreviewInternals(internalLocal, internalRemote, detailLimit));
 }

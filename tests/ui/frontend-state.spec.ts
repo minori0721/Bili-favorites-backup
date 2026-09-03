@@ -79,6 +79,31 @@ test("favorite folder covers use the cached same-origin image endpoint", async (
   await expect(page.locator("#favoritesList img.fav-cover")).toHaveAttribute("src", /\/api\/users\/user-1\/favorites\/101\/cover$/);
 });
 
+test("favorite dialog title stays readable at a narrow mobile width", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  test.skip(testInfo.project.name === "desktop", "narrow mobile dialog coverage");
+  await page.setViewportSize({ width: 320, height: 640 });
+  await boot(page);
+  await page.getByRole("button", { name: "选择同步收藏夹" }).click();
+  await expect(page.locator("#favoritesModal")).toHaveClass(/active/);
+
+  const metrics = await page.locator("#favoritesModalTitle").evaluate((title) => {
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    const lineRects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+    const titleRect = title.getBoundingClientRect();
+    const panelRect = title.closest(".panel")!.getBoundingClientRect();
+    return {
+      lineCount: lineRects.length,
+      titleRight: titleRect.right,
+      panelRight: panelRect.right,
+    };
+  });
+
+  expect(metrics.lineCount).toBe(1);
+  expect(metrics.titleRight).toBeLessThanOrEqual(metrics.panelRight);
+});
+
 test("favorites save failure keeps the dialog usable and a retry succeeds", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);

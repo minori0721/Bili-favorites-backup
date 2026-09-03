@@ -114,6 +114,19 @@ test("real app supports login, queue state, config update and migration preview 
     const guessedSession = await fetch(`${base}/api/queue/state`, { headers: { Cookie: "bfb.sid=guessed-session-id" } });
     assert.equal(guessedSession.status, 401);
 
+    const rawRename = await fetch(`${base}/api/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ items: [{ bvid: "BVRAWPATH", oldPath: "/backup/old.mp4", newPath: "/backup/new.mp4" }] }),
+    });
+    assert.equal(rawRename.status, 400);
+    const missingPreviewRename = await fetch(`${base}/api/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
+      body: JSON.stringify({ oldPath: "/backup/old.mp4", newPath: "/backup/new.mp4" }),
+    });
+    assert.equal(missingPreviewRename.status, 400);
+
     const estimate = await fetch(`${base}/api/migration/estimate`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },

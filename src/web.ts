@@ -431,7 +431,7 @@ function getAppStyles() {
     .modal .panel.panel-large { max-width:840px; }
     .modal .panel.panel-wide,.modal .panel.panel-wider,.modal .panel.panel-max { max-width:980px; }
     .modal .panel > h2,.modal .panel > .section-title-row:first-child { position:sticky; z-index:3; top:0; min-height:64px; margin:0; padding:19px var(--dialog-inline) 16px; border-bottom:1px solid var(--glass-border); background:transparent; backdrop-filter:none; }
-    .modal .panel > h2 { color:var(--ink); font-size:20px; line-height:1.35; }
+    .modal .panel > h2 { color:var(--ink); font-size:20px; line-height:1.35; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; overflow-wrap:normal; word-break:keep-all; }
     .modal .panel > .section-title-row:first-child { justify-content:space-between; }
     .modal .panel > .section-title-row:first-child h2 { color:var(--ink); font-size:20px; }
     .modal .panel > :not(h2):not(.section-title-row):not(.modal-actions) { margin-left:var(--dialog-inline); margin-right:var(--dialog-inline); }
@@ -2018,7 +2018,8 @@ function getAppScript() {
       }
     };
     let syncHelpMode = 'simple';
-    let renamePreviewState = { candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
+    let renamePreviewState = { previewId: null, revision: 0, expiresAt: 0, candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
+    let renameSelection = new Map();
     let renamePreviewPollTimer = null;
     let renamePreviewRequestController = null;
     let renamePreviewRequestToken = 0;
@@ -3401,8 +3402,48 @@ function getAppScript() {
       return Number.isFinite(value) && value >= 0 ? Math.floor(value) : (Array.isArray(renamePreviewState.skipped) ? renamePreviewState.skipped.length : 0);
     }
 
-    function scheduleRenamePreviewPolling(scanId, token) {
-      if (!scanId || token !== renamePreviewRequestToken) return;
+    function renameCandidateId(item) {
+      return String(item?.candidateId || [item?.bvid, item?.oldPath, item?.newPath].join('\u0000'));
+    }
+
+    function applyRenamePreviewState(next) {
+      const incoming = next && typeof next === 'object' ? next : {};
+      const previewChanged = String(incoming.previewId || '') !== String(renamePreviewState.previewId || '');
+      const previousSelection = renameSelection;
+      const nextSelection = new Map();
+      const candidates = Array.isArray(incoming.candidates) ? incoming.candidates : [];
+      candidates.forEach((item) => {
+        const id = renameCandidateId(item);
+        nextSelection.set(id, previewChanged || !previousSelection.has(id) ? true : previousSelection.get(id));
+      });
+      renameSelection = nextSelection;
+      renamePreviewState = {
+        previewId: incoming.previewId || null,
+        revision: Number(incoming.revision || 0),
+        expiresAt: Number(incoming.expiresAt || 0),
+        candidates,
+        skipped: Array.isArray(incoming.skipped) ? incoming.skipped : [],
+        skippedTotal: incoming.skippedTotal,
+        skippedByReason: incoming.skippedByReason || {},
+        remoteScan: incoming.remoteScan || null,
+      };
+    }
+
+    function updateRenameScanStatus(scan) {
+      const status = scan?.status;
+      if (status === 'scanning') {
+        setStatus('renameStatus', '远端深扫进行中，当前先显示本地索引结果。', 'muted');
+      } else if (status === 'failed') {
+        setStatus('renameStatus', '远端深扫失败，当前保留本地索引结果：' + safeText(scan.error, '未知错误'), 'error');
+      } else if (status === 'ready') {
+        setStatus('renameStatus', scan.complete === false
+          ? '远端深扫未完整覆盖，当前保留本地索引结果。'
+          : '远端深扫完成，已更新可处理候选。', 'muted');
+      }
+    }
+
+    function scheduleRenamePreviewPolling(previewId, token) {
+      if (!previewId || token !== renamePreviewRequestToken) return;
       if (renamePreviewPollTimer) clearTimeout(renamePreviewPollTimer);
       renamePreviewPollTimer = window.setTimeout(async () => {
         renamePreviewPollTimer = null;
@@ -3411,18 +3452,18 @@ function getAppScript() {
         const controller = new AbortController();
         renamePreviewRequestController = controller;
         try {
-          const next = await fetchJsonSilent('/api/rename/preview/status?scanId=' + encodeURIComponent(scanId) + '&detailLimit=50', { signal:controller.signal });
+          const next = await fetchJsonSilent('/api/rename/preview/status?previewId=' + encodeURIComponent(previewId) + '&sinceRevision=' + encodeURIComponent(String(renamePreviewState.revision || 0)) + '&detailLimit=50', { signal:controller.signal });
           if (token !== renamePreviewRequestToken) return;
-          renamePreviewState = next || { candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
-          renderRenamePreview();
+          if (next?.unchanged) {
+            renamePreviewState.remoteScan = next.remoteScan || renamePreviewState.remoteScan;
+          } else {
+            applyRenamePreviewState(next);
+            renderRenamePreview();
+          }
           const scan = renamePreviewState.remoteScan || {};
+          updateRenameScanStatus(scan);
           if (scan.status === 'scanning') {
-            setStatus('renameStatus', '远端深扫进行中，当前先显示本地索引结果。', 'muted');
-            scheduleRenamePreviewPolling(scan.id, token);
-          } else if (scan.status === 'failed') {
-            setStatus('renameStatus', '远端深扫失败，当前保留本地索引结果：' + safeText(scan.error, '未知错误'), 'error');
-          } else if (scan.status === 'ready') {
-            setStatus('renameStatus', '远端深扫完成，已补充本地索引之外的文件。', 'muted');
+            scheduleRenamePreviewPolling(previewId, token);
           }
         } catch (error) {
           if (error?.name !== 'AbortError' && token === renamePreviewRequestToken) {
@@ -3457,13 +3498,13 @@ function getAppScript() {
           signal:controller.signal
         });
         if (token !== renamePreviewRequestToken) return;
-        renamePreviewState = data || { candidates: [], skipped: [], skippedTotal: 0, remoteScan: null };
+        applyRenamePreviewState(data);
         renderRenamePreview();
         const scan = renamePreviewState.remoteScan || {};
         setStatus(st, scan.status === 'scanning'
           ? '已生成本地预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewSkippedTotal() + ' 个跳过；远端深扫在后台进行。'
           : '已生成重命名预览：' + renamePreviewState.candidates.length + ' 个可处理，' + renamePreviewSkippedTotal() + ' 个跳过。', 'muted');
-        if (scan.status === 'scanning') scheduleRenamePreviewPolling(scan.id, token);
+        if (scan.status === 'scanning') scheduleRenamePreviewPolling(renamePreviewState.previewId, token);
       } catch(e) {
         if (e?.name !== 'AbortError' && token === renamePreviewRequestToken) {
           summary.textContent = '预览失败：' + e.message;
@@ -3499,13 +3540,17 @@ function getAppScript() {
         empty.textContent = '没有找到可安全重命名的旧命名文件。';
         list.appendChild(empty);
       }
-      candidates.forEach((item, index) => {
+      candidates.forEach((item) => {
         const row = document.createElement('label');
         row.className = 'rename-item';
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.checked = true;
-        checkbox.dataset.renameIndex = String(index);
+        const candidateId = renameCandidateId(item);
+        checkbox.checked = renameSelection.get(candidateId) !== false;
+        checkbox.dataset.renameCandidateId = candidateId;
+        checkbox.addEventListener('change', () => {
+          renameSelection.set(candidateId, checkbox.checked);
+        });
         const body = document.createElement('div');
         const title = document.createElement('div');
         title.className = 'rename-title';
@@ -3548,27 +3593,28 @@ function getAppScript() {
     }
 
     function setRenameSelection(checked) {
+      const candidates = Array.isArray(renamePreviewState.candidates) ? renamePreviewState.candidates : [];
+      candidates.forEach((item) => renameSelection.set(renameCandidateId(item), checked));
       document.querySelectorAll('#renamePreviewList input[type="checkbox"]').forEach((input) => {
         input.checked = checked;
       });
     }
 
     async function executeSelectedRename() {
-      const candidates = Array.isArray(renamePreviewState.candidates) ? renamePreviewState.candidates : [];
-      const selected = [];
+      const selectedIds = [];
       document.querySelectorAll('#renamePreviewList input[type="checkbox"]').forEach((input) => {
-        const index = Number(input.dataset.renameIndex);
-        if (input.checked && Number.isInteger(index) && candidates[index]) {
-          selected.push(candidates[index]);
+        const candidateId = String(input.dataset.renameCandidateId || '');
+        if (input.checked && candidateId) {
+          selectedIds.push(candidateId);
         }
       });
-      if (!selected.length) {
+      if (!selectedIds.length) {
         showToast('请先勾选需要重命名的文件', 'info');
         return;
       }
       const confirmed = await confirmAction({
         title: '确认远端重命名',
-        message: '将重命名 ' + selected.length + ' 个远端文件。',
+        message: '将重命名 ' + selectedIds.length + ' 个远端文件。',
         detail: '此操作会修改 AList / OpenList 网盘文件名。建议确认预览列表无误后再继续。',
         confirmText: '确认重命名',
         trigger: document.getElementById('executeRenameBtn')
@@ -3576,6 +3622,7 @@ function getAppScript() {
       if (!confirmed) {
         return;
       }
+      stopRenamePreviewPolling();
       const btn = document.getElementById('executeRenameBtn');
       const resultBlock = document.getElementById('renameResultBlock');
       btn.textContent = '重命名中...';
@@ -3583,11 +3630,10 @@ function getAppScript() {
       setHidden(resultBlock, false);
       resultBlock.textContent = '正在执行远端重命名...';
       try {
-        const payload = selected.map((item) => ({ bvid:item.bvid, oldPath:item.oldPath, newPath:item.newPath }));
         const result = await fetchJson('/api/rename', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({ items:payload })
+          body:JSON.stringify({ previewId: renamePreviewState.previewId, candidateIds: selectedIds })
         });
         const success = Number(result.success || 0);
         const failed = Number(result.failed || 0);

@@ -143,3 +143,33 @@ test("在线导航保留收藏夹的服务端视频总数", async () => {
     countLabel: "个视频",
   });
 });
+
+test("在线内容命中页面缓存时重新读取归档状态而不重新请求B站", async () => {
+  let listCalls = 0;
+  let stateCalls = 0;
+  let currentState: "archived" | "unarchived" = "unarchived";
+  const service = new OnlineContentService({} as any, {
+    listPage: async () => {
+      listCalls += 1;
+      return {
+        kind: "history",
+        page: 1,
+        pageSize: 1,
+        hasMore: false,
+        items: [{ id: "BVFRESHSTATE", kind: "history", bvid: "BVFRESHSTATE", title: "状态会变化", playable: true }],
+      };
+    },
+  });
+  const states = () => {
+    stateCalls += 1;
+    return new Map([["BVFRESHSTATE", currentState]]);
+  };
+
+  const first = await service.list(user(), { kind: "history", page: 1, pageSize: 1 }, states);
+  assert.equal(first.items[0].archiveState, "unarchived");
+  currentState = "archived";
+  const second = await service.list(user(), { kind: "history", page: 1, pageSize: 1 }, states);
+  assert.equal(second.items[0].archiveState, "archived");
+  assert.equal(listCalls, 1);
+  assert.equal(stateCalls, 2);
+});

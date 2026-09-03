@@ -115,6 +115,52 @@ test("recursive remote preview bounds directory-list concurrency and summarizes 
   assert.deepEqual(result.skippedByReason, { "不是支持的视频文件": 1 });
 });
 
+test("recursive remote preview stops at entry and directory caps and avoids repeated directories", async () => {
+  const calls: string[] = [];
+  const result = await listRemoteFilesRecursive(
+    testConfig(),
+    "/target",
+    { maxDepth: 8, maxFiles: 100, maxEntries: 2, maxDirectories: 1, concurrency: 1, skippedLimit: 10 },
+    {
+      getDirectoryContents: async (directory) => {
+        calls.push(directory);
+        if (directory === "/target") return [
+          { filename: "/target/a", basename: "a", type: "directory" },
+          { filename: "/target/a", basename: "a", type: "directory" },
+          { filename: "/target/readme.txt", basename: "readme.txt", type: "file", size: 1 },
+        ];
+        return [];
+      },
+    } as any,
+  );
+
+  assert.equal(result.complete, false);
+  assert.deepEqual(calls, ["/target"]);
+  assert.equal(result.scannedEntries, 2);
+  assert.equal(result.scannedDirectories, 1);
+  assert.match(result.skipped.map((item) => item.reason).join("\n"), /扫描条目数量超过上限 2/);
+
+  const repeatedCalls: string[] = [];
+  const repeated = await listRemoteFilesRecursive(
+    testConfig(),
+    "/target",
+    { maxDepth: 8, maxFiles: 100, maxEntries: 20, maxDirectories: 3, concurrency: 1, skippedLimit: 10 },
+    {
+      getDirectoryContents: async (directory) => {
+        repeatedCalls.push(directory);
+        if (directory === "/target") return [
+          { filename: "/target/a", basename: "a", type: "directory" },
+          { filename: "/target/a", basename: "a", type: "directory" },
+        ];
+        return [{ filename: "/target/a/video.mp4", basename: "video.mp4", type: "file", size: 1 }];
+      },
+    } as any,
+  );
+  assert.equal(repeated.complete, false);
+  assert.deepEqual(repeatedCalls, ["/target", "/target/a"]);
+  assert.match(repeated.skipped.map((item) => item.reason).join("\n"), /重复出现/);
+});
+
 test("local rename index deduplicates proofs and excludes unverified files", () => {
   const record: RemoteFilePreviewVideoRecord = {
     bvid: "BVINDEX",
@@ -189,6 +235,8 @@ test("merged rename preview does not count the same skipped files twice", () => 
   assert.equal(merged.skippedTotal, 1);
   assert.deepEqual(merged.skippedByReason, { "不是支持的视频文件": 1 });
   assert.deepEqual(merged.skipped, [skipped]);
-  assert.deepEqual(merged.candidates, [candidate]);
+  // A complete remote scan is authoritative: the local proof candidate is
+  // removed when the remote tree no longer contains it.
+  assert.deepEqual(merged.candidates, []);
   assert.equal(merged.coverage, "merged");
 });

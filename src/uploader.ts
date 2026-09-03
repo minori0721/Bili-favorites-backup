@@ -64,6 +64,7 @@ import {
   RemoteFileResolutionConflictError,
   normalizeRemoteDirectoryEntry,
   normalizeObservedRemoteAccessPath,
+  normalizeRemoteLookupPath,
   remoteLookupDirname,
   type RemoteFileResolver,
   type RemoteFailureInfo,
@@ -1423,6 +1424,8 @@ export interface RenameRemoteItem {
   oldPath: string;
   newPath: string;
   expectedSize?: number;
+  /** Access spelling observed by the server for escaped WebDAV names. */
+  sourceAccessPath?: string;
 }
 
 /** List remote directory contents */
@@ -1447,7 +1450,14 @@ export async function listRemoteDir(config: AppConfig, remotePath: string): Prom
 export async function listRemoteFilesRecursive(
   config: AppConfig,
   rootPath: string,
-  options: { maxDepth?: number; maxFiles?: number; concurrency?: number; skippedLimit?: number } = {},
+  options: {
+    maxDepth?: number;
+    maxFiles?: number;
+    maxEntries?: number;
+    maxDirectories?: number;
+    concurrency?: number;
+    skippedLimit?: number;
+  } = {},
   clientOverride?: Pick<WebDAVClient, "getDirectoryContents">
 ): Promise<{
   files: RemoteListedFile[];
@@ -1455,16 +1465,41 @@ export async function listRemoteFilesRecursive(
   skippedTotal: number;
   skippedByReason: Record<string, number>;
   complete: boolean;
+  scannedEntries: number;
+  scannedDirectories: number;
 }> {
   const client = clientOverride || buildDavClient(config);
   const root = normalizeRemotePath(rootPath, { allowTrailingSlash: true });
   const maxDepth = Math.max(0, Math.floor(options.maxDepth ?? 4));
   const maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 2000));
+  const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? Math.max(10_000, Math.min(500_000, maxFiles * 5))));
+  const maxDirectories = Math.max(1, Math.floor(options.maxDirectories ?? Math.max(1_000, Math.min(50_000, maxFiles))));
   const files: RemoteListedFile[] = [];
   const skipped = new SkippedPreviewCollector<{ path: string; reason: string }>(options.skippedLimit);
   let complete = true;
   const videoExt = /\.(mp4|mkv|flv|mov|m4v)$/i;
   const tempExt = /\.(part|tmp|download)$/i;
+  let scannedEntries = 0;
+  let scannedDirectories = 1;
+  let entryLimitReported = false;
+  let directoryLimitReported = false;
+  const visitedDirectories = new Set<string>([normalizeRemoteLookupPath(root)]);
+
+  function markEntryLimit(dir: string) {
+    complete = false;
+    if (!entryLimitReported) {
+      skipped.add({ path: dir, reason: `扫描条目数量超过上限 ${maxEntries}` });
+      entryLimitReported = true;
+    }
+  }
+
+  function markDirectoryLimit(dir: string) {
+    complete = false;
+    if (!directoryLimitReported) {
+      skipped.add({ path: dir, reason: `扫描目录数量超过上限 ${maxDirectories}` });
+      directoryLimitReported = true;
+    }
+  }
 
   type DirectoryTask = { dir: string; depth: number };
 
@@ -1483,6 +1518,11 @@ export async function listRemoteFilesRecursive(
   function processDirectoryItems(dir: string, depth: number, items: any[]) {
     const children: DirectoryTask[] = [];
     for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+      if (scannedEntries >= maxEntries) {
+        markEntryLimit(dir);
+        return children;
+      }
+      scannedEntries += 1;
       const item = items[itemIndex];
       let normalized;
       try {
@@ -1514,6 +1554,19 @@ export async function listRemoteFilesRecursive(
           skipped.add({ path: strictDirectory, reason: `超过最大扫描深度 ${maxDepth}` });
           continue;
         }
+        const directoryKey = normalizeRemoteLookupPath(strictDirectory);
+        if (visitedDirectories.has(directoryKey)) {
+          complete = false;
+          skipped.add({ path: strictDirectory, reason: "远端目录重复出现，已跳过重复遍历" });
+          continue;
+        }
+        if (scannedDirectories >= maxDirectories) {
+          markDirectoryLimit(strictDirectory);
+          continue;
+        }
+        visitedDirectories.add(directoryKey);
+        scannedDirectories += 1;
+        if (scannedDirectories >= maxDirectories) markDirectoryLimit(strictDirectory);
         children.push({ dir: itemPath, depth: depth + 1 });
         continue;
       }
@@ -1539,11 +1592,12 @@ export async function listRemoteFilesRecursive(
         size: normalized.size,
       });
     }
+    if (scannedEntries >= maxEntries) markEntryLimit(dir);
     return children;
   }
 
   async function walk(dir: string, depth: number) {
-    if (files.length >= maxFiles) {
+    if (files.length >= maxFiles || scannedEntries >= maxEntries) {
       complete = false;
       return;
     }
@@ -1556,7 +1610,7 @@ export async function listRemoteFilesRecursive(
   async function walkConcurrent() {
     const concurrency = Math.max(2, Math.min(8, Math.floor(options.concurrency || 2)));
     let frontier: DirectoryTask[] = [{ dir: root, depth: 0 }];
-    while (frontier.length > 0 && files.length < maxFiles) {
+    while (frontier.length > 0 && files.length < maxFiles && scannedEntries < maxEntries) {
       const next: DirectoryTask[] = [];
       for (let offset = 0; offset < frontier.length && files.length < maxFiles; offset += concurrency) {
         const batch = frontier.slice(offset, offset + concurrency);
@@ -1567,12 +1621,12 @@ export async function listRemoteFilesRecursive(
       }
       frontier = next;
     }
-    if (frontier.length > 0 && files.length >= maxFiles) complete = false;
+    if (frontier.length > 0 && (files.length >= maxFiles || scannedEntries >= maxEntries)) complete = false;
   }
 
   if (Number(options.concurrency || 1) > 1) await walkConcurrent();
   else await walk(root, 0);
-  return { files, ...skipped.snapshot(), complete };
+  return { files, ...skipped.snapshot(), complete, scannedEntries, scannedDirectories };
 }
 
 export async function batchRenameRemotePaths(
@@ -1607,7 +1661,7 @@ export async function batchRenameRemotePaths(
       newPath,
       tempPath: `${remoteDirname(oldPath)}/__bfb_rename_${operationId}_${index}_${remoteBasename(oldPath)}`,
       oldSize: undefined as number | undefined,
-      sourceAccessPath: oldPath,
+      sourceAccessPath: item.sourceAccessPath,
       expectedSize: Number.isFinite(item.expectedSize) ? item.expectedSize : undefined,
     };
   });
@@ -1690,6 +1744,18 @@ export async function batchRenameRemotePaths(
       if (item.expectedSize !== undefined && source.size !== item.expectedSize) {
         preflight.set(item, { status: "conflict", error: "源文件大小与本地证明不一致" });
         continue;
+      }
+      if (item.sourceAccessPath) {
+        try {
+          const expectedAccessPath = normalizeObservedRemoteAccessPath(item.oldPath, item.sourceAccessPath);
+          if (source.path !== expectedAccessPath) {
+            preflight.set(item, { status: "conflict", error: "远端源文件访问路径与预览不一致" });
+            continue;
+          }
+        } catch {
+          preflight.set(item, { status: "conflict", error: "远端源文件访问路径不安全" });
+          continue;
+        }
       }
       item.sourceAccessPath = source.path;
       item.oldSize = source.size;

@@ -65,10 +65,11 @@ import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./
 import { rotateDebugLogs } from "./debug-log-retention.js";
 import { PathMigrationService } from "./path-migration.js";
 import { createRemoteReplacementRunner } from "./remote-operations.js";
+import { remoteStorageIdentity } from "./remote-storage.js";
 import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
-import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
+import { normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
 import { resolveQualityUpgradeRemoteTarget } from "./quality-upgrade-target.js";
-import { resolveRenameLogicalFile } from "./rename-proof.js";
+import { RenamePreviewSessionStore, type RenamePreviewRemoteScanInfo } from "./rename-preview-session.js";
 import {
   closePlaybackDeliveryTracker,
   getPlaybackDeliveryStatus,
@@ -110,7 +111,12 @@ import { ArchiveDeletionService } from "./archive-deletion.js";
 import { executeAccountRemoval } from "./account-removal.js";
 import { BackgroundPreviewCache, type BackgroundPreviewSnapshot } from "./preview-cache.js";
 import { SkippedPreviewCollector } from "./preview-summary.js";
-import { buildIndexedRemoteFiles, buildRenamePreview, mergeRenamePreviews, type RenamePreviewData } from "./rename-preview.js";
+import {
+  buildIndexedRemoteFiles,
+  buildRenamePreviewInternal,
+  mergeRenamePreviewInternals,
+  type InternalRenamePreviewData,
+} from "./rename-preview.js";
 
 ensureAppDirs();
 
@@ -175,6 +181,7 @@ const loginSessionTtlMs = 10 * 60 * 1000;
 const artplayerAssetPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/artplayer/dist/artplayer.js");
 type RemoteRenameScan = Awaited<ReturnType<typeof listRemoteFilesRecursive>>;
 const renamePreviewScans = new BackgroundPreviewCache<RemoteRenameScan>({ ttlMs: 5 * 60_000, failedTtlMs: 30_000, maxEntries: 32 });
+const renamePreviewSessions = new RenamePreviewSessionStore({ ttlMs: 5 * 60_000, maxEntries: 8 });
 
 if (process.env.NODE_ENV !== "test") {
   const backfillStart = setImmediate(() => { void unavailableCoverBackfill.start(); });
@@ -975,6 +982,8 @@ app.put("/api/config", (req, res) => {
     return;
   }
   const updated = configStore.update(req.body);
+  const updatedRoot = normalizeRemotePath(updated.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
+  renamePreviewSessions.invalidateConfig(renamePreviewConfigKey(updated, updatedRoot, renameScanLimit(updated)));
   onlineCoverCache.setLimitMb(updated.onlineCoverCacheLimitMB);
   scheduler.applyConfigUpdate(previous, updated);
   res.json({ success: true, data: updated });
@@ -2363,12 +2372,15 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 }));
 
-function isRemotePathUnder(root: string, target: string) {
-  return isRemotePathWithin(root, target);
-}
-
 function extractBvid(value: string) {
   return String(value || "").match(/BV[0-9A-Za-z]+/)?.[0] || "";
+}
+
+function renameScanLimit(config: AppConfig) {
+  const configured = Number(config.renameScanMaxFiles || 10_000);
+  return Number.isFinite(configured)
+    ? Math.max(100, Math.min(100_000, Math.floor(configured)))
+    : 10_000;
 }
 
 function renameRemoteScanKey(config: AppConfig, root: string, scanLimit: number) {
@@ -2379,6 +2391,18 @@ function renameRemoteScanKey(config: AppConfig, root: string, scanLimit: number)
     root,
     scanLimit,
     maxDepth: 8,
+    maxEntries: Math.max(10_000, Math.min(500_000, scanLimit * 5)),
+    maxDirectories: Math.max(1_000, Math.min(50_000, scanLimit)),
+  })).digest("hex");
+}
+
+function renamePreviewConfigKey(config: AppConfig, root: string, scanLimit: number) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    storage: remoteStorageIdentity(config),
+    root,
+    scanLimit,
+    maxDepth: 8,
+    filenameTemplate: config.filenameTemplate,
   })).digest("hex");
 }
 
@@ -2397,7 +2421,7 @@ function buildLocalRenamePreview(
   records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
 ) {
   const indexedFiles = buildIndexedRemoteFiles(records, root);
-  return buildRenamePreview({
+  return buildRenamePreviewInternal({
     config,
     root,
     records,
@@ -2417,7 +2441,7 @@ function buildRemoteRenamePreview(
   records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
   scanned: RemoteRenameScan,
 ) {
-  return buildRenamePreview({
+  return buildRenamePreviewInternal({
     config,
     root,
     records,
@@ -2441,30 +2465,69 @@ function renameScanMetadata(snapshot: BackgroundPreviewSnapshot<RemoteRenameScan
       complete: result.complete,
       scannedFiles: result.files.length,
       skippedTotal: result.skippedTotal,
+      ...(result.scannedEntries === undefined ? {} : { scannedEntries: result.scannedEntries }),
+      ...(result.scannedDirectories === undefined ? {} : { scannedDirectories: result.scannedDirectories }),
     } : {}),
   };
 }
 
-function buildRenamePreviewResponse(
+function renameScanSignature(snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>) {
+  const result = snapshot.result;
+  return JSON.stringify([
+    snapshot.status,
+    snapshot.completedAt || 0,
+    snapshot.error || "",
+    result?.complete === true,
+    result?.files.length || 0,
+    result?.skippedTotal || 0,
+    result?.scannedEntries || 0,
+    result?.scannedDirectories || 0,
+  ]);
+}
+
+function buildRenameSessionCurrent(
   config: AppConfig,
   root: string,
   scanLimit: number,
   detailLimit: number | undefined,
+  records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
+  local: InternalRenamePreviewData,
   snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>,
-): RenamePreviewData & { remoteScan: ReturnType<typeof renameScanMetadata> } {
-  const records = stateManager.getRemoteFilePreviewRecords();
-  const local = buildLocalRenamePreview(config, root, scanLimit, detailLimit, records);
-  if (snapshot.status === "ready" && snapshot.result) {
-    return {
-      ...mergeRenamePreviews(
-        local,
-        buildRemoteRenamePreview(config, root, scanLimit, detailLimit, records, snapshot.result),
-        detailLimit,
-      ),
-      remoteScan: renameScanMetadata(snapshot),
-    };
+) {
+  if (snapshot.status !== "ready" || !snapshot.result) return local;
+  return mergeRenamePreviewInternals(
+    local,
+    buildRemoteRenamePreview(config, root, scanLimit, detailLimit, records, snapshot.result),
+    detailLimit,
+  );
+}
+
+function syncRenamePreviewSession(
+  previewId: string,
+  config: AppConfig,
+  root: string,
+  scanLimit: number,
+  detailLimit: number | undefined,
+) {
+  const session = renamePreviewSessions.get(previewId);
+  if (!session) return undefined;
+  const scanId = renamePreviewSessions.getScanId(previewId);
+  const snapshot = scanId ? renamePreviewScans.get(scanId) : undefined;
+  if (snapshot) {
+    const signature = renameScanSignature(snapshot);
+    if (signature !== renamePreviewSessions.getRemoteSignature(previewId)) {
+      const records = stateManager.getRemoteFilePreviewRecords();
+      const local = renamePreviewSessions.getLocalPreview(previewId);
+      if (!local) return renamePreviewSessions.getResponse(previewId);
+      const current = buildRenameSessionCurrent(config, root, scanLimit, detailLimit, records, local, snapshot);
+      renamePreviewSessions.applyScan(previewId, {
+        current,
+        remoteScan: renameScanMetadata(snapshot) as RenamePreviewRemoteScanInfo,
+        remoteSignature: signature,
+      });
+    }
   }
-  return { ...local, remoteScan: renameScanMetadata(snapshot) };
+  return renamePreviewSessions.getResponse(previewId);
 }
 
 async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManager["listInterruptedQualityUpgrades"]>[number]) {
@@ -2814,44 +2877,75 @@ app.post("/api/rename/preview", asyncHandler(async (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body as { detailLimit?: unknown; refresh?: unknown } : {};
   const config = configStore.get();
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  const configuredLimit = Number(config.renameScanMaxFiles || 10_000);
-  const scanLimit = Number.isFinite(configuredLimit)
-    ? Math.max(100, Math.min(100_000, Math.floor(configuredLimit)))
-    : 10_000;
+  const scanLimit = renameScanLimit(config);
   const detailLimit = previewDetailLimit(body.detailLimit);
+  const configKey = renamePreviewConfigKey(config, root, scanLimit);
   const scanKey = renameRemoteScanKey(config, root, scanLimit);
   const snapshot = renamePreviewScans.start(
     scanKey,
     () => listRemoteFilesRecursive(config, root, {
       maxDepth: 8,
       maxFiles: scanLimit,
+      maxEntries: Math.max(10_000, Math.min(500_000, scanLimit * 5)),
+      maxDirectories: Math.max(1_000, Math.min(50_000, scanLimit)),
       concurrency: 2,
       skippedLimit: 50,
     }),
     { force: body.refresh === true },
   );
-  res.json({ success: true, data: buildRenamePreviewResponse(config, root, scanLimit, detailLimit, snapshot) });
+  const records = stateManager.getRemoteFilePreviewRecords();
+  const local = buildLocalRenamePreview(config, root, scanLimit, detailLimit, records);
+  const current = buildRenameSessionCurrent(config, root, scanLimit, detailLimit, records, local, snapshot);
+  const response = renamePreviewSessions.create({
+    key: configKey,
+    configKey,
+    scanId: snapshot.id,
+    local,
+    current,
+    remoteScan: renameScanMetadata(snapshot) as RenamePreviewRemoteScanInfo,
+    remoteSignature: renameScanSignature(snapshot),
+    force: body.refresh === true,
+  });
+  res.json({ success: true, data: response });
 }));
 
 app.get("/api/rename/preview/status", asyncHandler(async (req, res) => {
-  const scanId = String(req.query.scanId || "");
-  const snapshot = renamePreviewScans.get(scanId);
-  if (!snapshot) {
+  const previewId = String(req.query.previewId || "").trim();
+  if (!previewId) {
     res.status(404).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
     return;
   }
   const config = configStore.get();
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  const configuredLimit = Number(config.renameScanMaxFiles || 10_000);
-  const scanLimit = Number.isFinite(configuredLimit)
-    ? Math.max(100, Math.min(100_000, Math.floor(configuredLimit)))
-    : 10_000;
-  if (snapshot.key !== renameRemoteScanKey(config, root, scanLimit)) {
+  const scanLimit = renameScanLimit(config);
+  const configKey = renamePreviewConfigKey(config, root, scanLimit);
+  const previewConfigKey = renamePreviewSessions.getConfigKey(previewId);
+  if (previewConfigKey === undefined) {
+    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
+    return;
+  }
+  if (previewConfigKey !== configKey) {
     res.status(409).json({ success: false, message: "远端配置或扫描范围已变化，请重新预览" });
     return;
   }
   const detailLimit = previewDetailLimit(req.query.detailLimit);
-  res.json({ success: true, data: buildRenamePreviewResponse(config, root, scanLimit, detailLimit, snapshot) });
+  const sinceRevisionValue = req.query.sinceRevision;
+  const sinceRevision = sinceRevisionValue === undefined || sinceRevisionValue === ""
+    ? undefined
+    : Number(sinceRevisionValue);
+  if (sinceRevision !== undefined && (!Number.isInteger(sinceRevision) || sinceRevision < 1)) {
+    res.status(400).json({ success: false, message: "预览版本号无效" });
+    return;
+  }
+  const full = syncRenamePreviewSession(previewId, config, root, scanLimit, detailLimit);
+  if (!full) {
+    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
+    return;
+  }
+  const response = sinceRevision !== undefined && sinceRevision === full.revision
+    ? renamePreviewSessions.getResponse(previewId, true)
+    : full;
+  res.json({ success: true, data: response });
 }));
 
 app.post("/api/rename", asyncHandler(async (req, res) => {
@@ -2859,63 +2953,57 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
     res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能重命名远端文件" });
     return;
   }
-  const { items } = req.body as {
-    items?: Array<{ bvid?: string; oldPath: string; newPath: string }>;
-  };
+  const body = req.body && typeof req.body === "object" ? req.body as {
+    previewId?: unknown;
+    candidateIds?: unknown;
+    items?: unknown;
+  } : {};
   const config = configStore.get();
-  if (Array.isArray(items)) {
-    if (items.length === 0 || items.length > 10_000) {
-      res.status(400).json({ success: false, message: "items must contain 1-10000 entries" });
-      return;
-    }
-    const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-    const records = new Map(stateManager.getRemoteFilePreviewRecords().map((record) => [record.bvid, record]));
-    const requestedTargets = new Set<string>();
-    const safeItems: Array<{ bvid?: string; oldPath: string; newPath: string; expectedSize?: number }> = [];
-    for (const item of items) {
-      const oldPath = normalizeRemotePath(item.oldPath);
-      const newPath = normalizeRemotePath(item.newPath);
-      if (!isRemotePathUnder(root, oldPath) || !isRemotePathUnder(root, newPath)) {
-        res.status(400).json({ success: false, message: "rename path must stay under current alistDest" });
-        return;
-      }
-      if (remoteDirname(oldPath) !== remoteDirname(newPath)) {
-        res.status(400).json({ success: false, message: "rename cannot move files across directories" });
-        return;
-      }
-      if (oldPath === newPath) {
-        res.status(400).json({ success: false, message: "oldPath and newPath must be different" });
-        return;
-      }
-      const bvid = extractBvid(item.bvid || oldPath);
-      if (!bvid) {
-        res.status(400).json({ success: false, message: "each rename item must include a BV id" });
-        return;
-      }
-      const record = records.get(bvid);
-      if (!record) {
-        res.status(400).json({ success: false, message: `local state does not contain ${bvid}` });
-        return;
-      }
-      const knownFiles = [...record.remoteFiles, ...record.relations.flatMap((relation) => relation.remoteFiles || [])];
-      const proof = resolveRenameLogicalFile({
-        name: remoteBasename(oldPath),
-        accessPath: oldPath,
-        accessDir: remoteDirname(oldPath),
-        strictPath: oldPath,
-        strictDir: remoteDirname(oldPath),
-      }, knownFiles);
-      if (!proof.ok) {
-        res.status(409).json({ success: false, message: "rename source no longer has a safe logical mapping" });
-        return;
-      }
-      if (requestedTargets.has(newPath)) {
-        res.status(400).json({ success: false, message: "duplicate target path" });
-        return;
-      }
-      requestedTargets.add(newPath);
-      safeItems.push({ bvid, oldPath, newPath, expectedSize: proof.recorded?.size });
-    }
+  if (Array.isArray(body.items)) {
+    res.status(400).json({ success: false, message: "请先创建重命名预览，再使用 previewId 和 candidateIds 执行" });
+    return;
+  }
+  const previewId = String(body.previewId || "").trim();
+  const candidateIds = Array.isArray(body.candidateIds) ? body.candidateIds.map((value) => String(value || "")) : [];
+  if (!previewId || candidateIds.length === 0 || candidateIds.length > 10_000) {
+    res.status(400).json({ success: false, message: "previewId 和 candidateIds 必填" });
+    return;
+  }
+  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
+  const previewConfigKey = renamePreviewSessions.getConfigKey(previewId);
+  if (previewConfigKey === undefined) {
+    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
+    return;
+  }
+  if (previewConfigKey !== renamePreviewConfigKey(config, root, renameScanLimit(config))) {
+    res.status(409).json({ success: false, message: "远端配置或扫描范围已变化，请重新预览" });
+    return;
+  }
+  const started = renamePreviewSessions.beginExecution(previewId, candidateIds);
+  if (started.kind === "missing") {
+    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
+    return;
+  }
+  if (started.kind === "invalid") {
+    res.status(409).json({ success: false, message: started.message });
+    return;
+  }
+  if (started.kind === "in_progress") {
+    res.status(202).json({ success: true, data: { status: "running" } });
+    return;
+  }
+  if (started.kind === "completed") {
+    res.json({ success: true, data: started.result });
+    return;
+  }
+  const safeItems = started.candidates.map((item) => ({
+    bvid: item.bvid,
+    oldPath: item.oldPath,
+    newPath: item.newPath,
+    expectedSize: item.expectedSize,
+    sourceAccessPath: item.sourceAccessPath,
+  }));
+  try {
     const result = await batchRenameRemotePaths(config, safeItems);
     const stateRenames = new Map<string, Array<{ oldPath: string; newPath: string }>>();
     for (const item of result.results) {
@@ -2928,25 +3016,27 @@ app.post("/api/rename", asyncHandler(async (req, res) => {
       }
     }
     for (const [bvid, renames] of stateRenames) stateManager.renameRemoteFilesBatch(bvid, renames);
-    res.json({
-      success: true,
-      data: {
-        ...result,
-        results: result.results.map((entry: any) => ({
-          ...entry,
-          oldPath: redactRemotePathForDisplay(entry.oldPath),
-          newPath: redactRemotePathForDisplay(entry.newPath),
-          actualPath: entry.actualPath ? redactRemotePathForDisplay(entry.actualPath) : entry.actualPath,
-          observedPaths: Array.isArray(entry.observedPaths)
-            ? entry.observedPaths.map((value: string) => redactRemotePathForDisplay(value))
-            : entry.observedPaths,
-          error: entry.error ? sanitizeDiagnosticText(entry.error, 500) : entry.error,
-        })),
-      },
-    });
-    return;
+    const safeResult = {
+      ...result,
+      results: result.results.map((entry: any) => ({
+        ...entry,
+        oldPath: redactRemotePathForDisplay(entry.oldPath),
+        newPath: redactRemotePathForDisplay(entry.newPath),
+        actualPath: entry.actualPath ? redactRemotePathForDisplay(entry.actualPath) : entry.actualPath,
+        observedPaths: Array.isArray(entry.observedPaths)
+          ? entry.observedPaths.map((value: string) => redactRemotePathForDisplay(value))
+          : entry.observedPaths,
+        error: entry.error ? sanitizeDiagnosticText(entry.error, 500) : entry.error,
+      })),
+    };
+    renamePreviewSessions.finishExecution(previewId, safeResult);
+    res.json({ success: true, data: safeResult });
+  } catch (error) {
+    const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 300);
+    const failure = { success: 0, failed: safeItems.length, results: [], error: message };
+    renamePreviewSessions.finishExecution(previewId, failure);
+    throw error;
   }
-  res.status(400).json({ success: false, message: "items required" });
 }));
 
 app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -2971,6 +3061,7 @@ export async function closeAppResources() {
   if (!await pathMigrationStopped) throw new Error("Path migration did not stop before closing the state database");
   if (!await archiveDeletionStopped) throw new Error("Archive deletion did not stop before closing the state database");
   if (!await renamePreviewStopped) throw new Error("Rename preview scan did not stop before closing the state database");
+  renamePreviewSessions.clear();
   const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000);
   const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
   if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
