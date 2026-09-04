@@ -127,6 +127,13 @@ const baseItems = [
     statusGroup: "issue",
     backupStatus: "missing",
     unavailable: true,
+    sourceAvailability: {
+      state: "dormant",
+      reason: "api_not_found",
+      firstSeenAt: "2026-07-01T08:00:00.000Z",
+      lastCheckedAt: "2026-08-01T08:00:00.000Z",
+      checkRound: 3,
+    },
     membershipCount: 1,
     memberships: [{ folderTitle: "已停用收藏夹" }],
     playback: { available: false, partial: false, partCount: 0 },

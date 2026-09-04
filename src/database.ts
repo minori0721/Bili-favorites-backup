@@ -1504,6 +1504,53 @@ export class StateDatabase {
       .filter(Boolean);
   }
 
+  listAvailabilityCheckVideos(limit = 10_000) {
+    return (this.db.prepare(`
+      SELECT v.payload_json, summary.backup_status AS aggregate_status
+      FROM videos v
+      LEFT JOIN video_backup_summary summary ON summary.bvid=v.bvid
+      WHERE (
+          json_extract(v.payload_json, '$.sourceAvailability.state') IN ('pending_confirmation','unknown','confirmed_unavailable')
+          OR (
+            json_extract(v.payload_json, '$.sourceAvailability.state') IS NULL
+            AND json_extract(v.payload_json, '$.biliStatus')='unavailable'
+            AND COALESCE(json_extract(v.payload_json, '$.favoriteUnavailable'), 0)=1
+          )
+        )
+        AND EXISTS (
+          SELECT 1 FROM favorite_relations r
+          WHERE r.bvid=v.bvid
+            AND r.active_in_favorite=1
+            AND COALESCE(r.source_kind, 'favorite')='favorite'
+            AND COALESCE(r.backup_status, 'discovered') NOT IN ('uploaded','verified','partial_verified')
+        )
+      ORDER BY COALESCE(json_extract(v.payload_json, '$.sourceAvailability.nextCheckAt'), '') ASC, v.bvid ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(100_000, Math.floor(limit)))) as any[])
+      .map((row) => parseVideoRow(row))
+      .filter(Boolean);
+  }
+
+  listDormantAvailabilityVideos(limit = 10_000) {
+    return (this.db.prepare(`
+      SELECT v.payload_json
+      FROM videos v
+      WHERE json_extract(v.payload_json, '$.sourceAvailability.state')='dormant'
+        AND EXISTS (
+          SELECT 1 FROM favorite_relations r
+          WHERE r.bvid=v.bvid
+            AND r.active_in_favorite=1
+            AND COALESCE(r.source_kind, 'favorite')='favorite'
+            AND COALESCE(r.self_visible, 0)=0
+            AND COALESCE(r.backup_status, 'discovered') NOT IN ('uploaded','verified','partial_verified')
+        )
+      ORDER BY v.bvid ASC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(100_000, Math.floor(limit)))) as any[])
+      .map((row) => parseVideoRow(row))
+      .filter(Boolean);
+  }
+
   updateBrowserMediaMetadata(
     userId: string,
     mediaId: number,

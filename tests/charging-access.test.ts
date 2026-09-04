@@ -268,10 +268,10 @@ test("access probe maps restricted, transient, unavailable, and no-account resul
       expectedStatus: "charging_restricted",
     },
     {
-      name: "unavailable becomes lost",
+      name: "unavailable becomes a low-frequency availability probe",
       users: [{ id: "u1", uid: 1, name: "One", cookie: { SESSDATA: "one", bili_jct: "one", DedeUserID: "1" }, favorites: [{ mediaId: 1, title: "Favorites" }], enabled: true, lastLoginAt: at }],
       snapshot: { available: false, access: classifyVideoAccess(undefined), pages: [] },
-      expectedDelay: null,
+      expectedDelay: 24 * 60 * 60_000,
       expectedStatus: "lost",
     },
   ] as any[];

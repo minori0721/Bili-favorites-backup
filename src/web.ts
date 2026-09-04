@@ -489,6 +489,10 @@ function getAppStyles() {
       .video-play-affordance { display:none!important; }
     }
     .video-play-reason { display:block; color:var(--muted); font-size:11px; margin-top:5px; }
+    .video-source-availability { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:7px; color:#536C68; font-size:11px; line-height:1.55; }
+    .video-source-availability button { min-height:30px; padding:4px 10px; border:1px solid rgba(57,197,187,.42); border-radius:var(--radius-control); background:rgba(255,255,255,.58); color:#147F77; font:inherit; font-weight:700; cursor:pointer; }
+    .video-source-availability button:hover,.video-source-availability button:focus-visible { border-color:var(--accent); outline:2px solid rgba(57,197,187,.18); outline-offset:2px; }
+    .video-source-availability button:disabled { opacity:.58; cursor:wait; }
     .archive-library-modal { padding:0; align-items:stretch; background:rgba(20,35,33,0.58); backdrop-filter:blur(10px); }
     .archive-library-shell,.online-content-shell { position:relative; width:100%; height:100dvh; min-width:0; overflow:hidden; display:grid; grid-template-columns:280px minmax(0,1fr); background:rgba(245,249,248,0.92); backdrop-filter:blur(18px); color:var(--ink); }
     .archive-library-sidebar,.online-content-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid #DCE8E6; background:rgba(238,245,243,0.90); backdrop-filter:blur(18px); }
@@ -1821,6 +1825,7 @@ function getAppScript() {
     const SEP = '-';
 
     const actionLocks = new Set();
+    const availabilityRecheckInFlight = new Set();
     const configLoadState = { token:0, controller:null, loaded:false };
     const usersLoadState = { token:0, controller:null, loaded:false };
     const favoritesState = { userId:null, token:0, controller:null, coverObserver:null, loaded:false };
@@ -4663,6 +4668,11 @@ function getAppScript() {
         if (item.playback.partial) return '部分可播放';
         return '可播放';
       }
+      const sourceState = item?.sourceAvailability?.state;
+      if (sourceState === 'pending_confirmation') return 'B站状态待确认';
+      if (sourceState === 'unknown') return 'B站状态复核中';
+      if (sourceState === 'confirmed_unavailable') return 'B站源不可用';
+      if (sourceState === 'dormant') return 'B站源长期不可用';
       const labels = {
         remote_visibility_timeout:'等待远端文件可见',
         remote_visibility_stalled:'远端文件长时间不可见',
@@ -5766,6 +5776,7 @@ function getAppScript() {
       let stateClass = '';
       let badgeClass = '';
       let badgeText = '';
+      const sourceState = item?.sourceAvailability?.state;
       if (item.backupStatus === 'uploaded') {
         stateClass = item.unavailable ? 'unavailable-uploaded' : 'processed';
         badgeClass = 'upload-pending';
@@ -5781,7 +5792,7 @@ function getAppScript() {
       } else if (item.unavailable && !item.processed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
-        badgeText = '未上传且失效';
+        badgeText = sourceState === 'dormant' ? '长期不可用' : 'B站源不可用';
       } else if (item.processed) {
         stateClass = 'processed';
         badgeClass = 'done';
@@ -5809,6 +5820,20 @@ function getAppScript() {
       } else if (item.backupStatus === 'missing') {
         badgeClass = 'removed-missing';
         badgeText = '远端缺失';
+      } else if (sourceState === 'pending_confirmation') {
+        badgeClass = 'pending';
+        badgeText = '状态待确认';
+      } else if (sourceState === 'unknown') {
+        badgeClass = 'pending';
+        badgeText = '状态复核中';
+      } else if (sourceState === 'confirmed_unavailable') {
+        stateClass = 'unavailable-missing';
+        badgeClass = 'removed-missing';
+        badgeText = 'B站源不可用';
+      } else if (sourceState === 'dormant') {
+        stateClass = 'unavailable-missing';
+        badgeClass = 'removed-missing';
+        badgeText = '长期不可用';
       } else if (item.failed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -5853,6 +5878,48 @@ function getAppScript() {
             ? '归档容器暂不支持浏览器直接播放'
             : '尚未形成可播放的已验证归档';
         info.appendChild(reason);
+      }
+      if (sourceState) {
+        const source = document.createElement('div');
+        source.className = 'video-source-availability';
+        const copy = document.createElement('span');
+        const sourceMessages = {
+          pending_confirmation:'B站状态待确认，系统正在后台复核',
+          unknown:'暂时无法确认B站状态，系统稍后重试',
+          confirmed_unavailable:'B站源目前不可用，系统已停止重复下载',
+          dormant:'B站源长期不可用，无需处理；重新可见后会自动恢复'
+        };
+        copy.textContent = (sourceMessages[sourceState] || 'B站状态正在复核')
+          + (canPlay || item.processed ? '；已有归档和封面不受影响' : '');
+        source.appendChild(copy);
+        if (item.bvid) {
+          const recheck = document.createElement('button');
+          recheck.type = 'button';
+          recheck.textContent = availabilityRecheckInFlight.has(item.bvid) ? '已加入复核' : '立即复核';
+          recheck.disabled = availabilityRecheckInFlight.has(item.bvid);
+          recheck.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (availabilityRecheckInFlight.has(item.bvid)) return;
+            availabilityRecheckInFlight.add(item.bvid);
+            recheck.disabled = true;
+            recheck.textContent = '正在加入...';
+            try {
+              await fetchJson('/api/videos/' + encodeURIComponent(item.bvid) + '/availability-recheck', {
+                method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+              });
+              availabilityRecheckInFlight.delete(item.bvid);
+              recheck.textContent = '已加入复核';
+              showToast('已加入一次后台复核', 'success');
+            } catch (error) {
+              availabilityRecheckInFlight.delete(item.bvid);
+              recheck.disabled = false;
+              recheck.textContent = '立即复核';
+            }
+          });
+          source.appendChild(recheck);
+        }
+        info.appendChild(source);
       }
       div.appendChild(info);
 

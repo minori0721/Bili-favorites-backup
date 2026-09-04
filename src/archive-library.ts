@@ -7,7 +7,7 @@ import {
   type PlaybackQueuePage,
   type PlaybackQueueSource,
 } from "./playback.js";
-import { MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, type BackupStatus, type FavoriteRelation, type VideoArchiveEntry } from "./state.js";
+import { MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, type BackupStatus, type FavoriteRelation, type SourceAvailability, type VideoArchiveEntry } from "./state.js";
 import type { BiliUser } from "./users.js";
 
 export type ArchiveLibraryScope = "global" | "account" | "folder";
@@ -58,6 +58,7 @@ export interface ArchiveLibraryItem {
   backupStatus: BackupStatus;
   statusGroup: Exclude<ArchiveLibraryFilter, "all">;
   unavailable: boolean;
+  sourceAvailability?: SourceAvailability;
   activeInFavorite: boolean;
   lastSeenAt: string;
   membershipCount: number;
@@ -228,7 +229,10 @@ function displayCoverLocalPath(video: VideoArchiveEntry) {
 function relationUnavailable(relation: FavoriteRelation, video: VideoArchiveEntry) {
   const favoriteUnavailable = Boolean(relation.favoriteUnavailable || video.favoriteUnavailable);
   const selfVisible = Boolean(relation.selfVisible || video.selfVisible);
-  return (favoriteUnavailable && !selfVisible) || video.biliStatus === "unavailable";
+  if (selfVisible) return false;
+  const sourceState = video.sourceAvailability?.state;
+  if (sourceState) return sourceState === "confirmed_unavailable" || sourceState === "dormant";
+  return favoriteUnavailable && video.biliStatus === "unavailable";
 }
 
 function safeLibraryError(value: unknown) {
@@ -827,6 +831,7 @@ function itemFromRecords(
     backupStatus: chooseStatus(records, best),
     statusGroup,
     unavailable: records.some(({ relation, video: entry }) => relationUnavailable(relation, entry)),
+    sourceAvailability: video.sourceAvailability,
     activeInFavorite: records.some(({ relation }) => relation.sourceKind !== "manual" && relation.activeInFavorite),
     lastSeenAt: records.map(({ relation }) => relation.lastSeenAt).sort().reverse()[0] || video.lastSeenAt,
     membershipCount: memberships.length,

@@ -138,6 +138,27 @@ export interface ChargingAccessRestriction {
   lastError?: string;
 }
 
+export type SourceAvailabilityState =
+  | "pending_confirmation"
+  | "unknown"
+  | "confirmed_unavailable"
+  | "dormant";
+
+export type SourceAvailabilityReason =
+  | "favorite_flag"
+  | "api_not_found"
+  | "submission_invisible"
+  | "temporary_error";
+
+export interface SourceAvailability {
+  state: SourceAvailabilityState;
+  reason: SourceAvailabilityReason;
+  firstSeenAt: string;
+  lastCheckedAt?: string;
+  nextCheckAt?: string;
+  checkRound: number;
+}
+
 export interface DownloadSessionReference {
   id: string;
   localDir: string;
@@ -152,6 +173,7 @@ export interface VideoArchiveEntry {
   bvid: string;
   title: string;
   upperName: string;
+  upperMid?: number;
   cover?: string;
   originalMeta?: VideoMetadataSnapshot;
   description?: string;
@@ -166,6 +188,7 @@ export interface VideoArchiveEntry {
   localDir?: string;
   downloadSession?: DownloadSessionReference;
   accessRestriction?: ChargingAccessRestriction;
+  sourceAvailability?: SourceAvailability;
   accessClassification?: {
     purpose: "legacy_failure_classification";
     classifiedAt?: string;
@@ -289,6 +312,7 @@ export interface FolderDetailItem {
   lastSeenAt: string;
   activeInFavorite: boolean;
   accessRestriction?: ChargingAccessRestriction;
+  sourceAvailability?: SourceAvailability;
   playback: PlaybackAvailability;
 }
 
@@ -415,8 +439,51 @@ function displayDescription(entry: VideoArchiveEntry) {
   return entry.originalMeta?.description || entry.description;
 }
 
+const CONFIRMED_SOURCE_AVAILABILITY_STATES = new Set<SourceAvailabilityState>([
+  "confirmed_unavailable",
+  "dormant",
+]);
+const TRACKED_SOURCE_AVAILABILITY_STATES = new Set<SourceAvailabilityState>([
+  "pending_confirmation",
+  "unknown",
+  "confirmed_unavailable",
+  "dormant",
+]);
+
+const SOURCE_AVAILABILITY_ERROR_MESSAGES = new Set([
+  "Video became unavailable before a verified backup was found.",
+  "Video is currently unavailable on Bilibili.",
+  "Video unavailable while resuming backup.",
+]);
+
+function isSourceAvailabilityError(value: unknown) {
+  const message = String(value || "").trim();
+  if (SOURCE_AVAILABILITY_ERROR_MESSAGES.has(message)) return true;
+  if (message.startsWith("视频不可用（已删除、下架或不可见）:")) return true;
+  return message.startsWith("BBDown reported failure:")
+    && /(视频不存在|稿件不可见|已失效|资源不可用)/.test(message);
+}
+
+function sourceIsConfirmedUnavailable(entry: VideoArchiveEntry) {
+  if (entry.selfVisible) return false;
+  const state = entry.sourceAvailability?.state;
+  if (state) return CONFIRMED_SOURCE_AVAILABILITY_STATES.has(state);
+  // Legacy state files predate sourceAvailability. Only retain their old
+  // unavailable meaning when the favorite endpoint explicitly said so.
+  return entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable);
+}
+
+function sourceBlocksBackup(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
+  if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
+  if (entry.sourceAvailability) return TRACKED_SOURCE_AVAILABILITY_STATES.has(entry.sourceAvailability.state);
+  return entry.biliStatus === "unavailable"
+    && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable);
+}
+
 function relationTreatsUnavailable(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
-  return entry.biliStatus === "unavailable" && !relation?.selfVisible;
+  if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
+  return sourceIsConfirmedUnavailable(entry)
+    || (entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable));
 }
 
 export function relationKey(userId: string, mediaId: number, bvid: string) {
@@ -979,8 +1046,24 @@ export class StateManager {
     const existing = this.state.videos![item.bvid];
     const wasKnown = Boolean(existing);
     const favoriteUnavailable = Boolean(item.favoriteUnavailable || item.unavailable);
-    const biliStatus: BiliStatus = favoriteUnavailable ? "unavailable" : "available";
-    const relationStatus: BackupStatus = favoriteUnavailable && !item.selfVisible ? "lost" : "discovered";
+    const sourceUnavailable = favoriteUnavailable && !item.selfVisible;
+    const previousAvailability = existing?.sourceAvailability;
+    const confirmedUnavailable = sourceUnavailable && Boolean(previousAvailability
+      && ["confirmed_unavailable", "dormant"].includes(previousAvailability.state));
+    const biliStatus: BiliStatus = sourceUnavailable
+      ? (confirmedUnavailable ? "unavailable" : "unknown")
+      : "available";
+    const sourceAvailability: SourceAvailability | undefined = sourceUnavailable
+      ? {
+          state: confirmedUnavailable ? previousAvailability!.state : (previousAvailability?.state || "pending_confirmation"),
+          reason: confirmedUnavailable ? previousAvailability!.reason : (previousAvailability?.reason || "favorite_flag"),
+          firstSeenAt: previousAvailability?.firstSeenAt || seenAt,
+          lastCheckedAt: previousAvailability?.lastCheckedAt,
+          nextCheckAt: previousAvailability?.nextCheckAt,
+          checkRound: Math.max(0, Number(previousAvailability?.checkRound || 0)),
+        }
+      : undefined;
+    const relationStatus: BackupStatus = confirmedUnavailable ? "lost" : "discovered";
 
     if (!existing) {
       const originalMeta = hasUsableFavoriteMeta(item)
@@ -996,6 +1079,7 @@ export class StateManager {
         bvid: item.bvid,
         title: item.title || "Untitled",
         upperName: item.upperName || "Unknown",
+        upperMid: item.upperMid,
         cover: item.cover,
         description: item.description,
         originalMeta,
@@ -1004,6 +1088,7 @@ export class StateManager {
         biliStatus,
         backupStatus: relationStatus,
         statusUpdatedAt: seenAt,
+        sourceAvailability,
         favoriteUnavailable: favoriteUnavailable || undefined,
         selfVisible: item.selfVisible || undefined,
       };
@@ -1013,6 +1098,9 @@ export class StateManager {
       }
       if (!isPlaceholderUpperName(item.upperName)) {
         existing.upperName = item.upperName || existing.upperName;
+      }
+      if (Number(item.upperMid || 0) > 0) {
+        existing.upperMid = Number(item.upperMid);
       }
       if (item.cover) {
         existing.cover = item.cover;
@@ -1032,11 +1120,17 @@ export class StateManager {
       }
       existing.lastSeenAt = seenAt;
       existing.biliStatus = biliStatus;
+      existing.sourceAvailability = sourceAvailability;
       existing.favoriteUnavailable = favoriteUnavailable || undefined;
-      existing.selfVisible = item.selfVisible || undefined;
-      if (favoriteUnavailable && !item.selfVisible && !BACKED_UP_STATUSES.has(existing.backupStatus)) {
+      existing.selfVisible = item.selfVisible || existing.selfVisible || undefined;
+      if (confirmedUnavailable && !BACKED_UP_STATUSES.has(existing.backupStatus)
+        && !ACTIVE_BACKUP_STATUSES.has(existing.backupStatus)) {
         this.setVideoStatus(existing, "lost", seenAt);
         existing.lastError = "Video became unavailable before a verified backup was found.";
+      } else if (sourceUnavailable && !confirmedUnavailable && existing.backupStatus === "lost"
+        && isSourceAvailabilityError(existing.lastError)) {
+        this.setVideoStatus(existing, "discovered", seenAt);
+        existing.lastError = undefined;
       } else if (!favoriteUnavailable && existing.backupStatus === "lost") {
         this.setVideoStatus(existing, "discovered", seenAt);
         existing.lastError = undefined;
@@ -1064,13 +1158,20 @@ export class StateManager {
         relation.favOrderUpdatedAt = seenAt;
       }
       if (!relation.backupStatus) {
-        this.setRelationStatus(relation, this.initialRelationStatus(item.bvid, relation), seenAt);
+        this.setRelationStatus(relation, sourceUnavailable && !confirmedUnavailable
+          ? "discovered"
+          : this.initialRelationStatus(item.bvid, relation), seenAt);
+      } else if (confirmedUnavailable && !BACKED_UP_STATUSES.has(relation.backupStatus)
+        && !ACTIVE_BACKUP_STATUSES.has(relation.backupStatus)) {
+        this.setRelationStatus(relation, "lost", seenAt);
+        relation.lastError = "Video became unavailable before a verified backup was found.";
+      } else if (sourceUnavailable && !confirmedUnavailable && relation.backupStatus === "lost"
+        && isSourceAvailabilityError(relation.lastError)) {
+        this.setRelationStatus(relation, "discovered", seenAt);
+        relation.lastError = undefined;
       } else if ((!favoriteUnavailable || item.selfVisible) && relation.backupStatus === "lost") {
         this.setRelationStatus(relation, "discovered", seenAt);
         relation.lastError = undefined;
-      } else if (favoriteUnavailable && !item.selfVisible && !BACKED_UP_STATUSES.has(relation.backupStatus)) {
-        this.setRelationStatus(relation, "lost", seenAt);
-        relation.lastError = "Video became unavailable before a verified backup was found.";
       }
     } else {
       this.state.relations![key] = {
@@ -1149,7 +1250,7 @@ export class StateManager {
   shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string) {
     const entry = this.state.videos?.[bvid];
     const relation = userId && mediaId ? this.state.relations?.[relationKey(userId, mediaId, bvid)] : undefined;
-    if (!entry || relationTreatsUnavailable(relation, entry)) {
+    if (!entry || sourceBlocksBackup(relation, entry)) {
       return false;
     }
     const failed = userId ? this.getFailedEntry(userId, bvid, mediaId) : undefined;
@@ -1291,7 +1392,7 @@ export class StateManager {
   markRetryPending(bvid: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    if (entry.favoriteUnavailable && !entry.selfVisible) {
+    if (sourceIsConfirmedUnavailable(entry) && !entry.selfVisible) {
       this.setVideoStatus(entry, "lost");
       entry.lastError ||= "Video unavailable while resuming backup.";
       this.save();
@@ -1421,21 +1522,178 @@ export class StateManager {
   }
 
   markUnavailableFromAccessProbe(bvid: string, checkedAt = nowIso()) {
+    this.markAvailabilityConfirmedUnavailable(bvid, "api_not_found", checkedAt);
+  }
+
+  getSourceAvailability(bvid: string) {
+    const value = this.state.videos?.[bvid]?.sourceAvailability;
+    return value ? { ...value } : undefined;
+  }
+
+  private updateSourceAvailability(
+    bvid: string,
+    value: {
+      state: SourceAvailabilityState;
+      reason: SourceAvailabilityReason;
+      checkedAt?: string;
+      nextCheckAt?: string;
+      checkRound?: number;
+    }
+  ) {
     const entry = this.state.videos?.[bvid];
-    if (!entry) return;
-    delete entry.accessRestriction;
-    entry.biliStatus = "unavailable";
+    if (!entry) return false;
+    const checkedAt = value.checkedAt || nowIso();
+    const previous = entry.sourceAvailability;
+    const next: SourceAvailability = {
+      state: value.state,
+      reason: value.reason,
+      firstSeenAt: previous?.firstSeenAt || checkedAt,
+      lastCheckedAt: checkedAt,
+      nextCheckAt: value.nextCheckAt,
+      checkRound: Math.max(0, Number(value.checkRound ?? previous?.checkRound ?? 0)),
+    };
+    let changed = JSON.stringify(previous || null) !== JSON.stringify(next)
+      || entry.biliStatus !== (value.state === "confirmed_unavailable" || value.state === "dormant" ? "unavailable" : "unknown");
+    entry.sourceAvailability = next;
+    const unavailable = value.state === "confirmed_unavailable" || value.state === "dormant";
+    entry.biliStatus = unavailable ? "unavailable" : "unknown";
     entry.favoriteUnavailable = true;
-    entry.lastError = "Video became unavailable before a verified backup was found.";
+    if (unavailable) {
+      entry.lastError = "Video is currently unavailable on Bilibili.";
+    } else if (isSourceAvailabilityError(entry.lastError)) {
+      entry.lastError = undefined;
+    }
     for (const relation of this.listRelationsForBvid(bvid)) {
-      if (BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")) continue;
+      if (relation.sourceKind === "manual"
+        || !relation.activeInFavorite
+        || relation.selfVisible
+        || BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")) continue;
+      const beforeStatus = relation.backupStatus;
+      const beforeFavoriteUnavailable = relation.favoriteUnavailable;
+      const beforeLastError = relation.lastError;
       relation.favoriteUnavailable = true;
-      this.setRelationStatus(relation, "lost", checkedAt);
-      relation.lastError = entry.lastError;
+      if (unavailable) {
+        this.setRelationStatus(relation, "lost", checkedAt);
+        relation.lastError = entry.lastError;
+      } else if (relation.backupStatus === "lost" && isSourceAvailabilityError(relation.lastError)) {
+        this.setRelationStatus(relation, "discovered", checkedAt);
+        relation.lastError = undefined;
+      } else if (isSourceAvailabilityError(relation.lastError)) {
+        relation.lastError = undefined;
+      }
       this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
+      changed ||= beforeStatus !== relation.backupStatus
+        || Boolean(beforeFavoriteUnavailable) !== Boolean(relation.favoriteUnavailable)
+        || beforeLastError !== relation.lastError;
     }
     this.refreshVideoAggregateStatus(bvid);
-    this.save();
+    if (changed || unavailable) this.save();
+    return changed;
+  }
+
+  markAvailabilityPending(
+    bvid: string,
+    reason: SourceAvailabilityReason = "favorite_flag",
+    checkedAt = nowIso(),
+    nextCheckAt?: string,
+  ) {
+    const state = this.state.videos?.[bvid]?.sourceAvailability?.state;
+    if (state === "confirmed_unavailable" || state === "dormant") return false;
+    return this.updateSourceAvailability(bvid, {
+      state: "pending_confirmation",
+      reason,
+      checkedAt,
+      nextCheckAt,
+    });
+  }
+
+  markAvailabilityUnknown(
+    bvid: string,
+    reason: SourceAvailabilityReason = "temporary_error",
+    checkedAt = nowIso(),
+    nextCheckAt?: string,
+    checkRound?: number,
+  ) {
+    const state = this.state.videos?.[bvid]?.sourceAvailability?.state;
+    if (state === "dormant") return false;
+    return this.updateSourceAvailability(bvid, {
+      state: "unknown",
+      reason,
+      checkedAt,
+      nextCheckAt,
+      checkRound,
+    });
+  }
+
+  markAvailabilityConfirmedUnavailable(
+    bvid: string,
+    reason: SourceAvailabilityReason = "api_not_found",
+    checkedAt = nowIso(),
+    nextCheckAt?: string,
+    checkRound?: number,
+  ) {
+    delete this.state.videos?.[bvid]?.accessRestriction;
+    return this.updateSourceAvailability(bvid, {
+      state: "confirmed_unavailable",
+      reason,
+      checkedAt,
+      nextCheckAt,
+      checkRound,
+    });
+  }
+
+  markAvailabilityDormant(
+    bvid: string,
+    reason: SourceAvailabilityReason = "api_not_found",
+    checkedAt = nowIso(),
+    checkRound?: number,
+  ) {
+    delete this.state.videos?.[bvid]?.accessRestriction;
+    return this.updateSourceAvailability(bvid, {
+      state: "dormant",
+      reason,
+      checkedAt,
+      checkRound,
+    });
+  }
+
+  markAvailabilityRecovered(bvid: string, recoveredAt = nowIso()) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry) return false;
+    const previousAvailability = entry.sourceAvailability;
+    const previousStatus = entry.biliStatus;
+    const previousFavoriteUnavailable = entry.favoriteUnavailable;
+    const previousLastError = entry.lastError;
+    let changed = Boolean(previousAvailability)
+      || previousStatus !== "available"
+      || Boolean(previousFavoriteUnavailable)
+      || isSourceAvailabilityError(previousLastError);
+    delete entry.sourceAvailability;
+    entry.biliStatus = "available";
+    entry.favoriteUnavailable = undefined;
+    if (isSourceAvailabilityError(entry.lastError)) entry.lastError = undefined;
+    for (const relation of this.listRelationsForBvid(bvid)) {
+      const sourceFailure = isSourceAvailabilityError(relation.lastError);
+      if (relation.selfVisible && !sourceFailure) continue;
+      const beforeStatus = relation.backupStatus;
+      const beforeFavoriteUnavailable = relation.favoriteUnavailable;
+      const beforeLastError = relation.lastError;
+      relation.favoriteUnavailable = undefined;
+      if (relation.activeInFavorite && relation.backupStatus === "lost" && sourceFailure) {
+        this.setRelationStatus(relation, "discovered", recoveredAt);
+        relation.lastError = undefined;
+        this.clearFailedEntry(relation.userId, relation.mediaId, bvid);
+      } else if (sourceFailure) {
+        relation.lastError = undefined;
+      }
+      this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
+      changed ||= beforeStatus !== relation.backupStatus
+        || Boolean(beforeFavoriteUnavailable) !== Boolean(relation.favoriteUnavailable)
+        || beforeLastError !== relation.lastError;
+    }
+    this.refreshVideoAggregateStatus(bvid);
+    if (changed) this.save();
+    return changed;
   }
 
   getChargingRestriction(bvid: string) {
@@ -1446,6 +1704,30 @@ export class StateManager {
     const videos = this.lazyState ? this.database.listChargingRestrictedVideos() : Object.values(this.state.videos || {});
     return videos.filter((video) => video.accessRestriction?.type === "charging" && this.listRelationsForBvid(video.bvid)
       .some((relation) => relation.activeInFavorite && !BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")));
+  }
+
+  listAvailabilityCheckVideos(limit = 10_000) {
+    const videos = this.lazyState
+      ? this.database.listAvailabilityCheckVideos(limit)
+      : Object.values(this.state.videos || {}).filter((video) => [
+        "pending_confirmation", "unknown", "confirmed_unavailable",
+      ].includes(video.sourceAvailability?.state || "")
+        || (!video.sourceAvailability && video.biliStatus === "unavailable" && video.favoriteUnavailable));
+    return videos
+      .filter((video) => this.listRelationsForBvid(video.bvid).some((relation) =>
+        relation.activeInFavorite
+        && relation.sourceKind !== "manual"
+        && !relation.selfVisible
+        && !BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")))
+      .slice(0, Math.max(1, Math.floor(limit)));
+  }
+
+  listDormantAvailabilityVideos(limit = 10_000) {
+    return this.lazyState
+      ? this.database.listDormantAvailabilityVideos(limit)
+      : Object.values(this.state.videos || {})
+          .filter((video) => video.sourceAvailability?.state === "dormant")
+          .slice(0, Math.max(1, Math.floor(limit)));
   }
 
   getChargingRestrictionSummary() {
@@ -1478,14 +1760,17 @@ export class StateManager {
       nextCheckAt: value.nextCheckAt,
     };
     if (value.result === "available") {
-      entry.biliStatus = "available";
-      entry.lastError = undefined;
+      const recoveredAt = value.classifiedAt || nowIso();
+      this.markAvailabilityRecovered(bvid, recoveredAt);
       for (const relation of this.listRelationsForBvid(bvid)) {
-        if (!relation.activeInFavorite || ["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || "")) continue;
+        if (!relation.activeInFavorite
+          || ["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || "")) continue;
+        const failure = this.getFailedEntry(relation.userId, bvid, relation.mediaId);
+        if (!failure?.permanent) continue;
         const tracked = this.getRelation(relation.userId, relation.mediaId, bvid);
         if (!tracked) continue;
         this.clearFailedEntry(relation.userId, relation.mediaId, bvid);
-        this.setRelationStatus(tracked, "discovered", value.classifiedAt || nowIso());
+        this.setRelationStatus(tracked, "discovered", recoveredAt);
         tracked.lastError = undefined;
       }
       this.refreshVideoAggregateStatus(bvid);
@@ -2278,7 +2563,7 @@ export class StateManager {
           changed = true;
         }
         if (resumableStatuses.has(entry.backupStatus)) {
-          const target = entry.favoriteUnavailable && !entry.selfVisible ? "lost" : "queued";
+          const target = sourceIsConfirmedUnavailable(entry) && !entry.selfVisible ? "lost" : "queued";
           if (entry.backupStatus !== target) {
             this.setVideoStatus(entry, target, at);
             videoChanged = true;
@@ -2825,6 +3110,7 @@ export class StateManager {
       description: displayDescription(video),
       favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
       selfVisible: relation.selfVisible || video.selfVisible,
+      sourceAvailability: video.sourceAvailability,
       favOrder: relation.favOrder,
       favPage: relation.favPage,
       favIndexInPage: relation.favIndexInPage,
@@ -2857,6 +3143,7 @@ export class StateManager {
         description: displayDescription(video),
         favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
         selfVisible: relation.selfVisible || video.selfVisible,
+        sourceAvailability: video.sourceAvailability,
         unavailable: true,
         processed,
         failed,
@@ -3001,12 +3288,14 @@ export class StateManager {
     return {
       title: displayTitle(entry),
       upperName: displayUpperName(entry),
+      upperMid: entry.upperMid,
       cover: displayCover(entry),
       coverLocalPath: displayCoverLocalPath(entry),
       description: entry.description,
       favoriteUnavailable: entry.favoriteUnavailable,
       selfVisible: entry.selfVisible,
       accessRestriction: entry.accessRestriction,
+      sourceAvailability: entry.sourceAvailability,
     };
   }
 
@@ -3021,12 +3310,14 @@ export class StateManager {
       result.set(entry.bvid, {
         title: displayTitle(entry),
         upperName: displayUpperName(entry),
+        upperMid: entry.upperMid,
         cover: displayCover(entry),
         coverLocalPath: displayCoverLocalPath(entry),
         description: entry.description,
         favoriteUnavailable: entry.favoriteUnavailable,
         selfVisible: entry.selfVisible,
         accessRestriction: entry.accessRestriction,
+        sourceAvailability: entry.sourceAvailability,
       });
     }
     return result;

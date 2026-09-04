@@ -10,7 +10,7 @@ import {
   type BBDownApiMode,
   type BBDownEncoding,
 } from "./config.js";
-import { FavoriteRelation, MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, StateManager, VideoArchiveEntry, type RemoteFileRecord } from "./state.js";
+import { FavoriteRelation, MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, StateManager, VideoArchiveEntry, type RemoteFileRecord, type SourceAvailabilityReason } from "./state.js";
 import { BiliUser, downloadCredentialsForUser, UserStore } from "./users.js";
 import {
   BiliRiskOrLoginError,
@@ -144,6 +144,8 @@ const CHARGING_RECHECK_JITTER_MS = 12 * 60 * 60_000;
 const CHARGING_TRANSIENT_BASE_MS = 6 * 60 * 60_000;
 const CHARGING_TRANSIENT_JITTER_MS = 30 * 60_000;
 const CHARGING_NO_ACCOUNT_DELAY_MS = 24 * 60 * 60_000;
+const AVAILABILITY_UNKNOWN_DELAYS_MS = [10 * 60_000, 60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000, 7 * 24 * 60 * 60_000] as const;
+const AVAILABILITY_UNAVAILABLE_DELAYS_MS = [24 * 60 * 60_000, 7 * 24 * 60 * 60_000, 30 * 24 * 60 * 60_000] as const;
 const LOCAL_CLEANUP_RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000] as const;
 const AUTOMATIC_RECOVERY_REDOWNLOAD_LIMIT = 3;
 const AUTOMATIC_QUALITY_RECOVERY_LIMIT = 2;
@@ -177,6 +179,22 @@ export function computeChargingTransientDelayMs(random: () => number = Math.rand
   return jitteredDelay(CHARGING_TRANSIENT_BASE_MS, CHARGING_TRANSIENT_JITTER_MS, random);
 }
 
+export function computeAvailabilityUnknownDelayMs(round: number) {
+  const index = Math.max(0, Math.min(AVAILABILITY_UNKNOWN_DELAYS_MS.length - 1, Math.floor(Number(round) || 0)));
+  return AVAILABILITY_UNKNOWN_DELAYS_MS[index];
+}
+
+export function computeAvailabilityUnavailableDelayMs(round: number) {
+  const index = Math.max(0, Math.min(AVAILABILITY_UNAVAILABLE_DELAYS_MS.length - 1, Math.floor(Number(round) || 0)));
+  return AVAILABILITY_UNAVAILABLE_DELAYS_MS[index];
+}
+
+function availabilityJitter(bvid: string) {
+  let hash = 0;
+  for (const char of String(bvid || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return hash % (15 * 60_000);
+}
+
 interface SchedulerDependencies {
   videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string) => Promise<VideoPageSnapshotResult>;
   cacheInspector?: (rootDir: string, concurrency?: number) => Promise<DownloadCacheInspection>;
@@ -184,6 +202,38 @@ interface SchedulerDependencies {
   legacyTempDir?: string;
   now?: () => number;
   random?: () => number;
+}
+
+export type AccessProbeIntent = "charging" | "availability" | "legacy_classification";
+
+function normalizeAccessProbeIntents(payload: Record<string, any> | undefined): AccessProbeIntent[] {
+  const explicit = Array.isArray(payload?.intents)
+    ? payload.intents.map(String).filter((value): value is AccessProbeIntent =>
+      value === "charging" || value === "availability" || value === "legacy_classification")
+    : [];
+  if (explicit.length > 0) return [...new Set(explicit)];
+  if (payload?.purpose === "legacy_failure_classification") return ["legacy_classification", "availability"];
+  if (payload?.purpose === "availability_recheck") return ["availability"];
+  return ["charging"];
+}
+
+function snapshotAvailability(snapshot: VideoPageSnapshotResult): "available" | "unavailable" | "unknown" {
+  if (snapshot.availability === "available" || snapshot.availability === "unavailable" || snapshot.availability === "unknown") {
+    return snapshot.availability;
+  }
+  return snapshot.available ? "available" : "unavailable";
+}
+
+function isSourceUnavailableFailure(error: any) {
+  return error?.code === "BILI_VIDEO_UNAVAILABLE"
+    || error?.downloadFailureCategory === "source_unavailable";
+}
+
+function normalizeSourceAvailabilityReason(value: unknown): SourceAvailabilityReason {
+  if (value === "submission_invisible") return "submission_invisible";
+  if (value === "temporary_error" || value === "empty_response") return "temporary_error";
+  if (value === "favorite_unavailable") return "favorite_flag";
+  return "api_not_found";
 }
 
 export function computeUploadSessionRetryDelayMs(attempts: number) {
@@ -510,6 +560,10 @@ export class SyncScheduler {
     });
 
     this.downloadQueue.on("taskError", (task: DownloadTask | QualityUpgradeDownloadTask, error: any) => {
+      if (isSourceUnavailableFailure(error)) {
+        this.handleSourceUnavailableTask(task, error);
+        return;
+      }
       if (task instanceof DownloadTask && task.encodingRetry) {
         this.handleEncodingRetryDownloadError(task, error);
         return;
@@ -920,6 +974,16 @@ export class SyncScheduler {
     });
 
     this.downloadQueue.on("taskCompleted", (task: DownloadTask | QualityUpgradeDownloadTask) => {
+      if ((task instanceof DownloadTask && task.sourceUnavailable)
+        || (task instanceof QualityUpgradeDownloadTask && task.control.sourceUnavailable)) {
+        this.handleSourceUnavailableTask(
+          task,
+          { availabilityReason: task instanceof DownloadTask
+            ? task.availabilityReason
+            : task.control.availabilityReason },
+        );
+        return;
+      }
       if (task instanceof DownloadTask && task.encodingRetry && !this.isEncodingRetryParentActive(task.encodingRetry)) {
         if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
         this.dispatchPersistentJobs();
@@ -1982,25 +2046,210 @@ export class SyncScheduler {
       checkedAccountUids?: string[];
       previewAvailable?: boolean;
       notBefore?: number;
-      purpose?: "charging_recheck" | "legacy_failure_classification";
+      purpose?: "charging_recheck" | "availability_recheck" | "legacy_failure_classification";
+      intents?: AccessProbeIntent[];
+      availabilityRound?: number;
+      availabilityUnknownRound?: number;
+      availabilityReason?: SourceAvailabilityReason;
+      manual?: boolean;
     } = {}
   ) {
     const existing = this.stateManager.getChargingRestriction(bvid);
-    return this.jobStore.enqueue({
+    const existingJob = this.jobStore.findByDedupeKey(`access_probe:${bvid}`);
+    const existingPayload = (existingJob?.payload || {}) as Record<string, any>;
+    const incomingIntents = input.intents || (input.purpose === "legacy_failure_classification"
+      ? ["legacy_classification", "availability"]
+      : input.purpose === "availability_recheck"
+        ? ["availability"]
+        : ["charging"]);
+    const intents = [...new Set([
+      ...(existingJob ? normalizeAccessProbeIntents(existingPayload) : []),
+      ...incomingIntents,
+    ])] as AccessProbeIntent[];
+    const checkedAccountUids = [...new Set([
+      ...(Array.isArray(existing?.checkedAccountUids) ? existing.checkedAccountUids : []),
+      ...(Array.isArray(existingPayload.checkedAccountUids) ? existingPayload.checkedAccountUids : []),
+      ...(input.checkedAccountUids || []),
+    ].map(String))];
+    const existingAvailabilityRound = Math.max(0, Number(existingPayload.availabilityRound || 0));
+    const incomingAvailabilityRound = Math.max(0, Number(input.availabilityRound ?? 0));
+    const existingUnknownRound = Math.max(0, Number(existingPayload.availabilityUnknownRound || 0));
+    const incomingUnknownRound = Math.max(0, Number(input.availabilityUnknownRound ?? 0));
+    const purpose = input.purpose
+      || existingPayload.purpose
+      || (intents.includes("availability") && !intents.includes("charging") ? "availability_recheck" : "charging_recheck");
+    const notBefore = Math.min(
+      Number.isFinite(Number(existingJob?.notBefore)) && Number(existingJob?.notBefore) > 0 ? Number(existingJob!.notBefore) : Number.MAX_SAFE_INTEGER,
+      input.notBefore ?? this.now(),
+    );
+    const payload = {
+      ...existingPayload,
+      preferredUserId: input.preferredUserId || existingPayload.preferredUserId || "",
+      skipUserIds: input.skipUserIds || existingPayload.skipUserIds || [],
+      checkedAccountUids: checkedAccountUids.map(String),
+      previewAvailable: input.previewAvailable ?? existing?.previewAvailable ?? existingPayload.previewAvailable,
+      purpose,
+      intents,
+      availabilityRound: Math.max(existingAvailabilityRound, incomingAvailabilityRound),
+      availabilityUnknownRound: Math.max(existingUnknownRound, incomingUnknownRound),
+      availabilityReason: input.availabilityReason || existingPayload.availabilityReason,
+      manual: input.manual === true || existingPayload.manual === true,
+    };
+    const job = this.jobStore.enqueue({
       kind: "access_probe",
       dedupeKey: `access_probe:${bvid}`,
       bvid,
       priority: 90,
       maxAttempts: 1,
-      notBefore: input.notBefore ?? this.now(),
-      payload: {
-        preferredUserId: input.preferredUserId || "",
-        skipUserIds: input.skipUserIds || [],
-        checkedAccountUids: input.checkedAccountUids || existing?.checkedAccountUids || [],
-        previewAvailable: input.previewAvailable ?? existing?.previewAvailable,
-        purpose: input.purpose || "charging_recheck",
-      },
+      notBefore: Math.max(0, Number.isFinite(notBefore) ? notBefore : this.now()),
+      payload,
     });
+    // enqueue intentionally preserves a leased/running payload. Merge a newly
+    // discovered intent into that active job without touching its lease.
+    if (existingJob && ["leased", "running"].includes(existingJob.status)) {
+      this.jobStore.updatePayload(existingJob.id, payload);
+      return this.jobStore.findById(existingJob.id) || job;
+    }
+    return job;
+  }
+
+  private enqueueAvailabilityProbe(
+    bvid: string,
+    input: {
+      preferredUserId?: string;
+      notBefore?: number;
+      availabilityRound?: number;
+      availabilityUnknownRound?: number;
+      availabilityReason?: "favorite_flag" | "api_not_found" | "submission_invisible" | "temporary_error";
+      manual?: boolean;
+    } = {}
+  ) {
+    return this.enqueueChargingAccessProbe(bvid, {
+      preferredUserId: input.preferredUserId,
+      notBefore: input.notBefore,
+      availabilityRound: input.availabilityRound,
+      availabilityUnknownRound: input.availabilityUnknownRound,
+      availabilityReason: input.availabilityReason,
+      manual: input.manual,
+      intents: ["availability"],
+    });
+  }
+
+  requestAvailabilityRecheck(bvidValue: string) {
+    const bvid = String(bvidValue || "").trim();
+    if (!bvid || !this.stateManager.getVideoMeta(bvid)) {
+      return { ok: false as const, status: 404 as const, message: "本地没有该视频记录" };
+    }
+    if (!this.userStore.list().some((user) => this.isUserSyncEligible(user))) {
+      return { ok: false as const, status: 409 as const, message: "当前没有可用的B站账号，请先登录或启用账号" };
+    }
+    const current = this.stateManager.getSourceAvailability(bvid);
+    const job = this.enqueueAvailabilityProbe(bvid, {
+      notBefore: this.now(),
+      availabilityRound: current?.state === "confirmed_unavailable" ? current.checkRound : 0,
+      availabilityUnknownRound: current?.state === "unknown" ? current.checkRound : 0,
+      availabilityReason: current?.reason || "temporary_error",
+      manual: true,
+    });
+    this.dispatchPersistentJobs();
+    return { ok: true as const, status: 202 as const, jobId: job.id, bvid };
+  }
+
+  private handleSourceUnavailableTask(
+    task: DownloadTask | QualityUpgradeDownloadTask,
+    error: { availabilityReason?: unknown } = {},
+  ) {
+    const checkedAtMs = this.now();
+    const checkedAt = new Date(checkedAtMs).toISOString();
+    const reason = normalizeSourceAvailabilityReason(error.availabilityReason
+      || (task instanceof DownloadTask ? task.availabilityReason : task.control.availabilityReason));
+
+    if (task instanceof DownloadTask && task.encodingRetry) {
+      if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+      const completed = this.jobStore.completeEncodingRetryParent(
+        task.encodingRetry.parentJobId,
+        task.encodingRetry.generation,
+      );
+      this.jobStore.cancelEncodingRetryChildren(task.encodingRetry.parentJobId, task.encodingRetry.generation);
+      void this.cleanupEncodingRetryCandidate(task.encodingRetry);
+      if (completed) {
+        logManager.push({
+          timestamp: checkedAt,
+          type: "download",
+          level: "info",
+          summary: `B站源当前不可用，已结束本次规格替换 ${task.bvid}`,
+          raw: `[Availability] strict_candidate_ended bvid=${task.bvid} originalArchive=preserved`,
+          bvid: task.bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+      }
+      this.dispatchPersistentJobs();
+      return;
+    }
+
+    if (task instanceof QualityUpgradeDownloadTask) {
+      if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+      task.control.qualityStage = "download";
+      task.control.qualityStageLabel = "B站源当前不可用，原归档已保留";
+      task.control.error = undefined;
+      this.syncQualityUpgradeControl(task, "completed");
+      logManager.push({
+        timestamp: checkedAt,
+        type: "download",
+        level: "info",
+        summary: `B站源当前不可用，已结束本次画质重调 ${task.bvid}`,
+        raw: `[Availability] quality_candidate_ended bvid=${task.bvid} originalArchive=preserved`,
+        bvid: task.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+      this.dispatchPersistentJobs();
+      return;
+    }
+
+    if (task.downloadDir) {
+      const manifest = readDownloadSession(task.downloadDir);
+      if (manifest && manifest.outputs.length === 0) {
+        markDownloadSessionStatus(task.downloadDir, "failed", "B站源当前不可用，已停止重复下载。");
+      }
+    }
+    if (task.persistentJobId) this.jobStore.complete(task.persistentJobId, this.leaseOwner);
+    const relations = this.stateManager.listRelationsForBvid(task.bvid);
+    const shouldProbe = relations.some((relation) => relation.activeInFavorite
+      && relation.sourceKind !== "manual"
+      && !relation.selfVisible
+      && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
+    const previous = this.stateManager.getSourceAvailability(task.bvid);
+    const nextAt = checkedAtMs + computeAvailabilityUnavailableDelayMs(0);
+    this.stateManager.markAvailabilityConfirmedUnavailable(
+      task.bvid,
+      reason,
+      checkedAt,
+      shouldProbe ? new Date(nextAt).toISOString() : undefined,
+      shouldProbe ? 1 : 0,
+    );
+    if (shouldProbe) {
+      this.enqueueAvailabilityProbe(task.bvid, {
+        preferredUserId: task.userId,
+        notBefore: nextAt,
+        availabilityRound: 1,
+        availabilityReason: reason,
+      });
+    }
+    if (previous?.state !== "confirmed_unavailable" && previous?.state !== "dormant") {
+      logManager.push({
+        timestamp: checkedAt,
+        type: "download",
+        level: "warn",
+        summary: `B站视频当前不可用，已停止重复下载 ${task.bvid}`,
+        raw: `[Availability] download_stopped bvid=${task.bvid} automaticProbe=${shouldProbe}`,
+        bvid: task.bvid,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+    this.dispatchPersistentJobs();
   }
 
   private handleChargingRestrictedTask(task: DownloadTask | QualityUpgradeDownloadTask, error: any) {
@@ -2089,7 +2338,367 @@ export class SyncScheduler {
     this.jobStore.defer(job.id, this.leaseOwner, value.reason || "Charging access is not available", value.nextAt);
   }
 
+  private deferAvailabilityProbe(
+    job: any,
+    value: {
+      nextAt: number;
+      state: "pending_confirmation" | "unknown" | "confirmed_unavailable";
+      reason: "favorite_flag" | "api_not_found" | "submission_invisible" | "temporary_error";
+      checkRound?: number;
+      unknownRound?: number;
+      message: string;
+    }
+  ) {
+    const checkedAt = new Date(this.now()).toISOString();
+    const nextCheckAt = new Date(value.nextAt).toISOString();
+    if (value.state === "pending_confirmation") {
+      this.stateManager.markAvailabilityPending(String(job.bvid || ""), value.reason, checkedAt, nextCheckAt);
+    } else if (value.state === "unknown") {
+      this.stateManager.markAvailabilityUnknown(
+        String(job.bvid || ""),
+        value.reason,
+        checkedAt,
+        nextCheckAt,
+        value.unknownRound,
+      );
+    } else {
+      this.stateManager.markAvailabilityConfirmedUnavailable(
+        String(job.bvid || ""),
+        value.reason,
+        checkedAt,
+        nextCheckAt,
+        value.checkRound,
+      );
+    }
+    const current = this.jobStore.findById(job.id);
+    this.jobStore.updatePayload(job.id, {
+      ...((current?.payload || job.payload || {}) as Record<string, unknown>),
+      intents: normalizeAccessProbeIntents((current?.payload || job.payload || {}) as Record<string, any>),
+      manual: false,
+      availabilityRound: value.checkRound ?? Number((current?.payload as any)?.availabilityRound || 0),
+      availabilityUnknownRound: value.unknownRound ?? Number((current?.payload as any)?.availabilityUnknownRound || 0),
+      availabilityReason: value.reason,
+    });
+    this.jobStore.defer(job.id, this.leaseOwner, value.message, value.nextAt);
+  }
+
+  private async runAvailabilityProbe(job: any) {
+    const bvid = String(job.bvid || "");
+    if (!bvid) {
+      this.jobStore.complete(job.id, this.leaseOwner);
+      return;
+    }
+    const payload = (job.payload || {}) as Record<string, any>;
+    const intents = normalizeAccessProbeIntents(payload);
+    const wantsCharging = intents.includes("charging");
+    const wantsLegacyClassification = intents.includes("legacy_classification");
+    const manualProbe = payload.manual === true;
+    const relations = this.stateManager.listRelationsForBvid(bvid);
+    const hasUnbackedRelation = relations.some((relation) => relation.activeInFavorite
+      && relation.sourceKind !== "manual"
+      && !relation.selfVisible
+      && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
+    const previousAvailability = this.stateManager.getSourceAvailability(bvid);
+    if (!manualProbe && !hasUnbackedRelation
+      && !this.jobStore.hasJobsForBvid(bvid, ["quality_download"])) {
+      this.jobStore.complete(job.id, this.leaseOwner);
+      return;
+    }
+
+    const preferredUserId = String(payload.preferredUserId || "");
+    const relatedUsers = new Set(relations
+      .filter((relation) => relation.activeInFavorite && relation.sourceKind !== "manual")
+      .map((relation) => relation.userId));
+    const skipped = new Set<string>(Array.isArray(payload.skipUserIds) ? payload.skipUserIds.map(String) : []);
+    const ownerUid = Number(this.stateManager.getVideoMeta(bvid)?.upperMid || 0);
+    const seenAccountUids = new Set<string>();
+    const users = this.orderedEnabledUsers(preferredUserId, skipped)
+      .filter((user) => wantsCharging
+        || relatedUsers.size === 0
+        || relatedUsers.has(user.id)
+        || user.id === preferredUserId
+        || (ownerUid > 0 && Number(user.uid || user.cookie.DedeUserID || 0) === ownerUid))
+      .sort((left, right) => {
+        const leftOwner = ownerUid > 0 && Number(left.uid || left.cookie.DedeUserID || 0) === ownerUid;
+        const rightOwner = ownerUid > 0 && Number(right.uid || right.cookie.DedeUserID || 0) === ownerUid;
+        if (leftOwner !== rightOwner) return leftOwner ? -1 : 1;
+        return 0;
+      })
+      .filter((user) => {
+        const uid = String(user.uid || user.cookie.DedeUserID || user.id);
+        if (seenAccountUids.has(uid)) return false;
+        seenAccountUids.add(uid);
+        return true;
+      });
+    const checkedUids = new Set<string>(Array.isArray(payload.checkedAccountUids) ? payload.checkedAccountUids.map(String) : []);
+    let unavailableCount = 0;
+    let unknownCount = 0;
+    let accountBlockedCount = 0;
+    let chargingRestrictedCount = 0;
+    let recoveredUser: BiliUser | null = null;
+    let chargingUser: BiliUser | null = null;
+    let availabilityReason: "api_not_found" | "submission_invisible" | "temporary_error" =
+      payload.availabilityReason === "submission_invisible" ? "submission_invisible" : "api_not_found";
+    let transientReason = "";
+    let previewAvailable = typeof payload.previewAvailable === "boolean" ? payload.previewAvailable : undefined;
+
+    const preserveManualSchedule = (message: string) => {
+      if (!manualProbe || !previousAvailability) return false;
+      const checkedAt = new Date(this.now()).toISOString();
+      if (previousAvailability.state === "dormant") {
+        this.stateManager.markAvailabilityDormant(
+          bvid,
+          previousAvailability.reason,
+          checkedAt,
+          previousAvailability.checkRound,
+        );
+        this.jobStore.complete(job.id, this.leaseOwner);
+        return true;
+      }
+      const scheduledAt = Date.parse(previousAvailability.nextCheckAt || "");
+      if (!Number.isFinite(scheduledAt) || scheduledAt <= this.now() + 1_000) return false;
+      if (previousAvailability.state === "confirmed_unavailable") {
+        this.stateManager.markAvailabilityConfirmedUnavailable(
+          bvid,
+          previousAvailability.reason,
+          checkedAt,
+          previousAvailability.nextCheckAt,
+          previousAvailability.checkRound,
+        );
+      } else if (previousAvailability.state === "unknown") {
+        this.stateManager.markAvailabilityUnknown(
+          bvid,
+          previousAvailability.reason,
+          checkedAt,
+          previousAvailability.nextCheckAt,
+          previousAvailability.checkRound,
+        );
+      } else {
+        this.stateManager.markAvailabilityPending(
+          bvid,
+          previousAvailability.reason,
+          checkedAt,
+          previousAvailability.nextCheckAt,
+        );
+      }
+      this.jobStore.updatePayload(job.id, { ...payload, intents, manual: false });
+      this.jobStore.defer(job.id, this.leaseOwner, message, scheduledAt);
+      return true;
+    };
+
+    if (users.length === 0) {
+      if (preserveManualSchedule("手动复核未发现可用账号，保留原复核计划")) return;
+      const nextAt = this.now() + CHARGING_NO_ACCOUNT_DELAY_MS;
+      this.jobStore.updatePayload(job.id, { ...payload, intents, manual: false });
+      this.jobStore.defer(job.id, this.leaseOwner, "没有已启用的B站账号，等待账号恢复", nextAt);
+      return;
+    }
+
+    for (const user of users) {
+      checkedUids.add(String(user.uid || user.cookie.DedeUserID || user.id));
+      try {
+        const snapshot = await this.videoAccessProbe({
+          ...user.cookie,
+          accessToken: user.accessToken || "",
+        }, bvid);
+        const availability = snapshotAvailability(snapshot);
+        if (availability === "available") {
+          recoveredUser ||= user;
+          previewAvailable = snapshot.access.previewAvailable ?? snapshot.access.isUgcPayPreview ?? previewAvailable;
+          if (wantsCharging && snapshot.access.classification === "charging_restricted") {
+            chargingRestrictedCount += 1;
+            previewAvailable = snapshot.access.previewAvailable ?? snapshot.access.isUgcPayPreview ?? previewAvailable;
+          } else if (!wantsCharging || ["normal", "charging_allowed"].includes(snapshot.access.classification)) {
+            chargingUser ||= user;
+          }
+          if (!wantsCharging || chargingUser) break;
+          continue;
+        }
+        if (availability === "unavailable") {
+          unavailableCount += 1;
+          if (snapshot.availabilityReason === "submission_invisible") availabilityReason = "submission_invisible";
+          continue;
+        }
+        unknownCount += 1;
+        availabilityReason = "temporary_error";
+        transientReason = snapshot.availabilityReason === "empty_response"
+          ? "B站详情返回空响应"
+          : "B站详情暂时无法确认";
+      } catch (error: any) {
+        if (error instanceof BiliRiskOrLoginError || error?.biliRiskControl || error?.biliLoginRequired) {
+          accountBlockedCount += 1;
+        } else {
+          unknownCount += 1;
+        }
+        availabilityReason = "temporary_error";
+        transientReason = sanitizeUploadText(error?.message || error).slice(0, 300);
+      }
+    }
+
+    const checkedAt = new Date(this.now()).toISOString();
+    if (recoveredUser) {
+      const recovered = this.stateManager.markAvailabilityRecovered(bvid, checkedAt);
+      if (wantsLegacyClassification) {
+        this.stateManager.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
+      }
+      if (!wantsCharging || chargingUser) {
+        this.jobStore.complete(job.id, this.leaseOwner);
+        for (const relation of relations.filter((item) => item.activeInFavorite
+          && item.sourceKind !== "manual"
+          && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""))) {
+          const resolved = this.resolveRelation(relation);
+          if (!resolved || !this.stateManager.shouldEnqueueBackup(bvid, relation.userId, relation.mediaId, undefined)) continue;
+          this.enqueueIfNeeded(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
+            persisted: true,
+            downloadUserId: chargingUser?.id || recoveredUser.id,
+          });
+        }
+        if (recovered || previousAvailability) logManager.push({
+          timestamp: checkedAt,
+          type: "download",
+          level: "info",
+          summary: `B站视频已恢复可用 ${bvid}`,
+          raw: `[Availability] recovered bvid=${bvid} checkedAccounts=${checkedUids.size}`,
+          bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+        return;
+      }
+      this.stateManager.markChargingRestricted(bvid, {
+        checkedAt,
+        nextCheckAt: new Date(this.now() + computeChargingRecheckDelayMs(this.random)).toISOString(),
+        previewAvailable,
+        checkedAccountUids: [...checkedUids],
+      });
+      this.jobStore.updatePayload(job.id, {
+        ...payload,
+        intents: ["charging"],
+        manual: false,
+        checkedAccountUids: [...checkedUids],
+        previewAvailable,
+      });
+      this.jobStore.defer(job.id, this.leaseOwner, "视频已恢复，但仍需要充电权限", this.now() + computeChargingRecheckDelayMs(this.random));
+      return;
+    }
+
+    if (accountBlockedCount > 0) {
+      if (preserveManualSchedule("手动复核遇到账号登录或风控限制，保留原复核计划")) return;
+      const nextAt = this.now() + CHARGING_NO_ACCOUNT_DELAY_MS;
+      this.stateManager.markAvailabilityUnknown(
+        bvid,
+        "temporary_error",
+        checkedAt,
+        new Date(nextAt).toISOString(),
+        Number(payload.availabilityUnknownRound || 0),
+      );
+      this.jobStore.updatePayload(job.id, { ...payload, intents, manual: false });
+      this.jobStore.defer(job.id, this.leaseOwner, transientReason || "账号登录或风控限制，等待账号恢复", nextAt);
+      return;
+    }
+
+    if (unknownCount > 0) {
+      if (preserveManualSchedule("手动复核暂时无法确认，保留原复核计划")) return;
+      const unknownRound = Number(payload.availabilityUnknownRound || 0);
+      if (unknownRound >= AVAILABILITY_UNKNOWN_DELAYS_MS.length) {
+        this.stateManager.markAvailabilityDormant(bvid, "temporary_error", checkedAt, unknownRound);
+        this.jobStore.complete(job.id, this.leaseOwner);
+        logManager.push({
+          timestamp: checkedAt,
+          type: "download",
+          level: "info",
+          summary: `B站视频状态长期无法确认，已转入休眠 ${bvid}`,
+          raw: `[Availability] dormant_unknown bvid=${bvid} round=${unknownRound}`,
+          bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+        return;
+      }
+      const nextAt = this.now() + computeAvailabilityUnknownDelayMs(unknownRound);
+      this.deferAvailabilityProbe(job, {
+        nextAt,
+        state: "unknown",
+        reason: availabilityReason,
+        unknownRound: unknownRound + 1,
+        message: transientReason || "B站视频状态暂时无法确认，稍后复核",
+      });
+      return;
+    }
+
+    if (unavailableCount > 0) {
+      if (preserveManualSchedule("手动复核仍不可用，保留原复核计划")) return;
+      const unavailableRound = Number(payload.availabilityRound || 0);
+      if (unavailableRound >= AVAILABILITY_UNAVAILABLE_DELAYS_MS.length) {
+        this.stateManager.markAvailabilityDormant(bvid, availabilityReason, checkedAt, unavailableRound);
+        this.jobStore.complete(job.id, this.leaseOwner);
+        logManager.push({
+          timestamp: checkedAt,
+          type: "download",
+          level: "info",
+          summary: `B站视频长期不可用，已转入休眠 ${bvid}`,
+          raw: `[Availability] dormant bvid=${bvid} round=${unavailableRound}`,
+          bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+        return;
+      }
+      const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(unavailableRound);
+      const previous = this.stateManager.getSourceAvailability(bvid);
+      this.deferAvailabilityProbe(job, {
+        nextAt,
+        state: "confirmed_unavailable",
+        reason: availabilityReason,
+        checkRound: unavailableRound + 1,
+        message: "B站视频当前不可用，系统将在低频复核，不再重复下载",
+      });
+      if (previous?.state !== "confirmed_unavailable") {
+        logManager.push({
+          timestamp: checkedAt,
+          type: "download",
+          level: "warn",
+          summary: `B站视频当前不可用，已停止重复下载 ${bvid}`,
+          raw: `[Availability] confirmed_unavailable bvid=${bvid} round=${unavailableRound + 1}`,
+          bvid,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+      }
+      if (wantsLegacyClassification) {
+        this.stateManager.markLegacyAccessClassification(bvid, { result: "unavailable", classifiedAt: checkedAt });
+      }
+      return;
+    }
+
+    if (wantsCharging && chargingRestrictedCount > 0) {
+      const nextAt = this.now() + computeChargingRecheckDelayMs(this.random);
+      this.stateManager.markChargingRestricted(bvid, {
+        checkedAt,
+        nextCheckAt: new Date(nextAt).toISOString(),
+        previewAvailable,
+        checkedAccountUids: [...checkedUids],
+      });
+      this.jobStore.updatePayload(job.id, { ...payload, intents, manual: false, checkedAccountUids: [...checkedUids], previewAvailable });
+      this.jobStore.defer(job.id, this.leaseOwner, "视频仍受充电权限限制", nextAt);
+      return;
+    }
+
+    this.deferAvailabilityProbe(job, {
+      nextAt: this.now() + computeAvailabilityUnknownDelayMs(Number(payload.availabilityUnknownRound || 0)),
+      state: "unknown",
+      reason: "temporary_error",
+      unknownRound: Number(payload.availabilityUnknownRound || 0) + 1,
+      message: "B站视频状态暂时无法确认，稍后复核",
+    });
+  }
+
   private async runChargingAccessProbe(job: any) {
+    const intents = normalizeAccessProbeIntents(job.payload || {});
+    if (intents.includes("availability")) {
+      await this.runAvailabilityProbe(job);
+      return;
+    }
     const bvid = String(job.bvid || "");
     if (!bvid) {
       this.jobStore.complete(job.id, this.leaseOwner);
@@ -2133,8 +2742,14 @@ export class SyncScheduler {
           ...user.cookie,
           accessToken: user.accessToken || "",
         }, bvid);
-        if (!snapshot.available) {
+        const availability = snapshotAvailability(snapshot);
+        if (availability === "unavailable") {
           unavailableCount += 1;
+          continue;
+        }
+        if (availability === "unknown") {
+          unknownCount += 1;
+          lastTransientError = "B站详情暂时无法确认视频状态";
           continue;
         }
         if (["normal", "charging_allowed"].includes(snapshot.access.classification)) {
@@ -2192,20 +2807,30 @@ export class SyncScheduler {
     }
 
     if (restrictedCount === 0 && unavailableCount > 0 && unknownCount === 0) {
-      if (payload.purpose === "legacy_failure_classification") {
-        this.stateManager.markLegacyAccessClassification(bvid, {
-          result: "unavailable",
-          classifiedAt: new Date(this.now()).toISOString(),
-        });
-      }
-      this.stateManager.markUnavailableFromAccessProbe(bvid, new Date(this.now()).toISOString());
-      this.jobStore.complete(job.id, this.leaseOwner);
+      const checkedAt = new Date(this.now()).toISOString();
+      const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(0);
+      this.stateManager.markAvailabilityConfirmedUnavailable(
+        bvid,
+        "api_not_found",
+        checkedAt,
+        new Date(nextAt).toISOString(),
+        1,
+      );
+      this.jobStore.updatePayload(job.id, {
+        ...payload,
+        purpose: "availability_recheck",
+        intents: ["availability"],
+        manual: false,
+        availabilityRound: 1,
+        availabilityReason: "api_not_found",
+      });
+      this.jobStore.defer(job.id, this.leaseOwner, "充电视频源当前不可用，转为低频可用性复核", nextAt);
       logManager.push({
-        timestamp: new Date(this.now()).toISOString(),
+        timestamp: checkedAt,
         type: "download",
         level: "warn",
-        summary: `充电视频已不可访问 ${bvid}`,
-        raw: `[ChargingAccess] unavailable bvid=${bvid} checkedAccounts=${checkedUids.size}`,
+        summary: `充电视频源当前不可用，已停止重复下载 ${bvid}`,
+        raw: `[ChargingAccess] unavailable bvid=${bvid} checkedAccounts=${checkedUids.size} next=availability_probe`,
         bvid,
         simpleVisible: true,
       });
@@ -2247,13 +2872,37 @@ export class SyncScheduler {
     this.accessProbeJobId = job.id;
     this.accessProbePromise = this.runChargingAccessProbe(job).catch((error: any) => {
       const reason = sanitizeUploadText(error?.message || error).slice(0, 300);
-      const nextAt = this.now() + computeChargingTransientDelayMs(this.random);
-      this.deferChargingAccessProbe(job, {
-        nextAt,
-        checkedAccountUids: Array.isArray(job.payload?.checkedAccountUids) ? job.payload.checkedAccountUids.map(String) : [],
-        previewAvailable: typeof job.payload?.previewAvailable === "boolean" ? job.payload.previewAvailable : undefined,
-        reason,
-      });
+      const intents = normalizeAccessProbeIntents(job.payload || {});
+      if (intents.includes("availability")) {
+        const source = this.stateManager.getSourceAvailability(String(job.bvid || ""));
+        const scheduledAt = Date.parse(source?.nextCheckAt || "");
+        if (job.payload?.manual === true && source?.state === "dormant") {
+          this.jobStore.complete(job.id, this.leaseOwner);
+          return;
+        }
+        if (job.payload?.manual === true && Number.isFinite(scheduledAt) && scheduledAt > this.now() + 1_000) {
+          this.jobStore.updatePayload(job.id, { ...job.payload, intents, manual: false });
+          this.jobStore.defer(job.id, this.leaseOwner, reason, scheduledAt);
+          return;
+        }
+        const unknownRound = Number(job.payload?.availabilityUnknownRound || 0);
+        const nextAt = this.now() + computeAvailabilityUnknownDelayMs(unknownRound);
+        this.deferAvailabilityProbe(job, {
+          nextAt,
+          state: "unknown",
+          reason: "temporary_error",
+          unknownRound: unknownRound + 1,
+          message: reason,
+        });
+      } else {
+        const nextAt = this.now() + computeChargingTransientDelayMs(this.random);
+        this.deferChargingAccessProbe(job, {
+          nextAt,
+          checkedAccountUids: Array.isArray(job.payload?.checkedAccountUids) ? job.payload.checkedAccountUids.map(String) : [],
+          previewAvailable: typeof job.payload?.previewAvailable === "boolean" ? job.payload.previewAvailable : undefined,
+          reason,
+        });
+      }
     }).finally(() => {
       this.accessProbePromise = null;
       this.accessProbeJobId = null;
@@ -3624,7 +4273,8 @@ export class SyncScheduler {
 
       const failure = classifyDownloadRecoveryFailure({ message: record.failure.reason || "" });
       if (record.failure.userDisposition === "abandoned") continue;
-      const category: DownloadRecoveryCategory = failure.category === "source_unavailable" ? "unknown" : failure.category;
+      if (failure.category === "source_unavailable") continue;
+      const category: DownloadRecoveryCategory = failure.category;
       const alternateAccounts = this.userStore.list()
         .filter((user) => user.id !== relation.userId && this.isUserSyncEligible(user))
         .sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.id.localeCompare(right.id))
@@ -6833,7 +7483,7 @@ export class SyncScheduler {
         queuedRelations += 1;
       }
     }
-    this.wakeChargingAccessProbes();
+    this.wakeChargingAccessProbes(userId);
     this.dispatchPersistentJobs();
     return { reattachedRelations, resumedJobs, queuedRelations };
   }
@@ -7192,10 +7842,30 @@ export class SyncScheduler {
     return merged.created || merged.targetAdded;
   }
 
-  wakeChargingAccessProbes() {
+  wakeChargingAccessProbes(userId?: string) {
     const changed = this.jobStore.wakeAll(["access_probe"], this.now());
-    if (changed > 0) this.dispatchPersistentJobs();
-    return changed;
+    let dormantAwakened = 0;
+    if (userId) {
+      const user = this.userStore.getById(userId);
+      if (user && this.isUserSyncEligible(user)) {
+        const uid = Number(user.uid || user.cookie.DedeUserID || 0);
+        for (const video of this.stateManager.listDormantAvailabilityVideos()) {
+          const related = this.stateManager.listRelationsForBvid(video.bvid).some((relation) =>
+            relation.activeInFavorite && relation.sourceKind !== "manual" && relation.userId === userId);
+          if (!related && !(uid > 0 && Number(video.upperMid || 0) === uid)) continue;
+          const existing = this.jobStore.findByDedupeKey(`access_probe:${video.bvid}`);
+          this.enqueueAvailabilityProbe(video.bvid, {
+            preferredUserId: userId,
+            notBefore: this.now(),
+            availabilityReason: video.sourceAvailability?.reason || "temporary_error",
+            manual: true,
+          });
+          if (!existing) dormantAwakened += 1;
+        }
+      }
+    }
+    if (changed > 0 || dormantAwakened > 0) this.dispatchPersistentJobs();
+    return changed + dormantAwakened;
   }
 
   captureLegacyRecoveryMarkers() {
@@ -7219,6 +7889,8 @@ export class SyncScheduler {
     this.jobStore.rebind(this.stateManager.getDatabase());
     this.transferSessions.rebind(this.stateManager.getDatabase());
     this.reconcileTransferSessionRecoveryJobs(true);
+    this.ensurePersistedAvailabilityProbes();
+    this.dispatchPersistentJobs();
   }
 
   recheckLegacyRecoveryAfterImport(
@@ -7718,8 +8390,10 @@ export class SyncScheduler {
       total + Object.values(persistentCounts[kind] || {}).reduce((sum, count) => sum + Number(count || 0), 0), 0);
     const leasedJobs = Object.values(persistentCounts).reduce((total, statuses) =>
       total + Number(statuses.leased || 0) + Number(statuses.running || 0), 0);
-    const retryJobs = Object.values(persistentCounts).reduce((total, statuses) => total + Number(statuses.retry_wait || 0), 0);
-    const chargingSchedule = this.jobStore.scheduleSummary("access_probe");
+    const retryJobs = Object.entries(persistentCounts).reduce((total, [kind, statuses]) =>
+      kind === "access_probe" ? total : total + Number(statuses.retry_wait || 0), 0);
+    const chargingSchedule = this.jobStore.accessProbeScheduleSummary("charging");
+    const availabilitySchedule = this.jobStore.accessProbeScheduleSummary("availability");
     const chargingRestrictions = this.stateManager.getChargingRestrictionSummary();
     const lastChargingCheckAt = Date.parse(chargingRestrictions.lastCheckedAt || "");
     const recoveryIssues = this.getRecoveryIssueSnapshot();
@@ -7749,7 +8423,8 @@ export class SyncScheduler {
         pendingUploads: sumKinds(["upload", "history_upload"]),
         pendingDownloads: sumKinds(["download", "quality_download"]),
         pendingVerifications: sumKinds(["verify_upload"]),
-        chargingRestricted: sumKinds(["access_probe"]),
+        chargingRestricted: chargingSchedule.count,
+        availabilityChecks: availabilitySchedule.count,
         leasedJobs,
         retryJobs,
         prefetchLimit: this.configStore.get().queuePrefetchLimit || 25,
@@ -8237,6 +8912,36 @@ export class SyncScheduler {
         queueCoverCache(item.bvid, item.cover, (coverLocalPath) => {
           this.stateManager.recordCoverCache(item.bvid, coverLocalPath);
         });
+      }
+      if (item.unavailable && !item.selfVisible) {
+        const availability = this.stateManager.getSourceAvailability(item.bvid);
+        const shouldAutoProbe = this.stateManager.listRelationsForBvid(item.bvid).some((relation) =>
+          relation.activeInFavorite
+          && relation.sourceKind !== "manual"
+          && !relation.selfVisible
+          && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
+        if (shouldAutoProbe && availability && !["confirmed_unavailable", "dormant"].includes(availability.state)) {
+          const persistedNextAt = Date.parse(availability.nextCheckAt || "");
+          const nextAt = Number.isFinite(persistedNextAt) && persistedNextAt > this.now()
+            ? persistedNextAt
+            : this.now() + (Number(user.uid || user.cookie.DedeUserID || 0) === Number(item.upperMid || 0)
+              ? 0
+              : availabilityJitter(item.bvid));
+          if (!availability.nextCheckAt || !Number.isFinite(persistedNextAt) || persistedNextAt <= this.now()) {
+            this.stateManager.markAvailabilityPending(
+              item.bvid,
+              "favorite_flag",
+              seenAt,
+              new Date(nextAt).toISOString(),
+            );
+          }
+          this.enqueueAvailabilityProbe(item.bvid, {
+            preferredUserId: user.id,
+            notBefore: nextAt,
+            availabilityRound: availability.checkRound,
+            availabilityReason: availability.reason,
+          });
+        }
       }
       if (!result.wasKnown) {
         newItems += 1;
@@ -8935,6 +9640,7 @@ export class SyncScheduler {
   }
 
   private resumePersistedWork() {
+    this.ensurePersistedAvailabilityProbes();
     this.ensurePersistedChargingAccessProbes();
     if (this.stateManager.hasPersistentJobBootstrap()) {
       this.recoverOrphanedUploadFailures();
@@ -9152,6 +9858,39 @@ export class SyncScheduler {
         checkedAccountUids: video.accessRestriction?.checkedAccountUids || [],
         previewAvailable: video.accessRestriction?.previewAvailable,
         notBefore: Number.isFinite(nextAt) ? nextAt : this.now(),
+      });
+    }
+  }
+
+  private ensurePersistedAvailabilityProbes() {
+    for (const video of this.stateManager.listAvailabilityCheckVideos()) {
+      let source = video.sourceAvailability;
+      if (!source) {
+        const checkedAt = new Date(this.now()).toISOString();
+        const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(0);
+        this.stateManager.markAvailabilityConfirmedUnavailable(
+          video.bvid,
+          "api_not_found",
+          checkedAt,
+          new Date(nextAt).toISOString(),
+          1,
+        );
+        source = this.stateManager.getSourceAvailability(video.bvid);
+      }
+      if (!source || source.state === "dormant") continue;
+      const nextAt = Date.parse(source.nextCheckAt || "");
+      const relation = this.stateManager.listRelationsForBvid(video.bvid)
+        .find((item) => item.activeInFavorite
+          && item.sourceKind !== "manual"
+          && !item.selfVisible
+          && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""));
+      if (!relation) continue;
+      this.enqueueAvailabilityProbe(video.bvid, {
+        preferredUserId: relation?.userId,
+        notBefore: Number.isFinite(nextAt) ? Math.max(this.now(), nextAt) : this.now(),
+        availabilityRound: source.state === "confirmed_unavailable" ? source.checkRound : 0,
+        availabilityUnknownRound: source.state === "unknown" ? source.checkRound : 0,
+        availabilityReason: source.reason,
       });
     }
   }

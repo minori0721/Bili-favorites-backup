@@ -946,6 +946,33 @@ export class PersistentJobStore {
     };
   }
 
+  accessProbeScheduleSummary(intent: "charging" | "availability" | "legacy_classification") {
+    const row = this.stateDatabase.db.prepare(`
+      SELECT COUNT(*) AS count, MIN(not_before) AS next_at
+      FROM jobs
+      WHERE kind='access_probe'
+        AND status IN ('pending','retry_wait','leased','running')
+        AND (
+          EXISTS (
+            SELECT 1 FROM json_each(jobs.payload_json, '$.intents')
+            WHERE json_each.value=?
+          )
+          OR (
+            json_type(jobs.payload_json, '$.intents') IS NULL
+            AND CASE
+              WHEN ?='availability' THEN json_extract(jobs.payload_json, '$.purpose')='availability_recheck'
+              WHEN ?='legacy_classification' THEN json_extract(jobs.payload_json, '$.purpose')='legacy_failure_classification'
+              ELSE COALESCE(json_extract(jobs.payload_json, '$.purpose'), 'charging_recheck') NOT IN ('availability_recheck','legacy_failure_classification')
+            END
+          )
+        )
+    `).get(intent, intent, intent) as any;
+    return {
+      count: Number(row?.count || 0),
+      nextAt: Number.isFinite(Number(row?.next_at)) ? Number(row.next_at) : undefined,
+    };
+  }
+
   hasJobsForBvid(bvid: string, kinds?: PersistentJobKind[]) {
     if (!kinds?.length) {
       return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE bvid=?").get(bvid) as any).count || 0) > 0;

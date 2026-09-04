@@ -36,6 +36,9 @@ export interface DownloadResult {
   recoveredPages: number;
   totalPages: number;
   partial: boolean;
+  /** The source was explicitly unavailable; do not create an upload task. */
+  sourceUnavailable?: boolean;
+  availabilityReason?: VideoPageSnapshotResult["availabilityReason"];
 }
 
 export class ChargingRestrictedError extends Error {
@@ -482,18 +485,23 @@ export async function downloadWithBBDown(
   if (shutdownRequested) throw new Error("Application is shutting down");
   const downloadDir = options.downloadDir || path.join(tempDir, bvid);
   const snapshot = options.pageSnapshot || await getVideoPageSnapshot(cookie, bvid);
+  const snapshotAvailability = snapshot.availability
+    || (snapshot.available ? "available" : "unavailable");
   if (snapshot.access?.classification === "charging_restricted") {
     throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), snapshot.access);
   }
-  await fs.promises.mkdir(downloadDir, { recursive: true });
   const previousSession = readDownloadSession(downloadDir);
   const effectivePages = snapshot.pages.length > 0 ? snapshot.pages : previousSession?.pages || [];
-  if (effectivePages.length === 0 && snapshot.available) {
+  if (effectivePages.length === 0 && snapshotAvailability === "unknown") {
     const metadataError: any = new Error("Unable to resolve the current video page list; retrying later");
     metadataError.deferToNextCycle = true;
     metadataError.downloadFailureCategory = "transient";
     throw metadataError;
   }
+  if (effectivePages.length === 0 && snapshotAvailability === "unavailable") {
+    throw createSourceUnavailableError(snapshot.availabilityReason);
+  }
+  await fs.promises.mkdir(downloadDir, { recursive: true });
   const effectiveApiMode: BBDownApiMode = options.apiModeOverride || config.bbdownApiMode || "web";
   const sessionConfig: AppConfig = { ...config, bbdownApiMode: effectiveApiMode };
   const prepared = await prepareDownloadSession({
@@ -504,7 +512,7 @@ export async function downloadWithBBDown(
     kind: options.kind || "backup",
     pages: effectivePages,
     publishedAt: snapshot.publishedAt,
-    unavailable: !snapshot.available,
+    unavailable: snapshotAvailability === "unavailable",
     qualityUpgrade: options.qualityUpgrade,
     deferCompleteStatus: Boolean(options.expectedEncoding || options.expectedQuality),
   });
@@ -516,6 +524,20 @@ export async function downloadWithBBDown(
     });
   }
 
+  if (snapshotAvailability === "unavailable" && prepared.manifest.outputs.length > 0) {
+    if (prepared.manifest.status !== "complete") {
+      markDownloadSessionStatus(downloadDir, "partial", "Video is unavailable; preserving verified local pages.");
+    }
+    return {
+      downloadDir,
+      files: currentSessionFiles(downloadDir),
+      recoveredPages: prepared.recoveredPages,
+      totalPages: prepared.manifest.pages.length,
+      partial: true,
+      sourceUnavailable: true,
+      availabilityReason: snapshot.availabilityReason,
+    };
+  }
   if (prepared.missingPages.length === 0 && prepared.manifest.outputs.length > 0) {
     if (options.expectedEncoding) {
       const assessment = assessStrictEncoding(downloadDir, options.expectedEncoding);
@@ -542,35 +564,19 @@ export async function downloadWithBBDown(
       partial: prepared.manifest.status === "partial",
     };
   }
-  if (options.expectedEncoding && prepared.manifest.outputs.length > 0 && !snapshot.available) {
+  if (options.expectedEncoding && prepared.manifest.outputs.length > 0 && snapshotAvailability === "unavailable") {
     const assessment = assessStrictEncoding(downloadDir, options.expectedEncoding);
     const error = createStrictEncodingValidationError(assessment);
     markDownloadSessionStatus(downloadDir, "failed", error.message);
     throw error;
   }
-  if (options.expectedQuality && prepared.manifest.outputs.length > 0 && !snapshot.available) {
+  if (options.expectedQuality && prepared.manifest.outputs.length > 0 && snapshotAvailability === "unavailable") {
     const assessment = assessStrictQuality(downloadDir, options.expectedQuality);
     const error = new StrictQualityValidationError(assessment);
     markDownloadSessionStatus(downloadDir, "failed", error.message);
     throw error;
   }
-  if (!snapshot.available) {
-    if (prepared.manifest.outputs.length > 0) {
-      markDownloadSessionStatus(downloadDir, "partial", "Video is unavailable; preserving verified local pages.");
-      return {
-        downloadDir,
-        files: currentSessionFiles(downloadDir),
-        recoveredPages: prepared.recoveredPages,
-        totalPages: prepared.manifest.pages.length,
-        partial: true,
-      };
-    }
-    const unavailableError: any = new Error("Video is unavailable and no verified local pages can be recovered");
-    unavailableError.permanent = true;
-    unavailableError.code = "BILI_VIDEO_UNAVAILABLE";
-    unavailableError.downloadFailureCategory = "source_unavailable";
-    throw unavailableError;
-  }
+  if (snapshotAvailability === "unavailable") throw createSourceUnavailableError(snapshot.availabilityReason);
 
   const url = `https://www.bilibili.com/video/${bvid}`;
   const cookieString = buildCookieString(cookie);
@@ -729,12 +735,28 @@ export async function downloadWithBBDown(
       deferCompleteStatus: Boolean(options.expectedEncoding || options.expectedQuality),
     });
     if (refreshed.missingPages.length > 0) {
-      const latestSnapshot = snapshot.access?.classification === "unknown"
-        ? await (options.accessRecheck || getVideoPageSnapshot)(cookie, bvid).catch(() => undefined)
-        : undefined;
+      const latestSnapshot = await (options.accessRecheck || getVideoPageSnapshot)(cookie, bvid).catch(() => undefined);
       if (latestSnapshot?.access?.classification === "charging_restricted") {
         await cleanupNewInvalidArtifacts(downloadDir, invalidArtifactsBeforeRun);
         throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), latestSnapshot.access);
+      }
+      const latestAvailability = latestSnapshot?.availability
+        || (latestSnapshot?.available === true ? "available" : latestSnapshot ? "unavailable" : "unknown");
+      if (latestAvailability === "unavailable") {
+        await cleanupNewInvalidArtifacts(downloadDir, invalidArtifactsBeforeRun);
+        if (refreshed.manifest.outputs.length > 0) {
+          markDownloadSessionStatus(downloadDir, "partial", "Video became unavailable; preserving verified local pages.");
+          return {
+            downloadDir,
+            files: currentSessionFiles(downloadDir),
+            recoveredPages: refreshed.manifest.outputs.length,
+            totalPages: refreshed.manifest.pages.length,
+            partial: true,
+            sourceUnavailable: true,
+            availabilityReason: latestSnapshot?.availabilityReason,
+          };
+        }
+        throw createSourceUnavailableError(latestSnapshot?.availabilityReason);
       }
       const err = new Error(`BBDown did not complete all pages; remaining ${refreshed.missingPages.length}`);
       (err as any).deferToNextCycle = true;
@@ -780,6 +802,15 @@ export async function downloadWithBBDown(
   } finally {
     await credentialConfig.cleanup();
   }
+}
+
+function createSourceUnavailableError(reason?: VideoPageSnapshotResult["availabilityReason"]) {
+  const unavailableError: any = new Error("Video is unavailable and no verified local pages can be recovered");
+  unavailableError.permanent = true;
+  unavailableError.code = "BILI_VIDEO_UNAVAILABLE";
+  unavailableError.downloadFailureCategory = "source_unavailable";
+  unavailableError.availabilityReason = reason || "api_not_found";
+  return unavailableError;
 }
 
 async function preserveInterruptedDownload(downloadDir: string, error: any) {
@@ -1020,21 +1051,25 @@ async function fetchSafeVideoTitle(bvid: string, cookieString: string) {
   }
 }
 
-function classifyBBDownFailure(output: string) {
+export function classifyBBDownFailure(output: string): {
+  line: string;
+  category: "source_unavailable" | "transient" | "tool";
+  deferToNextCycle: boolean;
+} | null {
   for (const line of output.split(/\r?\n/).map((item) => item.trim())) {
     if (!line) continue;
     if (line.includes("解析此分P失败")) {
-      return { line, permanent: false, deferToNextCycle: true };
+      return { line, category: "transient", deferToNextCycle: true };
     }
-    if (
-      line.includes("Arg_KeyNotFound") ||
-      line.includes("未找到此 EP/SS") ||
-      line.includes("视频不存在") ||
+    if (line.includes("Arg_KeyNotFound") || line.includes("未找到此 EP/SS")) {
+      return { line, category: "tool", deferToNextCycle: false };
+    }
+    if (line.includes("视频不存在") ||
       line.includes("稿件不可见") ||
       line.includes("已失效") ||
       line.includes("资源不可用")
     ) {
-      return { line, permanent: true, deferToNextCycle: false };
+      return { line, category: "source_unavailable", deferToNextCycle: false };
     }
   }
   return null;
@@ -1491,10 +1526,11 @@ function runCommand(
       if (failure) {
         const finalizeFailure = (finalLine: string) => {
           const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${finalLine}`), combinedOutput);
-          (err as any).permanent = failure.permanent;
+          const permanent = failure.category === "source_unavailable";
+          (err as any).permanent = permanent;
           (err as any).deferToNextCycle = failure.deferToNextCycle;
-          (err as any).downloadFailureCategory = failure.permanent ? "source_unavailable" : "transient";
-          if (failure.permanent) (err as any).code = "BILI_VIDEO_UNAVAILABLE";
+          (err as any).downloadFailureCategory = failure.category;
+          if (permanent) (err as any).code = "BILI_VIDEO_UNAVAILABLE";
           logManager.push({
             timestamp: new Date().toISOString(),
             type: "download",
@@ -1542,7 +1578,7 @@ function runCommand(
 
       const errMsg = sanitizeDownloadDiagnosticText(stderr || combinedOutput || `Command failed with code ${code}`).slice(0, 4000);
       const nonZeroFailure = classifyBBDownFailure(combinedOutput);
-      if (nonZeroFailure?.permanent) {
+      if (nonZeroFailure?.category === "source_unavailable") {
         const err = attachAria2RecoveryIssue(new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`), combinedOutput);
         (err as any).permanent = true;
         (err as any).code = "BILI_VIDEO_UNAVAILABLE";
@@ -1554,6 +1590,12 @@ function runCommand(
         const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${nonZeroFailure.line}`), combinedOutput);
         (err as any).deferToNextCycle = true;
         (err as any).downloadFailureCategory = "transient";
+        rejectOnce(err);
+        return;
+      }
+      if (nonZeroFailure?.category === "tool") {
+        const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${nonZeroFailure.line}`), combinedOutput);
+        (err as any).downloadFailureCategory = "tool";
         rejectOnce(err);
         return;
       }

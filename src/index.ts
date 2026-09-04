@@ -161,7 +161,7 @@ const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, us
   setMaintenance: (locked, summary) => scheduler.setArchiveDeletionMaintenance(locked, summary),
   onAccountDeletionCompleted: (userId) => {
     scheduler.restoreUserAfterLogin(userId);
-    scheduler.wakeChargingAccessProbes();
+    scheduler.wakeChargingAccessProbes(userId);
   },
   onAccountPreparationRecovery: (userId, accountRemoved) => {
     if (accountRemoved) scheduler.finalizeUserRemoteDeletion(userId);
@@ -376,7 +376,7 @@ async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto"
       authRefreshRetryAt: undefined,
       lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
     });
-    scheduler.wakeChargingAccessProbes();
+    scheduler.wakeChargingAccessProbes(user.id);
   } catch (error: any) {
     const current = userStore.getById(user.id) || user;
     const failure = nextAuthRefreshFailureState(
@@ -1106,7 +1106,7 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
         });
         if (archiveDeletion.restoreAccount(userId)) {
           scheduler.restoreUserAfterLogin(userId);
-          scheduler.wakeChargingAccessProbes();
+          scheduler.wakeChargingAccessProbes(userId);
         }
         setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
@@ -1359,6 +1359,20 @@ app.get("/api/media-probe/:id", (req, res) => {
   }
   res.setHeader("Cache-Control", "private, no-store");
   res.json({ success: true, data: result });
+});
+
+app.post("/api/videos/:bvid/availability-recheck", (req, res) => {
+  const bvid = String(req.params.bvid || "").trim();
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
+    res.status(400).json({ success: false, message: "BV号格式无效" });
+    return;
+  }
+  const result = scheduler.requestAvailabilityRecheck(bvid);
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, message: result.message });
+    return;
+  }
+  res.status(202).json({ success: true, data: result });
 });
 
 app.get("/api/archive-library/navigation", (req, res) => {
@@ -1843,7 +1857,7 @@ app.patch("/api/users/:id", (req, res) => {
       : null;
   if (requestedEnabled !== null) {
     const updated = userStore.updatePartial(user.id, { enabled: requestedEnabled });
-    if (updated?.enabled) scheduler.wakeChargingAccessProbes();
+    if (updated?.enabled) scheduler.wakeChargingAccessProbes(user.id);
     res.json({ success: true, data: updated });
     return;
   }

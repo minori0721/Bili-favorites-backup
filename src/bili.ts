@@ -508,6 +508,15 @@ export async function listFavoriteItemsPage(
 
 export interface VideoPageSnapshotResult {
   available: boolean;
+  /** The API-level availability result. `available` remains for old callers. */
+  availability?: "available" | "unavailable" | "unknown";
+  availabilityReason?:
+    | "api_not_found"
+    | "submission_invisible"
+    | "favorite_unavailable"
+    | "empty_response"
+    | "temporary_error";
+  apiCodes?: number[];
   title?: string;
   upperName?: string;
   publishedAt?: number;
@@ -535,6 +544,46 @@ export interface VideoAccessSnapshot {
   previewAvailable?: boolean;
   exclusiveWithQa?: boolean;
   source: "view_detail" | "view" | "player" | "unknown";
+}
+
+export type VideoPageAvailability = "available" | "unavailable" | "unknown";
+export type VideoPageAvailabilityReason = NonNullable<VideoPageSnapshotResult["availabilityReason"]>;
+
+export interface VideoPageEndpointObservation {
+  availability: VideoPageAvailability;
+  reason: VideoPageAvailabilityReason;
+  apiCode?: number;
+}
+
+const DEFINITIVE_UNAVAILABLE_API_CODES = new Set([-404, 62002]);
+
+/**
+ * Combine the two public detail endpoints without treating an arbitrary API
+ * error as proof that a video was deleted. This is intentionally pure so the
+ * recovery state machine can be tested without contacting Bilibili.
+ */
+export function classifyVideoPageAvailability(
+  observations: VideoPageEndpointObservation[]
+): { availability: VideoPageAvailability; reason?: VideoPageAvailabilityReason; apiCodes: number[] } {
+  const apiCodes = [...new Set(observations
+    .map((observation) => observation.apiCode)
+    .filter((code): code is number => Number.isFinite(code)))];
+  if (observations.some((observation) => observation.availability === "available")) {
+    return { availability: "available", apiCodes };
+  }
+  if (observations.some((observation) => observation.availability === "unknown")) {
+    const reason = observations.some((observation) => observation.reason === "empty_response")
+      ? "empty_response"
+      : "temporary_error";
+    return { availability: "unknown", reason, apiCodes };
+  }
+  if (observations.length > 0 && observations.every((observation) => observation.availability === "unavailable")) {
+    const reason = observations.some((observation) => observation.reason === "submission_invisible")
+      ? "submission_invisible"
+      : "api_not_found";
+    return { availability: "unavailable", reason, apiCodes };
+  }
+  return { availability: "unknown", reason: "temporary_error", apiCodes };
 }
 
 function optionalBoolean(value: unknown) {
@@ -670,7 +719,7 @@ export async function getVideoPageSnapshot(
     `https://api.bilibili.com/x/web-interface/view/detail?bvid=${bvid}`,
     `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
   ];
-  let lastUnavailable = false;
+  const observations: VideoPageEndpointObservation[] = [];
   for (const [urlIndex, url] of urls.entries()) {
     let responseBody: unknown;
     try {
@@ -684,6 +733,7 @@ export async function getVideoPageSnapshot(
       if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(0, message)) {
         throw new BiliRiskOrLoginError(`Bili API error (status ${statusCode || "unknown"}): ${message}`);
       }
+      observations.push({ availability: "unknown", reason: "temporary_error" });
       continue;
     }
 
@@ -694,12 +744,19 @@ export async function getVideoPageSnapshot(
       if (isRiskOrLoginApiError(apiCode, message)) {
         throw new BiliRiskOrLoginError(`Bili API code ${apiCode}: ${message}`);
       }
-      lastUnavailable = true;
+      observations.push({
+        availability: DEFINITIVE_UNAVAILABLE_API_CODES.has(apiCode) ? "unavailable" : "unknown",
+        reason: apiCode === 62002 ? "submission_invisible" : apiCode === -404 ? "api_not_found" : "temporary_error",
+        apiCode,
+      });
       continue;
     }
     const data = body.data as Record<string, any> | undefined;
     const view = data?.View || data;
-    if (!view) continue;
+    if (!view) {
+      observations.push({ availability: "unknown", reason: "empty_response", apiCode });
+      continue;
+    }
     const access = await resolveVideoAccessFallback(
       client,
       bvidValue,
@@ -727,16 +784,31 @@ export async function getVideoPageSnapshot(
         publishedAt: Number(view.pubdate || 0) > 0 ? Number(view.pubdate) * 1000 : undefined,
       });
     }
-    return {
-      available: pages.length > 0,
-      title: typeof view.title === "string" ? view.title : undefined,
-      upperName: typeof view.owner?.name === "string" ? view.owner.name : undefined,
-      publishedAt: Number(view.pubdate || 0) > 0 ? Number(view.pubdate) * 1000 : undefined,
-      access,
-      pages,
-    };
+    if (pages.length > 0) {
+      return {
+        available: true,
+        availability: "available",
+        apiCodes: [...new Set(observations
+          .map((observation) => observation.apiCode)
+          .filter((code): code is number => Number.isFinite(code)))],
+        title: typeof view.title === "string" ? view.title : undefined,
+        upperName: typeof view.owner?.name === "string" ? view.owner.name : undefined,
+        publishedAt: Number(view.pubdate || 0) > 0 ? Number(view.pubdate) * 1000 : undefined,
+        access,
+        pages,
+      };
+    }
+    observations.push({ availability: "unknown", reason: "empty_response", apiCode });
   }
-  return { available: !lastUnavailable, access: classifyVideoAccess(undefined), pages: [] };
+  const classified = classifyVideoPageAvailability(observations);
+  return {
+    available: classified.availability === "available",
+    availability: classified.availability,
+    availabilityReason: classified.reason,
+    apiCodes: classified.apiCodes,
+    access: classifyVideoAccess(undefined),
+    pages: [],
+  };
 }
 
 // ---------- token refresh (biliLive-tools pattern) ----------

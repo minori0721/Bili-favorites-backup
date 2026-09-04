@@ -75,6 +75,14 @@ async function openSourceConfirmation(page: Page) {
   return button;
 }
 
+test("source availability uses a background status without creating a recovery badge", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  await resetFixture(page);
+  await openLibrary(page, testInfo);
+  await expect(page.locator('[data-archive-bvid="BV1BETA0002"] .archive-library-status')).toHaveText("B站源长期不可用");
+  await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
+});
+
 test("desktop modal stack traps focus and restores each interaction layer", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop interaction coverage");

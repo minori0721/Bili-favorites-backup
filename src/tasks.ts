@@ -82,6 +82,8 @@ export class DownloadTask extends Task {
   targets?: UploadTarget[];
   outputFiles: string[] = [];
   partialBackup = false;
+  sourceUnavailable = false;
+  availabilityReason?: string;
   recoveredPages = 0;
   totalPages = 0;
   apiModeOverride?: BBDownApiMode;
@@ -125,10 +127,14 @@ export class DownloadTask extends Task {
     this.downloadDir = result.downloadDir;
     this.outputFiles = result.files;
     this.partialBackup = result.partial;
+    this.sourceUnavailable = result.sourceUnavailable === true;
+    this.availabilityReason = result.availabilityReason;
     this.recoveredPages = result.recoveredPages;
     this.totalPages = result.totalPages;
     this.detail = `已完成 ${result.files.length}/${result.totalPages} 分P`;
-    this.onDownloaded?.(this, result.downloadDir);
+    if (!this.sourceUnavailable) {
+      this.onDownloaded?.(this, result.downloadDir);
+    }
     console.log(`[Task] Completed download for ${this.bvid}`);
   }
 }
@@ -170,6 +176,8 @@ export class QualityUpgradeTask extends Task {
   runId?: string;
   downloadDir?: string;
   outputFiles: string[] = [];
+  sourceUnavailable = false;
+  availabilityReason?: string;
   uploadResult?: UploadResult;
   deleteResult?: Awaited<ReturnType<typeof deleteRemoteFiles>>;
   finalFiles?: RemoteFileRecord[];
@@ -235,6 +243,7 @@ export class QualityUpgradeTask extends Task {
   async run() {
     this.runId = `${Date.now()}-${this.id}`;
     await this.runDownloadPhase(this.runId);
+    if (this.sourceUnavailable) return;
     await this.runUploadReplacePhase(this.runId);
   }
 
@@ -274,6 +283,8 @@ export class QualityUpgradeTask extends Task {
     });
     this.downloadDir = result.downloadDir;
     this.outputFiles = result.files;
+    this.sourceUnavailable = result.sourceUnavailable === true;
+    this.availabilityReason = result.availabilityReason;
   }
 
   async runUploadReplacePhase(runId: string) {
