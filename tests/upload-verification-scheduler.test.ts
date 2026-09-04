@@ -732,14 +732,14 @@ test("upload confirmation survives restart and times out into manual recovery", 
   assert.equal(reupload!.payload.awaitingManualRecovery, true);
   assert.equal(reupload!.notBefore, 0);
   assert.equal(reupload!.notBefore >= beforeTimeout + 29 * 60_000, false);
-  const recovery = scheduler.recoverUploadJob(reupload!.id, false);
+  const recovery = await scheduler.recoverUploadJob(reupload!.id, false);
   assert.equal(recovery.ok, true);
   assert.equal(scheduler.jobStore.findById(reupload!.id)?.payload.awaitingManualRecovery, false);
   assert.equal(
     scheduler.uploadQueue.getTasks().some((task: any) => task.resumeOnly === true),
     true,
   );
-  const duplicateRecovery = scheduler.recoverUploadJob(reupload!.id, false);
+  const duplicateRecovery = await scheduler.recoverUploadJob(reupload!.id, false);
   assert.equal(duplicateRecovery.ok, true);
   assert.equal(duplicateRecovery.idempotent, true);
   assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "upload_failed");
@@ -747,6 +747,370 @@ test("upload confirmation survives restart and times out into manual recovery", 
   scheduler.stop();
   manager.close();
   await removeTestDir(runtime);
+});
+
+test("stale resume-only recovery converges to the current verified archive when its local candidate is gone", async () => {
+  const runtime = await createTestDir("upload-stale-resume-verified-proof");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, "video.mp4"), Buffer.alloc(12, 1));
+  const manager = new StateManager({ statePath, dbPath });
+  const snapshot = verificationState(localDir);
+  const verifiedAt = new Date().toISOString();
+  const verifiedFile = {
+    name: "video.mp4",
+    path: "/target/video.mp4",
+    size: 12,
+    localRelativePath: "video.mp4",
+    verificationStatus: "verified" as const,
+    putAcceptedAt: verifiedAt,
+    verifiedAt,
+  };
+  snapshot.videos.BVVERIFY = {
+    ...snapshot.videos.BVVERIFY,
+    backupStatus: "upload_failed",
+    remotePath: "/target",
+    remoteFiles: [{ ...verifiedFile }],
+    uploadedAt: verifiedAt,
+    verifiedAt,
+    lastError: "旧恢复任务曾读取不到本地文件",
+  };
+  snapshot.relations["u1:1:BVVERIFY"] = {
+    ...snapshot.relations["u1:1:BVVERIFY"],
+    backupStatus: "upload_failed",
+    remotePath: "/target",
+    remoteFiles: [{ ...verifiedFile }],
+    uploadedAt: verifiedAt,
+    verifiedAt,
+    lastError: "旧恢复任务曾读取不到本地文件",
+  };
+  manager.replaceStateSnapshot(snapshot);
+  await fs.promises.rm(path.join(localDir, "video.mp4"));
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+    { remoteFileInspector: async () => ({ status: "verified" }) } as any,
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const job = scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:stale-resume",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "retry_wait",
+      payload: {
+        awaitingManualRecovery: false,
+        resumeOnly: true,
+        allowReupload: false,
+        localDir,
+        remotePath: "/target",
+        files: ["video.mp4"],
+      },
+    });
+
+    const result = await scheduler.recoverUploadJob(job.id, false);
+    assert.equal(result.ok, true);
+    assert.equal(result.idempotent, true);
+    assert.equal(result.resolved, "verified_archive");
+    assert.equal(scheduler.jobStore.findById(job.id), null);
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "verified");
+    assert.equal(manager.getDatabase().getVideo("BVVERIFY")?.backupStatus, "verified");
+    assert.equal(scheduler.uploadQueue.getTasks().length, 0);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("startup recovery removes obsolete verified-archive jobs but preserves real conflict candidates", async () => {
+  const runtime = await createTestDir("upload-stale-resume-startup-reconcile");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  const manager = new StateManager({ statePath, dbPath });
+  const snapshot = verificationState(localDir);
+  const verifiedAt = new Date().toISOString();
+  const verifiedFile = {
+    name: "video.mp4",
+    path: "/target/video.mp4",
+    size: 12,
+    localRelativePath: "video.mp4",
+    verificationStatus: "verified" as const,
+    putAcceptedAt: verifiedAt,
+    verifiedAt,
+  };
+  snapshot.videos.BVVERIFY = {
+    ...snapshot.videos.BVVERIFY,
+    backupStatus: "upload_failed",
+    remotePath: "/target",
+    remoteFiles: [{ ...verifiedFile }],
+    uploadedAt: verifiedAt,
+    verifiedAt,
+  };
+  snapshot.relations["u1:1:BVVERIFY"] = {
+    ...snapshot.relations["u1:1:BVVERIFY"],
+    backupStatus: "upload_failed",
+    remotePath: "/target",
+    remoteFiles: [{ ...verifiedFile }],
+    uploadedAt: verifiedAt,
+    verifiedAt,
+  };
+  manager.replaceStateSnapshot(snapshot);
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+    { remoteFileInspector: async () => ({ status: "verified" }) } as any,
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const obsolete = scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:obsolete-startup",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "retry_wait",
+      payload: {
+        awaitingManualRecovery: false,
+        resumeOnly: true,
+        allowReupload: false,
+        localDir,
+        remotePath: "/target",
+        files: ["video.mp4"],
+      },
+    });
+    const candidate = scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:conflict-startup",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "manual_wait",
+      payload: {
+        awaitingManualRecovery: true,
+        resumeOnly: true,
+        allowReupload: false,
+        localDir,
+        remotePath: "/target",
+        files: ["video.mp4"],
+        conflictCandidate: {
+          id: "candidate-1",
+          candidateRemotePath: "/target/_conflicts/candidate-1",
+          files: [{ ...verifiedFile, path: "/target/_conflicts/candidate-1/video.mp4" }],
+        },
+      },
+    });
+
+    await scheduler.reconcileObsoleteVerifiedArchiveRecoveries();
+
+    assert.equal(scheduler.jobStore.findById(obsolete.id), null);
+    assert.equal(scheduler.jobStore.findById(candidate.id)?.payload.conflictCandidate !== undefined, true);
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "verified");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("manual recovery never settles a conflict candidate from an unrelated verified archive", async () => {
+  const runtime = await createTestDir("upload-conflict-candidate-retained-proof");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  const manager = new StateManager({ statePath, dbPath });
+  const snapshot = verificationState(localDir);
+  const verifiedAt = new Date().toISOString();
+  const verifiedFile = {
+    name: "video.mp4", path: "/target/video.mp4", size: 12, localRelativePath: "video.mp4",
+    verificationStatus: "verified" as const, putAcceptedAt: verifiedAt, verifiedAt,
+  };
+  snapshot.videos.BVVERIFY = { ...snapshot.videos.BVVERIFY, backupStatus: "upload_failed", remotePath: "/target", remoteFiles: [{ ...verifiedFile }], uploadedAt: verifiedAt, verifiedAt };
+  snapshot.relations["u1:1:BVVERIFY"] = { ...snapshot.relations["u1:1:BVVERIFY"], backupStatus: "upload_failed", remotePath: "/target", remoteFiles: [{ ...verifiedFile }], uploadedAt: verifiedAt, verifiedAt };
+  manager.replaceStateSnapshot(snapshot);
+  let inspections = 0;
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+    { remoteFileInspector: async () => { inspections += 1; return { status: "verified" }; } } as any,
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const job = scheduler.jobStore.enqueue({
+      kind: "upload", dedupeKey: "upload:u1:1:BVVERIFY:/target:conflict-retained-proof", bvid: "BVVERIFY", userId: "u1", mediaId: 1,
+      initialStatus: "manual_wait",
+      payload: {
+        awaitingManualRecovery: true, resumeOnly: true, allowReupload: false, localDir, remotePath: "/target", files: ["video.mp4"],
+        conflictCandidate: { id: "candidate-1", candidateRemotePath: "/target/_conflicts/candidate-1", files: [{ ...verifiedFile, path: "/target/_conflicts/candidate-1/video.mp4" }] },
+      },
+    });
+    const result = await scheduler.recoverUploadJob(job.id, false);
+    assert.equal(result.ok, false);
+    assert.equal(inspections, 0);
+    assert.equal(scheduler.jobStore.findById(job.id)?.status, "manual_wait");
+    assert.equal(scheduler.jobStore.findById(job.id)?.payload.conflictCandidate?.id, "candidate-1");
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "upload_failed");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("stale resume-only recovery stays pending when the stored archive is no longer remotely visible", async () => {
+  const runtime = await createTestDir("upload-stale-resume-remote-missing");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  const manager = new StateManager({ statePath, dbPath });
+  const snapshot = verificationState(localDir);
+  const verifiedAt = new Date().toISOString();
+  const verifiedFile = {
+    name: "video.mp4", path: "/target/video.mp4", size: 12, localRelativePath: "video.mp4",
+    verificationStatus: "verified" as const, putAcceptedAt: verifiedAt, verifiedAt,
+  };
+  snapshot.videos.BVVERIFY = { ...snapshot.videos.BVVERIFY, backupStatus: "upload_failed", remotePath: "/target", remoteFiles: [{ ...verifiedFile }], uploadedAt: verifiedAt, verifiedAt };
+  snapshot.relations["u1:1:BVVERIFY"] = { ...snapshot.relations["u1:1:BVVERIFY"], backupStatus: "upload_failed", remotePath: "/target", remoteFiles: [{ ...verifiedFile }], uploadedAt: verifiedAt, verifiedAt };
+  manager.replaceStateSnapshot(snapshot);
+  let inspections = 0;
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+    { remoteFileInspector: async () => { inspections += 1; return { status: "missing" }; } } as any,
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const job = scheduler.jobStore.enqueue({
+      kind: "upload", dedupeKey: "upload:u1:1:BVVERIFY:/target:remote-missing", bvid: "BVVERIFY", userId: "u1", mediaId: 1,
+      initialStatus: "retry_wait",
+      payload: { awaitingManualRecovery: false, resumeOnly: true, allowReupload: false, localDir, remotePath: "/target", files: ["video.mp4"] },
+    });
+    const result = await scheduler.recoverUploadJob(job.id, false);
+    assert.equal(result.ok, true);
+    assert.equal(result.resolved, undefined);
+    assert.equal(inspections, 1);
+    assert.equal(scheduler.jobStore.findById(job.id)?.status, "retry_wait");
+    assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "upload_failed");
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("obsolete archive recovery requires an exact nonempty file set and uses bounded remote checks", async () => {
+  const runtime = await createTestDir("upload-stale-resume-bounded-checks");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  const manager = new StateManager({ statePath, dbPath });
+  const snapshot = verificationState(localDir);
+  const verifiedAt = new Date().toISOString();
+  const verifiedFile = {
+    name: "video.mp4", path: "/target/video.mp4", size: 12, localRelativePath: "video.mp4",
+    verificationStatus: "verified" as const, putAcceptedAt: verifiedAt, verifiedAt,
+  };
+  snapshot.videos.BVVERIFY = { ...snapshot.videos.BVVERIFY, backupStatus: "upload_failed", remotePath: "/target", remoteFiles: [{ ...verifiedFile }], uploadedAt: verifiedAt, verifiedAt };
+  snapshot.relations["u1:1:BVVERIFY"] = { ...snapshot.relations["u1:1:BVVERIFY"], backupStatus: "upload_failed", remotePath: "/target", remoteFiles: [{ ...verifiedFile }], uploadedAt: verifiedAt, verifiedAt };
+  manager.replaceStateSnapshot(snapshot);
+  let active = 0;
+  let maximumActive = 0;
+  let inspections = 0;
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+    { remoteFileInspector: async () => {
+      inspections += 1;
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { status: "verified" };
+    } } as any,
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const empty = scheduler.jobStore.enqueue({
+      kind: "upload", dedupeKey: "upload:u1:1:BVVERIFY:/target:empty-files", bvid: "BVVERIFY", userId: "u1", mediaId: 1,
+      initialStatus: "retry_wait",
+      payload: { awaitingManualRecovery: false, resumeOnly: true, allowReupload: false, localDir, remotePath: "/target", files: [] },
+    });
+    for (let index = 0; index < 3; index += 1) {
+      scheduler.jobStore.enqueue({
+        kind: "upload", dedupeKey: `upload:u1:1:BVVERIFY:/target:bounded-${index}`, bvid: "BVVERIFY", userId: "u1", mediaId: 1,
+        initialStatus: "retry_wait",
+        payload: { awaitingManualRecovery: false, resumeOnly: true, allowReupload: false, localDir, remotePath: "/target", files: ["video.mp4"] },
+      });
+    }
+    await scheduler.reconcileObsoleteVerifiedArchiveRecoveries(10, undefined, 2);
+    assert.ok(scheduler.jobStore.findById(empty.id));
+    assert.equal(inspections, 3);
+    assert.equal(maximumActive <= 2, true);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("manual recovery with no session refuses a missing local candidate before waking upload", async () => {
+  const runtime = await createTestDir("upload-legacy-missing-local-preflight");
+  const localDir = path.join(runtime, "temp", "BVVERIFY");
+  const statePath = path.join(runtime, "data", "state.json");
+  const dbPath = path.join(runtime, "data", "bfb.sqlite");
+  await fs.promises.mkdir(localDir, { recursive: true });
+  const manager = new StateManager({ statePath, dbPath });
+  manager.replaceStateSnapshot(verificationState(localDir));
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => [], getById: () => undefined } as any,
+    manager,
+  ) as any;
+  scheduler.uploadQueue.setStartGate(() => false);
+  try {
+    const job = scheduler.jobStore.enqueue({
+      kind: "upload",
+      dedupeKey: "upload:u1:1:BVVERIFY:/target:legacy-missing-local",
+      bvid: "BVVERIFY",
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "manual_wait",
+      payload: {
+        awaitingManualRecovery: true,
+        resumeOnly: true,
+        allowReupload: false,
+        localDir,
+        remotePath: "/target",
+        files: ["video.mp4"],
+      },
+    });
+
+    const result = await scheduler.recoverUploadJob(job.id, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 409);
+    assert.match(result.message, /重新下载/);
+    assert.equal(scheduler.jobStore.findById(job.id)?.status, "manual_wait");
+    assert.equal(scheduler.jobStore.findById(job.id)?.payload.awaitingManualRecovery, true);
+    assert.equal(scheduler.uploadQueue.getTasks().length, 0);
+  } finally {
+    scheduler.stop();
+    manager.close();
+    await removeTestDir(runtime);
+  }
 });
 
 test("transfer-session verification uses the same timeout and manual recovery path", async () => {

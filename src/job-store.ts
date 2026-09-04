@@ -922,6 +922,75 @@ export class PersistentJobStore {
     `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
   }
 
+  /**
+   * Find legacy no-session upload recoveries that are only waiting to
+   * re-confirm an archive. A fully verified relation makes such a job
+   * obsolete, but real conflict candidates and active uploads must remain.
+   */
+  listObsoleteArchiveRecoveryCandidates(
+    limit = 1000,
+    scope?: { bvid?: string; userId?: string; mediaId?: number },
+  ) {
+    const conditions = [
+      "kind='upload'",
+      "status IN ('pending','retry_wait','manual_wait','failed')",
+      "bvid IS NOT NULL AND bvid != ''",
+      "user_id IS NOT NULL AND user_id != ''",
+      "media_id IS NOT NULL",
+      "json_extract(payload_json, '$.resumeOnly')=1",
+      "COALESCE(json_extract(payload_json, '$.allowReupload'), 0)<>1",
+      "COALESCE(NULLIF(json_extract(payload_json, '$.sessionId'), ''), '')=''",
+      "json_type(payload_json, '$.encodingRetry') IS NULL",
+      "COALESCE(json_extract(payload_json, '$.historyOnly'), 0)<>1",
+      "json_type(payload_json, '$.conflictCandidate') IS NULL",
+      "COALESCE(json_extract(payload_json, '$.conflictCandidateOnly'), 0)<>1",
+      "COALESCE(json_extract(payload_json, '$.legacyConflictSideEffectsStarted'), 0)<>1",
+      "(json_type(payload_json, '$.conflictArchiveVerifiedPaths') IS NULL OR json_array_length(payload_json, '$.conflictArchiveVerifiedPaths')=0)",
+      "json_type(payload_json, '$.files')='array'",
+      "json_array_length(payload_json, '$.files')>0",
+    ];
+    const params: Array<string | number> = [];
+    if (scope?.bvid) {
+      conditions.push("bvid=?");
+      params.push(String(scope.bvid));
+    }
+    if (scope?.userId) {
+      conditions.push("user_id=?");
+      params.push(String(scope.userId));
+    }
+    const scopedMediaId = scope?.mediaId;
+    if (Number.isInteger(scopedMediaId)) {
+      conditions.push("media_id=?");
+      params.push(Number(scopedMediaId));
+    }
+    return (this.stateDatabase.db.prepare(`
+      SELECT * FROM jobs
+      WHERE ${conditions.join("\n        AND ")}
+      ORDER BY updated_at ASC, created_at ASC, id ASC
+      LIMIT ?
+    `).all(...params, Math.max(1, Math.floor(limit))) as any[]).map(rowToJob);
+  }
+
+  removeObsoleteArchiveRecoveryCandidate(id: string) {
+    return this.stateDatabase.db.prepare(`
+      DELETE FROM jobs
+      WHERE id=?
+        AND kind='upload'
+        AND status IN ('pending','retry_wait','manual_wait','failed')
+        AND json_extract(payload_json, '$.resumeOnly')=1
+        AND COALESCE(json_extract(payload_json, '$.allowReupload'), 0)<>1
+        AND COALESCE(NULLIF(json_extract(payload_json, '$.sessionId'), ''), '')=''
+        AND json_type(payload_json, '$.encodingRetry') IS NULL
+        AND COALESCE(json_extract(payload_json, '$.historyOnly'), 0)<>1
+        AND json_type(payload_json, '$.conflictCandidate') IS NULL
+        AND COALESCE(json_extract(payload_json, '$.conflictCandidateOnly'), 0)<>1
+        AND COALESCE(json_extract(payload_json, '$.legacyConflictSideEffectsStarted'), 0)<>1
+        AND (json_type(payload_json, '$.conflictArchiveVerifiedPaths') IS NULL OR json_array_length(payload_json, '$.conflictArchiveVerifiedPaths')=0)
+        AND json_type(payload_json, '$.files')='array'
+        AND json_array_length(payload_json, '$.files')>0
+    `).run(String(id || "")).changes === 1;
+  }
+
   countOutstanding(kinds: PersistentJobKind[]) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");

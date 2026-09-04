@@ -9186,12 +9186,14 @@ function getAppScript() {
       const buttons = card ? Array.from(card.querySelectorAll('.queue-recovery-actions button')) : [];
       buttons.forEach((button) => { button.disabled = true; });
       try {
-        await fetchJson('/api/queue/recover', {
+        const result = await fetchJson('/api/queue/recover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ jobId, allowReupload }),
         });
-        showToast(allowReupload ? '已开始重新确认并允许一次重传' : '已开始重新确认远端文件', 'success');
+        showToast(!allowReupload && result?.resolved === 'verified_archive'
+          ? '已确认现有归档，未重复上传'
+          : (allowReupload ? '已开始重新确认并允许一次重传' : '已开始重新确认远端文件'), 'success');
         await refreshQueueBoard();
       } catch (error) {
         buttons.forEach((button) => { button.disabled = false; });

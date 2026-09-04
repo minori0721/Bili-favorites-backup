@@ -1969,19 +1969,26 @@ app.get("/api/queue/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
-app.post("/api/queue/recover", (req, res) => {
+app.post("/api/queue/recover", asyncHandler(async (req, res) => {
   const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
   if (!jobId || jobId.length > 128) {
     res.status(400).json({ success: false, message: "Invalid recovery job id" });
     return;
   }
-  const result = scheduler.recoverUploadJob(jobId, req.body?.allowReupload === true);
+  const result = await scheduler.recoverUploadJob(jobId, req.body?.allowReupload === true);
   if (!result.ok) {
     res.status(result.status).json({ success: false, message: result.message });
     return;
   }
-  res.json({ success: true, data: { jobId: result.job.id, idempotent: result.idempotent } });
-});
+  res.json({
+    success: true,
+    data: {
+      jobId: result.job.id,
+      idempotent: result.idempotent,
+      ...(result.resolved ? { resolved: result.resolved } : {}),
+    },
+  });
+}));
 
 app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, res) => {
   const issueId = String(req.params.id || "").trim();

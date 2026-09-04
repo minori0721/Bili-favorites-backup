@@ -78,6 +78,7 @@ import {
 } from "./auth-refresh.js";
 import { TransferSessionStore } from "./transfer-session.js";
 import { classifyRemoteFailure, type RemoteFailureCategory, type RemoteFailureInfo } from "./remote-file-resolver.js";
+import { normalizeRemotePath, remoteDirname } from "./remote-path.js";
 import {
   PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES,
   PersistentJobStore,
@@ -2015,7 +2016,14 @@ export class SyncScheduler {
     };
     task.onUploaded = (_task, result) => this.stateManager.finalizeQualityUpgradeRemoteFiles(task.bvid, target.userId, target.mediaId, result.remotePath, result.files);
     task.onCompletedUpgrade = () => {
-      this.stateManager.completeQualityUpgrade(task.bvid, target.userId, target.mediaId, target.remotePath, task.finalFiles || []);
+      const completed = this.stateManager.completeQualityUpgrade(task.bvid, target.userId, target.mediaId, target.remotePath, task.finalFiles || []);
+      if (completed) {
+        void this.reconcileObsoleteVerifiedArchiveRecoveries(1, {
+          bvid: task.bvid,
+          userId: target.userId,
+          mediaId: target.mediaId,
+        }, 1);
+      }
       logManager.push({ timestamp: new Date().toISOString(), type: "upload", level: "info", summary: `重调画质完成 ${task.bvid}`, raw: `[QualityUpgrade] completed ${target.userId}:${target.mediaId}:${task.bvid}`, bvid: task.bvid, simpleVisible: true });
     };
     task.onFailed = (_task, error) => {
@@ -4087,6 +4095,77 @@ export class SyncScheduler {
     } satisfies ExistingArchiveProof;
   }
 
+  private isPlainObsoleteArchiveRecovery(job: any) {
+    const payload = job?.payload as any;
+    if (job?.kind !== "upload" || !["pending", "retry_wait", "manual_wait", "failed"].includes(String(job?.status || ""))) return false;
+    if (payload?.resumeOnly !== true || payload?.allowReupload === true || payload?.sessionId || payload?.encodingRetry || payload?.historyOnly) return false;
+    if (payload?.conflictCandidate || payload?.conflictCandidateOnly === true || payload?.legacyConflictSideEffectsStarted === true) return false;
+    if (Array.isArray(payload?.conflictArchiveVerifiedPaths) && payload.conflictArchiveVerifiedPaths.length > 0) return false;
+    const files = Array.isArray(payload?.files)
+      ? payload.files.map((value: unknown) => String(value || "").replace(/\\/g, "/").trim()).filter(Boolean)
+      : [];
+    return files.length > 0 && new Set(files).size === files.length;
+  }
+
+  private async confirmVerifiedArchiveProofForRecovery(job: any, proof: ExistingArchiveProof) {
+    if (!this.isVerifiedArchiveProofForRecovery(job, proof)) return "mismatch" as const;
+    for (const file of proof.files) {
+      try {
+        const result = await this.remoteFileInspector(this.configStore.get(), String(file.path), Number(file.size));
+        if (result.status !== "verified") return result.status;
+      } catch {
+        return "unknown" as const;
+      }
+    }
+    return "verified" as const;
+  }
+
+  private async reconcileObsoleteVerifiedArchiveRecoveries(
+    limit = 1000,
+    scope?: { bvid?: string; userId?: string; mediaId?: number },
+    concurrency = 2,
+  ) {
+    let removed = 0;
+    const jobs = this.jobStore.listObsoleteArchiveRecoveryCandidates(limit, scope);
+    let nextIndex = 0;
+    const worker = async () => {
+      while (this.acceptingJobs) {
+        const job = jobs[nextIndex++];
+        if (!job) return;
+        if (this.recoveryJobLocks.has(job.id) || !this.isPlainObsoleteArchiveRecovery(job)) continue;
+        this.recoveryJobLocks.add(job.id);
+        try {
+          const bvid = String(job.bvid || job.payload?.bvid || "");
+          if (!bvid || !job.userId || !Number.isInteger(job.mediaId)) continue;
+          // A recoverable transfer session is authoritative. Do not remove the
+          // legacy job while the session projection may still recreate work.
+          if (this.transferSessions.findForTarget(job.userId, job.mediaId, bvid)) continue;
+          const proof = this.captureExistingArchiveProof(job.userId, job.mediaId, bvid);
+          if (!proof || await this.confirmVerifiedArchiveProofForRecovery(job, proof) !== "verified") continue;
+          if (!this.stateManager.restoreExistingArchiveProof(bvid, job.userId, job.mediaId, proof)) continue;
+          if (!this.jobStore.removeObsoleteArchiveRecoveryCandidate(job.id)) continue;
+          removed += 1;
+          await this.maybeCleanupVerifiedLocalDir(bvid, String((job.payload as any)?.localDir || ""));
+        } finally {
+          this.recoveryJobLocks.delete(job.id);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(4, Math.floor(concurrency) || 1, jobs.length || 1)) }, worker));
+    if (removed > 0) {
+      logManager.push({
+        timestamp: new Date(this.now()).toISOString(),
+        type: "system",
+        level: "info",
+        summary: `已自动收敛 ${removed} 个过期上传恢复任务，保留已验证归档`,
+        raw: `[Recovery] obsolete verified archive recoveries removed=${removed}`,
+        simpleVisible: true,
+        debugVisible: true,
+      });
+    }
+    return removed;
+  }
+
   private legacyConflictSideEffectsStarted(item: RecoveryUploadItem, relation: FavoriteRelation | null) {
     if ((item.conflictArchiveVerifiedPaths || []).length > 0) return true;
     if (!item.conflictArchiveSegment || !relation?.remoteConflictArchives?.length) return false;
@@ -4613,10 +4692,66 @@ export class SyncScheduler {
     };
   }
 
-  private finalizeRetainedArchiveRecovery(job: any, proof: ExistingArchiveProof) {
+  private isVerifiedArchiveProofForRecovery(job: any, proof: ExistingArchiveProof) {
+    const payload = job?.payload as any;
+    if (proof.status !== "verified" || !proof.verifiedAt || proof.files.length === 0) return false;
+    const requestedRemotePath = String(payload?.remotePath || "").trim();
+    if (!requestedRemotePath) return false;
+    try {
+      const expectedDirectory = normalizeRemotePath(requestedRemotePath, { allowTrailingSlash: true });
+      const proofDirectory = normalizeRemotePath(
+        String(proof.remotePath || remoteDirname(String(proof.files[0]?.path || ""))),
+        { allowTrailingSlash: true },
+      );
+      if (expectedDirectory !== proofDirectory) return false;
+
+      const proofNames = proof.files.map((file) => String(
+        file.localRelativePath || path.posix.basename(String(file.path || "")),
+      ).replace(/\\/g, "/"));
+      if (proofNames.some((name) => !name) || new Set(proofNames).size !== proofNames.length) return false;
+      const requestedFiles: string[] = Array.isArray(payload?.files)
+        ? Array.from(new Set<string>(payload.files.map((value: unknown) => String(value || "").replace(/\\/g, "/")).filter((value: string) => Boolean(value))))
+        : [];
+      if (requestedFiles.length === 0
+        || requestedFiles.length !== proofNames.length
+        || requestedFiles.some((name) => !proofNames.includes(name))) {
+        return false;
+      }
+
+      return proof.files.every((file) => {
+        if (file.verificationStatus !== "verified" || !Number.isFinite(Number(file.size)) || Number(file.size) <= 0) return false;
+        try {
+          return remoteDirname(normalizeRemotePath(String(file.path || ""), { allowRoot: false })) === proofDirectory;
+        } catch {
+          return false;
+        }
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private finalizeRetainedArchiveRecovery(
+    job: any,
+    proof: ExistingArchiveProof,
+    options: { allowResumeOnly?: boolean } = {},
+  ) {
     const current = this.jobStore.findById(job.id);
-    if (!current || !(current.payload as any)?.awaitingManualRecovery) return false;
+    if (!current) return false;
     const payload = current.payload as any;
+    const manualRecovery = payload?.awaitingManualRecovery === true;
+    const staleResumeOnlyRecovery = options.allowResumeOnly === true
+      && ["manual_wait", "retry_wait", "failed"].includes(String(current.status))
+      && payload?.resumeOnly === true
+      && payload?.allowReupload !== true
+      && !payload?.sessionId
+      && !payload?.encodingRetry
+      && !payload?.historyOnly
+      && !payload?.conflictCandidate
+      && payload?.conflictCandidateOnly !== true
+      && payload?.legacyConflictSideEffectsStarted !== true
+      && (!Array.isArray(payload?.conflictArchiveVerifiedPaths) || payload.conflictArchiveVerifiedPaths.length === 0);
+    if (!manualRecovery && !staleResumeOnlyRecovery) return false;
     const session = payload.sessionId ? this.transferSessions.get(String(payload.sessionId)) : null;
     if (session) {
       const expectedGeneration = Number.isInteger(payload.sessionGeneration)
@@ -6363,7 +6498,7 @@ export class SyncScheduler {
         return { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues };
       }
       if (action === "reupload") {
-        const result = this.recoverUploadJob(jobId, true);
+        const result = await this.recoverUploadJob(jobId, true);
         return result.ok
           ? { ok: true as const, issues: this.getRecoveryIssueSnapshot().issues }
           : result;
@@ -6518,12 +6653,36 @@ export class SyncScheduler {
     return { ok: false as const, status: 400, message: "该待处理项不支持此操作" };
   }
 
-  recoverUploadJob(jobId: string, allowReupload = false) {
+  async recoverUploadJob(jobId: string, allowReupload = false) {
     const job = this.jobStore.findById(String(jobId || ""));
     if (!job || !["upload", "history_upload"].includes(job.kind)) {
       return { ok: false as const, status: 404, message: "Upload recovery job not found" };
     }
     const payload = job.payload as any;
+
+    // A legacy resume-only job can outlive its local candidate. If the
+    // relation already contains a complete verified proof for the same
+    // remote directory and file set, finish from that proof instead of
+    // waking an upload that can only fail on a missing local file.
+    if (!allowReupload && this.isPlainObsoleteArchiveRecovery(job)) {
+      if (this.recoveryJobLocks.has(job.id)) {
+        return { ok: false as const, status: 409, message: "正在复核现有归档，请稍候" };
+      }
+      this.recoveryJobLocks.add(job.id);
+      try {
+      const bvid = String(job.bvid || payload.bvid || "");
+      const proof = this.captureExistingArchiveProof(job.userId, job.mediaId, bvid);
+      if (proof && await this.confirmVerifiedArchiveProofForRecovery(job, proof) === "verified") {
+        const resolved = this.finalizeRetainedArchiveRecovery(job, proof, { allowResumeOnly: true });
+        if (resolved) {
+          return { ok: true as const, job, idempotent: true as const, resolved: "verified_archive" as const };
+        }
+      }
+      } finally {
+        this.recoveryJobLocks.delete(job.id);
+      }
+    }
+
     if (!payload.awaitingManualRecovery) {
       if (["pending", "leased", "running", "retry_wait"].includes(job.status)) {
         return { ok: true as const, job, idempotent: true as const };
@@ -6559,8 +6718,34 @@ export class SyncScheduler {
           return { ok: false as const, status: 409, message: "Local upload files are no longer available" };
         }
       }
-    } else if (!payload.localDir || !fs.existsSync(String(payload.localDir))) {
-      return { ok: false as const, status: 409, message: "Local upload files are no longer available" };
+    } else {
+      const localDirectory = String(payload.localDir || "").trim();
+      if (!localDirectory) {
+        return { ok: false as const, status: 409, message: "本地补传目录缺失，请重新下载后再上传" };
+      }
+      const localRoot = path.resolve(localDirectory);
+      try {
+        const rootInfo = fs.lstatSync(localRoot);
+        if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+          return { ok: false as const, status: 409, message: "本地补传目录已不可用，请重新下载后再上传" };
+        }
+      } catch {
+        return { ok: false as const, status: 409, message: "本地补传目录已不存在，请重新下载后再上传" };
+      }
+      for (const relativePath of recoveryFiles) {
+        const localFile = path.resolve(localRoot, relativePath);
+        if (localFile === localRoot || !localFile.startsWith(`${localRoot}${path.sep}`)) {
+          return { ok: false as const, status: 409, message: "本地补传文件路径无效" };
+        }
+        try {
+          const fileInfo = fs.lstatSync(localFile);
+          if (!fileInfo.isFile() || fileInfo.isSymbolicLink() || fileInfo.size <= 0) {
+            return { ok: false as const, status: 409, message: "本地补传文件已不存在，请重新下载后再上传" };
+          }
+        } catch {
+          return { ok: false as const, status: 409, message: "本地补传文件已不存在，请重新下载后再上传" };
+        }
+      }
     }
 
     const woken = this.jobStore.wakeManualJob(job.id, {
@@ -6770,6 +6955,7 @@ export class SyncScheduler {
         debugVisible: true,
       });
     }
+    void this.reconcileObsoleteVerifiedArchiveRecoveries();
     try {
       this.migrateLegacyQualityDownloadJobs();
     } catch (error) {
