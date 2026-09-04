@@ -102,6 +102,9 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
 
     const afterStart = scheduler.jobStore.findById(parent.id)!;
     const retry = (afterStart.payload as any).encodingRetry;
+    assert.equal((afterStart.payload as any).awaitingManualRecovery, false);
+    assert.equal((afterStart.payload as any).lifecycleState, "retrying");
+    assert.equal(scheduler.getRecoveryIssues().some((issue: any) => issue.id === `upload.${parent.id}`), false);
     assert.deepEqual(retry.priority, options.encodingPriority);
     assert.equal(retry.quality, "1080P");
     assert.equal(retry.strict, true);

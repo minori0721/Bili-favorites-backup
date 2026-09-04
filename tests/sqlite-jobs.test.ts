@@ -66,10 +66,67 @@ test("encoding retry counts only replacement children and keeps duplicate starts
     const failedPayload = jobs.findById(parent.id)!.payload as any;
     assert.equal(jobs.updatePayload(parent.id, {
       ...failedPayload,
+      awaitingManualRecovery: false,
+      lifecycleState: "retrying",
       encodingRetry: { ...failedPayload.encodingRetry, state: "running" },
     }), true);
     assert.equal(jobs.completeEncodingRetryParent(parent.id, 1), true);
     assert.equal(jobs.findById(parent.id), null);
+  } finally {
+    database.close();
+  }
+});
+
+test("encoding retry hides its parent while running and restores it on failure", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const parent = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "upload-parent-lifecycle",
+      bvid: "BVLIFECYCLE",
+      userId: "u1",
+      mediaId: 1,
+      initialStatus: "manual_wait",
+      payload: {
+        awaitingManualRecovery: true,
+        lifecycleState: "manual_required",
+        encodingRetry: {
+          parentJobId: "placeholder",
+          generation: 1,
+          priority: ["AV1", "HEVC", "AVC"],
+          strict: true,
+          state: "failed",
+        },
+      },
+    } as any);
+    const retry = {
+      parentJobId: parent.id,
+      generation: 2,
+      priority: ["AV1", "HEVC", "AVC"],
+      strict: true,
+      state: "running",
+    };
+    const started = jobs.startEncodingRetry(parent.id, {
+      kind: "download",
+      dedupeKey: "encoding-retry-download-lifecycle",
+      bvid: "BVLIFECYCLE",
+      userId: "u1",
+      mediaId: 1,
+      payload: { encodingRetry: retry },
+    } as any, retry);
+    assert.equal(started?.idempotent, false);
+    const running = jobs.findById(parent.id)!;
+    assert.equal((running.payload as any).awaitingManualRecovery, false);
+    assert.equal((running.payload as any).lifecycleState, "retrying");
+    assert.equal(jobs.listManualRecovery(["upload"]).length, 0);
+
+    assert.equal(jobs.finishEncodingRetry(parent.id, 2, { manualRecoveryReason: "候选失败" }), true);
+    const failed = jobs.findById(parent.id)!;
+    assert.equal((failed.payload as any).awaitingManualRecovery, true);
+    assert.equal((failed.payload as any).lifecycleState, "manual_required");
+    assert.equal((failed.payload as any).encodingRetry.state, "failed");
+    assert.equal(jobs.listManualRecovery(["upload"]).length, 1);
   } finally {
     database.close();
   }

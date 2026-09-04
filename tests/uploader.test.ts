@@ -126,6 +126,7 @@ async function startWebDavServer(options: {
   failPutName?: string;
   failPutStatus?: number;
   failPutBody?: string;
+  failPutHeaders?: Record<string, string>;
   failMoveName?: string;
   rejectFourByteNames?: boolean;
   rejectExtendedHeaders?: boolean;
@@ -190,6 +191,7 @@ async function startWebDavServer(options: {
       if (options.failPutName && requestPath.endsWith(`/${options.failPutName}`)) {
         if (options.writeBeforePutFailure) files.set(requestPath, body);
         res.statusCode = options.failPutStatus || 405;
+        for (const [name, value] of Object.entries(options.failPutHeaders || {})) res.setHeader(name, value);
         res.end(options.failPutBody || "Method Not Allowed");
         return;
       }
@@ -567,6 +569,45 @@ test("a 405 size-limit response survives post-PUT verification and enters manual
         assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
         assert.equal(error.uploadFailure?.summary, "远端拒绝上传：单文件超过存储限制");
         assert.doesNotMatch(error.uploadFailure?.summary || "", /SingleFileSizeOverLimit/);
+        return true;
+      },
+    );
+  } finally {
+    await server.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("a 405 provider error survives post-PUT verification with safe evidence", async () => {
+  const runtime = await createTestDir("upload-405-provider-evidence");
+  const server = await startWebDavServer({
+    failPutName: "p01.mp4",
+    failPutStatus: 405,
+    failPutBody: '{"code":"AccessUserMsgError","message":"provider rejected this write"}',
+    failPutHeaders: {
+      Allow: "PUT, OPTIONS",
+      "Content-Type": "application/json",
+      "X-OpenList-Error-Code": "AccessUserMsgError",
+    },
+  });
+  try {
+    await fs.promises.writeFile(path.join(runtime, "p01.mp4"), "provider-rejected-file");
+    await assert.rejects(
+      uploadWithAList(runtime, "/target", testConfig({ alistUrl: server.url }), {
+        cleanupLocal: false,
+        files: ["p01.mp4"],
+        verificationDelaysMs: [0],
+        log: noopLog,
+      }),
+      (error: any) => {
+        assert.ok(error instanceof UploadOperationError);
+        assert.equal(error.uploadFailure?.status, 405);
+        assert.equal(error.uploadFailure?.remoteErrorCode, "AccessUserMsgError");
+        assert.equal(error.uploadFailure?.responseHeaders?.allow, "PUT, OPTIONS");
+        assert.equal(error.uploadFailure?.responseHeaders?.["content-type"], "application/json");
+        assert.match(error.uploadFailure?.responseSnippet || "", /AccessUserMsgError/);
+        assert.match(error.uploadFailure?.summary || "", /AccessUserMsgError/);
+        assert.equal(error.uploadFailure?.responseHeaders?.authorization, undefined);
         return true;
       },
     );

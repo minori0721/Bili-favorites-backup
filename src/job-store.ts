@@ -594,19 +594,25 @@ export class PersistentJobStore {
       const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as any;
       if (!row) return null;
       const parent = rowToJob(row);
-      if (!['manual_wait', 'failed', 'retry_wait', 'pending'].includes(String(parent.status))
-        || (parent.payload as any)?.awaitingManualRecovery !== true) {
+      if (!['manual_wait', 'failed', 'retry_wait', 'pending'].includes(String(parent.status))) {
         return null;
       }
       const currentRetry = (parent.payload as any)?.encodingRetry;
       if (currentRetry && ['running', 'uploading', 'verifying'].includes(String(currentRetry.state || '')) && currentRetry.replacementJobId) {
         const existing = this.findById(String(currentRetry.replacementJobId));
         if (existing) return { parent, child: existing, idempotent: true };
+        return null;
+      }
+      if ((parent.payload as any)?.awaitingManualRecovery !== true) {
+        return null;
       }
 
       const created = this.enqueue(child);
       const payload = {
         ...parent.payload,
+        awaitingManualRecovery: false,
+        lifecycleState: 'retrying',
+        userDisposition: 'automatic_retry',
         encodingRetry: {
           ...retryState,
           replacementJobId: created.id,
@@ -643,6 +649,10 @@ export class PersistentJobStore {
       const nextPayload = {
         ...payload,
         ...payloadPatch,
+        awaitingManualRecovery: true,
+        resumeOnly: true,
+        allowReupload: false,
+        lifecycleState: 'manual_required',
         encodingRetry: {
           ...retryWithoutLease,
           state: 'failed',
@@ -706,8 +716,12 @@ export class PersistentJobStore {
       if (!retry
         || Number(retry.generation) !== Number(generation)
         || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
-      return this.stateDatabase.db.prepare("DELETE FROM jobs WHERE id=? AND json_extract(payload_json, '$.awaitingManualRecovery')=1")
-        .run(parentId).changes === 1;
+      return this.stateDatabase.db.prepare(`
+        DELETE FROM jobs
+        WHERE id=?
+          AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+          AND json_extract(payload_json, '$.encodingRetry.state') IN ('running','uploading','verifying')
+      `).run(parentId, generation).changes === 1;
     })();
   }
 

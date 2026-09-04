@@ -5683,21 +5683,24 @@ export class SyncScheduler {
 
   private async startEncodingRetry(jobId: string, priority: BBDownEncoding[], strict: boolean, requestedQuality?: string) {
     const job = this.jobStore.findById(jobId);
-    if (!job || job.kind !== "upload" || !(job.payload as any)?.awaitingManualRecovery || (job.payload as any)?.historyOnly) {
+    if (!job || job.kind !== "upload" || (job.payload as any)?.historyOnly) {
       return { ok: false as const, status: 404, message: "该任务不支持编码替换" };
     }
     const payload = job.payload as any;
-    const quality = String(requestedQuality || "").trim().toUpperCase();
-    if (quality && !isSelectableBilibiliQuality(quality)) {
-      return { ok: false as const, status: 400, message: "不支持的画质档位" };
-    }
-    const currentRetry = parseEncodingRetryContext(payload.encodingRetry);
     const retryState = payload.encodingRetry;
     if (retryState && ["running", "uploading", "verifying"].includes(String(retryState.state || ""))) {
       const activeChild = retryState.replacementJobId ? this.jobStore.findById(String(retryState.replacementJobId)) : null;
       if (activeChild) return { ok: true as const, idempotent: true as const, childJobId: activeChild.id };
       return { ok: false as const, status: 409, message: "编码替换任务正在恢复，请刷新待处理项" };
     }
+    if (payload.awaitingManualRecovery !== true) {
+      return { ok: false as const, status: 404, message: "该任务不支持编码替换" };
+    }
+    const quality = String(requestedQuality || "").trim().toUpperCase();
+    if (quality && !isSelectableBilibiliQuality(quality)) {
+      return { ok: false as const, status: 400, message: "不支持的画质档位" };
+    }
+    const currentRetry = parseEncodingRetryContext(payload.encodingRetry);
     const assessment = this.recoveryAssessment(payload);
     if (!assessment || !["remote_size_limit", "remote_write_rejected", "encoding_retry_failed"].includes(assessment.kind)) {
       return { ok: false as const, status: 409, message: "当前任务不是可更换编码的远端写入错误，请先重新检查" };
@@ -8211,6 +8214,8 @@ export class SyncScheduler {
 
     const assessment = payload.awaitingManualRecovery ? this.recoveryAssessment(payload) : null;
     const retryBusy = Boolean(payload.encodingRetry && ["running", "uploading", "verifying"].includes(String(payload.encodingRetry.state || "")));
+    const retryParentId = payload.encodingRetry?.parentJobId ? String(payload.encodingRetry.parentJobId) : "";
+    if (retryBusy && !payload.awaitingManualRecovery && retryParentId === String(job.id)) return null;
     const disposition = assessment ? recoveryIssueDisposition(assessment.kind) : undefined;
     const isVerification = kind === "verify_upload";
     const stage: QueueBoardItem["stage"] = isDownload

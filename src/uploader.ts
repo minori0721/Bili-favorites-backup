@@ -34,6 +34,8 @@ import { type RemoteFileQualityProfile, type RemoteFileRecord, type UploadFileMe
 import {
   captureUploadResponseBody,
   classifyUploadError,
+  extractRemoteErrorCode,
+  extractSafeUploadResponseHeaders,
   isSingleFileSizeLimitError,
   REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
   sanitizeUploadText,
@@ -354,6 +356,24 @@ function uploadStatus(error: any) {
   return Number(error?.status || error?.statusCode || error?.response?.status || 0);
 }
 
+function carryUploadResponseEvidence(target: any, sources: readonly unknown[]) {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const remoteErrorCode = extractRemoteErrorCode(source as any);
+    if (remoteErrorCode && !target.remoteErrorCode) target.remoteErrorCode = remoteErrorCode;
+    const responseHeaders = extractSafeUploadResponseHeaders(source as any);
+    if (responseHeaders) {
+      target.headers = { ...(target.headers || {}), ...responseHeaders };
+    }
+    const responseBody = (source as any).responseBody
+      ?? (source as any).body
+      ?? (source as any).response?.body;
+    if (!target.responseBody && (typeof responseBody === "string" || Buffer.isBuffer(responseBody))) {
+      target.responseBody = responseBody;
+    }
+  }
+}
+
 async function verify405WrittenFile(
   client: WebDAVClient,
   remoteFile: string,
@@ -396,6 +416,10 @@ async function verify405WrittenFile(
     `Remote upload verification failed after 405 response: ${(lastError as Error)?.message || "file not visible"}`
   );
   notVisible.status = 405;
+  // The provider's useful 405 evidence belongs to the original PUT error.
+  // Carry only the already-captured body, safe error code and whitelisted
+  // headers to the post-verification error; never copy raw response headers.
+  carryUploadResponseEvidence(notVisible, initialErrors);
   const sizeLimit = initialErrors.some((error) => isSingleFileSizeLimitError(error));
   if (sizeLimit) {
     notVisible.code = REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE;
