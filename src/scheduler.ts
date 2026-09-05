@@ -83,6 +83,7 @@ import { normalizeRemotePath, remoteDirname } from "./remote-path.js";
 import {
   PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES,
   PersistentJobStore,
+  isRecoveryStopped,
   type EnqueuePersistentJob,
   type PersistentJobKind,
   type QualityDownloadMigrationPlan,
@@ -181,20 +182,20 @@ export function computeChargingTransientDelayMs(random: () => number = Math.rand
   return jitteredDelay(CHARGING_TRANSIENT_BASE_MS, CHARGING_TRANSIENT_JITTER_MS, random);
 }
 
-export function computeAvailabilityUnknownDelayMs(round: number) {
+export function computeAvailabilityUnknownDelayMs(round: number, bvid = "") {
   const index = Math.max(0, Math.min(AVAILABILITY_UNKNOWN_DELAYS_MS.length - 1, Math.floor(Number(round) || 0)));
-  return AVAILABILITY_UNKNOWN_DELAYS_MS[index];
+  return AVAILABILITY_UNKNOWN_DELAYS_MS[index] + availabilityJitter(bvid);
 }
 
-export function computeAvailabilityUnavailableDelayMs(round: number) {
+export function computeAvailabilityUnavailableDelayMs(round: number, bvid = "") {
   const index = Math.max(0, Math.min(AVAILABILITY_UNAVAILABLE_DELAYS_MS.length - 1, Math.floor(Number(round) || 0)));
-  return AVAILABILITY_UNAVAILABLE_DELAYS_MS[index];
+  return AVAILABILITY_UNAVAILABLE_DELAYS_MS[index] + availabilityJitter(bvid);
 }
 
 function availabilityJitter(bvid: string) {
   let hash = 0;
   for (const char of String(bvid || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return hash % (15 * 60_000);
+  return bvid ? hash % (15 * 60_000) : 0;
 }
 
 interface SchedulerDependencies {
@@ -2258,7 +2259,7 @@ export class SyncScheduler {
       && !relation.selfVisible
       && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
     const previous = this.stateManager.getSourceAvailability(task.bvid);
-    const nextAt = checkedAtMs + computeAvailabilityUnavailableDelayMs(0);
+    const nextAt = checkedAtMs + computeAvailabilityUnavailableDelayMs(0, task.bvid);
     this.stateManager.markAvailabilityConfirmedUnavailable(
       task.bvid,
       reason,
@@ -2653,7 +2654,7 @@ export class SyncScheduler {
         });
         return;
       }
-      const nextAt = this.now() + computeAvailabilityUnknownDelayMs(unknownRound);
+      const nextAt = this.now() + computeAvailabilityUnknownDelayMs(unknownRound, bvid);
       this.deferAvailabilityProbe(job, {
         nextAt,
         state: "unknown",
@@ -2682,7 +2683,7 @@ export class SyncScheduler {
         });
         return;
       }
-      const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(unavailableRound);
+      const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(unavailableRound, bvid);
       const previous = this.stateManager.getSourceAvailability(bvid);
       this.deferAvailabilityProbe(job, {
         nextAt,
@@ -2723,7 +2724,7 @@ export class SyncScheduler {
     }
 
     this.deferAvailabilityProbe(job, {
-      nextAt: this.now() + computeAvailabilityUnknownDelayMs(Number(payload.availabilityUnknownRound || 0)),
+      nextAt: this.now() + computeAvailabilityUnknownDelayMs(Number(payload.availabilityUnknownRound || 0), bvid),
       state: "unknown",
       reason: "temporary_error",
       unknownRound: Number(payload.availabilityUnknownRound || 0) + 1,
@@ -2846,7 +2847,7 @@ export class SyncScheduler {
 
     if (restrictedCount === 0 && unavailableCount > 0 && unknownCount === 0) {
       const checkedAt = new Date(this.now()).toISOString();
-      const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(0);
+      const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(0, bvid);
       this.stateManager.markAvailabilityConfirmedUnavailable(
         bvid,
         "api_not_found",
@@ -2924,7 +2925,7 @@ export class SyncScheduler {
           return;
         }
         const unknownRound = Number(job.payload?.availabilityUnknownRound || 0);
-        const nextAt = this.now() + computeAvailabilityUnknownDelayMs(unknownRound);
+        const nextAt = this.now() + computeAvailabilityUnknownDelayMs(unknownRound, String(job.bvid || ""));
         this.deferAvailabilityProbe(job, {
           nextAt,
           state: "unknown",
@@ -7233,6 +7234,7 @@ export class SyncScheduler {
     const now = this.now();
     if (!force && now - this.transferSessionRecoveryReconciledAt < 30_000) return 0;
     this.transferSessionRecoveryReconciledAt = now;
+    this.jobStore.normalizeStoppedRecovery();
 
     const activeKeys = this.jobStore.listActiveTransferSessionKeys();
     const inputs: EnqueuePersistentJob[] = [];
@@ -8464,25 +8466,40 @@ export class SyncScheduler {
   }
 
   wakeChargingAccessProbes(userId?: string) {
-    const changed = this.jobStore.wakeAll(["access_probe"], this.now());
+    const now = this.now();
+    const candidateUser = userId ? this.userStore.getById(userId) : null;
+    const user = candidateUser && this.isUserSyncEligible(candidateUser) ? candidateUser : null;
+    const uid = user ? Number(user.uid || user.cookie.DedeUserID || 0) : 0;
+    let changed = 0;
+    for (const job of this.jobStore.list(["access_probe"], 100_000)) {
+      if (!["pending", "retry_wait"].includes(job.status)) continue;
+      const bvid = String(job.bvid || "");
+      if (!bvid) continue;
+      const intents = normalizeAccessProbeIntents((job.payload || {}) as Record<string, any>);
+      let shouldWake = intents.includes("charging");
+      if (!shouldWake && user && userId && intents.includes("availability")) {
+        const related = this.stateManager.listRelationsForBvid(bvid).some((relation) =>
+          relation.activeInFavorite && relation.sourceKind !== "manual" && relation.userId === userId);
+        const owner = uid > 0 && Number(this.stateManager.getVideoMeta(bvid)?.upperMid || 0) === uid;
+        shouldWake = related || owner;
+      }
+      if (shouldWake) changed += this.jobStore.wakeByBvid(bvid, ["access_probe"], now);
+    }
+
     let dormantAwakened = 0;
-    if (userId) {
-      const user = this.userStore.getById(userId);
-      if (user && this.isUserSyncEligible(user)) {
-        const uid = Number(user.uid || user.cookie.DedeUserID || 0);
-        for (const video of this.stateManager.listDormantAvailabilityVideos()) {
-          const related = this.stateManager.listRelationsForBvid(video.bvid).some((relation) =>
-            relation.activeInFavorite && relation.sourceKind !== "manual" && relation.userId === userId);
-          if (!related && !(uid > 0 && Number(video.upperMid || 0) === uid)) continue;
-          const existing = this.jobStore.findByDedupeKey(`access_probe:${video.bvid}`);
-          this.enqueueAvailabilityProbe(video.bvid, {
-            preferredUserId: userId,
-            notBefore: this.now(),
-            availabilityReason: video.sourceAvailability?.reason || "temporary_error",
-            manual: true,
-          });
-          if (!existing) dormantAwakened += 1;
-        }
+    if (user && userId) {
+      for (const video of this.stateManager.listDormantAvailabilityVideos()) {
+        const related = this.stateManager.listRelationsForBvid(video.bvid).some((relation) =>
+          relation.activeInFavorite && relation.sourceKind !== "manual" && relation.userId === userId);
+        if (!related && !(uid > 0 && Number(video.upperMid || 0) === uid)) continue;
+        const existing = this.jobStore.findByDedupeKey(`access_probe:${video.bvid}`);
+        this.enqueueAvailabilityProbe(video.bvid, {
+          preferredUserId: userId,
+          notBefore: now,
+          availabilityReason: video.sourceAvailability?.reason || "temporary_error",
+          manual: true,
+        });
+        if (!existing) dormantAwakened += 1;
       }
     }
     if (changed > 0 || dormantAwakened > 0) this.dispatchPersistentJobs();
@@ -8824,6 +8841,7 @@ export class SyncScheduler {
   }
 
   private mapPersistentJobForBoard(job: any): QueueBoardItem | null {
+    if (isRecoveryStopped(job.payload)) return null;
     const payload = (job.payload || {}) as any;
     const kind = String(job.kind || "");
     const isDownload = ["download", "quality_download"].includes(kind);
@@ -9559,9 +9577,7 @@ export class SyncScheduler {
           const persistedNextAt = Date.parse(availability.nextCheckAt || "");
           const nextAt = Number.isFinite(persistedNextAt) && persistedNextAt > this.now()
             ? persistedNextAt
-            : this.now() + (Number(user.uid || user.cookie.DedeUserID || 0) === Number(item.upperMid || 0)
-              ? 0
-              : availabilityJitter(item.bvid));
+            : this.now() + availabilityJitter(item.bvid);
           if (!availability.nextCheckAt || !Number.isFinite(persistedNextAt) || persistedNextAt <= this.now()) {
             this.stateManager.markAvailabilityPending(
               item.bvid,
@@ -10502,7 +10518,7 @@ export class SyncScheduler {
       let source = video.sourceAvailability;
       if (!source) {
         const checkedAt = new Date(this.now()).toISOString();
-        const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(0);
+        const nextAt = this.now() + computeAvailabilityUnavailableDelayMs(0, video.bvid);
         this.stateManager.markAvailabilityConfirmedUnavailable(
           video.bvid,
           "api_not_found",
@@ -10513,7 +10529,46 @@ export class SyncScheduler {
         source = this.stateManager.getSourceAvailability(video.bvid);
       }
       if (!source || source.state === "dormant") continue;
-      const nextAt = Date.parse(source.nextCheckAt || "");
+
+      let nextAt = Date.parse(source.nextCheckAt || "");
+      const existingJob = this.jobStore.findByDedupeKey(`access_probe:${video.bvid}`);
+      const existingPayload = (existingJob?.payload || {}) as Record<string, any>;
+      const existingIntents = existingJob ? normalizeAccessProbeIntents(existingPayload) : ["availability"];
+      const existingScheduleLooksFixed = !existingJob || Math.abs(existingJob.notBefore - nextAt) <= 1_000;
+      const canMigrateFixedSchedule = ["unknown", "confirmed_unavailable"].includes(source.state)
+        && existingScheduleLooksFixed
+        && (!existingJob || (
+          ["pending", "retry_wait"].includes(existingJob.status)
+          && existingPayload.manual !== true
+          && existingIntents.length === 1
+          && existingIntents[0] === "availability"
+        ));
+      const checkedAtMs = Date.parse(source.lastCheckedAt || "");
+      if (canMigrateFixedSchedule && Number.isFinite(nextAt) && Number.isFinite(checkedAtMs)) {
+        const round = Math.max(0, Number(source.checkRound || 0) - 1);
+        const baseDelay = source.state === "unknown"
+          ? computeAvailabilityUnknownDelayMs(round)
+          : computeAvailabilityUnavailableDelayMs(round);
+        const staggeredDelay = source.state === "unknown"
+          ? computeAvailabilityUnknownDelayMs(round, video.bvid)
+          : computeAvailabilityUnavailableDelayMs(round, video.bvid);
+        const legacyFixedAt = checkedAtMs + baseDelay;
+        if (Math.abs(nextAt - legacyFixedAt) <= 1_000 && staggeredDelay > baseDelay) {
+          const staggeredAt = checkedAtMs + staggeredDelay;
+          const catchUpDelay = Math.max(1_000, availabilityJitter(video.bvid));
+          const migratedAt = staggeredAt > this.now() + 1_000 ? staggeredAt : this.now() + catchUpDelay;
+          const migratedIso = new Date(migratedAt).toISOString();
+          if (source.state === "unknown") {
+            this.stateManager.markAvailabilityUnknown(video.bvid, source.reason, source.lastCheckedAt, migratedIso, source.checkRound);
+          } else {
+            this.stateManager.markAvailabilityConfirmedUnavailable(video.bvid, source.reason, source.lastCheckedAt, migratedIso, source.checkRound);
+          }
+          if (existingJob) this.jobStore.rescheduleByBvid(video.bvid, ["access_probe"], migratedAt, this.now());
+          source = this.stateManager.getSourceAvailability(video.bvid) || source;
+          nextAt = migratedAt;
+        }
+      }
+
       const relation = this.stateManager.listRelationsForBvid(video.bvid)
         .find((item) => item.activeInFavorite
           && item.sourceKind !== "manual"
@@ -10521,8 +10576,8 @@ export class SyncScheduler {
           && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""));
       if (!relation) continue;
       this.enqueueAvailabilityProbe(video.bvid, {
-        preferredUserId: relation?.userId,
-        notBefore: Number.isFinite(nextAt) ? Math.max(this.now(), nextAt) : this.now(),
+        preferredUserId: relation.userId,
+        notBefore: Number.isFinite(nextAt) ? Math.max(this.now(), nextAt) : this.now() + availabilityJitter(video.bvid),
         availabilityRound: source.state === "confirmed_unavailable" ? source.checkRound : 0,
         availabilityUnknownRound: source.state === "unknown" ? source.checkRound : 0,
         availabilityReason: source.reason,

@@ -115,19 +115,29 @@ test("video detail endpoints use a conservative three-state classification", () 
   assert.equal(classifyVideoPageAvailability([]).availability, "unknown");
 });
 
-test("availability retry delays follow the fixed low-frequency schedule", () => {
-  assert.deepEqual([0, 1, 2, 3, 4].map(computeAvailabilityUnknownDelayMs), [
+test("availability retry delays keep the base schedule and add stable BVID staggering", () => {
+  const unknownBase = [
     10 * 60_000,
     60 * 60_000,
     6 * 60 * 60_000,
     24 * 60 * 60_000,
     7 * 24 * 60 * 60_000,
-  ]);
-  assert.deepEqual([0, 1, 2].map(computeAvailabilityUnavailableDelayMs), [
+  ];
+  const unavailableBase = [
     24 * 60 * 60_000,
     7 * 24 * 60 * 60_000,
     30 * 24 * 60 * 60_000,
-  ]);
+  ];
+  assert.deepEqual([0, 1, 2, 3, 4].map((round) => computeAvailabilityUnknownDelayMs(round)), unknownBase);
+  assert.deepEqual([0, 1, 2].map((round) => computeAvailabilityUnavailableDelayMs(round)), unavailableBase);
+  const stagger = computeAvailabilityUnknownDelayMs(0, "BVAVAIL") - unknownBase[0];
+  assert.ok(stagger >= 0 && stagger < 15 * 60_000);
+  assert.deepEqual([0, 1, 2, 3, 4].map((round) => computeAvailabilityUnknownDelayMs(round, "BVAVAIL")),
+    unknownBase.map((delay) => delay + stagger));
+  assert.deepEqual([0, 1, 2].map((round) => computeAvailabilityUnavailableDelayMs(round, "BVAVAIL")),
+    unavailableBase.map((delay) => delay + stagger));
+  const repeated = computeAvailabilityUnknownDelayMs(0, "BVAVAIL");
+  assert.equal(repeated, unknownBase[0] + stagger);
 });
 
 test("only explicit BBDown unavailable output enters the source soft terminal", () => {
@@ -289,7 +299,7 @@ test("a source-unavailable download becomes a low-frequency probe without an upl
 
     const store = (scheduler as any).jobStore as PersistentJobStore;
     const probe = store.findByDedupeKey("access_probe:BVAVAIL");
-    assert.equal(probe?.notBefore, nowMs + 24 * 60 * 60_000);
+    assert.equal(probe?.notBefore, nowMs + computeAvailabilityUnavailableDelayMs(0, "BVAVAIL"));
     assert.deepEqual(probe?.payload.intents, ["availability"]);
     assert.equal(store.countOutstanding(["upload"]), 0);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
@@ -328,7 +338,7 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
   try {
     (scheduler as any).acceptingJobs = false;
     (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
-    const expectedDelays = [24 * 60 * 60_000, 7 * 24 * 60 * 60_000, 30 * 24 * 60 * 60_000];
+    const expectedDelays = [0, 1, 2].map((round) => computeAvailabilityUnavailableDelayMs(round, "BVAVAIL"));
     for (let round = 0; round < 4; round += 1) {
       const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
       assert.ok(job, `round ${round} should have a due probe`);
@@ -381,7 +391,7 @@ test("temporarily unknown availability backs off through 10m, 1h, 6h, 1d, and 7d
   try {
     (scheduler as any).acceptingJobs = false;
     (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
-    const delays = [10 * 60_000, 60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000, 7 * 24 * 60 * 60_000];
+    const delays = [0, 1, 2, 3, 4].map((round) => computeAvailabilityUnknownDelayMs(round, "BVAVAIL"));
     for (let round = 0; round <= delays.length; round += 1) {
       const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
       assert.ok(job, `unknown round ${round} should have a due probe`);
@@ -611,6 +621,57 @@ test("manual availability recheck requires an enabled account", async () => {
   }
 });
 
+test("logging in wakes charging plus related or owner availability probes without waking unrelated availability", async () => {
+  const runtime = await createTestDir("availability-targeted-login-wake");
+  const nowMs = Date.parse(checkedAt);
+  const future = nowMs + 7 * 24 * 60 * 60_000;
+  const state = availabilityState();
+  state.videos.BVOWNER = { ...state.videos.BVAVAIL, bvid: "BVOWNER", title: "Owner", upperMid: 1 };
+  state.videos.BVOTHER = { ...state.videos.BVAVAIL, bvid: "BVOTHER", title: "Other", upperMid: 99 };
+  state.videos.BVCHARGELOGIN = { ...state.videos.BVAVAIL, bvid: "BVCHARGELOGIN", title: "Charging", upperMid: 99 };
+  const manager = new StateManager({
+    statePath: path.join(runtime, "data", "state.json"),
+    dbPath: path.join(runtime, "data", "bfb.sqlite"),
+  });
+  manager.replaceStateSnapshot(state);
+  const users = testUsers();
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+    manager,
+    { now: () => nowMs },
+  );
+  const store = (scheduler as any).jobStore as PersistentJobStore;
+  try {
+    (scheduler as any).acceptingJobs = false;
+    for (const [bvid, intents] of [
+      ["BVAVAIL", ["availability"]],
+      ["BVOWNER", ["availability"]],
+      ["BVOTHER", ["availability"]],
+      ["BVCHARGELOGIN", ["charging"]],
+    ] as const) {
+      store.enqueue({
+        kind: "access_probe",
+        dedupeKey: `access_probe:${bvid}`,
+        bvid,
+        priority: 90,
+        maxAttempts: 1,
+        notBefore: future,
+        payload: { intents: [...intents], purpose: intents[0] === "charging" ? "charging_recheck" : "availability_recheck" },
+      });
+    }
+
+    assert.equal(scheduler.wakeChargingAccessProbes("u1"), 3);
+    assert.equal(store.findByDedupeKey("access_probe:BVAVAIL")?.notBefore, nowMs);
+    assert.equal(store.findByDedupeKey("access_probe:BVOWNER")?.notBefore, nowMs);
+    assert.equal(store.findByDedupeKey("access_probe:BVCHARGELOGIN")?.notBefore, nowMs);
+    assert.equal(store.findByDedupeKey("access_probe:BVOTHER")?.notBefore, future);
+  } finally {
+    await scheduler.shutdown(100);
+    await removeTestDir(runtime);
+  }
+});
+
 test("logging in wakes a related dormant video once without resetting its lifecycle", async () => {
   const runtime = await createTestDir("availability-dormant-login");
   const nowMs = Date.parse(checkedAt);
@@ -655,10 +716,10 @@ test("logging in wakes a related dormant video once without resetting its lifecy
     await removeTestDir(runtime);
   }
 });
-test("persisted availability schedules rebuild exactly one probe across repeated startup reconciliation", async () => {
+test("startup migrates a legacy fixed availability schedule once and keeps one staggered probe", async () => {
   const runtime = await createTestDir("availability-startup-idempotent");
   const nowMs = Date.parse(checkedAt);
-  const nextAt = nowMs + 7 * 24 * 60 * 60_000;
+  const legacyNextAt = nowMs + computeAvailabilityUnavailableDelayMs(1);
   const manager = new StateManager({
     statePath: path.join(runtime, "data", "state.json"),
     dbPath: path.join(runtime, "data", "bfb.sqlite"),
@@ -668,7 +729,51 @@ test("persisted availability schedules rebuild exactly one probe across repeated
     "BVAVAIL",
     "api_not_found",
     checkedAt,
-    new Date(nextAt).toISOString(),
+    new Date(legacyNextAt).toISOString(),
+    2,
+  );
+  const users = testUsers();
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+    manager,
+    { now: () => nowMs },
+  );
+  try {
+    (scheduler as any).acceptingJobs = false;
+    const store = (scheduler as any).jobStore as PersistentJobStore;
+    (scheduler as any).ensurePersistedAvailabilityProbes();
+    const migratedAt = nowMs + computeAvailabilityUnavailableDelayMs(1, "BVAVAIL");
+    (scheduler as any).ensurePersistedAvailabilityProbes();
+    const jobs = store.list(["access_probe"], 10).filter((job) => job.bvid === "BVAVAIL");
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].notBefore, migratedAt);
+    assert.equal(Date.parse(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt || ""), migratedAt);
+    assert.equal(jobs[0].payload.availabilityRound, 2);
+    assert.deepEqual(jobs[0].payload.intents, ["availability"]);
+  } finally {
+    await scheduler.shutdown(100);
+    await removeTestDir(runtime);
+  }
+});
+
+test("overdue legacy availability schedules migrate into a short stable catch-up spread", async () => {
+  const runtime = await createTestDir("availability-startup-catchup");
+  const checkedAtMs = Date.parse(checkedAt);
+  const nowMs = checkedAtMs + 40 * 24 * 60 * 60_000;
+  const legacyNextAt = checkedAtMs + computeAvailabilityUnavailableDelayMs(1);
+  const stagger = computeAvailabilityUnavailableDelayMs(1, "BVAVAIL") - computeAvailabilityUnavailableDelayMs(1);
+  const expectedCatchUpAt = nowMs + Math.max(1_000, stagger);
+  const manager = new StateManager({
+    statePath: path.join(runtime, "data", "state.json"),
+    dbPath: path.join(runtime, "data", "bfb.sqlite"),
+  });
+  manager.replaceStateSnapshot(availabilityState());
+  manager.markAvailabilityConfirmedUnavailable(
+    "BVAVAIL",
+    "api_not_found",
+    checkedAt,
+    new Date(legacyNextAt).toISOString(),
     2,
   );
   const users = testUsers();
@@ -683,13 +788,73 @@ test("persisted availability schedules rebuild exactly one probe across repeated
     const store = (scheduler as any).jobStore as PersistentJobStore;
     (scheduler as any).ensurePersistedAvailabilityProbes();
     (scheduler as any).ensurePersistedAvailabilityProbes();
-    const jobs = store.list(["access_probe"], 10).filter((job) => job.bvid === "BVAVAIL");
-    assert.equal(jobs.length, 1);
-    assert.equal(jobs[0].notBefore, nextAt);
-    assert.equal(jobs[0].payload.availabilityRound, 2);
-    assert.deepEqual(jobs[0].payload.intents, ["availability"]);
+    const job = store.findByDedupeKey("access_probe:BVAVAIL");
+    assert.equal(job?.notBefore, expectedCatchUpAt);
+    assert.equal(Date.parse(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt || ""), expectedCatchUpAt);
+    assert.ok(Number(job?.notBefore) > nowMs);
+    assert.ok(Number(job?.notBefore) <= nowMs + 15 * 60_000);
   } finally {
     await scheduler.shutdown(100);
     await removeTestDir(runtime);
+  }
+});
+
+test("startup migration leaves manual, merged charging, leased, and already-woken availability probes untouched", async () => {
+  const scenarios = [
+    { name: "manual", payload: { intents: ["availability"], purpose: "availability_recheck", manual: true }, leased: false, woken: false },
+    { name: "merged", payload: { intents: ["charging", "availability"], purpose: "charging_recheck" }, leased: false, woken: false },
+    { name: "leased", payload: { intents: ["availability"], purpose: "availability_recheck" }, leased: true, woken: false },
+    { name: "woken", payload: { intents: ["availability"], purpose: "availability_recheck" }, leased: false, woken: true },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const runtime = await createTestDir(`availability-startup-skip-${scenario.name}`);
+    const nowMs = Date.parse(checkedAt);
+    const legacyNextAt = nowMs + computeAvailabilityUnavailableDelayMs(1);
+    const manager = new StateManager({
+      statePath: path.join(runtime, "data", "state.json"),
+      dbPath: path.join(runtime, "data", "bfb.sqlite"),
+    });
+    manager.replaceStateSnapshot(availabilityState());
+    manager.markAvailabilityConfirmedUnavailable(
+      "BVAVAIL",
+      "api_not_found",
+      checkedAt,
+      new Date(legacyNextAt).toISOString(),
+      2,
+    );
+    const users = testUsers();
+    const scheduler = new SyncScheduler(
+      { get: () => testConfig() } as any,
+      { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+      manager,
+      { now: () => nowMs },
+    );
+    const store = (scheduler as any).jobStore as PersistentJobStore;
+    try {
+      (scheduler as any).acceptingJobs = false;
+      store.enqueue({
+        kind: "access_probe",
+        dedupeKey: "access_probe:BVAVAIL",
+        bvid: "BVAVAIL",
+        priority: 90,
+        maxAttempts: 1,
+        notBefore: scenario.leased || scenario.woken ? nowMs : legacyNextAt,
+        payload: { ...scenario.payload },
+      });
+      if (scenario.leased) {
+        const leased = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs)[0];
+        assert.ok(leased);
+      }
+
+      (scheduler as any).ensurePersistedAvailabilityProbes();
+      assert.equal(Date.parse(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt || ""), legacyNextAt, scenario.name);
+      const job = store.findByDedupeKey("access_probe:BVAVAIL");
+      if (scenario.leased) assert.equal(job?.status, "leased", scenario.name);
+      else assert.equal(job?.notBefore, scenario.woken ? nowMs : legacyNextAt, scenario.name);
+    } finally {
+      await scheduler.shutdown(100);
+      await removeTestDir(runtime);
+    }
   }
 });

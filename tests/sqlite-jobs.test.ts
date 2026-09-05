@@ -15,6 +15,81 @@ import { PersistentJobStore } from "../src/job-store.js";
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
+test("stopped recovery cannot reappear, be claimed, or overwrite a newer attempt", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const old = jobs.enqueue({ kind: "upload", dedupeKey: "stopped:g1", bvid: "BV1kg8Y6zEnZ",
+      payload: { sessionId: "session", sessionGeneration: 1, userDisposition: "abandoned",
+        awaitingManualRecovery: true, recoveryAssessment: { nextCheckAt: 1 }, files: ["video.mp4"] } });
+    assert.equal(jobs.listManualRecovery(["upload"]).length, 0);
+    assert.equal(jobs.listDueManualRecovery(["upload"]).length, 0);
+    assert.equal(jobs.listForBoard(["upload"]).length, 0);
+    assert.equal(jobs.claimByDedupeKey("stopped:g1", "worker"), null);
+    assert.equal(jobs.claimDue(["upload"], 10, "worker").length, 0);
+    assert.equal(jobs.normalizeStoppedRecovery(), 1);
+    assert.equal(jobs.normalizeStoppedRecovery(), 0);
+    const stopped = jobs.findById(old.id)!;
+    assert.equal(stopped.status, "failed");
+    assert.equal(stopped.payload.awaitingManualRecovery, false);
+    assert.equal(stopped.payload.recoveryAssessment.nextCheckAt, undefined);
+    assert.deepEqual(stopped.payload.files, ["video.mp4"]);
+    assert.equal(jobs.wakeManualJob(old.id), null);
+    assert.equal(jobs.wakeManualJob(old.id, { awaitingManualRecovery: false }), null);
+    assert.equal(jobs.updatePayload(old.id, { awaitingManualRecovery: true }), false);
+    assert.ok(jobs.listActiveTransferSessionKeys().has("session:g1"));
+    jobs.rebind(database);
+    assert.equal(new PersistentJobStore(database).normalizeStoppedRecovery(), 0);
+    const fresh = jobs.enqueue({ kind: "upload", dedupeKey: "stopped:g2", bvid: old.bvid,
+      initialStatus: "manual_wait", payload: { sessionId: "session", sessionGeneration: 2, awaitingManualRecovery: true } });
+    assert.deepEqual(jobs.listManualRecovery(["upload"]).map(j => j.id), [fresh.id]);
+    assert.ok(jobs.wakeManualJob(fresh.id));
+    assert.equal(jobs.claimDue(["upload"], 10, "worker")[0]?.id, fresh.id);
+  } finally { database.close(); }
+});
+
+test("startup and rebind clear legacy stopped leases without erasing evidence or cleanup plans", () => {
+  for (const field of ["userDisposition", "lifecycleState"]) {
+    const database = new StateDatabase(":memory:");
+    const jobs = new PersistentJobStore(database);
+    try {
+      const job = jobs.enqueue({ kind: "upload", dedupeKey: field, payload: { files: ["kept.mp4"] } });
+      const running = jobs.claimByDedupeKey(field, "old-worker")!;
+      database.db.prepare("UPDATE jobs SET payload_json=? WHERE id=?").run(JSON.stringify({
+        [field]: "abandoned", awaitingManualRecovery: true, files: ["kept.mp4"],
+        localCleanupPlans: [{ id: "existing-proof" }], recoveryAssessment: { nextCheckAt: 42 },
+      }), job.id);
+      if (field === "userDisposition") new PersistentJobStore(database);
+      else jobs.rebind(database);
+      assert.equal(jobs.findById(job.id)?.leaseOwner, undefined);
+      assert.equal(jobs.parkManualRecovery(job.id, running.leaseOwner!, "late", { awaitingManualRecovery: true }), false);
+      assert.equal(jobs.normalizeTerminalUploadRecovery(), 0);
+      assert.deepEqual(jobs.findById(job.id)?.payload.files, ["kept.mp4"]);
+      assert.deepEqual(jobs.findById(job.id)?.payload.localCleanupPlans, [{ id: "existing-proof" }]);
+      assert.equal(jobs.normalizeStoppedRecovery(), 0);
+    } finally { database.close(); }
+  }
+});
+
+test("late encoding callbacks cannot reopen a stopped replacement parent", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const parent = jobs.enqueue({ kind: "upload", dedupeKey: "late-encoding", payload: {
+      userDisposition: "abandoned", lifecycleState: "abandoned", awaitingManualRecovery: true,
+      encodingRetry: { generation: 4, state: "running", replacementJobId: "child" },
+    } });
+    jobs.normalizeStoppedRecovery();
+    assert.equal(jobs.finishEncodingRetry(parent.id, 4, { manualRecoveryReason: "late" }), false);
+    assert.equal(jobs.updateEncodingRetry(parent.id, 4, { state: "uploading" }), false);
+    assert.equal(jobs.startEncodingRetry(parent.id, {
+      kind: "download", dedupeKey: "late-encoding-child", bvid: "BVLATE",
+    }, { generation: 5 }), null);
+    assert.equal(jobs.findById(parent.id)?.payload.awaitingManualRecovery, false);
+    assert.equal(jobs.findById(parent.id)?.payload.lifecycleState, "abandoned");
+  } finally { database.close(); }
+});
+
 test("completed upload jobs retain cleanup authorization without blocking a new attempt", () => {
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
