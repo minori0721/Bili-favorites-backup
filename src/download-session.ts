@@ -369,6 +369,10 @@ function normalizeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[
 
 export function writeDownloadSession(downloadDir: string, manifest: DownloadSessionManifest) {
   manifest.updatedAt = nowIso();
+  // Persist paths in the same normalized form that readers and cleanup use.
+  // This keeps manifests portable between Windows and Linux runtimes.
+  manifest.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(manifest.outputs);
+  manifest.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(manifest.history);
   writeJsonFile(downloadSessionPath(downloadDir), manifest);
 }
 
