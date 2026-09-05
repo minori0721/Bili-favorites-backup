@@ -97,6 +97,41 @@ function testUsers() {
   ];
 }
 
+test("availability ignores unrelated accounts while charging probes retain them", async () => {
+  const runtime = await createTestDir("availability-related-users");
+  const manager = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
+  manager.replaceStateSnapshot(availabilityState());
+  manager.markAvailabilityPending("BVAVAIL", "favorite_flag", checkedAt);
+  const users = [...testUsers(), { ...testUsers()[0], id: "u3", uid: 3, cookie: { SESSDATA: "three", bili_jct: "three", DedeUserID: "3" }, favorites: [] }];
+  const checked: string[] = [];
+  const scheduler = new SyncScheduler(
+    { get: () => testConfig() } as any,
+    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+    manager,
+    { videoAccessProbe: async (cookie) => {
+      checked.push(String(cookie.DedeUserID));
+      if (cookie.DedeUserID === "3") throw Object.assign(new Error("unrelated account expired"), { biliLoginRequired: true });
+      return unavailableSnapshot();
+    } },
+  );
+  const store = (scheduler as any).jobStore as PersistentJobStore;
+  try {
+    (scheduler as any).acceptingJobs = false;
+    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { notBefore: Date.now() });
+    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, Date.now());
+    await (scheduler as any).runAvailabilityProbe(job);
+    assert.deepEqual(checked, ["2", "1"]);
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
+    const chargingUsers = (scheduler as any).availabilityProbeUsers("BVAVAIL", "", new Set(), true);
+    assert.equal(chargingUsers.some((user: any) => user.id === "u3"), true);
+    users.splice(0, 2);
+    assert.equal(scheduler.requestAvailabilityRecheck("BVAVAIL").status, 409);
+  } finally {
+    await scheduler.shutdown(100);
+    await removeTestDir(runtime);
+  }
+});
+
 test("video detail endpoints use a conservative three-state classification", () => {
   const available = { availability: "available", reason: "temporary_error" } as const;
   const missing = { availability: "unavailable", reason: "api_not_found", apiCode: -404 } as const;
@@ -496,7 +531,7 @@ test("one available account revives the relation and queues exactly one download
   }
 });
 
-test("availability probes fall back to an unrelated enabled account after owner and collector accounts", async () => {
+test("ordinary availability probes do not download through an unrelated enabled account", async () => {
   const runtime = await createTestDir("availability-unrelated-account");
   const nowMs = Date.parse(checkedAt);
   const manager = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
@@ -521,12 +556,11 @@ test("availability probes fall back to an unrelated enabled account after owner 
     assert.ok(job);
     store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
     await (scheduler as any).runAvailabilityProbe(job);
-    assert.deepEqual(checkedUsers, ["2", "1", "3"]);
-    assert.equal(manager.getSourceAvailability("BVAVAIL"), undefined);
-    assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "queued");
+    assert.deepEqual(checkedUsers, ["2", "1"]);
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
+    assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "lost");
     const downloads = store.list(["download"], 10).filter((item) => item.bvid === "BVAVAIL");
-    assert.equal(downloads.length, 1);
-    assert.equal(downloads[0]?.payload.downloadUserId, "u3");
+    assert.equal(downloads.length, 0);
   } finally {
     await scheduler.shutdown(100);
     await removeTestDir(runtime);

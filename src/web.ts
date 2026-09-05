@@ -439,6 +439,11 @@ function getAppStyles() {
     .modal .panel > .modal-actions { position:sticky; z-index:3; bottom:0; align-items:center; justify-content:flex-end; margin:20px 0 0; padding:14px var(--dialog-inline); border-top:1px solid var(--glass-border); background:transparent; backdrop-filter:none; }
     .modal .panel > .modal-actions .ghost { order:-1; }
     .modal .panel > .modal-actions .full-width { width:auto; min-width:120px; }
+    #pathMigrationModal .panel { display:flex; flex-direction:column; overflow:hidden; }
+    #pathMigrationModal .panel > h2,#pathMigrationModal .panel > .modal-actions { flex-shrink:0; }
+    #pathMigrationModal .panel > .modal-actions { margin-top:0; }
+    #pathMigrationModal .path-migration-body { min-height:0; overflow:auto; margin:0; padding:18px var(--dialog-inline); }
+    #pathMigrationModal .path-migration-body > p:first-child { margin-top:0; }
     .modal .panel > .status-line:not(:empty),.modal .panel > [role="alert"]:not(:empty) { padding:10px 12px; border-left:3px solid var(--accent); border-radius:var(--radius-legacy-control); background:var(--accent-soft); color:#315B55; line-height:1.55; text-align:left; }
     .modal .panel > .status-error:not(:empty),.modal .panel > [role="alert"].status-error:not(:empty) { border-left-color:var(--danger); background:#FFF0F0; color:#8E3434; }
     .favorites-list { max-height:400px; overflow:auto; border:1px solid var(--glass-border); border-radius:var(--radius-legacy-panel); padding:8px; background:var(--glass-surface); backdrop-filter:var(--glass-blur); }
@@ -1639,6 +1644,7 @@ function getModals() {
   <div class="modal" id="pathMigrationModal" aria-labelledby="pathMigrationModalTitle">
     <div class="panel panel-lg">
       <h2 id="pathMigrationModalTitle">迁移归档路径</h2>
+      <div class="path-migration-body">
       <p class="muted">系统会在同一 AList / OpenList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。开始前会用隔离临时文件探测 COPY 和 MOVE；复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
       <div class="settings-grid">
         <div><label for="pathMigrationSource">当前归档路径</label><input id="pathMigrationSource" type="text" readonly /></div>
@@ -1647,6 +1653,7 @@ function getModals() {
       <div id="pathMigrationSummary" class="cleanup-list"></div>
       <div id="pathMigrationItems" class="rename-skip-list"></div>
       <div id="pathMigrationStatus" class="rename-result result-block is-hidden"></div>
+      </div>
       <div class="row modal-actions split-actions">
         <button id="pathMigrationPreviewBtn" type="button">扫描并生成预览</button>
         <button id="pathMigrationStartBtn" type="button" class="ghost">开始迁移</button>
@@ -1849,6 +1856,11 @@ function getAppScript() {
       summary: null,
     };
     let pathMigrationPollTimer = null;
+    let pathMigrationGeneration = 0;
+    let pathMigrationController = null;
+    let pathMigrationItemsController = null;
+    let pathMigrationItemsVisible = false;
+    let pathMigrationCurrentId = null;
     const queueBoardState = {
       columns: {},
       cards: new Map(),
@@ -3309,19 +3321,100 @@ function getAppScript() {
     }
 
     function stopPathMigrationPolling() {
+      pathMigrationGeneration += 1;
+      pathMigrationController?.abort();
+      pathMigrationController = null;
+      pathMigrationItemsController?.abort();
+      pathMigrationItemsController = null;
       if (pathMigrationPollTimer) {
-        clearInterval(pathMigrationPollTimer);
+        clearTimeout(pathMigrationPollTimer);
         pathMigrationPollTimer = null;
       }
     }
 
+    function isPathMigrationOpen() {
+      const modal = document.getElementById('pathMigrationModal');
+      return modal.classList.contains('active') && !modal.classList.contains('is-closing');
+    }
+
+    async function loadPathMigrationItems(offset = 0) {
+      if (!isPathMigrationOpen()) return;
+      pathMigrationItemsController?.abort();
+      const controller = new AbortController();
+      pathMigrationItemsController = controller;
+      const generation = pathMigrationGeneration;
+      const migrationId = pathMigrationCurrentId;
+      const host = document.getElementById('pathMigrationItems');
+      pathMigrationItemsVisible = true;
+      host.replaceChildren();
+      const status = document.createElement('div');
+      status.className = 'muted';
+      status.textContent = '正在读取冲突与失败项目...';
+      host.appendChild(status);
+      const button = (label, action) => {
+        const control = document.createElement('button');
+        control.type = 'button';
+        control.className = 'ghost';
+        control.textContent = label;
+        control.addEventListener('click', action);
+        return control;
+      };
+      try {
+        const rows = await fetchJsonSilent('/api/path-migration/items?status=conflict,failed&offset=' + offset + '&limit=21', { signal:controller.signal });
+        if (controller.signal.aborted || generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
+        if (!Array.isArray(rows) || rows.some((row) => row.migrationId !== migrationId)) throw new Error('迁移预览已变化，请重新打开详情');
+        status.textContent = rows.length ? '冲突与失败项目 · 第 ' + (Math.floor(offset / 20) + 1) + ' 页' : '本页没有冲突或失败项目';
+        for (const row of rows.slice(0, 20)) {
+          const entry = document.createElement('div');
+          entry.className = 'cleanup-item';
+          const content = document.createElement('div');
+          content.style.minWidth = '0';
+          content.style.overflowWrap = 'anywhere';
+          const title = document.createElement('strong');
+          title.textContent = row.relativePath || '未知项目';
+          const reason = document.createElement('div');
+          reason.textContent = row.lastError || (row.status === 'conflict' ? '目标大小或类型与源文件不一致' : '迁移失败');
+          const size = document.createElement('div');
+          size.className = 'muted';
+          size.textContent = row.itemType === 'directory' ? '目录' : '源文件：' + (typeof row.expectedSize === 'number' ? formatBytes(row.expectedSize) : '大小未知') + ' · 目标大小：未记录';
+          content.append(title, reason, size);
+          entry.appendChild(content);
+          host.appendChild(entry);
+        }
+        const advice = document.createElement('div');
+        advice.className = 'muted';
+        advice.textContent = '请在存储端核对冲突文件，或更换目标目录后重新预览；不会自动覆盖或删除冲突文件。';
+        const controls = document.createElement('div');
+        controls.className = 'row';
+        const prev = button('上一页', () => loadPathMigrationItems(Math.max(0, offset - 20)));
+        prev.disabled = offset === 0;
+        const next = button('下一页', () => loadPathMigrationItems(offset + 20));
+        next.disabled = rows.length <= 20;
+        controls.append(prev, next, button('刷新列表', () => loadPathMigrationItems(offset)));
+        host.append(advice, controls);
+      } catch (error) {
+        if (controller.signal.aborted || generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
+        status.textContent = '读取失败：' + error.message;
+        host.appendChild(button('重试', () => loadPathMigrationItems(offset)));
+      } finally {
+        if (pathMigrationItemsController === controller) pathMigrationItemsController = null;
+      }
+    }
+
     function renderPathMigrationState(state) {
+      if (!isPathMigrationOpen()) return;
       const summary = document.getElementById('pathMigrationSummary');
       const source = document.getElementById('pathMigrationSource');
       const destination = document.getElementById('pathMigrationDestination');
       const status = document.getElementById('pathMigrationStatus');
       const items = document.getElementById('pathMigrationItems');
       if (!summary || !status) return;
+      if (pathMigrationCurrentId !== (state?.id || null)) {
+        pathMigrationItemsController?.abort();
+        pathMigrationItemsVisible = false;
+        pathMigrationCurrentId = state?.id || null;
+        items.replaceChildren();
+      }
       source.value = state?.sourceRoot || source.value || '';
       if (state?.destinationRoot) destination.value = state.destinationRoot;
       if (!state) {
@@ -3330,7 +3423,7 @@ function getAppScript() {
         setHidden(status, true);
         return;
       }
-      const labels = { scanning:'扫描中', ready:'可以开始', copying:'复制中', verifying:'等待远端确认', paused:'已暂停', switching:'切换状态中', cleanup_pending:'等待清理旧目录', cleanup_running:'正在核验并处理旧目录', completed:'已完成', cancelled:'已取消', failed:'需要处理' };
+      const labels = { scanning:'扫描中', ready:state.conflictCount > 0 ? '需处理冲突' : '可以开始', copying:'复制中', verifying:'等待远端确认', paused:'已暂停', switching:'切换状态中', cleanup_pending:'等待清理旧目录', cleanup_running:'正在核验并处理旧目录', completed:'已完成', cancelled:'已取消', failed:'需要处理' };
       const toCopy = Math.max(0, Number(state.entryCount || 0) - Number(state.verifiedCount || 0));
       summary.innerHTML =
         '<div class="cleanup-item"><div><div class="cleanup-item-title">阶段：' + escapeHtml(labels[state.status] || state.status) + '</div><div class="cleanup-item-desc">' + escapeHtml(state.sourceRoot) + ' → ' + escapeHtml(state.destinationRoot) + '</div></div><strong>' + escapeHtml(String(state.progress?.completed || 0)) + ' / ' + escapeHtml(String(state.entryCount || 0)) + '</strong></div>' +
@@ -3346,45 +3439,90 @@ function getAppScript() {
       document.getElementById('pathMigrationCancelBtn').disabled = ['switching','cleanup_pending','cleanup_running','completed','cancelled'].includes(state.status);
       document.getElementById('pathMigrationCleanupBtn').disabled = state.status !== 'cleanup_pending';
       document.getElementById('pathMigrationKeepBtn').disabled = state.status !== 'cleanup_pending';
-      if (items) {
-        items.innerHTML = state.conflictCount || state.failedCount ? '<div class="muted">冲突/失败项目可在接口分页查看；为避免大清单阻塞页面，这里只显示计数。</div>' : '';
+      if (items && !pathMigrationItemsVisible) {
+        items.replaceChildren();
+        if (state.conflictCount || state.failedCount) {
+          const show = document.createElement('button');
+          show.type = 'button';
+          show.className = 'ghost';
+          show.textContent = '查看冲突与失败项目';
+          show.addEventListener('click', () => loadPathMigrationItems(0));
+          items.appendChild(show);
+        }
       }
       if (busy || state.status === 'paused' || state.status === 'cleanup_pending') startPathMigrationPolling();
     }
 
     async function refreshPathMigrationState() {
-      try { renderPathMigrationState(await fetchJsonSilent('/api/path-migration/state')); } catch (error) { setStatus('pathMigrationStatus', '状态读取失败：' + error.message, 'error'); }
+      if (!isPathMigrationOpen() || pathMigrationController) return;
+      if (pathMigrationPollTimer) clearTimeout(pathMigrationPollTimer);
+      pathMigrationPollTimer = null;
+      const generation = pathMigrationGeneration;
+      const controller = new AbortController();
+      pathMigrationController = controller;
+      try {
+        const state = await fetchJsonSilent('/api/path-migration/state', { signal:controller.signal });
+        if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) renderPathMigrationState(state);
+      } catch (error) {
+        if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) {
+          setStatus('pathMigrationStatus', '状态读取失败：' + error.message, 'error');
+          startPathMigrationPolling();
+        }
+      } finally {
+        if (pathMigrationController === controller) pathMigrationController = null;
+      }
     }
 
     function startPathMigrationPolling() {
-      if (pathMigrationPollTimer) return;
-      pathMigrationPollTimer = setInterval(() => { void refreshPathMigrationState(); }, 1500);
+      if (pathMigrationPollTimer || !isPathMigrationOpen()) return;
+      pathMigrationPollTimer = setTimeout(() => {
+        pathMigrationPollTimer = null;
+        void refreshPathMigrationState();
+      }, 1500);
     }
 
     async function openPathMigration() {
       openModal('pathMigrationModal', document.getElementById('pathMigrationBtn'));
       stopPathMigrationPolling();
-      const config = await fetchJson('/api/config');
-      document.getElementById('pathMigrationSource').value = config.alistDest || '';
-      document.getElementById('pathMigrationDestination').value = '';
-      await refreshPathMigrationState();
+      pathMigrationItemsVisible = false;
+      pathMigrationCurrentId = null;
+      document.getElementById('pathMigrationItems').replaceChildren();
+      const generation = pathMigrationGeneration;
+      const controller = new AbortController();
+      pathMigrationController = controller;
+      try {
+        const config = await fetchJsonSilent('/api/config', { signal:controller.signal });
+        if (controller.signal.aborted || generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
+        document.getElementById('pathMigrationSource').value = config.alistDest || '';
+        document.getElementById('pathMigrationDestination').value = '';
+      } catch (error) {
+        if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) setStatus('pathMigrationStatus', '配置读取失败：' + error.message, 'error');
+        return;
+      } finally {
+        if (pathMigrationController === controller) pathMigrationController = null;
+      }
+      if (generation === pathMigrationGeneration) await refreshPathMigrationState();
     }
 
     async function previewPathMigration() {
+      const generation = pathMigrationGeneration;
       const destinationRoot = document.getElementById('pathMigrationDestination').value.trim();
       if (!destinationRoot) { setStatus('pathMigrationStatus', '请填写新归档路径。', 'error'); return; }
       try {
         await fetchJson('/api/path-migration/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ destinationRoot }) });
+        if (generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
         startPathMigrationPolling();
         await refreshPathMigrationState();
-      } catch (error) { setStatus('pathMigrationStatus', '预览失败：' + error.message, 'error'); }
+      } catch (error) { if (generation === pathMigrationGeneration && isPathMigrationOpen()) setStatus('pathMigrationStatus', '预览失败：' + error.message, 'error'); }
     }
 
     async function pathMigrationAction(action, body = {}) {
+      const generation = pathMigrationGeneration;
       try {
         await fetchJson('/api/path-migration/' + action, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+        if (generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
         await refreshPathMigrationState();
-      } catch (error) { setStatus('pathMigrationStatus', '操作失败：' + error.message, 'error'); }
+      } catch (error) { if (generation === pathMigrationGeneration && isPathMigrationOpen()) setStatus('pathMigrationStatus', '操作失败：' + error.message, 'error'); }
     }
 
     async function cleanupOldPathMigration() {
@@ -4664,13 +4802,13 @@ function getAppScript() {
       if (deletionStatuses.includes('failed')) return '清理失败';
       if (deletionStatuses.some((status) => ['preparing','config_removing','pending','running','retry_wait'].includes(status))) return '清理中';
       if (item.playback && item.playback.available) {
-        if (item.unavailable) return '已归档且失效';
+        if (item.unavailable || item.sourceAvailability?.reason === 'favorite_flag') return '已归档 · 收藏夹显示失效';
         if (item.playback.partial) return '部分可播放';
         return '可播放';
       }
       const sourceState = item?.sourceAvailability?.state;
       if (sourceState === 'pending_confirmation') return 'B站状态待确认';
-      if (sourceState === 'unknown') return 'B站状态复核中';
+      if (sourceState === 'unknown') return 'B站状态暂未确认';
       if (sourceState === 'confirmed_unavailable') return 'B站源不可用';
       if (sourceState === 'dormant') return 'B站源长期不可用';
       const labels = {
@@ -5836,7 +5974,7 @@ function getAppScript() {
       } else if (item.unavailable && item.processed) {
         stateClass = 'unavailable-uploaded';
         badgeClass = 'removed-uploaded';
-        badgeText = '已上传且失效';
+        badgeText = '已归档 · 收藏夹显示失效';
       } else if (item.unavailable && !item.processed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -5873,7 +6011,7 @@ function getAppScript() {
         badgeText = '状态待确认';
       } else if (sourceState === 'unknown') {
         badgeClass = 'pending';
-        badgeText = '状态复核中';
+        badgeText = '状态暂未确认';
       } else if (sourceState === 'confirmed_unavailable') {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -5932,12 +6070,12 @@ function getAppScript() {
         source.className = 'video-source-availability';
         const copy = document.createElement('span');
         const sourceMessages = {
-          pending_confirmation:'B站状态待确认，系统正在后台复核',
-          unknown:'暂时无法确认B站状态，系统稍后重试',
+          pending_confirmation:'收藏夹显示失效，尚未确认B站源状态',
+          unknown:'暂时无法确认B站源状态',
           confirmed_unavailable:'B站源目前不可用，系统已停止重复下载',
           dormant:'B站源长期不可用，无需处理；重新可见后会自动恢复'
         };
-        copy.textContent = (sourceMessages[sourceState] || 'B站状态正在复核')
+        copy.textContent = (sourceMessages[sourceState] || 'B站状态尚未确认')
           + (canPlay || item.processed ? '；已有归档和封面不受影响' : '');
         source.appendChild(copy);
         if (item.bvid) {
@@ -10168,13 +10306,14 @@ function getAppScript() {
       }
     });
     document.getElementById('videoGrid').addEventListener('click', (event) => {
+      if (event.target instanceof Element && event.target.closest('button,a,input,select,textarea,[contenteditable="true"]')) return;
       const row = event.target instanceof Element ? event.target.closest('[data-playback-bvid]') : null;
       if (row && row.dataset.playbackBvid) openArchivePlayback(row.dataset.playbackBvid, row);
     });
     document.getElementById('videoGrid').addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       const row = event.target instanceof Element ? event.target.closest('[data-playback-bvid]') : null;
-      if (!row || !row.dataset.playbackBvid) return;
+      if (!row || event.target !== row || !row.dataset.playbackBvid) return;
       event.preventDefault();
       openArchivePlayback(row.dataset.playbackBvid, row);
     });

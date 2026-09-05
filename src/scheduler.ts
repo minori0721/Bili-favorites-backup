@@ -2179,11 +2179,15 @@ export class SyncScheduler {
     if (!bvid || !this.stateManager.getVideoMeta(bvid)) {
       return { ok: false as const, status: 404 as const, message: "本地没有该视频记录" };
     }
-    if (!this.userStore.list().some((user) => this.isUserSyncEligible(user))) {
-      return { ok: false as const, status: 409 as const, message: "当前没有可用的B站账号，请先登录或启用账号" };
+    const existing = this.jobStore.findByDedupeKey(`access_probe:${bvid}`);
+    const charging = Boolean(this.stateManager.getChargingRestriction(bvid))
+      || Boolean(existing && normalizeAccessProbeIntents(existing.payload).includes("charging"));
+    if (this.availabilityProbeUsers(bvid, "", new Set(), charging).length === 0) {
+      return { ok: false as const, status: 409 as const, message: "当前没有可用的相关账号，请登录并启用收藏所属账号或UP主账号" };
     }
     const current = this.stateManager.getSourceAvailability(bvid);
-    const job = this.enqueueAvailabilityProbe(bvid, {
+    const job = this.enqueueChargingAccessProbe(bvid, {
+      intents: charging ? ["availability", "charging"] : ["availability"],
       notBefore: this.now(),
       availabilityRound: current?.state === "confirmed_unavailable" ? current.checkRound : 0,
       availabilityUnknownRound: current?.state === "unknown" ? current.checkRound : 0,
@@ -2349,6 +2353,16 @@ export class SyncScheduler {
       });
   }
 
+  private availabilityProbeUsers(bvid: string, preferredUserId: string, skipped: Set<string>, charging: boolean) {
+    const related = new Set(this.stateManager.listRelationsForBvid(bvid)
+      .filter((relation) => relation.activeInFavorite && relation.sourceKind !== "manual")
+      .map((relation) => relation.userId));
+    const ownerUid = Number(this.stateManager.getVideoMeta(bvid)?.upperMid || 0);
+    return this.orderedEnabledUsers(preferredUserId, skipped).filter((user) => charging
+      || related.has(user.id)
+      || (ownerUid > 0 && Number(user.uid || user.cookie.DedeUserID || 0) === ownerUid));
+  }
+
   private deferChargingAccessProbe(
     job: any,
     value: {
@@ -2450,7 +2464,7 @@ export class SyncScheduler {
     const skipped = new Set<string>(Array.isArray(payload.skipUserIds) ? payload.skipUserIds.map(String) : []);
     const ownerUid = Number(this.stateManager.getVideoMeta(bvid)?.upperMid || 0);
     const seenAccountUids = new Set<string>();
-    const users = this.orderedEnabledUsers(preferredUserId, skipped)
+    const users = this.availabilityProbeUsers(bvid, preferredUserId, skipped, wantsCharging)
       .sort((left, right) => {
         const leftOwner = ownerUid > 0 && Number(left.uid || left.cookie.DedeUserID || 0) === ownerUid;
         const rightOwner = ownerUid > 0 && Number(right.uid || right.cookie.DedeUserID || 0) === ownerUid;

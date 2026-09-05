@@ -755,6 +755,30 @@ app.get("/api/archive-deletions/:id", (request, response) => {
 });
 app.post("/api/archive-deletions/:id/retry", (_request, response) => response.json(ok({ accepted: true })));
 
+if (process.env.BFB_REVIEW_PREVIEW === "1") {
+  const migration = {
+    id: "review-migration", status: "ready", sourceRoot: "/测试旧归档", destinationRoot: "/测试新归档",
+    entryCount: 24, fileCount: 24, directoryCount: 0, totalBytes: 2516582400, conflictCount: 24, failedCount: 0,
+  };
+  app.get("/api/path-migration/state", (_request, response) => response.json(ok(migration)));
+  app.get("/api/path-migration/items", (request, response) => {
+    const offset = Math.max(0, Number(request.query.offset || 0));
+    const limit = Math.min(21, Math.max(1, Number(request.query.limit || 21)));
+    response.json(ok(Array.from({ length: 24 }, (_, index) => ({
+      migrationId: migration.id, relativePath: `测试收藏夹/视频${index + 1}/P1.mp4`,
+      itemType: "file", expectedSize: 104857600, status: "conflict", lastError: "目标大小与源文件不一致（隔离演示）",
+    })).slice(offset, offset + limit)));
+  });
+  app.post("/api/path-migration/preview", (_request, response) => {
+    migration.status = "ready";
+    response.json(ok(migration));
+  });
+  app.post("/api/path-migration/cancel", (_request, response) => {
+    migration.status = "cancelled";
+    response.json(ok(migration));
+  });
+}
+
 export async function startFakeUiServer() {
   return new Promise<() => Promise<void>>((resolve, reject) => {
     const sockets = new Set<Socket>();
