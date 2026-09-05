@@ -2,7 +2,7 @@
 
 | 组件 | 当前范围 | 说明 |
 | --- | --- | --- |
-| 应用版本 | v2.5.3 | 文档只维护当前main稳定版 |
+| 应用版本 | v2.5.4 | 文档只维护当前main稳定版 |
 | Node.js | 24 | 源码运行要求`>=24 <25` |
 | Docker平台 | `linux/amd64` | 当前工作流不发布ARM64 |
 | BBDown | fork Release `bfb-2.0.4` | 固定源码提交，不跟随master；支持BFB结构化媒体探测 |
@@ -40,7 +40,7 @@ BFB依赖标准 WebDAV 行为，但不同网盘驱动在 PUT、MOVE、DELETE、�
 
 网页和APP播放接口都可能受账号权限、风控或上游变化影响。BFB只根据明确字段和稳定信号分类，不通过标题或错误文案猜测付费权限，也不会绕过B站限制。
 
-`v2.5.3`沿用BBDown fork `bfb-2.0.4`。除既有PlayerUnite兼容外，BBDown提供BFB专用结构化媒体探测输出；BFB只把它作为可用组合和空间估算输入，最终下载仍以ffprobe实际媒体为准。
+`v2.5.4`沿用BBDown fork `bfb-2.0.4`。除既有PlayerUnite兼容外，BBDown提供BFB专用结构化媒体探测输出；BFB只把它作为可用组合和空间估算输入，最终下载仍以ffprobe实际媒体为准。
 
 ## 归档播放器
 
