@@ -161,6 +161,49 @@ test("recovery automation finalizes a remotely visible file without reading the 
   }
 });
 
+test("fully verified orphan generations resume confirmation instead of reopening upload or requiring manual action", async () => {
+  const fixture = await createStructuredRecoveryFixture("verified-orphan-generation", { status: "verified", remoteSize: 12 }, { local: "missing" });
+  const { runtime, manager, scheduler, session, job } = fixture;
+  try {
+    scheduler.jobStore.complete(job.id);
+    scheduler.transferSessions.updateFile(session.id, "video.mp4", { status: "verified", verifiedAt: Date.now() }, session.generation);
+    for (let index = 0; index < 2; index++) scheduler.reconcileTransferSessionRecoveryJobs(true);
+    const projected = scheduler.jobStore.findByDedupeKey(`upload-session:${session.id}:g${session.generation}`);
+    assert.ok(projected);
+    assert.notEqual(projected.status, "manual_wait");
+    assert.equal(projected.payload.resumeOnly, true);
+    assert.equal(projected.payload.lifecycleState, "remote_visibility_wait");
+    assert.equal(scheduler.transferSessions.get(session.id)?.generation, session.generation);
+    assert.equal(scheduler.transferSessions.listFiles(session.id, session.generation).length, 1);
+  } finally {
+    scheduler.stop(); manager.close(); await removeTestDir(runtime);
+  }
+});
+
+test("empty current generations remain recoverable without borrowing previous page success", async () => {
+  for (const remoteStatus of ["verified", "unknown"] as const) {
+    const fixture = await createStructuredRecoveryFixture(`empty-generation-${remoteStatus}`, { status: remoteStatus }, { local: "missing" });
+    const { runtime, manager, scheduler, session, job } = fixture;
+    try {
+      scheduler.jobStore.complete(job.id);
+      scheduler.transferSessions.updateFile(session.id, "video.mp4", { status: "verified", verifiedAt: Date.now() }, 1);
+      manager.markVerifiedUpload("BVVERIFY", "/target", [{ name: "video.mp4", path: "/target/video.mp4", localRelativePath: "video.mp4", size: 12, verificationStatus: "verified", putCompletedAt: new Date().toISOString() }], "u1", 1, false);
+      manager.getDatabase().db.prepare("UPDATE transfer_sessions SET generation=2, phase='uploading' WHERE id=?").run(session.id);
+      scheduler.reconcileTransferSessionRecoveryJobs(true);
+      const projected = scheduler.jobStore.findByDedupeKey(`upload-session:${session.id}:g2`);
+      assert.ok(projected);
+      assert.equal(projected.payload.emptyAttempt, true);
+      await scheduler.assessManualRecoveryJob(projected.id, { force: true });
+      assert.equal(scheduler.transferSessions.get(session.id)?.phase, remoteStatus === "verified" ? "superseded" : "uploading");
+      assert.equal(scheduler.transferSessions.listFiles(session.id, 2).length, 0);
+      assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "verified");
+      if (remoteStatus === "unknown") assert.ok(scheduler.jobStore.findById(projected.id));
+    } finally {
+      scheduler.stop(); manager.close(); await removeTestDir(runtime);
+    }
+  }
+});
+
 test("same-size recovery without a PUT proof becomes an isolated candidate and never writes new media metadata", async () => {
   const fixture = await createStructuredRecoveryFixture("recovery-unknown-same-size", { status: "verified", remoteSize: 12 });
   const { runtime, manager, scheduler, session, job } = fixture;
@@ -195,6 +238,8 @@ test("abandoning a recovery attempt supersedes its session and stays hidden on l
     assert.equal((abandoned?.payload as any).awaitingManualRecovery, false);
     assert.equal((abandoned?.payload as any).lifecycleState, "abandoned");
     assert.equal((abandoned?.payload as any).userDisposition, "abandoned");
+    scheduler.jobStore.normalizeTerminalUploadRecovery();
+    assert.equal(scheduler.jobStore.findById(job.id)?.payload.awaitingManualRecovery, false);
     assert.equal(scheduler.transferSessions.get(session.id)?.phase, "superseded");
     assert.equal(scheduler.getRecoveryIssues().some((item: any) => item.id === `upload.${job.id}`), false);
 

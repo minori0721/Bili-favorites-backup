@@ -382,13 +382,34 @@ export class PersistentJobStore {
     `).run(now + leaseMs, now, id, leaseOwner).changes === 1;
   }
 
-  complete(id: string, leaseOwner?: string) {
-    if (leaseOwner) {
-      return this.stateDatabase.db.prepare("DELETE FROM jobs WHERE id=? AND lease_owner=?").run(id, leaseOwner).changes === 1;
-    }
-    return this.stateDatabase.db.prepare("DELETE FROM jobs WHERE id=?").run(id).changes === 1;
+  private completeUnsafe(id: string, leaseOwner?: string) {
+    const ownerClause = leaseOwner ? " AND lease_owner=?" : "";
+    const args = leaseOwner ? [id, leaseOwner] : [id];
+    const retained = this.stateDatabase.db.prepare(`UPDATE jobs SET status='completed', dedupe_key='cleanup-complete:' || id,
+      lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+      WHERE id=?${ownerClause} AND json_array_length(payload_json, '$.localCleanupPlans')>0`)
+      .run(Date.now(), ...args).changes;
+    if (retained) return true;
+    return this.stateDatabase.db.prepare(`DELETE FROM jobs WHERE id=?${ownerClause}`).run(...args).changes === 1;
   }
 
+  complete(id: string, leaseOwner?: string) {
+    return this.stateDatabase.db.transaction(() => this.completeUnsafe(id, leaseOwner))();
+  }
+
+  completeAndEnqueue(id: string, leaseOwner: string, inputs: EnqueuePersistentJob[]) {
+    return this.stateDatabase.db.transaction(() => {
+      const current = this.stateDatabase.db.prepare(`
+        SELECT id FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')
+      `).get(id, leaseOwner);
+      if (!current) return null;
+      const next = inputs.map((input) => this.enqueue(input));
+      if (!this.completeUnsafe(id, leaseOwner)) {
+        throw new Error("Persistent job transition changed before commit");
+      }
+      return next;
+    })();
+  }
   retry(id: string, leaseOwner: string, error: string, notBefore: number) {
     const now = Date.now();
     const row = this.stateDatabase.db.prepare("SELECT kind, attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
@@ -496,6 +517,8 @@ export class PersistentJobStore {
           updated_at=?
       WHERE kind IN ('upload','history_upload')
         AND status='failed'
+        AND COALESCE(json_extract(payload_json, '$.userDisposition'), '')<>'abandoned'
+        AND COALESCE(json_extract(payload_json, '$.lifecycleState'), '')<>'abandoned'
         AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0)<>1
     `).run(now);
     return Number(result.changes || 0);
@@ -685,14 +708,74 @@ export class PersistentJobStore {
     })();
   }
 
+  transitionEncodingRetryChildren(
+    parentId: string,
+    generation: number,
+    currentChildId: string,
+    leaseOwner: string,
+    nextState: "uploading" | "verifying",
+    inputs: EnqueuePersistentJob[],
+  ) {
+    return this.stateDatabase.db.transaction(() => {
+      const parentRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+      if (!parentRow || inputs.length === 0) return null;
+      let payload: Record<string, any>;
+      try { payload = JSON.parse(String(parentRow.payload_json || "{}")); } catch { return null; }
+      const retry = payload.encodingRetry;
+      if (!retry
+        || Number(retry.generation) !== Number(generation)
+        || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return null;
+      const current = this.stateDatabase.db.prepare(`
+        SELECT id FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')
+      `).get(currentChildId, leaseOwner);
+      if (!current) return null;
+      const next = inputs.map((input) => this.enqueue(input));
+      if (!this.completeUnsafe(currentChildId, leaseOwner)) {
+        throw new Error("Encoding retry child changed before transition commit");
+      }
+      const activeChildren = this.stateDatabase.db.prepare(`
+        SELECT id FROM jobs
+        WHERE kind IN ('download','upload','history_upload','verify_upload')
+          AND id<>?
+          AND status<>'completed'
+          AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1
+          AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
+          AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+        ORDER BY created_at ASC, id ASC
+      `).all(parentId, parentId, generation) as Array<{ id: string }>;      const replacementJobIds = activeChildren.map((row) => String(row.id));
+      if (replacementJobIds.length === 0) {
+        throw new Error("Encoding retry transition produced no active children");
+      }
+      const nextPayload = {
+        ...payload,
+        encodingRetry: {
+          ...retry,
+          state: nextState,
+          replacementJobId: replacementJobIds[0],
+          replacementJobIds,
+        },
+      };
+      const updated = this.stateDatabase.db.prepare(`
+        UPDATE jobs SET payload_json=?, updated_at=?
+        WHERE id=?
+          AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+          AND json_extract(payload_json, '$.encodingRetry.state') IN ('running','uploading','verifying')
+      `).run(JSON.stringify(nextPayload), Date.now(), parentId, generation).changes;
+      if (updated !== 1) throw new Error("Encoding retry parent changed before child transition");
+      return next;
+    })();
+  }
+
   countEncodingRetryJobs(parentId: string, generation: number) {
     const row = this.stateDatabase.db.prepare(`
       SELECT COUNT(*) AS count FROM jobs
       WHERE kind IN ('download','upload','history_upload','verify_upload')
+        AND id<>?
+        AND status<>'completed'
         AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1
         AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
         AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
-    `).get(parentId, generation) as any;
+    `).get(parentId, parentId, generation) as any;
     return Number(row?.count || 0);
   }
 
@@ -700,31 +783,56 @@ export class PersistentJobStore {
     return this.stateDatabase.db.prepare(`
       DELETE FROM jobs
       WHERE kind IN ('download','upload','history_upload','verify_upload')
+        AND id<>?
+        AND status<>'completed'
         AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1
         AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
         AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
-    `).run(parentId, generation).changes;
+    `).run(parentId, parentId, generation).changes;
+  }
+
+  private completeEncodingRetryParentUnsafe(parentId: string, generation: number) {
+    const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+    if (!row) return false;
+    let payload: Record<string, any>;
+    try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { return false; }
+    const retry = payload.encodingRetry;
+    if (!retry
+      || Number(retry.generation) !== Number(generation)
+      || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
+    return this.stateDatabase.db.prepare(`
+      DELETE FROM jobs
+      WHERE id=?
+        AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+        AND json_extract(payload_json, '$.encodingRetry.state') IN ('running','uploading','verifying')
+    `).run(parentId, generation).changes === 1;
   }
 
   completeEncodingRetryParent(parentId: string, generation: number) {
-    return this.stateDatabase.db.transaction(() => {
-      const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
-      if (!row) return false;
-      let payload: Record<string, any>;
-      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { return false; }
-      const retry = payload.encodingRetry;
-      if (!retry
-        || Number(retry.generation) !== Number(generation)
-        || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
-      return this.stateDatabase.db.prepare(`
-        DELETE FROM jobs
-        WHERE id=?
-          AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
-          AND json_extract(payload_json, '$.encodingRetry.state') IN ('running','uploading','verifying')
-      `).run(parentId, generation).changes === 1;
-    })();
+    return this.stateDatabase.db.transaction(() => this.completeEncodingRetryParentUnsafe(parentId, generation))();
   }
 
+  completeEncodingRetryCommit(parentId: string, generation: number, childId?: string, leaseOwner?: string) {
+    return this.stateDatabase.db.transaction(() => {
+      const parent = this.findById(parentId);
+      const retry = (parent?.payload as any)?.encodingRetry;
+      if (!retry || Number(retry.generation) !== generation
+        || !['running', 'uploading', 'verifying'].includes(String(retry.state))) {
+        throw new Error("Encoding retry parent changed before commit");
+      }
+      if (childId && !this.completeUnsafe(childId, leaseOwner)) return false;
+      const unfinished = this.stateDatabase.db.prepare(`SELECT 1 FROM jobs
+        WHERE id<>? AND status<>'completed'
+          AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
+          AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
+        LIMIT 1`).get(parentId, parentId, generation);
+      if (unfinished) return true;
+      if (!this.completeEncodingRetryParentUnsafe(parentId, generation)) {
+        throw new Error("Encoding retry parent changed before commit");
+      }
+      return true;
+    })();
+  }
   wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}, notBefore = Date.now()) {
     const row = this.stateDatabase.db.prepare("SELECT status, payload_json FROM jobs WHERE id=?").get(id) as any;
     if (!row || !["manual_wait", "failed", "retry_wait", "pending"].includes(String(row.status))) return null;
@@ -811,7 +919,7 @@ export class PersistentJobStore {
     if (kinds.length === 0) return [];
     const placeholders = kinds.map(() => "?").join(",");
     return (this.stateDatabase.db.prepare(`
-      SELECT * FROM jobs WHERE kind IN (${placeholders})
+      SELECT * FROM jobs WHERE kind IN (${placeholders}) AND status<>'completed'
       ORDER BY priority ASC, not_before ASC, created_at ASC LIMIT ?
     `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
   }
@@ -1102,7 +1210,7 @@ export class PersistentJobStore {
   hasQualityTarget(userId: string, mediaId: number, bvid: string) {
     const row = this.stateDatabase.db.prepare(`
       SELECT 1 FROM jobs
-      WHERE bvid=? AND (
+      WHERE bvid=? AND status<>'completed' AND (
         (kind='quality_download' AND (
           (json_extract(payload_json, '$.target.userId')=? AND CAST(json_extract(payload_json, '$.target.mediaId') AS INTEGER)=?)
           OR EXISTS (
@@ -1121,6 +1229,7 @@ export class PersistentJobStore {
     const rows = this.stateDatabase.db.prepare(`
       SELECT kind, bvid, user_id, media_id, payload_json FROM jobs
       WHERE kind IN ('quality_download','quality_upload','quality_replace','quality_cleanup')
+        AND status<>'completed'
     `).all() as any[];
     const keys = new Set<string>();
     for (const row of rows) {
@@ -1142,7 +1251,7 @@ export class PersistentJobStore {
   }
 
   hasDedupePrefix(prefix: string) {
-    return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ?").get(`${prefix}%`) as any).count || 0) > 0;
+    return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed'").get(`${prefix}%`) as any).count || 0) > 0;
   }
 
   wakeByBvid(bvid: string, kinds: PersistentJobKind[], now = Date.now()) {

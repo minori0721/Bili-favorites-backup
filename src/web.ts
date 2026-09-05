@@ -5511,6 +5511,44 @@ function getAppScript() {
       }
     }
 
+    async function releaseArchiveLocalFiles(bvid, trigger, token) {
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled || trigger.dataset.releaseBusy === 'true') return;
+      trigger.dataset.releaseBusy = 'true';
+      trigger.disabled = true;
+      try {
+        const preview = await fetchJson('/api/videos/' + encodeURIComponent(bvid) + '/local-release-preview');
+        if (token !== archiveLibraryState.detailToken || !trigger.isConnected) return;
+        const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
+        if (candidates.length === 0 || Number(preview.fileCount || 0) <= 0) {
+          showToast('当前没有可安全释放的已授权本地文件');
+          return;
+        }
+        const candidate = candidates[0];
+        const extraGroups = Math.max(0, candidates.length - 1);
+        const confirmed = await confirmAction({
+          title:'释放本地空间',
+          message:'本次将安全释放 ' + Number(candidate.fileCount || 0) + ' 个本地文件，共 ' + formatBytes(Number(candidate.totalBytes || 0)) + '。',
+          detail:(candidate.requiresExplicitDeletion
+            ? (candidate.hasVerifiedArchive ? '存在已验证归档，但不能保证与这些本地文件是同一版本。' : '没有已验证归档，这可能是唯一副本。') + ' 删除后无法从本机恢复；请先停止本次尝试。'
+            : '只删除已完成远端确认且具有清理授权的文件；执行前会再次核对远端大小。') + ' 文件或会话有变化时停止删除。' + (extraGroups ? ' 另有 ' + extraGroups + ' 组文件可在完成后再次检查。' : ''),
+          requiredText:'DELETE LOCAL', confirmText:'释放本地空间', danger:true, trigger
+        });
+        if (!confirmed) return;
+        if (token !== archiveLibraryState.detailToken || !trigger.isConnected) return;
+        await fetchJson('/api/videos/' + encodeURIComponent(bvid) + '/local-release', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ releaseId:candidate.releaseId, confirmation:'DELETE LOCAL' })
+        });
+        showToast('已开始安全释放本地文件', 'success');
+      } catch (error) {
+        if (token === archiveLibraryState.detailToken && trigger.isConnected) {
+          showToast(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        delete trigger.dataset.releaseBusy;
+        if (trigger.isConnected) trigger.disabled = false;
+      }
+    }
     async function openArchiveLibraryDetail(bvid, trigger) {
       const detail = document.getElementById('archiveLibraryDetail');
       const body = document.getElementById('archiveLibraryDetailBody');
@@ -5544,6 +5582,16 @@ function getAppScript() {
         meta.className = 'archive-library-detail-meta';
         meta.textContent = safeText(data.upperName, '未知UP') + ' · ' + safeText(data.bvid, '-') + ' · ' + archiveStatusLabel(data);
         body.appendChild(meta);
+        const localActions = document.createElement('div');
+        localActions.className = 'archive-library-source-actions';
+        const releaseLocal = document.createElement('button');
+        releaseLocal.type = 'button';
+        releaseLocal.className = 'ghost';
+        releaseLocal.textContent = '释放本地空间';
+        releaseLocal.title = '查看本地文件并确认删除；运行中的任务必须先停止';
+        releaseLocal.addEventListener('click', () => void releaseArchiveLocalFiles(data.bvid, releaseLocal, token));
+        localActions.appendChild(releaseLocal);
+        body.appendChild(localActions);
         (data.memberships || []).forEach((membership) => {
           const source = document.createElement('div');
           source.className = 'archive-library-source';
@@ -8860,10 +8908,10 @@ function getAppScript() {
       }
       if (action.id === 'abandon_attempt') {
         const confirmed = await confirmAction({
-          title:'放弃本次候选',
+          title:'停止本次尝试',
           message:'结束当前恢复尝试并从待处理中心移除。',
-          detail:'原归档不会被删除或覆盖；以后重新同步时仍可建立新的候选代次。当前候选的本地文件和远端隔离文件不会自动用于播放。',
-          confirmText:'放弃本次候选',
+          detail:'只停止自动执行，不删除本地文件或远端文件。当前仍存在的文件会继续占用空间，当前尝试的文件不会自动用于播放。',
+          confirmText:'停止本次尝试',
           danger:true,
           trigger,
         });
@@ -8984,7 +9032,7 @@ function getAppScript() {
       if (issue.busy) {
         const busyNote = document.createElement('p');
         busyNote.className = 'recovery-safety-note';
-        busyNote.textContent = '替换下载、上传或远端确认正在进行。原文件仍保留，期间不能重复启动另一种编码。';
+        busyNote.textContent = '替换下载、上传或远端确认正在进行。替换流程不会主动清理旧文件，期间不能重复启动另一种编码。';
         appendRecoveryDetailSection(host, '当前进度', busyNote);
       } else if (issue.recommendedAction) {
         const actions = document.createElement('div');
@@ -9531,7 +9579,7 @@ function getAppScript() {
       }
       const retryText = uploadHealth.retryAt ? formatDateTime(uploadHealth.retryAt) : '等待调度';
       const modeText = uploadHealth.state === 'half_open' ? '正在进行单任务探测' : '将在 ' + retryText + ' 探测恢复';
-      el.textContent = '上传后端异常，下载已暂停：' + (uploadHealth.reason || 'AList / OpenList 上传暂不可用') + '；' + modeText + '。本地文件已保留为“待补传”。';
+      el.textContent = '上传后端异常，下载已暂停：' + (uploadHealth.reason || 'AList / OpenList 上传暂不可用') + '；' + modeText + '。认证异常不会自动清理待补传本地文件。';
     }
 
     function renderDownloadApiHealthStatus(parent, downloadApiHealth) {

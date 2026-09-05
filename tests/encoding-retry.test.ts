@@ -321,7 +321,7 @@ test("strict media target survives persistent upload task reconstruction", async
   }
 });
 
-test("successful encoding retry cleans the isolated candidate but preserves unknown artifacts", async () => {
+test("encoding retry cannot complete without committed archive evidence and preserves the isolated candidate", async () => {
   const runtime = await createTestDir("encoding-retry-success-cleanup");
   const tempDir = path.join(runtime, "temp");
   const bvid = "BVENCODINGCLEANUP";
@@ -420,14 +420,11 @@ test("successful encoding retry cleans the isolated candidate but preserves unkn
       encodingRetry: context,
     }), true);
 
-    assert.equal(scheduler.completeEncodingRetrySuccess(bvid, context), true);
-    for (let attempt = 0; attempt < 100 && fs.existsSync(path.join(candidateLocalDir, output)); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.equal(fs.existsSync(path.join(candidateLocalDir, output)), false);
+    assert.equal(typeof scheduler.completeEncodingRetrySuccess, "undefined");
+    assert.equal(fs.existsSync(path.join(candidateLocalDir, output)), true);
     assert.equal(fs.existsSync(unknownArtifact), true);
-    assert.equal(fs.existsSync(path.join(candidateLocalDir, DOWNLOAD_RETAINED_FILE)), true);
-    assert.equal(scheduler.jobStore.findById(parent.id), null);
+    assert.equal(fs.existsSync(path.join(candidateLocalDir, ".bfb-download.json")), true);
+    assert.ok(scheduler.jobStore.findById(parent.id), "parent must remain until a verified archive commit exists");
   } finally {
     scheduler.stop();
     state.close();

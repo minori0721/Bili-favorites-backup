@@ -1756,7 +1756,10 @@ export class StateDatabase {
     const rows = this.db.prepare(`
       SELECT v.payload_json, v.local_dir, v.updated_at, v.bvid
       FROM videos v
-      WHERE v.local_dir IS NOT NULL AND v.local_dir<>''
+      WHERE EXISTS (
+          SELECT 1 FROM jobs cleanup WHERE cleanup.bvid=v.bvid AND cleanup.status='completed'
+            AND json_array_length(cleanup.payload_json, '$.localCleanupPlans')>0
+        )
         AND v.backup_status IN ('verified','partial_verified')
         AND EXISTS (
           SELECT 1 FROM favorite_relations r WHERE r.bvid=v.bvid
@@ -1783,8 +1786,8 @@ export class StateDatabase {
     `).all({ ...after, limit: normalizedLimit }) as any[];
     const items = rows.flatMap((row) => {
       const video = parseJson<VideoArchiveEntry>(row.payload_json, undefined as any);
-      if (!video || !row.local_dir) return [];
-      video.localDir = String(row.local_dir);
+      if (!video) return [];
+      video.localDir = row.local_dir ? String(row.local_dir) : undefined;
       return [video];
     });
     const last = rows[rows.length - 1];

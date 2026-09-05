@@ -227,6 +227,21 @@ export class TransferSessionStore {
     return row ? fileFromRow(row) : null;
   }
 
+  ensurePrepared(input: EnsureTransferSessionInput, files: Array<{ relativePath: string; name: string; expectedSize: number }>, bind?: (session: TransferSessionRecord) => void) {
+    if (files.length === 0) throw new Error("Cannot create an upload attempt without files");
+    if (new Set(files.map((file) => file.relativePath)).size !== files.length) throw new Error("Duplicate upload files");
+    return this.stateDatabase.db.transaction(() => {
+      const session = this.ensure(input);
+      const existing = this.listFiles(session.id, session.generation);
+      if (existing.length > 0 && (existing.length !== files.length || existing.some((file) => !files.some((item) =>
+        item.relativePath === file.relativePath && item.expectedSize === file.expectedSize
+      )))) throw new Error("Current upload attempt file set changed");
+      for (const file of files) this.ensureFile(session.id, file, session.generation);
+      bind?.(session);
+      return session;
+    })();
+  }
+
   ensure(input: EnsureTransferSessionInput) {
     const existingById = input.sessionId ? this.assertGeneration(input.sessionId, input.expectedGeneration) : null;
     if (existingById) return existingById;

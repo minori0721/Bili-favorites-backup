@@ -1125,6 +1125,20 @@ test("a completed transfer session reopens in place when a later upload uses the
     const sessionId = first.sessionId;
     const firstGeneration = first.sessionGeneration;
     assert.equal(firstGeneration, 1);
+    await fs.promises.unlink(path.join(runtime, "video.mp4"));
+    await assert.rejects(uploadWithAList(runtime, "/target", config, {
+      files: ["video.mp4"], bvid: "BVREOPEN", userId: "u1", mediaId: 1,
+      transferSessionStore: sessions, verificationDelaysMs: [0], log: noopLog,
+    }), /missing/i);
+    assert.equal(sessions.get(sessionId!)?.generation, 1);
+    assert.equal(sessions.get(sessionId!)?.phase, "completed");
+    assert.equal(sessions.listFiles(sessionId!, 2).length, 0);
+    const confirmation = await resumeUploadSession(config, sessions, sessionId!, {
+      sessionGeneration: 1, verificationDelaysMs: [0], log: noopLog,
+    });
+    assert.equal(confirmation.allVerified, true);
+    assert.equal(server.puts.length, 1);
+    await fs.promises.writeFile(path.join(runtime, "video.mp4"), Buffer.from("reopen-session"));
     server.files.delete("/dav/target/video.mp4");
 
     const second = await uploadWithAList(runtime, "/target", config, {

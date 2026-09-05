@@ -12,7 +12,6 @@ import {
   assessStrictEncoding,
   assessStrictQuality,
   buildUploadFileMetadataFromSession,
-  cleanupUploadedSessionFiles,
   createStrictEncodingValidationError,
   StrictQualityValidationError,
   type DownloadSessionManifest,
@@ -202,7 +201,7 @@ export class QualityUpgradeTask extends Task {
   onBackupFileMoved?: (task: QualityUpgradeTask, file: RemoteFileRecord) => void;
   onFinalFileMoved?: (task: QualityUpgradeTask, file: RemoteFileRecord) => void;
   onUploaded?: (task: QualityUpgradeTask, result: UploadResult) => void;
-  onCompletedUpgrade?: (task: QualityUpgradeTask) => void;
+  onCompletedUpgrade?: (task: QualityUpgradeTask) => void | Promise<void>;
   onFailed?: (task: QualityUpgradeTask, error: any) => void;
   shouldCleanupLocal?: () => boolean;
   onLocalCleanupFinished?: (task: QualityUpgradeTask) => void;
@@ -461,14 +460,10 @@ export class QualityUpgradeTask extends Task {
       throw error;
     }
     this.qualityStageLabel = "画质重调完成";
-    this.onCompletedUpgrade?.(this);
-    if (this.downloadDir && (this.shouldCleanupLocal?.() ?? true)) {
-      try {
-        await cleanupUploadedSessionFiles(this.downloadDir);
-      } finally {
-        this.onLocalCleanupFinished?.(this);
-      }
-    }
+    // Local media cleanup is deliberately outside this phase. The scheduler
+    // persists a manifest-bound authorization only after the remote and
+    // SQLite success commit, then its recovery sweep performs the deletion.
+    await this.onCompletedUpgrade?.(this);
     console.log(`[Task] Completed quality upgrade for ${this.bvid}`);
   }
 }
@@ -710,12 +705,16 @@ export class UploadTask extends Task {
     try {
       this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
         cleanupLocal: this.cleanupLocal,
+        deferSessionCompletion: Boolean(this.persistentJobId),
         files: this.files,
         filenameMetadataByPath: this.filenameMetadataByPath,
         transferSessionStore: this.transferSessionStore,
         sessionId: this.sessionId,
         sessionGeneration: this.sessionGeneration,
         sessionDedupeKey: this.sessionDedupeKey,
+        onPreparedSession: (session) => {
+          this.onTransferSession?.(this, session.id, session.generation);
+        },
         allowReupload: false,
         reuploadAuthorizedFiles: this.reuploadAuthorizedFiles,
         consumeReuploadPermission: (relativePath) => {
@@ -847,6 +846,7 @@ export class UploadVerificationTask extends Task {
         filenameMetadataByPath: this.filenameMetadataByPath,
         cleanupLocal: false,
         verificationDelaysMs: [0],
+        deferSessionCompletion: Boolean(this.persistentJobId),
       });
       this.result = this.transferResult.allVerified
         ? { status: "verified", remoteSize: this.transferResult.files.reduce((sum, file) => sum + Number(file.size || 0), 0) }

@@ -454,7 +454,7 @@ app.get("/api/queue/state", (_request, response) => {
         { id: "keep_existing", label: "保留现有归档", description: "继续使用正式旧路径，候选文件仍保留。" },
         { id: "use_candidate", label: "采用新候选", description: "将候选设为当前归档，正式旧路径仍保留。" },
         { id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" },
-        { id: "abandon_attempt", label: "放弃本次候选", description: "结束当前候选并保留原归档。" },
+        { id: "abandon_attempt", label: "停止本次尝试", description: "停止自动执行，不删除本地或远端文件。" },
       ],
     },
     create_candidate: {

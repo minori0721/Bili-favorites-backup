@@ -70,6 +70,7 @@ test("real app supports login, queue state, config update and migration preview 
     assert.match(html, /传输方式未知/);
     assert.match(html, /cleanup_running/);
     assert.match(html, /metadataRetryTimers/);
+    assert.match(html, /释放本地空间/);
 
     const invalidPremiumAudio = await fetch(`${base}/api/config`, {
       method: "PUT",
@@ -141,7 +142,7 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(cleanupPreview.status, 200);
     const cleanupPreviewJson: any = await cleanupPreview.json();
     const orphanItem = cleanupPreviewJson.data.items.find((item: any) => item.key === "orphan-fragments");
-    assert.ok(orphanItem?.bytes >= 64);
+    assert.equal(orphanItem?.bytes, 0);
 
     const cleanup = await fetch(`${base}/api/storage/cleanup`, {
       method: "POST",
@@ -149,7 +150,7 @@ test("real app supports login, queue state, config update and migration preview 
       body: JSON.stringify({ items: ["orphan-fragments"], confirmation: "DELETE" }),
     });
     assert.equal(cleanup.status, 200);
-    assert.equal(fs.existsSync(retainedDir), false);
+    assert.equal(fs.existsSync(path.join(retainedDir, "unknown.bin")), true);
 
     const tempRoot = path.join(runtime, "temp");
     await fs.promises.mkdir(path.join(tempRoot, "BV1TEMPCLEAR", "nested"), { recursive: true });

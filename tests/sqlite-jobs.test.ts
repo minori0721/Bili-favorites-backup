@@ -15,6 +15,26 @@ import { PersistentJobStore } from "../src/job-store.js";
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 
+test("completed upload jobs retain cleanup authorization without blocking a new attempt", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const job = jobs.enqueue({ kind: "upload", bvid: "BVCLEANUP", dedupeKey: "upload:cleanup-test",
+      payload: { localCleanupPlans: [{ id: "authorized-plan", files: [{ relativePath: "video.mp4", expectedSize: 10 }] }] } });
+    assert.equal(jobs.complete(job.id), true);
+    assert.equal(jobs.findById(job.id)?.status, "completed");
+    assert.equal(jobs.findById(job.id)?.payload.localCleanupPlans.length, 1);
+    assert.equal(jobs.list(["upload"]).length, 0);
+    assert.equal(jobs.hasActiveJobsForBvid("BVCLEANUP"), false);
+    assert.equal(jobs.normalizeTerminalUploadRecovery(), 0);
+    const next = jobs.enqueue({ kind: "upload", bvid: "BVCLEANUP", dedupeKey: "upload:cleanup-test" });
+    assert.notEqual(next.id, job.id);
+    assert.equal(next.status, "pending");
+    assert.equal(jobs.complete(job.id), true);
+    assert.ok(jobs.findById(job.id)?.payload.localCleanupPlans);
+  } finally { database.close(); }
+});
+
 test("encoding retry counts only replacement children and keeps duplicate starts idempotent", () => {
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
@@ -563,6 +583,25 @@ test("state replacement and clearing remove transfer sessions with their child f
   } finally {
     database.close();
   }
+});
+
+test("prepared attempts roll back generation, files and binding together", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const sessions = new TransferSessionStore(database);
+    const input = { dedupeKey: "atomic-attempt", bvid: "BVATOMIC", localDir: "/tmp/BVATOMIC", remotePath: "/backup" };
+    const files = [{ relativePath: "one.mp4", name: "one.mp4", expectedSize: 12 }];
+    const first = sessions.ensurePrepared(input, files);
+    sessions.updateSession(first.id, { phase: "completed" }, first.generation);
+    assert.throws(() => sessions.ensurePrepared(input, files, () => { throw new Error("binding failed"); }), /binding failed/);
+    assert.equal(sessions.get(first.id)?.generation, 1);
+    assert.equal(sessions.get(first.id)?.phase, "completed");
+    assert.equal(sessions.listFiles(first.id, 2).length, 0);
+    const second = sessions.ensurePrepared(input, files);
+    assert.equal(second.generation, 2);
+    assert.equal(sessions.listFiles(first.id, 2).length, 1);
+    assert.equal(sessions.ensurePrepared(input, files).generation, 2);
+  } finally { database.close(); }
 });
 
 test("legacy transfer session phases can be superseded by a fresh download", () => {
@@ -1122,6 +1161,140 @@ test("pending upload verification query only returns awaiting relations", () => 
       ORDER BY next_verify_at ASC LIMIT 10
     `).all() as any[];
     assert.match(plan.map((row) => row.detail).join("\n"), /idx_remote_files_verify/);
+  } finally {
+    database.close();
+  }
+});
+test("completeAndEnqueue rolls back the source job when downstream creation fails", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const source = jobs.enqueue({ kind: "quality_download", dedupeKey: "quality-transition-source", bvid: "BVTRANSITION" });
+    const claimed = jobs.claimDue(["quality_download"], 1, "owner")[0];
+    assert.equal(claimed.id, source.id);
+    assert.equal(jobs.markRunning(source.id, "owner"), true);
+    assert.throws(() => jobs.completeAndEnqueue(source.id, "owner", [{
+      kind: "quality_upload",
+      dedupeKey: "quality-transition-next-invalid",
+      bvid: "BVTRANSITION",
+      initialStatus: "completed" as any,
+    }]), /Unsupported initial persistent job status/);
+    assert.equal(jobs.findById(source.id)?.status, "running");
+    assert.equal(jobs.findByDedupeKey("quality-transition-next-invalid"), null);
+
+    const transitioned = jobs.completeAndEnqueue(source.id, "owner", [{
+      kind: "quality_upload",
+      dedupeKey: "quality-transition-next",
+      bvid: "BVTRANSITION",
+    }]);
+    assert.equal(transitioned?.length, 1);
+    assert.equal(jobs.findById(source.id), null);
+    assert.ok(jobs.findByDedupeKey("quality-transition-next"));
+  } finally {
+    database.close();
+  }
+});
+
+test("encoding retry child and parent completion roll back together when generation changes", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const parent = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "encoding-parent-atomic",
+      bvid: "BVENCATOMIC",
+      initialStatus: "manual_wait",
+      payload: { encodingRetry: { parentJobId: "self", generation: 2, state: "uploading" } },
+    });
+    const child = jobs.enqueue({
+      kind: "upload",
+      dedupeKey: "encoding-child-atomic",
+      bvid: "BVENCATOMIC",
+      payload: { encodingRetry: { parentJobId: parent.id, generation: 1, state: "uploading" } },
+    });
+    const claimed = jobs.claimDue(["upload"], 1, "owner").find((job) => job.id === child.id);
+    assert.ok(claimed);
+    assert.equal(jobs.markRunning(child.id, "owner"), true);
+    assert.throws(() => jobs.completeEncodingRetryCommit(parent.id, 1, child.id, "owner"), /parent changed/);
+    assert.equal(jobs.findById(child.id)?.status, "running", "child deletion must roll back");
+    assert.ok(jobs.findById(parent.id));
+
+    jobs.updatePayload(parent.id, { encodingRetry: { parentJobId: parent.id, generation: 1, state: "uploading" } });
+    assert.equal(jobs.completeEncodingRetryCommit(parent.id, 1, child.id, "owner"), true);
+    assert.equal(jobs.findById(child.id), null);
+    assert.equal(jobs.findById(parent.id), null);
+  } finally {
+    database.close();
+  }
+});
+test("encoding retry commits keep their parent until all siblings finish", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const parent = jobs.enqueue({ kind: "upload", dedupeKey: "commit-parent", bvid: "BVCOMMIT",
+      initialStatus: "manual_wait", payload: { encodingRetry: { generation: 1, state: "uploading" } } });
+    const encodingRetry = { parentJobId: parent.id, generation: 1 };
+    jobs.enqueue({ kind: "upload", dedupeKey: "commit-a", bvid: "BVCOMMIT", payload: { encodingRetry } });
+    jobs.enqueue({ kind: "upload", dedupeKey: "commit-b", bvid: "BVCOMMIT", payload: { encodingRetry } });
+    const children = jobs.claimDue(["upload"], 2, "owner");
+    assert.equal(children.length, 2);
+    assert.equal(jobs.completeEncodingRetryCommit(parent.id, 1, children[0].id, "owner"), true);
+    assert.ok(jobs.findById(parent.id), "first success cannot retire the parent");
+    assert.equal(jobs.countEncodingRetryJobs(parent.id, 1), 1);
+    assert.equal(jobs.completeEncodingRetryCommit(parent.id, 1, children[1].id, "owner"), true);
+    assert.equal(jobs.findById(parent.id), null);
+  } finally { database.close(); }
+});
+
+test("encoding retry transitions preserve sibling job ids and ignore completed cleanup authorization", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    const parent = jobs.enqueue({
+      kind: "upload", dedupeKey: "encoding-parent-siblings", bvid: "BVENCIDS", initialStatus: "manual_wait",
+      payload: { awaitingManualRecovery: true },
+    });
+    const retry = { parentJobId: parent.id, generation: 1, priority: ["AV1", "HEVC", "AVC"], strict: true, state: "running" };
+    const started = jobs.startEncodingRetry(parent.id, {
+      kind: "download", dedupeKey: "encoding-download-siblings", bvid: "BVENCIDS",
+      payload: { encodingRetry: retry },
+    } as any, retry);
+    assert.ok(started);
+    const download = started!.child;
+    const claimedDownload = jobs.claimDue(["download"], 1, "owner")[0];
+    assert.equal(claimedDownload.id, download.id);
+    assert.equal(jobs.markRunning(download.id, "owner"), true);
+    const uploads = jobs.transitionEncodingRetryChildren(parent.id, 1, download.id, "owner", "uploading", [
+      { kind: "upload", dedupeKey: "encoding-upload-a", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
+      { kind: "upload", dedupeKey: "encoding-upload-b", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
+    ]);
+    assert.equal(uploads?.length, 2);
+    let parentRetry = (jobs.findById(parent.id)?.payload as any).encodingRetry;
+    assert.deepEqual(new Set(parentRetry.replacementJobIds), new Set(uploads!.map((job) => job.id)));
+
+    const first = jobs.claimDue(["upload"], 1, "owner")[0];
+    assert.ok(first);
+    assert.equal(jobs.markRunning(first.id, "owner"), true);
+    const verify = jobs.transitionEncodingRetryChildren(parent.id, 1, first.id, "owner", "verifying", [
+      { kind: "verify_upload", dedupeKey: "encoding-verify-a", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
+    ]);
+    assert.equal(verify?.length, 1);
+    const sibling = uploads!.find((job) => job.id !== first.id)!;
+    parentRetry = (jobs.findById(parent.id)?.payload as any).encodingRetry;
+    assert.deepEqual(new Set(parentRetry.replacementJobIds), new Set([sibling.id, verify![0].id]));
+
+    const retained = jobs.enqueue({
+      kind: "upload", dedupeKey: "encoding-completed-proof", bvid: "BVENCIDS",
+      payload: {
+        encodingRetry: retry,
+        localCleanupPlans: [{ id: "proof-plan", localDir: "x", manifestSessionId: "m", reason: "upload_verified", files: [{ relativePath: "x.mp4", expectedSize: 1, expectedIdentity: { dev: 1, ino: 1, mtimeMs: 1, ctimeMs: 1 }, remotePaths: ["/x.mp4"] }], createdAt: new Date().toISOString() }],
+      },
+    });
+    assert.equal(jobs.complete(retained.id), true);
+    assert.equal(jobs.findById(retained.id)?.status, "completed");
+    assert.equal(jobs.countEncodingRetryJobs(parent.id, 1), 2, "completed cleanup proof must not count as active retry work");
+    jobs.cancelEncodingRetryChildren(parent.id, 1);
+    assert.ok(jobs.findById(retained.id), "cancel must preserve completed cleanup authorization");
   } finally {
     database.close();
   }

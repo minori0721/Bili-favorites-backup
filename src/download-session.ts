@@ -244,19 +244,32 @@ export interface DownloadCacheInspection {
 
 export interface DownloadCleanupResult {
   removedFiles: number;
+  removedRelativePaths: string[];
   removedDirectories: number;
   removedBytes: number;
   retainedBytes: number;
   removedDirectory: boolean;
 }
 
+export interface DownloadCleanupAuthorization {
+  relativePath: string;
+  expectedSize: number;
+  manifestSessionId?: string;
+  expectedIdentity?: { dev: number; ino: number; mtimeMs: number; ctimeMs: number };
+}
+
 export interface DownloadCleanupOptions {
   /**
    * Restrict deletion to manifest paths that have been independently confirmed
-   * as uploaded. Omitting this keeps the legacy helper behavior for callers
-   * that already own the proof decision.
+   * as uploaded. Without an explicit set, all media and the manifest are retained.
    */
   confirmedRelativePaths?: Iterable<string>;
+  /**
+   * Persistent, manifest-bound authorization used by the scheduler. The
+   * expected size and session id are checked again immediately before unlink.
+   */
+  authorizedFiles?: Iterable<DownloadCleanupAuthorization>;
+  canDelete?: () => boolean;
   /** Keep the manifest when some tracked outputs still need upload. */
   preserveManifest?: boolean;
 }
@@ -455,7 +468,7 @@ export function assessStrictEncoding(
       totalPages: 0,
       mismatchedFiles: [],
       unknownFiles: [],
-      summary: `请求 ${requested}，下载清单缺失，无法取得已验证编码；未上传候选，原归档已保留。`,
+      summary: `请求 ${requested}，下载清单缺失，无法取得已验证编码；未上传候选，也未执行归档替换。`,
     };
   }
 
@@ -504,11 +517,11 @@ export function assessStrictEncoding(
   const displayActual = actual.length > 0 ? actual.join("、") : "未知";
   const missingPageCount = Math.max(0, manifest.pages.length - outputCids.size);
   const summary = status === "mismatch"
-    ? `请求 ${requested}，但实际文件编码为 ${displayActual}；未上传候选，原归档已保留。`
+    ? `请求 ${requested}，但实际文件编码为 ${displayActual}；未上传候选，也未执行归档替换。`
     : status === "unknown"
       ? !fileListMatchesManifest
-        ? `请求 ${requested}，下载输出与待上传文件清单不一致，无法确认全部分P编码；未上传候选，原归档已保留。`
-        : `请求 ${requested}，有 ${Math.max(unknownFiles.length, missingPageCount)} 个分P未取得可验证编码（已验证 ${verifiedPages}/${manifest.pages.length}）；未上传候选，原归档已保留。`
+        ? `请求 ${requested}，下载输出与待上传文件清单不一致，无法确认全部分P编码；未上传候选，也未执行归档替换。`
+        : `请求 ${requested}，有 ${Math.max(unknownFiles.length, missingPageCount)} 个分P未取得可验证编码（已验证 ${verifiedPages}/${manifest.pages.length}）；未上传候选，也未执行归档替换。`
       : `请求 ${requested}，全部 ${verifiedPages} 个分P已验证为 ${displayActual}。`;
 
   return {
@@ -544,7 +557,7 @@ export function assessStrictQuality(
       totalPages: manifest?.pages.length || 0,
       mismatchedFiles: [],
       unknownFiles: [],
-      summary: `请求 ${requested || "未知画质"}，下载清单或画质证明缺失；未上传候选，原归档已保留。`,
+      summary: `请求 ${requested || "未知画质"}，下载清单或画质证明缺失；未上传候选，也未执行归档替换。`,
     };
   }
 
@@ -594,11 +607,11 @@ export function assessStrictQuality(
   const displayActual = actual.length > 0 ? actual.join("、") : "未知";
   const missingPageCount = Math.max(0, manifest.pages.length - outputCids.size);
   const summary = status === "mismatch"
-    ? `请求 ${requested}，但 BBDown 选择的实际画质为 ${displayActual}；未上传候选，原归档已保留。`
+    ? `请求 ${requested}，但 BBDown 选择的实际画质为 ${displayActual}；未上传候选，也未执行归档替换。`
     : status === "unknown"
       ? !fileListMatchesManifest
-        ? `请求 ${requested}，下载输出与待上传文件清单不一致，无法确认全部分P画质；未上传候选，原归档已保留。`
-        : `请求 ${requested}，有 ${Math.max(unknownFiles.length, missingPageCount)} 个分P未取得可验证画质（已验证 ${verifiedPages}/${manifest.pages.length}）；未上传候选，原归档已保留。`
+        ? `请求 ${requested}，下载输出与待上传文件清单不一致，无法确认全部分P画质；未上传候选，也未执行归档替换。`
+        : `请求 ${requested}，有 ${Math.max(unknownFiles.length, missingPageCount)} 个分P未取得可验证画质（已验证 ${verifiedPages}/${manifest.pages.length}）；未上传候选，也未执行归档替换。`
       : `请求 ${requested}，全部 ${verifiedPages} 个分P已验证为 ${displayActual}。`;
 
   return {
@@ -1162,13 +1175,19 @@ async function removeEmptyDirectories(target: string, root: string): Promise<voi
 }
 
 export async function cleanupUploadedSessionFiles(downloadDir: string, options: DownloadCleanupOptions = {}) {
+  if (options.confirmedRelativePaths === undefined && options.authorizedFiles === undefined) {
+    return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
+  }
   const manifest = readDownloadSession(downloadDir);
   if (!manifest) {
     let remaining: string[] = [];
-    try { remaining = await fs.promises.readdir(downloadDir); } catch { /* already removed */ }
+    try { remaining = await fs.promises.readdir(downloadDir); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: true, retainedBytes: 0 };
+    }
     if (remaining.length === 0) {
-      await fs.promises.rm(downloadDir, { recursive: true, force: true });
-      return { removedFiles: 0, removedDirectories: 1, removedBytes: 0, removedDirectory: true, retainedBytes: 0 };
+      await fs.promises.rmdir(downloadDir);
+      return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 1, removedBytes: 0, removedDirectory: true, retainedBytes: 0 };
     }
     const retainedBytes = directorySizeSync(downloadDir);
     writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
@@ -1177,34 +1196,77 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       retainedAt: nowIso(),
       reason: "The download session manifest was missing during cleanup; all local files were preserved.",
     });
-    return { removedFiles: 0, removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes };
+    return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes };
   }
   const manifestPaths = new Set([
     ...manifest.outputs.map((output) => output.relativePath),
     ...manifest.history.map((output) => output.relativePath),
   ]);
-  const confirmedPaths = options.confirmedRelativePaths === undefined
-    ? manifestPaths
-    : new Set([...options.confirmedRelativePaths]
-      .map((value) => normalizeManifestRelativePath(value))
-      .filter((value): value is string => typeof value === "string" && manifestPaths.has(value)));
-  let removedFiles = 0;
-  let removedBytes = 0;
-  for (const relativePath of confirmedPaths) {
-    try {
-      const stat = await fs.promises.lstat(path.join(downloadDir, relativePath));
-      if (!stat.isFile()) continue;
-      await fs.promises.unlink(path.join(downloadDir, relativePath));
-      removedFiles += 1;
-      removedBytes += stat.size;
-    } catch {
-      // The file may have been removed by a prior idempotent cleanup attempt.
+  const authorized = new Map<string, DownloadCleanupAuthorization>();
+  if (options.authorizedFiles !== undefined) {
+    for (const item of options.authorizedFiles) {
+      const relativePath = normalizeManifestRelativePath(item?.relativePath);
+      const expectedSize = Number(item?.expectedSize);
+      if (!relativePath || !manifestPaths.has(relativePath) || !Number.isFinite(expectedSize) || expectedSize < 0) continue;
+      if (item.manifestSessionId && item.manifestSessionId !== manifest.sessionId) continue;
+      authorized.set(relativePath, { relativePath, expectedSize, manifestSessionId: item.manifestSessionId, expectedIdentity: item.expectedIdentity });
     }
   }
-  if (!options.preserveManifest) {
-    await fs.promises.unlink(downloadSessionPath(downloadDir)).catch(() => undefined);
-  } else if (confirmedPaths.size > 0) {
-    const confirmed = new Set(confirmedPaths);
+  if (options.authorizedFiles === undefined && options.confirmedRelativePaths !== undefined) {
+    for (const value of options.confirmedRelativePaths) {
+      const relativePath = normalizeManifestRelativePath(value);
+      if (!relativePath || !manifestPaths.has(relativePath) || authorized.has(relativePath)) continue;
+      const expected = [...manifest.outputs, ...manifest.history].find((output) => output.relativePath === relativePath);
+      if (expected && Number.isFinite(Number(expected.size))) {
+        authorized.set(relativePath, { relativePath, expectedSize: Number(expected.size) });
+      }
+    }
+  }
+  let removedFiles = 0;
+  let removedBytes = 0;
+  const removedPaths = new Set<string>();
+  const realRoot = await fs.promises.realpath(downloadDir);
+  for (const [relativePath, authorization] of authorized) {
+    try {
+      const target = path.join(downloadDir, relativePath);
+      const realTarget = await fs.promises.realpath(target);
+      const relativeTarget = path.relative(realRoot, realTarget);
+      if (relativeTarget.startsWith(`..${path.sep}`) || relativeTarget === ".." || path.isAbsolute(relativeTarget)) continue;
+      const stat = await fs.promises.lstat(target);
+      if (!stat.isFile()) continue;
+      const expected = [...manifest.outputs, ...manifest.history].find((output) => output.relativePath === relativePath);
+      if (!expected || stat.size !== expected.size || stat.size !== authorization.expectedSize) continue;
+      // Keep the final application-state check and unlink in one event-loop turn.
+      const currentManifest = readDownloadSession(downloadDir);
+      if (!currentManifest || JSON.stringify(currentManifest) !== JSON.stringify(manifest)) break;
+      if (options.canDelete && !options.canDelete()) break;
+      const currentStat = fs.lstatSync(target);
+      const identity = authorization.expectedIdentity || stat;
+      if (!currentStat.isFile() || currentStat.size !== authorization.expectedSize
+        || currentStat.dev !== identity.dev || currentStat.ino !== identity.ino
+        || currentStat.mtimeMs !== identity.mtimeMs || currentStat.ctimeMs !== identity.ctimeMs) continue;
+      fs.unlinkSync(target);
+      removedPaths.add(relativePath);
+      removedFiles += 1;
+      removedBytes += stat.size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") removedPaths.add(relativePath);
+    }
+  }
+  // An asynchronous file inspection may have yielded to a new download. Never
+  // reconcile an old snapshot over its manifest, even when some files were removed.
+  const latestManifest = readDownloadSession(downloadDir);
+  if (!latestManifest || JSON.stringify(latestManifest) !== JSON.stringify(manifest)) {
+    return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0,
+      removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
+  }
+  const preserveManifest = options.preserveManifest || [...manifestPaths].some((file) => !removedPaths.has(file));
+  if (!preserveManifest) {
+    try { fs.unlinkSync(downloadSessionPath(downloadDir)); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  } else if (removedPaths.size > 0) {
+    const confirmed = removedPaths;
     manifest.outputs = manifest.outputs.filter((output) => !confirmed.has(output.relativePath));
     manifest.history = manifest.history.filter((output) => !confirmed.has(output.relativePath));
     writeDownloadSession(downloadDir, manifest);
@@ -1212,13 +1274,16 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
   await removeEmptyDirectories(downloadDir, downloadDir);
   const retainedBytes = directorySizeSync(downloadDir);
   let remaining: string[] = [];
-  try { remaining = await fs.promises.readdir(downloadDir); } catch { /* removed concurrently */ }
+  try { remaining = await fs.promises.readdir(downloadDir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0, removedBytes, removedDirectory: true, retainedBytes: 0 };
+  }
   if (remaining.length === 0) {
-    await fs.promises.rm(downloadDir, { recursive: true, force: true });
-    return { removedFiles, removedDirectories: 1, removedBytes, removedDirectory: true, retainedBytes: 0 };
+    await fs.promises.rmdir(downloadDir);
+    return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 1, removedBytes, removedDirectory: true, retainedBytes: 0 };
   }
   const trackedFilesRemain = [...manifestPaths].some((relativePath) => fs.existsSync(path.join(downloadDir, relativePath)));
-  if (options.preserveManifest || trackedFilesRemain) {
+  if (preserveManifest || trackedFilesRemain) {
     writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
       schemaVersion: 1,
       bvid: manifest.bvid,
@@ -1226,7 +1291,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       retainedAt: nowIso(),
       reason: "Unverified or incomplete local artifacts were preserved after confirmed outputs were cleaned.",
     });
-    return { removedFiles, removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
+    return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
   }
   writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
     schemaVersion: 1,
@@ -1235,7 +1300,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
     retainedAt: nowIso(),
     reason: "Unverified local artifacts were preserved after all verified outputs were uploaded.",
   });
-  return { removedFiles, removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
+  return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
 }
 
 function directorySizeSync(target: string): number {
@@ -1332,6 +1397,7 @@ function classifyManifestRecovery(downloadDir: string, manifest: DownloadSession
 export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise<DownloadCleanupResult> {
   const result: DownloadCleanupResult = {
     removedFiles: 0,
+    removedRelativePaths: [],
     removedDirectories: 0,
     removedBytes: 0,
     removedDirectory: false,
@@ -1354,9 +1420,9 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
       continue;
     }
     if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE))) {
-      result.removedBytes += directorySizeSync(downloadDir);
-      await fs.promises.rm(downloadDir, { recursive: true, force: true });
-      result.removedDirectories += 1;
+      // A retained marker can include the only surviving media or a partial manifest.
+      // Releasing these files requires explicit per-file authorization.
+      result.retainedBytes += directorySizeSync(downloadDir);
       continue;
     }
     if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
@@ -1379,6 +1445,7 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
       await fs.promises.unlink(target);
       result.removedFiles += 1;
+      result.removedRelativePaths.push(path.relative(downloadDir, target).replace(/\\/g, "/"));
       result.removedBytes += stat.size;
     }
     await removeEmptyDirectories(downloadDir, downloadDir);
@@ -1479,7 +1546,7 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
       }
       if (isBBDownCredentialDirectoryName(entry.name)) continue;
       if (fileSizes.has(DOWNLOAD_RETAINED_FILE)) {
-        result.recovery.cleanupEligibleBytes += bytes;
+        result.recovery.retainedBytes += bytes;
         continue;
       }
       const manifest = await readDownloadSessionAsync(downloadDir);

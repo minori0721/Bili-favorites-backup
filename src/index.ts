@@ -1375,6 +1375,39 @@ app.post("/api/videos/:bvid/availability-recheck", (req, res) => {
   res.status(202).json({ success: true, data: result });
 });
 
+app.get("/api/videos/:bvid/local-release-preview", (req, res) => {
+  const bvid = String(req.params.bvid || "").trim();
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
+    res.status(400).json({ success: false, message: "BV号格式无效" });
+    return;
+  }
+  const result = scheduler.previewLocalArchiveRelease(bvid);
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, message: result.message });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: result });
+});
+
+app.post("/api/videos/:bvid/local-release", (req, res) => {
+  const bvid = String(req.params.bvid || "").trim();
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
+    res.status(400).json({ success: false, message: "BV号格式无效" });
+    return;
+  }
+  const result = scheduler.requestLocalArchiveRelease(
+    bvid,
+    String(req.body?.releaseId || ""),
+    String(req.body?.confirmation || ""),
+  );
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, message: result.message });
+    return;
+  }
+  res.status(202).setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, data: result });
+});
 app.get("/api/archive-library/navigation", (req, res) => {
   res.setHeader("Cache-Control", "private, no-store");
   res.json({

@@ -1388,7 +1388,7 @@ function runCommand(
             totalPages: 0,
             mismatchedFiles: [],
             unknownFiles: [],
-            summary: `请求 ${options.strictEncoding}，BBDown已选择 ${actual}；下载已停止，未上传候选，原归档已保留。`,
+            summary: `请求 ${options.strictEncoding}，BBDown已选择 ${actual}；下载已停止，未上传候选，也未执行归档替换。`,
           }, "selected_stream");
           stopForStrictSelection(error);
           return;
@@ -1405,7 +1405,7 @@ function runCommand(
             totalPages: 0,
             mismatchedFiles: [],
             unknownFiles: [],
-            summary: `请求 ${requestedQuality}，BBDown已选择 ${actualQuality}；下载已停止，未上传候选，原归档已保留。`,
+            summary: `请求 ${requestedQuality}，BBDown已选择 ${actualQuality}；下载已停止，未上传候选，也未执行归档替换。`,
           }, "selected_stream");
           stopForStrictSelection(error);
           return;

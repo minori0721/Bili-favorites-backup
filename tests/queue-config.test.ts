@@ -806,7 +806,7 @@ test("persistent quality uploads respect the upload queue hard limit", () => {
   state.close();
 });
 
-test("quality upgrade advances through persistent download upload replace and cleanup jobs", () => {
+test("quality upgrade advances atomically through download upload and replace while cleanup waits for final archive commit", () => {
   const config = testConfig();
   const user = { id: "u1", uid: 1, name: "Tester", enabled: true, cookie: {}, accessToken: "token", favorites: [] };
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `quality-phases-${Date.now()}.json`) });
@@ -840,7 +840,8 @@ test("quality upgrade advances through persistent download upload replace and cl
   phase = scheduler.uploadQueue.getTasks()[0];
   scheduler.uploadQueue.queue.splice(0);
   scheduler.uploadQueue.emit("taskCompleted", phase);
-  assert.equal(scheduler.jobStore.countOutstanding(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"]), 0);
+  assert.equal(scheduler.jobStore.countOutstanding(["quality_download", "quality_upload", "quality_replace", "quality_cleanup"]), 1);
+  assert.equal(scheduler.jobStore.list(["quality_cleanup"])[0]?.status, "leased");
   scheduler.stop();
   state.close();
 });

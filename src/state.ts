@@ -169,6 +169,31 @@ export interface DownloadSessionReference {
   updatedAt: string;
 }
 
+export type LocalCleanupPlanReason = "upload_verified" | "quality_upgrade";
+
+export interface LocalCleanupPlanFile {
+  relativePath: string;
+  expectedSize: number;
+  expectedIdentity: { dev: number; ino: number; mtimeMs: number; ctimeMs: number };
+  remotePaths: string[];
+}
+
+/**
+ * A persisted authorization to release local media after a verified remote
+ * commit. The manifest session id makes the authorization invalid when a
+ * directory has been reused for a different download attempt.
+ */
+export interface LocalCleanupPlan {
+  id: string;
+  localDir: string;
+  manifestSessionId: string;
+  transferSessionId?: string;
+  transferGeneration?: number;
+  reason: LocalCleanupPlanReason;
+  files: LocalCleanupPlanFile[];
+  createdAt: string;
+}
+
 export interface VideoArchiveEntry {
   bvid: string;
   title: string;
@@ -1525,6 +1550,16 @@ export class StateManager {
     this.markAvailabilityConfirmedUnavailable(bvid, "api_not_found", checkedAt);
   }
 
+  runAtomic<T>(fn: () => T): T {
+    this.flush();
+    try {
+      return this.database.db.transaction(() => this.runBatch(fn))();
+    } catch (error) {
+      this.reload();
+      throw error;
+    }
+  }
+
   getSourceAvailability(bvid: string) {
     const value = this.state.videos?.[bvid]?.sourceAvailability;
     return value ? { ...value } : undefined;
@@ -1830,6 +1865,117 @@ export class StateManager {
     }
     this.applyVerifiedRemoteFiles(entry, this.getRelation(_userId, _mediaId, bvid), remotePath, remoteFiles, nowIso(), partial);
     this.save();
+  }
+
+  getLocalCleanupPlans(bvid: string, localDir?: string) {
+    const rows = this.database.db.prepare("SELECT payload_json FROM jobs WHERE bvid=? AND json_type(payload_json, '$.localCleanupPlans')='array'").all(bvid) as Array<{ payload_json: string }>;
+    const plans: LocalCleanupPlan[] = rows.flatMap((row) => JSON.parse(row.payload_json).localCleanupPlans || []);
+    const wantedDir = localDir ? String(localDir) : undefined;
+    return plans
+      .filter((plan) => !wantedDir || plan.localDir === wantedDir)
+      .map((plan) => ({
+        ...plan,
+        files: plan.files.map((file) => ({ ...file, remotePaths: [...file.remotePaths] })),
+      }));
+  }
+
+  recordLocalCleanupPlan(bvid: string, plan: LocalCleanupPlan, jobId?: string) {
+    const entry = this.state.videos?.[bvid];
+    if (!entry || !plan || !plan.localDir || !plan.manifestSessionId || !jobId) return false;
+    const row = this.database.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND bvid=?").get(jobId, bvid) as { payload_json: string } | undefined;
+    if (!row) return false;
+    const payload = JSON.parse(row.payload_json);
+    const normalizeRelative = (value: unknown) => {
+      if (typeof value !== "string" || !value || value.includes("\0") || path.isAbsolute(value)) return null;
+      const normalized = path.normalize(value.replace(/[\\/]+/g, path.sep));
+      return normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`)
+        ? null
+        : normalized.replace(/\\/g, "/");
+    };
+    const filesByPath = new Map<string, LocalCleanupPlanFile>();
+    for (const file of Array.isArray(plan.files) ? plan.files : []) {
+      const relativePath = normalizeRelative(file?.relativePath);
+      const expectedSize = Number(file?.expectedSize);
+      const identity = file?.expectedIdentity;
+      const remotePaths = [...new Set((Array.isArray(file?.remotePaths) ? file.remotePaths : [])
+        .map((value) => String(value || "").trim()).filter(Boolean))];
+      if (!relativePath || !Number.isFinite(expectedSize) || expectedSize < 0 || remotePaths.length === 0
+        || !identity || ![identity.dev, identity.ino, identity.mtimeMs, identity.ctimeMs].every(Number.isFinite)) return false;
+      const existing = filesByPath.get(relativePath);
+      if (existing && existing.expectedSize !== expectedSize) return false;
+      filesByPath.set(relativePath, {
+        relativePath,
+        expectedSize,
+        expectedIdentity: { ...identity },
+        remotePaths: [...new Set([...(existing?.remotePaths || []), ...remotePaths])],
+      });
+    }
+    if (filesByPath.size === 0 || !String(plan.id || "")) return false;
+    const normalized: LocalCleanupPlan = {
+      id: String(plan.id),
+      localDir: String(plan.localDir),
+      manifestSessionId: String(plan.manifestSessionId),
+      transferSessionId: plan.transferSessionId ? String(plan.transferSessionId) : undefined,
+      transferGeneration: plan.transferGeneration === undefined ? undefined : Number(plan.transferGeneration),
+      reason: plan.reason === "quality_upgrade" ? "quality_upgrade" : "upload_verified",
+      files: [...filesByPath.values()],
+      createdAt: String(plan.createdAt || nowIso()),
+    };
+    const existingPlans: LocalCleanupPlan[] = payload.localCleanupPlans || [];
+    const current = existingPlans.find((item) => item.id === normalized.id);
+    if (current && (current.localDir !== normalized.localDir || current.manifestSessionId !== normalized.manifestSessionId)) return false;
+    const mergedFiles = new Map<string, LocalCleanupPlanFile>();
+    for (const file of current?.files || []) mergedFiles.set(file.relativePath, { ...file, remotePaths: [...file.remotePaths] });
+    for (const file of normalized.files) {
+      const previous = mergedFiles.get(file.relativePath);
+      if (previous && (previous.expectedSize !== file.expectedSize || JSON.stringify(previous.expectedIdentity) !== JSON.stringify(file.expectedIdentity))) return false;
+      mergedFiles.set(file.relativePath, {
+        relativePath: file.relativePath,
+        expectedSize: file.expectedSize,
+        expectedIdentity: { ...file.expectedIdentity },
+        remotePaths: [...new Set([...(previous?.remotePaths || []), ...file.remotePaths])],
+      });
+    }
+    const nextPlan: LocalCleanupPlan = {
+      ...normalized,
+      createdAt: current?.createdAt || normalized.createdAt,
+      files: [...mergedFiles.values()],
+    };
+    const nextPlans = current
+      ? existingPlans.map((item) => item.id === nextPlan.id ? nextPlan : item)
+      : [...existingPlans, nextPlan];
+    if (JSON.stringify(existingPlans) === JSON.stringify(nextPlans)) return false;
+    this.database.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=? AND bvid=?")
+      .run(JSON.stringify({ ...payload, localCleanupPlans: nextPlans }), Date.now(), jobId, bvid);
+    return true;
+  }
+
+  reconcileLocalCleanupPlans(bvid: string, localDir: string, remainingRelativePaths: Iterable<string>, removedDirectory = false) {
+    const normalizeRelative = (value: unknown) => String(value || "").replace(/\\/g, "/");
+    const remaining = new Set([...remainingRelativePaths].map(normalizeRelative).filter(Boolean));
+    return this.database.db.transaction(() => {
+      const rows = this.database.db.prepare("SELECT id, status, payload_json FROM jobs WHERE bvid=? AND json_type(payload_json, '$.localCleanupPlans')='array'")
+        .all(bvid) as Array<{ id: string; status: string; payload_json: string }>;
+      let changed = false;
+      for (const row of rows) {
+        const payload = JSON.parse(row.payload_json);
+        const plans: LocalCleanupPlan[] = payload.localCleanupPlans;
+        const next = plans.flatMap((plan) => {
+          if (plan.localDir !== localDir) return [plan];
+          const files = removedDirectory ? [] : plan.files.filter((file) => remaining.has(normalizeRelative(file.relativePath)));
+          return files.length ? [{ ...plan, files }] : [];
+        });
+        if (JSON.stringify(plans) === JSON.stringify(next)) continue;
+        changed = true;
+        if (next.length === 0 && row.status === "completed") {
+          this.database.db.prepare("DELETE FROM jobs WHERE id=? AND status='completed'").run(row.id);
+        } else {
+          this.database.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?")
+            .run(JSON.stringify({ ...payload, localCleanupPlans: next }), Date.now(), row.id);
+        }
+      }
+      return changed;
+    })();
   }
 
   recordManualArchiveItem(

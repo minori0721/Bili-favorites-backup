@@ -201,8 +201,8 @@ const actions = {
   }),
   abandonAttempt: (): RecoveryIssueAction => ({
     id: "abandon_attempt",
-    label: "放弃本次候选",
-    description: "结束当前候选并保留原归档；以后重新同步时仍可建立新的候选代次。",
+    label: "停止本次尝试",
+    description: "停止当前尝试的自动执行，不删除本地文件，也不改变已有远端归档。",
   }),
   openSettings: (): RecoveryIssueAction => ({
     id: "open_settings",

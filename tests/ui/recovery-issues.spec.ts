@@ -196,9 +196,9 @@ test("abandon candidate requires confirmation and is sent only once", async ({ p
   const row = page.locator(".recovery-issue-row");
   if (testInfo.project.name === "desktop") await row.click();
   else await row.tap();
-  await page.getByRole("button", { name: "放弃本次候选" }).click();
+  await page.getByRole("button", { name: "停止本次尝试" }).click();
   await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
-  await expect(page.locator("#confirmActionDetail")).toContainText("原归档不会被删除或覆盖");
+  await expect(page.locator("#confirmActionDetail")).toContainText("不删除本地文件或远端文件");
   await page.locator("#confirmActionOkBtn").evaluate((element: HTMLButtonElement) => {
     element.click();
     element.click();

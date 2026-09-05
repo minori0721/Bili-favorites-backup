@@ -575,14 +575,56 @@ test("successful uploads remove only verified session files and retain unknown a
     const unknown = path.join(downloadDir, "_invalid", "unknown.bin");
     await fs.promises.mkdir(path.dirname(unknown), { recursive: true });
     await fs.promises.writeFile(unknown, Buffer.alloc(32));
-    const result = await cleanupUploadedSessionFiles(downloadDir);
+    const retained = await cleanupUploadedSessionFiles(downloadDir);
+    assert.equal(retained.removedFiles, 0);
+    assert.equal(fs.existsSync(path.join(downloadDir, "video-BV1SELECTIVECLEAN.mp4")), true);
+    const result = await cleanupUploadedSessionFiles(downloadDir, { confirmedRelativePaths: ["video-BV1SELECTIVECLEAN.mp4"] });
     assert.equal(result.removedDirectory, false);
     assert.equal(fs.existsSync(path.join(downloadDir, "video-BV1SELECTIVECLEAN.mp4")), false);
     assert.equal(fs.existsSync(unknown), true);
     assert.equal(fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE)), true);
     const summary = await inspectRecovery(runtime);
-    assert.ok(summary.cleanupEligibleBytes >= 32);
+    assert.ok(summary.retainedBytes >= 32);
     assert.equal(summary.resumableSessions, 0);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("cleanup preserves changed files and their manifest records", async () => {
+  const runtime = await createTestDir("download-cleanup-changed");
+  try {
+    const manifest = uploadMetadataManifest();
+    writeDownloadSession(runtime, manifest);
+    const output = manifest.outputs[0];
+    const target = path.join(runtime, output.relativePath);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, Buffer.alloc(output.size + 1));
+    const result = await cleanupUploadedSessionFiles(runtime, { confirmedRelativePaths: [output.relativePath] });
+    assert.equal(result.removedFiles, 0);
+    assert.equal(fs.existsSync(target), true);
+    assert.equal(readDownloadSession(runtime)?.outputs.length, 1);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("explicit cleanup authorization cannot fall back to legacy paths after identity rejection", async () => {
+  const runtime = await createTestDir("download-cleanup-stale-authorization");
+  try {
+    const manifest = uploadMetadataManifest();
+    writeDownloadSession(runtime, manifest);
+    const output = manifest.outputs[0];
+    const target = path.join(runtime, output.relativePath);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, Buffer.alloc(output.size));
+    const result = await cleanupUploadedSessionFiles(runtime, {
+      authorizedFiles: [{ relativePath: output.relativePath, expectedSize: output.size, manifestSessionId: "previous-session" }],
+      confirmedRelativePaths: [output.relativePath],
+    });
+    assert.equal(result.removedFiles, 0);
+    assert.equal(fs.existsSync(target), true);
+    assert.equal(readDownloadSession(runtime)?.outputs.length, 1);
   } finally {
     await removeTestDir(runtime);
   }
@@ -594,7 +636,7 @@ test("cleanup never deletes a non-empty directory when its session manifest is m
   try {
     await fs.promises.mkdir(downloadDir, { recursive: true });
     await fs.promises.writeFile(path.join(downloadDir, "unknown.bin"), Buffer.alloc(16));
-    const result = await cleanupUploadedSessionFiles(downloadDir);
+    const result = await cleanupUploadedSessionFiles(downloadDir, { confirmedRelativePaths: [] });
     assert.equal(result.removedDirectory, false);
     assert.equal(fs.existsSync(path.join(downloadDir, "unknown.bin")), true);
     assert.equal(fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE)), true);

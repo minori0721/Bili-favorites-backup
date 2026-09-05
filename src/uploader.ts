@@ -696,6 +696,9 @@ function shouldRetryWithCompatibilityName(error: UploadOperationError, fileName:
 }
 
 interface UploadOptions {
+  deferSessionCompletion?: boolean;
+  onPreparedSession?: (session: { id: string; generation: number }) => void;
+  /** @deprecated Local cleanup belongs to the committed archive owner, never the transport. */
   cleanupLocal?: boolean;
   client?: WebDAVClient;
   verificationDelaysMs?: number[];
@@ -948,9 +951,6 @@ async function uploadWithAListDirect(
   }
 
   const allVerified = uploadedFiles.every((file) => file.verificationStatus === "verified");
-  if (options.cleanupLocal !== false && allVerified) {
-    await fs.promises.rm(localDir, { recursive: true, force: true });
-  }
   return {
     remotePath,
     files: uploadedFiles,
@@ -967,7 +967,7 @@ interface TransactionalPreparedEntry {
 }
 
 function transferFileRecord(
-  entry: TransactionalPreparedEntry,
+  entry: Pick<TransactionalPreparedEntry, "relativePath" | "sessionFile"> & { stat: Pick<fs.Stats, "size"> },
   config: AppConfig,
   metadata?: UploadFileMetadata,
   status: RemoteFileRecord["verificationStatus"] = "awaiting_verification",
@@ -1063,7 +1063,63 @@ async function uploadWithTransferSession(
   const resolver = createRemoteFileResolver(client, profile);
   const bvid = String(options.bvid || "");
   if (!bvid && !options.sessionId) throw new Error("Transactional upload requires a BVID or session id");
-  const session = store.ensure({
+  const previousSession = options.sessionId ? store.get(options.sessionId) : null;
+  if (previousSession && options.resumeOnly && !options.allowReupload && !options.reuploadAuthorizedFiles?.length) {
+    const session = store.assertGeneration(previousSession.id, options.sessionGeneration);
+    if (session.allowReupload) store.updateSession(session.id, { allowReupload: false }, session.generation);
+    const recorded = store.listFiles(session.id, session.generation);
+    if (recorded.length === 0) throw new Error("Upload session has no current-generation files");
+    const finalFiles: RemoteFileRecord[] = [];
+    const pendingChecks: UploadResult["pendingChecks"] = [];
+    for (const file of recorded) {
+      const observed = await inspectPathForExpectedSize(client, file.finalPath, file.expectedSize, resolver);
+      if (observed.status === "exists" && !file.putAcceptedAt) {
+        throw new UploadPreflightConflictError("UPLOAD_UNKNOWN_SAME_SIZE_TARGET", "远端同大小文件缺少本次PUT证明，不能确认上传成功");
+      }
+      const verified = observed.status === "exists";
+      store.updateFile(session.id, file.relativePath, {
+        status: verified ? "verified" : "awaiting_remote",
+        verifiedAt: verified ? Date.now() : null,
+        nextCheckAt: verified ? null : Date.now() + 2_000,
+        lastError: verified ? null : "等待远端确认，未重复上传",
+      }, session.generation);
+      finalFiles.push(transferFileRecord({ relativePath: file.relativePath, stat: { size: file.expectedSize }, sessionFile: store.getFile(session.id, file.relativePath, session.generation)! }, config, options.filenameMetadataByPath?.[file.relativePath], verified ? "verified" : "awaiting_verification"));
+      if (!verified) pendingChecks.push({ remoteFile: file.finalPath, finalFile: file.finalPath, expectedSize: file.expectedSize, localRelativePath: file.relativePath });
+    }
+    const allVerified = pendingChecks.length === 0;
+    const phase = allVerified && !options.deferSessionCompletion ? "completed" : "awaiting_remote";
+    store.updateSession(session.id, { phase, completedAt: phase === "completed" ? Date.now() : null }, session.generation);
+    return { remotePath: session.remotePath, files: finalFiles, allVerified, sessionId: session.id, sessionGeneration: session.generation, phase, pendingChecks };
+  }
+  const localRoot = path.resolve(localDir);
+  const requestedFiles = options.files || (previousSession ? store.listFiles(previousSession.id, options.sessionGeneration).map((file) => file.relativePath) : []);
+  const uploadEntries = requestedFiles.length > 0
+    ? requestedFiles.map((relativePath) => ({ relativePath, name: path.basename(relativePath) }))
+    : (await fs.promises.readdir(localDir, { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => ({ relativePath: entry.name, name: entry.name }));
+  const validatedEntries: Array<{ relativePath: string; name: string; localFile: string; stat: fs.Stats }> = [];
+  for (const entry of uploadEntries) {
+    const localFile = path.resolve(localDir, entry.relativePath);
+    let stat: fs.Stats;
+    try {
+      if (localFile === localRoot || !localFile.startsWith(`${localRoot}${path.sep}`)) throw new Error("Unsafe local path");
+      stat = await inspectLocalUploadPath(localRoot, localFile);
+      if (!stat.isFile() || stat.size <= 0) throw new Error("Invalid local output");
+    } catch (cause) {
+      const error: any = new Error(`Local upload file is missing or invalid: ${entry.relativePath}`);
+      error.status = 422;
+      error.cause = cause;
+      throw new UploadOperationError(classifyUploadError(error, remotePath));
+    }
+    validatedEntries.push({ ...entry, localFile, stat });
+  }
+  if (validatedEntries.length === 0) {
+    const error: any = new Error("Local upload directory contains no files");
+    error.status = 422;
+    throw new UploadOperationError(classifyUploadError(error, remotePath));
+  }
+  const session = store.ensurePrepared({
     sessionId: options.sessionId,
     dedupeKey: options.sessionDedupeKey || `upload:${options.userId || "video"}:${options.mediaId || 0}:${bvid}:${remotePath}:${options.historySnapshotAt || "main"}`,
     bvid,
@@ -1074,7 +1130,7 @@ async function uploadWithTransferSession(
     historyOnly: options.historyOnly,
     historySnapshotAt: options.historySnapshotAt,
     expectedGeneration: options.sessionGeneration,
-  });
+  }, validatedEntries.map((entry) => ({ relativePath: entry.relativePath, name: entry.name, expectedSize: entry.stat.size })), options.onPreparedSession);
   const sessionGeneration = session.generation;
   // Re-upload permission belongs to individual files on the leased upload
   // job. The old session-wide flag is cleared and never used as authority.
@@ -1086,44 +1142,9 @@ async function uploadWithTransferSession(
     (options.reuploadAuthorizedFiles || []).map((value) => String(value || "").replace(/\\/g, "/"))
   );
 
-  const localRoot = path.resolve(localDir);
-  const sessionFiles = store.listFiles(session.id, sessionGeneration);
-  const requestedFiles = options.files || sessionFiles.map((file) => file.relativePath);
-  const uploadEntries = requestedFiles.length > 0
-    ? requestedFiles.map((relativePath) => ({ relativePath, name: path.basename(relativePath) }))
-    : (await fs.promises.readdir(localDir, { withFileTypes: true }))
-      .filter((entry) => entry.isFile())
-      .map((entry) => ({ relativePath: entry.name, name: entry.name }));
-  const preparedEntries: TransactionalPreparedEntry[] = [];
-  for (const entry of uploadEntries) {
-    const localFile = path.resolve(localDir, entry.relativePath);
-    if (localFile !== localRoot && !localFile.startsWith(`${localRoot}${path.sep}`)) {
-      const localError: any = new Error(`Local upload path escapes the download directory: ${entry.relativePath}`);
-      localError.status = 422;
-      throw new UploadOperationError(classifyUploadError(localError, remotePath));
-    }
-    let stat: fs.Stats;
-    try {
-      stat = await inspectLocalUploadPath(localRoot, localFile);
-    } catch (error) {
-      const localError: any = new Error(`Local upload file is missing: ${entry.relativePath}`);
-      localError.status = 422;
-      localError.cause = error;
-      throw new UploadOperationError(classifyUploadError(localError, remotePath));
-    }
-    if (!stat.isFile() || stat.size <= 0) {
-      const localError: any = new Error(`Local upload file is empty or invalid: ${entry.relativePath}`);
-      localError.status = 422;
-      throw new UploadOperationError(classifyUploadError(localError, remotePath));
-    }
-    const sessionFile = store.ensureFile(session.id, { relativePath: entry.relativePath, name: entry.name, expectedSize: stat.size }, sessionGeneration);
-    preparedEntries.push({ relativePath: entry.relativePath, localFile, stat, sessionFile });
-  }
-  if (preparedEntries.length === 0) {
-    const emptyError: any = new Error(`Local upload directory contains no files: ${localDir}`);
-    emptyError.status = 422;
-    throw new UploadOperationError(classifyUploadError(emptyError, remotePath));
-  }
+  const preparedEntries: TransactionalPreparedEntry[] = validatedEntries.map((entry) => ({
+    ...entry, sessionFile: store.getFile(session.id, entry.relativePath, sessionGeneration)!,
+  }));
 
   let groupDecision: UploadGroupPreflightDecision;
   try {
@@ -1317,11 +1338,10 @@ async function uploadWithTransferSession(
   }
 
   const allVerified = finalFiles.length === preparedEntries.length && finalFiles.every((file) => file.verificationStatus === "verified");
-  const phase: TransferSessionPhase = allVerified
+  const phase: TransferSessionPhase = allVerified && !options.deferSessionCompletion
     ? "completed"
     : "awaiting_remote";
-  store.updateSession(session.id, { phase, completedAt: allVerified ? Date.now() : null, lastError: allVerified ? null : "等待远端确认" }, sessionGeneration);
-  if (allVerified && options.cleanupLocal !== false) await fs.promises.rm(localDir, { recursive: true, force: true });
+  store.updateSession(session.id, { phase, completedAt: phase === "completed" ? Date.now() : null, lastError: allVerified ? null : "等待远端确认" }, sessionGeneration);
   return {
     remotePath,
     files: finalFiles,
