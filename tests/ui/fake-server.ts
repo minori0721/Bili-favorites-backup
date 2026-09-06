@@ -1,6 +1,7 @@
 import express from "express";
 import type { Socket } from "node:net";
 import { renderAppPage } from "../../src/web.js";
+import { renderReleaseNotes } from "../../src/release-notes.js";
 
 const app = express();
 const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
@@ -228,6 +229,7 @@ app.get("/", (_request, response) => response.type("html").send(renderAppPage())
 app.get("/api/updates", (_request, response) => response.json({ success: true, data: {
   comparison: "reference", checkedAt: new Date().toISOString(), error: null,
   release: { version: "v2.5.4", publishedAt: "2026-09-06T00:00:00Z", notes: "隔离预览数据，不代表 GitHub 实时发布状态。\n\n修复恢复状态展示，优化弹窗与任务看板。",
+    notesHtml: renderReleaseNotes('隔离预览数据，不代表 GitHub 实时发布状态。\n\n### 主要变化\n- **恢复**状态展示修复\n- 弹窗与任务看板优化\n\n### 升级注意\n配置与数据保持不变。'),
     url: "https://github.com/minori0721/Bili-favorites-backup/releases/tag/v2.5.4" },
   releasesUrl: "https://github.com/minori0721/Bili-favorites-backup/releases",
 } }));

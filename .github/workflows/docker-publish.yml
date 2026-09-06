@@ -85,3 +85,28 @@ jobs:
             BFB_BUILD_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    needs: docker
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: bfb-release-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Generate notes from the tagged changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release-notes.mjs "$RELEASE_TAG" > "$RUNNER_TEMP/bfb-release-notes.md"
+      - name: Publish application release after image success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/publish-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/bfb-release-notes.md"

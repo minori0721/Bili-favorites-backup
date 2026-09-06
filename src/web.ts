@@ -462,6 +462,13 @@ function getAppStyles() {
     #updatesModal .updates-body { min-height:0; overflow-y:auto; padding:0 0 16px; }
     #updatesModal .modal-actions { margin-top:0; }
     #updatesModal .version-link { white-space:normal; text-align:center; }
+    #updatesNotes { overflow-wrap:anywhere; line-height:1.7; font-size:14px; }
+    #updatesNotes h3,#updatesNotes h4,#updatesNotes h5,#updatesNotes h6 { font-size:15px; margin:18px 0 8px; color:var(--ink); }
+    #updatesNotes p { margin:8px 0; }
+    #updatesNotes ul,#updatesNotes ol { padding-left:22px; }
+    #updatesNotes li { margin:5px 0; }
+    #updatesNotes pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:10px; background:var(--accent-soft); border-radius:8px; }
+    #updatesNotes a { color:#24766F; text-decoration:underline; }
     #pathMigrationModal .panel > h2,#pathMigrationModal .panel > .modal-actions { flex-shrink:0; }
     #pathMigrationModal .panel > .modal-actions { margin-top:0; }
     #pathMigrationModal .path-migration-body { min-height:0; overflow:auto; margin:0; padding:18px var(--dialog-inline); }
@@ -1312,7 +1319,9 @@ function getModals() {
       <p id="updatesStatus" role="status" aria-live="polite"></p>
       <p id="updatesTime" class="muted"></p>
       <h3 id="updatesReleaseTitle">正式版发布说明</h3>
-      <div id="updatesNotes" style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7"></div>
+      <div id="updatesNotes"></div>
+      <p id="updatesTruncated" class="muted" hidden>内容已截取，可前往发布页面阅读完整说明。</p>
+      <p><a id="updatesChangelogLink" class="version-link" href="${escapeHtml(appInfo.repositoryUrl)}/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">查看版本记录 ↗</a></p>
       </div>
       <div class="row modal-actions">
         <button id="closeUpdatesBtn" class="ghost">关闭</button>
@@ -10091,7 +10100,13 @@ function getAppScript() {
              reference: '当前为开发或本地构建，以下正式版仅供参考，不代表 dev 镜像有更新' }[data.comparison] || '无法判断版本'));
         document.getElementById('updatesTime').textContent = data.checkedAt ? '上次成功检查：' + new Date(data.checkedAt).toLocaleString() + (data.error ? '（缓存结果）' : '') : '';
         document.getElementById('updatesReleaseTitle').textContent = data.release ? data.release.version + ' · ' + new Date(data.release.publishedAt).toLocaleDateString() : '正式版发布说明';
-        document.getElementById('updatesNotes').textContent = data.release?.notes || '暂无发布说明';
+        const notes = document.getElementById('updatesNotes');
+        if (data.release?.notesHtml) notes.innerHTML = data.release.notesHtml;
+        else notes.textContent = data.release?.notes || (data.release ? '该版本未填写发布说明，可查看对应版本记录。' : '暂无应用发布说明');
+        document.getElementById('updatesTruncated').hidden = !data.release?.truncated;
+        const changelog = data.release?.changelogUrl;
+        document.getElementById('updatesChangelogLink').href = typeof changelog === 'string' && changelog.startsWith('https://github.com/minori0721/Bili-favorites-backup/blob/v') && changelog.endsWith('/CHANGELOG.md')
+          ? changelog : 'https://github.com/minori0721/Bili-favorites-backup/blob/main/CHANGELOG.md';
         const link = document.getElementById('updatesReleaseLink');
         const safeUrl = data.release?.url || data.releasesUrl;
         link.href = typeof safeUrl === 'string' && safeUrl.startsWith('https://github.com/minori0721/Bili-favorites-backup/releases') ? safeUrl : 'https://github.com/minori0721/Bili-favorites-backup/releases';

@@ -77,6 +77,8 @@ test("main workspace and every standard dialog use the shared visual system", as
           actionsBackdrop: actions ? style(actions).backdropFilter : "missing",
           actionsBorder: actions ? style(actions).borderTopWidth : "missing",
           actionsPosition: actions ? style(actions).position : "missing",
+          innerScroll: panel.querySelector('.updates-body') ? style(panel.querySelector('.updates-body')!).overflowY : "",
+          panelOverflow: style(panel).overflowY,
         };
       }),
       controls: {
@@ -116,8 +118,9 @@ test("main workspace and every standard dialog use the shared visual system", as
   expect(audit.dialogs.every((dialog) => dialog.background.startsWith("rgba(") && dialog.background !== "rgba(0, 0, 0, 0)")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.titleBackground === "rgba(0, 0, 0, 0)" && dialog.actionsBackground === "rgba(0, 0, 0, 0)")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.titleBackdrop === "none" && dialog.actionsBackdrop === "none")).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === "sticky")).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === "sticky")).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === (dialog.id === 'updatesModal' ? 'static' : 'sticky'))).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === (dialog.id === 'updatesModal' ? 'static' : 'sticky'))).toBe(true);
+  expect(audit.dialogs.find(dialog => dialog.id === 'updatesModal')).toMatchObject({ innerScroll: 'auto', panelOverflow: 'hidden' });
   expect(audit.controls.primaryRadius).toBe("14px");
   expect(audit.controls.secondaryRadius).toBe("14px");
   expect(audit.controls.helpRadius).toBe("50%");

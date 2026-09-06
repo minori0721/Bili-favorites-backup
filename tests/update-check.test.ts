@@ -49,8 +49,64 @@ test("dev and local builds are reference only; empty releases and bad responses 
     const result = await new UpdateCheckService((async () => response) as typeof fetch).check();
     assert.ok(result.error); assert.equal(result.release, null);
   }
-  const missing = await new UpdateCheckService((async () => new Response(null, { status: 404 })) as typeof fetch).check();
+  const missing = await new UpdateCheckService((async (url) => String(url).endsWith('/latest') ? new Response(null, { status: 404 }) : Response.json([])) as typeof fetch).check();
   assert.equal(missing.release, null); assert.equal(missing.error, null);
   const offline = await new UpdateCheckService((async () => { throw new Error("network secret"); }) as typeof fetch).check();
   assert.ok(offline.error); assert.ok(!JSON.stringify(offline).includes("secret"));
+});
+
+test('tool latest falls back to application releases, including across pages in numeric order', async () => {
+  const urls: string[] = [];
+  const service = new UpdateCheckService((async (url) => {
+    urls.push(String(url));
+    if (urls.length === 1) return Response.json({ ...release, tag_name: 'ffmpeg-bfb-8.1.2-20260711.1' });
+    if (urls.length === 2) return Response.json([{ ...release, tag_name: 'v2.9.0' }, { ...release, tag_name: 'v99.0.0', prerelease: true }], { headers: { Link: '<https://evil.invalid/>; rel="next"' } });
+    return Response.json([release, { ...release, tag_name: '2.99.0' }, { ...release, tag_name: 'v3.0.0', draft: true }]);
+  }) as typeof fetch, Date.now, stable);
+  const result = await service.check();
+  assert.equal(result.release?.version, 'v2.10.0');
+  assert.equal(result.comparison, 'update_available');
+  assert.equal(urls.length, 3);
+  assert.ok(urls.every(url => url.startsWith('https://api.github.com/repos/minori0721/Bili-favorites-backup/releases')));
+  assert.ok(urls[2].endsWith('page=2'));
+});
+
+test('incomplete or failed pagination never publishes a partial latest claim', async () => {
+  for (const failure of ['incomplete', 'invalid', 'network']) {
+    let calls = 0;
+    const service = new UpdateCheckService((async () => {
+      calls++;
+      if (calls === 1) return Response.json({ ...release, tag_name: 'ffmpeg-test' });
+      if (failure === 'invalid') return Response.json({ wrong: [] });
+      if (failure === 'network') throw new Error('network');
+      return Response.json([release], { headers: { Link: '<next>; rel="next"' } });
+    }) as typeof fetch, Date.now, stable);
+    const result = await service.check();
+    assert.ok(result.error);
+    assert.equal(result.release, null);
+    assert.equal(result.comparison, 'unknown');
+    assert.ok(calls <= 4);
+  }
+});
+
+test('empty and truncated notes are explicit, and main images count as stable', async () => {
+  for (const body of ['', 'a'.repeat(24001)]) {
+    const service = new UpdateCheckService((async () => Response.json({ ...release, body })) as typeof fetch, Date.now,
+      buildAppInfo({ BFB_BUILD_REF: 'main' }, { version: '2.9.0' }));
+    const result = await service.check();
+    assert.equal(result.comparison, 'update_available');
+    assert.equal(result.release?.truncated, body.length > 24000);
+    assert.equal(result.release?.notes.length, Math.min(body.length, 24000));
+    assert.ok(result.release?.changelogUrl.endsWith('/v2.10.0/CHANGELOG.md'));
+  }
+});
+
+test('format errors do not inherit GitHub rate reset when quota is still available', async () => {
+  const now = 100000;
+  const service = new UpdateCheckService((async () => Response.json({ bad: true }, { headers: {
+    'x-ratelimit-remaining': '57', 'x-ratelimit-reset': String((now + 3600000) / 1000),
+  } })) as typeof fetch, () => now, stable);
+  const result = await service.check();
+  assert.equal(result.errorCode, 'invalid_response');
+  assert.equal(Date.parse(result.nextRefreshAt), now + 60000);
 });
