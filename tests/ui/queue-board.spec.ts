@@ -71,6 +71,7 @@ test("codec preference editor supports a stable three-item reorder", async ({ pa
   void browserProblems;
   await openBoard(page);
   const editor = page.locator("#bbdownEncodingPriorityEditor");
+  await page.locator('#downloadSettings > summary').click();
   await editor.scrollIntoViewIfNeeded();
   const items = editor.locator(".encoding-priority-item");
   await expect(items).toHaveCount(3);

@@ -233,6 +233,7 @@ function isSourceUnavailableFailure(error: any) {
 }
 
 function normalizeSourceAvailabilityReason(value: unknown): SourceAvailabilityReason {
+  if (value === "under_review" || value === "uploader_only") return value;
   if (value === "submission_invisible") return "submission_invisible";
   if (value === "temporary_error" || value === "empty_response") return "temporary_error";
   if (value === "favorite_unavailable") return "favorite_flag";
@@ -2159,7 +2160,7 @@ export class SyncScheduler {
       notBefore?: number;
       availabilityRound?: number;
       availabilityUnknownRound?: number;
-      availabilityReason?: "favorite_flag" | "api_not_found" | "submission_invisible" | "temporary_error";
+      availabilityReason?: SourceAvailabilityReason;
       manual?: boolean;
     } = {}
   ) {
@@ -2395,7 +2396,7 @@ export class SyncScheduler {
     value: {
       nextAt: number;
       state: "pending_confirmation" | "unknown" | "confirmed_unavailable";
-      reason: "favorite_flag" | "api_not_found" | "submission_invisible" | "temporary_error";
+      reason: SourceAvailabilityReason;
       checkRound?: number;
       unknownRound?: number;
       message: string;
@@ -2490,7 +2491,7 @@ export class SyncScheduler {
     let chargingRestrictedCount = 0;
     let recoveredUser: BiliUser | null = null;
     let chargingUser: BiliUser | null = null;
-    let availabilityReason: "api_not_found" | "submission_invisible" | "temporary_error" =
+    let availabilityReason: SourceAvailabilityReason =
       payload.availabilityReason === "submission_invisible" ? "submission_invisible" : "api_not_found";
     let transientReason = "";
     let previewAvailable = typeof payload.previewAvailable === "boolean" ? payload.previewAvailable : undefined;
@@ -2569,11 +2570,13 @@ export class SyncScheduler {
         }
         if (availability === "unavailable") {
           unavailableCount += 1;
-          if (snapshot.availabilityReason === "submission_invisible") availabilityReason = "submission_invisible";
+          if (unknownCount === 0 && snapshot.availabilityReason === "submission_invisible") availabilityReason = "submission_invisible";
           continue;
         }
+        const unknownReason = normalizeSourceAvailabilityReason(snapshot.availabilityReason || "temporary_error");
+        availabilityReason = unknownCount === 0 || availabilityReason === unknownReason
+          ? unknownReason : "temporary_error";
         unknownCount += 1;
-        availabilityReason = "temporary_error";
         transientReason = snapshot.availabilityReason === "empty_response"
           ? "B站详情返回空响应"
           : "B站详情暂时无法确认";
@@ -2654,7 +2657,7 @@ export class SyncScheduler {
       if (preserveManualSchedule("手动复核暂时无法确认，保留原复核计划")) return;
       const unknownRound = Number(payload.availabilityUnknownRound || 0);
       if (unknownRound >= AVAILABILITY_UNKNOWN_DELAYS_MS.length) {
-        this.stateManager.markAvailabilityDormant(bvid, "temporary_error", checkedAt, unknownRound);
+        this.stateManager.markAvailabilityDormant(bvid, availabilityReason, checkedAt, unknownRound);
         this.jobStore.complete(job.id, this.leaseOwner);
         logManager.push({
           timestamp: checkedAt,

@@ -1,4 +1,5 @@
 import express from "express";
+import { UpdateCheckService } from "./update-check.js";
 import session from "express-session";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -897,6 +898,12 @@ app.post("/api/login", requireSameOrigin, loginRateLimiter, (req, res) => {
 });
 
 app.use("/api", requireAuth, requireSameOrigin);
+
+const updateCheckService = new UpdateCheckService();
+app.get("/api/updates", asyncHandler(async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, data: await updateCheckService.check(req.query.refresh === "1") });
+}));
 
 app.post("/api/logout", (req, res) => {
   req.session.destroy((error) => {

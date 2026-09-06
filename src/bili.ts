@@ -514,6 +514,8 @@ export interface VideoPageSnapshotResult {
   availabilityReason?:
     | "api_not_found"
     | "submission_invisible"
+    | "under_review"
+    | "uploader_only"
     | "favorite_unavailable"
     | "empty_response"
     | "temporary_error";
@@ -573,7 +575,12 @@ export function classifyVideoPageAvailability(
     return { availability: "available", apiCodes };
   }
   if (observations.some((observation) => observation.availability === "unknown")) {
-    const reason = observations.some((observation) => observation.reason === "empty_response")
+    const unknown = observations.filter((observation) => observation.availability === "unknown");
+    const explicit = unknown[0]?.reason;
+    const reason = (explicit === "under_review" || explicit === "uploader_only")
+      && unknown.every((observation) => observation.reason === explicit)
+      ? explicit
+      : observations.some((observation) => observation.reason === "empty_response")
       ? "empty_response"
       : "temporary_error";
     return { availability: "unknown", reason, apiCodes };
@@ -747,7 +754,8 @@ export async function getVideoPageSnapshot(
       }
       observations.push({
         availability: DEFINITIVE_UNAVAILABLE_API_CODES.has(apiCode) ? "unavailable" : "unknown",
-        reason: apiCode === 62002 ? "submission_invisible" : apiCode === -404 ? "api_not_found" : "temporary_error",
+        reason: apiCode === 62002 ? "submission_invisible" : apiCode === -404 ? "api_not_found"
+          : apiCode === 62004 ? "under_review" : apiCode === 62012 ? "uploader_only" : "temporary_error",
         apiCode,
       });
       continue;

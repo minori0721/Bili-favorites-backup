@@ -225,6 +225,12 @@ app.post("/__test/reset", (request, response) => {
 app.get("/__test/state", (_request, response) => response.json(state));
 
 app.get("/", (_request, response) => response.type("html").send(renderAppPage()));
+app.get("/api/updates", (_request, response) => response.json({ success: true, data: {
+  comparison: "reference", checkedAt: new Date().toISOString(), error: null,
+  release: { version: "v2.5.4", publishedAt: "2026-09-06T00:00:00Z", notes: "隔离预览数据，不代表 GitHub 实时发布状态。\n\n修复恢复状态展示，优化弹窗与任务看板。",
+    url: "https://github.com/minori0721/Bili-favorites-backup/releases/tag/v2.5.4" },
+  releasesUrl: "https://github.com/minori0721/Bili-favorites-backup/releases",
+} }));
 app.get("/api/config", (_request, response) => {
   state.configRequests += 1;
   if (state.configFailuresRemaining > 0) {

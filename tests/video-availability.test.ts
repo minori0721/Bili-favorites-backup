@@ -150,6 +150,21 @@ test("video detail endpoints use a conservative three-state classification", () 
   assert.equal(classifyVideoPageAvailability([]).availability, "unknown");
 });
 
+test("explicit review and uploader-only reasons stay unknown without overriding usable pages", () => {
+  for (const [reason, apiCode] of [["under_review", 62004], ["uploader_only", 62012]] as const) {
+    const explicit = { availability: "unknown", reason, apiCode } as const;
+    assert.equal(classifyVideoPageAvailability([explicit, explicit]).reason, reason);
+    assert.equal(classifyVideoPageAvailability([explicit, explicit]).availability, "unknown");
+    assert.equal(classifyVideoPageAvailability([explicit, { availability: "available", reason: "temporary_error" }]).availability, "available");
+    assert.equal(classifyVideoPageAvailability([explicit, { availability: "unknown", reason: "temporary_error" }]).reason, "temporary_error");
+    assert.equal(classifyVideoPageAvailability([explicit, { availability: "unavailable", reason: "api_not_found" }]).reason, reason);
+  }
+  assert.equal(classifyVideoPageAvailability([
+    { availability: "unknown", reason: "under_review", apiCode: 62004 },
+    { availability: "unknown", reason: "uploader_only", apiCode: 62012 },
+  ]).reason, "temporary_error");
+});
+
 test("availability retry delays keep the base schedule and add stable BVID staggering", () => {
   const unknownBase = [
     10 * 60_000,
@@ -397,7 +412,8 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
   }
 });
 
-test("temporarily unknown availability backs off through 10m, 1h, 6h, 1d, and 7d before dormancy", async () => {
+for (const diagnosticReason of ["temporary_error", "under_review", "uploader_only"] as const) {
+test(`unknown availability (${diagnosticReason}) preserves the full backoff and dormancy`, async () => {
   const runtime = await createTestDir("availability-unknown-lifecycle");
   let nowMs = Date.now();
   const manager = new StateManager({
@@ -416,7 +432,7 @@ test("temporarily unknown availability backs off through 10m, 1h, 6h, 1d, and 7d
       videoAccessProbe: async () => ({
         available: false,
         availability: "unknown",
-        availabilityReason: "temporary_error",
+        availabilityReason: diagnosticReason,
         access: classifyVideoAccess(undefined),
         pages: [],
       }),
@@ -436,17 +452,19 @@ test("temporarily unknown availability backs off through 10m, 1h, 6h, 1d, and 7d
         const next = store.findByDedupeKey("access_probe:BVAVAIL");
         assert.equal(next?.notBefore, nowMs + delays[round]);
         assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, round + 1);
+        assert.equal(manager.getSourceAvailability("BVAVAIL")?.reason, diagnosticReason);
         nowMs = Number(next?.notBefore);
       }
     }
     assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "dormant");
-    assert.equal(manager.getSourceAvailability("BVAVAIL")?.reason, "temporary_error");
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.reason, diagnosticReason);
   } finally {
     await scheduler.shutdown(100);
     await removeTestDir(runtime);
   }
 });
+}
 
 test("manual recheck preserves an existing unavailable schedule when the source is still unavailable", async () => {
   const runtime = await createTestDir("availability-manual-preserves-schedule");

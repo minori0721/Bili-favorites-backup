@@ -17,6 +17,21 @@ const test = base.extend<{ browserProblems: string[] }>({
 
 type RecoveryFixtureKind = "visibility" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
 
+test("polished recovery and media picker keep compact layout and hidden legacy controls", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await openRecoveryCenter(page, "quality");
+  await page.locator('.recovery-issue-row').click();
+  await expect(page.locator('#recoveryIssuesDetail')).toHaveCSS('display', 'block');
+  await page.getByRole('button', { name: '重新选择画质与编码' }).click();
+  await expect(page.locator('#encodingRetryPriorityEditor')).toBeHidden();
+  await expect(page.locator('#encodingRetryStatus')).toBeHidden();
+  await expect(page.locator('#encodingRetryProbeBtn')).toHaveCSS('border-radius', '12px');
+  await expect(page.locator('#encodingRetryCombinations button').first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await page.locator('#encodingRetryCancelBtn').click();
+  await expect(page.locator('#recoveryIssuesModal')).toHaveClass(/active/);
+});
+
 async function openRecoveryCenter(
   page: Page,
   recoveryIssueKind: RecoveryFixtureKind = "candidate",
@@ -288,7 +303,8 @@ test("an unavailable Bilibili item exposes an explicit unknown-size strict fallb
   await expect(page.locator("#encodingRetryManual")).toBeVisible();
   await expect(page.locator("#encodingRetryQuality").locator("option").first()).toHaveText("不限定画质（沿用任务设置）");
   await expect(page.locator("#encodingRetryEncoding").locator("option").first()).toHaveText("不限定编码（沿用当前偏好）");
-  await expect(page.locator(".media-retry-strict-note")).toContainText("已选择的画质或编码会逐分P严格匹配");
+  await expect(page.locator(".media-retry-strict-note")).toContainText("所选规格逐分P严格匹配");
+  await expect(page.locator(".media-retry-strict-note")).toContainText("不匹配则停止上传，保留原归档");
   await expect(page.locator("#encodingRetryEncoding")).toHaveValue("");
   await expect(page.locator("#encodingRetrySubmitBtn")).toBeDisabled();
   await page.locator("#encodingRetryQuality").selectOption("1080P");

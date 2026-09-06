@@ -148,6 +148,8 @@ export type SourceAvailabilityReason =
   | "favorite_flag"
   | "api_not_found"
   | "submission_invisible"
+  | "under_review"
+  | "uploader_only"
   | "temporary_error";
 
 export interface SourceAvailability {

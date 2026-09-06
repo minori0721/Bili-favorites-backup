@@ -228,8 +228,8 @@ export function renderAppPage() {
   ${getAppHeader()}
   <main>
     ${getAccountSection()}
-    ${getSettingsSection()}
     ${getLogSection()}
+    ${getSettingsSection()}
   </main>
   ${getModals()}
   <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
@@ -328,6 +328,8 @@ function getAppStyles() {
     .row button:disabled { opacity:.56; cursor:not-allowed; transform:none; box-shadow:none; }
     .row button:disabled:hover { transform:none; box-shadow:none; }
     .row .ghost { background:rgba(255,255,255,0.66); color:var(--accent); border:1px solid rgba(57,197,187,0.45); box-shadow:none; }
+    .panel button.ghost,.storage-check-row button.ghost { min-height:40px; padding:8px 12px; border:1px solid var(--glass-border-strong); border-radius:var(--radius-legacy-control); background:var(--glass-input); color:#24766F; font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+    .panel button.ghost:focus-visible,.storage-check-row button.ghost:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     .row .ghost:hover,.row .ghost:focus-visible { background:rgba(57,197,187,0.08); border-color:var(--accent); color:var(--accent); box-shadow:0 6px 16px rgba(57,197,187,0.10); }
     .row .danger-ghost { border-color:#D6A2A2; color:var(--danger); }
     .row button.danger-action { background:var(--danger); border-color:var(--danger); box-shadow:none; }
@@ -350,6 +352,13 @@ function getAppStyles() {
     .auth-health-detail { color:var(--muted); }
     .auth-health.error .auth-health-detail { color:#C62828; }
     .settings-grid { display:grid; gap:14px 16px; grid-template-columns:1fr 1fr; }
+    .settings-fold { border-top:1px solid var(--glass-border); }
+    .settings-fold > summary { display:flex; align-items:center; gap:12px; min-height:52px; padding:12px 2px; font-size:14px; font-weight:600; color:var(--ink); cursor:pointer; list-style:none; }
+    .settings-fold > summary::-webkit-details-marker { display:none; }
+    .settings-fold > summary::after { content:'+'; margin-left:auto; color:var(--archive-muted); font-size:20px; font-weight:400; }
+    .settings-fold[open] > summary::after { content:'−'; }
+    .settings-fold > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:var(--radius-control); }
+    .settings-fold > .settings-grid { padding:4px 0 22px; }
     .settings-group { grid-column:1/-1; padding-top:14px; border-top:1px solid rgba(214,240,237,0.78); margin-top:8px; }
     .settings-group-title { font-weight:700; color:var(--ink); margin-bottom:12px; }
     .field-full { grid-column:1/-1; }
@@ -385,14 +394,22 @@ function getAppStyles() {
     .media-retry-probe-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
     .media-retry-probe-summary { min-width:0; color:#4D6862; font-size:12px; line-height:1.55; }
     .media-retry-probe-summary.error { color:#9B2C2C; }
-    .media-retry-probe-head button { flex:0 0 auto; min-height:34px; padding:6px 11px; }
+    .media-retry-probe-head button { display:inline-flex; align-items:center; justify-content:center; gap:6px; flex:0 0 auto; min-height:40px; padding:8px 12px; font:inherit; font-size:13px; font-weight:600; border:1px solid var(--glass-border-strong); border-radius:var(--radius-legacy-control); background:var(--glass-input); color:var(--ink); cursor:pointer; }
+    .media-retry-probe-head button:hover,.media-retry-probe-head button:focus-visible { background:var(--accent-soft); border-color:var(--accent); outline:none; box-shadow:var(--focus-ring); }
+    .media-retry-probe-head button:disabled { opacity:.55; cursor:wait; }
+    .encoding-retry-status:empty { display:none; }
+    .encoding-priority-editor[hidden] { display:none; }
+    .encoding-retry-copy { margin:0 0 16px; font-size:14px; line-height:1.6; }
     .media-retry-combinations { display:grid; gap:7px; max-height:286px; overflow:auto; padding:2px; }
     .media-retry-combination { width:100%; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; align-items:center; padding:10px 12px; border:1px solid #D5E4E0; border-radius:8px; background:#FFF; color:#294A44; text-align:left; cursor:pointer; }
     .media-retry-combination:hover,.media-retry-combination:focus-visible { border-color:#39C5BB; outline:2px solid rgba(57,197,187,.2); outline-offset:1px; }
     .media-retry-combination[aria-checked="true"] { border-color:#178E84; background:#EFFAF8; box-shadow:0 0 0 1px rgba(23,142,132,.14); }
     .media-retry-combination-main { min-width:0; font-weight:800; overflow-wrap:anywhere; }
-    .media-retry-combination-meta { color:#60736F; font-size:11px; font-weight:600; }
-    .media-retry-combination-size { color:#176F67; font-size:12px; font-weight:800; white-space:nowrap; }
+    .media-retry-combination-meta { margin-top:4px; color:var(--archive-muted); font-size:12px; font-weight:400; line-height:1.5; }
+    .media-retry-combination-meta > span { display:block; }
+    .media-retry-combination-copy { min-width:0; }
+    @media (max-width:600px) { .media-retry-combination { grid-template-columns:minmax(0,1fr); gap:6px; } .media-retry-combination-size { justify-self:start; } }
+    .media-retry-combination-size { color:#176F67; font-size:14px; font-weight:700; white-space:nowrap; font-variant-numeric:tabular-nums; }
     .media-retry-combination:disabled { cursor:not-allowed; opacity:.58; background:#F5F7F6; }
     .media-retry-combination:disabled:hover { border-color:#D5E4E0; outline:none; }
     .media-retry-manual { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; padding:12px; border:1px solid #E7C990; border-radius:8px; background:#FFF9EE; }
@@ -440,6 +457,11 @@ function getAppStyles() {
     .modal .panel > .modal-actions .ghost { order:-1; }
     .modal .panel > .modal-actions .full-width { width:auto; min-width:120px; }
     #pathMigrationModal .panel { display:flex; flex-direction:column; overflow:hidden; }
+    #updatesModal .panel { display:flex; flex-direction:column; overflow:hidden; }
+    #updatesModal .panel > h2,#updatesModal .modal-actions { flex-shrink:0; position:static; }
+    #updatesModal .updates-body { min-height:0; overflow-y:auto; padding:0 0 16px; }
+    #updatesModal .modal-actions { margin-top:0; }
+    #updatesModal .version-link { white-space:normal; text-align:center; }
     #pathMigrationModal .panel > h2,#pathMigrationModal .panel > .modal-actions { flex-shrink:0; }
     #pathMigrationModal .panel > .modal-actions { margin-top:0; }
     #pathMigrationModal .path-migration-body { min-height:0; overflow:auto; margin:0; padding:18px var(--dialog-inline); }
@@ -505,6 +527,8 @@ function getAppStyles() {
     .archive-library-brand { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border); }
     .archive-library-brand h2 { margin:0; font-size:18px; color:#21413D; letter-spacing:0; }
     .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close { width:36px; height:36px; display:inline-grid; place-items:center; border:1px solid var(--border-strong); border-radius:var(--radius-control); background:var(--panel); color:#38534F; padding:0; font-size:21px; cursor:pointer; }
+    .archive-library-close,.archive-library-mobile-back,.archive-library-detail-close { width:40px; height:40px; flex-shrink:0; }
+    .archive-library-close:focus-visible,.archive-library-mobile-back:focus-visible,.archive-library-detail-close:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     .archive-library-close:hover,.archive-library-close:focus-visible,.archive-library-mobile-back:hover,.archive-library-mobile-back:focus-visible,.archive-library-detail-close:hover,.archive-library-detail-close:focus-visible { border-color:var(--accent); color:var(--accent); outline:2px solid rgba(57,197,187,0.18); outline-offset:2px; }
     .archive-library-nav { min-height:0; flex:1 1 auto; overflow:auto; padding:10px; overscroll-behavior:contain; }
     .archive-nav-account { margin-top:12px; }
@@ -796,13 +820,17 @@ function getAppStyles() {
     .queue-card:hover { box-shadow:0 6px 16px rgba(57,197,187,0.12); border-color:var(--accent); }
     .queue-cover { width:64px; height:44px; object-fit:cover; display:flex; align-items:center; justify-content:center; border-radius:6px; background:#eee; color:#9aa8a6; font-size:10px; flex-shrink:0; }
     .queue-info { min-width:0; flex:1; }
-    .queue-title { font-size:12px; font-weight:700; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .queue-title { font-size:13px; font-weight:600; line-height:1.5; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .queue-meta { font-size:11px; color:var(--muted); margin-top:3px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .queue-extra { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
     .queue-status { flex:1 1 100%; min-width:0; color:var(--ink); line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .queue-phase { flex-basis:100%; color:var(--ink); font-size:12px; font-weight:600; }
+    .queue-diagnostic { flex-basis:100%; min-width:0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+    .queue-diagnostic > summary { cursor:pointer; color:var(--archive-muted); padding:4px 0; }
+    .queue-diagnostic > p { margin:4px 0; font-size:12px; line-height:1.6; color:var(--ink); }
     .queue-pill { border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); padding:1px 6px; line-height:1.5; }
     .queue-recovery-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }
-    .queue-recovery-actions button { border:1px solid var(--accent); border-radius:8px; padding:4px 8px; background:rgba(57,197,187,0.08); color:var(--accent); cursor:pointer; font-size:11px; font-weight:700; }
+    .queue-recovery-actions button { min-height:36px; border:1px solid var(--accent); border-radius:8px; padding:6px 10px; background:rgba(57,197,187,0.08); color:#24766F; cursor:pointer; font-size:12px; font-weight:600; }
     .queue-recovery-actions button:hover,.queue-recovery-actions button:focus-visible { background:rgba(57,197,187,0.18); outline:2px solid rgba(57,197,187,0.24); outline-offset:1px; }
     .queue-recovery-actions button.danger-action { border-color:#D65A5A; color:#A83232; background:rgba(214,90,90,0.08); }
     .queue-recovery-actions button:disabled { cursor:wait; opacity:.58; }
@@ -846,21 +874,23 @@ function getAppStyles() {
     .recovery-issue-row-problem { display:block; overflow:hidden; color:#4D6862; font-size:11px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
     .recovery-issue-row-meta { display:block; overflow:hidden; color:#71837F; font-size:11px; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
     .recovery-issue-row-arrow { align-self:center; color:#6B817B; font-size:18px; line-height:1; }
-    .recovery-issues-detail { min-width:0; min-height:0; overflow:auto; background:rgba(255,255,255,0.84); backdrop-filter:var(--glass-blur); padding:24px clamp(18px,3vw,38px) 36px; }
+    .recovery-issues-detail { display:block; width:100%; max-width:none; margin:0; min-width:0; min-height:0; overflow:auto; background:var(--glass-surface); backdrop-filter:var(--glass-blur); padding:24px clamp(18px,3vw,38px) 28px; }
     .recovery-issues-detail:focus { outline:none; }
     .recovery-detail-kicker { width:max-content; max-width:100%; padding:3px 8px; border-radius:999px; background:#EAF5F2; color:#27736A; font-size:11px; font-weight:800; }
     .recovery-detail-kicker.warning { background:#FFF3DF; color:#99601C; }
     .recovery-detail-kicker.danger { background:#FCE9E9; color:#A53838; }
-    .recovery-detail-title { margin:10px 0 3px; font-size:22px; line-height:1.3; color:#183A34; overflow-wrap:anywhere; }
+    .recovery-detail-title { margin:12px 0 8px; font-size:20px; line-height:1.4; color:var(--ink); overflow-wrap:anywhere; }
     .recovery-detail-problem { margin:0; color:#4D6862; font-size:13px; font-weight:700; line-height:1.5; }
     .recovery-detail-meta { margin-top:7px; color:#687B77; font-size:12px; overflow-wrap:anywhere; }
-    .recovery-target-card { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:18px; padding:12px; border:1px solid #DCE9E6; border-radius:8px; background:#F7FBFA; }
+    .recovery-target-card { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 20px; margin-top:16px; padding:14px 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
     .recovery-target-field { min-width:0; display:grid; gap:3px; }
-    .recovery-target-field-label { color:#71837F; font-size:10px; font-weight:700; }
-    .recovery-target-field-value { overflow-wrap:anywhere; color:#28443F; font-size:12px; font-weight:800; line-height:1.45; }
+    .recovery-target-field-label { color:var(--archive-muted); font-size:12px; font-weight:400; }
+    .recovery-target-field-value { overflow-wrap:anywhere; color:var(--ink); font-size:13px; font-weight:600; line-height:1.5; }
     .recovery-detail-section { padding:16px 0; border-bottom:1px solid #E4ECEA; }
     .recovery-detail-section h3 { margin:0 0 8px; font-size:13px; color:#3D5D57; }
-    .recovery-detail-section p { margin:0; color:#263E3A; line-height:1.7; }
+    .recovery-detail-section p { margin:0; color:var(--ink); font-size:14px; line-height:1.65; }
+    .recovery-detail-section .recovery-action-note { margin-top:10px; font-size:12px; color:var(--archive-muted); }
+    .recovery-action-note:empty { display:none; }
     .recovery-protected-list { margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px 8px; list-style:none; }
     .recovery-protected-list li { position:relative; padding:6px 9px 6px 24px; border:1px solid #DCE9E6; border-radius:7px; background:#F7FBFA; color:#3E5D57; line-height:1.4; }
     .recovery-protected-list li::before { content:'✓'; position:absolute; left:8px; color:#17877C; font-weight:900; }
@@ -1110,7 +1140,7 @@ function getAppHeader() {
   return `<header>
     <div class="app-brand">
       <h1>B站收藏夹同步</h1>
-      ${getVersionLink("header-meta")}
+      <button type="button" id="versionInfoBtn" class="version-link header-meta" title="版本与更新">${escapeHtml(appInfo.versionLabel)}</button>
     </div>
     <div class="header-actions">
       ${getGithubLink("header-meta")}
@@ -1138,16 +1168,17 @@ function getAccountSection() {
 }
 
 function getSettingsSection() {
-  return `<section class="card">
+  return `<section class="card" id="settingsSection">
       <div class="section-title-row">
         <h2>全局设置</h2>
         <button class="help-icon-btn" id="settingsHelpBtn" type="button" title="查看当前设置如何执行" aria-label="查看当前设置如何执行">?</button>
       </div>
-      <div class="settings-grid">
+      <details class="settings-fold" open><summary>同步节奏</summary><div class="settings-grid">
         <div><label for="pollInterval">轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
         <div><label for="delaySeconds">BBDown 分P延迟（秒）</label><input id="delaySeconds" type="number" min="0" aria-describedby="delaySecondsHint" /><p class="muted field-hint" id="delaySecondsHint">用于 BBDown 的 --delay-per-page，只影响新下载任务。</p></div>
 
-        <div class="settings-group"><div class="settings-group-title">远端存储（AList / OpenList WebDAV）</div></div>
+      </div></details>
+      <details class="settings-fold" id="storageSettings"><summary>远端存储与播放</summary><div class="settings-grid">
         <div class="field-full"><label for="alistUrl">远端内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244 或 http://openlist:5244" autocomplete="off" aria-describedby="alistUrlHint" /><p class="muted field-hint" id="alistUrlHint">兼容字段名保持为 alistUrl；这里可以填写 AList 或 OpenList 的 WebDAV 服务地址。</p></div>
         <div class="field-full"><label for="alistBrowserUrl">远端网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://openlist.example.com" autocomplete="off" aria-describedby="alistBrowserUrlHint" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在网盘中查看”入口；留空则不显示。支持 AList 和 OpenList 的网页地址。</p></div>
         <div><label for="alistUsername">远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
@@ -1174,7 +1205,8 @@ function getSettingsSection() {
           <p class="muted field-hint" id="playbackDeliveryModeHint">直连可节省 BFB 服务器流量，但网盘临时签名地址会在当前浏览器的网络请求中可见。</p>
         </div>
 
-        <div class="settings-group"><div class="settings-group-title">下载控制 (BBDown)</div></div>
+      </div></details>
+      <details class="settings-fold" id="downloadSettings"><summary>下载画质与编码</summary><div class="settings-grid">
         <div class="field-full"><label id="bbdownApiModeLabel">播放接口</label>
           <div class="segmented-control" id="bbdownApiModeControl" role="radiogroup" aria-labelledby="bbdownApiModeLabel" aria-describedby="bbdownApiModeHint">
             <label><input type="radio" name="bbdownApiMode" value="web" checked /><span>网页接口</span></label>
@@ -1210,7 +1242,8 @@ function getSettingsSection() {
           <p class="muted field-hint">Hi-Res / Dolby 需要扫码登录获得 APP token；旧账号如果没有 token，请重新登录后再启用。</p>
         </div>
 
-        <div class="settings-group"><div class="settings-group-title">视频命名模板</div></div>
+      </div></details>
+      <details class="settings-fold" id="namingSettings"><summary>视频命名</summary><div class="settings-grid">
         <div class="field-full">
           <p class="muted template-note">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
           <label>可用变量</label>
@@ -1224,19 +1257,22 @@ function getSettingsSection() {
         </div>
         <div class="field-full"><label for="renameScanMaxFiles">远端重命名扫描上限</label><input id="renameScanMaxFiles" type="number" min="100" max="100000" /></div>
 
-        <div class="settings-group"><div class="settings-group-title">任务队列与重试</div></div>
+      </div></details>
+      <details class="settings-fold" id="queueSettings"><summary>队列与重试</summary><div class="settings-grid">
         <div><label for="maxRetries">失败重试次数</label><input id="maxRetries" type="number" min="0" /></div>
         <div><label for="retryDelaySeconds">重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label for="concurrentDownloads">同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label for="concurrentUploads">同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
         <div class="field-full"><label for="uploadFileIntervalSeconds">远端文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" aria-describedby="uploadFileIntervalHint" /><p class="muted field-hint" id="uploadFileIntervalHint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
-        <div class="field-full"><label for="localCacheLimitGB">本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
-        <div class="field-full"><label for="onlineCoverCacheLimitMB">在线缩略图缓存上限 (MB，64-2048)</label><input id="onlineCoverCacheLimitMB" type="number" min="64" max="2048" step="1" /></div>
         <div class="field-full"><label for="queuePrefetchLimit">任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
         <div><label for="remoteVerifyConcurrency">远端对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>
         <div><label for="remoteVerifyRateLimitPerSecond">远端对账限速 (次/秒)</label><input id="remoteVerifyRateLimitPerSecond" type="number" min="0.5" max="100" step="0.5" /></div>
         <div class="field-full"><label for="remoteRequeueLimitPerCycle">每轮最多补传数量</label><input id="remoteRequeueLimitPerCycle" type="number" min="1" max="1000" /></div>
-      </div>
+      </div></details>
+      <details class="settings-fold" id="cacheSettings"><summary>本地缓存与缩略图</summary><div class="settings-grid">
+        <div><label for="localCacheLimitGB">本地缓存软上限 (GB，0 表示不限制)</label><input id="localCacheLimitGB" type="number" min="0" max="1024" step="0.5" /></div>
+        <div><label for="onlineCoverCacheLimitMB">在线缩略图缓存上限 (MB，64-2048)</label><input id="onlineCoverCacheLimitMB" type="number" min="64" max="2048" step="1" /></div>
+      </div></details>
       <div class="row settings-actions">
         <button id="saveConfigBtn">保存设置并生效</button>
         <button id="renameBtn" class="rename-btn">检查旧命名文件</button>
@@ -1267,6 +1303,24 @@ function getLogSection() {
 
 function getModals() {
   return `
+  <div class="modal" id="updatesModal" aria-labelledby="updatesModalTitle">
+    <div class="panel panel-md">
+      <h2 id="updatesModalTitle">版本与更新</h2>
+      <div class="updates-body" tabindex="0" aria-label="版本信息与发布说明">
+      <p>当前运行：${escapeHtml(appInfo.versionLabel)}</p>
+      <p class="muted">构建提交：${escapeHtml(appInfo.revision || "未提供")}</p>
+      <p id="updatesStatus" role="status" aria-live="polite"></p>
+      <p id="updatesTime" class="muted"></p>
+      <h3 id="updatesReleaseTitle">正式版发布说明</h3>
+      <div id="updatesNotes" style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7"></div>
+      </div>
+      <div class="row modal-actions">
+        <button id="closeUpdatesBtn" class="ghost">关闭</button>
+        <button id="checkUpdatesBtn" class="ghost">检查更新</button>
+        <a id="updatesReleaseLink" class="version-link" href="${escapeHtml(appInfo.repositoryUrl)}/releases" target="_blank" rel="noopener noreferrer">前往发布页面 ↗</a>
+      </div>
+    </div>
+  </div>
   <div class="modal" id="loginModal" aria-labelledby="loginModalTitle">
     <div class="panel panel-sm">
       <h2 id="loginModalTitle">扫码登录</h2>
@@ -1740,7 +1794,7 @@ function getModals() {
       <div class="media-retry-probe">
         <div class="media-retry-probe-head">
           <div id="encodingRetryProbeSummary" class="media-retry-probe-summary" aria-live="polite">正在读取当前可用媒体组合...</div>
-          <button id="encodingRetryProbeBtn" class="ghost" type="button">重新探测</button>
+          <button id="encodingRetryProbeBtn" class="ghost" type="button" title="重新探测可用画质与编码"><span aria-hidden="true">↻</span>重新探测</button>
         </div>
         <div id="encodingRetryCombinations" class="media-retry-combinations" role="radiogroup" aria-label="可用画质与编码组合"></div>
         <div id="encodingRetryManual" class="media-retry-manual" hidden>
@@ -1761,7 +1815,7 @@ function getModals() {
           </label>
         </div>
         <div id="encodingRetryEstimate" class="media-retry-estimate">尚未取得大小信息。</div>
-        <p class="media-retry-strict-note">已选择的画质或编码会逐分P严格匹配；未选择的维度沿用当前任务设置或编码偏好。严格项不匹配时不会上传候选，原归档继续保留。</p>
+        <p class="media-retry-strict-note">所选规格逐分P严格匹配；未指定项沿用任务设置。不匹配则停止上传，保留原归档。</p>
       </div>
       <div id="encodingRetryPriorityEditor" class="encoding-priority-editor" role="listbox" aria-label="本次重试编码顺序" hidden></div>
       <input type="checkbox" id="encodingRetryStrict" checked hidden />
@@ -2276,6 +2330,7 @@ function getAppScript() {
       if (!modal) return false;
       const index = modalStack.findIndex((entry) => entry.modal === modal);
       if (index < 0 || index !== modalStack.length - 1) return false;
+      if (modal.id === 'updatesModal') { updatesController?.abort(); updatesController = null; }
       if (modal.id === 'confirmActionModal' && pendingConfirmAction && !options.skipConfirm) {
         finishConfirmAction(false);
         return true;
@@ -2629,6 +2684,7 @@ function getAppScript() {
         setStatus(status, result.title + '：' + result.message, result.ok ? 'success' : 'error');
         if (!result.ok && result.field) {
           const field = document.getElementById(result.field);
+          if (field?.closest('.settings-fold')) field.closest('.settings-fold').open = true;
           field?.scrollIntoView({ behavior:'smooth', block:'center' });
           setTimeout(() => field?.focus({ preventScroll:true }), 260);
         }
@@ -2641,6 +2697,14 @@ function getAppScript() {
     }
 
     async function saveConfig() {
+      const invalid = Array.from(document.querySelectorAll('#settingsSection input, #settingsSection select')).find((field) => field.willValidate && !field.validity.valid);
+      if (invalid) {
+        if (invalid.closest('.settings-fold')) invalid.closest('.settings-fold').open = true;
+        invalid.scrollIntoView({ block:'center' });
+        invalid.reportValidity();
+        invalid.focus({ preventScroll:true });
+        return;
+      }
       const btn = document.getElementById('saveConfigBtn');
       const st = document.getElementById('configStatus');
       return runExclusive('config:save', btn, async () => {
@@ -2682,6 +2746,7 @@ function getAppScript() {
         setStatus(st, '设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、远端路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
       } catch(e) {
         setStatus(st, '保存失败: '+e.message, 'error');
+        document.querySelectorAll('.settings-fold').forEach((group) => { group.open = true; });
         if (e.code === 'PATH_MIGRATION_REQUIRED') {
           await openPathMigration();
           document.getElementById('pathMigrationDestination').value = payload.alistDest;
@@ -4795,6 +4860,16 @@ function getAppScript() {
       }
     }
 
+    function sourceAvailabilityReasonLabel(source, compact = false) {
+      const labels = {
+        under_review:'B站稿件审核中',
+        uploader_only:'仅UP主自己可见',
+        submission_invisible:compact ? '稿件不可见' : 'B站稿件不可见，具体原因未公开',
+        api_not_found:'B站未找到该视频'
+      };
+      return labels[source?.reason] || '';
+    }
+
     function archiveStatusLabel(item) {
       const deletionStatuses = item?.memberships?.map((membership) => membership.deletionStatus).filter(Boolean) || [];
       if (item?.deletionStatus) deletionStatuses.push(item.deletionStatus);
@@ -4808,8 +4883,8 @@ function getAppScript() {
       }
       const sourceState = item?.sourceAvailability?.state;
       if (sourceState === 'pending_confirmation') return 'B站状态待确认';
-      if (sourceState === 'unknown') return 'B站状态暂未确认';
-      if (sourceState === 'confirmed_unavailable') return 'B站源不可用';
+      if (sourceState === 'unknown') return sourceAvailabilityReasonLabel(item.sourceAvailability, true) || 'B站状态暂未确认';
+      if (sourceState === 'confirmed_unavailable') return sourceAvailabilityReasonLabel(item.sourceAvailability, true) || 'B站源不可用';
       if (sourceState === 'dormant') return 'B站源长期不可用';
       const labels = {
         remote_visibility_timeout:'等待远端文件可见',
@@ -6011,11 +6086,11 @@ function getAppScript() {
         badgeText = '状态待确认';
       } else if (sourceState === 'unknown') {
         badgeClass = 'pending';
-        badgeText = '状态暂未确认';
+        badgeText = sourceAvailabilityReasonLabel(item.sourceAvailability, true) || '状态暂未确认';
       } else if (sourceState === 'confirmed_unavailable') {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
-        badgeText = 'B站源不可用';
+        badgeText = sourceAvailabilityReasonLabel(item.sourceAvailability, true) || 'B站源不可用';
       } else if (sourceState === 'dormant') {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -6075,7 +6150,11 @@ function getAppScript() {
           confirmed_unavailable:'B站源目前不可用，系统已停止重复下载',
           dormant:'B站源长期不可用，无需处理；重新可见后会自动恢复'
         };
-        copy.textContent = (sourceMessages[sourceState] || 'B站状态尚未确认')
+        const specificReason = sourceAvailabilityReasonLabel(item.sourceAvailability);
+        copy.textContent = (specificReason && sourceState !== 'pending_confirmation'
+          ? specificReason + (sourceState === 'dormant' ? '；已休眠，无需处理，重新可见后会自动恢复'
+            : sourceState === 'confirmed_unavailable' ? '；已停止重复下载，系统会低频复核' : '；系统会稍后复核')
+          : sourceMessages[sourceState] || 'B站状态尚未确认')
           + (canPlay || item.processed ? '；已有归档和封面不受影响' : '');
         source.appendChild(copy);
         if (item.bvid) {
@@ -8701,12 +8780,17 @@ function getAppScript() {
         const coverage = pageCount > 1
           ? (available ? '全部 ' + pageCount + ' 个分P' : '仅 ' + Number(combination.availablePageCount || 0) + '/' + pageCount + ' 个分P')
           : (available ? '可严格选择' : '当前不可用');
-        meta.textContent = [combination.resolution, mediaRetryFpsLabel(combination.frameRate), coverage, mediaRetrySourceLabel(combination.totalSizeSource || combination.sizeSource)].filter(Boolean).join(' · ');
+        const dimensions = document.createElement('span');
+        dimensions.textContent = [combination.resolution, mediaRetryFpsLabel(combination.frameRate)].filter(Boolean).join(' · ');
+        const source = document.createElement('span');
+        source.textContent = [coverage, mediaRetrySourceLabel(combination.totalSizeSource || combination.sizeSource)].filter(Boolean).join(' · ');
+        meta.append(dimensions, source);
         const size = document.createElement('span');
         size.className = 'media-retry-combination-size';
         const bytes = mediaRetryCombinationBytes(combination);
         size.textContent = bytes > 0 ? formatBytes(bytes) : '大小待确认';
         const copy = document.createElement('span');
+        copy.className = 'media-retry-combination-copy';
         copy.append(main, document.createElement('br'), meta);
         button.append(copy, size);
          button.addEventListener('click', () => {
@@ -9005,6 +9089,7 @@ function getAppScript() {
       if (action.id === 'open_settings') {
         closeModal('recoveryIssuesModal');
         const checkButton = document.getElementById('storageCheckBtn');
+        document.getElementById('storageSettings').open = true;
         checkButton?.scrollIntoView({ behavior:'smooth', block:'center' });
         setTimeout(() => checkButton?.focus({ preventScroll:true }), 260);
         return;
@@ -9126,7 +9211,7 @@ function getAppScript() {
       problem.textContent = recoveryIssueTypeLabel(issue);
       const meta = document.createElement('div');
       meta.className = 'recovery-detail-meta';
-      meta.textContent = recoveryIssueMeta(issue) + (issue.occurredAt ? ' · ' + formatDateTime(issue.occurredAt) : '');
+      meta.textContent = issue.occurredAt ? '发生于 ' + formatDateTime(issue.occurredAt) : '';
       host.append(kicker, heading, problem, meta);
 
       const targetCard = document.createElement('div');
@@ -9167,6 +9252,7 @@ function getAppScript() {
         item.textContent = String(fact);
         protectedList.appendChild(item);
       });
+      if (protectedList.childElementCount) appendRecoveryDetailSection(host, '系统保护了什么', protectedList);
       if (issue.busy) {
         const busyNote = document.createElement('p');
         busyNote.className = 'recovery-safety-note';
@@ -9201,8 +9287,6 @@ function getAppScript() {
         actions.appendChild(description);
         appendRecoveryDetailSection(host, '下一步', actions);
       }
-
-      appendRecoveryDetailSection(host, '系统保护了什么', protectedList);
 
       const technical = document.createElement('details');
       technical.className = 'recovery-technical';
@@ -9485,10 +9569,27 @@ function getAppScript() {
       if (extraEl) {
         extraEl.innerHTML = '';
         if (item.detail || queuePhaseLabel(item)) {
+          const phase = queuePhaseLabel(item);
+          if (phase && item.detail && String(item.detail) !== phase) {
+            const stage = document.createElement('span');
+            stage.className = 'queue-phase';
+            stage.textContent = phase;
+            extraEl.appendChild(stage);
+          }
           const detail = document.createElement('span');
           detail.className = 'queue-status';
           detail.textContent = String(item.detail || queuePhaseLabel(item));
-          extraEl.appendChild(detail);
+          if (item.detail && (String(item.detail).length > 80 || /HTTP|ENOENT|failed|Error:/.test(String(item.detail)))) {
+            const diagnostic = document.createElement('details');
+            diagnostic.className = 'queue-diagnostic';
+            diagnostic.open = Boolean(card.__diagnosticOpen);
+            diagnostic.addEventListener('toggle', () => { card.__diagnosticOpen = diagnostic.open; });
+            const summary = document.createElement('summary');
+            summary.textContent = '查看原因';
+            detail.style.display = 'block';
+            diagnostic.append(summary, detail);
+            extraEl.appendChild(diagnostic);
+          } else extraEl.appendChild(detail);
         }
         if (item.phase === 'retry_wait') {
           const retry = document.createElement('span');
@@ -9499,7 +9600,9 @@ function getAppScript() {
         const time = document.createElement('span');
         time.className = 'queue-pill';
         time.dataset.queueTime = '1';
-        time.textContent = queueTimeLabel(item, nowMs);
+        const timeLabel = queueTimeLabel(item, nowMs);
+        time.textContent = timeLabel;
+        time.hidden = timeLabel === queuePhaseLabel(item);
         extraEl.appendChild(time);
       }
       updateQueueRecoveryActions(card, item);
@@ -9510,7 +9613,11 @@ function getAppScript() {
       for (const card of queueBoardState.cards.values()) {
         const item = card.__queueItem;
         const time = card.querySelector('[data-queue-time="1"]');
-        if (item && time) time.textContent = queueTimeLabel(item, nowMs);
+        if (item && time) {
+          const label = queueTimeLabel(item, nowMs);
+          time.textContent = label;
+          time.hidden = label === queuePhaseLabel(item);
+        }
       }
     }
 
@@ -9963,6 +10070,40 @@ function getAppScript() {
 
     // ---- Event Bindings ----
     document.getElementById('addUserBtn').addEventListener('click', startLogin);
+    let updatesController = null;
+    async function loadUpdates(refresh = false) {
+      if (updatesController) return;
+      const controller = new AbortController();
+      updatesController = controller;
+      const button = document.getElementById('checkUpdatesBtn');
+      const status = document.getElementById('updatesStatus');
+      button.disabled = true;
+      status.textContent = '正在检查更新…';
+      try {
+        const response = await fetch('/api/updates' + (refresh ? '?refresh=1' : ''), { signal: controller.signal });
+        if (!response.ok) throw new Error('request');
+        const result = await response.json();
+        if (!result.success || !result.data) throw new Error('response');
+        if (updatesController !== controller) return;
+        const data = result.data;
+        status.textContent = data.error || (!data.release ? '暂时没有正式发布版本' :
+          ({ update_available: '有新的正式版本可用', up_to_date: '当前已是最新正式版', ahead: '当前版本高于最新正式版',
+             reference: '当前为开发或本地构建，以下正式版仅供参考，不代表 dev 镜像有更新' }[data.comparison] || '无法判断版本'));
+        document.getElementById('updatesTime').textContent = data.checkedAt ? '上次成功检查：' + new Date(data.checkedAt).toLocaleString() + (data.error ? '（缓存结果）' : '') : '';
+        document.getElementById('updatesReleaseTitle').textContent = data.release ? data.release.version + ' · ' + new Date(data.release.publishedAt).toLocaleDateString() : '正式版发布说明';
+        document.getElementById('updatesNotes').textContent = data.release?.notes || '暂无发布说明';
+        const link = document.getElementById('updatesReleaseLink');
+        const safeUrl = data.release?.url || data.releasesUrl;
+        link.href = typeof safeUrl === 'string' && safeUrl.startsWith('https://github.com/minori0721/Bili-favorites-backup/releases') ? safeUrl : 'https://github.com/minori0721/Bili-favorites-backup/releases';
+      } catch (error) {
+        if (!controller.signal.aborted && updatesController === controller) status.textContent = '暂时无法连接更新源，请稍后重试';
+      } finally {
+        if (updatesController === controller) { updatesController = null; button.disabled = false; }
+      }
+    }
+    document.getElementById('versionInfoBtn').addEventListener('click', (event) => { openModal('updatesModal', event.currentTarget); loadUpdates(); });
+    document.getElementById('checkUpdatesBtn').addEventListener('click', () => loadUpdates(true));
+    document.getElementById('closeUpdatesBtn').addEventListener('click', () => closeModal('updatesModal'));
     document.getElementById('closeLoginBtn').addEventListener('click', () => closeModal('loginModal'));
     document.getElementById('saveFavoritesBtn').addEventListener('click', saveFavorites);
     document.getElementById('closeFavoritesBtn').addEventListener('click', () => closeModal('favoritesModal'));
