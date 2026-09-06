@@ -78,7 +78,7 @@ docker compose logs --tail=100 app
 
 下一步：[首次登录](./first-login)。
 
-## 版本检查与发布说明（dev新增）
+## 版本检查与发布说明
 
 点击主页顶部版本标签打开“版本与更新”。正式标签及main构建按版本比较；dev和本地构建只展示正式版参考，不表示dev镜像已经有更新。
 
@@ -92,6 +92,6 @@ docker compose logs --tail=100 app
 
 - 继续使用现有dev验证、正式版本标签及main发布流程；不要为发布说明移动或重打历史标签。
 - 标签必须为`vX.Y.Z`，并与package版本及CHANGELOG章节一致。CHANGELOG应记录主要变化、升级注意、数据兼容与已知问题，发布正文从标签对应章节生成，不取dev“未发布”内容。
-- `Docker Publish`中新增的Release任务只在正式标签镜像成功后运行，单独授予`contents: write`；重跑保留已有Release，历史版本不会把Latest退回。此流程随代码合并发布后生效，不追溯执行旧工作流。
+- `Docker Publish`中新增的Release任务只在正式标签镜像成功后运行，单独授予`contents: write`；重跑保留已有Release，历史版本不会把Latest退回。此流程从v2.5.5开始生效，不追溯执行旧工作流。
 - 工具包发布使用工具前缀，并显式设置`--latest=false`。不得搬迁或删除历史附件，否则旧镜像构建可能无法下载固定依赖。
 - 2026-09-06补建的BFB `v2.5.4` Release来自既有标签`941a968`对应章节，标签与成功镜像不变；不是新版本发布。更早版本仍可从CHANGELOG及Git标签查看，没有批量补建历史Release。

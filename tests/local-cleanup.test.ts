@@ -529,7 +529,7 @@ test("manual local release uses persisted cleanup authorization and the verified
     const started = scheduler.requestLocalArchiveRelease(bvid, preview.candidates[0].releaseId, "DELETE LOCAL");
     assert.equal(started.ok, true);
     assert.equal(started.fileCount, 1);
-    await waitForCondition(() => !fs.existsSync(target));
+    await waitForCondition(() => !fs.existsSync(target) && state.getLocalCleanupPlans(bvid).length === 0);
     assert.deepEqual(inspected, ["/archive/video.mp4"]);
     assert.equal(state.getLocalCleanupPlans(bvid).length, 0);
   } finally {
