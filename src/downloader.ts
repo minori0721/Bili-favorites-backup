@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { tempDir } from "./paths.js";
 import { createBBDownCredentialDirectory } from "./credential-temp.js";
@@ -152,6 +153,7 @@ export interface BBDownProbeTarget {
 }
 
 export interface BBDownProbeOptions {
+  pagesOnly?: boolean;
   command?: string;
   commandArgsPrefix?: string[];
   timeoutMs?: number;
@@ -330,6 +332,7 @@ export async function probeMediaWithBBDown(
     config.bbdownApiMode === "app" ? String(cookie.appBuvid || "") : "",
   );
   const args = buildBBDownProbeArgs(bvid, credential.configPath, probeDir, config, options.target);
+  if (options.pagesOnly) args.push("--bfb-pages-json");
   // A probe must expose all combinations. Applying the configured download
   // preference here would hide alternatives needed by exact retries.
   const spawnArgs = [...(options.commandArgsPrefix || []), ...args];
@@ -390,7 +393,7 @@ export async function probeMediaWithBBDown(
           return;
         }
         if (code === 0) finish();
-        else finish(new Error(`BBDown 探测失败（退出码 ${code ?? "unknown"}）`));
+        else finish(new Error(interactiveFailureSummary(stdoutOutput) || `BBDown 探测失败（退出码 ${code ?? "unknown"}）`));
       });
     });
   } finally {
@@ -398,6 +401,8 @@ export async function probeMediaWithBBDown(
     await fs.promises.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
   }
   const pages = parseBBDownProbeOutput(stdoutOutput, bvid);
+  if (options.pagesOnly) validateInteractiveInventory(stdoutOutput, pages);
+  validateInteractiveProbeCoverage(stdoutOutput, pages);
   if (pages.length === 0) {
     const hasStructuredOutput = stdoutOutput.split(/\r?\n/).some((line) => line.trim().startsWith("BFB_PROBE_JSON:"));
     const error: any = new Error(hasStructuredOutput
@@ -407,6 +412,46 @@ export async function probeMediaWithBBDown(
     throw error;
   }
   return { bvid, pages, source: "bbdown" };
+}
+
+export function interactivePageSetHash(pages: BBDownProbePage[]) {
+  return createHash("sha256").update(pages.map((page) => page.cid).join(",")).digest("hex");
+}
+
+export function validateInteractiveProbeCoverage(output: string, pages: BBDownProbePage[]) {
+  const expected = output.split(/\r?\n/).filter((line) => line.startsWith("BFB_INTERACTIVE_EXPECTED:"));
+  if (expected.length > 0) {
+    if (expected.length !== 1) throw new Error("互动剧情探测返回多份片段清单，无法确认完整性");
+    validateInteractiveInventory(expected[0].replace("BFB_INTERACTIVE_EXPECTED:", "BFB_PAGES_COMPLETE:"), pages);
+  }
+}
+
+export function validateInteractiveInventory(output: string, pages: BBDownProbePage[]) {
+  const markers = output.split(/\r?\n/).filter((line) => line.startsWith("BFB_PAGES_COMPLETE:"));
+  if (pages.length === 0 || pages.length > 500 || markers.length !== 1
+    || markers[0].slice("BFB_PAGES_COMPLETE:".length).trim() !== interactivePageSetHash(pages)
+    || pages.some((page, index) => page.pageIndex !== index + 1
+      || !/^[1-9]\d*$/.test(page.cid) || !Number.isSafeInteger(Number(page.cid)))) {
+    const error: any = new Error("互动视频片段清单不完整或工具不支持，已停止下载；请更新 BBDown 后重试");
+    error.code = "BBDOWN_INTERACTIVE_INCOMPLETE";
+    error.downloadFailureCategory = "tool";
+    throw error;
+  }
+}
+
+function interactiveFailureSummary(output: string) {
+  const code = output.match(/BFB_SIGNAL:(INTERACTIVE_[A-Z_]+)/)?.[1];
+  if (!code) return undefined;
+  const descriptions: Record<string, string> = {
+    INTERACTIVE_CHANGED: "互动视频片段清单发生变化，请重新探测后重试",
+    INTERACTIVE_AUTH: "互动剧情接口需要有效账号权限，请检查登录状态",
+    INTERACTIVE_RATE_LIMIT: "互动剧情接口暂时限制访问，请稍后重试",
+    INTERACTIVE_TIMEOUT: "互动剧情解析超时，尚未取得完整片段清单",
+    INTERACTIVE_LIMIT: "互动剧情超过安全遍历上限，尚未取得完整片段清单",
+    INTERACTIVE_HTTP_ERROR: "互动剧情接口请求失败，不能据此判断视频失效",
+    INTERACTIVE_INCOMPLETE: "互动剧情返回不完整，尚未取得完整片段清单",
+  };
+  return descriptions[code] || "互动剧情解析失败，尚未取得完整片段清单";
 }
 
 export async function runWindowsTaskkill(
@@ -491,7 +536,23 @@ export async function downloadWithBBDown(
     throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), snapshot.access);
   }
   const previousSession = readDownloadSession(downloadDir);
-  const effectivePages = snapshot.pages.length > 0 ? snapshot.pages : previousSession?.pages || [];
+  let effectivePages = snapshot.pages.length > 0 ? snapshot.pages : previousSession?.pages || [];
+  let interactiveDigest: string | undefined;
+  if (snapshot.interactive && snapshotAvailability === "available") {
+    const inventory = await probeMediaWithBBDown(bvid, cookie, config, {
+      pagesOnly: true,
+      command: options.command,
+      commandArgsPrefix: options.commandArgsPrefix,
+      workingRoot: path.dirname(downloadDir),
+      timeoutMs: 110_000,
+    });
+    interactiveDigest = interactivePageSetHash(inventory.pages);
+    effectivePages = inventory.pages.map((page) => ({
+      index: page.pageIndex, cid: Number(page.cid), title: page.pageTitle,
+      duration: page.durationSeconds || 0,
+      publishedAt: page.publishedAt ? page.publishedAt * 1000 : snapshot.publishedAt,
+    }));
+  }
   if (effectivePages.length === 0 && snapshotAvailability === "unknown") {
     const metadataError: any = new Error("Unable to resolve the current video page list; retrying later");
     metadataError.deferToNextCycle = true;
@@ -610,6 +671,7 @@ export async function downloadWithBBDown(
     ];
 
     const selectedPages = buildSelectPageArgument(prepared.missingPages);
+    if (interactiveDigest) args.push("--bfb-page-set-sha256", interactiveDigest);
     if (selectedPages) args.push("--select-page", selectedPages);
 
     args.push(...buildBBDownTrackSelectionArgs(config, {
@@ -1056,6 +1118,8 @@ export function classifyBBDownFailure(output: string): {
   category: "source_unavailable" | "transient" | "tool";
   deferToNextCycle: boolean;
 } | null {
+  const interactive = interactiveFailureSummary(output);
+  if (interactive) return { line: interactive, category: "tool", deferToNextCycle: false };
   for (const line of output.split(/\r?\n/).map((item) => item.trim())) {
     if (!line) continue;
     if (line.includes("解析此分P失败")) {

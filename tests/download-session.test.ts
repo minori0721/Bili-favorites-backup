@@ -27,6 +27,7 @@ import {
   runWindowsTaskkill,
   sanitizeDownloadDiagnosticText,
   shutdownActiveDownloads,
+  interactivePageSetHash,
 } from "../src/downloader.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 import { writeJsonFile } from "../src/storage.js";
@@ -71,6 +72,85 @@ function isProcessAlive(pid: number) {
     return false;
   }
 }
+
+test("interactive download expands the root snapshot, protects the page set and resumes all CIDs", async () => {
+  configureFfprobe();
+  const runtime = await createTestDir("interactive-download");
+  try {
+    const fixture = path.join(runtime, "fixture.mp4");
+    await createVideo(fixture);
+    const bvid = "BV1pT4y157sf";
+    const downloadDir = path.join(runtime, bvid);
+    const records = [101, 102, 103].map((cid, i) => ({
+      version: 2, bvid, cid: String(cid), pageIndex: i + 1, pageTitle: `Node ${i + 1}`,
+      durationSeconds: 2, tracks: [],
+    }));
+    const digest = interactivePageSetHash(records);
+    const log = path.join(runtime, "runs.jsonl");
+    const script = path.join(runtime, "fake.mjs");
+    await fs.promises.writeFile(script, `
+      import fs from 'node:fs'; import path from 'node:path';
+      const args = process.argv.slice(2);
+      if (args.includes('--bfb-pages-json')) {
+        for (const p of ${JSON.stringify(records)}) console.log('BFB_PROBE_JSON:' + JSON.stringify(p));
+        console.log('BFB_PAGES_COMPLETE:${digest}');
+      } else {
+        if (args[args.indexOf('--bfb-page-set-sha256') + 1] !== '${digest}') process.exit(9);
+        const resumed = fs.existsSync(${JSON.stringify(log)});
+        fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+        const indexes = resumed ? [3] : [1, 2];
+        for (const i of indexes) fs.copyFileSync(${JSON.stringify(fixture)}, path.join(process.cwd(), 'video-${bvid}_P' + i + '.mp4'));
+      }
+    `);
+    const options = {
+      downloadDir, command: process.execPath, commandArgsPrefix: [script],
+      pageSnapshot: { available: true, interactive: true, access: { classification: "normal", source: "view" },
+        pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] } as const,
+    };
+    const cookie = { SESSDATA: "fake", DedeUserID: "1" };
+    const runOptions = { ...options, accessRecheck: async () => options.pageSnapshot };
+    await assert.rejects(downloadWithBBDown(bvid, cookie, testConfig(), runOptions as any), /remaining 1/);
+    assert.equal(readDownloadSession(downloadDir)?.status, "failed");
+    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 2);
+    const first = await downloadWithBBDown(bvid, cookie, testConfig(), runOptions as any);
+    assert.equal(first.files.length, 3);
+    assert.equal(first.totalPages, 3);
+    assert.equal(readDownloadSession(downloadDir)?.status, "complete");
+    assert.deepEqual(readDownloadSession(downloadDir)?.pages.map(p => p.cid), [101, 102, 103]);
+    const second = await downloadWithBBDown(bvid, cookie, testConfig(), runOptions as any);
+    assert.equal(second.files.length, 3);
+    const calls = (await fs.promises.readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1][calls[1].indexOf("--select-page") + 1], "3");
+  } finally { await removeTestDir(runtime); }
+});
+
+test("interactive inventory failures preserve the existing manifest and page-set drift stops media download", async () => {
+  const runtime = await createTestDir("interactive-boundaries");
+  try {
+    const bvid = "BV1pT4y157sf";
+    const downloadDir = path.join(runtime, bvid);
+    await prepareDownloadSession({ downloadDir, bvid, accountUid: 1, config: testConfig(),
+      pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] });
+    const before = readDownloadSession(downloadDir);
+    const script = path.join(runtime, "fake.mjs");
+    const records = [{ version: 2, bvid, cid: "101", pageIndex: 1, pageTitle: "Root", tracks: [] }];
+    const options = { downloadDir, command: process.execPath, commandArgsPrefix: [script],
+      pageSnapshot: { available: true, interactive: true, pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] } };
+    await fs.promises.writeFile(script, `console.log('BFB_PROBE_JSON:' + ${JSON.stringify(JSON.stringify(records[0]))});`);
+    await assert.rejects(downloadWithBBDown(bvid, { SESSDATA: "fake", DedeUserID: "1" }, testConfig(), options as any), /片段清单不完整/);
+    assert.deepEqual(readDownloadSession(downloadDir), before);
+    await fs.promises.writeFile(script, `
+      if (process.argv.includes('--bfb-pages-json')) {
+        console.log('BFB_PROBE_JSON:' + ${JSON.stringify(JSON.stringify(records[0]))});
+        console.log('BFB_PAGES_COMPLETE:${interactivePageSetHash(records)}');
+      } else { console.log('BFB_SIGNAL:INTERACTIVE_CHANGED'); process.exit(1); }
+    `);
+    await assert.rejects(downloadWithBBDown(bvid, { SESSDATA: "fake", DedeUserID: "1" }, testConfig(), options as any), /片段清单发生变化/);
+    assert.equal(readDownloadSession(downloadDir)?.status, "failed");
+    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 0);
+  } finally { await removeTestDir(runtime); }
+});
 
 function uploadMetadataManifest(overrides: Partial<DownloadSessionManifest> = {}): DownloadSessionManifest {
   return {
@@ -699,7 +779,33 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
-test("BBDown 2.0.4 keeps 2.0.3 Web resume tracks when runtime settings are unchanged", async () => {
+for (const mode of ["web", "app"] as const) {
+  test(`BBDown 2.0.5 retains 2.0.4 ${mode} tracks but still isolates changed runtime settings`, async () => {
+    const runtime = await createTestDir(`bbdown-205-${mode}`);
+    try {
+      const downloadDir = path.join(runtime, "BV1pT4y157sf");
+      const pages = [{ index: 1, cid: 101, title: "Root", duration: 2 }];
+      const config = testConfig({ bbdownApiMode: mode });
+      await prepareDownloadSession({ downloadDir, bvid: "BV1pT4y157sf", accountUid: 1, config, pages });
+      const old = readDownloadSession(downloadDir)!;
+      old.bbdownCommit = "0ea9463202e8a57e0d673f29166e54f4ed770255";
+      old.configFingerprint = "old-runtime";
+      writeJsonFile(path.join(downloadDir, ".bfb-download.json"), old);
+      const track = path.join(downloadDir, "video.mp4.aria2");
+      await fs.promises.writeFile(track, "resume");
+      const upgraded = await prepareDownloadSession({ downloadDir, bvid: old.bvid, accountUid: 1, config, pages });
+      assert.equal(upgraded.incompatibleFragmentsMoved, 0);
+      assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
+      assert.equal(fs.existsSync(track), true);
+      writeJsonFile(path.join(downloadDir, ".bfb-download.json"), old);
+      const changed = await prepareDownloadSession({ downloadDir, bvid: old.bvid, accountUid: 2, config, pages });
+      assert.equal(changed.incompatibleFragmentsMoved, 1);
+      assert.equal(fs.existsSync(track), false);
+    } finally { await removeTestDir(runtime); }
+  });
+}
+
+test("BBDown current release keeps 2.0.3 Web resume tracks when runtime settings are unchanged", async () => {
   const runtime = await createTestDir("download-session-compatible-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1BBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -732,7 +838,7 @@ test("BBDown 2.0.4 keeps 2.0.3 Web resume tracks when runtime settings are uncha
   }
 });
 
-test("BBDown 2.0.4 keeps 2.0.3 APP resume tracks because download behavior is unchanged", async () => {
+test("BBDown current release keeps 2.0.3 APP resume tracks because download behavior is unchanged", async () => {
   const runtime = await createTestDir("download-session-compatible-app-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1BBDOWNAPPUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -765,7 +871,7 @@ test("BBDown 2.0.4 keeps 2.0.3 APP resume tracks because download behavior is un
   }
 });
 
-test("BBDown 2.0.4 keeps historic Web resume tracks when runtime settings are unchanged", async () => {
+test("BBDown current release keeps historic Web resume tracks when runtime settings are unchanged", async () => {
   const runtime = await createTestDir("download-session-legacy-web-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1LEGACYBBDOWN");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];
@@ -798,7 +904,7 @@ test("BBDown 2.0.4 keeps historic Web resume tracks when runtime settings are un
   }
 });
 
-test("BBDown 2.0.4 still isolates older APP resume tracks before redownload", async () => {
+test("BBDown current release still isolates older APP resume tracks before redownload", async () => {
   const runtime = await createTestDir("download-session-app-bbdown-upgrade");
   const downloadDir = path.join(runtime, "BV1APPBBDOWNUPGRADE");
   const pages = [{ index: 1, cid: 101, title: "One", duration: 10 }];

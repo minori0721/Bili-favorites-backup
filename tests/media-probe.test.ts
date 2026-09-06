@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { MediaProbeService } from "../src/media-probe.js";
-import { buildBBDownProbeArgs, buildBBDownTrackSelectionArgs, parseBBDownProbeOutput, probeMediaWithBBDown, type BBDownProbePage } from "../src/downloader.js";
+import { buildBBDownProbeArgs, buildBBDownTrackSelectionArgs, parseBBDownProbeOutput, probeMediaWithBBDown, interactivePageSetHash, validateInteractiveInventory, validateInteractiveProbeCoverage, classifyBBDownFailure, type BBDownProbePage } from "../src/downloader.js";
 import type { BiliUser } from "../src/users.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
@@ -18,6 +18,34 @@ function user(): BiliUser {
     lastLoginAt: new Date().toISOString(),
   };
 }
+
+test("interactive inventory requires a complete ordered CID set and a completion marker", () => {
+  const inventory = pages();
+  const marker = `BFB_PAGES_COMPLETE:${interactivePageSetHash(inventory)}`;
+  validateInteractiveInventory(marker, inventory);
+  for (const [output, records] of [
+    ["", inventory], [marker, inventory.slice(0, 1)], [marker, [...inventory].reverse()],
+    [marker + "\n" + marker, inventory], [marker, []],
+    [marker, [{ ...inventory[0], cid: "9007199254740992" }]],
+  ] as Array<[string, BBDownProbePage[]]>) {
+    assert.throws(() => validateInteractiveInventory(output, records), /片段清单不完整/);
+  }
+});
+
+test("interactive API failure cannot be classified as a deleted video by generic log text", () => {
+  const failure = classifyBBDownFailure("剧情图已失效\nBFB_SIGNAL:INTERACTIVE_INCOMPLETE");
+  assert.equal(failure?.category, "tool");
+  assert.match(failure?.line || "", /互动剧情/);
+});
+
+test("interactive media estimates reject skipped branches, ordinary probes stay compatible", () => {
+  const records = pages();
+  const expected = `BFB_INTERACTIVE_EXPECTED:${interactivePageSetHash(records)}`;
+  validateInteractiveProbeCoverage(expected, records);
+  assert.throws(() => validateInteractiveProbeCoverage(expected, records.slice(0, 1)), /不完整/);
+  assert.throws(() => validateInteractiveProbeCoverage(expected + "\n" + expected, records), /多份/);
+  validateInteractiveProbeCoverage("", records);
+});
 
 function pages(): BBDownProbePage[] {
   return [

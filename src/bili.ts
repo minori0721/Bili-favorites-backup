@@ -507,6 +507,7 @@ export async function listFavoriteItemsPage(
 }
 
 export interface VideoPageSnapshotResult {
+  interactive?: boolean;
   available: boolean;
   /** The API-level availability result. `available` remains for old callers. */
   availability?: "available" | "unavailable" | "unknown";
@@ -788,6 +789,7 @@ export async function getVideoPageSnapshot(
       return {
         available: true,
         availability: "available",
+        interactive: Number(view.rights?.is_stein_gate || 0) === 1,
         apiCodes: [...new Set(observations
           .map((observation) => observation.apiCode)
           .filter((code): code is number => Number.isFinite(code)))],

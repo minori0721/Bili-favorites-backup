@@ -21,7 +21,8 @@ import {
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "0ea9463202e8a57e0d673f29166e54f4ed770255";
+export const BBDOWN_SOURCE_COMMIT = "fa7209d63bd73a4ab07913ce1478a0e13056ad09";
+const PREVIOUS_BBDOWN_INTERACTIVE_COMMIT = "0ea9463202e8a57e0d673f29166e54f4ed770255";
 const PREVIOUS_BBDOWN_SOURCE_COMMIT = "76c1a802825efd9761699d42955fd0553a9dfa9d";
 const PREVIOUS_BBDOWN_PROBE_COMMIT = "d34b69482d3cdf3af3aea12cf1123142609b5c07";
 const LEGACY_BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
@@ -1034,7 +1035,7 @@ export async function prepareDownloadSession(options: {
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
-      const probeOnlyBbdownUpgrade = manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
+      const probeOnlyBbdownUpgrade = [PREVIOUS_BBDOWN_INTERACTIVE_COMMIT, PREVIOUS_BBDOWN_SOURCE_COMMIT].includes(manifest.bbdownCommit)
         && previousSnapshot.apiMode === nextSnapshot.apiMode
         && sameRuntimeConfig;
       const compatibleBbdownUpgrade = probeOnlyBbdownUpgrade || (
@@ -1052,6 +1053,7 @@ export async function prepareDownloadSession(options: {
         && sameRuntimeConfig
         && (
           manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === PREVIOUS_BBDOWN_INTERACTIVE_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_PROBE_COMMIT
           || manifest.bbdownCommit === LEGACY_BBDOWN_SOURCE_COMMIT
