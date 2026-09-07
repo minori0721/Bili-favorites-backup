@@ -262,11 +262,33 @@ test("real app supports login, queue state, config update and migration preview 
     assert.equal(completeExport.status, 200);
     const completeArchive = Buffer.from(await completeExport.arrayBuffer());
     await fs.promises.rm(resumableDir, { recursive: true, force: true });
-    const completeImport = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreState=false&restoreCovers=false`, {
+    const originalRename = fs.promises.rename;
+    let unblock!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { unblock = resolve; });
+    const atSwitch = new Promise<void>(resolve => { entered = resolve; });
+    fs.promises.rename = (async (from: any, to: any) => {
+      if (String(from).startsWith(`${tempRoot}.migration-`) && String(to) === tempRoot) {
+        entered();
+        await blocked;
+      }
+      return originalRename(from, to);
+    }) as typeof originalRename;
+    let completeImport: Response;
+    try {
+    const pendingCompleteImport = fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreState=false&restoreCovers=false`, {
       method: "POST",
       headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
       body: completeArchive,
     });
+      await Promise.race([atSwitch, new Promise((_, reject) => setTimeout(() => reject(new Error("import did not reach switch")), 5000).unref())]);
+      for (const route of ["/api/config", "/api/path-migration/preview", "/api/users/u1/refresh-auth", "/api/migration/import"]) {
+        const conflict = await fetch(`${base}${route}`, { method: route === "/api/config" ? "PUT" : "POST", headers: { Origin: base, Cookie: cookie, "Content-Type": "application/json" }, body: "{}" });
+        assert.equal(conflict.status, 409, route);
+      }
+      unblock();
+      completeImport = await pendingCompleteImport;
+    } finally { unblock(); fs.promises.rename = originalRename; }
     assert.equal(completeImport.status, 200);
     assert.equal(fs.existsSync(path.join(tempRoot, "BVCOMPLETE", "track.aria2")), true);
     const refusedCompleteImport = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreState=false&restoreCovers=false`, {

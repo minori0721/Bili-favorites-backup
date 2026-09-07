@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import path from "node:path";
+import { createTestDir, removeTestDir } from "./helpers.js";
 import { OnlineCoverCache } from "../src/online-cover-cache.js";
 
 function deferred<T>() {
@@ -15,6 +18,48 @@ function isolatedCache() {
   cache.get = async () => null;
   return cache as OnlineCoverCache & Record<string, any>;
 }
+
+test("清理临时目录失败后仍释放所有封面并发名额", async () => {
+  const root = await createTestDir("cover-cleanup-denied");
+  const cache = isolatedCache();
+  const mkdtemp = fs.promises.mkdtemp, rm = fs.promises.rm;
+  fs.promises.mkdtemp = ((prefix: any, options: any) => mkdtemp(path.basename(String(prefix)).startsWith("online-cover-") ? path.join(root, "online-cover-") : prefix, options)) as typeof mkdtemp;
+  fs.promises.rm = (async (target: any, options: any) => {
+    if (String(target).startsWith(root)) throw Object.assign(new Error("fixture EACCES"), { code: "EACCES" });
+    return rm(target, options);
+  }) as typeof rm;
+  try {
+    assert.deepEqual(await Promise.all(Array.from({ length: 8 }, (_, i) => cache.getOrFetch(`failure-${i}`, "invalid-url"))), Array(8).fill(null));
+    assert.equal(cache.runningFetches, 0);
+    assert.equal(cache.fetchWaiters.length, 0);
+    await cache.clear();
+  } finally { fs.promises.mkdtemp = mkdtemp; fs.promises.rm = rm; await removeTestDir(root); }
+});
+
+test("封面删除失败时清空与淘汰保留占用，重试成功才清账", async () => {
+  const cache = isolatedCache();
+  const entry = { fileName: "fixture-denied.webp", bytes: 100, accessedAt: 1, lastAccessPersistAt: 1 };
+  cache.entries.set("fixture", entry);
+  cache.totalBytes = 100;
+  cache.limitBytes = 1;
+  const unlink = fs.promises.unlink;
+  fs.promises.unlink = (async (file: any) => {
+    if (path.basename(String(file)) === entry.fileName) throw Object.assign(new Error("fixture denied"), { code: "EACCES" });
+    return unlink(file);
+  }) as typeof unlink;
+  try {
+    await cache.evictIfNeeded();
+    assert.equal((await cache.inspect()).bytes, 100);
+    await assert.rejects(cache.clear(), /未能删除/);
+    assert.equal((await cache.inspect()).files, 1);
+    fs.promises.unlink = (async (file: any) => {
+      if (path.basename(String(file)) === entry.fileName) throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      return unlink(file);
+    }) as typeof unlink;
+    await cache.clear();
+    assert.equal((await cache.inspect()).bytes, 0);
+  } finally { fs.promises.unlink = unlink; }
+});
 
 test("在线缩略图清理等待正在写入的文件且不会互相死锁", async () => {
   const cache = isolatedCache();

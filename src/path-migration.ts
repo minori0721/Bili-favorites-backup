@@ -376,6 +376,15 @@ export class PathMigrationService {
     this.ensuredDirectories.clear();
   }
 
+  rebindWithinLifecycleBarrier(database: StateDatabase) {
+    if (!this.lifecycleBarrier || this.previewTask || this.worker || this.starting) {
+      throw new Error("导入状态切换需要独占维护保护");
+    }
+    this.db = database;
+    this.jobStore.rebind(database);
+    this.ensuredDirectories.clear();
+  }
+
   private async walk(
     client: PathMigrationDavClient,
     root: string,

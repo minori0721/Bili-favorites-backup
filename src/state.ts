@@ -1,3 +1,4 @@
+import { prepareDatabaseReplacement, recoverDatabaseReplacement } from "./database-replacement.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -837,6 +838,7 @@ export class StateManager {
   }
 
   private initializeDatabase() {
+    recoverDatabaseReplacement(this.dbPath);
     const readLegacyStateStrict = () => {
       const raw = fs.readFileSync(this.statePath, "utf8");
       const parsed = JSON.parse(raw);
@@ -3846,56 +3848,43 @@ export class StateManager {
         },
       };
     }
-    const validation = new StateDatabase(source);
-    try {
-      validation.integrityCheck();
-    } finally {
-      validation.close();
-    }
     this.flush();
-    const operationId = crypto.randomUUID().replace(/-/g, "");
-    const replacement = `${this.dbPath}.importing-${operationId}`;
-    const previous = `${this.dbPath}.before-import-${operationId}`;
-    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${replacement}${suffix}`, { force: true });
-    fs.copyFileSync(source, replacement);
-    this.database.close();
-    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${previous}${suffix}`, { force: true });
+    const replacement = await prepareDatabaseReplacement(this.dbPath, source, (destination) => this.backupDatabase(destination));
     try {
-      for (const suffix of ["", "-wal", "-shm"]) {
-        if (fs.existsSync(`${this.dbPath}${suffix}`)) fs.renameSync(`${this.dbPath}${suffix}`, `${previous}${suffix}`);
-      }
-      fs.renameSync(replacement, this.dbPath);
+      this.database.close();
+      replacement.install();
       this.database = new StateDatabase(this.dbPath);
       this.database.integrityCheck();
       this.reloadDatabaseView();
     } catch (error) {
       try { if (this.database?.db?.open) this.database.close(); } catch {}
-      for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
-      for (const suffix of ["", "-wal", "-shm"]) {
-        if (fs.existsSync(`${previous}${suffix}`)) fs.renameSync(`${previous}${suffix}`, `${this.dbPath}${suffix}`);
+      try {
+        replacement.rollback();
+        this.database = new StateDatabase(this.dbPath);
+        this.reloadDatabaseView();
+      } catch (rollbackError) {
+        throw Object.assign(new Error("Database replacement recovery failed; files retained"), { cause: rollbackError, recoveryRequired: true });
       }
-      this.database = new StateDatabase(this.dbPath);
-      this.reloadDatabaseView();
       throw error;
     }
     let settled = false;
     return {
       commit: async () => {
         if (settled) return;
-        for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${previous}${suffix}`, { force: true });
+        replacement.commit();
         settled = true;
       },
       rollback: async () => {
         if (settled) return;
         this.database.close();
-        for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
-        for (const suffix of ["", "-wal", "-shm"]) {
-          if (fs.existsSync(`${previous}${suffix}`)) fs.renameSync(`${previous}${suffix}`, `${this.dbPath}${suffix}`);
+        try {
+          replacement.rollback();
+          this.database = new StateDatabase(this.dbPath);
+          this.reloadDatabaseView();
+          settled = true;
+        } catch (error) {
+          throw Object.assign(new Error("Database replacement recovery failed; files retained"), { cause: error, recoveryRequired: true });
         }
-        this.database = new StateDatabase(this.dbPath);
-        this.database.integrityCheck();
-        this.reloadDatabaseView();
-        settled = true;
       },
     };
   }

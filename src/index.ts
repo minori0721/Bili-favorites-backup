@@ -1,3 +1,5 @@
+import { ImportMaintenance } from "./import-maintenance.js";
+import { recoverImportTransaction } from "./import-transaction.js";
 import express from "express";
 import { UpdateCheckService } from "./update-check.js";
 import session from "express-session";
@@ -120,6 +122,9 @@ import {
 } from "./rename-preview.js";
 
 ensureAppDirs();
+recoverImportTransaction();
+logManager.reload();
+const importMaintenance = new ImportMaintenance();
 
 const configStore = new ConfigStore();
 const userStore = new UserStore();
@@ -350,6 +355,10 @@ function buildAuthHealth(user: BiliUser) {
 }
 
 async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto" | "on_error") {
+  return importMaintenance.run(() => refreshUserAuthForStoreUnlocked(userId, reason));
+}
+
+async function refreshUserAuthForStoreUnlocked(userId: string, reason: "manual" | "auto" | "on_error") {
   const user = userStore.getById(userId);
   if (!user) {
     throw new Error("User not found");
@@ -403,7 +412,7 @@ function startTokenRefreshLoop() {
   async function checkAndRefresh() {
     let nextInterval = CHECK_INTERVAL;
     try {
-      if (scheduler.hasRunningTransferTasks()) {
+      if (importMaintenance.blocked || scheduler.hasRunningTransferTasks()) {
         console.warn("[Auth] Skip auto refresh because transfer tasks are running; retry in 1 hour.");
         nextInterval = RETRY_INTERVAL_ON_BUSY;
         return;
@@ -841,7 +850,11 @@ function asyncHandler(
   handler: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void> | void
 ) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    Promise.resolve(handler(req, res, next)).catch(next);
+    if (req.path === "/api/migration/import") {
+      Promise.resolve().then(() => handler(req, res, next)).catch(next);
+      return;
+    }
+    importMaintenance.run(async () => { await handler(req, res, next); }).catch(next);
   };
 }
 
@@ -898,6 +911,13 @@ app.post("/api/login", requireSameOrigin, loginRateLimiter, (req, res) => {
 });
 
 app.use("/api", requireAuth, requireSameOrigin);
+app.use("/api", (_req, res, next) => {
+  if (importMaintenance.blocked) {
+    res.status(409).json({ success: false, message: "状态导入维护中，请稍后重试" });
+    return;
+  }
+  next();
+});
 
 const updateCheckService = new UpdateCheckService();
 app.get("/api/updates", asyncHandler(async (req, res) => {
@@ -1087,7 +1107,9 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
     setLoginSession(loginId, { status: "pending", qrDataUrl });
 
     login.emitter.on("completed", async (result: any) => {
+      let release: (() => void) | undefined;
       try {
+        release = importMaintenance.enter();
         const authData = normalizeTvAuthResult(result);
         const info = await getUserInfo(authData.cookie);
         const userId = String(info.uid);
@@ -1118,7 +1140,7 @@ app.post("/api/users/login/start", asyncHandler(async (req, res) => {
         setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
       } catch (error: any) {
         setLoginSession(loginId, { status: "error", qrDataUrl, message: safeErrorSummary(error, "Failed to save user") });
-      }
+      } finally { release?.(); }
     });
 
     login.emitter.on("error", (error: any) => {
@@ -2297,7 +2319,7 @@ function reloadStoresAfterImport() {
   userStore.reload();
   stateManager.reload();
   scheduler.reloadStateDatabase();
-  pathMigration.rebind(stateManager.getDatabase());
+  pathMigration.rebindWithinLifecycleBarrier(stateManager.getDatabase());
   archiveDeletion.rebind(stateManager.getDatabase());
   logManager.reload();
   scheduler.updateInterval();
@@ -2387,8 +2409,18 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
   }
   const previousLegacyRecoveryMarkers = scheduler.captureLegacyRecoveryMarkers();
   const upload = await receiveMigrationArchive(req);
+  let releaseMaintenance: (() => void) | undefined;
   let result: Awaited<ReturnType<typeof applyMigrationPackageFile>>;
   try {
+    // Validate the uploaded archive before taking the exclusive maintenance boundary.
+    await previewMigrationPackageFile(upload.archivePath);
+    releaseMaintenance = await importMaintenance.acquire();
+    archiveDeletion.setImportMaintenance(true);
+    if (mediaProbe.isBusy() || archiveDeletion.hasUnfinishedOperation() || stateManager.getDatabase().getActivePathMigration()
+      || scheduler.hasRunningTransferTasks() || scheduler.hasPersistentTransferWork() || scheduler.hasActiveOrQueuedSchedulerWork()) {
+      throw Object.assign(new Error("导入准备期间任务状态已变化，请稍后重试"), { statusCode: 409 });
+    }
+    if (!await renamePreviewScans.waitForIdle(30_000)) throw Object.assign(new Error("重命名预览尚未结束，请稍后重试"), { statusCode: 409 });
     const backfillStopped = await unavailableCoverBackfill.stop(30_000);
     const coverQueueIdle = backfillStopped && await waitForCoverCacheIdle(30_000);
     if (!backfillStopped || !coverQueueIdle) {
@@ -2402,7 +2434,7 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
         throw Object.assign(new Error("归档路径任务刚刚开始运行，请稍后重试导入"), { statusCode: 409 });
       }
       try {
-        return applyMigrationPackageFile(upload.archivePath, {
+        return await applyMigrationPackageFile(upload.archivePath, {
           restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
           restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
           restoreState: parseBooleanOption(req.query.restoreState, true),
@@ -2419,11 +2451,22 @@ app.post("/api/migration/import", asyncHandler(async (req, res) => {
       stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
     }
   } catch (error: any) {
+    if (error?.recoveryRequired) {
+      importMaintenance.failClosed();
+      scheduler.beginShutdown();
+      throw error;
+    }
     if (error?.statusCode === 409) throw error;
     throw badRequest(error?.message || "导入包无法解析");
   } finally {
-    await fs.promises.rm(upload.root, { recursive: true, force: true });
-    unavailableCoverBackfill.restart();
+    try { await fs.promises.rm(upload.root, { recursive: true, force: true }); }
+    finally {
+      releaseMaintenance?.();
+      if (!importMaintenance.blocked) {
+        archiveDeletion.setImportMaintenance(false);
+        unavailableCoverBackfill.restart();
+      }
+    }
   }
   try {
     scheduler.recheckLegacyRecoveryAfterImport(result.restored, previousLegacyRecoveryMarkers);

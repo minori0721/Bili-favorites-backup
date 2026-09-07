@@ -1002,7 +1002,15 @@ export class ArchiveDeletionService {
     }
   }
 
+  private importMaintenance = false;
+
+  setImportMaintenance(locked: boolean) {
+    this.importMaintenance = locked;
+    if (!locked) this.schedule();
+  }
+
   private schedule() {
+    if (this.importMaintenance) return;
     if (this.stopped || this.worker) return;
     if (this.wakeTimer) {
       clearTimeout(this.wakeTimer);

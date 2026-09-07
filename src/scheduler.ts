@@ -526,10 +526,10 @@ export class SyncScheduler {
       if (!(task instanceof DownloadTask) && !(task instanceof QualityUpgradeDownloadTask)) return false;
       return this.canStartDownloadTask(task);
     });
-    this.uploadQueue.setStartGate((task) => !this.pathMigrationLocked
+    this.uploadQueue.setStartGate((task) => !this.cleanupLocked && !this.pathMigrationLocked
       && !this.isArchiveDeletionTargetBlocked(task)
       && this.uploadCircuit.allowUploadStart(this.uploadTaskKey(task)));
-    this.verificationQueue.setStartGate((task) => !this.pathMigrationLocked
+    this.verificationQueue.setStartGate((task) => !this.cleanupLocked && !this.pathMigrationLocked
       && !this.isArchiveDeletionTargetBlocked(task)
       && this.uploadCircuit.allowUploadStart(`verify:${(task as any).bvid || task.id}`));
     this.refreshLocalCacheAndWake(true);
@@ -3558,7 +3558,7 @@ export class SyncScheduler {
   }
 
   private startLocalCleanupSweep() {
-    if (this.localCleanupSweepPromise || !this.acceptingJobs) return;
+    if (this.localCleanupSweepPromise || this.cleanupLocked || !this.acceptingJobs) return;
     this.localCleanupSweepPromise = (async () => {
       let cursor: import("./database.js").VerifiedLocalCleanupCursor | null = null;
       while (this.acceptingJobs) {
@@ -8415,7 +8415,7 @@ export class SyncScheduler {
   }
 
   hasActiveOrQueuedSchedulerWork() {
-    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || this.pathMigrationLocked || this.archiveDeletionLocked || Boolean(this.legacyTempRecoveryPromise);
+    return this.running || Boolean(this.pendingTickOptions) || this.cleanupLocked || this.pathMigrationLocked || this.archiveDeletionLocked || Boolean(this.legacyTempRecoveryPromise) || Boolean(this.localCleanupSweepPromise);
   }
 
   refreshLocalCacheState() {
@@ -8435,7 +8435,7 @@ export class SyncScheduler {
   }
 
   withCleanupLock<T>(fn: () => Promise<T>) {
-    if (this.cleanupLocked || this.running || this.pendingTickOptions || this.hasRunningTransferTasks()) {
+    if (this.cleanupLocked || this.localCleanupSweepPromise || this.running || this.pendingTickOptions || this.hasRunningTransferTasks()) {
       throw new Error("当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。");
     }
     this.cleanupLocked = true;
@@ -8717,7 +8717,7 @@ export class SyncScheduler {
   }
 
   private canStartDownloadTask(task?: DownloadTask | QualityUpgradeDownloadTask) {
-    if (this.legacyTempRecoveryPending || this.pathMigrationLocked || this.archiveDeletionLocked) return false;
+    if (this.cleanupLocked || this.legacyTempRecoveryPending || this.pathMigrationLocked || this.archiveDeletionLocked) return false;
     if (task && this.isArchiveDeletionTargetBlocked(task)) return false;
     if (task instanceof QualityUpgradeDownloadTask && this.qualityArtifactCleanupLocks.has(task.control.artifactKey)) {
       return false;

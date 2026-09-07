@@ -1,3 +1,4 @@
+import { beginImportTransaction } from "./import-transaction.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -763,6 +764,9 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       await fs.promises.copyFile(originalSqliteSource, sqliteSource, fs.constants.COPYFILE_EXCL);
       await sanitizeLightweightDatabase(sqliteSource);
     }
+    const transaction = beginImportTransaction(operationId);
+    let committed = false;
+    let recoveryPending = false;
     const prepared: Array<{ name: string; target: string; staged: string; backup: string }> = [];
     const switched: typeof prepared = [];
     const prepare = async (name: string, source: string, target: string) => {
@@ -775,12 +779,12 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       const stat = await fs.promises.stat(source);
       if (stat.isDirectory()) await fs.promises.cp(source, staged, { recursive: true, force: false, errorOnExist: true });
       else await fs.promises.copyFile(source, staged, fs.constants.COPYFILE_EXCL);
+      transaction.add({ target, staged, backup });
       prepared.push({ name, target, staged, backup });
       return true;
     };
     const restored: string[] = [];
     let stateReplacement: { commit(): Promise<void>; rollback(): Promise<void> } | undefined;
-    let appliedSuccessfully = false;
     try {
       if (options.restoreConfig !== false) await prepare("config", path.join(extracted.extractDir, "data", "config.json"), path.join(dataDir, "config.json"));
       if (options.restoreUsers !== false) await prepare("users", path.join(extracted.extractDir, "data", "users.json"), path.join(dataDir, "users.json"));
@@ -831,11 +835,17 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       }
 
       await options.reload?.();
+      transaction.commit();
+      committed = true;
       await stateReplacement?.commit();
       for (const item of switched) await rmWithRetry(item.backup);
-      appliedSuccessfully = true;
+      transaction.finish();
       return { manifest: extracted.manifest, backupPath, restored };
     } catch (error) {
+      if (committed || (error as any)?.recoveryRequired) {
+        recoveryPending = true;
+        throw Object.assign(new Error("Import requires recovery; files retained"), { cause: error, recoveryRequired: true });
+      }
       const rollbackErrors: string[] = [];
       if (stateReplacement) {
         try {
@@ -847,7 +857,7 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       for (const item of [...switched].reverse()) {
         try {
           await fs.promises.rm(item.target, { recursive: true, force: true });
-          if (await pathExists(item.backup)) await fs.promises.rename(item.backup, item.target);
+          if (await pathExists(item.backup)) await fs.promises.cp(item.backup, item.target, { recursive: true });
         } catch (rollbackError) {
           rollbackErrors.push(`${item.name}: ${safeErrorSummary(rollbackError)}; backup=${item.backup}`);
         }
@@ -860,13 +870,15 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
         }
       }
       if (rollbackErrors.length > 0) {
-        throw new Error(`${safeErrorSummary(error)}；回滚未完整完成：${rollbackErrors.join("；")}`);
+        recoveryPending = true;
+        throw Object.assign(new Error(`${safeErrorSummary(error)}；回滚未完整完成：${rollbackErrors.join("；")}`), { recoveryRequired: true });
       }
+      transaction.finish();
       throw error;
     } finally {
-      for (const item of prepared) {
+      for (const item of recoveryPending || transaction.pending ? [] : prepared) {
         await rmWithRetry(item.staged);
-        if (appliedSuccessfully || !(await pathExists(item.backup))) {
+        if (!recoveryPending) {
           await rmWithRetry(item.backup);
         }
       }

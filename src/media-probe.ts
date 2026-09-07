@@ -158,6 +158,8 @@ export class MediaProbeService {
     private readonly availabilityProbe?: MediaAvailabilityProbe,
   ) {}
 
+  isBusy() { return this.activeByUser.size > 0; }
+
   start(user: BiliUser, bvid: string, target?: TargetMediaProfile) {
     this.prune();
     const normalized = String(bvid || "").trim();

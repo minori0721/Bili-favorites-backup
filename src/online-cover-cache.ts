@@ -133,7 +133,12 @@ export class OnlineCoverCache {
     const { digest, filePath } = this.fileForKey(key);
     const entry = this.entries.get(digest);
     if (!entry) return null;
-    const stat = await fs.promises.stat(filePath).catch(() => null);
+    let stat;
+    try { stat = await fs.promises.stat(filePath); }
+    catch (error: any) {
+      if (error?.code !== "ENOENT") return null; // Unknown is not proof that disk space was freed.
+      stat = null;
+    }
     if (!stat || stat.size <= 0) {
       this.entries.delete(digest);
       this.totalBytes = Math.max(0, this.totalBytes - (entry.bytes || 0));
@@ -204,11 +209,13 @@ export class OnlineCoverCache {
       this.generation += 1;
       await Promise.allSettled([...this.active.values(), ...this.activePromotions]);
       if (this.cleanupPromise) await this.cleanupPromise;
-      for (const entry of this.entries.values()) {
-        await fs.promises.unlink(path.join(onlineCoversDir, entry.fileName)).catch(() => undefined);
+      for (const [digest, entry] of this.entries) {
+        if (await this.removeEntryFile(entry)) {
+          this.entries.delete(digest);
+          this.totalBytes = Math.max(0, this.totalBytes - entry.bytes);
+        }
       }
-      this.entries.clear();
-      this.totalBytes = 0;
+      if (this.entries.size > 0) throw new Error("部分在线封面未能删除，已保留占用统计，请稍后重试");
     })();
     this.clearPromise = work;
     try {
@@ -258,8 +265,11 @@ export class OnlineCoverCache {
       console.warn(`[OnlineCoverCache] failed: ${safeErrorSummary(error)}`);
       return null;
     } finally {
-      if (root) await fs.promises.rm(root, { recursive: true, force: true });
-      this.releaseFetchSlot();
+      try {
+        if (root) await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+      } catch (error) {
+        console.warn(`[OnlineCoverCache] temporary cleanup deferred: ${safeErrorSummary(error)}`);
+      } finally { this.releaseFetchSlot(); }
     }
   }
 
@@ -282,6 +292,15 @@ export class OnlineCoverCache {
     else this.runningFetches = Math.max(0, this.runningFetches - 1);
   }
 
+  private async removeEntryFile(entry: OnlineCoverEntry) {
+    try { await fs.promises.unlink(path.join(onlineCoversDir, entry.fileName)); return true; }
+    catch (error: any) {
+      if (error?.code === "ENOENT") return true;
+      console.warn(`[OnlineCoverCache] eviction deferred: ${safeErrorSummary(error)}`);
+      return false;
+    }
+  }
+
   private async evictIfNeeded() {
     // clear() waits for active writes and then removes all entries. Waiting
     // here would make clear() wait for the same fetch that is waiting for
@@ -295,7 +314,7 @@ export class OnlineCoverCache {
       for (const [digest, entry] of candidates) {
         if (this.totalBytes <= target) break;
         if (this.active.has(digest)) continue;
-        await fs.promises.unlink(path.join(onlineCoversDir, entry.fileName)).catch(() => undefined);
+        if (!await this.removeEntryFile(entry)) continue;
         this.entries.delete(digest);
         this.totalBytes = Math.max(0, this.totalBytes - entry.bytes);
       }
