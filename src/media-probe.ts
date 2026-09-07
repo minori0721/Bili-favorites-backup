@@ -8,6 +8,7 @@ import {
   type BBDownProbeTrack,
 } from "./downloader.js";
 import type { BiliUser } from "./users.js";
+import type { VideoPageSnapshotResult } from "./bili.js";
 import {
   normalizeActualCodec,
   normalizeBilibiliQualityLabel,
@@ -81,7 +82,7 @@ type MediaProbeRunner = (
 type MediaAvailabilityProbe = (
   cookie: BiliUser["cookie"],
   bvid: string,
-) => Promise<{ available: boolean; pages?: unknown[] }>;
+) => Promise<{ available: boolean; pages?: unknown[] } & Partial<Pick<VideoPageSnapshotResult, "availability" | "availabilityReason">>>;
 
 function codec(value: unknown): MediaProbeCombination["encoding"] {
   const normalized = normalizeActualCodec(String(value || ""));
@@ -179,7 +180,10 @@ export class MediaProbeService {
       if (this.availabilityProbe) {
         const availability = await this.availabilityProbe(user.cookie, normalized);
         if (availability.available === false && (!Array.isArray(availability.pages) || availability.pages.length === 0)) {
-          throw new Error("B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小");
+          if (availability.availability === "unavailable") {
+            throw new Error("B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小");
+          }
+          throw new Error("暂时无法确认B站源状态，请稍后重新探测可用画质、编码和大小");
         }
       }
       return this.probeRunner(normalized, user.cookie, this.configStore.get(), probeTarget);

@@ -343,6 +343,7 @@ export async function probeMediaWithBBDown(
   try {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(command, spawnArgs, { cwd: probeDir, windowsHide: true, detached: process.platform !== "win32" });
+      child.stdout.setEncoding("utf8");
       activeDownloadChildren.set(child, String(cookie.DedeUserID || ""));
       let settled = false;
       let outputLimitExceeded = false;
@@ -440,7 +441,7 @@ export function validateInteractiveInventory(output: string, pages: BBDownProbeP
 }
 
 function interactiveFailureSummary(output: string) {
-  const code = output.match(/BFB_SIGNAL:(INTERACTIVE_[A-Z_]+)/)?.[1];
+  const code = output.split(/\r?\n/).map(parseBBDownSignal).find((signal) => signal?.startsWith("INTERACTIVE_"));
   if (!code) return undefined;
   const descriptions: Record<string, string> = {
     INTERACTIVE_CHANGED: "互动视频片段清单发生变化，请重新探测后重试",
@@ -452,6 +453,12 @@ function interactiveFailureSummary(output: string) {
     INTERACTIVE_INCOMPLETE: "互动剧情返回不完整，尚未取得完整片段清单",
   };
   return descriptions[code] || "互动剧情解析失败，尚未取得完整片段清单";
+}
+
+export function parseBBDownSignal(line: string): string | undefined {
+  const body = line.trim().replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] - /, "");
+  if (/^BFB_SIGNAL:APP_NO_VIDEO_INFO: [^\r\n]+$/.test(body)) return "APP_NO_VIDEO_INFO";
+  return /^BFB_SIGNAL:([A-Z_]+(?::(?:WEB|APP))?)$/.exec(body)?.[1];
 }
 
 export async function runWindowsTaskkill(
@@ -1266,6 +1273,8 @@ function runCommand(
       detached: process.platform !== "win32",
     });
     activeDownloadChildren.set(child, String(options.accountUid || ""));
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     const commandStartedAt = Date.now();
     const sizeSamples: Array<{ at: number; size: number }> = [];
     let watchdogTimer: NodeJS.Timeout | null = null;
@@ -1397,16 +1406,16 @@ function runCommand(
     };
 
     const consumeSignal = (line: string) => {
-      const trimmed = line.trim();
-      if (trimmed.includes("BFB_SIGNAL:RISK_V_VOUCHER")) {
+      const signal = parseBBDownSignal(line);
+      if (signal === "RISK_V_VOUCHER") {
         riskSignalSeen = true;
         return true;
       }
-      if (trimmed.includes("BFB_SIGNAL:APP_NO_VIDEO_INFO")) {
+      if (signal === "APP_NO_VIDEO_INFO") {
         appNoVideoInfoSeen = true;
         return true;
       }
-      const ready = /BFB_SIGNAL:PLAYURL_READY:(WEB|APP)/.exec(trimmed);
+      const ready = /^PLAYURL_READY:(WEB|APP)$/.exec(signal || "");
       if (ready) {
         if (!readySignalSeen) {
           readySignalSeen = true;

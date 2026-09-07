@@ -3,9 +3,21 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { MediaProbeService } from "../src/media-probe.js";
+import { parseBBDownSignal } from "../src/downloader.js";
 import { buildBBDownProbeArgs, buildBBDownTrackSelectionArgs, parseBBDownProbeOutput, probeMediaWithBBDown, interactivePageSetHash, validateInteractiveInventory, validateInteractiveProbeCoverage, classifyBBDownFailure, type BBDownProbePage } from "../src/downloader.js";
 import type { BiliUser } from "../src/users.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+
+test("BBDown signals accept legacy framing but reject title and JSON markers", () => {
+  for (const prefix of ["", "[2026-07-11 00:00:00.000] - "]) {
+    assert.equal(parseBBDownSignal(prefix + "BFB_SIGNAL:PLAYURL_READY:WEB"), "PLAYURL_READY:WEB");
+    assert.equal(parseBBDownSignal(prefix + "BFB_SIGNAL:RISK_V_VOUCHER"), "RISK_V_VOUCHER");
+    assert.equal(parseBBDownSignal(prefix + "BFB_SIGNAL:APP_NO_VIDEO_INFO: APP play response had no video info"), "APP_NO_VIDEO_INFO");
+    assert.equal(parseBBDownSignal(prefix + "标题 BFB_SIGNAL:RISK_V_VOUCHER"), undefined);
+  }
+  assert.equal(parseBBDownSignal('{"title":"BFB_SIGNAL:INTERACTIVE_INCOMPLETE"}'), undefined);
+  assert.equal(parseBBDownSignal("BFB_SIGNAL:RISK_V_VOUCHER suffix"), undefined);
+});
 
 function user(): BiliUser {
   return {
@@ -75,6 +87,47 @@ function pages(): BBDownProbePage[] {
   ];
 }
 
+test("unknown and legacy availability never claim that a video is invisible", async () => {
+  for (const availability of [
+    { available: false, availability: "unknown" as const, availabilityReason: "temporary_error" as const, pages: [] },
+    { available: false, pages: [] },
+  ]) {
+    let calls = 0;
+    const service = new MediaProbeService({ get: () => testConfig() }, async (bvid) => {
+      calls++; return { bvid, pages: pages(), source: "bbdown" };
+    }, undefined, async () => availability);
+    const result = await waitFor(service.start(user(), "BV1Probe00001"));
+    assert.equal(result.status, "failed");
+    assert.match(result.error || "", /暂时无法确认B站源状态/);
+    assert.doesNotMatch(result.error || "", /稿件不可见/);
+    assert.equal(calls, 0);
+  }
+});
+
+test("interactive signals must occupy a complete protocol line, not a title or JSON value", () => {
+  for (const text of [
+    "[date] - 视频标题: BFB_SIGNAL:INTERACTIVE_AUTH 教程",
+    'BFB_PROBE_JSON:{"title":"BFB_SIGNAL:INTERACTIVE_AUTH"}',
+    "prefix BFB_SIGNAL:INTERACTIVE_AUTH", "BFB_SIGNAL:INTERACTIVE_AUTH suffix",
+  ]) assert.equal(classifyBBDownFailure(text), null);
+  assert.equal(classifyBBDownFailure("标题\r\nBFB_SIGNAL:INTERACTIVE_AUTH\r\n")?.category, "tool");
+});
+
+test("real probe stdout preserves UTF8 split inside Chinese and four-byte characters", async () => {
+  const runtime = await createTestDir("probe-utf8");
+  const record = { ...pages()[0], pageTitle: "中文标题😀" };
+  const output = `BFB_PROBE_JSON:${JSON.stringify(record)}\n`;
+  const script = `const b=Buffer.from(${JSON.stringify(output)}); let i=0;
+    const timer=setInterval(()=>{if(i===b.length){clearInterval(timer);return;}process.stdout.write(b.subarray(i,i+1));i++;},1);`;
+  try {
+    const result = await probeMediaWithBBDown(record.bvid, user().cookie, testConfig(), {
+      command: process.execPath, commandArgsPrefix: ["-e", script, "--"], workingRoot: runtime,
+    });
+    assert.deepEqual(result.pages, [record]);
+    assert.deepEqual(await fs.promises.readdir(runtime), []);
+  } finally { await removeTestDir(runtime); }
+});
+
 async function waitFor<T extends { status: string }>(value: T) {
   const deadline = Date.now() + 2_000;
   while (value.status === "running" && Date.now() < deadline) {
@@ -127,7 +180,7 @@ test("Bilibili visibility failure stops BBDown probing and returns a safe explan
       return { bvid, pages: pages(), source: "bbdown" };
     },
     undefined,
-    async () => ({ available: false, pages: [] }),
+    async () => ({ available: false, availability: "unavailable", pages: [] }),
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001"));
   assert.equal(result.status, "failed");

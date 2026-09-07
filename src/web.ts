@@ -2339,7 +2339,10 @@ function getAppScript() {
       if (!modal) return false;
       const index = modalStack.findIndex((entry) => entry.modal === modal);
       if (index < 0 || index !== modalStack.length - 1) return false;
-      if (modal.id === 'updatesModal') { updatesController?.abort(); updatesController = null; }
+      if (modal.id === 'updatesModal') {
+        updatesController?.abort(); updatesController = null;
+        clearInterval(updatesCooldownTimer); updatesCooldownTimer = null;
+      }
       if (modal.id === 'confirmActionModal' && pendingConfirmAction && !options.skipConfirm) {
         finishConfirmAction(false);
         return true;
@@ -6047,6 +6050,7 @@ function getAppScript() {
       let badgeClass = '';
       let badgeText = '';
       const sourceState = item?.sourceAvailability?.state;
+      const confirmedSourceUnavailable = item.unavailable && (!sourceState || ['confirmed_unavailable', 'dormant'].includes(sourceState));
       if (item.backupStatus === 'uploaded') {
         stateClass = item.unavailable ? 'unavailable-uploaded' : 'processed';
         badgeClass = 'upload-pending';
@@ -6055,10 +6059,10 @@ function getAppScript() {
         stateClass = 'processed';
         badgeClass = 'partial';
         badgeText = '部分备份';
-      } else if (item.unavailable && item.processed) {
+      } else if ((item.archivedSourceUnavailable ?? item.unavailable) && item.processed) {
         stateClass = 'unavailable-uploaded';
         badgeClass = 'removed-uploaded';
-        badgeText = '已归档 · 收藏夹显示失效';
+        badgeText = confirmedSourceUnavailable ? '已归档 · B站源不可用' : '已归档 · 收藏夹显示失效';
       } else if (item.unavailable && !item.processed) {
         stateClass = 'unavailable-missing';
         badgeClass = 'removed-missing';
@@ -6149,7 +6153,7 @@ function getAppScript() {
             : '尚未形成可播放的已验证归档';
         info.appendChild(reason);
       }
-      if (sourceState) {
+      if (sourceState || item.archivedSourceUnavailable) {
         const source = document.createElement('div');
         source.className = 'video-source-availability';
         const copy = document.createElement('span');
@@ -6160,7 +6164,12 @@ function getAppScript() {
           dormant:'B站源长期不可用，无需处理；重新可见后会自动恢复'
         };
         const specificReason = sourceAvailabilityReasonLabel(item.sourceAvailability);
-        copy.textContent = (specificReason && sourceState !== 'pending_confirmation'
+        const archivedMessage = item.processed
+          ? (specificReason && sourceState !== 'pending_confirmation' ? specificReason
+            : confirmedSourceUnavailable ? 'B站源目前不可用' : '收藏夹标记失效，尚未确认B站源状态')
+            + '；已有归档和封面不受影响'
+          : '';
+        copy.textContent = archivedMessage || (specificReason && sourceState !== 'pending_confirmation'
           ? specificReason + (sourceState === 'dormant' ? '；已休眠，无需处理，重新可见后会自动恢复'
             : sourceState === 'confirmed_unavailable' ? '；已停止重复下载，系统会低频复核' : '；系统会稍后复核')
           : sourceMessages[sourceState] || 'B站状态尚未确认')
@@ -9536,6 +9545,39 @@ function getAppScript() {
       if (!existingEncodingButton) actions.appendChild(encodingButton);
     }
 
+    function updateQueueCover(card, item) {
+      const label = safeText(item.title || item.bvid, '视频封面');
+      const urls = [localCoverUrl(item), typeof item.cover === 'string' ? item.cover.trim().replace('http://', 'https://') : '']
+        .filter(Boolean).map((value) => { try { return new URL(value, location.href).href; } catch { return ''; } }).filter(Boolean);
+      const candidates = Array.from(new Set(urls));
+      const key = JSON.stringify(candidates);
+      const current = card.querySelector('.queue-cover');
+      if (current instanceof HTMLImageElement) current.alt = label;
+      if (card.__queueCoverKey === key) return;
+      card.__queueCoverKey = key;
+      function placeholder() {
+        const cover = document.createElement('div');
+        cover.className = 'queue-cover';
+        cover.textContent = '封面';
+        cover.setAttribute('aria-hidden', 'true');
+        card.querySelector('.queue-cover')?.replaceWith(cover);
+      }
+      if (!candidates.length) { placeholder(); return; }
+      const img = document.createElement('img');
+      img.className = 'queue-cover';
+      img.alt = label;
+      img.referrerPolicy = 'no-referrer';
+      img.loading = 'lazy';
+      let index = 0;
+      img.onerror = () => {
+        if (card.__queueCoverKey !== key || !card.contains(img)) return;
+        if (++index < candidates.length) img.src = candidates[index];
+        else { img.onerror = null; placeholder(); }
+      };
+      current?.replaceWith(img);
+      img.src = candidates[0];
+    }
+
     function updateQueueCard(card, item, nowMs) {
       card.__queueItem = item;
       card.dataset.queueStage = item.stage || '';
@@ -9543,30 +9585,7 @@ function getAppScript() {
       const titleEl = card.querySelector('.queue-title');
       const metaEl = card.querySelector('.queue-meta');
       const extraEl = card.querySelector('.queue-extra');
-      const coverEl = card.querySelector('.queue-cover');
-      const cachedCoverUrl = localCoverUrl(item);
-      const remoteCoverUrl = typeof item.cover === 'string' && item.cover.trim()
-        ? item.cover.replace('http://', 'https://')
-        : '';
-      const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
-      if (coverEl instanceof HTMLImageElement) {
-        if (coverUrl) {
-          if (coverEl.src !== coverUrl) coverEl.src = coverUrl;
-        } else {
-          const placeholder = document.createElement('div');
-          placeholder.className = 'queue-cover';
-          placeholder.textContent = '封面';
-          placeholder.setAttribute('aria-hidden', 'true');
-          coverEl.replaceWith(placeholder);
-        }
-      } else if (coverUrl && coverEl) {
-        const img = document.createElement('img');
-        img.className = 'queue-cover';
-        img.src = coverUrl;
-        img.referrerPolicy = 'no-referrer';
-        img.loading = 'lazy';
-        coverEl.replaceWith(img);
-      }
+      updateQueueCover(card, item);
       if (titleEl) {
         titleEl.textContent = safeText(item.title || item.bvid, '未知任务');
         titleEl.title = safeText(item.title || item.bvid, '未知任务');
@@ -9634,26 +9653,9 @@ function getAppScript() {
       const card = document.createElement('div');
       card.className = 'queue-card';
       card.dataset.queueKey = makeQueueCardKey(item);
-      const cachedCoverUrl = localCoverUrl(item);
-      const remoteCoverUrl = typeof item.cover === 'string' && item.cover.trim()
-        ? item.cover.replace('http://', 'https://')
-        : '';
-      const coverUrl = (!remoteCoverUrl || item.unavailable) && cachedCoverUrl ? cachedCoverUrl : remoteCoverUrl;
-      if (coverUrl) {
-        const img = document.createElement('img');
-        img.className = 'queue-cover';
-        img.src = coverUrl;
-        img.alt = safeText(item.title || item.bvid, '视频封面');
-        img.referrerPolicy = 'no-referrer';
-        img.loading = 'lazy';
-        card.appendChild(img);
-      } else {
-        const cover = document.createElement('div');
-        cover.className = 'queue-cover';
-        cover.textContent = '封面';
-        cover.setAttribute('aria-hidden', 'true');
-        card.appendChild(cover);
-      }
+      const cover = document.createElement('div');
+      cover.className = 'queue-cover';
+      card.appendChild(cover);
       const info = document.createElement('div');
       info.className = 'queue-info';
       const title = document.createElement('div');
@@ -10080,8 +10082,17 @@ function getAppScript() {
     // ---- Event Bindings ----
     document.getElementById('addUserBtn').addEventListener('click', startLogin);
     let updatesController = null;
+    let updatesRefreshAfter = 0;
+    let updatesCooldownTimer = null;
+    function updateRefreshButton() {
+      const button = document.getElementById('checkUpdatesBtn');
+      const seconds = Math.max(0, Math.ceil((updatesRefreshAfter - Date.now()) / 1000));
+      button.disabled = Boolean(updatesController) || seconds > 0;
+      button.textContent = updatesController ? '正在检查…' : seconds > 0 ? seconds + '秒后可重新检查' : '检查更新';
+      if (!seconds && updatesCooldownTimer) { clearInterval(updatesCooldownTimer); updatesCooldownTimer = null; }
+    }
     async function loadUpdates(refresh = false) {
-      if (updatesController) return;
+      if (updatesController || (refresh && Date.now() < updatesRefreshAfter)) return;
       const controller = new AbortController();
       updatesController = controller;
       const button = document.getElementById('checkUpdatesBtn');
@@ -10095,6 +10106,8 @@ function getAppScript() {
         if (!result.success || !result.data) throw new Error('response');
         if (updatesController !== controller) return;
         const data = result.data;
+        const nextRefresh = Date.parse(data.nextRefreshAt || '');
+        updatesRefreshAfter = Number.isFinite(nextRefresh) ? nextRefresh : 0;
         status.textContent = data.error || (!data.release ? '暂时没有正式发布版本' :
           ({ update_available: '有新的正式版本可用', up_to_date: '当前已是最新正式版', ahead: '当前版本高于最新正式版',
              reference: '当前为开发或本地构建，以下正式版仅供参考，不代表 dev 镜像有更新' }[data.comparison] || '无法判断版本'));
@@ -10113,7 +10126,12 @@ function getAppScript() {
       } catch (error) {
         if (!controller.signal.aborted && updatesController === controller) status.textContent = '暂时无法连接更新源，请稍后重试';
       } finally {
-        if (updatesController === controller) { updatesController = null; button.disabled = false; }
+        if (updatesController === controller) {
+          updatesController = null;
+          clearInterval(updatesCooldownTimer);
+          updatesCooldownTimer = updatesRefreshAfter > Date.now() ? setInterval(updateRefreshButton, 1000) : null;
+          updateRefreshButton();
+        }
       }
     }
     document.getElementById('versionInfoBtn').addEventListener('click', (event) => { openModal('updatesModal', event.currentTarget); loadUpdates(); });

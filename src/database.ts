@@ -1886,10 +1886,11 @@ export class StateDatabase {
   queryFolderPage(userId: string, mediaId: number, filter: string, offset: number, limit: number) {
     const processed = "r.backup_status IN ('uploaded','verified','partial_verified')";
     const unavailable = "v.bili_status='unavailable' AND r.self_visible=0";
+    const archivedUnavailable = `(${processed}) AND r.self_visible=0 AND r.source_kind!='manual' AND (r.favorite_unavailable=1 OR v.bili_status='unavailable')`;
     const filterSql = filter === "uploaded" ? processed
       : filter === "pending" ? `NOT (${processed}) AND NOT (${unavailable})`
       : filter === "pending_unavailable" ? `NOT (${processed}) AND (${unavailable})`
-      : filter === "uploaded_unavailable" ? `(${processed}) AND (${unavailable})`
+      : filter === "uploaded_unavailable" ? archivedUnavailable
       : "1=1";
     const base = "FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid WHERE r.user_id=? AND r.media_id=?";
     const rows = this.db.prepare(`
@@ -1909,7 +1910,7 @@ export class StateDatabase {
         SUM(CASE WHEN ${processed} THEN 1 ELSE 0 END) AS uploaded,
         SUM(CASE WHEN NOT (${processed}) AND NOT (${unavailable}) THEN 1 ELSE 0 END) AS pending,
         SUM(CASE WHEN NOT (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS pending_unavailable,
-        SUM(CASE WHEN (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS uploaded_unavailable,
+        SUM(CASE WHEN ${archivedUnavailable} THEN 1 ELSE 0 END) AS uploaded_unavailable,
         SUM(CASE WHEN (${filterSql}) THEN 1 ELSE 0 END) AS total_filtered
       ${base}
     `).get(userId, mediaId) as any;

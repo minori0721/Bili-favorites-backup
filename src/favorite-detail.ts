@@ -39,6 +39,7 @@ export function mergeLiveFavoriteDetailItem(
     description: live.description || stored?.description,
     favoriteUnavailable,
     selfVisible,
+    archivedSourceUnavailable: Boolean(stored?.processed && !selfVisible && liveUnavailable),
     favOrder: stored?.favOrder,
     favPage: stored?.favPage,
     favIndexInPage: stored?.favIndexInPage,

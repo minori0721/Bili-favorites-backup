@@ -319,6 +319,7 @@ export type FolderDetailFilter =
   | "uploaded_unavailable";
 
 export interface FolderDetailItem {
+  archivedSourceUnavailable?: boolean;
   bvid: string;
   title: string;
   upperName: string;
@@ -511,6 +512,13 @@ function relationTreatsUnavailable(relation: FavoriteRelation | undefined | null
   if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
   return sourceIsConfirmedUnavailable(entry)
     || (entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable));
+}
+
+// Display-only evidence: never use a favorite flag to authorize download/recovery decisions.
+function archivedSourceUnavailable(relation: FavoriteRelation, video: VideoArchiveEntry) {
+  return BACKED_UP_STATUSES.has(relation.backupStatus || video.backupStatus)
+    && relation.sourceKind !== "manual" && !relation.selfVisible
+    && (Boolean(relation.favoriteUnavailable) || video.biliStatus === "unavailable");
 }
 
 export function relationKey(userId: string, mediaId: number, bvid: string) {
@@ -3214,7 +3222,7 @@ export class StateManager {
       } else if (!item.unavailable) {
         summary.pending += 1;
       }
-      if (item.unavailable && item.processed) {
+      if (item.archivedSourceUnavailable) {
         summary.uploadedUnavailable += 1;
       } else if (item.unavailable && !item.processed) {
         summary.pendingUnavailable += 1;
@@ -3226,7 +3234,7 @@ export class StateManager {
       if (filter === "uploaded") return item.processed;
       if (filter === "pending") return !item.processed && !item.unavailable;
       if (filter === "pending_unavailable") return !item.processed && item.unavailable;
-      if (filter === "uploaded_unavailable") return item.processed && item.unavailable;
+      if (filter === "uploaded_unavailable") return Boolean(item.archivedSourceUnavailable);
       return true;
     });
 
@@ -3250,6 +3258,7 @@ export class StateManager {
   private buildFolderDetailItem(userId: string, relation: FavoriteRelation, video: VideoArchiveEntry): FolderDetailItem {
     const backupStatus = relation.backupStatus || video.backupStatus;
     return {
+      archivedSourceUnavailable: archivedSourceUnavailable(relation, video),
       bvid: video.bvid,
       title: displayTitle(video),
       upperName: displayUpperName(video),
@@ -3421,7 +3430,7 @@ export class StateManager {
       } else if (!unavailable) {
         summary.pending += 1;
       }
-      if (unavailable && processed) {
+      if (archivedSourceUnavailable(relation, video)) {
         summary.uploadedUnavailable += 1;
       } else if (unavailable && !processed) {
         summary.pendingUnavailable += 1;

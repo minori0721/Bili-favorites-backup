@@ -28,6 +28,40 @@ async function openBoard(page: Page) {
   await expect(page.locator(".queue-card")).toHaveCount(1);
 }
 
+test('queue covers prefer local files, fall back once, and do not reset on polling', async ({ page }) => {
+  const requests: string[] = [];
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lZkAAAAASUVORK5CYII=', 'base64');
+  await page.route('**/covers/review*.png', r => { requests.push(r.request().url()); return r.fulfill({ contentType: 'image/png', body: png }); });
+  await page.route('https://example.invalid/cover.png', r => { requests.push(r.request().url()); return r.fulfill({ contentType: 'image/png', body: png }); });
+  await openBoard(page);
+  await page.evaluate(() => {
+    const card = document.querySelector('.queue-card') as any;
+    const item = { ...card.__queueItem, coverLocalPath: 'covers/review.png', cover: 'https://example.invalid/cover.png' };
+    (window as any).reviewCoverItem = item;
+    (window as any).updateQueueCard(card, item, Date.now());
+  });
+  const img = page.locator('.queue-card img.queue-cover');
+  await expect(img).toHaveAttribute('src', /\/covers\/review.png$/);
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).not.toContain('example.invalid');
+  const mutations = await page.evaluate(() => {
+    const card = document.querySelector('.queue-card');
+    const image = card!.querySelector('img')!;
+    const observer = new MutationObserver(() => {});
+    observer.observe(image, { attributes: true, attributeFilter: ['src'] });
+    for (let i = 0; i < 5; i++) (window as any).updateQueueCard(card, (window as any).reviewCoverItem, Date.now());
+    const n = observer.takeRecords().length; observer.disconnect(); return n;
+  });
+  expect(mutations).toBe(0);
+  await img.dispatchEvent('error');
+  await expect(img).toHaveAttribute('src', 'https://example.invalid/cover.png');
+  await expect.poll(() => requests.length).toBe(2);
+  await img.dispatchEvent('error');
+  await expect(page.locator('.queue-card .queue-cover')).toHaveText('封面');
+  await page.evaluate(() => (window as any).updateQueueCard(document.querySelector('.queue-card'), (window as any).reviewCoverItem, Date.now()));
+  await expect(page.locator('.queue-card .queue-cover')).toHaveText('封面');
+});
+
 async function openMediaRetryBoard(page: Page) {
   await page.request.post("/__test/reset", { data: { queueBoardMode: "media_retry" } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({

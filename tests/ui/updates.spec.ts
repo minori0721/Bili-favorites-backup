@@ -1,6 +1,47 @@
 import { test, expect } from "@playwright/test";
 import { renderReleaseNotes } from '../../src/release-notes.js';
 
+test('update refresh cooldown is visible, expires, and survives closing without late timers', async ({ page }) => {
+  let calls = 0;
+  await page.request.post('/__test/reset');
+  await page.route('https://fonts.googleapis.com/**', r => r.fulfill({ body: '' }));
+  await page.route('**/api/updates*', r => {
+    calls++;
+    return r.fulfill({ json: { success: true, data: { release: null, comparison: 'reference',
+      nextRefreshAt: new Date(Date.now() + 2500).toISOString() } } });
+  });
+  await page.goto('/');
+  await page.locator('#versionInfoBtn').click();
+  const button = page.locator('#checkUpdatesBtn');
+  await expect(button).toBeDisabled();
+  await expect(button).toContainText('秒后可重新检查');
+  await page.evaluate(() => (window as any).loadUpdates(true));
+  expect(calls).toBe(1);
+  await page.locator('#closeUpdatesBtn').click();
+  await page.locator('#versionInfoBtn').click();
+  await expect(button).toBeDisabled();
+  await expect(button).toBeEnabled({ timeout: 6000 });
+  await expect(button).toHaveText('检查更新');
+  await button.click();
+  await expect.poll(() => calls).toBe(3);
+});
+
+test('reopening during cooldown after a network failure still enables refresh when due', async ({ page }) => {
+  let calls = 0;
+  await page.request.post('/__test/reset');
+  await page.route('https://fonts.googleapis.com/**', r => r.fulfill({ body: '' }));
+  await page.route('**/api/updates*', r => ++calls === 1
+    ? r.fulfill({ json: { success: true, data: { release: null, nextRefreshAt: new Date(Date.now() + 2500).toISOString() } } })
+    : r.fulfill({ status: 503, body: 'offline' }));
+  await page.goto('/');
+  await page.locator('#versionInfoBtn').click();
+  await expect(page.locator('#checkUpdatesBtn')).toContainText('秒后可重新检查');
+  await page.locator('#closeUpdatesBtn').click();
+  await page.locator('#versionInfoBtn').click();
+  await expect(page.locator('#updatesStatus')).toContainText('暂时无法');
+  await expect(page.locator('#checkUpdatesBtn')).toBeEnabled({ timeout: 6000 });
+});
+
 test("version dialog safely renders release notes, checks on demand and restores focus", async ({ page }) => {
   let calls = 0;
   await page.request.post("/__test/reset");

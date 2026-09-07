@@ -20,6 +20,52 @@ import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 const checkedAt = "2026-09-04T00:00:00.000Z";
 
+test("archived favorite flags are display-only and folder counts match pages after restart", async () => {
+  const runtime = await createTestDir("archived-favorite-display");
+  const options = { statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") };
+  const seed = availabilityState("verified");
+  const video = seed.videos.BVAVAIL;
+  video.biliStatus = "unknown";
+  video.favoriteUnavailable = true;
+  video.sourceAvailability = { state: "pending_confirmation", reason: "favorite_flag", firstSeenAt: checkedAt, checkRound: 0 };
+  video.remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 10, verificationStatus: "verified" }];
+  seed.relations["u1:1:BVAVAIL"].favoriteUnavailable = true;
+  const r = seed.relations["u1:1:BVAVAIL"];
+  for (const [id, changes] of Object.entries({
+    BVCONFIRMED: { biliStatus: "unavailable" }, BVPARTIAL: { backupStatus: "partial_verified" },
+    BVUPLOADED: { backupStatus: "uploaded" }, BVPENDING: { backupStatus: "discovered" },
+    BVSELF: { selfVisible: true }, BVMANUAL: { sourceKind: "manual" },
+  })) {
+    seed.videos[id] = { ...video, bvid: id, ...changes };
+    seed.relations['u1:1:' + id] = { ...r, bvid: id, ...changes };
+  }
+  seed.relations["u1:2:BVAVAIL"] = { ...r, mediaId: 2, favoriteUnavailable: false };
+  await fs.promises.writeFile(options.statePath, JSON.stringify(seed));
+  let manager = new StateManager(options);
+  try {
+    for (let restart = 0; restart < 2; restart++) {
+      const before = JSON.stringify(manager.getDatabase().getVideo("BVAVAIL"));
+      const page = manager.listFolderItemsForUser("u1", 1, 0, 2, "uploaded_unavailable");
+      const rest = manager.listFolderItemsForUser("u1", 1, 2, 2, "uploaded_unavailable");
+      assert.equal(page.summary.uploadedUnavailable, 4);
+      assert.equal(page.totalFiltered, 4);
+      assert.equal(new Set([...page.items, ...rest.items].map(x => x.bvid)).size, 4);
+      assert.equal(rest.hasMore, false);
+      assert.equal(manager.getFolderIndexSummary("u1", 1).uploadedUnavailable, 4);
+      assert.equal(manager.getFolderIndexSummary("u1", 2).uploadedUnavailable, 0);
+      const item = manager.getFolderItemForUser("u1", 1, "BVAVAIL")!;
+      assert.equal(item.archivedSourceUnavailable, true);
+      assert.equal(item.unavailable, false);
+      assert.equal(JSON.stringify(manager.getDatabase().getVideo("BVAVAIL")), before);
+      assert.equal((manager.getDatabase().db.prepare('SELECT count(*) AS n FROM jobs').get() as { n: number }).n, 0);
+      if (restart === 0) { manager.close(); manager = new StateManager(options); }
+    }
+    manager.recordFavoriteItem("u1", 1, "Favorites", { bvid: "BVAVAIL", title: "restored", upperName: "UP", unavailable: false });
+    assert.equal(manager.getFolderItemForUser("u1", 1, "BVAVAIL")?.archivedSourceUnavailable, false);
+    assert.equal(manager.getFolderIndexSummary("u1", 1).uploadedUnavailable, 3);
+  } finally { manager.close(); await removeTestDir(runtime); }
+});
+
 function unavailableSnapshot(reason: "api_not_found" | "submission_invisible" = "api_not_found"): VideoPageSnapshotResult {
   return {
     available: false,

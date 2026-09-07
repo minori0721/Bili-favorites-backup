@@ -70,6 +70,23 @@ test("source diagnostics name only explicit evidence and preserve archive playba
   expect(errors).toEqual([]);
 });
 
+test('archived favorite-only evidence is visible without changing unavailable or promising probes', async ({ page }) => {
+  await page.evaluate(() => {
+    const w = window as any;
+    const item = { bvid: 'BV1TEST00001', title: '已留档', processed: true, unavailable: false,
+      archivedSourceUnavailable: true, favoriteUnavailable: true, backupStatus: 'verified',
+      playback: { available: true, partCount: 1 },
+      sourceAvailability: { state: 'pending_confirmation', reason: 'favorite_flag' } };
+    document.getElementById('videoGrid')!.replaceChildren(w.renderVideoDetailItem(item));
+    w.openModal('videoDetailModal');
+  });
+  await expect(page.locator('#videoGrid .video-badge')).toHaveText('已归档 · 收藏夹显示失效');
+  await expect(page.locator('.video-source-availability')).toContainText('尚未确认B站源状态');
+  await expect(page.locator('.video-source-availability')).not.toContainText('会稍后复核');
+  await expect(page.locator('#vdFilterUploadedUnavailableBtn')).toContainText('已上传且失效');
+  await expect(page.locator('#videoGrid [data-playback-bvid]')).toBeVisible();
+});
+
 test("settings folds preserve unified save and reveal invalid hidden controls", async ({ page }) => {
   await expect(page.locator('#saveConfigBtn')).toBeEnabled();
   expect(await page.locator('body > main > .card h2').allTextContents()).toEqual(['账号与同步', '任务中心', '全局设置']);
