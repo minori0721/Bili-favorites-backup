@@ -9,7 +9,23 @@ export function buildReleaseNotes(changelog, tag, version) {
   const start = matching[0] + 1;
   let end = lines.findIndex((line, index) => index >= start && line.startsWith('## '));
   if (end < 0) end = lines.length;
-  const body = lines.slice(start, end).join('\n').trim();
+  const section = lines.slice(start, end);
+  let body = section.join('\n').trim();
+  const summaryHeading = '### 发布摘要';
+  const upgradeHeading = '### 升级与回滚';
+  if (section.includes(summaryHeading)) {
+    const extract = heading => {
+      const matches = section.flatMap((line, index) => line === heading ? [index] : []);
+      if (matches.length !== 1) throw new Error('Expected one ' + heading + ' section');
+      const begin = matches[0] + 1;
+      let finish = section.findIndex((line, index) => index >= begin && /^#{1,3} /.test(line));
+      if (finish < 0) finish = section.length;
+      const content = section.slice(begin, finish).join('\n').trim();
+      if (!content || content === '暂无。') throw new Error('Release summary sections cannot be empty');
+      return heading + '\n\n' + content;
+    };
+    body = extract(summaryHeading) + '\n\n' + extract(upgradeHeading);
+  }
   if (!body || body === '暂无。') throw new Error('Release notes cannot be empty');
   return body + '\n\n### 镜像与完整记录\n\n' +
     '- Docker：`minori0721/bili-favorites-backup:' + tag + '`\n' +

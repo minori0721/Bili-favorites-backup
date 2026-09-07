@@ -28,6 +28,18 @@ test('release note extraction uses exactly the version section and rejects misma
   assert.throws(() => buildReleaseNotes(input + '\n## [2.5.4] - again\nwrong', 'v2.5.4', '2.5.4'));
 });
 
+test('release summaries retain upgrade cautions and omit detailed changes', () => {
+  const input = '## [2.5.6] - 2026-09-07\n### 发布摘要\n- Summary\n### 修复\n- Detailed changes\n### 升级与回滚\n- Keep recovery records\n## [2.5.5] - earlier\nOlder notes';
+  const notes = buildReleaseNotes(input, 'v2.5.6', '2.5.6');
+  assert.match(notes, /Summary/);
+  assert.match(notes, /Keep recovery records/);
+  assert.doesNotMatch(notes, /Detailed changes|Older notes/);
+  assert.throws(() => buildReleaseNotes(input.replace('### 升级与回滚', '### Other'), 'v2.5.6', '2.5.6'));
+  assert.throws(() => buildReleaseNotes(input.replace('- Summary', ''), 'v2.5.6', '2.5.6'));
+  assert.throws(() => buildReleaseNotes(input.replace('### 修复', '### 发布摘要'), 'v2.5.6', '2.5.6'));
+  assert.throws(() => buildReleaseNotes(input.replace('- Keep recovery records', '暂无。'), 'v2.5.6', '2.5.6'));
+});
+
 test('publishing is idempotent and rerunning an old tag cannot downgrade Latest', () => {
   assert.equal(shouldMakeLatest('v2.9.0', [{ tag_name: 'v2.10.0' }]), false);
   assert.equal(shouldMakeLatest('v2.10.0', [{ tag_name: 'ffmpeg-9.0.0' }, { tag_name: 'v3.0.0', prerelease: true }]), true);
