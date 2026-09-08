@@ -1,0 +1,48 @@
+import type { RemoteFileRecord } from '../state.js';
+import type { UploadIntent, ExistingArchiveProof } from '../upload-preflight.js';
+import type { EncodingRetryContext, StrictMediaTarget } from '../tasks.js';
+
+export interface RecoveryUploadItem {
+  bvid: string;
+  localDir: string;
+  remotePath: string;
+  userId?: string;
+  mediaId?: number;
+  folderTitle?: string;
+  videoTitle?: string;
+  upperName?: string;
+  cover?: string;
+  files?: string[];
+  filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
+  partialBackup?: boolean;
+  historyOnly?: boolean;
+  historySnapshotAt?: string;
+  uploadIntent?: UploadIntent;
+  existingArchiveProof?: ExistingArchiveProof;
+  legacyConflictSideEffectsStarted?: boolean;
+  conflictCandidateId?: string;
+  conflictCandidateRemotePath?: string;
+  conflictCandidateOnly?: boolean;
+  conflictCandidateReasonCode?: string;
+  conflictCandidateReasonSummary?: string;
+  conflictArchiveSegment?: string;
+  conflictArchiveOldFiles?: RemoteFileRecord[];
+  conflictArchiveVerifiedPaths?: string[];
+  sessionId?: string;
+  sessionGeneration?: number;
+  sessionDedupeKey?: string;
+  allowReupload?: boolean;
+  reuploadAuthorizedFiles?: string[];
+  resumeOnly?: boolean;
+  awaitingManualRecovery?: boolean;
+  lifecycleState?: string;
+  attemptKey?: string;
+  userDisposition?: string;
+  verifiedPages?: number;
+  totalPages?: number;
+  automaticRecoveryAttempts?: number;
+  notBefore?: number;
+  priority?: boolean;
+  encodingRetry?: EncodingRetryContext;
+  strictMediaTarget?: StrictMediaTarget;
+}

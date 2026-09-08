@@ -1,0 +1,75 @@
+import type { BBDownEncoding } from '../config.js';
+import type { RecoveryIssueKind, RecoveryIssueAction, RecoveryIssueDisposition } from '../recovery-policy.js';
+import type { RemoteWriteEvidence } from '../upload-health.js';
+import type { RemoteFailureCategory } from '../remote-file-resolver.js';
+
+export interface RecoveryIssue {
+  id: string;
+  kind: RecoveryIssueKind;
+  severity: "info" | "warning" | "danger";
+  title: string;
+  summary: string;
+  protectedFacts: string[];
+  recommendedAction?: RecoveryIssueAction;
+  availableActions: RecoveryIssueAction[];
+  bvid?: string;
+  videoTitle?: string;
+  upperName?: string;
+  userId?: string;
+  mediaId?: number;
+  folderTitle?: string;
+  fileName?: string;
+  expectedSize?: number;
+  observedSize?: number;
+  remoteErrorCode?: string;
+  responseHeaders?: Record<string, string>;
+  responseSnippet?: string;
+  requestedEncoding?: BBDownEncoding;
+  actualEncodings?: string[];
+  encodingMismatch?: boolean;
+  requestedQuality?: string;
+  actualQualities?: string[];
+  qualityMismatch?: boolean;
+  verifiedPages?: number;
+  totalPages?: number;
+  lifecycleState?: string;
+  attemptKey?: string;
+  occurredAt: number;
+  checkedAt?: number;
+  nextAutomaticCheckAt?: number;
+  busy?: boolean;
+  safeDiagnostic: string;
+  disposition: RecoveryIssueDisposition;
+}
+
+export interface RecoveryAssessment {
+  kind: Exclude<RecoveryIssueKind, "quality_failed" | "storage_backend">;
+  checkedAt: number;
+  nextCheckAt?: number;
+  localStatus: "available" | "missing" | "changed" | "unknown";
+  remoteStatus: "verified" | "missing" | "mismatch" | "mixed" | "error" | "unknown" | "transient" | "permission" | "unsupported" | "size_limit";
+  fileName?: string;
+  expectedSize?: number;
+  observedSize?: number;
+  writeStatus?: number;
+  remoteErrorCode?: string;
+  responseHeaders?: Record<string, string>;
+  responseSnippet?: string;
+  writeEvidence?: RemoteWriteEvidence | "repeated_missing_parent_visible";
+  uploadAttempts?: number;
+  firstObservedAt?: number;
+  lastObservedAt?: number;
+  consecutiveObservations?: number;
+  candidateSafe?: boolean;
+  candidateEligible?: boolean;
+  failureCategory?: RemoteFailureCategory;
+  operation?: "inspect" | "put";
+  requestedEncoding?: BBDownEncoding;
+  actualEncodings?: string[];
+  encodingMismatch?: boolean;
+  requestedQuality?: string;
+  actualQualities?: string[];
+  qualityMismatch?: boolean;
+  verifiedPages?: number;
+  summary: string;
+}

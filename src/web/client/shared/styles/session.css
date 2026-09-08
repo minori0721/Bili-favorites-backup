@@ -1,0 +1,12 @@
+.session-expired-dialog {
+  width: min(28rem, calc(100vw - 32px));
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  color: var(--ink);
+  background: var(--bg, #fff);
+}
+.session-expired-dialog::backdrop { background: rgb(0 0 0 / 50%); }
+.session-expired-dialog h2 { margin: 0 0 12px; }
+.session-expired-dialog p { margin: 0 0 20px; line-height: 1.6; }

@@ -1,3 +1,5 @@
+import type { QueueBoardItem, QueueBoardStage, QueueBoardPhase } from './shared/api/queue-item.js';
+export type { QueueBoardItem, QueueBoardStage, QueueBoardPhase, QueueBoardAction } from './shared/api/queue-item.js';
 import { EventEmitter } from "node:events";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 
@@ -22,54 +24,6 @@ export abstract class Task {
   }
 
   abstract run(): Promise<void>;
-}
-
-export type QueueBoardStage = "download_pending" | "download_running" | "upload_pending" | "upload_running";
-export type QueueBoardPhase =
-  | "queued"
-  | "leased"
-  | "running"
-  | "retry_wait"
-  | "remote_verifying"
-  | "background_wait"
-  | "manual_action";
-export type QueueBoardAction = "retry" | "verify" | "recheck" | "redownload_with_encoding" | "abandon_attempt";
-
-export interface QueueBoardItem {
-  id: string;
-  bvid: string;
-  title: string;
-  upperName: string;
-  cover: string;
-  folderTitle: string;
-  remotePath: string;
-  detail: string;
-  userId: string;
-  mediaId: number;
-  retries: number;
-  maxRetries: number;
-  queuedAt?: number;
-  startedAt?: number;
-  retryAt?: number;
-  sequence?: number;
-  status?: string;
-  phase?: QueueBoardPhase;
-  nextAction?: QueueBoardAction;
-  nextActionAt?: number;
-  actionRequired?: boolean;
-  lastError?: string;
-  coverLocalPath?: string;
-  persistentJobId?: string;
-  awaitingManualRecovery?: boolean;
-  recoveryJobId?: string;
-  recoveryDisposition?: "background" | "action_required" | "intentional_confirmation";
-  recoveryIssueId?: string;
-  recoveryKind?: string;
-  recoveryActions?: Array<{ id: QueueBoardAction; label: string }>;
-  lifecycleState?: string;
-  verifiedPages?: number;
-  totalPages?: number;
-  stage: QueueBoardStage;
 }
 
 export function mapQueueBoardTask(task: any, stage: QueueBoardStage, overrides: Partial<QueueBoardItem> = {}): QueueBoardItem {
@@ -118,6 +72,7 @@ export class TaskQueue extends EventEmitter {
   private sequenceCounter = 0;
   private canStartTask?: (task: Task) => boolean;
   private maxSize: number;
+  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(concurrency: number = 1, maxSize = Number.POSITIVE_INFINITY) {
     super();
@@ -189,6 +144,9 @@ export class TaskQueue extends EventEmitter {
     const removedIds = new Set(removed.map((task) => task.id));
     this.queue = this.queue.filter((task) => !removedIds.has(task.id));
     for (const task of removed) {
+      const timer = this.retryTimers.get(task.id);
+      if (timer) clearTimeout(timer);
+      this.retryTimers.delete(task.id);
       task.status = "error";
       this.emit("taskSettled", task);
     }
@@ -255,11 +213,14 @@ export class TaskQueue extends EventEmitter {
         const retryAfterMs = computeTaskRetryDelayMs(task.retryDelaySeconds, retryIndex, error?.retryAfterMs);
         task.retryAt = Date.now() + retryAfterMs;
         this.emit("taskRetry", task, error);
-        setTimeout(() => {
+        if (!this.queue.includes(task) || task.status !== 'retry_wait') return;
+        const timer = setTimeout(() => {
+          this.retryTimers.delete(task.id);
           task.status = "pending";
           task.retryAt = undefined;
           this.processQueue();
         }, retryAfterMs);
+        this.retryTimers.set(task.id, timer);
       }
     } finally {
       this.activeCount--;

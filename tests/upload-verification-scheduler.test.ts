@@ -345,6 +345,7 @@ test("a failed transfer session without a job is projected once into recovery", 
     scheduler.jobStore.complete(job.id);
     scheduler.transferSessions.updateSession(session.id, { phase: "failed", lastError: "WebDAV 405 write result was not confirmed" }, session.generation);
 
+    scheduler.refreshRecoveryProjection(true);
     const first = scheduler.getRecoveryIssueSnapshot().issues.filter((item: any) => item.bvid === "BVVERIFY");
     assert.equal(first.length, 1);
     const projected = scheduler.jobStore.findByDedupeKey(`upload-session:${session.id}:g${session.generation}`);

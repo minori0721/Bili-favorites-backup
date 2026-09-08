@@ -1,4 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function showVideo(page: Page, item: Record<string, unknown>) {
+  await page.route('**/api/users/*/favorites/*/detail-items?**', route => route.fulfill({json:{success:true,data:{items:[item],page:1,hasMore:false}}}));
+  const modal = page.locator('#videoDetailModal');
+  if (await modal.evaluate(element => element.classList.contains('active'))) await page.locator('#closeVideoDetailBtn').click();
+  await page.locator('[data-action="favorite_detail"]').first().click();
+  await expect(page.locator('#videoGrid [data-playback-bvid]')).toBeVisible();
+}
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/__test/reset");
@@ -13,16 +21,14 @@ test("archived unavailable cards do not claim background work and nested control
     requests += 1;
     await route.fulfill({ json: { success: true, data: {} } });
   });
-  await page.evaluate(() => {
-    const w = window as any;
-    const item = { bvid: "BV1TEST00001", title: "已归档的失效视频", processed: true, unavailable: true,
-      backupStatus: "verified", playback: { available: true, partCount: 1 },
-      sourceAvailability: { state: "pending_confirmation", reason: "favorite_flag" } };
-    document.getElementById("videoGrid")!.replaceChildren(w.renderVideoDetailItem(item));
-    w.openModal("videoDetailModal");
-    w.reviewPlaybackCount = 0;
-    w.openArchivePlayback = () => { w.reviewPlaybackCount += 1; };
+  let playbackRequests = 0;
+  await page.route('**/*/playback-queue?**', route => {
+    playbackRequests += 1;
+    return route.fulfill({json:{success:false,message:'隔离播放请求'}});
   });
+  await showVideo(page, { bvid: "BV1TEST00001", title: "已归档的失效视频", processed: true, unavailable: true,
+    backupStatus: "verified", playback: { available: true, partCount: 1 },
+    sourceAvailability: { state: "pending_confirmation", reason: "favorite_flag" } });
   await expect(page.locator(".video-source-availability")).not.toContainText("正在后台复核");
   await expect(page.locator("#videoGrid .video-badge")).toHaveText("已归档 · 收藏夹显示失效");
   const button = page.locator(".video-source-availability button");
@@ -33,10 +39,10 @@ test("archived unavailable cards do not claim background work and nested control
     await expect(button).toHaveText("已加入复核");
   }
   expect(requests).toBe(2);
-  expect(await page.evaluate(() => (window as any).reviewPlaybackCount)).toBe(0);
+  expect(playbackRequests).toBe(0);
   await page.locator("#videoGrid [data-playback-bvid]").focus();
   await page.keyboard.press("Enter");
-  expect(await page.evaluate(() => (window as any).reviewPlaybackCount)).toBe(1);
+  await expect.poll(() => playbackRequests).toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 });
 
@@ -49,37 +55,24 @@ test("source diagnostics name only explicit evidence and preserve archive playba
     ["submission_invisible", "B站稿件不可见，具体原因未公开", "confirmed_unavailable"],
     ["api_not_found", "B站未找到该视频", "confirmed_unavailable"],
   ]) {
-    await page.evaluate(({ reason, state }) => {
-      const w = window as any;
-      const item = { bvid: "BV1TEST00001", title: "源站状态测试", processed: true,
-        backupStatus: "verified", playback: { available: true, partCount: 1 },
-        sourceAvailability: { state, reason } };
-      document.getElementById("videoGrid")!.replaceChildren(w.renderVideoDetailItem(item));
-      w.openModal("videoDetailModal");
-    }, { reason, state });
+    await showVideo(page, { bvid: "BV1TEST00001", title: "源站状态测试", processed: true,
+      backupStatus: "verified", playback: { available: true, partCount: 1 }, sourceAvailability: { state, reason } });
     await expect(page.locator(".video-source-availability")).toContainText(label);
     await expect(page.locator(".video-source-availability")).toContainText("已有归档和封面不受影响");
     await expect(page.locator(".video-source-availability")).not.toContainText("已删除");
     await expect(page.locator("#videoGrid [data-playback-bvid]")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-    expect(await page.evaluate(({ reason, state }) => (window as any).archiveStatusLabel({
-      sourceAvailability: { reason, state }, playback: { available: false },
-    }), { reason, state })).toBe(reason === "submission_invisible" ? "稿件不可见" : label);
+
   }
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
   expect(errors).toEqual([]);
 });
 
 test('archived favorite-only evidence is visible without changing unavailable or promising probes', async ({ page }) => {
-  await page.evaluate(() => {
-    const w = window as any;
-    const item = { bvid: 'BV1TEST00001', title: '已留档', processed: true, unavailable: false,
-      archivedSourceUnavailable: true, favoriteUnavailable: true, backupStatus: 'verified',
-      playback: { available: true, partCount: 1 },
-      sourceAvailability: { state: 'pending_confirmation', reason: 'favorite_flag' } };
-    document.getElementById('videoGrid')!.replaceChildren(w.renderVideoDetailItem(item));
-    w.openModal('videoDetailModal');
-  });
+  await showVideo(page, { bvid: 'BV1TEST00001', title: '已留档', processed: true, unavailable: false,
+    archivedSourceUnavailable: true, favoriteUnavailable: true, backupStatus: 'verified',
+    playback: { available: true, partCount: 1 },
+    sourceAvailability: { state: 'pending_confirmation', reason: 'favorite_flag' } });
   await expect(page.locator('#videoGrid .video-badge')).toHaveText('已归档 · 收藏夹显示失效');
   await expect(page.locator('.video-source-availability')).toContainText('尚未确认B站源状态');
   await expect(page.locator('.video-source-availability')).not.toContainText('会稍后复核');
@@ -116,25 +109,49 @@ test("settings folds preserve unified save and reveal invalid hidden controls", 
 });
 
 test("a late migration response cannot restart polling after close", async ({ page }) => {
-  await page.evaluate(() => {
-    const w = window as any;
-    w.openModal("pathMigrationModal");
-    w.reviewPollCount = 0;
-    w.fetchJsonSilent = () => {
-      w.reviewPollCount += 1;
-      return new Promise((resolve) => { w.reviewRelease = resolve; });
-    };
-    w.reviewPending = w.refreshPathMigrationState();
-    w.closeModal("pathMigrationModal");
+  let requests = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/path-migration/state', async route => {
+    requests += 1;
+    await pending;
+    await route.fulfill({json:{success:true,data:{id:'migration',status:'copying',entryCount:2}}}).catch(() => {});
   });
-  await expect(page.locator("#pathMigrationModal")).not.toHaveClass(/active/);
-  await page.evaluate(async () => {
-    const w = window as any;
-    w.reviewRelease({ id: "migration", status: "copying", entryCount: 2 });
-    await w.reviewPending;
-  });
+  await page.locator('#storageSettings > summary').click();
+  await page.locator('#pathMigrationBtn').click();
+  await expect.poll(() => requests).toBe(1);
+  await page.locator('#closePathMigrationBtn').click();
+  await expect(page.locator('#pathMigrationModal')).not.toHaveClass(/active/);
+  release();
   await page.waitForTimeout(1700);
-  expect(await page.evaluate(() => (window as any).reviewPollCount)).toBe(1);
+  expect(requests).toBe(1);
+});
+
+test('migration preview deduplicates repeated clicks and ignores completion after close', async ({page}) => {
+  let reads = 0, writes = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/path-migration/state',route => {
+    reads += 1;
+    return route.fulfill({json:{success:true,data:null}});
+  });
+  await page.route('**/api/path-migration/preview',async route => {
+    writes += 1;
+    await pending;
+    await route.fulfill({json:{success:true,data:{}}}).catch(() => {});
+  });
+  await page.locator('#storageSettings > summary').click();
+  await page.locator('#pathMigrationBtn').click();
+  await expect(page.locator('#pathMigrationSummary')).toContainText('还没有路径预览');
+  await page.locator('#pathMigrationDestination').fill('/new');
+  await page.locator('#pathMigrationPreviewBtn').dispatchEvent('click');
+  await page.locator('#pathMigrationPreviewBtn').dispatchEvent('click');
+  await expect.poll(() => writes).toBe(1);
+  await page.locator('#closePathMigrationBtn').click();
+  release();
+  await page.waitForTimeout(1700);
+  expect(reads).toBe(1);
+  expect(writes).toBe(1);
 });
 
 test("migration conflict details are paginated and recover from a failed page", async ({ page }) => {
@@ -153,11 +170,11 @@ test("migration conflict details are paginated and recover from a failed page", 
       itemType: "file", expectedSize: 1024, status: "conflict", lastError: "目标大小不一致",
     })) } });
   });
-  await page.evaluate(() => {
-    const w = window as any;
-    w.openModal("pathMigrationModal");
-    w.renderPathMigrationState({ id: "migration", status: "ready", conflictCount: 21, sourceRoot: "/old", destinationRoot: "/new" });
-  });
+  await page.route('**/api/path-migration/state', route => route.fulfill({json:{success:true,data:{
+    id:'migration',status:'ready',conflictCount:21,sourceRoot:'/old',destinationRoot:'/new',
+  }}}));
+  await page.locator('#storageSettings > summary').click();
+  await page.locator('#pathMigrationBtn').click();
   await page.getByRole("button", { name: "查看冲突与失败项目" }).click();
   await expect(page.locator("#pathMigrationItems .cleanup-item")).toHaveCount(20);
   expect(offsets).toEqual([0]);

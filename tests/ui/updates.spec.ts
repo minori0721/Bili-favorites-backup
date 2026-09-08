@@ -15,7 +15,7 @@ test('update refresh cooldown is visible, expires, and survives closing without 
   const button = page.locator('#checkUpdatesBtn');
   await expect(button).toBeDisabled();
   await expect(button).toContainText('秒后可重新检查');
-  await page.evaluate(() => (window as any).loadUpdates(true));
+  await button.dispatchEvent('click');
   expect(calls).toBe(1);
   await page.locator('#closeUpdatesBtn').click();
   await page.locator('#versionInfoBtn').click();

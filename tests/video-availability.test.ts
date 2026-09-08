@@ -165,10 +165,10 @@ test("availability ignores unrelated accounts while charging probes retain them"
     (scheduler as any).acceptingJobs = false;
     (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { notBefore: Date.now() });
     const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, Date.now());
-    await (scheduler as any).runAvailabilityProbe(job);
+    await (scheduler as any).accessProbes.availability(job);
     assert.deepEqual(checked, ["2", "1"]);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
-    const chargingUsers = (scheduler as any).availabilityProbeUsers("BVAVAIL", "", new Set(), true);
+    const chargingUsers = (scheduler as any).accessProbes.users("BVAVAIL", "", new Set(), true);
     assert.equal(chargingUsers.some((user: any) => user.id === "u3"), true);
     users.splice(0, 2);
     assert.equal(scheduler.requestAvailabilityRecheck("BVAVAIL").status, 409);
@@ -439,7 +439,7 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
       const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
       assert.ok(job, `round ${round} should have a due probe`);
       store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-      await (scheduler as any).runAvailabilityProbe(job);
+      await (scheduler as any).accessProbes.availability(job);
       if (round < expectedDelays.length) {
         const next = store.findByDedupeKey("access_probe:BVAVAIL");
         assert.equal(next?.notBefore, nowMs + expectedDelays[round]);
@@ -493,7 +493,7 @@ test(`unknown availability (${diagnosticReason}) preserves the full backoff and 
       const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
       assert.ok(job, `unknown round ${round} should have a due probe`);
       store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-      await (scheduler as any).runAvailabilityProbe(job);
+      await (scheduler as any).accessProbes.availability(job);
       if (round < delays.length) {
         const next = store.findByDedupeKey("access_probe:BVAVAIL");
         assert.equal(next?.notBefore, nowMs + delays[round]);
@@ -547,7 +547,7 @@ test("manual recheck preserves an existing unavailable schedule when the source 
     assert.equal(scheduler.requestAvailabilityRecheck("BVAVAIL").ok, true);
     const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
     store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).runAvailabilityProbe(job);
+    await (scheduler as any).accessProbes.availability(job);
 
     const next = store.findByDedupeKey("access_probe:BVAVAIL");
     assert.equal(next?.notBefore, scheduledAt);
@@ -583,7 +583,7 @@ test("one available account revives the relation and queues exactly one download
     (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs, availabilityRound: 1 });
     const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
     store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).runAvailabilityProbe(job);
+    await (scheduler as any).accessProbes.availability(job);
 
     assert.equal(manager.getSourceAvailability("BVAVAIL"), undefined);
     assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "queued");
@@ -619,7 +619,7 @@ test("ordinary availability probes do not download through an unrelated enabled 
     const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
     assert.ok(job);
     store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).runAvailabilityProbe(job);
+    await (scheduler as any).accessProbes.availability(job);
     assert.deepEqual(checkedUsers, ["2", "1"]);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
     assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "lost");
@@ -653,7 +653,7 @@ test("an archived video keeps its source status without an automatic long-term p
     (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
     const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
     store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).runAvailabilityProbe(job);
+    await (scheduler as any).accessProbes.availability(job);
     assert.equal(probeCalls, 0);
     assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "pending_confirmation");
@@ -805,7 +805,7 @@ test("logging in wakes a related dormant video once without resetting its lifecy
     assert.equal(store.list(["access_probe"], 10).length, 1);
     const job = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs)[0];
     store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).runAvailabilityProbe(job);
+    await (scheduler as any).accessProbes.availability(job);
     assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "dormant");
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, 3);

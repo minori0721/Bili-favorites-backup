@@ -97,13 +97,13 @@ function rowToJob(row: any): PersistentJobRecord {
 }
 
 export class PersistentJobStore {
-  constructor(private stateDatabase: StateDatabase) {
-    this.normalizeStoppedRecovery();
+  constructor(private stateDatabase: StateDatabase, options: {normalizeRecovery?: boolean} = {}) {
+    if (options.normalizeRecovery !== false) this.normalizeStoppedRecovery();
   }
 
-  rebind(stateDatabase: StateDatabase) {
+  rebind(stateDatabase: StateDatabase, options: {normalizeRecovery?: boolean} = {}) {
     this.stateDatabase = stateDatabase;
-    this.normalizeStoppedRecovery();
+    if (options.normalizeRecovery !== false) this.normalizeStoppedRecovery();
   }
 
   normalizeStoppedRecovery() {

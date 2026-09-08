@@ -21,6 +21,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
+RUN npm prune --omit=dev
 
 FROM debian:bookworm-slim AS bbdown
 ARG BBDOWN_RELEASE
@@ -79,7 +80,7 @@ RUN if [ "$APT_MIRROR" = "tuna" ]; then \
       fi; \
     fi \
   && apt-get update \
-  && apt-get install -y --no-install-recommends aria2 ca-certificates \
+  && apt-get install -y --no-install-recommends aria2 ca-certificates tini \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=bbdown /out/BBDown /usr/local/bin/BBDown
 COPY --from=ffmpeg /out/ffmpeg /usr/local/bin/ffmpeg
@@ -88,7 +89,8 @@ RUN ffmpeg -hide_banner -version | head -n 1 \
   && ffprobe -hide_banner -version | head -n 1 \
   && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libwebp'
 COPY package*.json ./
-RUN npm ci --omit=dev
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 EXPOSE 3000
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]

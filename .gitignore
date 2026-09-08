@@ -9,3 +9,9 @@ node_modules
 test-anti-risk.mjs
 /test-results
 /playwright-report
+
+# Local preview, diagnostics, and validation artifacts
+/output/
+/.preview-root/
+/.playwright-cli/
+/.review-*

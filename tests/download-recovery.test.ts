@@ -183,6 +183,7 @@ test("legacy permanent download failures become manual recovery items without au
   ) as any;
   scheduler.downloadQueue.setStartGate(() => false);
   try {
+    scheduler.refreshRecoveryProjection(true);
     const issue = scheduler.getRecoveryIssues().find((item: any) => item.bvid === "BVLEGACY");
     assert.ok(issue);
     assert.equal(issue.kind, "download_retry_exhausted");

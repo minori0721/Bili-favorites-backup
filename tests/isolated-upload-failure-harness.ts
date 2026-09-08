@@ -12,7 +12,6 @@ const remotePath = "/backup/isolated";
 const stateManager = new StateManager();
 const configStore = new ConfigStore();
 const scheduler = new SyncScheduler(configStore, new UserStore(), stateManager) as any;
-scheduler.localCacheSnapshot = { usedBytes: 0, limitBytes: 0, reserveBytes: 0, paused: false, checkedAt: Date.now() };
 scheduler.uploadQueue.setStartGate(() => false);
 scheduler.queueUploadWork({
   bvid,

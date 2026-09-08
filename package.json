@@ -12,11 +12,16 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "pretest": "npm run build:web",
+    "pretest:ui": "npm run build:web",
     "state:export-json": "tsx src/scripts/sqlite-to-json.ts",
     "benchmark:state": "tsx src/scripts/benchmark-state.ts",
-    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test": "node scripts/test.mjs",
     "test:ui": "playwright test",
     "start": "node dist/index.js",
     "login": "tsx src/scripts/login.ts"
@@ -47,6 +52,7 @@
     "ip-address": "10.7.0"
   },
   "devDependencies": {
+    "esbuild": "0.28.1",
     "@playwright/test": "^1.62.1",
     "@types/archiver": "^8.0.0",
     "@types/better-sqlite3": "7.6.13",

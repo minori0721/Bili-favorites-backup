@@ -1,4 +1,12 @@
+import { createRecoveryRouter } from './http/recovery.js';
+import { createLocalReleaseRouter } from './http/local-release.js';
+import { createQualityMaintenance } from './scheduler/quality-maintenance.js';
+import { createQualityMaintenanceRouter } from './http/quality-maintenance.js';
+import { createOnlineContentRouter } from './http/online-content.js';
+import { createSyncControlRouter } from './http/sync-control.js';
+import { createPathMigrationRouter } from './http/path-migration.js';
 import { ImportMaintenance } from "./import-maintenance.js";
+import { createStartupLifecycle } from "./startup-lifecycle.js";
 import { recoverImportTransaction } from "./import-transaction.js";
 import express from "express";
 import { UpdateCheckService } from "./update-check.js";
@@ -27,11 +35,12 @@ import {
   refreshUserAuth,
   resolveSelfVisibleFavoriteItem,
 } from "./bili.js";
-import { normalizeEncodingPriority, normalizeQualityPriority, shutdownActiveDownloads } from "./downloader.js";
+import { shutdownActiveDownloads } from "./downloader.js";
 import { cleanupStaleBBDownCredentialDirectories } from "./credential-temp.js";
 import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadCache, readDownloadSession } from "./download-session.js";
 import { clearDirectoryContents } from "./storage.js";
 import { renderLoginPage, renderAppPage } from "./web.js";
+import { readAssetManifest, serveAppAsset } from "./web/server/assets.js";
 import { appInfo } from "./app-info.js";
 import { SyncScheduler } from "./scheduler.js";
 import { logManager, logsPath } from "./logger.js";
@@ -71,7 +80,6 @@ import { createRemoteReplacementRunner } from "./remote-operations.js";
 import { remoteStorageIdentity } from "./remote-storage.js";
 import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
 import { normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
-import { resolveQualityUpgradeRemoteTarget } from "./quality-upgrade-target.js";
 import { RenamePreviewSessionStore, type RenamePreviewRemoteScanInfo } from "./rename-preview-session.js";
 import {
   closePlaybackDeliveryTracker,
@@ -113,7 +121,6 @@ import {
 import { ArchiveDeletionService } from "./archive-deletion.js";
 import { executeAccountRemoval } from "./account-removal.js";
 import { BackgroundPreviewCache, type BackgroundPreviewSnapshot } from "./preview-cache.js";
-import { SkippedPreviewCollector } from "./preview-summary.js";
 import {
   buildIndexedRemoteFiles,
   buildRenamePreviewInternal,
@@ -121,6 +128,7 @@ import {
   type InternalRenamePreviewData,
 } from "./rename-preview.js";
 
+readAssetManifest();
 ensureAppDirs();
 recoverImportTransaction();
 logManager.reload();
@@ -189,11 +197,6 @@ type RemoteRenameScan = Awaited<ReturnType<typeof listRemoteFilesRecursive>>;
 const renamePreviewScans = new BackgroundPreviewCache<RemoteRenameScan>({ ttlMs: 5 * 60_000, failedTtlMs: 30_000, maxEntries: 32 });
 const renamePreviewSessions = new RenamePreviewSessionStore({ ttlMs: 5 * 60_000, maxEntries: 8 });
 
-if (process.env.NODE_ENV !== "test") {
-  const backfillStart = setImmediate(() => { void unavailableCoverBackfill.start(); });
-  backfillStart.unref?.();
-}
-
 type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "online-covers" | "exports" | "backups" | "state" | "users" | "config";
 
 const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
@@ -213,26 +216,30 @@ const cleanupItems: Record<CleanupItem, { label: string; important: boolean; pat
 
 const allCleanupKeys = Object.keys(cleanupItems) as CleanupItem[];
 
-if (process.env.NODE_ENV !== "test") {
-  startAfterRecovery();
-}
-
-async function startAfterRecovery() {
-  await onlineCoverCache.initialize().catch((error) => {
+const startupLifecycle = createStartupLifecycle([
+  () => { void unavailableCoverBackfill.start(); },
+  () => onlineCoverCache.initialize().catch((error) => {
     console.warn(`[OnlineCoverCache] 初始化失败: ${safeErrorSummary(error)}`);
-  });
-  await rotateDebugLogs().catch((error) => {
+  }),
+  () => rotateDebugLogs().catch((error) => {
     console.warn(`[DebugLog] 启动轮转失败: ${safeErrorSummary(error)}`);
-  });
-  await cleanupBBDownCredentialResidue().catch((error) => {
+  }),
+  () => cleanupBBDownCredentialResidue().catch((error) => {
     console.warn(`[Security] Failed to clean stale BBDown credential directories: ${safeErrorSummary(error)}`);
+  }),
+  () => pathMigration.resumePersisted(),
+  () => recoverInterruptedQualityUpgrades(),
+  () => recoverInterruptedQualityDownloads(),
+  () => archiveDeletion.restoreLiveAccountsAfterStartup(),
+  () => scheduler.resumePersistedWorkOnStartup(),
+  () => { scheduler.start(); },
+]);
+
+if (process.env.NODE_ENV !== "test") {
+  void startupLifecycle.start().catch(error => {
+    scheduler.beginShutdown();
+    console.error(`[Startup] Recovery failed; scheduling remains stopped: ${safeErrorSummary(error)}`);
   });
-  await pathMigration.resumePersisted();
-  await recoverInterruptedQualityUpgrades();
-  await recoverInterruptedQualityDownloads();
-  archiveDeletion.restoreLiveAccountsAfterStartup();
-  scheduler.resumePersistedWorkOnStartup();
-  scheduler.start();
 }
 
 async function cleanupBBDownCredentialResidue() {
@@ -538,6 +545,7 @@ function requireSameOrigin(req: express.Request, res: express.Response, next: ex
   res.status(403).json({ success: false, message: "Invalid request origin" });
 }
 
+app.get('/assets/app/:name', requireAuth, serveAppAsset);
 app.use("/covers", requireAuth, express.static(coversDir, {
   maxAge: "30d",
   immutable: true,
@@ -875,6 +883,7 @@ app.get("/login", (req, res) => {
 });
 
 app.get("/", (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   if (!req.session.user) {
     res.redirect("/login");
     return;
@@ -1016,66 +1025,7 @@ app.put("/api/config", (req, res) => {
   res.json({ success: true, data: updated });
 });
 
-app.post("/api/path-migration/preview", asyncHandler(async (req, res) => {
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能预览归档路径迁移" });
-    return;
-  }
-  const destinationRoot = String(req.body?.destinationRoot || "").trim();
-  if (!destinationRoot) {
-    res.status(400).json({ success: false, message: "destinationRoot is required" });
-    return;
-  }
-  const record = await pathMigration.preview(destinationRoot);
-  res.status(202).json({ success: true, data: record });
-}));
-
-app.get("/api/path-migration/state", (_req, res) => {
-  res.json({ success: true, data: pathMigration.getState() || null });
-});
-
-app.get("/api/path-migration/items", (req, res) => {
-  const rawStatus = String(req.query.status || "conflict,failed");
-  const statuses = rawStatus.split(",").filter((value): value is any => ["pending", "reusable", "copying", "awaiting_verification", "verified", "conflict", "failed"].includes(value));
-  const offset = Math.max(0, Number(req.query.offset || 0));
-  const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 100)));
-  res.json({ success: true, data: pathMigration.listItems(statuses, offset, limit) });
-});
-
-app.post("/api/path-migration/start", asyncHandler(async (req, res) => {
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能开始归档路径迁移" });
-    return;
-  }
-  res.json({ success: true, data: await pathMigration.start(req.body?.id) });
-}));
-
-app.post("/api/path-migration/pause", (_req, res) => {
-  res.json({ success: true, data: pathMigration.pause() });
-});
-
-app.post("/api/path-migration/resume", (_req, res) => {
-  res.json({ success: true, data: pathMigration.resume() });
-});
-
-app.post("/api/path-migration/cancel", asyncHandler(async (_req, res) => {
-  const state = pathMigration.cancel();
-  if (!await pathMigration.waitForIdle(30_000)) {
-    res.status(409).json({ success: false, message: "归档路径预览仍未停止，请等待当前请求结束后再导入或重载状态库" });
-    return;
-  }
-  res.json({ success: true, data: state });
-}));
-
-app.post("/api/path-migration/cleanup-old", asyncHandler(async (req, res) => {
-  const confirmation = String(req.body?.confirmation || "");
-  const keepOld = req.body?.keepOld === true;
-  if (!keepOld && confirmation !== "DELETE OLD ARCHIVE") {
-    res.status(400).json({ success: false, message: "请输入 DELETE OLD ARCHIVE 以确认删除旧归档目录" });
-    return;
-  }
-  res.json({ success: true, data: await pathMigration.cleanupOld(req.body?.id, keepOld) });
-}));
+app.use(createPathMigrationRouter({pathMigration, archiveDeletion, boundary:asyncHandler}));
 
 app.get("/api/users", (req, res) => {
   const users = userStore.list().map((user) => ({
@@ -1252,52 +1202,7 @@ const onlineArchiveStates: OnlineArchiveStateResolver = (items) => {
   return states;
 };
 
-app.get("/api/online-content/navigation", asyncHandler(async (_req, res) => {
-  const data = await onlineContent.getNavigation(userStore.list().filter((user) => user.enabled));
-  res.setHeader("Cache-Control", "private, max-age=30");
-  res.json({ success: true, data });
-}));
-
-app.get("/api/online-content/items", asyncHandler(async (req, res) => {
-  const userId = String(req.query.userId || "").trim();
-  const user = userStore.getById(userId);
-  if (!user || !user.enabled) {
-    res.status(404).json({ success: false, message: "在线内容账号不存在" });
-    return;
-  }
-  const rawKind = String(req.query.kind || "favorite");
-  const allowedKinds = ["favorite", "collected", "bangumi", "drama", "watch_later", "history"];
-  if (!allowedKinds.includes(rawKind)) {
-    res.status(400).json({ success: false, message: "在线内容分类无效" });
-    return;
-  }
-  const mediaId = req.query.mediaId === undefined || req.query.mediaId === "" ? undefined : Number(req.query.mediaId);
-  const page = req.query.page === undefined ? 1 : Number(req.query.page);
-  const pageSize = req.query.pageSize === undefined ? 50 : Number(req.query.pageSize);
-  const query = String(req.query.q || "").trim();
-  const cursor = String(req.query.cursor || "").trim();
-  if ((mediaId !== undefined && (!Number.isInteger(mediaId) || mediaId < 1))
-    || !Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50
-    || query.length > 80 || cursor.length > 256 || query.includes("\0") || cursor.includes("\0")) {
-    res.status(400).json({ success: false, message: "在线内容分页参数无效" });
-    return;
-  }
-  const data = await onlineContent.list(user, {
-    kind: rawKind as any,
-    mediaId,
-    page,
-    pageSize,
-    cursor: cursor || undefined,
-    query: query || undefined,
-  }, onlineArchiveStates);
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data });
-}));
-
-app.get("/api/online-content/covers/:token", asyncHandler(async (req, res) => {
-  const filePath = await onlineContent.resolveCover(String(req.params.token || ""));
-  sendOnlineCover(res, filePath);
-}));
+app.use(createOnlineContentRouter({content:onlineContent,users:userStore,archiveStates:onlineArchiveStates,boundary:asyncHandler}));
 
 app.post("/api/online-content/manual-archive", asyncHandler(async (req, res) => {
   const userId = String(req.body?.userId || "").trim();
@@ -1404,39 +1309,10 @@ app.post("/api/videos/:bvid/availability-recheck", (req, res) => {
   res.status(202).json({ success: true, data: result });
 });
 
-app.get("/api/videos/:bvid/local-release-preview", (req, res) => {
-  const bvid = String(req.params.bvid || "").trim();
-  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
-    res.status(400).json({ success: false, message: "BV号格式无效" });
-    return;
-  }
-  const result = scheduler.previewLocalArchiveRelease(bvid);
-  if (!result.ok) {
-    res.status(result.status).json({ success: false, message: result.message });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: result });
-});
-
-app.post("/api/videos/:bvid/local-release", (req, res) => {
-  const bvid = String(req.params.bvid || "").trim();
-  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
-    res.status(400).json({ success: false, message: "BV号格式无效" });
-    return;
-  }
-  const result = scheduler.requestLocalArchiveRelease(
-    bvid,
-    String(req.body?.releaseId || ""),
-    String(req.body?.confirmation || ""),
-  );
-  if (!result.ok) {
-    res.status(result.status).json({ success: false, message: result.message });
-    return;
-  }
-  res.status(202).setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: result });
-});
+app.use(createLocalReleaseRouter({
+  service: { preview: bvid => scheduler.previewLocalArchiveRelease(bvid), release: (bvid, id, confirmation) => scheduler.requestLocalArchiveRelease(bvid, id, confirmation) },
+  boundary: asyncHandler,
+}));
 app.get("/api/archive-library/navigation", (req, res) => {
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
@@ -1475,45 +1351,7 @@ app.get("/api/archive-library/items/:bvid", (req, res) => {
   }
 });
 
-app.post("/api/archive-library/items/:bvid/deletion-preview", asyncHandler(async (req, res) => {
-  const bvid = String(req.params.bvid || "").trim();
-  const userId = String(req.body?.userId || "").trim();
-  const mediaId = Number(req.body?.mediaId);
-  if (!/^BV[0-9A-Za-z]+$/.test(bvid) || !userId || !Number.isInteger(mediaId) || (mediaId < 1 && mediaId !== -1)) {
-    res.status(400).json({ success: false, message: "归档来源参数无效" });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: archiveDeletion.previewSource(userId, mediaId, bvid) });
-}));
-
-app.get("/api/archive-deletions/:id", (req, res) => {
-  const data = archiveDeletion.get(String(req.params.id || ""));
-  if (!data) {
-    res.status(404).json({ success: false, message: "归档清理任务不存在" });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data });
-});
-
-app.post("/api/archive-deletions/:id/start", asyncHandler(async (req, res) => {
-  const data = archiveDeletion.start(String(req.params.id || ""), String(req.body?.confirmation || ""));
-  res.status(202).setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data });
-}));
-
-app.post("/api/archive-deletions/:id/retry", asyncHandler(async (req, res) => {
-  const data = archiveDeletion.retry(String(req.params.id || ""));
-  res.status(202).setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data });
-}));
-
-app.post("/api/archive-deletions/:id/repreview", asyncHandler(async (req, res) => {
-  const data = archiveDeletion.repreview(String(req.params.id || ""));
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data });
-}));
+app.use(createArchiveDeletionRouter({ service: archiveDeletion, boundary: asyncHandler }));
 
 app.get("/api/archive-library/playback-queue", (req, res) => {
   try {
@@ -1926,79 +1764,15 @@ app.patch("/api/users/:id", (req, res) => {
   res.json({ success: true, data: user });
 });
 
-app.post("/api/users/:id/removal-preview", (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: archiveDeletion.previewAccount(user) });
-});
-
-app.delete("/api/users/:id", asyncHandler(async (req, res) => {
-  const result = await executeAccountRemoval({
-    archiveDeletion,
-    scheduler,
-    userStore,
-    onRollbackError: (error) => console.error(`[Account] Failed to roll back account removal: ${safeErrorSummary(error)}`),
-  }, String(req.params.id || ""), req.body || {});
-  if (result.operation) {
-    res.status(202).json({ success: true, data: { ...result.retired, operation: result.operation } });
-    return;
-  }
-  res.json({ success: true, data: result.retired });
+app.use(createAccountRemovalRouter({
+  user: id => userStore.getById(id), preview: user => archiveDeletion.previewAccount(user), boundary: asyncHandler,
+  remove: (id, body) => executeAccountRemoval({ archiveDeletion, scheduler, userStore,
+    onRollbackError: error => console.error(`[Account] Failed to roll back account removal: ${safeErrorSummary(error)}`),
+  }, id, body),
 }));
 
-app.post("/api/sync/now", asyncHandler(async (req, res) => {
-  try {
-    const result = scheduler.runNow();
-    if (result.started) {
-      res.json({ success: true, data: { message: "Sync triggered", queued: false } });
-      return;
-    }
-    if (result.queued) {
-      res.json({ success: true, data: { message: "Sync queued", queued: true } });
-      return;
-    }
-    res.status(409).json({ success: false, message: "A sync task is already running" });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: safeErrorSummary(err, "Sync failed") });
-  }
-}));
-
-app.post("/api/sync/reconcile", asyncHandler(async (_req, res) => {
-  try {
-    const result = scheduler.runReconcileNow();
-    if (result.started) {
-      res.json({ success: true, data: { message: "Reconcile triggered", queued: false } });
-      return;
-    }
-    if (result.queued) {
-      res.json({ success: true, data: { message: "Reconcile queued", queued: true } });
-      return;
-    }
-    res.status(409).json({ success: false, message: "A sync task is already running" });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: safeErrorSummary(err, "Reconcile failed") });
-  }
-}));
-
-app.post("/api/sync/reconcile-remote", asyncHandler(async (_req, res) => {
-  try {
-    const result = scheduler.runRemoteReconcileNow();
-    if (result.started) {
-      res.json({ success: true, data: { message: "Remote-only reconcile triggered", queued: false } });
-      return;
-    }
-    if (result.queued) {
-      res.json({ success: true, data: { message: "Remote-only reconcile queued", queued: true } });
-      return;
-    }
-    res.status(409).json({ success: false, message: "A sync task is already running" });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: safeErrorSummary(err, "Remote reconcile failed") });
-  }
+app.use(createSyncControlRouter({
+  sync:() => scheduler.runNow(),reconcile:() => scheduler.runReconcileNow(),remote:() => scheduler.runRemoteReconcileNow(),boundary:asyncHandler,
 }));
 
 app.get("/api/logs/stream", (req, res) => {
@@ -2031,58 +1805,9 @@ app.get("/api/queue/state", (_req, res) => {
   res.json({ success: true, data: scheduler.getQueueSnapshot() });
 });
 
-app.post("/api/queue/recover", asyncHandler(async (req, res) => {
-  const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
-  if (!jobId || jobId.length > 128) {
-    res.status(400).json({ success: false, message: "Invalid recovery job id" });
-    return;
-  }
-  const result = await scheduler.recoverUploadJob(jobId, req.body?.allowReupload === true);
-  if (!result.ok) {
-    res.status(result.status).json({ success: false, message: result.message });
-    return;
-  }
-  res.json({
-    success: true,
-    data: {
-      jobId: result.job.id,
-      idempotent: result.idempotent,
-      ...(result.resolved ? { resolved: result.resolved } : {}),
-    },
-  });
-}));
-
-app.post("/api/recovery-issues/:id/actions/:action", asyncHandler(async (req, res) => {
-  const issueId = String(req.params.id || "").trim();
-  const action = String(req.params.action || "").trim();
-  const allowedActions = new Set([
-    "recheck",
-    "reupload",
-    "create_candidate",
-    "redownload",
-    "redownload_with_encoding",
-    "redownload_with_quality",
-    "retry_download",
-    "retry_download_with_account",
-    "defer_download",
-    "retry_quality",
-    "retry_quality_with_encoding",
-    "retry_quality_with_quality",
-    "abandon_attempt",
-    "keep_existing",
-    "use_candidate",
-  ]);
-  if (!issueId || issueId.length > 160 || !allowedActions.has(action)) {
-    res.status(400).json({ success: false, message: "Invalid recovery issue action" });
-    return;
-  }
-  const result = await scheduler.resolveRecoveryIssue(issueId, action as any, req.body || {});
-  if (!result.ok) {
-    res.status(result.status).json({ success: false, message: result.message });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: { issues: result.issues } });
+app.use(createRecoveryRouter({ boundary: asyncHandler,
+  recoverUploadJob: scheduler.recoverUploadJob.bind(scheduler),
+  resolveRecoveryIssue: scheduler.resolveRecoveryIssue.bind(scheduler),
 }));
 
 async function pathSize(targetPath: string): Promise<number> {
@@ -2322,6 +2047,7 @@ function reloadStoresAfterImport() {
   pathMigration.rebindWithinLifecycleBarrier(stateManager.getDatabase());
   archiveDeletion.rebind(stateManager.getDatabase());
   logManager.reload();
+  scheduler.resumeAfterStateRebind();
   scheduler.updateInterval();
 }
 
@@ -2707,271 +2433,12 @@ async function recoverInterruptedQualityUpgrades() {
   }
 }
 
-function describeUpgradeReason(config: ReturnType<ConfigStore["get"]>) {
-  const parts: string[] = [];
-  if (config.bbdownQuality) parts.push(`目标清晰度 ${config.bbdownQuality}`);
-  if (config.bbdownEncoding) parts.push(`编码优先 ${config.bbdownEncoding}`);
-  if (config.bbdownHiRes) parts.push("Hi-Res 音频");
-  if (config.bbdownDolby) parts.push("杜比音效");
-  return parts.length ? parts.join(" / ") : "按当前 BBDown 画质设置重新下载";
-}
-
-function getQualityProfile(config: AppConfig) {
-  return {
-    quality: String(config.bbdownQuality || ""),
-    encoding: String(config.bbdownEncoding || ""),
-    hiRes: Boolean(config.bbdownHiRes),
-    dolby: Boolean(config.bbdownDolby),
-  };
-}
-
-function isMediaRemoteFile(file: RemoteFileRecord) {
-  return /\.(mp4|mkv|flv|mov|m4v)$/i.test(file.name);
-}
-
-function qualityProfilesMatch(files: RemoteFileRecord[], config: AppConfig) {
-  const mediaFiles = files.filter(isMediaRemoteFile);
-  if (mediaFiles.length === 0 || mediaFiles.some((file) => !file.qualityProfile)) {
-    return "unknown" as const;
-  }
-  const target = getQualityProfile(config);
-  return mediaFiles.every((file) =>
-    file.qualityProfile?.quality === target.quality &&
-    file.qualityProfile?.encoding === target.encoding &&
-    file.qualityProfile?.hiRes === target.hiRes &&
-    file.qualityProfile?.dolby === target.dolby
-  ) ? "same" as const : "different" as const;
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildTemplateMetadataRegex(template: string, bvid: string) {
-  const tokenPattern = /<videoTitle>|<ownerName>|<bvid>|<publishDate>|<videoDate>|<dfn>|<videoCodecs>/g;
-  let output = "^";
-  let lastIndex = 0;
-  let hasQuality = false;
-  let hasEncoding = false;
-  for (const match of template.matchAll(tokenPattern)) {
-    output += escapeRegExp(template.slice(lastIndex, match.index));
-    switch (match[0]) {
-      case "<bvid>":
-        output += escapeRegExp(bvid);
-        break;
-      case "<dfn>":
-        output += "(?<dfn>[^\\/\\.]+?)";
-        hasQuality = true;
-        break;
-      case "<videoCodecs>":
-        output += "(?<videoCodecs>[^\\/\\.]+?)";
-        hasEncoding = true;
-        break;
-      default:
-        output += ".+?";
-        break;
-    }
-    lastIndex = (match.index || 0) + match[0].length;
-  }
-  output += escapeRegExp(template.slice(lastIndex));
-  output += "(?:_P\\d+)?$";
-  if (!hasQuality && !hasEncoding) {
-    return null;
-  }
-  return { regex: new RegExp(output, "i"), hasQuality, hasEncoding };
-}
-
-function textMatchesQuality(value: string, target: string) {
-  return value.trim().toLowerCase() === normalizeQualityPriority(target).toLowerCase();
-}
-
-function textMatchesEncoding(value: string, target: string) {
-  return value.trim().toLowerCase() === normalizeEncodingPriority(target).toLowerCase();
-}
-
-function qualityFilenameMatchStatus(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
-  const needsQuality = Boolean(config.bbdownQuality);
-  const needsEncoding = Boolean(config.bbdownEncoding);
-  if (!needsQuality && !needsEncoding) {
-    return "unknown" as const;
-  }
-  const mediaFiles = files.filter(isMediaRemoteFile);
-  if (mediaFiles.length === 0) {
-    return "unknown" as const;
-  }
-  const templateRegex = buildTemplateMetadataRegex(config.filenameTemplate || "<videoTitle>-<bvid>", bvid);
-  if (!templateRegex) {
-    return "unknown" as const;
-  }
-  if ((needsQuality && !templateRegex.hasQuality) || (needsEncoding && !templateRegex.hasEncoding)) {
-    return "unknown" as const;
-  }
-  let matched = false;
-  for (const file of mediaFiles) {
-    const parsed = templateRegex.regex.exec(file.name.replace(/\.[^.]+$/, ""));
-    if (!parsed?.groups) {
-      return "unknown" as const;
-    }
-    if (needsQuality && !textMatchesQuality(parsed.groups.dfn || "", config.bbdownQuality)) {
-      return "different" as const;
-    }
-    if (needsEncoding && !textMatchesEncoding(parsed.groups.videoCodecs || "", config.bbdownEncoding)) {
-      return "different" as const;
-    }
-    matched = true;
-  }
-  return matched ? "same" as const : "unknown" as const;
-}
-
-function getQualityUpgradeMatchStatus(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
-  const profileStatus = qualityProfilesMatch(files, config);
-  if (profileStatus !== "unknown") {
-    return profileStatus;
-  }
-  if (config.bbdownHiRes || config.bbdownDolby) {
-    return "unknown" as const;
-  }
-  return qualityFilenameMatchStatus(files, bvid, config);
-}
-
-function buildQualityUpgradePreview(detailLimit?: number) {
-  const config = configStore.get();
-  const reason = describeUpgradeReason(config);
-  const records = stateManager.getRemoteFilePreviewRecords();
-  const qualityTargetKeys = scheduler.getQualityUpgradeTargetKeys();
-  const candidates: Array<{
-    key: string;
-    bvid: string;
-    title: string;
-    ownerName: string;
-    userId: string;
-    mediaId: number;
-    folderTitle: string;
-    remotePath: string;
-    oldFiles: RemoteFileRecord[];
-    reason: string;
-    matchStatus: "different";
-  }> = [];
-  const uncertain: Array<{
-    key: string; bvid: string; title: string; ownerName: string; userId: string; mediaId: number;
-    folderTitle: string; remotePath: string; oldFiles: RemoteFileRecord[]; reason: string; matchStatus: "unknown";
-  }> = [];
-  const skipped = new SkippedPreviewCollector<{ bvid?: string; title?: string; folderTitle?: string; reason: string }>(detailLimit);
-  const remoteRoot = config.alistDest || "/bili-backup/videos";
-
-  for (const record of records) {
-    for (const relation of record.relations) {
-      if (relation.hasInterruptedQualityUpgrade) {
-        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "上一次画质重调正在恢复中" });
-        continue;
-      }
-      if (relation.backupStatus !== "verified" && relation.backupStatus !== "partial_verified") {
-        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: relation.backupStatus === "uploaded" ? "远端文件仍在确认中" : "只有最终确认的视频才能重调画质" });
-        continue;
-      }
-      const remoteTarget = resolveQualityUpgradeRemoteTarget(remoteRoot, relation);
-      if (!remoteTarget.ok) {
-        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: remoteTarget.reason });
-        continue;
-      }
-      const { oldFiles, remotePath } = remoteTarget;
-      const key = relationKey(relation.userId, relation.mediaId, record.bvid);
-      if (qualityTargetKeys.has(`${relation.userId}:${relation.mediaId}:${record.bvid}`)) {
-        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "已在画质重调队列中" });
-        continue;
-      }
-      const matchStatus = getQualityUpgradeMatchStatus(oldFiles, record.bvid, config);
-      if (matchStatus === "same") {
-        skipped.add({ bvid: record.bvid, title: record.title, folderTitle: relation.folderTitle, reason: "远端文件已符合当前画质设置" });
-        continue;
-      }
-      const previewItem = {
-        key,
-        bvid: record.bvid,
-        title: record.title,
-        ownerName: record.upperName,
-        userId: relation.userId,
-        mediaId: relation.mediaId,
-        folderTitle: relation.folderTitle,
-        remotePath,
-        oldFiles,
-        reason: matchStatus === "unknown" ? "旧文件缺少可确认的画质档案，需要人工确认" : reason,
-      };
-      if (matchStatus === "unknown") uncertain.push({ ...previewItem, matchStatus: "unknown" });
-      else candidates.push({ ...previewItem, matchStatus: "different" });
-    }
-  }
-
-  return { candidates, uncertain, ...skipped.snapshot(), target: {
-    quality: config.bbdownQuality,
-    encoding: config.bbdownEncoding,
-    hiRes: config.bbdownHiRes,
-    dolby: config.bbdownDolby,
-  } };
-}
-
-app.post("/api/quality-upgrade/preview", asyncHandler(async (req, res) => {
-  res.json({ success: true, data: buildQualityUpgradePreview(previewDetailLimit(req.body?.detailLimit)) });
-}));
-
-app.post("/api/quality-upgrade", asyncHandler(async (req, res) => {
-  const { items } = req.body as { items?: Array<{ key?: string; userId?: string; mediaId?: number; bvid?: string; forceUnknown?: boolean }> };
-  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
-    res.status(400).json({ success: false, message: "items must contain 1-50 entries" });
-    return;
-  }
-  const preview = buildQualityUpgradePreview();
-  const candidates = new Map(preview.candidates.map((item) => [item.key, item]));
-  const uncertain = new Map(preview.uncertain.map((item) => [item.key, item]));
-  const config = configStore.get();
-  const queued: Array<{ key: string; bvid: string; title: string; artifactKey: string }> = [];
-  const skipped: Array<{ key: string; reason: string }> = [];
-  const requestedKeys = new Set<string>();
-  const downloadGroups = new Set<string>();
-
-  for (const item of items) {
-    const key = item.key || (item.userId && item.mediaId && item.bvid ? relationKey(item.userId, Number(item.mediaId), item.bvid) : "");
-    if (!key || requestedKeys.has(key)) {
-      skipped.push({ key, reason: key ? "重复提交" : "缺少任务标识" });
-      continue;
-    }
-    requestedKeys.add(key);
-    const candidate = candidates.get(key) || (item.forceUnknown ? uncertain.get(key) : undefined);
-    if (!candidate) {
-      skipped.push({ key, reason: uncertain.has(key) ? "无法判断旧文件画质，必须明确确认后提交" : "预览候选不存在或已在队列中" });
-      continue;
-    }
-    const user = userStore.getById(candidate.userId);
-    if (!user || !user.enabled) {
-      skipped.push({ key, reason: "账号不存在或未启用" });
-      continue;
-    }
-    const task = new QualityUpgradeTask(candidate.bvid, downloadCredentialsForUser(user), config, {
-      userId: candidate.userId,
-      mediaId: candidate.mediaId,
-      folderTitle: candidate.folderTitle,
-      remotePath: candidate.remotePath,
-      oldFiles: candidate.oldFiles,
-    });
-    task.videoTitle = candidate.title;
-    task.folderTitle = candidate.folderTitle;
-    task.downloadUserId = user.id;
-    task.userId = candidate.userId;
-    task.mediaId = candidate.mediaId;
-    if (!scheduler.enqueueQualityUpgrade(task)) {
-      skipped.push({ key, reason: "该任务已在持久化队列中" });
-      continue;
-    }
-    queued.push({ key, bvid: candidate.bvid, title: candidate.title, artifactKey: task.artifactKey });
-    downloadGroups.add(task.artifactKey);
-  }
-
-  res.json({ success: true, data: { queued, skipped, downloadGroups: downloadGroups.size } });
-}));
-
-app.get("/api/quality-upgrade/state", (_req, res) => {
-  res.json({ success: true, data: scheduler.getQualityUpgradeState() });
+const qualityMaintenance = createQualityMaintenance({
+  config: () => configStore.get(), records: () => stateManager.getRemoteFilePreviewRecords(),
+  targetKeys: () => scheduler.getQualityUpgradeTargetKeys(), users: userStore,
+  enqueue: task => scheduler.enqueueQualityUpgrade(task),
 });
+app.use(createQualityMaintenanceRouter({service:qualityMaintenance,state:()=>scheduler.getQualityUpgradeState(),detailLimit:previewDetailLimit,boundary:asyncHandler}));
 
 app.post("/api/rename/preview", asyncHandler(async (req, res) => {
   if (archiveDeletion.hasUnfinishedOperation()) {
@@ -3156,12 +2623,15 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
 
 
 export async function closeAppResources() {
+  startupLifecycle.stop();
   scheduler.beginShutdown();
+  const startupStopped = await startupLifecycle.waitForIdle(5_000);
   const pathMigrationStopped = pathMigration.stop(5_000);
   const archiveDeletionStopped = archiveDeletion.stop(5_000);
   const renamePreviewStopped = renamePreviewScans.stop(5_000);
   await shutdownActiveDownloads(5_000);
-  await scheduler.shutdown(5_000);
+  await scheduler.shutdown(5_000, {closeDatabase:false});
+  if (!startupStopped) throw new Error("Startup recovery did not stop before closing the state database");
   if (!await pathMigrationStopped) throw new Error("Path migration did not stop before closing the state database");
   if (!await archiveDeletionStopped) throw new Error("Archive deletion did not stop before closing the state database");
   if (!await renamePreviewStopped) throw new Error("Rename preview scan did not stop before closing the state database");
@@ -3197,7 +2667,10 @@ if (process.env.NODE_ENV !== "test") {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
+    startupLifecycle.stop();
     scheduler.beginShutdown();
+    const startupStopped = await startupLifecycle.waitForIdle(20_000);
+    if (!startupStopped) console.warn("[Shutdown] Startup recovery did not stop before the shutdown deadline");
     const pathMigrationStopped = pathMigration.stop(20_000);
     const archiveDeletionStopped = archiveDeletion.stop(20_000);
     const renamePreviewStopped = renamePreviewScans.stop(20_000);
@@ -3205,7 +2678,9 @@ if (process.env.NODE_ENV !== "test") {
     await shutdownActiveDownloads(20_000).catch((error) => {
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
     });
-    await scheduler.shutdown(20_000).catch((error) => {
+    let schedulerStopped = true;
+    await scheduler.shutdown(20_000, {closeDatabase:false}).catch((error) => {
+      schedulerStopped = false;
       console.warn(`[Shutdown] Failed to checkpoint state database cleanly: ${safeErrorSummary(error)}`);
     });
     if (!await pathMigrationStopped) {
@@ -3229,14 +2704,25 @@ if (process.env.NODE_ENV !== "test") {
     const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
     closePlaybackDeliveryTracker();
     adminSessionStore.close();
-    if (await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle) {
+    const quiesced = startupStopped && schedulerStopped && await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle;
+    if (quiesced) {
       stateManager.close();
     } else {
       console.warn("[Shutdown] Skipped explicit state database close because background work did not quiesce");
     }
     logManager.close();
-    process.exit(0);
+    process.exit(quiesced ? 0 : 1);
   };
   process.once("SIGINT", () => { void shutdown("SIGINT"); });
   process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+  if (process.env.BFB_DEV_SERVER === '1' && process.send) {
+    process.on('message', message => {
+      if (message && typeof message === 'object' && 'type' in message && message.type === 'bfb:dev-shutdown') {
+        void shutdown('development restart');
+      }
+    });
+    process.once('disconnect', () => { void shutdown('development launcher disconnected'); });
+  }
 }
+import { createArchiveDeletionRouter } from './http/archive-deletion.js';
+import { createAccountRemovalRouter } from './http/account-removal.js';

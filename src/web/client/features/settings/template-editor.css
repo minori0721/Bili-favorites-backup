@@ -1,0 +1,19 @@
+    /* Template tags */
+    .template-tags { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+    .selected-tags { min-height:40px; border:1px dashed var(--border-strong); border-radius:var(--radius-legacy-control); padding:8px; background:var(--surface); }
+    .template-empty-hint { color:var(--muted); font-size:13px; padding:4px; }
+    .template-tag { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:999px; background:rgba(57,197,187,0.1); color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all 0.2s; user-select:none; }
+    .template-tag:hover { border-color:var(--accent); }
+    .template-tag.active { background:var(--accent); color:white; }
+    .template-tag.selected { background:var(--accent); color:white; cursor:grab; }
+    .template-tag.selected:active { cursor:grabbing; }
+    .template-tag.dragging { opacity:0.4; }
+    .template-tag.drag-over { border-color:var(--accent); transform:scale(1.05); }
+    .template-tag .remove-x { margin-left:4px; font-size:14px; opacity:0.7; }
+    .template-tag .remove-x:hover { opacity:1; }
+    .template-preview { padding:11px 12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-legacy-control); font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
+    .segmented-control { display:inline-grid; grid-template-columns:repeat(2,minmax(110px,1fr)); gap:3px; padding:3px; border:1px solid var(--border); border-radius:10px; background:var(--surface-strong); }
+    .segmented-control label { margin:0; cursor:pointer; }
+    .segmented-control input { position:absolute; opacity:0; pointer-events:none; }
+    .segmented-control span { display:block; min-height:34px; padding:8px 14px; border-radius:7px; text-align:center; color:var(--muted); font-size:13px; font-weight:700; }
+    .segmented-control input:checked + span { background:var(--panel); color:var(--accent); box-shadow:0 1px 4px rgba(24,51,48,.12); }

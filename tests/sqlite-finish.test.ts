@@ -101,99 +101,16 @@ test("application info derives safe dev, release, and local build labels", () =>
     assert.match(html, /https:\/\/github\.com\/minori0721\/Bili-favorites-backup/);
   }
   const appHtml = renderAppPage();
-  assert.match(appHtml, /class="app-brand"/);
-  assert.match(appHtml, /class="header-actions"/);
-  assert.match(appHtml, /setTimeout\(\(\) => \{[\s\S]*?refreshQueueBoard\(\);[\s\S]*?\}, Math\.max\(1_000/);
-  assert.match(appHtml, /function queueBoardRefreshDelay\(snapshot\)/);
-  assert.match(appHtml, /setInterval\(updateQueueBoardClock, 1_000\)/);
+  for (const id of ['logQueueBtn','queueBoard','playbackModal','archiveLibraryBtn','archiveLibraryModal','accountRemovalModal','accountRemovalOnly','accountRemovalRemote','playbackDeliveryMode','recoveryIssuesStatus','closePlaybackImmersiveBtn','playbackImmersiveQueueBtn','playbackMobilePortraitBtn']) {
+    assert.ok(appHtml.includes('id="' + id + '"'), 'Missing UI entry: ' + id);
+  }
   assert.match(appHtml, /id="logQueueBtn" class="active"/);
-  assert.match(appHtml, /setLogMode\('queue'\)/);
-  assert.match(appHtml, /visibilitychange/);
-  assert.match(appHtml, /if \(document\.hidden\) \{[\s\S]*?stopQueueBoardPolling\(\);[\s\S]*?stopRecoveryIssuePolling\(\);[\s\S]*?\}/);
-  assert.match(appHtml, /id="playbackModal"/);
-  assert.match(appHtml, /id="archiveLibraryBtn"/);
-  assert.match(appHtml, /id="archiveLibraryModal"/);
-  assert.match(appHtml, /data-archive-filter="deleted"/);
-  assert.match(appHtml, /more\.className = 'archive-library-card-more'/);
-  assert.match(appHtml, /archive-library-status\.deleted/);
-  assert.match(appHtml, /archive-library-source-reason/);
-  assert.match(appHtml, /id="accountRemovalModal"/);
-  assert.match(appHtml, /id="accountRemovalOnly"[^>]*checked/);
-  assert.match(appHtml, /id="accountRemovalRemote"/);
-  assert.match(appHtml, /function loadAccountRemovalPreview\(\)/);
-  assert.match(appHtml, /仅移除账号登录；远端归档、封面和本地索引都会保留/);
-  assert.match(appHtml, /DELETE REMOTE ARCHIVE/);
-  assert.match(appHtml, /function openArchiveLibraryPlayback\(bvid, trigger\)/);
-  assert.match(appHtml, /\/api\/archive-library\/navigation/);
-  assert.match(appHtml, /function pollArchiveLibraryNavigationDeletions\(activeDeletions\)/);
-  assert.match(appHtml, /Promise\.all\(activeDeletions\.map/);
-  assert.match(appHtml, /fetchJson\('\/api\/archive-deletions\/' \+ encodeURIComponent\(entry\.id\), \{ signal:controller\.signal \}\)/);
-  assert.match(appHtml, /archiveLibraryState\.sessionToken/);
-  assert.match(appHtml, /params\.set\('direction', 'before'\)/);
-  assert.match(appHtml, /playbackState\.libraryContext/);
-  assert.match(appHtml, /function playbackFileApiPath\(part, suffix\)/);
-  assert.match(appHtml, /id="playbackDeliveryMode"/);
-  assert.match(appHtml, /artplayer-5\.4\.0\.js/);
-  assert.match(appHtml, /PLAYBACK_STORAGE_KEY = 'bfb-playback-v1'/);
-  assert.match(appHtml, /@media \(hover:hover\) and \(pointer:fine\)/);
-  assert.match(appHtml, /@media \(max-width:720px\), \(hover:none\), \(pointer:coarse\)/);
-  assert.match(appHtml, /function syncPlaybackQueueSelection\(options = \{\}\)/);
-  assert.match(appHtml, /pageSize: 50/);
-  assert.match(appHtml, /\/playback-search\?/);
-  assert.match(appHtml, /'queueQ=' : 'q='/);
-  assert.match(appHtml, /new IntersectionObserver/);
-  assert.match(appHtml, /image\.loading = 'lazy'/);
-  assert.match(appHtml, /queuePosition/);
-  assert.match(appHtml, /dataset\.queueKey/);
-  assert.match(appHtml, /params\.set\('delivery', 'proxy'\)/);
-  assert.match(appHtml, /referrerpolicy:'no-referrer'/);
-  assert.match(appHtml, /let fallbackStarted = false/);
-  assert.match(appHtml, /function decidePlaybackMediaError\(input\)/);
-  const playbackPolicyStart = appHtml.indexOf('const decidePlaybackMediaError =');
-  const playbackPolicyEnd = appHtml.indexOf('const TEMPLATE_VARS =', playbackPolicyStart);
-  assert.ok(playbackPolicyStart >= 0 && playbackPolicyEnd > playbackPolicyStart);
-  assert.doesNotMatch(appHtml.slice(playbackPolicyStart, playbackPolicyEnd), /__name/);
-  assert.match(appHtml, /id="recoveryIssuesStatus"/);
-  assert.match(appHtml, /recoveryIssueState\.error/);
-  assert.match(appHtml, /fetchJsonSilent\(playbackFileApiPath\(part, '\/media-metadata'\)/);
-  const appScript = appHtml.split("<script>")[1]?.split("</script>")[0] || "";
-  assert.ok(appScript.length > 0);
-  assert.doesNotThrow(() => new Function(appScript));
-  assert.match(appHtml, /function resolvePlaybackDeliveryViewStatus\(current,reported,final\)/);
-  assert.match(appHtml, /browserSupportsHevc:browserSupportsHevc\(art\.video\)/);
-  assert.match(appHtml, /if \(part\.bilibiliQuality\) labels\.push\('B站'/);
-  assert.doesNotMatch(appHtml, /if \(part\.requestedQuality\) labels\.push/);
-  assert.match(appHtml, /return part\.codec \? String\(part\.codec\) : ''/);
-  assert.doesNotMatch(appHtml, /meta\.push\(safeText\(item\.upperName/);
-  assert.doesNotMatch(appHtml, /if \(part\.size\) meta\.push/);
-  assert.doesNotMatch(appHtml, /return '传输失败'/);
-  assert.match(appHtml, /async function pollPlaybackDelivery[\s\S]*?token === playbackState\.loadingToken[\s\S]*?attemptId === playbackState\.deliveryAttemptId/);
-  assert.match(appHtml, /function showFinalPlaybackError[\s\S]{0,700}resolvePlaybackDeliveryViewStatus/);
-  assert.match(appHtml, /id="closePlaybackImmersiveBtn"/);
-  assert.match(appHtml, /\/api\/archive-deletions\/' \+ encodeURIComponent\(operationId\) \+ '\/repreview'/);
-  assert.match(appHtml, /重新预览并确认/);
-  assert.match(appHtml, /id="playbackImmersiveQueueBtn"/);
-  assert.match(appHtml, /id="playbackMobilePortraitBtn"/);
-  assert.match(appHtml, /mobilePortraitMode: true/);
-  assert.match(appHtml, /mobilePortraitMode: parsed\.mobilePortraitMode !== false/);
-  assert.match(appHtml, /function isPlaybackImmersiveActive\(\)/);
-  assert.match(appHtml, /function setPlaybackQueueDrawer\(open\)/);
-  assert.match(appHtml, /Math\.abs\(deltaY\) >= 72/);
-  assert.match(appHtml, /stepPlayback\(deltaY < 0 \? 1 : -1\)/);
-  assert.match(appHtml, /touch-action:pan-x/);
-  assert.match(appHtml, /object-fit:contain!important/);
-  assert.match(appHtml, /window\.matchMedia\('\(orientation: portrait\)'\)/);
-  assert.match(appHtml, /delete queueHost\.dataset\.queueView/);
-  assert.doesNotMatch(appHtml, /screen\.orientation\.lock/);
-  const immersivePlaybackScript = appHtml.slice(
-    appHtml.indexOf("function syncPlaybackImmersiveMode()"),
-    appHtml.indexOf("function resetPlaybackSwipe()"),
-  );
-  assert.doesNotMatch(immersivePlaybackScript, /scrollIntoView/);
-  assert.match(appHtml, /field\?\.scrollIntoView\(\{ behavior:'smooth', block:'center' \}\)/);
-  const inlineScripts = [...appHtml.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];
-  assert.equal(inlineScripts.length, 1);
-  assert.doesNotThrow(() => new Function(inlineScripts[0][1]));
+  assert.match(appHtml, /class="log-console is-hidden"/);
+  assert.equal((appHtml.match(/data-queue-column=/g) || []).length, 4);
+  assert.match(appHtml, /<script defer src="\/assets\/app\/app-[A-Z0-9]+\.js"/);
+  assert.match(appHtml, /<link rel="stylesheet" href="\/assets\/app\/app-[A-Z0-9]+\.css"/);
+  assert.match(appHtml, /id="appAssetError" role="alert" hidden/);
+  assert.doesNotMatch(appHtml, /function refreshQueueBoard|function decidePlaybackMediaError/);
   assert.match(renderLoginPage(), /class="login-meta"/);
 });
 
@@ -311,7 +228,7 @@ test("1000 orphaned upload failures persist in bounded SQL pages and keep the ta
   }) as typeof manager.listUploadFailuresForRecoveryPage;
   try {
     scheduler.uploadQueue.setStartGate(() => false);
-    scheduler.recoverOrphanedUploadFailures();
+    scheduler.startupRecovery().recoverOrphanedUploadFailures();
     assert.equal(scheduler.jobStore.countOutstanding(["upload"]), 999);
     assert.equal(scheduler.uploadQueue.getSize(), 25);
     assert.ok(pageSizes.length >= 10);
@@ -319,7 +236,7 @@ test("1000 orphaned upload failures persist in bounded SQL pages and keep the ta
     assert.deepEqual(enumerations, []);
     assert.equal(manager.getRelationStatus("u1", 1, "BVORPHAN000999")?.backupStatus, "upload_failed");
 
-    scheduler.recoverOrphanedUploadFailures();
+    scheduler.startupRecovery().recoverOrphanedUploadFailures();
     assert.equal(scheduler.jobStore.countOutstanding(["upload"]), 999);
     assert.equal(scheduler.uploadQueue.getSize(), 25);
   } finally {

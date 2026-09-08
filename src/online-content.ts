@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { OnlineItem, OnlineNavigationDTO } from './shared/api/online-content.js';
 import path from "node:path";
 import type { Response } from "express";
 import {
@@ -7,6 +8,7 @@ import {
   type OnlineContentItem,
   type OnlineContentKind,
   type OnlineContentPage,
+  type FavoriteFolderInfo,
 } from "./bili.js";
 import type { BiliUser } from "./users.js";
 import { coversDir } from "./paths.js";
@@ -23,11 +25,7 @@ export interface OnlineContentQuery {
   query?: string;
 }
 
-export interface PublicOnlineContentItem extends Omit<OnlineContentItem, "cover"> {
-  coverUrl?: string;
-  coverToken?: string;
-  archiveState: "archived" | "processing" | "unarchived" | "unavailable";
-}
+export type PublicOnlineContentItem = Omit<OnlineContentItem, "cover"> & OnlineItem;
 
 type CachedOnlineContentItem = Omit<PublicOnlineContentItem, "archiveState">;
 
@@ -87,7 +85,7 @@ export class OnlineContentService {
   private readonly failures = new Map<string, { expiresAt: number; message: string }>();
   private readonly activeByUser = new Map<string, number>();
   private readonly coverRefs = new Map<string, CoverReference>();
-  private readonly navigation = new Map<string, { expiresAt: number; value: unknown }>();
+  private readonly navigation = new Map<string, { expiresAt: number; value: {folders:FavoriteFolderInfo[]} }>();
 
   constructor(
     private readonly coverCache: OnlineCoverCache,
@@ -95,14 +93,14 @@ export class OnlineContentService {
   ) {}
 
   async getNavigation(users: BiliUser[]) {
-    const result = [] as any[];
+    const result:OnlineNavigationDTO['accounts'] = [];
     for (const user of users) {
       const cached = this.navigation.get(user.id);
-      let folders: unknown[] = [];
+      let folders: FavoriteFolderInfo[] = [];
       if (cached && cached.expiresAt > Date.now()) {
         this.navigation.delete(user.id);
         this.navigation.set(user.id, cached);
-        folders = (cached.value as any)?.folders || [];
+        folders = cached.value.folders;
       } else {
         try {
           folders = await (this.loaders.listFolders || listFavoriteFolders)(user.cookie);
@@ -121,7 +119,7 @@ export class OnlineContentService {
         name: user.name,
         avatar: user.avatar,
         sources: [
-          ...folders.map((folder: any) => {
+          ...folders.map((folder) => {
             const count = Number(folder.mediaCount);
             return {
               kind: "favorite",
@@ -283,7 +281,7 @@ export class OnlineContentService {
         : "unavailable",
     }));
     return {
-      page: { ...page, items } as unknown as OnlineContentPage,
+      page: { ...page, items },
       items,
     };
   }

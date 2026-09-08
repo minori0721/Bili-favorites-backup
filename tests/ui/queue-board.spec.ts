@@ -28,37 +28,72 @@ async function openBoard(page: Page) {
   await expect(page.locator(".queue-card")).toHaveCount(1);
 }
 
+test('opening and closing pending issues shares the in-flight board request', async ({page,browserProblems}) => {
+  void browserProblems;
+  await page.request.post('/__test/reset',{data:{queueBoardMode:'manual_wait'}});
+  await page.route('https://fonts.googleapis.com/**',route => route.fulfill({body:''}));
+  let requests = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/queue/state',async route => {
+    requests += 1;
+    const response = await route.fetch();
+    await pending;
+    await route.fulfill({response});
+  });
+  await page.goto('/');
+  try {
+    await expect.poll(() => requests).toBe(1);
+    await page.locator('#recoveryIssuesBtn').click();
+    await expect(page.locator('#recoveryIssuesModal')).toHaveClass(/active/);
+    await page.locator('#closeRecoveryIssuesBtn').click();
+    expect(requests).toBe(1);
+  } finally { release(); }
+  await expect(page.locator('.queue-card')).toHaveCount(1);
+  expect(requests).toBe(1);
+  await page.locator('#recoveryIssuesBtn').click();
+  await expect.poll(() => requests).toBe(2);
+  await page.locator('#closeRecoveryIssuesBtn').click();
+});
+
 test('queue covers prefer local files, fall back once, and do not reset on polling', async ({ page }) => {
   const requests: string[] = [];
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lZkAAAAASUVORK5CYII=', 'base64');
   await page.route('**/covers/review*.png', r => { requests.push(r.request().url()); return r.fulfill({ contentType: 'image/png', body: png }); });
   await page.route('https://example.invalid/cover.png', r => { requests.push(r.request().url()); return r.fulfill({ contentType: 'image/png', body: png }); });
-  await openBoard(page);
-  await page.evaluate(() => {
-    const card = document.querySelector('.queue-card') as any;
-    const item = { ...card.__queueItem, coverLocalPath: 'covers/review.png', cover: 'https://example.invalid/cover.png' };
-    (window as any).reviewCoverItem = item;
-    (window as any).updateQueueCard(card, item, Date.now());
+  let polls = 0;
+  await page.route('**/api/queue/state', async route => {
+    const response = await route.fetch();
+    const json = await response.json();
+    for (const key of ['downloadPending', 'downloadRunning', 'uploadPending', 'uploadRunning']) {
+      for (const item of json.data[key] || []) Object.assign(item, {coverLocalPath:'covers/review.png', cover:'https://example.invalid/cover.png'});
+    }
+    polls++;
+    await route.fulfill({json});
   });
+  await page.clock.install();
+  await openBoard(page);
   const img = page.locator('.queue-card img.queue-cover');
   await expect(img).toHaveAttribute('src', /\/covers\/review.png$/);
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0]).not.toContain('example.invalid');
-  const mutations = await page.evaluate(() => {
-    const card = document.querySelector('.queue-card');
-    const image = card!.querySelector('img')!;
-    const observer = new MutationObserver(() => {});
+  await img.evaluate((image) => {
+    image.dataset.srcMutations = '0';
+    const observer = new MutationObserver(records => { image.dataset.srcMutations = String(Number(image.dataset.srcMutations) + records.length); });
     observer.observe(image, { attributes: true, attributeFilter: ['src'] });
-    for (let i = 0; i < 5; i++) (window as any).updateQueueCard(card, (window as any).reviewCoverItem, Date.now());
-    const n = observer.takeRecords().length; observer.disconnect(); return n;
   });
-  expect(mutations).toBe(0);
+  const before = polls;
+  await page.clock.fastForward(16000);
+  await expect.poll(() => polls).toBeGreaterThan(before);
+  await expect(img).toHaveAttribute('data-src-mutations', '0');
   await img.dispatchEvent('error');
   await expect(img).toHaveAttribute('src', 'https://example.invalid/cover.png');
   await expect.poll(() => requests.length).toBe(2);
   await img.dispatchEvent('error');
   await expect(page.locator('.queue-card .queue-cover')).toHaveText('封面');
-  await page.evaluate(() => (window as any).updateQueueCard(document.querySelector('.queue-card'), (window as any).reviewCoverItem, Date.now()));
+  const afterFailure = polls;
+  await page.clock.fastForward(16000);
+  await expect.poll(() => polls).toBeGreaterThan(afterFailure);
   await expect(page.locator('.queue-card .queue-cover')).toHaveText('封面');
 });
 
@@ -144,6 +179,30 @@ test("strict media retry card offers a specification picker without unsafe direc
   await expect(card.getByRole("button", { name: "换规格" })).toBeVisible();
   await expect(card.getByRole("button", { name: "重新确认" })).toBeVisible();
   await expect(card.getByRole("button", { name: "继续上传" })).toBeHidden();
+});
+
+test('queue recovery deduplicates rapid actions and restores controls after failure', async ({ page }) => {
+  let calls = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/queue/recover', async route => {
+    calls++;
+    if (calls === 1) {
+      await pending;
+      await route.fulfill({ status: 503, json: { success: false, message: '稍后重试' } });
+    } else await route.fulfill({ json: { success: true, data: { resolved: 'verified_archive' } } });
+  });
+  await openPartialUploadBoard(page);
+  const recheck = page.locator('.queue-card').getByRole('button', { name: '重新确认' });
+  await recheck.dispatchEvent('click');
+  await recheck.dispatchEvent('click');
+  await expect.poll(() => calls).toBe(1);
+  await expect(recheck).toBeDisabled();
+  release();
+  await expect(recheck).toBeEnabled();
+  await recheck.click();
+  await expect.poll(() => calls).toBe(2);
+  await expect(recheck).toBeEnabled();
 });
 
 test("partial multipart recovery shows progress and does not look like a completed upload", async ({ page, browserProblems }) => {

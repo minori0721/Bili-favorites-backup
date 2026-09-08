@@ -60,17 +60,23 @@ test("real app supports login, queue state, config update and migration preview 
     const html = await root.text();
     assert.match(html, /任务预取上限/);
     assert.match(html, /rel="icon" type="image\/svg\+xml"/);
-    assert.match(html, /upload-health-status/);
     assert.match(html, /网页接口/);
-    assert.match(html, /download-api-health-status/);
     assert.match(html, /class="app-brand"/);
     assert.match(html, /class="version-link header-meta"/);
     assert.match(html, /class="github-link header-meta"/);
-    assert.match(html, /input\[type="url"\]/);
-    assert.match(html, /传输方式未知/);
-    assert.match(html, /cleanup_running/);
-    assert.match(html, /metadataRetryTimers/);
-    assert.match(html, /释放本地空间/);
+    assert.match(html, /id="archiveLibraryModal"/);
+    assert.equal(root.headers.get('cache-control'), 'no-store');
+    const scriptPath = html.match(/<script defer src="([^\"]+)"/)?.[1];
+    const stylePath = html.match(/<link rel="stylesheet" href="([^\"]+)"/)?.[1];
+    assert.ok(scriptPath && stylePath);
+    for (const asset of [scriptPath, stylePath]) {
+      const unauthenticated = await fetch(base + asset, {redirect:'manual'});
+      assert.notEqual(unauthenticated.status, 200);
+      const resource = await fetch(base + asset, {headers:{Cookie:cookie}});
+      assert.equal(resource.status,200);
+      assert.equal(resource.headers.get('cache-control'),'private, max-age=31536000, immutable');
+      assert.ok((await resource.arrayBuffer()).byteLength > 0);
+    }
 
     const invalidPremiumAudio = await fetch(`${base}/api/config`, {
       method: "PUT",

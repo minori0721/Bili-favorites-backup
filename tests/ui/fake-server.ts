@@ -1,6 +1,7 @@
 import express from "express";
 import type { Socket } from "node:net";
 import { renderAppPage } from "../../src/web.js";
+import { serveAppAsset } from "../../src/web/server/assets.js";
 import { renderReleaseNotes } from "../../src/release-notes.js";
 
 const app = express();
@@ -118,7 +119,7 @@ const baseItems = [
     backupStatus: "verified",
     unavailable: false,
     membershipCount: 1,
-    memberships: [{ folderTitle: "历史收藏夹" }],
+    memberships: [{ userId: "u1", mediaId: 1, folderTitle: "历史收藏夹" }],
     playback: { available: true, partial: false, partCount: 1, actualQuality: "1080p" },
   },
   {
@@ -136,7 +137,7 @@ const baseItems = [
       checkRound: 3,
     },
     membershipCount: 1,
-    memberships: [{ folderTitle: "已停用收藏夹" }],
+    memberships: [{ userId: "u1", mediaId: 2, folderTitle: "已停用收藏夹" }],
     playback: { available: false, partial: false, partCount: 0 },
   },
 ];
@@ -225,7 +226,8 @@ app.post("/__test/reset", (request, response) => {
 });
 app.get("/__test/state", (_request, response) => response.json(state));
 
-app.get("/", (_request, response) => response.type("html").send(renderAppPage()));
+app.get('/assets/app/:name', serveAppAsset);
+app.get("/", (_request, response) => response.set('Cache-Control','no-store').type("html").send(renderAppPage()));
 app.get("/api/updates", (_request, response) => response.json({ success: true, data: {
   comparison: "reference", checkedAt: new Date().toISOString(), error: null,
   release: { version: "v2.5.4", publishedAt: "2026-09-06T00:00:00Z", notes: "隔离预览数据，不代表 GitHub 实时发布状态。\n\n修复恢复状态展示，优化弹窗与任务看板。",
@@ -628,7 +630,7 @@ app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, respons
   response.json(ok({ previewId: "source-preview", fileCount: 2, totalBytes: 15 * 1024 * 1024, sharedCount: 0 }));
 });
 app.get("/api/archive-library/playback-queue", (_request, response) => response.json(ok({
-  mode: "library", page: 1, pageSize: 50, total: 0, focusIndex: -1, items: [],
+  mode: "library", page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [],
 })));
 
 app.get("/api/online-content/navigation", (_request, response) => {

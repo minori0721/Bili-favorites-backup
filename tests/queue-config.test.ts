@@ -16,6 +16,7 @@ import { computeUploadSessionRetryDelayMs, SyncScheduler } from "../src/schedule
 import { StateManager } from "../src/state.js";
 import { DownloadTask, QualityUpgradeTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import { inspectDownloadCache } from '../src/download-session.js';
 import {
   LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER,
   LEGACY_TEMP_CACHE_MARKER,
@@ -23,6 +24,28 @@ import {
 
 class IdleTask extends Task {
   async run() {}
+}
+
+const cacheAdapters = new WeakMap<SyncScheduler, (read: () => Promise<{ usedBytes: number }>) => void>();
+function makeScheduler(...args: ConstructorParameters<typeof SyncScheduler>) {
+  let inspect = args[3]?.cacheInspector ?? inspectDownloadCache;
+  const scheduler = new SyncScheduler(args[0], args[1], args[2], {
+    ...args[3], cacheInspector: (root, concurrency) => inspect(root, concurrency),
+  });
+  cacheAdapters.set(scheduler, read => {
+    inspect = async () => {
+      const result = await read();
+      return { usedBytes: result.usedBytes, fileCount: 0, exportableBytes: 0, exportableFiles: 0,
+        recovery: { resumableSessions: 0, completedPages: 0, totalPages: 0, retainedBytes: 0, legacyDirectories: 0, legacyBytes: 0, cleanupEligibleBytes: 0 } };
+    };
+  });
+  return scheduler;
+}
+function setCacheObservation(scheduler: SyncScheduler, read: () => Promise<{ usedBytes: number }>) {
+  const configure = cacheAdapters.get(scheduler);
+  assert.ok(configure);
+  configure(read);
+  scheduler.refreshLocalCacheState();
 }
 
 function seedQueuedDownload(state: StateManager, bvid: string) {
@@ -97,7 +120,7 @@ test("queue snapshots reuse one asynchronous cache inspection and coalesce force
     inspections += 1;
     return new Promise<any>((resolve) => resolvers.push(resolve));
   };
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) } as any,
     { list: () => [], getById: () => undefined } as any,
     state,
@@ -114,6 +137,8 @@ test("queue snapshots reuse one asynchronous cache inspection and coalesce force
     },
   });
   try {
+    assert.equal(inspections, 0);
+    scheduler.start();
     assert.equal(inspections, 1);
     for (let index = 0; index < 100; index += 1) scheduler.getQueueSnapshot();
     assert.equal(inspections, 1);
@@ -125,7 +150,7 @@ test("queue snapshots reuse one asynchronous cache inspection and coalesce force
     await waitForCondition(() => inspections === 2);
     assert.equal(resolvers.length, 2);
     resolvers[1](inspection(20));
-    await waitForCondition(() => scheduler.localCacheRefresh === null);
+    await scheduler.getLocalCacheCapacity();
     assert.equal(scheduler.getQueueSnapshot().localCache.usedBytes, 20);
     assert.equal(inspections, 2);
   } finally {
@@ -142,7 +167,7 @@ test("legacy local cache recovery is asynchronous, persistent, and skipped after
   const user = seedQueuedDownload(state, "BVLEGACYCACHE");
   await fs.promises.mkdir(path.join(legacyTemp, "BVLEGACYCACHE"), { recursive: true });
   await fs.promises.writeFile(path.join(legacyTemp, "BVLEGACYCACHE", "track.part"), "partial");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig() } as any,
     { list: () => [user], getById: () => user } as any,
     state,
@@ -151,18 +176,15 @@ test("legacy local cache recovery is asynchronous, persistent, and skipped after
   try {
     scheduler.downloadQueue.setStartGate(() => false);
     scheduler.resumePersistedWorkOnStartup();
-    assert.equal(scheduler.legacyTempRecoveryPending, true);
+    assert.equal(scheduler.legacyCacheRecovery.busy, true);
     assert.ok(scheduler.getQueueSnapshot());
-    await scheduler.legacyTempRecoveryPromise;
+    await scheduler.legacyCacheRecovery.whenIdle();
     assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
     assert.equal(state.getDatabase().getVideo("BVLEGACYCACHE")?.localDir, path.join(legacyTemp, "BVLEGACYCACHE"));
     assert.equal(scheduler.jobStore.countOutstanding(["download"]), 1);
 
-    let repeatedScans = 0;
-    scheduler.recoverLegacyDownloadDirs = async () => { repeatedScans += 1; };
     scheduler.startLegacyTempCacheRecovery();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(repeatedScans, 0);
+    assert.equal(scheduler.legacyCacheRecovery.busy, false);
   } finally {
     scheduler.stop();
     state.close();
@@ -178,7 +200,7 @@ test("legacy local cache recovery treats a corrupt manifest as an interrupted le
   const downloadDir = path.join(legacyTemp, "BVCORRUPTCACHE");
   await fs.promises.mkdir(downloadDir, { recursive: true });
   await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), "{broken", "utf8");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig() } as any,
     { list: () => [user], getById: () => user } as any,
     state,
@@ -187,7 +209,7 @@ test("legacy local cache recovery treats a corrupt manifest as an interrupted le
   try {
     scheduler.downloadQueue.setStartGate(() => false);
     scheduler.startLegacyTempCacheRecovery();
-    await scheduler.legacyTempRecoveryPromise;
+    await scheduler.legacyCacheRecovery.whenIdle();
     assert.equal(state.getDatabase().getVideo("BVCORRUPTCACHE")?.localDir, downloadDir);
     assert.equal(scheduler.jobStore.countOutstanding(["download"]), 1);
     assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
@@ -201,21 +223,19 @@ test("legacy local cache recovery treats a corrupt manifest as an interrupted le
 test("legacy cache failure leaves downloads gated only until the attempt settles", async () => {
   const runtime = await createTestDir("legacy-cache-failure");
   const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig() } as any,
     { list: () => [], getById: () => null } as any,
     state,
     { legacyTempDir: path.join(runtime, "temp") }
   ) as any;
   try {
-    let rejectScan!: (error: Error) => void;
-    scheduler.recoverLegacyDownloadDirs = () => new Promise<void>((_resolve, reject) => { rejectScan = reject; });
+    await fs.promises.writeFile(path.join(runtime, "temp"), "not a directory");
     scheduler.startLegacyTempCacheRecovery();
-    assert.equal(scheduler.legacyTempRecoveryPending, true);
+    assert.equal(scheduler.legacyCacheRecovery.busy, true);
     assert.equal(scheduler.canStartDownloadTask(), false);
-    rejectScan(new Error("permission denied: C:/secret/path"));
-    await scheduler.legacyTempRecoveryPromise;
-    assert.equal(scheduler.legacyTempRecoveryPending, false);
+    await scheduler.legacyCacheRecovery.whenIdle();
+    assert.equal(scheduler.legacyCacheRecovery.busy, false);
     assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), null);
   } finally {
     scheduler.stop();
@@ -244,7 +264,7 @@ test("legacy cache scan skips managed sessions and symlinks and retains unresolv
   }));
   await fs.promises.symlink(linkTarget, path.join(legacyTemp, "BVLINKCACHE"), "junction");
   const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig() } as any,
     { list: () => [], getById: () => null } as any,
     state,
@@ -252,14 +272,11 @@ test("legacy cache scan skips managed sessions and symlinks and retains unresolv
   ) as any;
   try {
     scheduler.startLegacyTempCacheRecovery();
-    await scheduler.legacyTempRecoveryPromise;
+    await scheduler.legacyCacheRecovery.whenIdle();
     assert.equal(state.getDatabase().getMeta(LEGACY_TEMP_CACHE_MARKER), "complete");
     assert.equal(scheduler.jobStore.countOutstanding(["download"]), 0);
-    let repeatedScans = 0;
-    scheduler.recoverLegacyDownloadDirs = async () => { repeatedScans += 1; };
     scheduler.startLegacyTempCacheRecovery();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(repeatedScans, 0);
+    assert.equal(scheduler.legacyCacheRecovery.busy, false);
     assert.equal(fs.existsSync(unresolved), true);
   } finally {
     scheduler.stop();
@@ -271,7 +288,7 @@ test("legacy cache scan skips managed sessions and symlinks and retains unresolv
 test("migration restore invalidates only the matching legacy recovery markers", async () => {
   const runtime = await createTestDir("legacy-import-markers");
   const state = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig() } as any,
     { list: () => [], getById: () => null } as any,
     state
@@ -416,25 +433,24 @@ test("cache refresh completion dispatches persisted downloads without an externa
         },
       },
     });
-    const scheduler = new SyncScheduler(
+    const scheduler = makeScheduler(
       { get: () => testConfig({ localCacheLimitGB: 1, queuePrefetchLimit: 5 }) } as any,
       { list: () => [user], getById: () => user } as any,
       state
     ) as any;
-    await scheduler.localCacheRefresh;
+    await scheduler.getLocalCacheCapacity();
     scheduler.stop();
     scheduler.acceptingJobs = true;
     scheduler.downloadQueue.setStartGate(() => false);
-    scheduler.localCacheSnapshot = null;
-    scheduler.localCacheRefresh = null;
+
+
 
     let finishRefresh!: (snapshot: any) => void;
     const pendingRefresh = new Promise<any>((resolve) => { finishRefresh = resolve; });
-    scheduler.refreshLocalCacheSnapshot = async () => {
+    setCacheObservation(scheduler, async () => {
       const snapshot = await pendingRefresh;
-      scheduler.localCacheSnapshot = snapshot;
       return snapshot;
-    };
+    });
     scheduler.jobStore.enqueue({
       kind: "download",
       dedupeKey: "download:BVCACHEWAKE",
@@ -469,12 +485,14 @@ test("starting polling preserves persistent job wake and lease heartbeat timers"
   const runtime = await createTestDir("timer-preservation");
   const config = testConfig();
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => config } as any,
     { list: () => [], getById: () => undefined } as any,
     state
   ) as any;
   try {
+    assert.equal(scheduler.leaseHeartbeatTimer, null);
+    scheduler.start();
     const heartbeat = scheduler.leaseHeartbeatTimer;
     assert.ok(heartbeat);
     scheduler.jobStore.enqueue({
@@ -508,26 +526,25 @@ test("a stopped scheduler does not dispatch when an in-flight cache refresh comp
   const runtime = await createTestDir("stopped-cache-refresh");
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
   const user = seedQueuedDownload(state, "BVSTOPPEDREFRESH");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) } as any,
     { list: () => [user], getById: () => user } as any,
     state
   ) as any;
   try {
-    await scheduler.localCacheRefresh;
+    await scheduler.getLocalCacheCapacity();
     scheduler.stop();
     scheduler.acceptingJobs = true;
     scheduler.downloadQueue.setStartGate(() => false);
-    scheduler.localCacheSnapshot = null;
-    scheduler.localCacheRefresh = null;
+
+
 
     let finishRefresh!: (snapshot: any) => void;
     const pendingRefresh = new Promise<any>((resolve) => { finishRefresh = resolve; });
-    scheduler.refreshLocalCacheSnapshot = async () => {
+    setCacheObservation(scheduler, async () => {
       const snapshot = await pendingRefresh;
-      scheduler.localCacheSnapshot = snapshot;
       return snapshot;
-    };
+    });
     enqueueDownloadJob(scheduler, "BVSTOPPEDREFRESH");
     scheduler.dispatchPersistentJobs();
     scheduler.stop();
@@ -555,30 +572,29 @@ test("concurrent cache wake callbacks lease a persisted download only once", asy
   const runtime = await createTestDir("concurrent-cache-wake");
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
   const user = seedQueuedDownload(state, "BVCONCURRENTWAKE");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) } as any,
     { list: () => [user], getById: () => user } as any,
     state
   ) as any;
   try {
-    await scheduler.localCacheRefresh;
+    await scheduler.getLocalCacheCapacity();
     scheduler.stop();
     scheduler.acceptingJobs = true;
     scheduler.downloadQueue.setStartGate(() => false);
-    scheduler.localCacheSnapshot = null;
-    scheduler.localCacheRefresh = null;
+
+
 
     let finishRefresh!: (snapshot: any) => void;
     const pendingRefresh = new Promise<any>((resolve) => { finishRefresh = resolve; });
-    scheduler.refreshLocalCacheSnapshot = async () => {
+    setCacheObservation(scheduler, async () => {
       const snapshot = await pendingRefresh;
-      scheduler.localCacheSnapshot = snapshot;
       return snapshot;
-    };
+    });
     enqueueDownloadJob(scheduler, "BVCONCURRENTWAKE");
     scheduler.dispatchPersistentJobs();
-    scheduler.refreshLocalCacheAndWake(true);
-    scheduler.refreshLocalCacheAndWake(true);
+    scheduler.refreshLocalCacheState();
+    scheduler.refreshLocalCacheState();
 
     finishRefresh({
       limitBytes: 1024 * 1024 * 1024,
@@ -602,19 +618,19 @@ test("a transient cache refresh failure recovers without an external scheduler e
   const runtime = await createTestDir("cache-refresh-recovery");
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
   const user = seedQueuedDownload(state, "BVREFRESHRECOVERY");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) } as any,
     { list: () => [user], getById: () => user } as any,
     state
   ) as any;
   const originalWarn = console.warn;
   try {
-    await scheduler.localCacheRefresh;
+    await scheduler.getLocalCacheCapacity();
     scheduler.stop();
     scheduler.acceptingJobs = true;
     scheduler.downloadQueue.setStartGate(() => false);
-    scheduler.localCacheSnapshot = null;
-    scheduler.localCacheRefresh = null;
+
+
     scheduler.persistentJobWakeMinMs = 20;
     let refreshAttempts = 0;
     let warningCount = 0;
@@ -622,7 +638,7 @@ test("a transient cache refresh failure recovers without an external scheduler e
       if (String(args[0]).includes("Failed to refresh local cache state")) warningCount += 1;
       else originalWarn(...args);
     };
-    scheduler.refreshLocalCacheSnapshot = async () => {
+    setCacheObservation(scheduler, async () => {
       refreshAttempts += 1;
       if (refreshAttempts === 1) throw new Error("temporary cache scan failure");
       const snapshot = {
@@ -632,9 +648,8 @@ test("a transient cache refresh failure recovers without an external scheduler e
         paused: false,
         checkedAt: Date.now(),
       };
-      scheduler.localCacheSnapshot = snapshot;
       return snapshot;
-    };
+    });
     enqueueDownloadJob(scheduler, "BVREFRESHRECOVERY");
     scheduler.dispatchPersistentJobs();
 
@@ -655,13 +670,13 @@ test("stop followed by start immediately resumes due persisted jobs", async () =
   const runtime = await createTestDir("scheduler-restart-wake");
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
   const user = seedQueuedDownload(state, "BVRESTARTWAKE");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig() } as any,
     { list: () => [user], getById: () => user } as any,
     state
   ) as any;
   try {
-    await scheduler.localCacheRefresh;
+    await scheduler.getLocalCacheCapacity();
     await new Promise<void>((resolve) => setImmediate(resolve));
     scheduler.stop();
     scheduler.downloadQueue.setStartGate(() => false);
@@ -683,24 +698,25 @@ test("a due download blocked by a full cache does not create a zero-delay dispat
   const runtime = await createTestDir("cache-backpressure-loop");
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
   const user = seedQueuedDownload(state, "BVCACHEFULL");
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) } as any,
     { list: () => [user], getById: () => user } as any,
     state
   ) as any;
   try {
-    await scheduler.localCacheRefresh;
+    await scheduler.getLocalCacheCapacity();
     await new Promise<void>((resolve) => setImmediate(resolve));
     scheduler.stop();
     scheduler.acceptingJobs = true;
     scheduler.persistentJobWakeMinMs = 40;
-    scheduler.localCacheSnapshot = {
+    setCacheObservation(scheduler, async () => ({
       limitBytes: 1024 * 1024 * 1024,
       usedBytes: 900 * 1024 * 1024,
       reserveBytes: 512 * 1024 * 1024,
       paused: true,
       checkedAt: Date.now(),
-    };
+    }));
+    await scheduler.getLocalCacheCapacity();
     enqueueDownloadJob(scheduler, "BVCACHEFULL");
 
     const originalDispatch = scheduler.dispatchPersistentJobs.bind(scheduler);
@@ -764,7 +780,7 @@ test("retry-pending recovery applies one global budget across folders", () => {
     snapshot.relations[`u1:${mediaId}:${bvid}`] = { userId: "u1", mediaId, bvid, folderTitle: mediaId === 1 ? "One" : "Two", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), activeInFavorite: true, backupStatus: "failed" };
   }
   state.replaceStateSnapshot(snapshot);
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => config } as any,
     { list: () => [user], getById: () => user } as any,
     state
@@ -784,7 +800,7 @@ test("persistent quality uploads respect the upload queue hard limit", () => {
   const config = testConfig({ queuePrefetchLimit: 5 });
   const user = { id: "u1", uid: 1, name: "Tester", enabled: true, cookie: {}, accessToken: "token", favorites: [] };
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `quality-capacity-${Date.now()}.json`) });
-  const scheduler = new SyncScheduler(
+  const scheduler = makeScheduler(
     { get: () => config } as any,
     { list: () => [user], getById: () => user } as any,
     state
@@ -810,7 +826,7 @@ test("quality upgrade advances atomically through download upload and replace wh
   const config = testConfig();
   const user = { id: "u1", uid: 1, name: "Tester", enabled: true, cookie: {}, accessToken: "token", favorites: [] };
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `quality-phases-${Date.now()}.json`) });
-  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [user], getById: () => user } as any, state) as any;
+  const scheduler = makeScheduler({ get: () => config } as any, { list: () => [user], getById: () => user } as any, state) as any;
   scheduler.downloadQueue.setStartGate(() => false);
   scheduler.uploadQueue.setStartGate(() => false);
   const control = new QualityUpgradeTask("BVQUALITYPHASE", {}, config, { userId: "u1", mediaId: 1, folderTitle: "Favorites", remotePath: "/target", oldFiles: [] });
@@ -859,7 +875,7 @@ test("download completion re-reads relations added after the BVID job was claime
       "u1:2:BVRACE": { userId: "u1", mediaId: 2, bvid: "BVRACE", folderTitle: "Two", firstSeenAt: now, lastSeenAt: now, activeInFavorite: true, backupStatus: "queued" },
     },
   });
-  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => [user], getById: () => user } as any, state) as any;
+  const scheduler = makeScheduler({ get: () => config } as any, { list: () => [user], getById: () => user } as any, state) as any;
   scheduler.uploadQueue.setStartGate(() => false);
   const task = new DownloadTask("BVRACE", {}, config);
   task.downloadDir = "local";

@@ -95,10 +95,9 @@ test("settings, dialogs, scroll lock and modal toasts expose one accessible laye
   await page.waitForTimeout(50);
   expect(await page.evaluate(() => window.scrollY)).toBe(beforeScroll);
 
-  await page.evaluate(() => {
-    (window as typeof window & { showToast: (message: string, type: string) => void })
-      .showToast("模拟错误", "error");
-  });
+  await page.route('**/api/users/user-1', route => route.request().method() === 'DELETE'
+    ? route.fulfill({json:{success:false,message:'模拟错误'}}) : route.continue());
+  await page.locator('#accountRemovalSubmitBtn').click();
   await expect(page.locator("#accountRemovalModal [role=alert]")).toContainText("模拟错误");
   await expect(page.locator("#toastContainer .toast")).toHaveCount(0);
   await page.locator("#accountRemovalModal .toast-close").click();
@@ -183,11 +182,10 @@ test("mobile archive panels expose only the visible page and keep touch targets 
   await expect(page.locator(".archive-library-sidebar")).toHaveAttribute("inert", "");
   await expect(page.locator(".archive-library-main")).not.toHaveAttribute("inert", "");
   await expect(page.locator(".archive-library-card-more")).toHaveCount(2);
-  const touchTargets = await page.locator("#archiveLibraryMobileBackBtn, .archive-library-card-more").evaluateAll((elements) => elements.map((element) => {
+  await expect.poll(() => page.locator("#archiveLibraryMobileBackBtn, .archive-library-card-more").evaluateAll(elements => elements.every(element => {
     const rect = element.getBoundingClientRect();
-    return { width:rect.width, height:rect.height };
-  }));
-  expect(touchTargets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+    return rect.width >= 44 && rect.height >= 44;
+  }))).toBe(true);
 
   await page.locator("#archiveLibraryMobileBackBtn").tap();
   await expect(page.locator(".archive-library-sidebar")).not.toHaveAttribute("inert", "");

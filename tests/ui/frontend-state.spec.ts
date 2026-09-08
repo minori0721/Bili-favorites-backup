@@ -29,6 +29,126 @@ function desktopOnly(testInfo: TestInfo) {
   test.skip(testInfo.project.name !== "desktop", "desktop request-state coverage");
 }
 
+test('logout deduplicates clicks, reports failure and cancels on page suspension', async ({ page }) => {
+  let calls = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  let releaseSuspended!: () => void;
+  const suspended = new Promise<void>(resolve => { releaseSuspended = resolve; });
+  const problems: string[] = [];
+  page.on('pageerror', error => problems.push(error.message));
+  await page.route('**/api/logout', async route => {
+    calls++;
+    if (calls === 1) await pending;
+    if (calls === 3) {
+      await suspended;
+      await route.fulfill({ json: { success: true, data: {} } });
+      return;
+    }
+    await route.fulfill({ status: 503, json: { success: false, message: '退出暂时失败' } });
+  });
+  await boot(page);
+  const logout = page.locator('#logoutBtn');
+  await logout.dispatchEvent('click');
+  await logout.dispatchEvent('click');
+  await expect.poll(() => calls).toBe(1);
+  await expect(logout).toBeDisabled();
+  release();
+  await expect(logout).toBeEnabled();
+  await expect(page.getByText('退出暂时失败', { exact: true })).toBeVisible();
+  await logout.click();
+  await expect.poll(() => calls).toBe(2);
+  await expect(logout).toBeEnabled();
+  await logout.click();
+  await expect.poll(() => calls).toBe(3);
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  releaseSuspended();
+  await expect(logout).toBeEnabled();
+  await logout.click();
+  await expect.poll(() => calls).toBe(4);
+  await expect(logout).toBeEnabled();
+  expect(new URL(page.url()).pathname).toBe('/');
+  expect(problems).toEqual([]);
+});
+
+test('settings and sync help open through the modal boundary and release focus',async({page,browserProblems},testInfo)=>{
+  void browserProblems;
+  desktopOnly(testInfo);
+  await boot(page);
+  await expect(page.locator('#saveConfigBtn')).toBeEnabled();
+  await page.locator('#settingsHelpBtn').click();
+  await expect(page.locator('#settingsHelpModal')).toHaveClass(/active/);
+  await expect(page.locator('#settingsFlowContent')).toContainText('自动轮询');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#settingsHelpBtn')).toBeFocused();
+  await page.locator('#syncHelpBtn').click();
+  await expect(page.locator('#syncHelpModal')).toHaveClass(/active/);
+  await page.locator('#syncHelpDetailBtn').click();
+  await expect(page.locator('#syncHelpContent')).toContainText('SQLite');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#syncHelpBtn')).toBeFocused();
+});
+
+test('settings template follows loaded order and restores a single editor after page suspension', async ({ page, browserProblems }) => {
+  void browserProblems;
+  await page.route('**/api/config', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data.filenameTemplate = '<bvid>_<ownerName>';
+    body.data.alistBrowserUrl = 'https://storage.example.test';
+    await route.fulfill({json:body});
+  });
+  await boot(page);
+  await expect(page.locator('#filenameTemplate')).toHaveValue('<bvid>_<ownerName>');
+  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['BV号×', 'UP主×']);
+  await expect(page.locator('#templatePreview')).toHaveText('BV1xxxxx_UP主名.mp4');
+  await expect(page.locator('#alistBrowserUrlHint')).not.toHaveClass(/status-error/);
+  await page.locator('#filenameTemplate').evaluate((element: HTMLInputElement) => {
+    element.closest('details')?.setAttribute('open','');
+  });
+  await page.locator('#filenameTemplate').fill('<dfn>-<bvid>');
+  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['清晰度×', 'BV号×']);
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true}));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+  });
+  await expect(page.locator('#templateTags .template-tag')).toHaveCount(7);
+  await expect(page.locator('#filenameTemplate')).toHaveValue('<bvid>_<ownerName>');
+  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['BV号×', 'UP主×']);
+});
+
+test('settings save cancels a suspended request and does not duplicate handlers on resume', async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  desktopOnly(testInfo);
+  let writes = 0;
+  await page.route('**/api/config', async route => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    writes++;
+    await new Promise(resolve => setTimeout(resolve, writes === 1 ? 600 : 0));
+    await route.fulfill({json:{success:true,data:{}}});
+  });
+  await boot(page);
+  await expect(page.locator('#saveConfigBtn')).toBeEnabled();
+  await page.locator('#saveConfigBtn').evaluate(button => {
+    button.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+    button.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+  });
+  await expect.poll(() => writes).toBe(1);
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true}));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+  });
+  await expect(page.locator('#saveConfigBtn')).toBeEnabled();
+  await page.waitForTimeout(700);
+  await expect(page.locator('#configStatus')).not.toContainText('设置已保存');
+  await page.locator('#saveConfigBtn').click();
+  await expect.poll(() => writes).toBe(2);
+  await expect(page.locator('#configStatus')).toContainText('设置已保存');
+});
+
 test("initial failures are visible and retry without unhandled page errors", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);
@@ -122,6 +242,23 @@ test("favorites save failure keeps the dialog usable and a retry succeeds", asyn
   expect(state.favoriteSaveCount).toBe(2);
 });
 
+test("page lifecycle closes login and restores one set of event handlers", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await boot(page);
+  await page.locator('#addUserBtn').click();
+  await expect(page.locator('#loginStatus')).toContainText('等待扫码中');
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true})));
+  await expect(page.locator('#loginModal')).toBeHidden();
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+  });
+  await page.locator('#addUserBtn').click();
+  await expect(page.locator('#loginStatus')).toContainText('等待扫码中');
+  const state = await page.request.get('/__test/state').then(response => response.json());
+  expect(state.loginStartCount).toBe(2);
+});
+
 test("an old login completion timer cannot close a newly opened login", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);
@@ -186,6 +323,34 @@ test("manual archive controls reset when the reusable dialog opens again", async
   await page.getByRole("button", { name: "手动归档" }).click();
   await expect(page.locator("#manualArchiveProbeBtn")).toBeEnabled();
   await expect(page.locator("#manualArchiveStartBtn")).toBeEnabled();
+});
+
+test('late manual archive submission cannot close a newly opened options dialog', async ({page,browserProblems},testInfo)=>{
+  void browserProblems;
+  desktopOnly(testInfo);
+  let submissions=0;
+  let releaseResponse!:()=>void;
+  const responseGate=new Promise<void>(resolve=>{releaseResponse=resolve;});
+  await page.route('**/api/online-content/manual-archive',async route=>{
+    submissions++;
+    await responseGate;
+    await route.fulfill({json:{success:true,data:{status:'queued'}}});
+  });
+  await boot(page);
+  await page.locator('#onlineContentBtn').click();
+  await page.getByRole('button',{name:'手动归档'}).click();
+  await page.locator('#manualArchiveStartBtn').evaluate(button=>{
+    button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+    button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  });
+  await expect.poll(()=>submissions).toBe(1);
+  await page.locator('#manualArchiveCancelBtn').click();
+  await page.getByRole('button',{name:'手动归档'}).click();
+  releaseResponse();
+  await page.waitForTimeout(100);
+  await expect(page.locator('#manualArchiveOptionsModal')).toHaveClass(/active/);
+  await expect(page.locator('#manualArchiveStartBtn')).toBeEnabled();
+  await expect(page.locator('#manualArchiveProbeResult')).toContainText('默认偏好');
 });
 
 test("archive reset disables stale cards, rolls back on failure, and deduplicates results", async ({ page, browserProblems }, testInfo) => {

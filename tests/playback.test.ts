@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 import express from "express";
 import { StateDatabase } from "../src/database.js";
+import { parsePlaybackQueuePage, parsePlaybackSearchPage } from "../src/shared/api/playback-queue.js";
 import {
   getPlaybackQueue,
   getPlaybackDeliveryStatus,
@@ -108,6 +109,24 @@ function playbackState(): StateFile {
     folderScans: {},
   };
 }
+
+test("browser parsers accept real SQLite queue responses including manual archives and empty favorites", () => {
+  const database = new StateDatabase(":memory:");
+  try {
+    const state = playbackState();
+    database.replaceState(state);
+    assert.equal(parsePlaybackQueuePage(getPlaybackQueue(database, "u1", 999, {})).focusIndex, -1);
+    assert.ok(parsePlaybackQueuePage(getPlaybackQueue(database, "u1", 10, {})).items.length > 0);
+    assert.ok(parsePlaybackSearchPage(getPlaybackSearch(database, "u1", 10, { query: "第一" })).items.length > 0);
+    state.relations = Object.fromEntries(Object.values(state.relations).map(value => [
+      `${value.userId}:-1:${value.bvid}`, { ...value, mediaId: -1 },
+    ]));
+    database.replaceState(state);
+    assert.equal(parsePlaybackQueuePage(getPlaybackQueue(database, "u1", -1, {})).items[0].source.mediaId, -1);
+  } finally {
+    database.close();
+  }
+});
 
 test("playback availability only exposes verified playable archive files", () => {
   assert.deepEqual(playbackAvailability("verified", [remoteFile("video.mp4")]), {
