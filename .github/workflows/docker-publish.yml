@@ -12,11 +12,11 @@ on:
       - "README.md"
       - "DEV_NOTES.md"
       - ".github/workflows/docs-pages.yml"
-      - ".github/workflows/docker-publish.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   IMAGE_NAME: minori0721/bili-favorites-backup
@@ -34,7 +34,14 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Find successful dev test evidence
+        id: dev-tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/dev-test-evidence.mjs
+
       - name: Check media and resume tools
+        if: steps.dev-tests.outputs.reuse != 'true'
         timeout-minutes: 10
         run: |
           command -v aria2c
@@ -55,11 +62,15 @@ jobs:
           if [[ "$BUILD_REF" == refs/tags/* ]]; then TAG="$BUILD_REF_NAME"; fi
           node scripts/release-notes.mjs "$TAG" > "$RUNNER_TEMP/bfb-release-preview.md"
 
-      - name: Test and build application
-        run: |
-          npm ci
-          npm test
-          npm run build
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Test application
+        if: steps.dev-tests.outputs.reuse != 'true'
+        run: npm test
+
+      - name: Build application
+        run: npm run build
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4

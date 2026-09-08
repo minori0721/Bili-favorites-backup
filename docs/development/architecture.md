@@ -93,6 +93,14 @@ npm run build
 
 `npm test` 递归发现 `tests` 内所有 `.test.ts`，浏览器行为测试由 Playwright 独立运行。新增模块测试应测试公开接口和可观察行为，不通过 `window` 或源文件文本访问实现。
 
+### dev → main 验收复用
+
+先推 dev 并等待 `Docker Publish` 成功，再将该提交快进合并到 main。main 的 push 流水线通过 GitHub Actions API 查询同一仓库、同一工作流、同一完整提交 SHA 的成功 dev push，找到后跳过重复的 `npm test` 和测试媒体工具准备。提交 SHA 包括版本、依赖锁文件、测试与工作流配置；任何新提交都必须有对应的成功记录，不能只凭业务文件看起来没变而跳过。
+
+没有记录、dev 尚未完成、失败或 API 不可用时，main 自动执行全套测试。dev、正式 tag 和手动触发始终执行测试；需要强制复验 main 时使用 `workflow_dispatch`。工作流修改本身也会触发 CI。判定脚本为 `scripts/dev-test-evidence.mjs`，对应边界测试为 `tests/dev-test-evidence.test.ts`。
+
+安装依赖、构建（含类型与架构检查）、发布说明校验、镜像构建与发布后的隔离启动检查始终执行；文档站仍独立构建部署。跳过测试的运行摘要记录复用的 SHA 和 dev run ID，便于追溯。UI 仍按改动范围在本地验收，不能把此复用规则当成 UI 已自动运行。
+
 架构检查禁止客户端导入服务端代码、跨功能导入内部文件、新模块运行时循环依赖、业务模块依赖整个调度器，以及模块使用 `as any`。客户端不允许 JavaScript 源文件或整体关闭类型检查。Artplayer 仅导入已安装版本的类型，运行时仍使用既有受保护厂商资源路径。
 
 `scheduler-ownership.json` 覆盖当前调度器的每个实例字段，并分别列出当前所有者、迁移目标和生命周期要求。架构检查会核对新增、遗漏、重复和过时字段；目标所有者不代表业务已经迁出。
