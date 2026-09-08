@@ -249,8 +249,14 @@ test("archive search applies atomically and ignores slow obsolete responses", as
   await page.locator("#archiveLibrarySearchClearBtn").click();
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
 
-  await search.fill("late");
-  await page.locator("#closeArchiveLibraryBtn").click();
+  // Dispatch both events in one browser turn: locator actionability can take
+  // longer than the 300ms debounce, allowing a valid request before closing.
+  await search.evaluate((input) => {
+    (input as HTMLInputElement).value = "late";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    (document.getElementById("closeArchiveLibraryBtn") as HTMLButtonElement).click();
+  });
+  await expect(page.locator("#archiveLibraryModal")).not.toHaveClass(/active/);
   await page.waitForTimeout(450);
   const finalState = await page.request.get("/__test/state").then((response) => response.json());
   expect(finalState.itemQueries).not.toContain("late");
