@@ -9,6 +9,16 @@ import { parsePlaybackQueuePage, parsePlaybackSearchPage } from '../../src/share
 
 const part = { fileId: 1, pageIndex: 1, label: '正片', fingerprint: '1:0:1', streamUrl: '/media/1' };
 
+test('archive navigation accepts numeric server UIDs and rejects invalid identifiers', () => {
+  const account = { id: 'user', folders: [], inactiveFolders: [] };
+  for (const uid of [0, 342080505, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(parseArchiveNavigation({ accounts: [{ ...account, uid }] }).accounts[0].uid, uid);
+  }
+  for (const uid of ['342080505', -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, {}, true]) {
+    assert.throws(() => parseArchiveNavigation({ accounts: [{ ...account, uid }] }), /UID/);
+  }
+});
+
 test('local release accepts optional proof metadata without inferring proof from missing data', () => {
   const candidate = { releaseId: 'reviewed-plan', fileCount: 1, totalBytes: 20, requiresExplicitDeletion: false };
   assert.equal(parseLocalReleasePreview({ fileCount: 1, candidates: [candidate] }).candidates[0].hasVerifiedArchive, false);

@@ -132,6 +132,7 @@ npm run build
 
 ## 新增或修改功能的入口
 
+- API 边界测试应将真实服务查询结果经过 `JSON.stringify` / `JSON.parse` 后交给浏览器解析器，覆盖序列化后的类型、可选字段和历史哨兵值。UI 假服务须与该契约一致，不能单靠手写假数据证明前后端兼容。归档导航的 UID 是数字，历史移除账号可为 0；对应回归在 `tests/archive-library.test.ts` 和 `tests/web/archive-library-contract.test.ts`。
 - 前端功能从 `features/<feature>/controller.ts` 或该目录的既有公开入口开始；由 `app.ts` 注入 DOM 根节点、API 与明确回调。共享网络数据先在 `src/shared/api` 收窄，功能内部文件不跨目录引用。请求、计时器和事件监听与拥有它们的控制器一起销毁。
 - 任务创建使用 `download-task-factory`、`upload-task-factory` 或 `quality-task-factory`。异步回调携带创建时的运行代次；调度控制仍统一决定任务是否能领取和启动。
 - `backup-enqueue.prepare` 在事务外读取本地文件与历史清单，返回只做同步存储变更的 `commit`。普通入队由模块提交后唤醒；恢复替换由 `recovery-finalization` 或 `legacy-download-recovery` 把来源重置、新任务入队、旧会话和父任务收尾合并到一个 `runAtomic`，成功后才唤醒。禁止在事务里等待网络或文件操作。

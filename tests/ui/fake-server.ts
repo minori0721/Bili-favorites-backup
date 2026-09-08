@@ -163,7 +163,7 @@ function navigation() {
     summary,
     accounts: [{
       id: "user-1",
-      uid: "10001",
+      uid: 10001,
       name: "测试账号",
       removed: false,
       summary,

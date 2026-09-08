@@ -11,6 +11,7 @@ import {
 import { StateDatabase } from "../src/database.js";
 import type { BackupStatus, FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "../src/state.js";
 import type { BiliUser } from "../src/users.js";
+import { parseArchiveNavigation, parseArchiveLibraryPage } from "../src/shared/api/archive-library.js";
 
 const now = Date.parse("2026-07-28T12:00:00.000Z");
 
@@ -196,6 +197,28 @@ function fixture() {
   database.rebuildArchiveLibraryProjection();
   return database;
 }
+
+test("real archive responses survive JSON transport and browser boundary validation", () => {
+  const database = fixture();
+  try {
+    database.db.prepare('INSERT INTO archive_accounts(user_id,uid,name,avatar,removed_at,updated_at) VALUES(?,?,?,?,?,?)')
+      .run('removed-user', 0, '历史账号', '', now, now);
+    const navigation = parseArchiveNavigation(JSON.parse(JSON.stringify(getArchiveLibraryNavigation(database, users()))));
+    assert.deepEqual(navigation.accounts.map(account => account.uid), [1, 2, 0]);
+    assert.equal(navigation.accounts[2].removed, true);
+    assert.equal(navigation.summary.total, 4);
+    assert.equal(navigation.accounts[0].inactiveFolders.length, 1);
+    for (const scope of ['global', 'account', 'folder'] as const) {
+      const result = queryArchiveLibraryItems(database, users(), { scope, userId: 'u1', mediaId: 10, pageSize: 1 });
+      const parsed = parseArchiveLibraryPage(JSON.parse(JSON.stringify(result)));
+      assert.equal(parsed.items.length, 1);
+      assert.equal(parsed.items[0].bvid, result.items[0].bvid);
+      assert.equal(parsed.hasMore, result.hasMore);
+    }
+  } finally {
+    database.close();
+  }
+});
 
 test("archive navigation keeps selected empty folders and exposes inactive archives", () => {
   const database = fixture();

@@ -34,6 +34,15 @@ function optionalString(value: unknown, message: string) {
   return text(value, message, true);
 }
 
+function optionalUid(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  // The server uses numeric UIDs, including 0 for historical accounts without a UID.
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('归档账号 UID 格式错误');
+  }
+  return value;
+}
+
 function parseSummary(value: unknown) {
   const data = record(value, '归档导航汇总格式错误');
   return {
@@ -95,7 +104,7 @@ function parseNavigationAccount(value: unknown) {
   }
   return {
     id: text(data.id, '归档账号标识格式错误', false)!,
-    uid: optionalString(data.uid, '归档账号 UID 格式错误'),
+    uid: optionalUid(data.uid),
     name: optionalString(data.name, '归档账号名称格式错误'),
     avatar: optionalString(data.avatar, '归档账号头像格式错误'),
     enabled: flag(data.enabled, '归档账号启用状态格式错误'),
