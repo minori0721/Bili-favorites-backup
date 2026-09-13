@@ -56,7 +56,10 @@ export function hasArchiveCover(bvid: string) {
     if (!stat.isFile() || stat.size <= 0) return false;
     fs.accessSync(filePath, fs.constants.R_OK);
     return true;
-  } catch {
+  } catch (error) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
+      console.warn(`[CoverCache] local cover inspection failed: ${safeErrorSummary(error)}`);
+    }
     return false;
   }
 }
@@ -263,7 +266,7 @@ async function moveAcrossMounts(source: string, target: string) {
       throw error;
     }
     await fs.promises.copyFile(source, target);
-    await fs.promises.unlink(source).catch(() => undefined);
+    await fs.promises.unlink(source).catch(error => console.warn(`[CoverCache] copied source cleanup failed: ${safeErrorSummary(error)}`));
   }
 }
 
@@ -414,7 +417,8 @@ export function waitForCoverCacheIdle(timeoutMs = 20_000) {
 function parseVideoPayload(value: unknown) {
   try {
     return JSON.parse(String(value || "")) as VideoArchiveEntry;
-  } catch {
+  } catch (error) {
+    console.warn(`[CoverBackfill] invalid persisted cover metadata: ${safeErrorSummary(error)}`);
     return null;
   }
 }
@@ -510,19 +514,18 @@ export class UnavailableCoverBackfill {
         continue;
       }
       const relativePath = coverRelativePathForBvid(bvid);
-      try {
-        const exists = this.options.coverExists
-          ? await this.options.coverExists(bvid)
-          : hasArchiveCover(bvid);
-        if (this.stopped) return;
-        if (!exists) throw new Error("cover missing");
+      const exists = this.options.coverExists
+        ? await this.options.coverExists(bvid)
+        : hasArchiveCover(bvid);
+      if (this.stopped) return;
+      if (exists) {
         if (video.originalMeta?.coverLocalPath !== relativePath) {
           if (this.stateManager.recordCoverCache(bvid, relativePath)) summary.linked += 1;
         } else {
           summary.skipped += 1;
         }
         continue;
-      } catch {}
+      }
 
       const coverUrl = String(video.originalMeta?.cover || video.cover || "").trim();
       if (!coverUrl) {

@@ -353,7 +353,7 @@ test('late manual archive submission cannot close a newly opened options dialog'
   await expect(page.locator('#manualArchiveProbeResult')).toContainText('默认偏好');
 });
 
-test("archive reset disables stale cards, rolls back on failure, and deduplicates results", async ({ page, browserProblems }, testInfo) => {
+test("archive reset disables stale cards and retains the last valid page on failed or duplicate responses", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);
   await boot(page);
@@ -377,5 +377,7 @@ test("archive reset disables stale cards, rolls back on failure, and deduplicate
   expect(state.itemQueries).toHaveLength(requestCount);
 
   await search.fill("duplicates");
-  await expect(page.locator(".archive-library-card")).toHaveCount(1);
+  await expect(page.locator("#archiveLibraryFooter")).toContainText("加载失败");
+  await expect(search).toHaveValue("");
+  await expect(page.locator(".archive-library-card")).toHaveCount(2);
 });

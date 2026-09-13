@@ -8,6 +8,19 @@ import { SyncScheduler } from '../../src/scheduler.js';
 import { StateManager } from '../../src/state.js';
 import { inspectDownloadCache } from '../../src/download-session.js';
 import { createTestDir, removeTestDir, testConfig } from '../helpers.js';
+import {createStartupLifecycle} from '../../src/startup-lifecycle.js';
+
+test('application bootstrap keeps admission closed after a recovery failure', async () => {
+  const directory = await createTestDir('startup-admission');
+  const state = new StateManager({statePath: path.join(directory, 'state.json'), dbPath: path.join(directory, 'state.sqlite')});
+  const scheduler = new SyncScheduler({get: () => testConfig()}, {list: () => [], getById: () => undefined, updatePartial: () => undefined}, state, {deferAdmissionUntilStart: true});
+  try {
+    const startup = createStartupLifecycle([{name: 'restore', run: () => { throw new Error('recovery failed'); }}, {name: 'scheduler', run: () => scheduler.start()}]);
+    await assert.rejects(startup.start(), /recovery failed/);
+    assert.deepEqual(scheduler.runNow(), {started: false, queued: false});
+    assert.equal(scheduler.hasRunningTransferTasks(), false);
+  } finally { await scheduler.shutdown(1000, {closeDatabase: false}); state.close(); await removeTestDir(directory); }
+});
 
 test('quiescence timeout cannot report busy work as idle', async () => {
   let now = 0, sleeps = 0;

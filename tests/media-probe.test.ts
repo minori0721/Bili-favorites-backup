@@ -270,7 +270,7 @@ test("structured probe JSON survives stdout chunks split inside one record", () 
   const line = `BFB_PROBE_JSON:${JSON.stringify(pages()[0])}`;
   const splitAt = Math.floor(line.length / 2);
   const parsed = parseBBDownProbeOutput([line.slice(0, splitAt), line.slice(splitAt), "\n"].join(""));
-  assert.deepEqual(parsed, [pages()[0]]);
+  assert.deepEqual(parsed, { kind: 'ok', pages: [pages()[0]] });
 });
 
 test("structured probe parser fails the complete probe on malformed or duplicate page records", () => {
@@ -281,14 +281,25 @@ test("structured probe parser fails the complete probe on malformed or duplicate
     { ...valid, tracks: [{ ...valid.tracks[0], estimatedBytes: -1 }] },
     valid,
   ].map((record) => `BFB_PROBE_JSON:${JSON.stringify(record)}`).join("\n");
-  assert.deepEqual(parseBBDownProbeOutput(malformed, valid.bvid), []);
-  assert.deepEqual(parseBBDownProbeOutput(`BFB_PROBE_JSON:${JSON.stringify(valid)}`, valid.bvid), [valid]);
+  assert.deepEqual(parseBBDownProbeOutput(malformed, valid.bvid), {kind: 'invalid', reason: 'invalid_page', line: 1});
+  assert.deepEqual(parseBBDownProbeOutput(`BFB_PROBE_JSON:${JSON.stringify(valid)}`, valid.bvid), {kind: 'ok', pages: [valid]});
 
   const duplicatePage = { ...pages()[1], pageIndex: valid.pageIndex };
   const duplicates = [valid, duplicatePage]
     .map((record) => `BFB_PROBE_JSON:${JSON.stringify(record)}`)
     .join("\n");
-  assert.deepEqual(parseBBDownProbeOutput(duplicates, valid.bvid), []);
+  assert.deepEqual(parseBBDownProbeOutput(duplicates, valid.bvid), {kind: 'partial', pages: [valid], reason: 'duplicate_page', line: 2});
+});
+
+test('probe parsing distinguishes missing framing, damaged JSON, missing fields and partial output', () => {
+  assert.deepEqual(parseBBDownProbeOutput('ordinary diagnostics'), {kind: 'empty'});
+  assert.deepEqual(parseBBDownProbeOutput('BFB_PROBE_JSON:{'), {kind: 'invalid', reason: 'malformed_json', line: 1});
+  assert.deepEqual(parseBBDownProbeOutput('BFB_PROBE_JSON:{}'), {kind: 'invalid', reason: 'invalid_page', line: 1});
+  const valid = pages()[0];
+  assert.deepEqual(parseBBDownProbeOutput(`BFB_PROBE_JSON:${JSON.stringify(valid)}\nBFB_PROBE_JSON:{`),
+    {kind: 'partial', pages: [valid], reason: 'malformed_json', line: 2});
+  const duplicateCid = {...pages()[1], cid: valid.cid};
+  assert.equal(parseBBDownProbeOutput([valid, duplicateCid].map(value => `BFB_PROBE_JSON:${JSON.stringify(value)}`).join('\n')).kind, 'partial');
 });
 
 test("structured probe output cap waits for the BBDown process to exit", { timeout: 30_000 }, async () => {

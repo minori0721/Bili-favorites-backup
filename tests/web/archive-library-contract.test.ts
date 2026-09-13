@@ -34,6 +34,15 @@ const item = {
   source: { userId: 'user', mediaId: 1, folderTitle: '收藏夹' },
 };
 
+test('archive and playback reject missing evidence and duplicate rows while preserving explicit partial playback', () => {
+  assert.throws(() => parseArchiveLibraryPage({items: [{...item, playback: undefined}], hasMore: false}));
+  assert.throws(() => parseArchiveLibraryPage({items: [item, item], hasMore: false}));
+  const base = {mode: 'favorite', page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false};
+  assert.throws(() => parsePlaybackQueuePage({...base, items: [item, item]}));
+  assert.throws(() => parsePlaybackQueuePage({...base, items: [{...item, parts: [part, part]}]}));
+  assert.equal(parsePlaybackQueuePage({...base, items: [{...item, partial: true}]}).items[0].partial, true);
+});
+
 test('manual archives and an unfocused empty queue preserve server sentinel values', () => {
   const empty = { mode: 'library', page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [] };
   assert.equal(parsePlaybackQueuePage(empty).focusIndex, -1);

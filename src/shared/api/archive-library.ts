@@ -1,32 +1,32 @@
-import { isRecord } from './value.js';
+import { isRecord, ResponseFormatError, requireUnique } from './value.js';
 export { parsePlaybackQueuePage, parsePlaybackSearchPage } from './playback-queue.js';
 
 function record(value: unknown, message: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error(message);
+  if (!isRecord(value)) throw new ResponseFormatError(message);
   return value;
 }
 
 function text(value: unknown, message: string, optional = true): string | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'string') throw new Error(message);
+  if (typeof value !== 'string') throw new ResponseFormatError(message);
   return value;
 }
 
 function count(value: unknown, message: string, optional = true): number | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(message);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new ResponseFormatError(message);
   return value;
 }
 
 function integer(value: unknown, message: string, optional = true): number | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < -1) throw new Error(message);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < -1) throw new ResponseFormatError(message);
   return value;
 }
 
 function flag(value: unknown, message: string, optional = true): boolean | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'boolean') throw new Error(message);
+  if (typeof value !== 'boolean') throw new ResponseFormatError(message);
   return value;
 }
 
@@ -38,7 +38,7 @@ function optionalUid(value: unknown): number | undefined {
   if (value == null) return undefined;
   // The server uses numeric UIDs, including 0 for historical accounts without a UID.
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error('归档账号 UID 格式错误');
+    throw new ResponseFormatError('归档账号 UID 格式错误');
   }
   return value;
 }
@@ -97,10 +97,10 @@ function parseDeletion(value: unknown) {
 function parseNavigationAccount(value: unknown) {
   const data = record(value, '归档账号目录格式错误');
   if (!Array.isArray(data.folders) || !data.folders.every((item) => isRecord(item))) {
-    throw new Error('归档账号目录格式错误');
+    throw new ResponseFormatError('归档账号目录格式错误');
   }
   if (!Array.isArray(data.inactiveFolders) || !data.inactiveFolders.every((item) => isRecord(item))) {
-    throw new Error('归档停用目录格式错误');
+    throw new ResponseFormatError('归档停用目录格式错误');
   }
   return {
     id: text(data.id, '归档账号标识格式错误', false)!,
@@ -119,7 +119,7 @@ function parseNavigationAccount(value: unknown) {
 
 export function parseArchiveNavigation(value: unknown) {
   const data = record(value, '归档导航响应格式错误');
-  if (!Array.isArray(data.accounts)) throw new Error('归档导航账号列表格式错误');
+  if (!Array.isArray(data.accounts)) throw new ResponseFormatError('归档导航账号列表格式错误');
   return {
     summary: parseSummary(data.summary ?? {}),
     accounts: data.accounts.map(parseNavigationAccount),
@@ -173,7 +173,7 @@ function parseMembership(value: unknown) {
 export function parseArchiveLibraryItem(value: unknown) {
   const data = record(value, '归档项目格式错误');
   if (!Array.isArray(data.memberships) || !data.memberships.every(isRecord)) {
-    throw new Error('归档来源列表格式错误');
+    throw new ResponseFormatError('归档来源列表格式错误');
   }
   return {
     bvid: text(data.bvid, '归档项目缺少标识', false)!,
@@ -189,20 +189,20 @@ export function parseArchiveLibraryItem(value: unknown) {
     lastSeenAt: optionalString(data.lastSeenAt, '归档项目时间字段格式错误'),
     membershipCount: count(data.membershipCount, '归档项目来源数格式错误') ?? data.memberships.length,
     memberships: data.memberships.map(parseMembership),
-    playback: parsePlaybackAvailability(data.playback ?? { available: false }),
+    playback: parsePlaybackAvailability(data.playback),
   };
 }
 
 export function parseArchiveLibraryPage(value: unknown) {
   const data = record(value, '归档项目分页格式错误');
   if (!Array.isArray(data.items) || !data.items.every(isRecord) || typeof data.hasMore !== 'boolean') {
-    throw new Error('归档项目分页格式错误');
+    throw new ResponseFormatError('归档项目分页格式错误');
   }
   const nextCursor = data.nextCursor == null ? null : text(data.nextCursor, '归档项目游标格式错误', false)!;
-  if (data.hasMore && !nextCursor) throw new Error('归档项目分页缺少后续游标');
+  if (data.hasMore && !nextCursor) throw new ResponseFormatError('归档项目分页缺少后续游标');
   return {
     context: data.context == null ? undefined : record(data.context, '归档项目上下文格式错误'),
-    items: data.items.map(parseArchiveLibraryItem),
+    items: requireUnique(data.items.map(parseArchiveLibraryItem), item => item.bvid, '归档分页包含重复视频'),
     summary: data.summary == null ? undefined : parseSummary(data.summary),
     hasMore: data.hasMore,
     nextCursor,
@@ -215,14 +215,14 @@ export function parseArchiveLibraryDetail(value: unknown) {
 
 export function parseArchiveDeletion(value: unknown) {
   const parsed = parseDeletion(value);
-  if (!parsed) throw new Error('缺少归档清理操作');
+  if (!parsed) throw new ResponseFormatError('缺少归档清理操作');
   return parsed;
 }
 
 export function parseArchiveDeletionPreview(value: unknown) {
   const data = record(value, '归档清理预览格式错误');
   const previewId = text(data.previewId, '归档清理预览标识格式错误', false)!;
-  if (!previewId) throw new Error('归档清理预览缺少标识');
+  if (!previewId) throw new ResponseFormatError('归档清理预览缺少标识');
   return { previewId, scope: text(data.scope, '归档清理范围格式错误'),
     fileCount: count(data.fileCount, '归档清理文件数格式错误', false)!,
     totalBytes: count(data.totalBytes, '归档清理大小格式错误', false)!,
@@ -231,12 +231,12 @@ export function parseArchiveDeletionPreview(value: unknown) {
 
 export function parseLocalReleasePreview(value: unknown) {
   const data = record(value, '本地释放预览格式错误');
-  if (!Array.isArray(data.candidates)) throw new Error('本地释放候选格式错误');
+  if (!Array.isArray(data.candidates)) throw new ResponseFormatError('本地释放候选格式错误');
   return { fileCount: count(data.fileCount, '本地释放文件数格式错误', false)!,
     candidates: data.candidates.map(value => {
       const item = record(value, '本地释放候选格式错误');
       const releaseId = text(item.releaseId, '本地释放授权格式错误', false)!;
-      if (!releaseId) throw new Error('本地释放缺少授权');
+      if (!releaseId) throw new ResponseFormatError('本地释放缺少授权');
       return { releaseId, fileCount: count(item.fileCount, '本地释放文件数格式错误', false)!,
         totalBytes: count(item.totalBytes, '本地释放大小格式错误', false)!,
         requiresExplicitDeletion: flag(item.requiresExplicitDeletion, '本地释放确认格式错误', false)!,

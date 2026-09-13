@@ -12,6 +12,7 @@ test-anti-risk.mjs
 
 # Local preview, diagnostics, and validation artifacts
 /output/
+/.tmp/
 /.preview-root/
 /.playwright-cli/
 /.review-*

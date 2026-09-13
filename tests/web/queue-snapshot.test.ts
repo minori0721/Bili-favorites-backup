@@ -1,7 +1,15 @@
+import { queueResponse, parseQueueFixture } from './queue-fixture.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createQueueSnapshotResource } from '../../src/web/client/features/task-center/snapshot.js';
 import { parseQueueSnapshot, type QueueSnapshot } from '../../src/shared/api/queue-snapshot.js';
+
+test('missing queue fields cannot be presented as an empty or idle queue', () => {
+  for (const field of ['scheduler', 'recovery', 'downloadPending', 'downloadRunning', 'uploadPending', 'uploadRunning']) {
+    assert.throws(() => parseQueueSnapshot({...queueResponse(), [field]: undefined}));
+  }
+  assert.equal(parseQueueSnapshot(queueResponse()).downloadPending.length, 0);
+});
 
 test('board and issue panel share a request while retaining independent cancellation', async () => {
   let calls = 0;
@@ -10,7 +18,7 @@ test('board and issue panel share a request while retaining independent cancella
   const receive:QueueSnapshot[] = [];
   const request = async (_url:string, options?:RequestInit) => {
     calls += 1; signal = options?.signal;
-    return new Promise(resolve => { release = resolve; });
+    return new Promise(resolve => { release = value => resolve(queueResponse(value)); });
   };
   const resource = createQueueSnapshotResource({api:{request,silent:request},receive:snapshot => receive.push(snapshot)});
   const first = new AbortController(), second = new AbortController();
@@ -30,7 +38,7 @@ test('board and issue panel share a request while retaining independent cancella
 test('cancelled late responses cannot replace the new snapshot or resolve new consumers', async () => {
   const pending:Array<(value:unknown) => void> = [];
   const receive:QueueSnapshot[] = [];
-  const request = async () => new Promise(resolve => pending.push(resolve));
+  const request = async () => new Promise(resolve => pending.push(value => resolve(queueResponse(value))));
   const resource = createQueueSnapshotResource({api:{request,silent:request},receive:snapshot => receive.push(snapshot)});
   const old = resource.request();
   resource.cancel();
@@ -47,20 +55,20 @@ test('cancelled late responses cannot replace the new snapshot or resolve new co
 
 test('queue boundary rejects invalid arrays and supports the existing issue fallbacks', () => {
   assert.throws(() => parseQueueSnapshot(null));
-  assert.throws(() => parseQueueSnapshot({downloadPending:{}}));
-  assert.throws(() => parseQueueSnapshot({issues:[null]}));
-  assert.deepEqual(parseQueueSnapshot({actionRequiredIssues:[{id:'action'}],intentionalConfirmations:[{id:'confirm'}]}).issues.map(item => item.id),['action','confirm']);
-  assert.equal(parseQueueSnapshot({uploadPending:[{id:'job'}]}).uploadPending[0].stage,'upload_pending');
-  assert.throws(() => parseQueueSnapshot({uploadPending:[{id:'job',retries:'1'}]}));
-  assert.throws(() => parseQueueSnapshot({uploadPending:[{id:'job',recoveryActions:[{label:'重试'}]}]}));
-  assert.throws(() => parseQueueSnapshot({uploadPending:[{id:'job',recoveryActions:[{id:'retry'}]}]}));
-  assert.throws(() => parseQueueSnapshot({uploadPending:[{id:'job',recoveryDisposition:'unknown'}]}));
+  assert.throws(() => parseQueueFixture({downloadPending:{}}));
+  assert.throws(() => parseQueueFixture({issues:[null]}));
+  assert.deepEqual(parseQueueFixture({actionRequiredIssues:[{id:'action'}],intentionalConfirmations:[{id:'confirm'}]}).issues.map(item => item.id),['action','confirm']);
+  assert.equal(parseQueueFixture({uploadPending:[{id:'job'}]}).uploadPending[0].stage,'upload_pending');
+  assert.throws(() => parseQueueFixture({uploadPending:[{id:'job',retries:'1'}]}));
+  assert.throws(() => parseQueueFixture({uploadPending:[{id:'job',recoveryActions:[{label:'重试'}]}]}));
+  assert.throws(() => parseQueueFixture({uploadPending:[{id:'job',recoveryActions:[{id:'retry'}]}]}));
+  assert.throws(() => parseQueueFixture({uploadPending:[{id:'job',recoveryDisposition:'unknown'}]}));
 });
 
 test('completed issue actions invalidate older board responses and preserve the last board columns', async () => {
   const pending:Array<(value:unknown) => void> = [];
   const received:QueueSnapshot[] = [];
-  const request = async () => new Promise(resolve => pending.push(resolve));
+  const request = async () => new Promise(resolve => pending.push(value => resolve(queueResponse(value))));
   const resource = createQueueSnapshotResource({api:{request,silent:request},receive:value => received.push(value)});
   const initial = resource.request();
   pending[0]({downloadRunning:[{id:'running'}],issues:[{id:'before'}]});

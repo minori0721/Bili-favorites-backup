@@ -6,7 +6,7 @@ import { createOnlineContentRouter } from './http/online-content.js';
 import { createSyncControlRouter } from './http/sync-control.js';
 import { createPathMigrationRouter } from './http/path-migration.js';
 import { ImportMaintenance } from "./import-maintenance.js";
-import { createStartupLifecycle } from "./startup-lifecycle.js";
+import { createStartupLifecycle, optionalStartupStep } from "./startup-lifecycle.js";
 import { recoverImportTransaction } from "./import-transaction.js";
 import express from "express";
 import { UpdateCheckService } from "./update-check.js";
@@ -137,7 +137,7 @@ const importMaintenance = new ImportMaintenance();
 const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
-const scheduler = new SyncScheduler(configStore, userStore, stateManager);
+const scheduler = new SyncScheduler(configStore, userStore, stateManager, {deferAdmissionUntilStart: true});
 const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
 const onlineCoverCache = new OnlineCoverCache(configStore.get().onlineCoverCacheLimitMB);
 const onlineContent = new OnlineContentService(onlineCoverCache);
@@ -218,21 +218,21 @@ const allCleanupKeys = Object.keys(cleanupItems) as CleanupItem[];
 
 const startupLifecycle = createStartupLifecycle([
   () => { void unavailableCoverBackfill.start(); },
-  () => onlineCoverCache.initialize().catch((error) => {
+  optionalStartupStep("OnlineCoverCache", () => onlineCoverCache.initialize(), (error) => {
     console.warn(`[OnlineCoverCache] 初始化失败: ${safeErrorSummary(error)}`);
   }),
-  () => rotateDebugLogs().catch((error) => {
+  optionalStartupStep("DebugLog", () => rotateDebugLogs(), (error) => {
     console.warn(`[DebugLog] 启动轮转失败: ${safeErrorSummary(error)}`);
   }),
-  () => cleanupBBDownCredentialResidue().catch((error) => {
+  optionalStartupStep("SecurityCleanup", () => cleanupBBDownCredentialResidue(), (error) => {
     console.warn(`[Security] Failed to clean stale BBDown credential directories: ${safeErrorSummary(error)}`);
   }),
-  () => pathMigration.resumePersisted(),
-  () => recoverInterruptedQualityUpgrades(),
-  () => recoverInterruptedQualityDownloads(),
-  () => archiveDeletion.restoreLiveAccountsAfterStartup(),
-  () => scheduler.resumePersistedWorkOnStartup(),
-  () => { scheduler.start(); },
+  { name: 'path-migration', run: () => pathMigration.resumePersisted() },
+  { name: 'quality-replacement', run: () => recoverInterruptedQualityUpgrades() },
+  { name: 'quality-downloads', run: () => recoverInterruptedQualityDownloads() },
+  { name: 'archive-accounts', run: () => archiveDeletion.restoreLiveAccountsAfterStartup() },
+  { name: 'persistent-jobs', run: () => scheduler.resumePersistedWorkOnStartup() },
+  { name: 'scheduling', run: () => { scheduler.start(); } },
 ]);
 
 if (process.env.NODE_ENV !== "test") {
@@ -254,7 +254,11 @@ async function recoverInterruptedQualityDownloads() {
     stateManager.listInterruptedQualityUpgrades().map((relation) => relationKey(relation.userId, relation.mediaId, relation.bvid))
   );
   let entries: fs.Dirent[] = [];
-  try { entries = await fs.promises.readdir(tempDir, { withFileTypes: true }); } catch { return; }
+  try { entries = await fs.promises.readdir(tempDir, { withFileTypes: true }); }
+  catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith("quality-upgrade-")) continue;
     const downloadDir = path.join(tempDir, entry.name);
@@ -1249,7 +1253,7 @@ app.post("/api/online-content/manual-archive", asyncHandler(async (req, res) => 
     qualityStrict: Boolean(requestedQuality),
     qualityEncodingOverride,
   });
-  await onlineContent.promoteCover(token).catch(() => undefined);
+  await onlineContent.promoteCover(token).catch(error => console.warn(`[Cover] promotion failed: ${safeErrorSummary(error)}`));
   res.status(result.status === "queued" ? 202 : 200).json({ success: true, data: result });
 }));
 
@@ -2022,11 +2026,11 @@ async function receiveMigrationArchive(req: express.Request) {
     if (bytes === 0) throw new BadRequestError("迁移压缩包为空");
     return { root, archivePath, bytes };
   } catch (error) {
-    await handle.close().catch(() => undefined);
+    await handle.close();
     await fs.promises.rm(root, { recursive: true, force: true });
     throw error;
   } finally {
-    await handle.close().catch(() => undefined);
+    await handle.close(); // FileHandle.close is idempotent; a failed close must remain observable.
   }
 }
 
@@ -2639,7 +2643,7 @@ export async function closeAppResources() {
   const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000);
   const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
   if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
-  await cleanupBBDownCredentialResidue().catch(() => undefined);
+  await cleanupBBDownCredentialResidue().catch(error => console.warn(`[Shutdown] credential cleanup failed: ${safeErrorSummary(error)}`));
   closePlaybackDeliveryTracker();
   adminSessionStore.close();
   stateManager.close();
@@ -2675,7 +2679,9 @@ if (process.env.NODE_ENV !== "test") {
     const archiveDeletionStopped = archiveDeletion.stop(20_000);
     const renamePreviewStopped = renamePreviewScans.stop(20_000);
     server.close();
+    let downloadsStopped = true;
     await shutdownActiveDownloads(20_000).catch((error) => {
+      downloadsStopped = false;
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
     });
     let schedulerStopped = true;
@@ -2704,7 +2710,7 @@ if (process.env.NODE_ENV !== "test") {
     const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
     closePlaybackDeliveryTracker();
     adminSessionStore.close();
-    const quiesced = startupStopped && schedulerStopped && await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle;
+    const quiesced = startupStopped && downloadsStopped && schedulerStopped && await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle;
     if (quiesced) {
       stateManager.close();
     } else {

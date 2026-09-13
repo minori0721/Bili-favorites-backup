@@ -11,7 +11,7 @@ import { CHARGING_NO_ACCOUNT_DELAY_MS, AVAILABILITY_UNKNOWN_DELAYS_MS, AVAILABIL
 
 interface AccessProbeDependencies {
   users: Pick<UserStore, 'list'>;
-  state: Pick<StateManager, 'listRelationsForBvid' | 'getVideoMeta' | 'markChargingRestricted' | 'markAvailabilityPending' | 'markAvailabilityUnknown' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityDormant' | 'markAvailabilityRecovered' | 'markLegacyAccessClassification' | 'shouldEnqueueBackup' | 'clearChargingRestriction'>;
+  state: Pick<StateManager, 'runAtomic' | 'listRelationsForBvid' | 'getVideoMeta' | 'markChargingRestricted' | 'markAvailabilityPending' | 'markAvailabilityUnknown' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityDormant' | 'markAvailabilityRecovered' | 'markLegacyAccessClassification' | 'shouldEnqueueBackup' | 'clearChargingRestriction'>;
   jobs: Pick<PersistentJobStore, 'updatePayload' | 'defer' | 'findById' | 'complete' | 'hasJobsForBvid' | 'list' | 'wakeByBvid'>;
   owner: string;
   now(): number;
@@ -22,6 +22,7 @@ interface AccessProbeDependencies {
   inspect(cookie: BiliUser['cookie'], bvid: string): Promise<VideoPageSnapshotResult>;
   resolve(relation: FavoriteRelation): {user: BiliUser; mediaId: number; folderTitle: string} | null;
   enqueue(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: {persisted: boolean; downloadUserId: string}): unknown;
+  prepareCharging(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: {persisted: boolean; downloadUserId: string}): {commit(): boolean} | null;
 }
 
 /** A claimed probe runs inside scheduling control's tracked promise and lease. */
@@ -67,20 +68,24 @@ function deferChargingAccessProbe(
   ) {
     const checkedAt = new Date(deps.now()).toISOString();
     const nextCheckAt = new Date(value.nextAt).toISOString();
-    deps.state.markChargingRestricted(String(job.bvid || ""), {
-      checkedAt,
-      nextCheckAt,
-      previewAvailable: value.previewAvailable,
-      checkedAccountUids: value.checkedAccountUids,
-      lastError: value.reason,
+    deps.state.runAtomic(() => {
+      deps.state.markChargingRestricted(String(job.bvid || ""), {
+        checkedAt,
+        nextCheckAt,
+        previewAvailable: value.previewAvailable,
+        checkedAccountUids: value.checkedAccountUids,
+        lastError: value.reason,
+      });
+      deps.jobs.updatePayload(job.id, {
+        ...(job.payload || {}),
+        skipUserIds: [],
+        checkedAccountUids: value.checkedAccountUids,
+        previewAvailable: value.previewAvailable,
+      });
+      if (!deps.jobs.defer(job.id, deps.owner, value.reason || "Charging access is not available", value.nextAt)) {
+        throw new Error('Access probe reschedule lost its lease');
+      }
     });
-    deps.jobs.updatePayload(job.id, {
-      ...(job.payload || {}),
-      skipUserIds: [],
-      checkedAccountUids: value.checkedAccountUids,
-      previewAvailable: value.previewAvailable,
-    });
-    deps.jobs.defer(job.id, deps.owner, value.reason || "Charging access is not available", value.nextAt);
   }
 
 function deferAvailabilityProbe(
@@ -526,34 +531,37 @@ async function runChargingAccessProbe(job: PersistentJobRecord) {
     }
 
     if (allowedUser) {
+      const downloadUser = allowedUser;
       const checkedAt = new Date(deps.now()).toISOString();
-      if (payload.purpose === "legacy_failure_classification") {
-        deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
-      }
-      deps.state.clearChargingRestriction(bvid, checkedAt);
-      deps.jobs.complete(job.id, deps.owner);
-      for (const qualityJob of deps.jobs.list(["quality_download"], 10_000)) {
-        if (qualityJob.bvid !== bvid) continue;
-        deps.jobs.updatePayload(qualityJob.id, {
-          ...qualityJob.payload,
-          downloadUserId: allowedUser.id,
-        });
-      }
-      deps.jobs.wakeByBvid(bvid, ["quality_download"], deps.now());
-      const relation = relations.find((item) => item.activeInFavorite
-        && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""));
+      const relation = relations.find(item => item.activeInFavorite && !['uploaded', 'verified', 'partial_verified'].includes(item.backupStatus || ''));
       const resolved = relation ? deps.resolve(relation) : null;
-      if (relation && resolved) {
-        deps.enqueue(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
-          persisted: true,
-          downloadUserId: allowedUser.id,
-        });
-      }
+      // Preparation may inspect local files; keep it outside the SQLite transaction.
+      const replacement = relation && resolved ? deps.prepareCharging(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
+        persisted: true, downloadUserId: downloadUser.id,
+      }) : null;
+      if (relation && resolved && !replacement) throw new Error('Access recovered but the replacement task could not be prepared');
+      assertCurrent();
+      deps.state.runAtomic(() => {
+        if (payload.purpose === "legacy_failure_classification") {
+          deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
+        }
+        deps.state.clearChargingRestriction(bvid, checkedAt);
+        if (!deps.jobs.complete(job.id, deps.owner)) throw new Error('Access probe completion lost its lease');
+        for (const qualityJob of deps.jobs.list(["quality_download"], 10_000)) {
+          if (qualityJob.bvid !== bvid) continue;
+          deps.jobs.updatePayload(qualityJob.id, {
+            ...qualityJob.payload,
+            downloadUserId: downloadUser.id,
+          });
+        }
+        deps.jobs.wakeByBvid(bvid, ["quality_download"], deps.now());
+        if (replacement && !replacement.commit()) throw new Error('Access recovered but the replacement task was not accepted');
+      });
       logManager.push({
         timestamp: checkedAt,
         type: "download",
         level: "info",
-        summary: `充电视频权限已恢复 ${bvid}，已重新加入下载`,
+        summary: `充电视频权限已恢复 ${bvid}${replacement ? '，已重新加入下载' : '，当前无待恢复收藏任务'}`,
         raw: `[ChargingAccess] allowed bvid=${bvid} checkedAccounts=${checkedUids.size}`,
         bvid,
         simpleVisible: true,

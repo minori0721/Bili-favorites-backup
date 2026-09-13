@@ -1,3 +1,4 @@
+import { queueResponse, parseQueueFixture } from './queue-fixture.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createQueueBoardController, queueBoardRefreshDelay } from '../../src/web/client/features/task-center/board-controller.js';
@@ -29,8 +30,8 @@ test('board lifecycle deduplicates starts and prevents stopped responses from re
   board.stop();
   assert.equal(pending[0].signal.aborted, true);
   board.start();
-  const current = parseQueueSnapshot({ downloadPending: [{ id: 'new' }] });
-  pending[0].resolve(parseQueueSnapshot({ downloadPending: [{ id: 'old' }] }));
+  const current = parseQueueFixture({ downloadPending: [{ id: 'new' }] });
+  pending[0].resolve(parseQueueFixture({ downloadPending: [{ id: 'old' }] }));
   pending[1].resolve(current);
   await Promise.resolve();
   assert.deepEqual(rendered, [current]);
@@ -50,9 +51,9 @@ test('board lifecycle deduplicates starts and prevents stopped responses from re
 });
 
 test('board polling intervals retain running, waiting, maintenance and idle behavior', () => {
-  assert.equal(queueBoardRefreshDelay(parseQueueSnapshot({ downloadRunning: [{ phase: 'running' }] })), 2_000);
-  assert.equal(queueBoardRefreshDelay(parseQueueSnapshot({ uploadPending: [{ phase: 'remote_verifying' }] })), 2_000);
-  assert.equal(queueBoardRefreshDelay(parseQueueSnapshot({ uploadPending: [{ phase: 'retry_wait' }] })), 5_000);
-  assert.equal(queueBoardRefreshDelay(parseQueueSnapshot({ maintenance: { active: true } })), 5_000);
-  assert.equal(queueBoardRefreshDelay(parseQueueSnapshot({})), 15_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ downloadRunning: [{ phase: 'running' }] })), 2_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ uploadPending: [{ phase: 'remote_verifying' }] })), 2_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ uploadPending: [{ phase: 'retry_wait' }] })), 5_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ maintenance: { active: true } })), 5_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({})), 15_000);
 });

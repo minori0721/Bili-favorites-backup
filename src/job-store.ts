@@ -97,7 +97,9 @@ function rowToJob(row: any): PersistentJobRecord {
 }
 
 export class PersistentJobStore {
-  constructor(private stateDatabase: StateDatabase, options: {normalizeRecovery?: boolean} = {}) {
+  private readonly now: () => number;
+  constructor(private stateDatabase: StateDatabase, options: {normalizeRecovery?: boolean; now?: () => number} = {}) {
+    this.now = options.now ?? Date.now;
     if (options.normalizeRecovery !== false) this.normalizeStoppedRecovery();
   }
 
@@ -121,11 +123,11 @@ export class PersistentJobStore {
           OR json_extract(payload_json, '$.allowReupload')=1
           OR json_type(payload_json, '$.recoveryAssessment.nextCheckAt') IS NOT NULL)
         ORDER BY updated_at, id LIMIT 1000)
-    `).run(Date.now()).changes)();
+    `).run(this.now()).changes)();
   }
 
   enqueue(input: EnqueuePersistentJob) {
-    const now = Date.now();
+    const now = this.now();
     const id = crypto.randomUUID();
     const initialStatus = input.initialStatus || "pending";
     if (!["pending", "retry_wait", "manual_wait"].includes(initialStatus)) {
@@ -219,7 +221,7 @@ export class PersistentJobStore {
         target: existingPayload.target || incomingPayload.target || mergedTargets[0],
         targets: mergedTargets,
       };
-      const now = Date.now();
+      const now = this.now();
       this.stateDatabase.db.prepare(`
         UPDATE jobs SET
           status=CASE WHEN status='failed' THEN 'pending' ELSE status END,
@@ -257,13 +259,13 @@ export class PersistentJobStore {
     const attempts = Math.max(...jobs.map((job) => Number(job.attempts || 0)), 0);
     const notBefore = Math.max(...jobs.map((job) => Number(job.notBefore || 0)), Number(input.notBefore || 0));
     const maxAttempts = Math.max(...jobs.map((job) => Number(job.maxAttempts || 1)), Number(input.maxAttempts || 1));
-    const createdAt = Math.min(...jobs.map((job) => Number(job.createdAt || Date.now())));
+    const createdAt = Math.min(...jobs.map((job) => Number(job.createdAt || this.now())));
     const lastError = [...jobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.lastError || null;
-    const status = notBefore > Date.now() || jobs.some((job) => job.status === "retry_wait") ? "retry_wait" : "pending";
+    const status = notBefore > this.now() || jobs.some((job) => job.status === "retry_wait") ? "retry_wait" : "pending";
     this.stateDatabase.db.prepare(`
       UPDATE jobs SET status=?, attempts=?, max_attempts=?, not_before=?, lease_owner=NULL,
         lease_expires_at=NULL, last_error=?, created_at=?, updated_at=? WHERE id=?
-    `).run(status, attempts, maxAttempts, notBefore, lastError, createdAt, Date.now(), replacement.id);
+    `).run(status, attempts, maxAttempts, notBefore, lastError, createdAt, this.now(), replacement.id);
     return this.findById(replacement.id)!;
   }
 
@@ -337,7 +339,7 @@ export class PersistentJobStore {
     return row ? rowToJob(row) : null;
   }
 
-  claimByDedupeKey(dedupeKey: string, leaseOwner: string, leaseMs = 30 * 60_000, now = Date.now()) {
+  claimByDedupeKey(dedupeKey: string, leaseOwner: string, leaseMs = 30 * 60_000, now = this.now()) {
     const transaction = this.stateDatabase.db.transaction(() => {
       this.recoverExpiredLeases(now);
       const row = this.stateDatabase.db.prepare(`
@@ -369,7 +371,7 @@ export class PersistentJobStore {
     return row ? rowToJob(row) : null;
   }
 
-  claimDue(kinds: PersistentJobKind[], limit: number, leaseOwner: string, leaseMs = 5 * 60_000, now = Date.now()) {
+  claimDue(kinds: PersistentJobKind[], limit: number, leaseOwner: string, leaseMs = 5 * 60_000, now = this.now()) {
     if (kinds.length === 0 || limit <= 0) return [];
     const placeholders = kinds.map(() => "?").join(",");
     const transaction = this.stateDatabase.db.transaction(() => {
@@ -398,7 +400,7 @@ export class PersistentJobStore {
   }
 
   markRunning(id: string, leaseOwner: string, leaseMs = 30 * 60_000) {
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='running', lease_expires_at=?, updated_at=?
       WHERE id=? AND lease_owner=? AND status='leased'
@@ -406,7 +408,7 @@ export class PersistentJobStore {
   }
 
   extendLease(id: string, leaseOwner: string, leaseMs = 30 * 60_000) {
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET lease_expires_at=?, updated_at=?
       WHERE id=? AND lease_owner=? AND status IN ('leased','running')
@@ -419,7 +421,7 @@ export class PersistentJobStore {
     const retained = this.stateDatabase.db.prepare(`UPDATE jobs SET status='completed', dedupe_key='cleanup-complete:' || id,
       lease_owner=NULL, lease_expires_at=NULL, updated_at=?
       WHERE id=?${ownerClause} AND json_array_length(payload_json, '$.localCleanupPlans')>0`)
-      .run(Date.now(), ...args).changes;
+      .run(this.now(), ...args).changes;
     if (retained) return true;
     return this.stateDatabase.db.prepare(`DELETE FROM jobs WHERE id=?${ownerClause}`).run(...args).changes === 1;
   }
@@ -442,7 +444,7 @@ export class PersistentJobStore {
     })();
   }
   retry(id: string, leaseOwner: string, error: string, notBefore: number) {
-    const now = Date.now();
+    const now = this.now();
     const row = this.stateDatabase.db.prepare("SELECT kind, attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
     if (!row) return { updated: false, exhausted: false };
     const attempts = Number(row.attempts || 0) + 1;
@@ -496,7 +498,7 @@ export class PersistentJobStore {
       if (!row || String(row.kind) !== "download") return { updated: false, exhausted: false, attempts: 0 };
       const attempts = Number(row.attempts || 0) + 1;
       const exhausted = attempts >= Number(row.max_attempts || 1);
-      const now = Date.now();
+      const now = this.now();
       let payload: Record<string, unknown> = {};
       try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { payload = {}; }
       if (exhausted) {
@@ -536,7 +538,7 @@ export class PersistentJobStore {
   }
 
   normalizeTerminalUploadRecovery() {
-    const now = Date.now();
+    const now = this.now();
     const result = this.stateDatabase.db.prepare(`
       UPDATE jobs
       SET payload_json=json_set(
@@ -556,7 +558,7 @@ export class PersistentJobStore {
   }
 
   retryIndefinitely(id: string, leaseOwner: string, error: string, notBefore: number) {
-    const now = Date.now();
+    const now = this.now();
     const row = this.stateDatabase.db.prepare("SELECT attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
     if (!row) return { updated: false, attempts: 0 };
     const attempts = Number(row.attempts || 0) + 1;
@@ -568,7 +570,7 @@ export class PersistentJobStore {
   }
 
   defer(id: string, leaseOwner: string, error: string, notBefore: number) {
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='retry_wait', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
         last_error=?, updated_at=? WHERE id=? AND lease_owner=?
@@ -597,7 +599,7 @@ export class PersistentJobStore {
       payload.allowReupload = false;
       return this.stateDatabase.db.prepare(
         "UPDATE jobs SET payload_json=?, updated_at=? WHERE id=? AND lease_owner=? AND status IN ('leased','running')"
-      ).run(JSON.stringify(payload), Date.now(), id, leaseOwner).changes === 1;
+      ).run(JSON.stringify(payload), this.now(), id, leaseOwner).changes === 1;
     })();
   }
 
@@ -611,7 +613,7 @@ export class PersistentJobStore {
       payload = {};
     }
     const mergedPayload = { ...payload, ...payloadPatch };
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='manual_wait', lease_owner=NULL, lease_expires_at=NULL,
         last_error=?, payload_json=?, updated_at=?
@@ -619,7 +621,7 @@ export class PersistentJobStore {
     `).run(error.slice(0, 1000), JSON.stringify(mergedPayload), now, id, leaseOwner).changes === 1;
   }
 
-  recoverExpiredLeases(now = Date.now()) {
+  recoverExpiredLeases(now = this.now()) {
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='pending', lease_owner=NULL, lease_expires_at=NULL, updated_at=?
       WHERE status IN ('leased','running') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
@@ -627,7 +629,7 @@ export class PersistentJobStore {
   }
 
   releaseOwner(leaseOwner: string) {
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='pending', lease_owner=NULL, lease_expires_at=NULL, updated_at=?
       WHERE lease_owner=? AND status IN ('leased','running')
@@ -639,7 +641,7 @@ export class PersistentJobStore {
       && payload.allowReupload !== true && payload.resumeOnly !== true;
     return this.stateDatabase.db.prepare(`UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?
       AND (? OR (${RECOVERY_NOT_STOPPED_SQL}))`)
-      .run(JSON.stringify(payload || {}), Date.now(), id, Number(preservesStop)).changes === 1;
+      .run(JSON.stringify(payload || {}), this.now(), id, Number(preservesStop)).changes === 1;
   }
 
   startEncodingRetry(
@@ -681,7 +683,7 @@ export class PersistentJobStore {
         UPDATE jobs SET payload_json=?, updated_at=?
         WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')
           AND json_extract(payload_json, '$.awaitingManualRecovery')=1
-      `).run(JSON.stringify(payload), Date.now(), parentId);
+      `).run(JSON.stringify(payload), this.now(), parentId);
       if (updated.changes !== 1) {
         this.complete(created.id);
         return null;
@@ -718,7 +720,7 @@ export class PersistentJobStore {
         },
       };
       return this.stateDatabase.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?")
-        .run(JSON.stringify(nextPayload), Date.now(), parentId).changes === 1;
+        .run(JSON.stringify(nextPayload), this.now(), parentId).changes === 1;
     })();
   }
 
@@ -741,7 +743,7 @@ export class PersistentJobStore {
         },
       };
       return this.stateDatabase.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?")
-        .run(JSON.stringify(nextPayload), Date.now(), parentId).changes === 1;
+        .run(JSON.stringify(nextPayload), this.now(), parentId).changes === 1;
     })();
   }
 
@@ -798,7 +800,7 @@ export class PersistentJobStore {
         WHERE id=?
           AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
           AND json_extract(payload_json, '$.encodingRetry.state') IN ('running','uploading','verifying')
-      `).run(JSON.stringify(nextPayload), Date.now(), parentId, generation).changes;
+      `).run(JSON.stringify(nextPayload), this.now(), parentId, generation).changes;
       if (updated !== 1) throw new Error("Encoding retry parent changed before child transition");
       return next;
     })();
@@ -872,7 +874,7 @@ export class PersistentJobStore {
       return true;
     })();
   }
-  wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}, notBefore = Date.now()) {
+  wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}, notBefore = this.now()) {
     if (isRecoveryStopped(this.findById(id)?.payload)) return null;
     const row = this.stateDatabase.db.prepare("SELECT status, payload_json FROM jobs WHERE id=?").get(id) as any;
     if (!row || !["manual_wait", "failed", "retry_wait", "pending"].includes(String(row.status))) return null;
@@ -883,7 +885,7 @@ export class PersistentJobStore {
       payload = {};
     }
     const mergedPayload = { ...payload, ...payloadPatch };
-    const now = Date.now();
+    const now = this.now();
     const updated = this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='pending', not_before=?, attempts=0, lease_owner=NULL,
         lease_expires_at=NULL, last_error=NULL, payload_json=?, updated_at=?
@@ -919,13 +921,13 @@ export class PersistentJobStore {
       allowReupload: false,
       userDisposition: "abandoned",
       lifecycleState: "abandoned",
-      abandonedAt: Date.now(),
+      abandonedAt: this.now(),
     };
     if (nextPayload.recoveryAssessment && typeof nextPayload.recoveryAssessment === 'object') {
       nextPayload.recoveryAssessment = { ...nextPayload.recoveryAssessment };
       delete (nextPayload.recoveryAssessment as any).nextCheckAt;
     }
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='failed', not_before=0, lease_owner=NULL, lease_expires_at=NULL,
         last_error=?, payload_json=?, updated_at=?
@@ -1048,7 +1050,7 @@ export class PersistentJobStore {
     `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
   }
 
-  listDueManualRecovery(kinds: PersistentJobKind[], now = Date.now(), limit = 25) {
+  listDueManualRecovery(kinds: PersistentJobKind[], now = this.now(), limit = 25) {
     if (kinds.length === 0) return [];
     const placeholders = kinds.map(() => "?").join(",");
     return (this.stateDatabase.db.prepare(`
@@ -1159,7 +1161,7 @@ export class PersistentJobStore {
     return Number(row?.count || 0);
   }
 
-  countDue(kinds: PersistentJobKind[], maxPriority = 100, now = Date.now()) {
+  countDue(kinds: PersistentJobKind[], maxPriority = 100, now = this.now()) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");
     const row = this.stateDatabase.db.prepare(`
@@ -1305,7 +1307,7 @@ export class PersistentJobStore {
     return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed'").get(`${prefix}%`) as any).count || 0) > 0;
   }
 
-  wakeByBvid(bvid: string, kinds: PersistentJobKind[], now = Date.now()) {
+  wakeByBvid(bvid: string, kinds: PersistentJobKind[], now = this.now()) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");
     return this.stateDatabase.db.prepare(`
@@ -1314,7 +1316,7 @@ export class PersistentJobStore {
     `).run(now, now, bvid, ...kinds).changes;
   }
 
-  rescheduleByBvid(bvid: string, kinds: PersistentJobKind[], notBefore: number, now = Date.now()) {
+  rescheduleByBvid(bvid: string, kinds: PersistentJobKind[], notBefore: number, now = this.now()) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");
     return this.stateDatabase.db.prepare(`
@@ -1323,7 +1325,7 @@ export class PersistentJobStore {
     `).run(Math.max(0, Math.floor(notBefore)), now, bvid, ...kinds).changes;
   }
 
-  wakeAll(kinds: PersistentJobKind[], now = Date.now()) {
+  wakeAll(kinds: PersistentJobKind[], now = this.now()) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");
     return this.stateDatabase.db.prepare(`
@@ -1348,7 +1350,7 @@ export class PersistentJobStore {
   }
 
   reassignDownloadJob(id: string, downloadUserId: string, payload: Record<string, unknown>) {
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET user_id=?,
         payload_json=?, status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
@@ -1357,14 +1359,14 @@ export class PersistentJobStore {
   }
 
   pauseDetachedUserJob(id: string, userId: string, payload: Record<string, unknown>) {
-    const now = Date.now();
+    const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET payload_json=?, status='retry_wait', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
         last_error='等待原账号重新登录', updated_at=? WHERE id=? AND kind IN ('download','quality_download')
     `).run(JSON.stringify({ ...payload, pausedForUserId: userId }), Number.MAX_SAFE_INTEGER, now, id).changes === 1;
   }
 
-  resumeDetachedUserJobs(userId: string, now = Date.now()) {
+  resumeDetachedUserJobs(userId: string, now = this.now()) {
     const jobs = (this.stateDatabase.db.prepare(`
       SELECT * FROM jobs WHERE kind IN ('download','quality_download')
         AND json_extract(payload_json, '$.pausedForUserId')=?

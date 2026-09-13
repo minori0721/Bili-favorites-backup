@@ -23,8 +23,11 @@ test('online navigation keeps display fields and rejects malformed sources',()=>
 
 test('probe boundaries distinguish a task reference from summary and preserve zero capacity',()=>{
   assert.equal(parseProbeReference({probeId:'probe'}),'probe');
-  assert.equal(parseProbeSummary({status:'complete',cacheAvailableBytes:0}).cacheAvailableBytes,0);
-  assert.equal(parseProbeSummary({status:'complete'}).cacheAvailableBytes,undefined);
+  assert.equal(parseProbeSummary({status:'complete',pages:[],combinations:[],cacheAvailableBytes:0}).cacheAvailableBytes,0);
+  assert.equal(parseProbeSummary({status:'complete',pages:[],combinations:[]}).cacheAvailableBytes,undefined);
+  assert.throws(()=>parseProbeSummary({status:'complete'}));
+  assert.equal(parseProbeSummary({status:'failed',error:'稿件不可见'}).error,'稿件不可见');
+  assert.throws(()=>parseProbeSummary({status:'failed'}));
   assert.throws(()=>parseProbeSummary({status:'complete',estimatedBytes:-1}));
   assert.throws(()=>parseProbeSummary({status:'complete',combinations:[{available:'false'}]}));
 });

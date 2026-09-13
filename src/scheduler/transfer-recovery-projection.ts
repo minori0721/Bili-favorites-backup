@@ -22,7 +22,6 @@ export function createTransferRecoveryProjection(deps: Dependencies) {
   function reconcile(force = false) {
     const now = deps.now();
     if (!force && now - reconciledAt < 30_000) return 0;
-    reconciledAt = now;
     deps.jobStore.normalizeStoppedRecovery();
 
     const activeKeys = deps.jobStore.listActiveTransferSessionKeys();
@@ -144,9 +143,10 @@ export function createTransferRecoveryProjection(deps: Dependencies) {
       }
       if (inputs.length >= maxProjected || page.length < pageSize) break;
     }
-    if (inputs.length === 0) return 0;
+    if (inputs.length === 0) { reconciledAt = now; return 0; }
     try {
       deps.jobStore.enqueueBatch(inputs);
+      reconciledAt = now;
       logManager.push({
         timestamp: new Date(now).toISOString(),
         type: "system",
@@ -159,7 +159,7 @@ export function createTransferRecoveryProjection(deps: Dependencies) {
       return inputs.length;
     } catch (error) {
       console.warn(`[Recovery] Failed to project transfer sessions: ${safeErrorSummary(error)}`);
-      return 0;
+      throw error;
     }
   }
 

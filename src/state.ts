@@ -3857,7 +3857,10 @@ export class StateManager {
       this.database.integrityCheck();
       this.reloadDatabaseView();
     } catch (error) {
-      try { if (this.database?.db?.open) this.database.close(); } catch {}
+      try { if (this.database.db.open) this.database.close(); }
+      catch (closeError) {
+        throw Object.assign(new Error("Database replacement connection could not close; files retained"), { cause: closeError, recoveryRequired: true });
+      }
       try {
         replacement.rollback();
         this.database = new StateDatabase(this.dbPath);

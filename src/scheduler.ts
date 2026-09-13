@@ -176,6 +176,8 @@ function cooldownMs() {
 }
 
 interface SchedulerDependencies {
+  /** Application bootstrap owns recovery ordering and opens admission only in start(). */
+  deferAdmissionUntilStart?: boolean;
   videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string) => Promise<VideoPageSnapshotResult>;
   cacheInspector?: (rootDir: string, concurrency?: number) => Promise<DownloadCacheInspection>;
   remoteFileInspector?: typeof inspectRemoteFileSize;
@@ -267,6 +269,7 @@ export class SyncScheduler {
   private cycleContext: SyncCycleStats | null = null;
 
   constructor(configStore: Pick<ConfigStore, 'get'>, userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial'>, stateManager: StateManager, dependencies: SchedulerDependencies = {}) {
+    this.acceptingJobs = !dependencies.deferAdmissionUntilStart;
     this.configStore = configStore;
     this.userStore = userStore;
     this.stateManager = stateManager;
@@ -277,7 +280,7 @@ export class SyncScheduler {
     this.now = dependencies.now || Date.now;
     this.random = dependencies.random || Math.random;
     this.polling = createPollingSchedule({ now: this.now, random: this.random, run: () => { void this.tick(); } });
-    this.jobStore = new PersistentJobStore(this.stateManager.getDatabase(), {normalizeRecovery:false});
+    this.jobStore = new PersistentJobStore(this.stateManager.getDatabase(), {normalizeRecovery:false, now:this.now});
     this.transferSessions = new TransferSessionStore(this.stateManager.getDatabase());
     this.legacyCacheRecovery = createLegacyCacheRecovery({
       stateManager: this.stateManager, legacyTempDir: this.legacyTempDir,
@@ -311,6 +314,7 @@ export class SyncScheduler {
       eligible: user => this.isUserSyncEligible(user), inspect: this.videoAccessProbe,
       resolve: relation => this.resolveRelation(relation),
       enqueue: (user, mediaId, title, bvid, options) => this.enqueueIfNeeded(user, mediaId, title, bvid, options),
+      prepareCharging: (user, mediaId, title, bvid, options) => this.backupEnqueue().prepareAfterAccessCheck(user, mediaId, title, bvid, options),
     });
     this.localCapacity = createLocalCapacity({
       limitGB: () => this.configStore.get().localCacheLimitGB,
@@ -1592,11 +1596,7 @@ export class SyncScheduler {
       });
     }
     void this.reconcileObsoleteVerifiedArchiveRecoveries();
-    try {
-      this.migrateLegacyQualityDownloadJobs();
-    } catch (error) {
-      console.warn(`[Recovery] Failed to migrate legacy quality downloads: ${safeErrorSummary(error)}`);
-    }
+    this.migrateLegacyQualityDownloadJobs();
     this.bootstrapLegacyFailureClassification();
     this.resumePersistedWork();
     this.startLegacyTempCacheRecovery();
@@ -1684,8 +1684,8 @@ export class SyncScheduler {
 
   start() {
     if (this.shutdownStarted || this.storageRebindResumeAdmission !== null) return false;
-    this.acceptingJobs = true;
     this.initializeRuntime();
+    this.acceptingJobs = true;
     const { pollIntervalMinutes } = this.configStore.get();
     const intervalMs = pollIntervalMinutes * 60 * 1000;
     if (!this.polling.start(intervalMs)) return false;

@@ -9,5 +9,5 @@ test('queue status preserves zero counts and both persisted numeric and ISO sche
 });
 test('queue snapshot rejects malformed status before publishing any new board state',()=>{
   for(const value of [{scheduler:{queuedActions:[{}]}},{localCache:{paused:'false'}},{uploadHealth:{retryAt:{}}},{recovery:{pendingUploads:'1'}},{scheduler:[]}])assert.throws(()=>parseQueueSnapshot(value));
-  assert.equal(parseQueueStatus({}).scheduler.recovery.pendingDownloads,0);
+  assert.throws(() => parseQueueStatus({}), /状态/);
 });

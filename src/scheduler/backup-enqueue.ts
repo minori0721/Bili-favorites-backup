@@ -31,13 +31,13 @@ interface Dependencies {
 }
 export function createBackupEnqueue(deps: Dependencies) {
   /** All filesystem evidence is read while preparing; commit only mutates SQLite and its memory projection. */
-  function prepare(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: BackupEnqueueOptions = {}, recoveryDownload = false) {
+  function prepare(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: BackupEnqueueOptions = {}, recoveryDownload = false, accessChecked = false) {
     if (!deps.eligible(user) || deps.blocked(user.id, mediaId, bvid)) return null;
     const epoch = deps.generation();
     const exact = Boolean(options.qualityProfile && (options.qualityStrict || options.qualityEncodingOverride?.strict));
     const local = exact || recoveryDownload ? null : deps.state.getCompletedLocalDownload(bvid);
     const restriction = deps.state.getChargingRestriction(bvid);
-    if (restriction && !local) {
+    if (restriction && !local && !accessChecked) {
       const nextAt = Date.parse(restriction.nextCheckAt || '');
       return { kind: 'probe' as const, commit: () => {
         if (epoch !== deps.generation() || !deps.eligible(user) || deps.blocked(user.id, mediaId, bvid)) return false;
@@ -99,5 +99,8 @@ export function createBackupEnqueue(deps: Dependencies) {
   function prepareRecoveryDownload(user: BiliUser, mediaId: number, title: string, bvid: string, options: BackupEnqueueOptions = {}) {
     return prepare(user, mediaId, title, bvid, { ...options, persisted: true }, true);
   }
-  return { prepare, prepareRecoveryDownload, enqueue };
+  function prepareAfterAccessCheck(user: BiliUser, mediaId: number, title: string, bvid: string, options: BackupEnqueueOptions) {
+    return prepare(user, mediaId, title, bvid, options, false, true);
+  }
+  return { prepare, prepareRecoveryDownload, prepareAfterAccessCheck, enqueue };
 }

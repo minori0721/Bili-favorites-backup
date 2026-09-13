@@ -1,0 +1,615 @@
+{
+  "src/admin-session.ts": {
+    "empty-catch:catch {}": 2,
+    "unexplained-any:err: any": 1,
+    "unexplained-any:err?: any": 2
+  },
+  "src/archive-deletion.ts": {
+    "unexplained-any:Promise<any>": 3,
+    "unexplained-any:error: any": 6,
+    "unexplained-any:hasEvidence.get({ userId: user.id }) as any": 1,
+    "unexplained-any:any[]": 18,
+    "unexplained-any:this.db.db.prepare(` SELECT id, status, scope, user_id, media_id, bvid FROM archive_deletions WHERE status IN ('preparing','config_removing','pending','running','retry_wait') ORDER BY updated_at DESC LIMIT 1 `).get() as any": 1,
+    "unexplained-any:this.db.db.prepare(\"SELECT COUNT(*) AS count FROM favorite_relations WHERE user_id=?\").get(userId) as any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT COUNT(*) AS files, COALESCE(SUM(expected_size),0) AS bytes FROM archive_deletion_items WHERE deletion_id=? `).get(id) as any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT COUNT(*) AS count FROM archive_deletion_items i WHERE i.deletion_id=? AND EXISTS( SELECT 1 FROM remote_files rf WHERE rf.remote_path=i.remote_path AND rf.user_id<>'' AND NOT EXISTS( SELECT 1 FROM archive_deleted_sources s WHERE s.deletion_id=? AND s.user_id=rf.user_id AND s.media_id=rf.media_id AND s.bvid=rf.bvid ) ) `).get(id, id) as any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT COUNT(*) AS count FROM archive_deletion_items WHERE deletion_id=? AND status='conflict' `).get(id) as any": 1,
+    "unexplained-any:candidate: any": 1,
+    "unexplained-any:error as any": 1,
+    "unexplained-any:this.db.db.prepare(\"SELECT * FROM archive_deletions WHERE id=?\").get(id) as any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT COUNT(*) AS count FROM jobs j WHERE j.kind<>'archive_delete' AND j.status IN (${statuses}) AND j.bvid=? AND ( (j.user_id=? AND j.media_id=?) OR json_extract(j.payload_json, '$.target.userId')=? AND CAST(json_extract(j.payload_json, '$.target.mediaId') AS INTEGER)=? OR EXISTS( SELECT 1 FROM json_each(j.payload_json, '$.targets') target WHERE json_extract(target.value, '$.userId')=? AND CAST(json_extract(target.value, '$.mediaId') AS INTEGER)=? ) ) `).get( ...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, row.bvid, row.user_id, row.media_id, row.user_id, row.media_id, row.user_id, row.media_id, ) as any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT COUNT(*) AS count FROM jobs j WHERE j.kind<>'archive_delete' AND j.status IN (${statuses}) AND j.user_id=? `).get(...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, row.user_id) as any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT id FROM archive_deletions WHERE scope='account' AND user_id=? AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed') ORDER BY CASE status WHEN 'preparing' THEN 0 WHEN 'config_removing' THEN 1 WHEN 'pending' THEN 2 WHEN 'running' THEN 3 WHEN 'retry_wait' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END, updated_at DESC, id DESC LIMIT 1 `).get(userId) as any": 1,
+    "unexplained-any:this.db.db.prepare(\"SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?\").get(id) as any": 4,
+    "unexplained-any:this.db.db.prepare(\"SELECT active_in_favorite FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?\").get(userId, mediaId, bvid) as any": 1,
+    "unexplained-any:parseJson<any>(row.payload_json, {})": 3,
+    "unexplained-any:this.db.db.prepare(` SELECT MIN(not_before) AS due FROM jobs WHERE kind='archive_delete' AND status IN ('pending','retry_wait') `).get() as any": 1,
+    "unexplained-any:this.db.db.prepare(\"SELECT status FROM archive_deletions WHERE id=?\").get(id) as any": 2,
+    "unexplained-any:parseJson<any>(source.relation_json, {})": 2,
+    "unexplained-any:file: any": 1,
+    "unexplained-any:this.db.db.prepare(\"SELECT scope, user_id FROM archive_deletions WHERE id=?\").get(id) as any": 1,
+    "unexplained-any:relation: any": 1
+  },
+  "src/archive-library.ts": {
+    "unexplained-any:any[]": 7,
+    "unexplained-any:summary: any = null": 1,
+    "unexplained-any:undefined as any": 2,
+    "unexplained-any:database.db.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(baseParams) as any": 1,
+    "unexplained-any:database.db.prepare(` ${cte} SELECT COUNT(*) AS count FROM filtered WHERE ${before.cursorSql} `).get(countParams) as any": 1,
+    "unexplained-any:row: any": 1,
+    "unexplained-any:new Map<string, any>()": 1,
+    "unexplained-any:indexedFolders.get(`${user.id}:${folder.mediaId}`) as any": 1,
+    "unexplained-any:indexedFolders.get(`${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`) as any": 1
+  },
+  "src/auth-refresh.ts": {
+    "unexplained-any:any[]": 1,
+    "unexplained-any:current: any = error": 1
+  },
+  "src/bili.ts": {
+    "unexplained-any:Record<string, any>": 9,
+    "unexplained-any:error: any": 6,
+    "unexplained-any:raw: any": 2,
+    "unexplained-any:parsed as any": 4,
+    "unexplained-any:data: any": 1,
+    "unexplained-any:originalError as any": 1,
+    "unexplained-any:result: any": 1,
+    "unexplained-any:item: any": 1,
+    "unexplained-any:item as any": 1,
+    "unexplained-any:media: any": 2,
+    "unexplained-any:page: any": 1,
+    "unexplained-any:result: any = await tv.refresh(accessToken, refreshToken)": 1
+  },
+  "src/config.ts": {
+    "unexplained-any:merged as any": 1
+  },
+  "src/cover-cache.ts": {
+    "unexplained-any:error: any": 2,
+    "unexplained-any:any[]": 2
+  },
+  "src/credential-temp.ts": {
+    "unexplained-any:error: any": 1
+  },
+  "src/database-replacement.ts": {
+    "critical-swallow:catch { // The commit decision is durable. Cleanup must never reverse it. console.warn(\"[Migration] Database replacement cleanup deferred; recovery files retained.\"); }": 1
+  },
+  "src/database.ts": {
+    "unexplained-any:row: any": 4,
+    "unexplained-any:undefined as any": 22,
+    "unexplained-any:any[]": 61,
+    "unexplained-any:this.db.prepare(\"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_relations_remote_schedule'\").get() as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT COUNT(*) AS count FROM videos\").get() as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT value FROM schema_meta WHERE key=?\").get(key) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS(SELECT 1 FROM remote_files LIMIT 1) OR EXISTS(SELECT 1 FROM quality_upgrades LIMIT 1) OR EXISTS(SELECT 1 FROM jobs WHERE kind IN ('upload','history_upload','verify_upload','quality_upload','quality_replace','quality_cleanup')) OR EXISTS(SELECT 1 FROM videos WHERE json_type(payload_json, '$.remotePath') IS NOT NULL) OR EXISTS(SELECT 1 FROM favorite_relations WHERE json_type(payload_json, '$.remotePath') IS NOT NULL) AS present `).get() as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS( SELECT 1 FROM archive_deletions WHERE status IN ('preparing','config_removing','pending','running','retry_wait') ) AS present `).get() as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS( SELECT 1 FROM archive_deletions WHERE status IN ('preparing','config_removing','pending','running','retry_wait','failed') ) AS present `).get() as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS( SELECT 1 FROM archive_deletions WHERE scope='account' AND user_id=? AND status IN ('preparing','config_removing','pending','running','retry_wait','failed') ) AS present `).get(userId) as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT removed_at FROM archive_accounts WHERE user_id=?\").get(userId) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS( SELECT 1 FROM archive_deleted_sources WHERE user_id=? AND media_id=? AND bvid=? AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed') ) AS blocked `).get(userId, mediaId, bvid) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS( SELECT 1 FROM archive_deleted_sources WHERE user_id=? AND media_id=? AND bvid=? AND status IN ('preparing','config_removing','pending','running','retry_wait') ) AS active `).get(userId, mediaId, bvid) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT EXISTS( SELECT 1 FROM archive_deleted_sources WHERE user_id=? AND media_id=? AND status IN ('preparing','config_removing','pending','running','retry_wait') ) AS active `).get(userId, mediaId) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT * FROM path_migrations WHERE status IN ('scanning','ready','copying','verifying','paused','switching','cleanup_pending','cleanup_running') ORDER BY created_at DESC LIMIT 1 `).get() as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT * FROM path_migrations WHERE id=?\").get(id) as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT * FROM path_migration_items WHERE migration_id=? AND relative_path=?\") .get(migrationId, relativePath) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT * FROM path_migration_items WHERE migration_id=? AND status IN ('pending','reusable','copying','awaiting_verification','failed') AND next_attempt_at<=? ORDER BY relative_path ASC LIMIT 1 `).get(migrationId, now) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT MIN(next_attempt_at) AS next_attempt_at FROM path_migration_items WHERE migration_id=? AND status IN ('copying','awaiting_verification','failed') AND next_attempt_at>? `).get(migrationId, now) as any": 1,
+    "unexplained-any:Iterable<any>": 1,
+    "unexplained-any:value: any": 1,
+    "unexplained-any:(value: any): any => { if (Array.isArray(value)) return value.map(rewritePayload); if (!value || typeof value !== \"object\") return value; const output: Record<string, unknown> = {}; for (const [key, child] of Object.entries(value)) { output[key] = pathKeys.has(key) ? rewriteValue(child) : rewritePayload(child); } return output; }": 1,
+    "unexplained-any:payload: any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT id FROM jobs WHERE dedupe_key=? AND id<>?\").get(dedupeKey, row.id) as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT payload_json FROM cooldowns WHERE kind='download_api' AND scope_id='global'\").get() as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT v.payload_json, summary.backup_status AS aggregate_status FROM videos v LEFT JOIN video_backup_summary summary ON summary.bvid=v.bvid WHERE v.bvid=? `).get(bvid) as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT payload_json FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?\") .get(userId, mediaId, bvid) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT rf.id, rf.bvid, rf.remote_path, rf.expected_size, rf.status, rf.updated_at, rf.actual_width, rf.actual_height, rf.actual_duration, rf.actual_fps, rf.actual_codec, rf.actual_metadata_source, rf.actual_metadata_at, r.payload_json AS relation_json, v.payload_json AS video_json FROM remote_files rf JOIN favorite_relations r ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid JOIN videos v ON v.bvid=rf.bvid WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified' AND r.backup_status IN ('verified','partial_verified') `).get(fileId, userId, mediaId) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT COUNT(*) AS count, MAX(v.access_last_checked_at) AS last_checked_at FROM videos v WHERE v.access_restriction_type='charging' AND EXISTS ( SELECT 1 FROM favorite_relations r WHERE r.bvid=v.bvid AND r.active_in_favorite=1 AND r.backup_status NOT IN ('uploaded','verified','partial_verified') ) `).get() as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT COUNT(*) AS total, SUM(CASE WHEN r.active_in_favorite=1 THEN 1 ELSE 0 END) AS active_total, SUM(CASE WHEN r.active_in_favorite=0 THEN 1 ELSE 0 END) AS historical_total, SUM(CASE WHEN ${processed} THEN 1 ELSE 0 END) AS uploaded, SUM(CASE WHEN NOT (${processed}) AND NOT (${unavailable}) THEN 1 ELSE 0 END) AS pending, SUM(CASE WHEN NOT (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS pending_unavailable, SUM(CASE WHEN ${archivedUnavailable} THEN 1 ELSE 0 END) AS uploaded_unavailable, SUM(CASE WHEN (${filterSql}) THEN 1 ELSE 0 END) AS total_filtered ${base} `).get(userId, mediaId) as any": 1,
+    "unexplained-any:row as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT payload_json FROM failures WHERE user_id=? AND bvid=? AND media_id IN (?,0) ORDER BY CASE WHEN media_id=? THEN 0 ELSE 1 END, failed_at DESC LIMIT 1 `).get(userId, bvid, mediaId, mediaId) as any": 1,
+    "unexplained-any:this.db.prepare(` SELECT payload_json FROM failures WHERE user_id=? AND bvid=? ORDER BY failed_at DESC LIMIT 1 `).get(userId, bvid) as any": 1,
+    "unexplained-any:this.db.prepare(\"SELECT payload_json FROM cooldowns WHERE kind=? AND scope_id=?\").get(kind, scopeId) as any": 1
+  },
+  "src/debug-log-retention.ts": {
+    "unexplained-any:error: any": 1,
+    "silent-recovery:fs.promises.rm(temporary, { force: true }).catch(() => undefined)": 1,
+    "silent-recovery:rotateDebugLogs({ directory }).catch(() => undefined)": 1
+  },
+  "src/download-recovery.ts": {
+    "unexplained-any:error: any": 2
+  },
+  "src/download-session.ts": {
+    "silent-recovery:catch { return null; }": 1,
+    "unexplained-any:output as any": 1,
+    "unexplained-any:item as any": 4,
+    "unexplained-any:new Promise<any>((resolve, reject) => { const child = spawn(ffprobePath(), args, { windowsHide: true }); let stdout = \"\"; let stderr = \"\"; const timer = setTimeout(() => child.kill(\"SIGKILL\"), 30_000); child.stdout.on(\"data\", (chunk) => { stdout += chunk.toString(); }); child.stderr.on(\"data\", (chunk) => { stderr += chunk.toString(); }); child.on(\"error\", (error) => { clearTimeout(timer); reject(error); }); child.on(\"close\", (code) => { clearTimeout(timer); if (code !== 0) { reject(new Error(stderr.trim() || `ffprobe exited with code ${code}`)); return; } try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); } }); })": 1,
+    "unexplained-any:stream: any": 2,
+    "unexplained-any:error: any": 8,
+    "silent-recovery:fs.promises.rm(stageRoot, { recursive: true, force: true }).catch(() => undefined)": 1,
+    "silent-recovery:validateMediaOutput(path.join(downloadDir, relativePath), 0).catch(() => null)": 1,
+    "silent-recovery:fs.promises.copyFile(existingManifestPath, preservedPath).catch(() => undefined)": 1
+  },
+  "src/downloader.ts": {
+    "unexplained-any:error: any = new Error(\"BBDown媒体探测输出异常，已停止读取\")": 1,
+    "unexplained-any:error: any = new Error(\"互动视频片段清单不完整或工具不支持，已停止下载；请更新 BBDown 后重试\")": 1,
+    "unexplained-any:metadataError: any = new Error(\"Unable to resolve the current video page list; retrying later\")": 1,
+    "unexplained-any:error: any = new Error(\"APP 接口需要 access token。请重新扫码登录后再启用该模式。\")": 1,
+    "unexplained-any:error: any": 3,
+    "unexplained-any:retryError: any": 1,
+    "unexplained-any:err as any": 14,
+    "unexplained-any:unavailableError: any = new Error(\"Video is unavailable and no verified local pages can be recovered\")": 1,
+    "unexplained-any:error as any": 1,
+    "unexplained-any:data: any = await response.json()": 1,
+    "unexplained-any:err: any = new Error(\"B站播放接口触发风控，下载将在冷却后自动恢复\")": 1,
+    "unexplained-any:err: any = new Error(\"APP 播放接口未返回视频信息\")": 1
+  },
+  "src/index.ts": {
+    "unexplained-any:error: any": 9,
+    "parser-empty-fallback:query.mediaId === undefined || query.mediaId === \"\" ? undefined : Number(query.mediaId)": 1,
+    "unexplained-any:draft as any": 1,
+    "unexplained-any:result: any": 1,
+    "unexplained-any:err: any": 5,
+    "unexplained-any:entry: any": 2,
+    "unexplained-any:value: any": 1
+  },
+  "src/job-store.ts": {
+    "unexplained-any:payload: any": 1,
+    "unexplained-any:target: any": 1,
+    "unexplained-any:Record<string, any>": 10,
+    "unexplained-any:new Map<string, any>()": 1,
+    "unexplained-any:row: any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT * FROM jobs WHERE dedupe_key=?\").get(input.dedupeKey) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT * FROM jobs WHERE id=?\").get(id) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count FROM jobs WHERE kind='quality_download' AND ( json_type(payload_json, '$.artifactKey') IS NULL OR COALESCE(json_type(payload_json, '$.targets'), '') != 'array' OR bvid IS NULL OR dedupe_key NOT LIKE ('quality-download:' || bvid || ':%') ) `).get() as any": 1,
+    "unexplained-any:any[]": 15,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT * FROM jobs WHERE dedupe_key=? AND status IN ('pending','retry_wait') AND not_before<=? AND ${RECOVERY_NOT_STOPPED_SQL} LIMIT 1 `).get(dedupeKey, now) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT kind, attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?\").get(id, leaseOwner) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?\").get(id, leaseOwner) as any": 2,
+    "unexplained-any:this.stateDatabase.db.prepare( \"SELECT kind, attempts, max_attempts, payload_json FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')\" ).get(id, leaseOwner) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT attempts FROM jobs WHERE id=? AND lease_owner=?\").get(id, leaseOwner) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare( \"SELECT payload_json FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')\" ).get(id, leaseOwner) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT * FROM jobs WHERE id=?\").get(parentId) as any": 2,
+    "unexplained-any:parent.payload as any": 2,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT payload_json FROM jobs WHERE id=?\").get(parentId) as any": 3,
+    "silent-recovery:catch { return null; }": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count FROM jobs WHERE kind IN ('download','upload','history_upload','verify_upload') AND id<>? AND status<>'completed' AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1 AND json_extract(payload_json, '$.encodingRetry.parentJobId')=? AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=? `).get(parentId, parentId, generation) as any": 1,
+    "unexplained-any:parent?.payload as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT status, payload_json FROM jobs WHERE id=?\").get(id) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare( \"SELECT status, payload_json FROM jobs WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')\" ).get(id) as any": 1,
+    "unexplained-any:nextPayload.recoveryAssessment as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT * FROM jobs WHERE kind='download' AND json_extract(payload_json, '$.legacyFailureKey')=? ORDER BY updated_at DESC LIMIT 1 `).get(String(issueKey || \"\")) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count FROM jobs WHERE kind IN (${placeholders}) `).get(...kinds) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count FROM jobs WHERE kind IN (${placeholders}) AND status IN ('pending','retry_wait') AND not_before <= ? AND priority <= ? `).get(...kinds, now, maxPriority) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT MIN(not_before) AS next_at FROM jobs WHERE status IN ('pending','retry_wait') `).get() as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count, MIN(not_before) AS next_at FROM jobs WHERE kind=? AND status IN ('pending','retry_wait','leased','running') `).get(kind) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count, MIN(not_before) AS next_at FROM jobs WHERE kind='access_probe' AND status IN ('pending','retry_wait','leased','running') AND ( EXISTS ( SELECT 1 FROM json_each(jobs.payload_json, '$.intents') WHERE json_each.value=? ) OR ( json_type(jobs.payload_json, '$.intents') IS NULL AND CASE WHEN ?='availability' THEN json_extract(jobs.payload_json, '$.purpose')='availability_recheck' WHEN ?='legacy_classification' THEN json_extract(jobs.payload_json, '$.purpose')='legacy_failure_classification' ELSE COALESCE(json_extract(jobs.payload_json, '$.purpose'), 'charging_recheck') NOT IN ('availability_recheck','legacy_failure_classification') END ) ) `).get(intent, intent, intent) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT COUNT(*) AS count FROM jobs WHERE bvid=?\").get(bvid) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as any": 2,
+    "unexplained-any:this.stateDatabase.db.prepare(` SELECT COUNT(*) AS count FROM jobs WHERE kind IN ('quality_download','quality_upload','quality_replace','quality_cleanup') AND json_extract(payload_json, '$.artifactKey')=? `).get(artifactKey) as any": 1,
+    "unexplained-any:this.stateDatabase.db.prepare(\"SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed'\").get(`${prefix}%`) as any": 1,
+    "unexplained-any:payload as any": 1
+  },
+  "src/media-metadata.ts": {
+    "parser-empty-fallback:Number.isFinite(parsed) && parsed > 0 && parsed <= 1_000 ? parsed : undefined": 1
+  },
+  "src/migration.ts": {
+    "unexplained-any:getStateSnapshot(): any;": 1,
+    "unexplained-any:state: any": 3,
+    "unexplained-any:input: any": 1,
+    "unexplained-any:Object.values<any>(state.videos || {})": 1,
+    "unexplained-any:Object.values<any>(state.relations || {})": 1,
+    "unexplained-any:any[]": 6,
+    "unexplained-any:video: any": 3,
+    "unexplained-any:Object.values<any>(state.relations)": 2,
+    "unexplained-any:Object.values<any>(videos)": 1,
+    "unexplained-any:Object.values<any>(state.videos)": 1,
+    "unexplained-any:database.db.prepare(` SELECT (SELECT COUNT(*) FROM videos) AS videos, (SELECT COUNT(*) FROM favorite_relations) AS relations, (SELECT COUNT(*) FROM videos WHERE bili_status='unavailable') AS unavailableVideos `).get() as any": 1,
+    "silent-recovery:fs.promises.readdir(path.join(extractDir, \"temp\"), { withFileTypes: true }).catch(() => [])": 1,
+    "silent-recovery:fs.promises.readdir(tempDir).catch(() => [])": 2,
+    "unexplained-any:error as any": 1
+  },
+  "src/online-cover-cache.ts": {
+    "unexplained-any:error: any": 4,
+    "silent-recovery:fs.promises.unlink(source).catch(() => undefined)": 1,
+    "silent-recovery:fs.promises.readdir(onlineCoversDir, { withFileTypes: true }).catch(() => [])": 1,
+    "silent-recovery:fs.promises.stat(fullPath).catch(() => null)": 1,
+    "silent-recovery:fs.promises.utimes(filePath, now / 1000, now / 1000).catch(() => undefined)": 1
+  },
+  "src/path-migration.ts": {
+    "unexplained-any:Promise<any>": 7,
+    "unexplained-any:value: any": 1,
+    "unexplained-any:error: any": 7,
+    "unexplained-any:stat: any": 3,
+    "unexplained-any:this.db.db.prepare(\"SELECT id FROM path_migrations ORDER BY created_at DESC LIMIT 1\").get() as any": 1,
+    "unexplained-any:any[]": 2,
+    "unexplained-any:target: any": 1,
+    "unexplained-any:this.db.db.prepare(` SELECT EXISTS(SELECT 1 FROM path_migration_scan s LEFT JOIN path_migration_items i ON i.migration_id=? AND i.relative_path=s.relative_path WHERE i.relative_path IS NULL OR i.item_type<>s.item_type OR COALESCE(i.expected_size,-1)<>COALESCE(s.expected_size,-1)) OR EXISTS(SELECT 1 FROM path_migration_items i LEFT JOIN path_migration_scan s ON s.relative_path=i.relative_path WHERE i.migration_id=? AND s.relative_path IS NULL) AS changed `).get(migrationId, migrationId) as any": 1,
+    "unexplained-any:Iterable<any>": 1
+  },
+  "src/playback.ts": {
+    "unexplained-any:any[]": 4,
+    "unexplained-any:undefined as any": 9,
+    "unexplained-any:database.db.prepare(` SELECT r.payload_json AS relation_json, v.payload_json AS video_json FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid WHERE r.user_id=? AND r.media_id=? AND r.bvid=? AND NOT EXISTS ( SELECT 1 FROM archive_deleted_sources ads WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','completed') ) `).get(userId, mediaId, bvid) as any": 1,
+    "unexplained-any:database.db.prepare(` SELECT COUNT(*) AS count FROM favorite_relations r WHERE ${playableRelationSql} `).get(userId, mediaId) as any": 1,
+    "unexplained-any:database.db.prepare(` WITH playable AS ( SELECT r.bvid, ROW_NUMBER() OVER (ORDER BY ${queueOrderSql}) - 1 AS position FROM favorite_relations r WHERE ${playableRelationSql} ) SELECT position FROM playable WHERE bvid=? `).get(userId, mediaId, focusBvid) as any": 1,
+    "unexplained-any:database.db.prepare(`${cteSql} SELECT COUNT(*) AS count FROM matched`) .get(userId, mediaId, ...matchParams) as any": 1,
+    "unexplained-any:database.db.prepare(` SELECT rf.id, rf.bvid, rf.name, rf.remote_path, rf.expected_size, r.payload_json AS relation_json FROM remote_files rf JOIN favorite_relations r ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified' AND r.backup_status IN ('verified','partial_verified') AND NOT EXISTS( SELECT 1 FROM archive_deleted_sources ads WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','completed') ) `).get(fileId, userId, mediaId) as any": 1,
+    "silent-recovery:catch { return null; }": 2,
+    "unexplained-any:response as any": 1,
+    "unexplained-any:Readable.toWeb(response as any) as any": 1,
+    "unexplained-any:init.body as any": 1,
+    "unexplained-any:upstream.body as any": 1,
+    "unexplained-any:error: any": 1
+  },
+  "src/queue.ts": {
+    "unexplained-any:[key: string]: any;": 1,
+    "unexplained-any:task: any": 1,
+    "unexplained-any:error: any": 1
+  },
+  "src/remote-file-resolver.ts": {
+    "unexplained-any:Promise<any>": 3,
+    "unexplained-any:error: any": 5,
+    "unexplained-any:entry: any": 7,
+    "unexplained-any:any[]": 2
+  },
+  "src/remote-operations.ts": {
+    "unexplained-any:Promise<any>": 6,
+    "unexplained-any:error: any": 4,
+    "unexplained-any:stat: any": 1,
+    "unexplained-any:error as any": 4
+  },
+  "src/remote-path.ts": {
+    "silent-recovery:catch { return null; }": 1
+  },
+  "src/scheduler.ts": {
+    "unexplained-any:this.stateManager.getUploadCooldown() as any": 1,
+    "unexplained-any:this.stateManager as any": 5,
+    "unexplained-any:task as any": 1,
+    "unexplained-any:payload: any": 3,
+    "unexplained-any:job: any": 7,
+    "unexplained-any:Record<string, any>": 2,
+    "unexplained-any:error: any": 5,
+    "unexplained-any:task: any": 3,
+    "unexplained-any:job.payload as any": 2,
+    "unexplained-any:task.persistentJob as any": 1,
+    "unexplained-any:this.uploadCircuit.getSnapshot() as any": 1,
+    "unexplained-any:current.payload as any": 2,
+    "unexplained-any:merged.job.payload as any": 1
+  },
+  "src/scheduler/archive-proof-recovery.ts": {
+    "critical-swallow:catch { return \"unknown\" as const; }": 1
+  },
+  "src/scheduler/download-recovery-actions.ts": {
+    "critical-swallow:catch (error) { return { ok: false as const, status: 409, message: `所选账号访问检查失败：${sanitizeUploadText(readTaskFailure(error).message || error || \"未知错误\", 180)}`, }; }": 1
+  },
+  "src/scheduler/legacy-cache-recovery.ts": {
+    "critical-swallow:catch (error) { if (errorCode(error) === \"ENOENT\") entries = []; else throw error; }": 1,
+    "critical-swallow:catch (error) { if (errorCode(error) !== \"ENOENT\") throw error; }": 1
+  },
+  "src/scheduler/legacy-download-recovery.ts": {
+    "critical-swallow:catch (error) { return { ok: false as const, status: 409, message: `所选账号访问检查失败：${sanitizeUploadText(readTaskFailure(error).message || error || \"未知错误\", 180)}`, }; }": 1,
+    "critical-swallow:catch (error) { if (error !== rejected) throw error; return { ok: false as const, status: 409, message: \"下载任务未能重新排队，请刷新待处理列表后重试\" }; }": 1
+  },
+  "src/scheduler/local-cleanup-plan.ts": {
+    "silent-recovery:catch { return null; }": 1
+  },
+  "src/scheduler/recovery-assessment.ts": {
+    "critical-swallow:catch (error) { const assessment = buildRemoteRecoveryAssessment(\"unknown\", error, \"冲突候选\"); deps.updateRecoveryAssessment(job.id, assessment); return { changed: true, assessment }; }": 1,
+    "critical-swallow:catch (error) { const assessment = buildRemoteRecoveryAssessment(\"unknown\", error, \"旧归档\"); deps.updateRecoveryAssessment(job.id, assessment); return { changed: true, assessment }; }": 1,
+    "critical-swallow:catch (error) { const assessment = buildRemoteRecoveryAssessment(local.status, error, \"远端文件\"); deps.updateRecoveryAssessment(job.id, assessment); return { changed: true, assessment }; }": 1
+  },
+  "src/scheduler/recovery-context.ts": {
+    "parser-empty-fallback:isRecord(item.target) && typeof item.target.userId === \"string\" && Number.isInteger(Number(item.target.mediaId)) && typeof item.target.folderTitle === \"string\" && typeof item.target.remotePath === \"string\" ? { userId: item.target.userId, mediaId: Number(item.target.mediaId), folderTitle: item.target.folderTitle, remotePath: item.target.remotePath, } : undefined": 1,
+    "parser-empty-fallback:isSelectableBilibiliQuality(item.quality) ? String(item.quality).trim().toUpperCase() : undefined": 1,
+    "parser-empty-fallback:Array.isArray(item.originalFiles) ? item.originalFiles.map(String).filter(Boolean) : undefined": 1,
+    "parser-empty-fallback:item.lastError ? sanitizeUploadText(item.lastError, 500) : undefined": 1,
+    "parser-empty-fallback:quality || encoding ? { quality: quality || undefined, encoding } : undefined": 1
+  },
+  "src/scheduler/recovery-issue-payload.ts": {
+    "parser-empty-fallback:raw.responseHeaders && Object.values(headers).every(value => typeof value === 'string') ? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined": 1,
+    "parser-empty-fallback:raw.encodingRetry == null ? undefined : { ...retry, state: text(retry.state) }": 1,
+    "parser-empty-fallback:raw.qualityFailure == null ? undefined : { category: text(failure.category), encodingEligible: boolean(failure.encodingEligible), qualityEligible: boolean(failure.qualityEligible), requestedQuality: text(failure.requestedQuality), requestedEncoding: encoding(failure.requestedEncoding), actualQualities: strings(failure.actualQualities), actualEncodings: strings(failure.actualEncodings), qualityMismatch: boolean(failure.qualityMismatch), encodingMismatch: boolean(failure.encodingMismatch), verifiedPages: number(failure.verifiedPages), }": 1,
+    "parser-empty-fallback:Array.isArray(override.priority) ? override.priority.map(encoding).filter((item): item is BBDownEncoding => item !== undefined) : undefined": 1
+  },
+  "src/scheduler/recovery-local-files.ts": {
+    "critical-swallow:catch { return { status: \"missing\" as const, session, files }; }": 1,
+    "critical-swallow:catch { return { status: \"missing\" as const, session: null, files: [] as ReturnType<TransferSessionStore[\"listFiles\"]> }; }": 1
+  },
+  "src/scheduler/recovery-projection.ts": {
+    "parser-empty-fallback:value.fileName ? path.basename(String(value.fileName)) : undefined": 1,
+    "parser-empty-fallback:Number.isInteger(Number(value.writeStatus)) && Number(value.writeStatus) >= 100 && Number(value.writeStatus) <= 599 ? Number(value.writeStatus) : undefined": 1,
+    "parser-empty-fallback:typeof value.remoteErrorCode === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{1,80}$/.test(value.remoteErrorCode) ? value.remoteErrorCode : undefined": 1,
+    "parser-empty-fallback:Object.keys(safeHeaders).length > 0 ? safeHeaders : undefined": 1,
+    "parser-empty-fallback:typeof value.responseSnippet === 'string' ? sanitizeUploadText(value.responseSnippet, 240) : undefined": 1,
+    "parser-empty-fallback:['target_missing_parent_visible', 'repeated_missing_parent_visible'].includes(writeEvidence) ? writeEvidence as RemoteWriteEvidence | 'repeated_missing_parent_visible' : undefined": 1,
+    "parser-empty-fallback:finiteNumber(value.uploadAttempts) !== undefined && Number(value.uploadAttempts) >= 0 ? Number(value.uploadAttempts) : undefined": 1,
+    "parser-empty-fallback:positiveNumber(value.consecutiveObservations) !== undefined ? Math.floor(Number(value.consecutiveObservations)) : undefined": 1,
+    "parser-empty-fallback:typeof value.candidateEligible === 'boolean' ? value.candidateEligible : undefined": 1,
+    "parser-empty-fallback:['transient', 'permission', 'unsupported', 'not_found', 'conflict', 'unknown'].includes(failureCategory) ? failureCategory as RemoteFailureCategory : undefined": 1,
+    "parser-empty-fallback:['inspect', 'put'].includes(operation) ? operation as RecoveryAssessment['operation'] : undefined": 1,
+    "parser-empty-fallback:['HEVC', 'AVC', 'AV1'].includes(requestedEncoding) ? requestedEncoding as BBDownEncoding : undefined": 1,
+    "parser-empty-fallback:Array.isArray(value.actualEncodings) ? value.actualEncodings.map(String) : undefined": 1,
+    "parser-empty-fallback:typeof value.encodingMismatch === 'boolean' ? value.encodingMismatch : undefined": 1,
+    "parser-empty-fallback:typeof value.requestedQuality === 'string' ? value.requestedQuality : undefined": 1,
+    "parser-empty-fallback:Array.isArray(value.actualQualities) ? value.actualQualities.map(String) : undefined": 1,
+    "parser-empty-fallback:typeof value.qualityMismatch === 'boolean' ? value.qualityMismatch : undefined": 1,
+    "parser-empty-fallback:value.uploadedAt ? String(value.uploadedAt) : undefined": 1,
+    "parser-empty-fallback:value.verifiedAt ? String(value.verifiedAt) : undefined": 1,
+    "critical-swallow:catch { return false; }": 2
+  },
+  "src/scheduler/transfer-recovery-projection.ts": {
+    "critical-swallow:catch { filenameMetadataByPath = undefined; }": 1,
+    "critical-swallow:catch { existingArchiveProof = undefined; }": 1
+  },
+  "src/scheduler/verification-payload.ts": {
+    "parser-empty-fallback:Array.isArray(raw.files) ? raw.files.filter((item): item is string => typeof item === 'string') : []": 1,
+    "parser-empty-fallback:raw.filenameMetadataByPath === undefined ? undefined : filenameMetadataByPath": 1
+  },
+  "src/scripts/login.ts": {
+    "unexplained-any:result: any": 1,
+    "unexplained-any:error: any": 1
+  },
+  "src/shared/api/archive-library.ts": {
+    "parser-empty-fallback:data.nextCursor == null ? null : text(data.nextCursor, '归档项目游标格式错误', false)!": 1,
+    "parser-empty-fallback:data.context == null ? undefined : record(data.context, '归档项目上下文格式错误')": 1,
+    "parser-empty-fallback:data.summary == null ? undefined : parseSummary(data.summary)": 1
+  },
+  "src/shared/api/media-probe.ts": {
+    "parser-empty-fallback:Array.isArray(value.combinations)?value.combinations:[]": 1
+  },
+  "src/shared/api/playback-queue.ts": {
+    "parser-empty-fallback:data.previousCursor == null ? null : text(data.previousCursor, '播放队列游标格式错误', false)!": 1,
+    "parser-empty-fallback:data.nextCursor == null ? null : text(data.nextCursor, '播放队列游标格式错误', false)!": 1,
+    "parser-empty-fallback:data.mediaMetadata == null ? undefined : record(data.mediaMetadata, '播放元数据格式错误')": 1,
+    "parser-empty-fallback:metadata ? { width: count(metadata.width, '播放宽度格式错误'), height: count(metadata.height, '播放高度格式错误'), source: text(metadata.source, '播放元数据来源格式错误'), } : undefined": 1
+  },
+  "src/shared/api/queue-snapshot.ts": {
+    "parser-empty-fallback:isRecord(value.issueSummary) ? value.issueSummary : undefined": 1
+  },
+  "src/shared/api/queue-status.ts": {
+    "parser-empty-fallback:data.localCache == null ? null : object(data.localCache)": 1,
+    "parser-empty-fallback:data.downloadRecovery == null ? null : object(data.downloadRecovery)": 1,
+    "parser-empty-fallback:data.chargingAccess == null ? null : object(data.chargingAccess)": 1,
+    "parser-empty-fallback:data.uploadHealth == null ? null : object(data.uploadHealth)": 1,
+    "parser-empty-fallback:data.downloadApiHealth == null ? null : object(data.downloadApiHealth)": 1,
+    "parser-empty-fallback:data.maintenance == null ? null : object(data.maintenance)": 1,
+    "parser-empty-fallback:maintenance ? {kind:text(maintenance.kind),status:text(maintenance.status)} : null": 1,
+    "parser-empty-fallback:cache ? {limitBytes:count(cache.limitBytes),usedBytes:count(cache.usedBytes),reserveBytes:count(cache.reserveBytes),paused:flag(cache.paused)} : null": 1,
+    "parser-empty-fallback:downloads ? {resumableSessions:count(downloads.resumableSessions),legacyDirectories:count(downloads.legacyDirectories),cleanupEligibleBytes:count(downloads.cleanupEligibleBytes),retainedBytes:count(downloads.retainedBytes)} : null": 1,
+    "parser-empty-fallback:charging ? {pending:count(charging.pending),nextCheckAt:time(charging.nextCheckAt)} : null": 1,
+    "parser-empty-fallback:upload ? {state:text(upload.state),reason:text(upload.reason),retryAt:time(upload.retryAt)} : null": 1,
+    "parser-empty-fallback:api ? {state:text(api.state),activeMode:text(api.activeMode),probeBvid:text(api.probeBvid),retryAt:time(api.retryAt)} : null": 1
+  },
+  "src/shared/api/recovery-issues.ts": {
+    "parser-empty-fallback:data.mediaProfile == null ? undefined : record(data.mediaProfile)": 1,
+    "parser-empty-fallback:profile ? { quality: flag(profile.quality), encoding: flag(profile.encoding) } : undefined": 1,
+    "parser-empty-fallback:Array.isArray(data.choices) ? data.choices : []": 1,
+    "parser-empty-fallback:Array.isArray(data.availableActions) ? data.availableActions : []": 1,
+    "parser-empty-fallback:data.recommendedAction == null ? undefined : parseRecoveryAction(data.recommendedAction)": 1
+  },
+  "src/shared/api/video-detail.ts": {
+    "parser-empty-fallback:item.sourceAvailability == null ? undefined : record(item.sourceAvailability)": 1,
+    "parser-empty-fallback:item.accessRestriction == null ? undefined : record(item.accessRestriction)": 1,
+    "parser-empty-fallback:item.playback == null ? undefined : record(item.playback)": 1,
+    "parser-empty-fallback:source ? {state:text(source.state),reason:text(source.reason)} : undefined": 1,
+    "parser-empty-fallback:access ? {nextCheckAt:text(access.nextCheckAt)} : undefined": 1,
+    "parser-empty-fallback:playback ? {available:flag(playback.available),partCount:count(playback.partCount),reason:text(playback.reason)} : undefined": 1,
+    "parser-empty-fallback:data.indexSummary == null ? null : record(data.indexSummary)": 1,
+    "parser-empty-fallback:data.summary == null ? null : parseSummary(data.summary)": 1,
+    "parser-empty-fallback:index ? {...parseSummary(index),indexed:count(index.indexed)??0,biliTotal:count(index.biliTotal)??0,scanComplete:flag(index.scanComplete)??false,unreturnedCount:count(index.unreturnedCount)??0} : null": 1
+  },
+  "src/state.ts": {
+    "unexplained-any:new WeakMap<object, any>()": 1,
+    "unexplained-any:value as any": 1,
+    "unexplained-any:database.db.prepare(` SELECT (SELECT COUNT(*) FROM videos) AS videos, (SELECT COUNT(*) FROM favorite_relations) AS relations `).get() as any": 1,
+    "unexplained-any:this.database.db.prepare(` SELECT COUNT(DISTINCT bvid) AS count FROM favorite_relations WHERE backup_status IN ('downloaded','uploading','upload_failed') `).get() as any": 1
+  },
+  "src/storage-diagnostic.ts": {
+    "unexplained-any:timeoutError: any = new Error(\"WebDAV read-only check timed out\")": 1,
+    "unexplained-any:await statWithTimeout(client, destination, timeoutMs) as any": 1
+  },
+  "src/tasks.ts": {
+    "unexplained-any:error: any": 2,
+    "unexplained-any:rollbackError as any": 2,
+    "unexplained-any:error: any = new Error( `Failed to delete ${this.deleteResult.failed} old quality backup file(s): ${failedPaths.join(\", \")}${first?.error ? `; ${first.error}` : \"\"}` )": 1,
+    "unexplained-any:error: any = new Error(\"冲突候选缺少稳定任务标识或远端路径\")": 1,
+    "unexplained-any:pendingError: any = new Error(\"冲突候选已上传，正在等待远端完整可见\")": 1
+  },
+  "src/transfer-session.ts": {
+    "unexplained-any:row: any": 2,
+    "unexplained-any:any[]": 3,
+    "unexplained-any:fallback: any": 1,
+    "unexplained-any:patch as any": 2
+  },
+  "src/upload-health.ts": {
+    "unexplained-any:headers: any": 1,
+    "unexplained-any:error: any": 9
+  },
+  "src/uploader.ts": {
+    "unexplained-any:client as any": 10,
+    "unexplained-any:mismatch: any = new Error( observed.status === \"unknown\" ? \"Remote upload visibility could not be confirmed\" : observed.directory ? \"Remote upload target is a directory\" : `Remote size mismatch: expected ${expectedSize}, received ${Number.isFinite(lastSize) ? lastSize : \"unknown\"}` )": 1,
+    "unexplained-any:verificationError: any = new Error( `Remote upload verification failed for ${remoteFile}: ${(lastError as Error)?.message || \"file not visible\"}` )": 1,
+    "unexplained-any:lastError as any": 3,
+    "unexplained-any:directoryConflict: any = new Error(\"Remote upload target is a directory\")": 2,
+    "unexplained-any:mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(observed.size) ? observed.size : \"unknown\"}`)": 1,
+    "unexplained-any:error: any": 5,
+    "unexplained-any:target: any": 1,
+    "unexplained-any:source as any": 5,
+    "unexplained-any:mismatch: any = new Error( observed.directory ? \"Remote upload target is a directory\" : `Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(remoteSize) ? remoteSize : \"unknown\"}` )": 1,
+    "unexplained-any:notVisible: any = new Error( `Remote upload verification failed after 405 response: ${(lastError as Error)?.message || \"file not visible\"}` )": 1,
+    "unexplained-any:error as any": 8,
+    "silent-recovery:handle.close().catch(() => undefined)": 1,
+    "unexplained-any:opened.stream as any": 1,
+    "silent-recovery:opened.handle.close().catch(() => undefined)": 1,
+    "unexplained-any:putAccepted: any": 1,
+    "unexplained-any:localError: any = new Error(`Local upload path escapes the download directory: ${entry.relativePath}`)": 1,
+    "unexplained-any:localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`)": 1,
+    "unexplained-any:emptyError: any = new Error(`Local upload directory contains no files: ${localDir}`)": 1,
+    "unexplained-any:unknown: any = new Error(\"远端上传目标状态无法确认\")": 1,
+    "unexplained-any:mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${result.size ?? \"unknown\"}`)": 1,
+    "unexplained-any:error: any = new Error(`Local upload file is missing or invalid: ${entry.relativePath}`)": 1,
+    "unexplained-any:error: any = new Error(\"Local upload directory contains no files\")": 1,
+    "unexplained-any:permissionError: any = new Error(\"Re-upload permission is no longer available for this file\")": 1,
+    "unexplained-any:any[]": 3,
+    "unexplained-any:clientOverride as any": 4,
+    "silent-recovery:replacementRunner(config, item.newPath, item.oldPath, item.oldSize).catch(() => undefined)": 1,
+    "silent-recovery:replacementRunner(config, item.tempPath, item.oldPath, item.oldSize).catch(() => undefined)": 1
+  },
+  "src/web/client/features/accounts/login-contract.ts": {
+    "parser-empty-fallback:typeof value.message === 'string' ? value.message : undefined": 1
+  },
+  "src/web/client/features/archive/library.ts": {
+    "empty-catch:catch (_) {}": 2
+  },
+  "src/web/client/features/path-migration/contract.ts": {
+    "parser-empty-fallback:row.expectedSize == null ? undefined : number(row.expectedSize)": 1
+  },
+  "src/web/client/features/playback/controller.ts": {
+    "empty-catch:catch (_) {}": 7,
+    "silent-recovery:loadPlaybackQueuePage(error.page, { direction:'prepend' }).catch(() => undefined)": 1,
+    "silent-recovery:loadPlaybackQueuePage(error.page, { direction:'append' }).catch(() => undefined)": 1,
+    "silent-recovery:loadPlaybackQueuePage(bounds.first - 1, { direction:'prepend' }).catch(() => undefined)": 1,
+    "silent-recovery:loadPlaybackQueuePage(bounds.last + 1, { direction:'append' }).catch(() => undefined)": 1,
+    "silent-recovery:pending.catch(() => undefined)": 2
+  },
+  "src/web/client/features/settings/cleanup.ts": {
+    "empty-catch:catch { }": 1
+  },
+  "src/web/client/features/settings/contract.ts": {
+    "parser-empty-fallback:value && isRecord(value) ? value[key] : undefined": 3
+  },
+  "src/web/client/features/settings/migration.ts": {
+    "empty-catch:catch { }": 2
+  },
+  "src/web/client/features/task-center/queue-recovery.ts": {
+    "critical-swallow:catch (error) { if (generation === token && !controller.signal.aborted) notify(error instanceof Error ? error.message : '恢复上传失败', 'error'); }": 1
+  },
+  "src/web/client/features/task-center/recovery-center.ts": {
+    "critical-swallow:catch (error) { if (actionToken !== lifecycleGeneration || controller.signal.aborted) return; buttons.forEach((button) => { button.disabled = false; }); if (!(error instanceof Error && error.name === 'AbortError')) showToast(error instanceof Error ? error.message : '处理失败', 'error'); }": 1,
+    "critical-swallow:catch (error) { if (token !== recoveryIssueState.token) return; if (!(error instanceof Error && error.name === 'AbortError') && elements.recoveryIssuesModal?.classList.contains('active')) { recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请点击“重试”再次加载。'; elements.recoveryIssuesLive.textContent = '待处理问题加载失败，请稍后重试。'; renderRecoveryIssueCenter(); } else if (!(error instanceof Error && error.name === 'AbortError')) { recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请打开面板后重试。'; } }": 1
+  },
+  "src/zip.ts": {
+    "empty-catch:catch {}": 1
+  },
+  "tests/download-recovery.test.ts": {
+    "scheduler-private:scheduler.downloadQueue": 2,
+    "scheduler-private:scheduler.jobStore": 7
+  },
+  "tests/encoding-retry.test.ts": {
+    "scheduler-private:scheduler.downloadQueue": 3,
+    "scheduler-private:scheduler.uploadQueue": 3,
+    "scheduler-private:scheduler.jobStore": 7,
+    "scheduler-private:scheduler.buildDownloadTask": 1,
+    "scheduler-private:scheduler.buildPersistentUploadJob": 1,
+    "scheduler-private:scheduler.buildUploadTask": 2
+  },
+  "tests/isolated-upload-failure-harness.ts": {
+    "scheduler-private:scheduler.uploadQueue": 4,
+    "scheduler-private:scheduler.queueUploadWork": 1,
+    "scheduler-private:scheduler.jobStore": 1,
+    "scheduler-private:scheduler.uploadCircuit": 1,
+    "scheduler-private:scheduler.canStartDownloadTask": 1
+  },
+  "tests/local-cleanup.test.ts": {
+    "scheduler-private:scheduler.jobStore": 2,
+    "scheduler-private:scheduler.now": 1
+  },
+  "tests/manual-archive.test.ts": {
+    "scheduler-private:scheduler.downloadQueue": 2,
+    "scheduler-private:scheduler.jobStore": 4,
+    "scheduler-private:scheduler.buildDownloadTask": 1
+  },
+  "tests/quality-recovery.test.ts": {
+    "scheduler-private:scheduler.downloadQueue": 2,
+    "scheduler-private:scheduler.jobStore": 7,
+    "scheduler-private:scheduler.buildQualityUpgradeTask": 1,
+    "scheduler-private:scheduler.dispatchPersistentJobs": 1
+  },
+  "tests/quality-sharing.test.ts": {
+    "scheduler-private:scheduler.buildQualityUpgradeTask": 3,
+    "scheduler-private:scheduler.downloadQueue": 7,
+    "scheduler-private:scheduler.uploadQueue": 1,
+    "scheduler-private:scheduler.jobStore": 18,
+    "scheduler-private:scheduler.migrateLegacyQualityDownloadJobs": 6,
+    "scheduler-private:scheduler.qualityArtifactCleanupLocks": 2,
+    "scheduler-private:scheduler.canStartDownloadTask": 1
+  },
+  "tests/queue-board.test.ts": {
+    "scheduler-private:scheduler.jobStore": 2
+  },
+  "tests/queue-config.test.ts": {
+    "scheduler-private:scheduler.jobStore": 24,
+    "scheduler-private:scheduler.downloadQueue": 20,
+    "scheduler-private:scheduler.legacyCacheRecovery": 9,
+    "scheduler-private:scheduler.startLegacyTempCacheRecovery": 6,
+    "scheduler-private:scheduler.canStartDownloadTask": 1,
+    "scheduler-private:scheduler.acceptingJobs": 5,
+    "scheduler-private:scheduler.dispatchPersistentJobs": 10,
+    "scheduler-private:scheduler.leaseHeartbeatTimer": 5,
+    "scheduler-private:scheduler.jobDispatchTimer": 4,
+    "scheduler-private:scheduler.persistentJobWakeMinMs": 2,
+    "scheduler-private:scheduler.cycleContext": 2,
+    "scheduler-private:scheduler.requeueRetryPendingBeforeScan": 1,
+    "scheduler-private:scheduler.uploadQueue": 16
+  },
+  "tests/recovery-harness.ts": {
+    "scheduler-private:scheduler.downloadQueue": 2,
+    "scheduler-private:scheduler.uploadQueue": 1,
+    "scheduler-private:scheduler.jobStore": 1,
+    "scheduler-private:scheduler.dispatchPersistentJobs": 1
+  },
+  "tests/recovery-priority-harness.ts": {
+    "scheduler-private:scheduler.downloadQueue": 1,
+    "scheduler-private:scheduler.uploadQueue": 2,
+    "scheduler-private:scheduler.canStartDownloadTask": 1,
+    "scheduler-private:scheduler.jobStore": 1,
+    "scheduler-private:scheduler.dispatchPersistentJobs": 1
+  },
+  "tests/reliability-security.test.ts": {
+    "scheduler-private:(scheduler as any).jobStore": 10
+  },
+  "tests/scheduler-recovery.test.ts": {
+    "scheduler-private:scheduler.uploadQueue": 1,
+    "scheduler-private:scheduler.jobStore": 3
+  },
+  "tests/source-deletion-scheduler.test.ts": {
+    "scheduler-private:fixture.scheduler.isArchiveDeletionTargetBlocked": 3,
+    "scheduler-private:scheduler.jobStore": 4,
+    "scheduler-private:fixture.scheduler.buildQualityUpgradeTask": 2,
+    "scheduler-private:fixture.scheduler.queueUploadWork": 1,
+    "scheduler-private:fixture.scheduler.jobStore": 1
+  },
+  "tests/sqlite-finish.test.ts": {
+    "scheduler-private:scheduler.uploadQueue": 3,
+    "scheduler-private:scheduler.startupRecovery": 2,
+    "scheduler-private:scheduler.jobStore": 2
+  },
+  "tests/upload-verification-scheduler.test.ts": {
+    "scheduler-private:scheduler.jobStore": 106,
+    "scheduler-private:scheduler.downloadQueue": 1,
+    "scheduler-private:scheduler.uploadQueue": 23,
+    "scheduler-private:scheduler.verificationQueue": 3,
+    "scheduler-private:scheduler.transferSessions": 35,
+    "scheduler-private:scheduler.reconcileTransferSessionRecoveryJobs": 7,
+    "scheduler-private:scheduler.assessManualRecoveryJob": 1,
+    "scheduler-private:(scheduler.jobStore.findById(job.id)?.payload as any).recoveryAssessment": 2,
+    "scheduler-private:scheduler.remoteFileInspector": 3,
+    "scheduler-private:(permissionFailure.scheduler.jobStore.findById(permissionFailure.job.id)?.payload as any).recoveryAssessment": 1,
+    "scheduler-private:permissionFailure.scheduler.jobStore": 1,
+    "scheduler-private:scheduler.leaseOwner": 12,
+    "scheduler-private:scheduler.handleUploadVerificationCompleted": 4,
+    "scheduler-private:scheduler.reconcileObsoleteVerifiedArchiveRecoveries": 2,
+    "scheduler-private:scheduler.enqueueUploadVerificationJobs": 1,
+    "scheduler-private:scheduler.markUploadTaskFailed": 1,
+    "scheduler-private:changed.scheduler.remoteFileInspector": 1,
+    "scheduler-private:changed.scheduler.jobStore": 1
+  },
+  "tests/video-availability.test.ts": {
+    "scheduler-private:(scheduler as any).jobStore": 15,
+    "scheduler-private:(scheduler as any).acceptingJobs": 15,
+    "scheduler-private:(scheduler as any).enqueueAvailabilityProbe": 8,
+    "scheduler-private:(scheduler as any).leaseOwner": 16,
+    "scheduler-private:(scheduler as any).accessProbes": 9,
+    "scheduler-private:(scheduler as any).handleSourceUnavailableTask": 1,
+    "scheduler-private:(scheduler as any).enqueueChargingAccessProbe": 1,
+    "scheduler-private:(scheduler as any).ensurePersistedAvailabilityProbes": 5
+  }
+}

@@ -38,8 +38,12 @@ export function sanitizeDiagnosticText(value: unknown, maxLength = 2_000) {
   return redactDiagnosticPaths(text).slice(0, Math.max(100, maxLength));
 }
 
-export function safeErrorSummary(error: any, fallback = "操作失败") {
-  const status = Number(error?.statusCode || error?.response?.status || error?.status || 0);
-  const message = sanitizeDiagnosticText(error?.message || fallback, 500);
-  return status ? `status=${status}: ${message}` : message;
+export function safeErrorSummary(error: unknown, fallback = "操作失败") {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : undefined;
+  const response = record?.response && typeof record.response === "object" ? record.response as Record<string, unknown> : undefined;
+  const rawStatus = record?.statusCode ?? response?.status ?? record?.status;
+  const status = typeof rawStatus === 'number' || typeof rawStatus === 'string' ? Number(rawStatus) : 0;
+  const rawMessage = typeof error === 'string' ? error : typeof record?.message === 'string' ? record.message : fallback;
+  const message = sanitizeDiagnosticText(rawMessage || fallback, 500);
+  return Number.isFinite(status) && status > 0 ? `status=${status}: ${message}` : message;
 }

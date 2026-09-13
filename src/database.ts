@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
+import { safeErrorSummary } from './diagnostics.js';
 import type {
   StateFile,
   VideoArchiveEntry,
@@ -440,10 +441,14 @@ CREATE INDEX IF NOT EXISTS idx_archive_library_projection_status_title_desc
 `;
 
 function parseJson<T>(value: string, fallback: T): T {
+  // SQL NULL is absence; corrupt persisted JSON is never an empty state.
+  if (value == null) return fallback;
   try {
-    return JSON.parse(value) as T;
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected persisted object');
+    return parsed as T;
   } catch {
-    return fallback;
+    throw new Error("Invalid persisted JSON in state database");
   }
 }
 
@@ -933,11 +938,12 @@ export class StateDatabase {
       try {
         if (this.db.open) {
           if (this.filePath !== ":memory:") {
-            try { this.db.pragma("wal_checkpoint(TRUNCATE)"); } catch {}
+            try { this.db.pragma("wal_checkpoint(TRUNCATE)"); }
+            catch (cleanupError) { console.warn(`[Database] failed migration checkpoint: ${safeErrorSummary(cleanupError)}`); }
           }
           this.db.close();
         }
-      } catch {}
+      } catch (cleanupError) { console.warn(`[Database] failed migration close: ${safeErrorSummary(cleanupError)}`); }
       if (schemaMigrationFrom !== null) {
         console.error(
           `[Database] SQLite schema migration ${schemaMigrationFrom} -> ${DATABASE_SCHEMA_VERSION} failed `

@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { classifyVideoAccess } from "../src/bili.js";
+import { classifyVideoAccess, type VideoPageSnapshotResult } from "../src/bili.js";
 import { downloadWithBBDown } from "../src/downloader.js";
 import {
   computeAvailabilityUnavailableDelayMs,
   computeChargingRecheckDelayMs,
   computeChargingTransientDelayMs,
-  SyncScheduler,
 } from "../src/scheduler.js";
-import { StateManager } from "../src/state.js";
+import { StateManager, type BackupStatus, type StateFile } from "../src/state.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import { createAccessProbes } from "../src/scheduler/access-probes.js";
+import { createBackupEnqueue } from "../src/scheduler/backup-enqueue.js";
+import type { BiliUser } from "../src/users.js";
 import { writeJsonFile } from "../src/storage.js";
 
 const at = "2026-07-12T00:00:00.000Z";
@@ -29,7 +31,7 @@ function chargingSnapshot(play: boolean, preview = true) {
   };
 }
 
-function createChargingState(status = "failed") {
+function createChargingState(status: BackupStatus = "failed") {
   return {
     schemaVersion: 11,
     processedByUser: {},
@@ -69,7 +71,7 @@ function createChargingState(status = "failed") {
     },
     folderScans: {},
     userCooldowns: {},
-  } as any;
+  } satisfies StateFile;
 }
 
 test("charging access fields distinguish normal, restricted, allowed, and unknown", () => {
@@ -94,7 +96,7 @@ test("charging restriction is raised before a download directory or BBDown proce
         pageSnapshot: chargingSnapshot(false),
         command: "this-command-must-not-run",
       }),
-      (error: any) => error?.chargingRestricted === true && error?.accountUid === 1
+      (error: unknown) => error instanceof Error && "chargingRestricted" in error && error.chargingRestricted === true && "accountUid" in error && error.accountUid === 1
     );
     assert.equal(fs.existsSync(downloadDir), false);
   } finally {
@@ -126,7 +128,8 @@ test("charging status clears old failures but preserves verified relations", asy
     assert.equal(manager.listFolderItemsForUser("u1", 1, 0, 20, "pending").items[0].backupStatus, "discovered");
 
     const verified = createChargingState("verified");
-    verified.failedByUser = {};
+    const verifiedState: StateFile = verified;
+    verifiedState.failedByUser = {};
     manager.replaceStateSnapshot(verified);
     manager.markChargingRestricted("BVCHARGE", {
       checkedAt: at,
@@ -157,33 +160,23 @@ test("access probe checks enabled accounts in order and queues download with the
     { id: "u2", uid: 2, name: "Two", cookie: { SESSDATA: "two", bili_jct: "two", DedeUserID: "2" }, favorites: [], enabled: true, lastLoginAt: at },
   ];
   const checked: string[] = [];
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => [...users], getById: (id: string) => users.find((user) => user.id === id) || null } as any,
-    manager,
-    {
-      now: () => Date.parse(at),
-      random: () => 0.5,
-      videoAccessProbe: async (cookie) => {
-        checked.push(String(cookie.DedeUserID));
-        return chargingSnapshot(cookie.DedeUserID === "2");
-      },
-    }
-  );
+  const store = new PersistentJobStore(manager.getDatabase());
+  const probes = accessFixture(manager, store, users, async cookie => {
+    checked.push(String(cookie.DedeUserID));
+    return chargingSnapshot(cookie.DedeUserID === "2");
+  }, Date.parse(at));
   try {
-    const store = (scheduler as any).jobStore;
     store.enqueue({ kind: "access_probe", dedupeKey: "access_probe:BVCHARGE", bvid: "BVCHARGE", notBefore: 0, payload: { preferredUserId: "u1" } });
-    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, Date.parse(at));
-    store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    (scheduler as any).acceptingJobs = false;
-    await (scheduler as any).runChargingAccessProbe(job);
+    const [job] = store.claimDue(["access_probe"], 1, "charging-test", 300_000, Date.parse(at));
+    store.markRunning(job.id, "charging-test", 300_000);
+    await probes.charging(job);
     assert.deepEqual(checked, ["1", "2"]);
     assert.equal(manager.getChargingRestriction("BVCHARGE"), undefined);
     const downloadJob = store.findByDedupeKey("download:BVCHARGE");
     assert.equal(downloadJob?.payload.downloadUserId, "u2");
     assert.equal(downloadJob?.payload.primaryUserId, "u1");
   } finally {
-    await scheduler.shutdown(100);
+    manager.close();
     await removeTestDir(runtime);
   }
 });
@@ -218,7 +211,7 @@ test("a complete local session uploads immediately instead of waiting for chargi
     history: [],
   });
   const state = createChargingState("charging_restricted");
-  state.videos.BVCHARGE.localDir = localDir;
+  Object.assign(state.videos.BVCHARGE, {localDir});
   const manager = new StateManager({
     statePath: path.join(runtime, "data", "state.json"),
     dbPath: path.join(runtime, "data", "bfb.sqlite"),
@@ -226,20 +219,16 @@ test("a complete local session uploads immediately instead of waiting for chargi
   manager.replaceStateSnapshot(state);
   manager.markChargingRestricted("BVCHARGE", { checkedAt: at, nextCheckAt: at, checkedAccountUids: ["1"] });
   const user = { id: "u1", uid: 1, name: "One", cookie: { SESSDATA: "one", bili_jct: "one", DedeUserID: "1" }, favorites: [{ mediaId: 1, title: "Favorites" }], enabled: true, lastLoginAt: at };
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
-    manager
-  );
+  const store = new PersistentJobStore(manager.getDatabase());
+  const enqueue = backupFixture(manager, store);
   try {
-    (scheduler as any).acceptingJobs = false;
-    const queued = (scheduler as any).enqueueIfNeeded(user, 1, "Favorites", "BVCHARGE");
+    const queued = enqueue.enqueue(user, 1, "Favorites", "BVCHARGE");
     assert.equal(queued, true);
     assert.equal(manager.getChargingRestriction("BVCHARGE"), undefined);
-    assert.equal((scheduler as any).jobStore.list(["upload"], 10).length, 1);
-    assert.equal((scheduler as any).jobStore.findByDedupeKey("access_probe:BVCHARGE"), null);
+    assert.equal(store.list(["upload"], 10).length, 1);
+    assert.equal(store.findByDedupeKey("access_probe:BVCHARGE"), null);
   } finally {
-    await scheduler.shutdown(100);
+    manager.close();
     await removeTestDir(runtime);
   }
 });
@@ -275,7 +264,7 @@ test("access probe maps restricted, transient, unavailable, and no-account resul
       expectedDelay: computeAvailabilityUnavailableDelayMs(0, "BVCHARGE"),
       expectedStatus: "lost",
     },
-  ] as any[];
+  ] satisfies Array<{name: string; users: BiliUser[]; snapshot: VideoPageSnapshotResult; expectedDelay: number; expectedStatus: string}>;
 
   for (const scenario of scenarios) {
     await t.test(scenario.name, async () => {
@@ -286,24 +275,18 @@ test("access probe maps restricted, transient, unavailable, and no-account resul
       });
       manager.replaceStateSnapshot(createChargingState("charging_restricted"));
       manager.markChargingRestricted("BVCHARGE", { checkedAt: at, nextCheckAt: at, checkedAccountUids: [] });
-      const scheduler = new SyncScheduler(
-        { get: () => testConfig() } as any,
-        { list: () => [...scenario.users], getById: (id: string) => scenario.users.find((user: any) => user.id === id) || null } as any,
-        manager,
-        { now: () => nowMs, random: () => 0.5, videoAccessProbe: async () => scenario.snapshot }
-      );
+      const store = new PersistentJobStore(manager.getDatabase());
+      const probes = accessFixture(manager, store, scenario.users, async () => scenario.snapshot, nowMs);
       try {
-        const store = (scheduler as any).jobStore as PersistentJobStore;
         store.enqueue({ kind: "access_probe", dedupeKey: "access_probe:BVCHARGE", bvid: "BVCHARGE", notBefore: 0, payload: { preferredUserId: "u1" } });
-        const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
-        store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-        (scheduler as any).acceptingJobs = false;
-        await (scheduler as any).runChargingAccessProbe(job);
+        const [job] = store.claimDue(["access_probe"], 1, "charging-test", 300_000, nowMs);
+        store.markRunning(job.id, "charging-test", 300_000);
+        await probes.charging(job);
         const stored = store.findByDedupeKey("access_probe:BVCHARGE");
         if (scenario.expectedDelay === null) assert.equal(stored, null);
         else assert.equal(stored?.notBefore, nowMs + scenario.expectedDelay);
         assert.equal(manager.getRelationStatus("u1", 1, "BVCHARGE")?.backupStatus, scenario.expectedStatus);
-        await scheduler.shutdown(100);
+        manager.close();
         manager = new StateManager({
           statePath: path.join(runtime, "data", "state.json"),
           dbPath: path.join(runtime, "data", "bfb.sqlite"),
@@ -316,4 +299,43 @@ test("access probe maps restricted, transient, unavailable, and no-account resul
       }
     });
   }
+});
+
+function backupFixture(state: StateManager, jobs: PersistentJobStore) {
+  return createBackupEnqueue({state, jobs, config: {get: () => testConfig()},
+    eligible: user => user.enabled, blocked: () => false, remotePath: () => '/archive', proof: () => undefined,
+    uploadJob: item => ({kind: 'upload', dedupeKey: `upload:${item.bvid}`, bvid: item.bvid}),
+    historySegment: value => value, probe: () => assert.fail('unexpected access probe'),
+    cycleStartedAt: () => undefined, generation: () => 0, now: () => Date.parse(at), dispatch: () => {},
+  });
+}
+function accessFixture(state: StateManager, jobs: PersistentJobStore, users: BiliUser[], inspect: (cookie: BiliUser['cookie']) => Promise<VideoPageSnapshotResult>, now: number) {
+  const backup = backupFixture(state, jobs);
+  return createAccessProbes({state, jobs, users: {list: () => users}, owner: 'charging-test',
+    now: () => now, random: () => 0.5, generation: () => 0, canContinue: () => true,
+    eligible: user => user.enabled, inspect, enqueue: backup.enqueue, prepareCharging: backup.prepareAfterAccessCheck,
+    resolve: relation => {
+      const user = users.find(user => user.id === relation.userId);
+      return user ? {user, mediaId: relation.mediaId, folderTitle: relation.folderTitle || 'Favorites'} : null;
+    },
+  });
+}
+
+test('access recovery rolls back permission, probe completion and download state when task insertion fails', async () => {
+  const runtime = await createTestDir('charging-atomic');
+  const state = new StateManager({statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite')});
+  try {
+    state.replaceStateSnapshot(createChargingState('charging_restricted'));
+    state.markChargingRestricted('BVCHARGE', {checkedAt: at, nextCheckAt: at, checkedAccountUids: []});
+    const jobs = new PersistentJobStore(state.getDatabase());
+    const users: BiliUser[] = [{id: 'u1', uid: 1, name: 'One', enabled: true, favorites: [{mediaId: 1, title: 'Favorites'}], lastLoginAt: at, cookie: {SESSDATA: 'test', bili_jct: 'test', DedeUserID: '1'}}];
+    jobs.enqueue({kind: 'access_probe', dedupeKey: 'access_probe:BVCHARGE', bvid: 'BVCHARGE', notBefore: 0});
+    const [job] = jobs.claimDue(['access_probe'], 1, 'charging-test', 300_000, Date.parse(at));
+    const before = state.getChargingRestriction('BVCHARGE');
+    state.getDatabase().db.exec("CREATE TRIGGER fail_download BEFORE INSERT ON jobs WHEN NEW.kind='download' BEGIN SELECT RAISE(ABORT, 'injected task insert failure'); END");
+    await assert.rejects(accessFixture(state, jobs, users, async () => chargingSnapshot(true), Date.parse(at)).charging(job), /injected task insert/);
+    assert.deepEqual(state.getChargingRestriction('BVCHARGE'), before);
+    assert.equal(jobs.findById(job.id)?.status, 'leased');
+    assert.equal(jobs.findByDedupeKey('download:BVCHARGE'), null);
+  } finally { state.close(); await removeTestDir(runtime); }
 });

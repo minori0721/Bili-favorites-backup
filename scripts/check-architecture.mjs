@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { inspectFailureBoundaries } from './check-failure-boundaries.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const sourceRoot = path.join(root,'src');
@@ -95,5 +96,20 @@ function check(file) {
   complete.add(file);
 }
 for (const file of paths) check(file);
+const schedulerTree = ts.createSourceFile('scheduler.ts', fs.readFileSync(path.join(sourceRoot, 'scheduler.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+const schedulerClass = schedulerTree.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'SyncScheduler');
+const privateMembers = schedulerClass.members.filter(node => node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.PrivateKeyword)).map(node => node.name?.getText(schedulerTree));
+const baseline = JSON.parse(fs.readFileSync(path.join(root, 'docs/development/failure-boundary-baseline.json'), 'utf8'));
+for (const file of [...paths, ...files(path.join(root, 'tests'))]) {
+  const fileName = normalize(path.relative(root, file));
+  const found = inspectFailureBoundaries(fs.readFileSync(file, 'utf8'), {test: fileName.startsWith('tests/'), critical: /(?:database|state|recovery)/.test(fileName), privateMembers});
+  const used = new Map();
+  for (const finding of found) {
+    const key = `${finding.rule}:${finding.signature}`;
+    const count = (used.get(key) || 0) + 1;
+    used.set(key, count);
+    if (count > (baseline[fileName]?.[key] || 0)) errors.push(`${fileName}:${finding.line}: ${finding.rule} (new failure-boundary violation)`);
+  }
+}
 if (errors.length) { console.error([...new Set(errors)].join('\n')); process.exitCode = 1; }
 else console.log(`Architecture checks passed (${paths.length} source files; browser source fully checked).`);

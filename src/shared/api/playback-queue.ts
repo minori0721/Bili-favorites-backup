@@ -1,27 +1,27 @@
-import { isRecord } from './value.js';
+import { isRecord, ResponseFormatError, requireUnique } from './value.js';
 
 function record(value: unknown, message: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error(message);
+  if (!isRecord(value)) throw new ResponseFormatError(message);
   return value;
 }
 function text(value: unknown, message: string, optional = true): string | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'string') throw new Error(message);
+  if (typeof value !== 'string') throw new ResponseFormatError(message);
   return value;
 }
 function count(value: unknown, message: string, optional = true): number | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(message);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new ResponseFormatError(message);
   return value;
 }
 function integer(value: unknown, message: string, optional = true, minimum = 0): number | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) throw new Error(message);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) throw new ResponseFormatError(message);
   return value;
 }
 function flag(value: unknown, message: string, optional = true): boolean | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'boolean') throw new Error(message);
+  if (typeof value !== 'boolean') throw new ResponseFormatError(message);
   return value;
 }
 function optionalString(value: unknown, message: string) {
@@ -53,7 +53,7 @@ function parsePlaybackPart(value: unknown) {
 
 function parsePlaybackItem(value: unknown) {
   const data = record(value, '播放队列项目格式错误');
-  if (!Array.isArray(data.parts) || !data.parts.every(isRecord)) throw new Error('播放分P列表格式错误');
+  if (!Array.isArray(data.parts) || !data.parts.every(isRecord)) throw new ResponseFormatError('播放分P列表格式错误');
   const source = record(data.source, '播放来源格式错误');
   return {
     bvid: text(data.bvid, '播放项目缺少标识', false)!,
@@ -70,18 +70,18 @@ function parsePlaybackItem(value: unknown) {
       mediaId: integer(source.mediaId, '播放来源 mediaId 格式错误', false, -1)!,
       folderTitle: optionalString(source.folderTitle, '播放来源目录格式错误'),
     },
-    parts: data.parts.map(parsePlaybackPart),
+    parts: requireUnique(data.parts.map(parsePlaybackPart), part => part.fileId, '播放分P包含重复文件'),
   };
 }
 
 function parsePlaybackPageBase(value: unknown, message: string) {
   const data = record(value, message);
-  if (!Array.isArray(data.items) || !data.items.every(isRecord)) throw new Error(message);
-  return { data, items: data.items.map(parsePlaybackItem) };
+  if (!Array.isArray(data.items) || !data.items.every(isRecord)) throw new ResponseFormatError(message);
+  return { data, items: requireUnique(data.items.map(parsePlaybackItem), item => item.bvid, '播放分页包含重复视频') };
 }
 
 function playbackMode(value: unknown): 'favorite' | 'single' | 'library' {
-  if (value !== 'favorite' && value !== 'single' && value !== 'library') throw new Error('播放队列模式格式错误');
+  if (value !== 'favorite' && value !== 'single' && value !== 'library') throw new ResponseFormatError('播放队列模式格式错误');
   return value;
 }
 
@@ -117,7 +117,7 @@ export function parsePlaybackSearchPage(value: unknown) {
 export function parsePlaybackDelivery(value: unknown) {
   const data = record(value, '播放传输状态格式错误');
   const status = data.status;
-  if (status !== 'pending' && status !== 'direct' && status !== 'proxy' && status !== 'failed' && status !== 'unknown') throw new Error('播放传输状态格式错误');
+  if (status !== 'pending' && status !== 'direct' && status !== 'proxy' && status !== 'failed' && status !== 'unknown') throw new ResponseFormatError('播放传输状态格式错误');
   return {status};
 }
 

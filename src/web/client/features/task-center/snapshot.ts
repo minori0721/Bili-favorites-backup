@@ -1,5 +1,5 @@
 import type { ApiClient } from '../../shared/api.js';
-import { parseQueueSnapshot, type QueueSnapshot } from '../../../../shared/api/queue-snapshot.js';
+import { parseQueueSnapshot, parseQueueIssueUpdate, type QueueSnapshot } from '../../../../shared/api/queue-snapshot.js';
 
 interface Consumer {
   resolve(value:QueueSnapshot):void;
@@ -62,10 +62,11 @@ export function createQueueSnapshotResource(dependencies:{api:ApiClient; receive
     },
     cancel,
     applyIssueUpdate(value:unknown) {
-      const update = parseQueueSnapshot(value);
+      const update = parseQueueIssueUpdate(value);
+      if (!snapshot) throw new Error('任务中心尚未加载，请刷新后查看处理结果');
       // A GET started before this mutation completed may still describe the old issue list.
       cancel();
-      snapshot = {...(snapshot || parseQueueSnapshot({})), issues:update.issues, issueSummary:update.issueSummary};
+      snapshot = {...snapshot, issues:update.issues, issueSummary:update.issueSummary};
       dependencies.receive(snapshot);
     },
     reset() { cancel(); snapshot = null; },

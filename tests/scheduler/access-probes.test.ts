@@ -18,7 +18,7 @@ for (const interruption of ['generation', 'maintenance', 'lease', 'attempt'] as 
     let resolve!: (snapshot: VideoPageSnapshotResult) => void;
     const probes = createAccessProbes({ state, jobs, users: { list: () => [user] }, owner: 'fixture', now: Date.now, random: () => 0.5,
       generation: () => generation, canContinue: () => active, eligible: () => true,
-      inspect: () => new Promise(done => { resolve = done; }), resolve: () => null, enqueue: () => { queued++; } });
+      inspect: () => new Promise(done => { resolve = done; }), resolve: () => null, enqueue: () => { queued++; }, prepareCharging: () => assert.fail('late response must not prepare work') });
     try {
       state.recordFavoriteItem('u', 1, 'Favorites', { bvid: 'BVPROBE', title: 'Fixture', upperName: 'UP', unavailable: true });
       state.markAvailabilityPending('BVPROBE', 'favorite_flag', new Date().toISOString());

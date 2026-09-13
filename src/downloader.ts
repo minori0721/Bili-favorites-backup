@@ -106,6 +106,7 @@ export async function shutdownActiveDownloads(timeoutMs = 20_000) {
       console.warn(`[BBDown] Process ${child.pid || "unknown"} remained active after forced shutdown`);
     }
   }
+  if (activeDownloadChildren.size > 0) throw new Error('Download processes did not stop before the shutdown deadline');
 }
 
 export async function cancelActiveDownloadsForAccount(accountUid: string, timeoutMs = 20_000) {
@@ -288,32 +289,38 @@ function validProbePage(value: unknown, expectedBvid?: string): value is BBDownP
     && page.tracks.every(validProbeTrack);
 }
 
-export function parseBBDownProbeOutput(output: string, expectedBvid?: string): BBDownProbePage[] {
+export type BBDownProbeParseResult =
+  | { kind: "empty" }
+  | { kind: "invalid"; reason: "malformed_json" | "invalid_page" | "duplicate_page" | "duplicate_cid"; line: number }
+  | { kind: "partial"; pages: BBDownProbePage[]; reason: "malformed_json" | "invalid_page" | "duplicate_page" | "duplicate_cid"; line: number }
+  | { kind: "ok"; pages: BBDownProbePage[] };
+
+export function parseBBDownProbeOutput(output: string, expectedBvid?: string): BBDownProbeParseResult {
   const records = output.split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.startsWith("BFB_PROBE_JSON:"));
-  if (records.length === 0) return [];
+  if (records.length === 0) return { kind: "empty" };
 
   const pages: BBDownProbePage[] = [];
   const pageIndexes = new Set<number>();
   const cids = new Set<string>();
-  for (const line of records) {
-    let page: BBDownProbePage;
+  const invalid = (reason: "malformed_json" | "invalid_page" | "duplicate_page" | "duplicate_cid", line: number): BBDownProbeParseResult =>
+    pages.length ? { kind: "partial", pages, reason, line } : { kind: "invalid", reason, line };
+  for (const [index, line] of records.entries()) {
+    let page: unknown;
     try {
-      page = JSON.parse(line.slice("BFB_PROBE_JSON:".length)) as BBDownProbePage;
+      page = JSON.parse(line.slice("BFB_PROBE_JSON:".length));
     } catch {
-      return [];
+      return invalid("malformed_json", index + 1);
     }
-    if (!validProbePage(page, expectedBvid)
-      || pageIndexes.has(page.pageIndex)
-      || cids.has(page.cid)) {
-      return [];
-    }
+    if (!validProbePage(page, expectedBvid)) return invalid("invalid_page", index + 1);
+    if (pageIndexes.has(page.pageIndex)) return invalid("duplicate_page", index + 1);
+    if (cids.has(page.cid)) return invalid("duplicate_cid", index + 1);
     pageIndexes.add(page.pageIndex);
     cids.add(page.cid);
     pages.push(page);
   }
-  return pages.sort((left, right) => left.pageIndex - right.pageIndex);
+  return { kind: "ok", pages: pages.sort((left, right) => left.pageIndex - right.pageIndex) };
 }
 
 export async function probeMediaWithBBDown(
@@ -398,20 +405,21 @@ export async function probeMediaWithBBDown(
       });
     });
   } finally {
-    await credential.cleanup().catch(() => undefined);
-    await fs.promises.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+    await credential.cleanup().catch(error => console.warn(`[Probe] credential cleanup failed: ${safeErrorSummary(error)}`));
+    await fs.promises.rm(probeDir, { recursive: true, force: true }).catch(error => console.warn(`[Probe] temporary directory cleanup failed: ${safeErrorSummary(error)}`));
   }
-  const pages = parseBBDownProbeOutput(stdoutOutput, bvid);
+  const parsed = parseBBDownProbeOutput(stdoutOutput, bvid);
+  if (parsed.kind !== "ok") {
+    throw Object.assign(new Error(parsed.kind === "empty"
+      ? "当前 BBDown 不支持结构化媒体探测，请先更新 BBDown"
+      : `BBDown返回的媒体探测数据无效（${parsed.reason}，第${parsed.line}条）`), {
+      code: parsed.kind === "empty" ? "BBDOWN_PROBE_UNSUPPORTED" : "BBDOWN_PROBE_INVALID",
+      parseResult: parsed,
+    });
+  }
+  const pages = parsed.pages;
   if (options.pagesOnly) validateInteractiveInventory(stdoutOutput, pages);
   validateInteractiveProbeCoverage(stdoutOutput, pages);
-  if (pages.length === 0) {
-    const hasStructuredOutput = stdoutOutput.split(/\r?\n/).some((line) => line.trim().startsWith("BFB_PROBE_JSON:"));
-    const error: any = new Error(hasStructuredOutput
-      ? "BBDown返回的媒体探测数据无效或版本不兼容"
-      : "当前 BBDown 不支持结构化媒体探测，请先更新 BBDown");
-    error.code = hasStructuredOutput ? "BBDOWN_PROBE_INVALID" : "BBDOWN_PROBE_UNSUPPORTED";
-    throw error;
-  }
   return { bvid, pages, source: "bbdown" };
 }
 
@@ -804,7 +812,10 @@ export async function downloadWithBBDown(
       deferCompleteStatus: Boolean(options.expectedEncoding || options.expectedQuality),
     });
     if (refreshed.missingPages.length > 0) {
-      const latestSnapshot = await (options.accessRecheck || getVideoPageSnapshot)(cookie, bvid).catch(() => undefined);
+      const latestSnapshot = await (options.accessRecheck || getVideoPageSnapshot)(cookie, bvid).catch(error => {
+        console.warn(`[Download] access recheck failed for ${bvid}: ${safeErrorSummary(error)}`);
+        return undefined; // Unknown access keeps the incomplete download failed below.
+      });
       if (latestSnapshot?.access?.classification === "charging_restricted") {
         await cleanupNewInvalidArtifacts(downloadDir, invalidArtifactsBeforeRun);
         throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), latestSnapshot.access);
@@ -883,10 +894,10 @@ function createSourceUnavailableError(reason?: VideoPageSnapshotResult["availabi
 }
 
 async function preserveInterruptedDownload(downloadDir: string, error: any) {
-  const refreshed = await refreshDownloadSessionOutputs(downloadDir).catch(() => undefined);
+  const refreshed = await refreshDownloadSessionOutputs(downloadDir);
   const issue = error?.aria2RecoveryIssue as Aria2TrackRecoveryIssue | undefined;
   if (issue && refreshed?.missingPages.some((page) => page.index === issue.pageIndex)) {
-    const moved = await quarantineBrokenAria2Track(downloadDir, issue).catch(() => 0);
+    const moved = await quarantineBrokenAria2Track(downloadDir, issue);
     if (moved > 0) {
       logManager.push({
         timestamp: new Date().toISOString(),
@@ -1401,7 +1412,7 @@ function runCommand(
     const startWatchdog = () => {
       void sampleDownloadSize();
       watchdogTimer = setInterval(() => {
-        void sampleDownloadSize().catch(() => undefined);
+        void sampleDownloadSize().catch(error => console.warn(`[Download] progress sampling failed: ${safeErrorSummary(error)}`));
       }, lowSpeedWatchdog.sampleIntervalMs);
     };
 
