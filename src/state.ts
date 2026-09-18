@@ -2165,7 +2165,7 @@ export class StateManager {
     this.save();
   }
 
-  listPendingUploadVerifications(limit = 100) {
+  listPendingUploadVerifications(limit = 100, offset = 0) {
     const rows: Array<{
       bvid: string;
       userId: string;
@@ -2176,12 +2176,14 @@ export class StateManager {
       files: RemoteFileRecord[];
     }> = [];
     const pending = this.lazyState
-      ? this.database.listPendingUploadVerifications(limit)
+      ? this.database.listPendingUploadVerifications(limit, offset)
       : Object.values(this.state.relations || {}).map((relation) => ({ relation, localDir: this.state.videos?.[relation.bvid]?.localDir }));
+    let skipped = 0;
     for (const { relation, localDir } of pending) {
       if (relation.backupStatus !== "uploaded") continue;
       const files = (relation.remoteFiles || []).filter((file) => file.verificationStatus === "awaiting_verification");
       if (files.length === 0) continue;
+      if (!this.lazyState && skipped++ < offset) continue;
       rows.push({
         bvid: relation.bvid,
         userId: relation.userId,

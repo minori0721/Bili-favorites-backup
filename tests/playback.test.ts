@@ -468,7 +468,8 @@ test("browser metadata fills missing dimensions in place without replacing ffpro
       SELECT id, expected_size, updated_at FROM remote_files
       WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
     `).get() as any;
-    const fingerprint = `${before.id}:${before.expected_size}:${before.updated_at}`;
+    const fingerprint = getPlaybackQueue(database, 'u1', 10, {})!.items
+      .find(item => item.bvid === 'BVPLAY001')!.parts[0].fingerprint;
     const result = database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
       fingerprint,
       width: 1080,
@@ -542,7 +543,8 @@ test("browser metadata propagates only to equivalent verified remote-file rows",
     `).run(shared.path, Date.now());
 
     const result = database.updateBrowserMediaMetadata("u1", 10, Number(primary.id), {
-      fingerprint: `${primary.id}:${primary.expected_size}:${primary.updated_at}`,
+      fingerprint: getPlaybackQueue(database, 'u1', 10, {})!.items
+        .find(item => item.bvid === 'BVPLAY001')!.parts[0].fingerprint,
       width: 1920,
       height: 1080,
       duration: 120,
@@ -573,7 +575,8 @@ test("browser metadata propagates only to equivalent verified remote-file rows",
       WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
     `).run(Date.parse(now));
     database.updateBrowserMediaMetadata("u1", 10, Number(primary.id), {
-      fingerprint: `${primary.id}:${primary.expected_size}:${primary.updated_at}`,
+      fingerprint: getPlaybackQueue(database, 'u1', 10, {})!.items
+        .find(item => item.bvid === 'BVPLAY001')!.parts[0].fingerprint,
       width: 1280,
       height: 720,
       duration: 60,

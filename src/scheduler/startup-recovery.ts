@@ -198,7 +198,17 @@ export function createStartupRecovery(deps: Dependencies) {
 
     const sessionFilesCache = new Map<string, ReturnType<TransferSessionStore["listFiles"]>>();
     const sessionVerificationJobs = new Map<string, VerificationCandidate>();
-    for (const pending of deps.stateManager.listPendingUploadVerifications(10_000)) {
+    // Bootstrap is synchronous: enqueuing jobs does not mutate these source rows,
+    // so stable ordered offset pages traverse the same set without a hard cap.
+    function* pendingVerifications() {
+      const pageSize = 500;
+      for (let offset = 0; ; offset += pageSize) {
+        const page = deps.stateManager.listPendingUploadVerifications(pageSize, offset);
+        yield* page;
+        if (page.length < pageSize) return;
+      }
+    }
+    for (const pending of pendingVerifications()) {
       const relation = deps.stateManager.getRelationStatus(pending.userId, pending.mediaId, pending.bvid);
       const resolved = relation ? deps.resolveRelation(relation) : null;
       const manifest = pending.localDir ? readDownloadSession(pending.localDir) : null;

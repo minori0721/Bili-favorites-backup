@@ -13,6 +13,7 @@ import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel
 import { buildDavClient } from "./uploader.js";
 import { getRemoteBackendProfile } from "./remote-storage.js";
 import { isRemotePathWithin, normalizeStoredRemoteFilePath } from "./remote-path.js";
+import { playbackFileFingerprint } from './playback-file-identity.js';
 import { buildStorageDavFileUrl, parseStorageBaseUrl } from "./storage-url.js";
 import {
   createRemoteFileResolver,
@@ -103,7 +104,7 @@ interface PlaybackFileRow {
   actualDuration?: number;
   actualCodec?: string;
   actualMetadataSource?: "ffprobe" | "browser";
-  updatedAt: number;
+  putCompletedAt?: number;
 }
 
 export type PlaybackDeliveryStatus = "pending" | "direct" | "proxy" | "failed";
@@ -275,7 +276,7 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
   const rows = database.db.prepare(`
     SELECT id, bvid, name, remote_path, expected_size, quality_json,
       actual_width, actual_height, actual_fps, actual_duration, actual_codec,
-      actual_metadata_source, updated_at
+      actual_metadata_source, put_completed_at
     FROM remote_files
     WHERE user_id=? AND media_id=? AND status='verified' AND bvid IN (${placeholders})
       AND (
@@ -304,7 +305,7 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
       actualMetadataSource: row.actual_metadata_source === "ffprobe" || row.actual_metadata_source === "browser"
         ? row.actual_metadata_source
         : undefined,
-      updatedAt: Number(row.updated_at || 0),
+      putCompletedAt: row.put_completed_at == null ? undefined : Number(row.put_completed_at),
     });
     result.set(bvid, group);
   }
@@ -337,7 +338,7 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
     WITH requested(user_id, media_id, bvid) AS (VALUES ${values})
     SELECT rf.id, rf.bvid, rf.user_id, rf.media_id, rf.name, rf.remote_path, rf.expected_size, rf.quality_json,
       rf.actual_width, rf.actual_height, rf.actual_fps, rf.actual_duration, rf.actual_codec,
-      rf.actual_metadata_source, rf.updated_at
+      rf.actual_metadata_source, rf.put_completed_at
     FROM requested q
     JOIN remote_files rf ON rf.user_id=q.user_id AND rf.media_id=q.media_id AND rf.bvid=q.bvid
     WHERE rf.status='verified' AND (
@@ -371,7 +372,7 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
       actualMetadataSource: row.actual_metadata_source === "ffprobe" || row.actual_metadata_source === "browser"
         ? row.actual_metadata_source
         : undefined,
-      updatedAt: Number(row.updated_at || 0),
+      putCompletedAt: row.put_completed_at == null ? undefined : Number(row.put_completed_at),
     });
     result.set(key, group);
   }
@@ -426,7 +427,9 @@ export function buildQueueItem(
       mediaMetadataSource: row.actualMetadataSource,
       quality: actualQuality,
       codec: actualCodec,
-      fingerprint: `${row.id}:${row.expectedSize || 0}:${row.updatedAt}`,
+      // ID identifies a file incarnation; ordinary verification must not reset progress.
+      fingerprint: playbackFileFingerprint({ id: row.id, bvid: row.bvid,
+        remotePath: row.remotePath, size: row.expectedSize, putCompletedAt: row.putCompletedAt }),
       streamUrl: `/api/users/${encodeURIComponent(relation.userId)}/favorites/${relation.mediaId}/playback/files/${row.id}`,
     } satisfies PlaybackPart;
   });

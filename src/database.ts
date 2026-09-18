@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { safeErrorSummary } from './diagnostics.js';
+import { playbackFileFingerprint } from './playback-file-identity.js';
 import type {
   StateFile,
   VideoArchiveEntry,
@@ -10,6 +11,7 @@ import type {
   FolderScanState,
   FailedEntry,
   RemoteFileMediaMetadata,
+  RemoteFileRecord,
   UserCooldown,
   RemoteFilePreviewVideoRecord,
 } from "./state.js";
@@ -1564,8 +1566,14 @@ export class StateDatabase {
     input: BrowserMediaMetadataInput
   ): BrowserMediaMetadataUpdateResult | null {
     const transaction = this.db.transaction((): BrowserMediaMetadataUpdateResult | null => {
-      const row = this.db.prepare(`
-        SELECT rf.id, rf.bvid, rf.remote_path, rf.expected_size, rf.status, rf.updated_at,
+      const row = this.db.prepare<[number, string, number], {
+        id: number; bvid: string; remote_path: string; expected_size: number | null;
+        status: string; put_completed_at: number | null; updated_at: number;
+        actual_width: number | null; actual_height: number | null; actual_duration: number | null;
+        actual_fps: number | null; actual_codec: string | null; actual_metadata_source: string | null;
+        actual_metadata_at: number | null; relation_json: string; video_json: string;
+      }>(`
+        SELECT rf.id, rf.bvid, rf.remote_path, rf.expected_size, rf.status, rf.put_completed_at, rf.updated_at,
           rf.actual_width, rf.actual_height, rf.actual_duration, rf.actual_fps, rf.actual_codec,
           rf.actual_metadata_source, rf.actual_metadata_at,
           r.payload_json AS relation_json, v.payload_json AS video_json
@@ -1575,10 +1583,11 @@ export class StateDatabase {
         JOIN videos v ON v.bvid=rf.bvid
         WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified'
           AND r.backup_status IN ('verified','partial_verified')
-      `).get(fileId, userId, mediaId) as any;
+      `).get(fileId, userId, mediaId);
       if (!row) return null;
 
-      const fingerprint = `${Number(row.id)}:${Number(row.expected_size || 0)}:${Number(row.updated_at || 0)}`;
+      const fingerprint = playbackFileFingerprint({ id: Number(row.id), bvid: String(row.bvid),
+        remotePath: String(row.remote_path), size: row.expected_size, putCompletedAt: row.put_completed_at });
       if (!crypto.timingSafeEqual(
         Buffer.from(crypto.createHash("sha256").update(fingerprint).digest()),
         Buffer.from(crypto.createHash("sha256").update(String(input.fingerprint || "")).digest())
@@ -2067,17 +2076,19 @@ export class StateDatabase {
     return Number((row as any)?.count || 0);
   }
 
-  listPendingUploadVerifications(limit = 100) {
+  listPendingUploadVerifications(limit = 100, offset = 0) {
     return (this.db.prepare(`
       WITH due AS (
-        SELECT user_id, media_id, bvid,
-          MIN(COALESCE(next_verify_at, 0)) AS next_at,
-          MIN(updated_at) AS first_updated_at
-        FROM remote_files
-        WHERE status='awaiting_verification'
-        GROUP BY user_id, media_id, bvid
-        ORDER BY next_at ASC, first_updated_at ASC
-        LIMIT ?
+        SELECT rf.user_id, rf.media_id, rf.bvid,
+          MIN(COALESCE(rf.next_verify_at, 0)) AS next_at,
+          MIN(rf.updated_at) AS first_updated_at
+        FROM remote_files rf
+        JOIN favorite_relations r
+          ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
+        WHERE rf.status='awaiting_verification' AND r.backup_status='uploaded'
+        GROUP BY rf.user_id, rf.media_id, rf.bvid
+        ORDER BY next_at, first_updated_at, rf.user_id, rf.media_id, rf.bvid
+        LIMIT ? OFFSET ?
       )
       SELECT r.payload_json AS relation_json, v.local_dir
       FROM due
@@ -2085,8 +2096,8 @@ export class StateDatabase {
         ON r.user_id=due.user_id AND r.media_id=due.media_id AND r.bvid=due.bvid
       JOIN videos v ON v.bvid=due.bvid
       WHERE r.backup_status='uploaded'
-      ORDER BY due.next_at ASC, due.first_updated_at ASC
-    `).all(Math.max(1, Math.floor(limit))) as any[]).map((row) => ({
+      ORDER BY due.next_at, due.first_updated_at, due.user_id, due.media_id, due.bvid
+    `).all(Math.max(1, Math.floor(limit)), Math.max(0, Math.floor(offset))) as any[]).map((row) => ({
       relation: parseJson<FavoriteRelation>(row.relation_json, {} as FavoriteRelation),
       localDir: row.local_dir ? String(row.local_dir) : undefined,
     }));
@@ -2321,8 +2332,14 @@ export class StateDatabase {
     }
   }
 
-  private replaceRemoteFiles(bvid: string, userId: string, mediaId: number, files: any[], now: number) {
-    this.db.prepare("DELETE FROM remote_files WHERE bvid=? AND user_id=? AND media_id=?").run(bvid, userId, mediaId);
+  private replaceRemoteFiles(bvid: string, userId: string, mediaId: number, files: RemoteFileRecord[], now: number) {
+    const existing = this.db.prepare<[string, string, number], {
+      id: number; remote_path: string; expected_size: number | null; put_completed_at: number | null;
+    }>("SELECT id, remote_path, expected_size, put_completed_at FROM remote_files WHERE bvid=? AND user_id=? AND media_id=?")
+      .all(bvid, userId, mediaId);
+    const byPath = new Map(existing.map(row => [row.remote_path, row]));
+    const seen = new Set<string>();
+    const remove = this.db.prepare('DELETE FROM remote_files WHERE id=?');
     const insert = this.db.prepare(`
       INSERT INTO remote_files(
         bvid, user_id, media_id, kind, local_relative_path, name, remote_path, expected_size,
@@ -2330,8 +2347,28 @@ export class StateDatabase {
         actual_metadata_source, actual_metadata_at, put_completed_at, verify_attempts, next_verify_at,
         last_error, updated_at
       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(user_id, media_id, bvid, remote_path) DO UPDATE SET
+        local_relative_path=excluded.local_relative_path, name=excluded.name,
+        expected_size=excluded.expected_size, status=excluded.status, quality_json=excluded.quality_json,
+        actual_width=excluded.actual_width, actual_height=excluded.actual_height,
+        actual_fps=excluded.actual_fps, actual_duration=excluded.actual_duration,
+        actual_codec=excluded.actual_codec, actual_metadata_source=excluded.actual_metadata_source,
+        actual_metadata_at=excluded.actual_metadata_at,
+        put_completed_at=COALESCE(excluded.put_completed_at,remote_files.put_completed_at),
+        verify_attempts=excluded.verify_attempts, next_verify_at=excluded.next_verify_at,
+        last_error=excluded.last_error, updated_at=excluded.updated_at
     `);
     for (const file of files) {
+      if (seen.has(file.path)) throw new Error('Duplicate remote file path in source');
+      seen.add(file.path);
+      const previous = byPath.get(file.path);
+      const putAt = file.putCompletedAt ? isoToMs(file.putCompletedAt, now) : null;
+      // Bookkeeping preserves IDs; an explicit new upload or changed known size
+      // invalidates URLs for the old file incarnation, even at the same path.
+      if (previous && ((putAt !== null && putAt !== previous.put_completed_at)
+        || (typeof file.size === 'number' && previous.expected_size !== null && file.size !== previous.expected_size))) {
+        remove.run(previous.id);
+      }
       insert.run(
         bvid,
         userId,
@@ -2343,20 +2380,21 @@ export class StateDatabase {
         typeof file.size === "number" ? file.size : null,
         file.verificationStatus || "verified",
         file.qualityProfile ? JSON.stringify(file.qualityProfile) : null,
-        Number.isInteger(file.mediaMetadata?.width) ? file.mediaMetadata.width : null,
-        Number.isInteger(file.mediaMetadata?.height) ? file.mediaMetadata.height : null,
-        Number.isFinite(file.mediaMetadata?.fps) ? file.mediaMetadata.fps : null,
-        Number.isFinite(file.mediaMetadata?.duration) ? file.mediaMetadata.duration : null,
+        file.mediaMetadata && Number.isInteger(file.mediaMetadata.width) ? file.mediaMetadata.width : null,
+        file.mediaMetadata && Number.isInteger(file.mediaMetadata.height) ? file.mediaMetadata.height : null,
+        file.mediaMetadata && Number.isFinite(file.mediaMetadata.fps) ? file.mediaMetadata.fps : null,
+        file.mediaMetadata && Number.isFinite(file.mediaMetadata.duration) ? file.mediaMetadata.duration : null,
         file.mediaMetadata?.codec || null,
         file.mediaMetadata?.source || null,
         file.mediaMetadata?.observedAt ? isoToMs(file.mediaMetadata.observedAt, now) : null,
-        file.putCompletedAt ? isoToMs(file.putCompletedAt, now) : null,
+        putAt,
         Number(file.verifyAttempts || 0),
         file.nextVerifyAt ? isoToMs(file.nextVerifyAt, now) : null,
         file.lastError || null,
         now
       );
     }
+    for (const previous of existing) if (!seen.has(previous.remote_path)) remove.run(previous.id);
   }
 
   private replaceFailures(failedByUser: Record<string, Record<string, FailedEntry>>) {

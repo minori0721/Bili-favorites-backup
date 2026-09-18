@@ -75,7 +75,7 @@
   "src/database.ts": {
     "unexplained-any:row: any": 4,
     "unexplained-any:undefined as any": 22,
-    "unexplained-any:any[]": 61,
+    "unexplained-any:any[]": 60,
     "unexplained-any:this.db.prepare(\"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_relations_remote_schedule'\").get() as any": 1,
     "unexplained-any:this.db.prepare(\"SELECT COUNT(*) AS count FROM videos\").get() as any": 1,
     "unexplained-any:this.db.prepare(\"SELECT value FROM schema_meta WHERE key=?\").get(key) as any": 1,
@@ -100,7 +100,6 @@
     "unexplained-any:this.db.prepare(\"SELECT payload_json FROM cooldowns WHERE kind='download_api' AND scope_id='global'\").get() as any": 1,
     "unexplained-any:this.db.prepare(` SELECT v.payload_json, summary.backup_status AS aggregate_status FROM videos v LEFT JOIN video_backup_summary summary ON summary.bvid=v.bvid WHERE v.bvid=? `).get(bvid) as any": 1,
     "unexplained-any:this.db.prepare(\"SELECT payload_json FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?\") .get(userId, mediaId, bvid) as any": 1,
-    "unexplained-any:this.db.prepare(` SELECT rf.id, rf.bvid, rf.remote_path, rf.expected_size, rf.status, rf.updated_at, rf.actual_width, rf.actual_height, rf.actual_duration, rf.actual_fps, rf.actual_codec, rf.actual_metadata_source, rf.actual_metadata_at, r.payload_json AS relation_json, v.payload_json AS video_json FROM remote_files rf JOIN favorite_relations r ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid JOIN videos v ON v.bvid=rf.bvid WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified' AND r.backup_status IN ('verified','partial_verified') `).get(fileId, userId, mediaId) as any": 1,
     "unexplained-any:this.db.prepare(` SELECT COUNT(*) AS count, MAX(v.access_last_checked_at) AS last_checked_at FROM videos v WHERE v.access_restriction_type='charging' AND EXISTS ( SELECT 1 FROM favorite_relations r WHERE r.bvid=v.bvid AND r.active_in_favorite=1 AND r.backup_status NOT IN ('uploaded','verified','partial_verified') ) `).get() as any": 1,
     "unexplained-any:this.db.prepare(` SELECT COUNT(*) AS total, SUM(CASE WHEN r.active_in_favorite=1 THEN 1 ELSE 0 END) AS active_total, SUM(CASE WHEN r.active_in_favorite=0 THEN 1 ELSE 0 END) AS historical_total, SUM(CASE WHEN ${processed} THEN 1 ELSE 0 END) AS uploaded, SUM(CASE WHEN NOT (${processed}) AND NOT (${unavailable}) THEN 1 ELSE 0 END) AS pending, SUM(CASE WHEN NOT (${processed}) AND (${unavailable}) THEN 1 ELSE 0 END) AS pending_unavailable, SUM(CASE WHEN ${archivedUnavailable} THEN 1 ELSE 0 END) AS uploaded_unavailable, SUM(CASE WHEN (${filterSql}) THEN 1 ELSE 0 END) AS total_filtered ${base} `).get(userId, mediaId) as any": 1,
     "unexplained-any:row as any": 1,
