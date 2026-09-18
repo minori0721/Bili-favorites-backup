@@ -75,3 +75,18 @@ test('playback boundaries reject malformed parts and preserve queue/search contr
   assert.throws(() => parsePlaybackQueuePage({ mode: 'favorite', page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false, items: [{ ...item, parts: [{ ...part, fileId: '1' }] }] }));
   assert.throws(() => parsePlaybackSearchPage({ query: '标题', page: 1, pageSize: 50, total: 1, hasMore: false, items: [{ ...item, source: null }] }));
 });
+
+
+test('reference statistics reject malformed partial values and preserve older response absence', () => {
+  const parse = (summary: unknown) => parseArchiveNavigation({summary, accounts: []}).summary;
+  assert.equal(parse({}).sourceReferenceCount, undefined);
+  assert.equal(parse({sourceReferenceCount: 2, uniqueRemotePathCount: 1}).uniqueRemotePathCount, 1);
+  for (const summary of [
+    {sourceReferenceCount: 2}, {uniqueRemotePathCount: 1},
+    {sourceReferenceCount: null, uniqueRemotePathCount: null},
+    {sourceReferenceCount: 1, uniqueRemotePathCount: 2},
+    {sourceReferenceCount: 1.5, uniqueRemotePathCount: 1},
+    {sourceReferenceCount: '2', uniqueRemotePathCount: 1},
+    {sourceReferenceCount: -1, uniqueRemotePathCount: 0},
+  ]) assert.throws(() => parse(summary), /引用统计/);
+});

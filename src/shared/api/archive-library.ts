@@ -43,6 +43,23 @@ function optionalUid(value: unknown): number | undefined {
   return value;
 }
 
+function parseReferenceStats(data: Record<string, unknown>) {
+  // Older responses omit both fields. Never turn a missing/partial result into zero.
+  const read = (value: unknown) => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new ResponseFormatError('归档来源引用统计格式错误');
+    }
+    return value;
+  };
+  if (data.sourceReferenceCount === undefined && data.uniqueRemotePathCount === undefined) {
+    return { sourceReferenceCount: undefined, uniqueRemotePathCount: undefined };
+  }
+  const sourceReferenceCount = read(data.sourceReferenceCount);
+  const uniqueRemotePathCount = read(data.uniqueRemotePathCount);
+  if (uniqueRemotePathCount > sourceReferenceCount) throw new ResponseFormatError('归档来源引用统计不一致');
+  return { sourceReferenceCount, uniqueRemotePathCount };
+}
+
 function parseSummary(value: unknown) {
   const data = record(value, '归档导航汇总格式错误');
   return {
@@ -51,6 +68,7 @@ function parseSummary(value: unknown) {
     pending: count(data.pending, '归档汇总计数字段格式错误') ?? 0,
     issue: count(data.issue, '归档汇总计数字段格式错误') ?? 0,
     deleted: count(data.deleted, '归档汇总计数字段格式错误') ?? 0,
+    ...parseReferenceStats(data),
     lastSyncedAt: optionalString(data.lastSyncedAt, '归档汇总时间字段格式错误'),
     coverLocalPath: optionalString(data.coverLocalPath, '归档汇总封面字段格式错误'),
     cover: optionalString(data.cover, '归档汇总封面字段格式错误'),
@@ -69,6 +87,7 @@ function parseNavigationFolder(value: unknown) {
     pending: count(data.pending, '归档目录汇总格式错误') ?? 0,
     issue: count(data.issue, '归档目录汇总格式错误') ?? 0,
     deleted: count(data.deleted, '归档目录汇总格式错误') ?? 0,
+    ...parseReferenceStats(data),
     lastSyncedAt: optionalString(data.lastSyncedAt, '归档目录时间字段格式错误'),
     coverLocalPath: optionalString(data.coverLocalPath, '归档目录封面字段格式错误'),
     cover: optionalString(data.cover, '归档目录封面字段格式错误'),

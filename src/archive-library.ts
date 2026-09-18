@@ -1,3 +1,4 @@
+import { readRemoteReferenceStats } from "./remote-reference-query.js";
 import crypto from "node:crypto";
 import type { StateDatabase } from "./database.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
@@ -1060,7 +1061,10 @@ export function getArchiveLibraryPlaybackSearch(
   };
 }
 
-const emptyNavigationSummary = () => ({ total: 0, playable: 0, pending: 0, issue: 0, deleted: 0 });
+const emptyNavigationSummary = () => ({
+  total: 0, playable: 0, pending: 0, issue: 0, deleted: 0,
+  sourceReferenceCount: 0, uniqueRemotePathCount: 0,
+});
 
 function readNavigationRows(database: StateDatabase, userIds: string[]) {
   if (userIds.length === 0) return [] as any[];
@@ -1134,23 +1138,32 @@ function readNavigationRows(database: StateDatabase, userIds: string[]) {
   `).all(...userIds) as any[];
 }
 
-function navigationSummaryFromRow(row: any) {
+function navigationSummaryFromRow(row: any, remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number }) {
   return row ? {
     total: Number(row.total || 0),
     playable: Number(row.playable || 0),
     pending: Number(row.pending || 0),
     issue: Number(row.issue || 0),
     deleted: Number(row.deleted || 0),
+    sourceReferenceCount: remoteStats?.sourceReferenceCount ?? 0,
+    uniqueRemotePathCount: remoteStats?.uniqueRemotePathCount ?? 0,
   } : emptyNavigationSummary();
 }
 
-function decorateNavigationSummary(summary: ReturnType<typeof navigationSummaryFromRow>, rows: any[]) {
+
+function decorateNavigationSummary(
+  summary: ReturnType<typeof navigationSummaryFromRow>,
+  rows: any[],
+  remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number },
+) {
   const latestSync = Math.max(0, ...rows.map((row) => Number(row.last_synced_at || 0)));
   const coverRow = [...rows]
     .filter((row) => row.cover_local_path || row.cover)
     .sort((left, right) => Number(right.last_seen_at || 0) - Number(left.last_seen_at || 0))[0];
   return {
     ...summary,
+    sourceReferenceCount: remoteStats?.sourceReferenceCount ?? summary.sourceReferenceCount,
+    uniqueRemotePathCount: remoteStats?.uniqueRemotePathCount ?? summary.uniqueRemotePathCount,
     lastSyncedAt: isoFromMs(latestSync),
     coverLocalPath: coverRow?.cover_local_path || undefined,
     cover: coverRow?.cover || undefined,
@@ -1162,6 +1175,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
   const userIds = libraryUsers.map((user) => user.id);
   const selected = selectionSet(libraryUsers);
   const navigationRows = readNavigationRows(database, userIds);
+  const remoteReferenceStats = readRemoteReferenceStats(database, userIds);
   const folderRows = navigationRows
     .filter((row) => row.row_kind === "folder")
     .sort((left, right) => String(left.user_id).localeCompare(String(right.user_id))
@@ -1169,8 +1183,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       || Number(left.media_id || 0) - Number(right.media_id || 0));
   const accountSummaries = new Map(navigationRows
     .filter((row) => row.row_kind === "account")
-    .map((row) => [String(row.user_id), navigationSummaryFromRow(row)]));
-  const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"));
+    .map((row) => [String(row.user_id), navigationSummaryFromRow(row, remoteReferenceStats.get(`account:${row.user_id}`))]));
+  const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"), remoteReferenceStats.get("global"));
   const indexedFolders = new Map(folderRows.map((row) => [`${row.user_id}:${row.media_id}`, row]));
   const accountDeletionRows = userIds.length ? database.db.prepare(`
     SELECT id, user_id, status, file_count, total_bytes, completed_count, retained_count,
@@ -1211,6 +1225,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         pending: Number(row?.pending || 0),
         issue: Number(row?.issue || 0),
         deleted: Number(row?.deleted || 0),
+        sourceReferenceCount: remoteReferenceStats.get(`folder:${user.id}:${folder.mediaId}`)?.sourceReferenceCount || 0,
+        uniqueRemotePathCount: remoteReferenceStats.get(`folder:${user.id}:${folder.mediaId}`)?.uniqueRemotePathCount || 0,
         lastSyncedAt: isoFromMs(row?.last_synced_at),
         coverLocalPath: row?.cover_local_path || undefined,
         cover: row?.cover || undefined,
@@ -1229,6 +1245,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         pending: Number(manualRow.pending || 0),
         issue: Number(manualRow.issue || 0),
         deleted: Number(manualRow.deleted || 0),
+        sourceReferenceCount: remoteReferenceStats.get(`folder:${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`)?.sourceReferenceCount || 0,
+        uniqueRemotePathCount: remoteReferenceStats.get(`folder:${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`)?.uniqueRemotePathCount || 0,
         lastSyncedAt: isoFromMs(manualRow.last_synced_at || manualRow.last_seen_at),
         coverLocalPath: manualRow.cover_local_path || undefined,
         cover: manualRow.cover || undefined,
@@ -1247,6 +1265,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         pending: Number(row.pending || 0),
         issue: Number(row.issue || 0),
         deleted: Number(row.deleted || 0),
+        sourceReferenceCount: remoteReferenceStats.get(`folder:${row.user_id}:${row.media_id}`)?.sourceReferenceCount || 0,
+        uniqueRemotePathCount: remoteReferenceStats.get(`folder:${row.user_id}:${row.media_id}`)?.uniqueRemotePathCount || 0,
         lastSyncedAt: isoFromMs(row.last_synced_at || row.last_seen_at),
         coverLocalPath: row.cover_local_path || undefined,
         cover: row.cover || undefined,
@@ -1261,13 +1281,13 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       removed: Boolean(user.archiveRemoved),
       removedAt: user.removedAt,
       deletion: accountDeletions.get(user.id),
-      summary: decorateNavigationSummary(accountSummaries.get(user.id) || emptyNavigationSummary(), accountRows),
+      summary: decorateNavigationSummary(accountSummaries.get(user.id) || emptyNavigationSummary(), accountRows, remoteReferenceStats.get(`account:${user.id}`)),
       folders: activeFolders,
       inactiveFolders,
     };
   });
   return {
-    summary: decorateNavigationSummary(globalSummary, folderRows),
+    summary: decorateNavigationSummary(globalSummary, folderRows, remoteReferenceStats.get("global")),
     accounts: accountData,
   };
 }

@@ -621,3 +621,51 @@ test("large archive pagination stays bounded and library indexes serve both orde
     database.close();
   }
 });
+
+
+test("navigation counts source references and unique paths without video-level duplicates", () => {
+  const database = fixture();
+  try {
+    // Two source references share one path; the video-level copy is absent from this count.
+    database.db.prepare("UPDATE remote_files SET remote_path='/archive/u2/20/BVSHARED_P1.mp4' WHERE user_id='u1' AND bvid='BVSHARED'").run();
+    database.db.prepare(`INSERT INTO remote_files(bvid,user_id,media_id,name,remote_path,status,updated_at)
+      VALUES('BVSHARED','',0,'copy.mp4','/archive/u2/20/BVSHARED_P1.mp4','verified',?)`).run(now);
+    // Same visible account, but no matching source relation.
+    database.db.prepare(`INSERT INTO remote_files(bvid,user_id,media_id,name,remote_path,status,updated_at)
+      VALUES('BVSHARED','u1',999,'orphan.mp4','/orphan.mp4','verified',?)`).run(now);
+    const nav = parseArchiveNavigation(JSON.parse(JSON.stringify(getArchiveLibraryNavigation(database, users()))));
+    assert.equal(nav.summary.total, 4);
+    assert.equal(nav.summary.sourceReferenceCount, 4);
+    assert.equal(nav.summary.uniqueRemotePathCount, 3);
+    assert.equal(nav.accounts[0].summary.sourceReferenceCount, 2);
+    assert.equal(nav.accounts[1].summary.sourceReferenceCount, 2);
+    assert.equal(nav.accounts[0].folders[1].sourceReferenceCount, 0);
+    assert.equal(nav.accounts[0].folders[1].uniqueRemotePathCount, 0);
+    const restricted = getArchiveLibraryNavigation(database, [users()[0]]);
+    assert.equal(restricted.summary.sourceReferenceCount, 2);
+    assert.equal(restricted.summary.uniqueRemotePathCount, 2);
+    assert.equal(getArchiveLibraryNavigation(database, []).summary.sourceReferenceCount, 0);
+    // File status is not a live remote census: missing records remain references.
+    database.db.prepare("UPDATE remote_files SET status='missing' WHERE user_id='u2'").run();
+    assert.equal(getArchiveLibraryNavigation(database, users()).summary.sourceReferenceCount, 4);
+  } finally { database.close(); }
+});
+
+test("completed source deletion excludes its references while retaining other sources", () => {
+  const database = fixture();
+  try {
+    database.db.prepare(`INSERT INTO archive_deletions(
+      id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
+      file_count,total_bytes,created_at,updated_at
+    ) VALUES('stats-delete','source','u1',10,'BVSHARED','completed','test','/archive',1,1001,?,?)`).run(now, now);
+    database.db.prepare(`INSERT INTO archive_deleted_sources(
+      user_id,media_id,bvid,deletion_id,status,file_count,total_bytes,deleted_at
+    ) VALUES('u1',10,'BVSHARED','stats-delete','completed',1,1001,?)`).run(now);
+    const nav = getArchiveLibraryNavigation(database, users());
+    assert.equal(nav.summary.sourceReferenceCount, 3);
+    assert.equal(nav.accounts[0].summary.sourceReferenceCount, 1);
+    assert.equal(nav.accounts[1].summary.sourceReferenceCount, 2);
+    database.db.prepare("UPDATE archive_deleted_sources SET status='failed'").run();
+    assert.equal(getArchiveLibraryNavigation(database, users()).summary.sourceReferenceCount, 4);
+  } finally { database.close(); }
+});

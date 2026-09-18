@@ -319,3 +319,24 @@ test("mobile Escape closes the playback drawer before the player", async ({ page
   await expect(page.locator("#playbackModal")).not.toHaveClass(/active/);
   await expect(page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-main')).toBeFocused();
 });
+
+
+test("directory reference counts remain separate from search results", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  await resetFixture(page);
+  await page.route('**/api/archive-library/navigation', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data.summary.sourceReferenceCount = 4;
+    body.data.summary.uniqueRemotePathCount = 3;
+    await route.fulfill({response, json: body});
+  });
+  await openLibrary(page, testInfo);
+  const nav = page.locator('.archive-nav-item[data-archive-scope="global"]');
+  await expect(nav).toContainText('2 个视频');
+  await expect(nav).toContainText('来源引用 4 · 唯一路径 3');
+  await expect(page.locator('#archiveLibrarySummary')).not.toContainText('来源引用');
+  // The navigation remains in the DOM on mobile; inspect intrinsic containment too.
+  const overflow = await nav.evaluate(el => el.scrollWidth > el.clientWidth + 1);
+  expect(overflow).toBe(false);
+});

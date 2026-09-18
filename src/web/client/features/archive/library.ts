@@ -302,13 +302,16 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     function archiveNavMeta(entry: Partial<Summary>) {
       const sync = entry.lastSyncedAt ? ' · 最近同步 ' + formatDateTime(entry.lastSyncedAt) : '';
       if (!Number(entry.total || 0)) return '暂无本地索引' + sync;
-      return Number(entry.total || 0) + ' 项 · 可播 ' + Number(entry.playable || 0) + sync;
+      const remote = entry.sourceReferenceCount === undefined ? '' :
+        ' · 来源引用 ' + entry.sourceReferenceCount + ' · 唯一路径 ' + entry.uniqueRemotePathCount;
+      return Number(entry.total || 0) + ' 个视频 · 可播 ' + Number(entry.playable || 0) + remote + sync;
     }
 
     function createArchiveNavItem(entry: Partial<Summary>, context: Directory) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'archive-nav-item';
+      button.title = '当前目录的本地索引统计；来源引用不含视频级副本，唯一路径不代表实时远端文件数。';
       button.dataset.archiveScope = context.scope;
       button.dataset.archiveUserId = context.userId || '';
       button.dataset.archiveMediaId = String(context.mediaId || '');
