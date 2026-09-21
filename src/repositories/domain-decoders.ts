@@ -563,11 +563,21 @@ export function decodeLocalCleanupPlan(value: unknown, context = 'local cleanup 
 export function decodeQualityProfile(value: unknown, context = 'quality profile'): RemoteFileQualityProfile | undefined {
   if (value === undefined || value === null) return undefined;
   const source = record(value, context);
-  const quality = requiredString(source, 'quality', context);
-  const encoding = requiredString(source, 'encoding', context);
-  if ((source.hiRes !== undefined && typeof source.hiRes !== 'boolean')
-    || (source.dolby !== undefined && typeof source.dolby !== 'boolean')) {
-    throw new PersistedDomainDecodeError(context, 'hiRes and dolby must be booleans');
+  // Older remote-file rows persisted an otherwise valid profile with an empty
+  // quality or encoding when BBDown did not expose that metadata. Keep that
+  // legacy state as "unknown" at the domain boundary instead of making every
+  // caller handle incomplete profiles. Missing fields and wrong types remain
+  // malformed persisted data.
+  const quality = source.quality;
+  const encoding = source.encoding;
+  if (typeof quality !== 'string') {
+    throw new PersistedDomainDecodeError(context, 'quality must be a string');
   }
-  return { quality, encoding, hiRes: source.hiRes === true, dolby: source.dolby === true };
+  if (typeof encoding !== 'string') {
+    throw new PersistedDomainDecodeError(context, 'encoding must be a string');
+  }
+  const hiRes = optionalBoolean(source, 'hiRes', context, false);
+  const dolby = optionalBoolean(source, 'dolby', context, false);
+  if (quality.length === 0 || encoding.length === 0) return undefined;
+  return { quality, encoding, hiRes, dolby };
 }

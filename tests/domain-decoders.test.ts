@@ -4,6 +4,7 @@ import {
   PersistedDomainDecodeError,
   decodeDownloadApiCooldown,
   decodeFavoriteRelation,
+  decodeQualityProfile,
   decodeUploadCooldown,
   decodeVideoPayload,
 } from '../src/repositories/domain-decoders.js';
@@ -66,6 +67,32 @@ test('legacy main download sessions are decoded as backup sessions', () => {
     },
   });
   assert.equal(decoded.downloadSession?.kind, 'backup');
+});
+
+test('legacy empty quality metadata is treated as unknown without weakening validation', () => {
+  assert.equal(decodeQualityProfile({ quality: '', encoding: '', hiRes: false, dolby: false }), undefined);
+  assert.equal(decodeQualityProfile({ quality: '4K', encoding: '', hiRes: false, dolby: false }), undefined);
+  assert.deepEqual(decodeQualityProfile({ quality: '4K', encoding: 'HEVC', hiRes: false, dolby: true }), {
+    quality: '4K', encoding: 'HEVC', hiRes: false, dolby: true,
+  });
+
+  assert.throws(
+    () => decodeQualityProfile({ quality: '', encoding: '', hiRes: 'false' }),
+    (error: unknown) => error instanceof PersistedDomainDecodeError && error.message.includes('hiRes'),
+  );
+  assert.throws(
+    () => decodeQualityProfile({ quality: null, encoding: 'HEVC' }),
+    (error: unknown) => error instanceof PersistedDomainDecodeError && error.message.includes('quality'),
+  );
+});
+
+test('video payloads with legacy unknown quality remain readable', () => {
+  const decoded = decodeVideoPayload({
+    bvid: 'BV1', title: 'title', upperName: 'upper', firstSeenAt: '2026-01-01', lastSeenAt: '2026-01-02',
+    backupStatus: 'verified', biliStatus: 'available',
+    remoteFiles: [{ name: 'video.mp4', path: '/archive/video.mp4', qualityProfile: { quality: '', encoding: '' } }],
+  });
+  assert.equal(decoded.remoteFiles?.[0].qualityProfile, undefined);
 });
 
 test('download API cooldown decoder validates its persisted control mode', () => {
