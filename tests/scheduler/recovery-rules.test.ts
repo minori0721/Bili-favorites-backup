@@ -13,7 +13,7 @@ test('persisted access intents retain compatibility without duplicate probe purp
 });
 
 test('recovery context requires generation and both local copies before restoring retry work', () => {
-  const saved={parentJobId:'parent',generation:2,candidateLocalDir:'candidate',originalLocalDir:'original',priority:['AVC','HEVC','AV1'],state:'verifying'};
+  const saved={parentJobId:'parent',generation:2,candidateLocalDir:'candidate',originalLocalDir:'original',priority:['AVC','HEVC','AV1'],state:'verifying' as const};
   const context=parseEncodingRetryContext(saved);
   assert.equal(context?.state,'verifying');
   assert.equal(context?.originalLocalDir,'original');

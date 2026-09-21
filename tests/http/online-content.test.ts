@@ -8,7 +8,7 @@ test('online read routes preserve validation and caching behind one boundary',as
   const user:BiliUser={id:'user',uid:1,name:'fixture',cookie:{SESSDATA:'',bili_jct:'',DedeUserID:''},favorites:[],enabled:true,lastLoginAt:''};
   let entered=0;let reads=0;
   const app=express();
-  app.use(createOnlineContentRouter({users:{list:()=>[user],getById:id=>id===user.id?user:undefined},archiveStates:()=>new Map(),
+  app.use(createOnlineContentRouter({users:{list:()=>[user],getById:id=>id===user.id?user: null},archiveStates:()=>new Map(),
     content:{getNavigation:async()=>({accounts:[]}),resolveCover:async()=>null,list:async(_user,query)=>{
       reads++;
       return {items:[],page:{items:[],kind:query.kind,page:query.page||1,pageSize:50,hasMore:false}};

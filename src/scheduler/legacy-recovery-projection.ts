@@ -2,13 +2,13 @@ import type { StateDatabase } from '../database.js';
 import type { FavoriteRelation } from '../state.js';
 import type { BiliUser, UserStore } from '../users.js';
 import type { ConfigStore } from '../config.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { classifyDownloadRecoveryFailure } from '../download-recovery.js';
 import type { DownloadRecoveryCategory } from '../recovery-policy.js';
 import type { RecoveryIssueKind } from '../recovery-policy.js';
 import { sanitizeUploadText } from '../upload-health.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'list' | 'listLegacyDownloadRecovery' | 'complete' | 'findLegacyDownloadRecovery' | 'updatePayload' | 'enqueue'>;
+  jobStore: Pick<JobRepository, 'list' | 'listLegacyDownloadRecovery' | 'complete' | 'findLegacyDownloadRecovery' | 'updatePayload' | 'enqueue'>;
   userStore: Pick<UserStore, 'list'>;
   configStore: Pick<ConfigStore, 'get'>;
   database(): Pick<StateDatabase, 'listPermanentFailureRecoveryRelations' | 'isArchiveSourceDeletionBlocked'>;

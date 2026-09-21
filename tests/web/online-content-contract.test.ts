@@ -15,19 +15,19 @@ test('online page boundary normalizes both supported pagination envelopes',()=>{
 });
 
 test('online navigation keeps display fields and rejects malformed sources',()=>{
-  const parsed=parseOnlineNavigation({accounts:[{userId:'u',cookie:'fixture',sources:[{kind:'favorite',title:'folder',mediaId:1,count:0}]}]});
+  const parsed=parseOnlineNavigation({accounts:[{userId:'u',cookie:'fixture',sources:[{kind:'favorite' as const,title:'folder',mediaId:1,count:0}]}]});
   assert.equal('cookie' in parsed.accounts[0],false);
   assert.equal(parsed.accounts[0].sources[0].count,0);
-  assert.throws(()=>parseOnlineNavigation({accounts:[{userId:'u',sources:[{kind:'favorite',count:-1}]}]}));
+  assert.throws(()=>parseOnlineNavigation({accounts:[{userId:'u',sources:[{kind:'favorite' as const,count:-1}]}]}));
 });
 
 test('probe boundaries distinguish a task reference from summary and preserve zero capacity',()=>{
   assert.equal(parseProbeReference({probeId:'probe'}),'probe');
-  assert.equal(parseProbeSummary({status:'complete',pages:[],combinations:[],cacheAvailableBytes:0}).cacheAvailableBytes,0);
-  assert.equal(parseProbeSummary({status:'complete',pages:[],combinations:[]}).cacheAvailableBytes,undefined);
-  assert.throws(()=>parseProbeSummary({status:'complete'}));
-  assert.equal(parseProbeSummary({status:'failed',error:'稿件不可见'}).error,'稿件不可见');
-  assert.throws(()=>parseProbeSummary({status:'failed'}));
-  assert.throws(()=>parseProbeSummary({status:'complete',estimatedBytes:-1}));
-  assert.throws(()=>parseProbeSummary({status:'complete',combinations:[{available:'false'}]}));
+  assert.equal(parseProbeSummary({status:'complete' as const,pages:[],combinations:[],cacheAvailableBytes:0}).cacheAvailableBytes,0);
+  assert.equal(parseProbeSummary({status:'complete' as const,pages:[],combinations:[]}).cacheAvailableBytes,undefined);
+  assert.throws(()=>parseProbeSummary({status:'complete' as const}));
+  assert.equal(parseProbeSummary({status:'failed' as const,error:'稿件不可见'}).error,'稿件不可见');
+  assert.throws(()=>parseProbeSummary({status:'failed' as const}));
+  assert.throws(()=>parseProbeSummary({status:'complete' as const,estimatedBytes:-1}));
+  assert.throws(()=>parseProbeSummary({status:'complete' as const,combinations:[{available:'false'}]}));
 });

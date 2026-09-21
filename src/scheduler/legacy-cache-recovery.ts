@@ -29,6 +29,7 @@ export function createLegacyCacheRecovery(deps: Dependencies) {
     try {
       entries = await fs.promises.readdir(deps.legacyTempDir, { withFileTypes: true });
     } catch (error) {
+      // boundary-critical: ENOENT is the explicitly supported absence of a legacy cache; every other filesystem error is rethrown.
       if (errorCode(error) === "ENOENT") entries = [];
       else throw error;
     }
@@ -50,6 +51,7 @@ export function createLegacyCacheRecovery(deps: Dependencies) {
         const retained = await fs.promises.lstat(path.join(localDir, DOWNLOAD_RETAINED_FILE));
         if (retained.isFile() && !retained.isSymbolicLink()) continue;
       } catch (error) {
+        // boundary-critical: A missing retention marker permits inspection; all non-ENOENT failures propagate.
         if (errorCode(error) !== "ENOENT") throw error;
       }
       if (await readDownloadSessionAsync(localDir)) continue;

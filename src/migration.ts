@@ -1,3 +1,4 @@
+import { parseMigrationPayload } from './migration-payload.js';
 import { beginImportTransaction } from "./import-transaction.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -23,12 +24,62 @@ const allowedImportFiles = new Set([
   "data/logs.json",
 ]);
 
+type JsonRecord = Record<string, unknown>;
+type MigrationStateSnapshot = JsonRecord & {
+  videos?: Record<string, JsonRecord>;
+  relations?: Record<string, JsonRecord>;
+};
+
+function record(value: unknown): JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+}
+
+function recordMap(value: unknown): Record<string, JsonRecord> {
+  const source = record(value);
+  return Object.fromEntries(Object.entries(source).map(([key, item]) => [key, record(item)]));
+}
+
+function stateSnapshot(value: unknown): MigrationStateSnapshot {
+  const source = record(value);
+  return { ...source, videos: recordMap(source.videos), relations: recordMap(source.relations) };
+}
+
+function remoteFiles(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((item) => {
+    const row = record(item);
+    const name = String(row.name || "");
+    const filePath = String(row.path || "");
+    if (!name || !filePath) return null;
+    const size = Number(row.size);
+    return { name, path: filePath, ...(Number.isFinite(size) ? { size } : {}) };
+  }).filter((item): item is { name: string; path: string; size?: number } => Boolean(item));
+}
+
+async function readDirectoryOrEmpty(directory: string) {
+  try {
+    return await fs.promises.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function readNamesOrEmpty(directory: string) {
+  try {
+    return await fs.promises.readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 export interface MigrationStateAccess {
-  getStateSnapshot(): any;
+  getStateSnapshot(): unknown;
   backupDatabase(destination: string): Promise<void>;
   replaceDatabaseFile(source: string): Promise<void>;
   beginDatabaseReplacement?(source: string): Promise<{ commit(): Promise<void>; rollback(): Promise<void> }>;
-  replaceStateSnapshot(state: any): void;
+  replaceStateSnapshot(state: unknown): void;
   getMigrationPendingUploadCount?(): number;
 }
 
@@ -67,22 +118,14 @@ function cloneJsonValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? null)) as T;
 }
 
-function parseMigrationJson(value: unknown) {
-  try {
-    return JSON.parse(String(value || "{}"));
-  } catch {
-    return {};
-  }
-}
-
-function sanitizeLightweightStateSnapshot(input: any) {
-  const state = cloneJsonValue(input || { videos: {}, relations: {} });
-  for (const video of Object.values<any>(state.videos || {})) {
+function sanitizeLightweightStateSnapshot(input: unknown): MigrationStateSnapshot {
+  const state = stateSnapshot(cloneJsonValue(input || { videos: {}, relations: {} }));
+  for (const video of Object.values(state.videos || {})) {
     delete video.localDir;
     delete video.downloadSession;
     if (lightweightRuntimeStatuses.has(String(video.backupStatus || ""))) video.backupStatus = "queued";
   }
-  for (const relation of Object.values<any>(state.relations || {})) {
+  for (const relation of Object.values(state.relations || {})) {
     delete relation.qualityUpgrade;
     delete relation.localDir;
     delete relation.downloadDir;
@@ -111,26 +154,28 @@ async function sanitizeLightweightDatabase(filePath: string) {
         DELETE FROM quality_upgrades;
       `);
 
-      const videoRows = database.db.prepare("SELECT bvid, backup_status, payload_json FROM videos").all() as any[];
+      const videoRows = database.db.prepare<unknown[], { "bvid": string; "backup_status": string; "payload_json": string }>("SELECT bvid, backup_status, payload_json FROM videos").all();
       const updateVideo = database.db.prepare(
         "UPDATE videos SET backup_status=?, local_dir=NULL, payload_json=?, updated_at=? WHERE bvid=?"
       );
       for (const row of videoRows) {
-        const video = sanitizeLightweightStateSnapshot({ videos: { [String(row.bvid)]: parseMigrationJson(row.payload_json) }, relations: {} }).videos[String(row.bvid)];
+        const sanitized = sanitizeLightweightStateSnapshot({ videos: { [String(row.bvid)]: parseMigrationPayload(row.payload_json) }, relations: {} });
+        const video = sanitized.videos?.[String(row.bvid)] || {};
         const status = lightweightRuntimeStatuses.has(String(row.backup_status || "")) ? "queued" : String(row.backup_status || "discovered");
         updateVideo.run(status, JSON.stringify(video), now, String(row.bvid));
       }
 
-      const relationRows = database.db.prepare("SELECT user_id, media_id, bvid, backup_status, payload_json FROM favorite_relations").all() as any[];
+      const relationRows = database.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "backup_status": string; "payload_json": string }>("SELECT user_id, media_id, bvid, backup_status, payload_json FROM favorite_relations").all();
       const updateRelation = database.db.prepare(`
         UPDATE favorite_relations
         SET backup_status=?, payload_json=?, updated_at=?
         WHERE user_id=? AND media_id=? AND bvid=?
       `);
       for (const row of relationRows) {
-        const relation = sanitizeLightweightStateSnapshot({ videos: {}, relations: {
-          [`${row.user_id}:${row.media_id}:${row.bvid}`]: parseMigrationJson(row.payload_json),
-        } }).relations[`${row.user_id}:${row.media_id}:${row.bvid}`];
+        const sanitized = sanitizeLightweightStateSnapshot({ videos: {}, relations: {
+          [`${row.user_id}:${row.media_id}:${row.bvid}`]: parseMigrationPayload(row.payload_json),
+        } });
+        const relation = sanitized.relations?.[`${row.user_id}:${row.media_id}:${row.bvid}`] || {};
         const status = lightweightRuntimeStatuses.has(String(row.backup_status || ""))
           ? (relation.favoriteUnavailable && !relation.selfVisible ? "lost" : "queued")
           : String(row.backup_status || "discovered");
@@ -219,44 +264,51 @@ async function sha256File(filePath: string) {
   return hash.digest("hex");
 }
 
-function videoDisplayTitle(video: any) {
-  return String(video?.originalMeta?.title || video?.title || video?.bvid || "");
+function videoDisplayTitle(video: JsonRecord) {
+  const original = record(video.originalMeta);
+  return String(original.title || video.title || video.bvid || "");
 }
 
-function videoDisplayUpperName(video: any) {
-  return String(video?.originalMeta?.upperName || video?.upperName || "Unknown");
+function videoDisplayUpperName(video: JsonRecord) {
+  const original = record(video.originalMeta);
+  return String(original.upperName || video.upperName || "Unknown");
 }
 
-function videoDisplayCover(video: any) {
-  return video?.originalMeta?.cover || video?.cover;
+function videoDisplayCover(video: JsonRecord) {
+  const original = record(video.originalMeta);
+  const cover = original.cover || video.cover;
+  return typeof cover === "string" ? cover : undefined;
 }
 
-function buildUnavailableIndex(state: any): UnavailableVideoIndex {
-  const videos = state?.videos && typeof state.videos === "object" ? state.videos : {};
-  const relations = state?.relations && typeof state.relations === "object" ? Object.values<any>(state.relations) : [];
-  const byBvid = new Map<string, any[]>();
+function buildUnavailableIndex(input: unknown): UnavailableVideoIndex {
+  const state = stateSnapshot(input);
+  const videos = state.videos || {};
+  const relations = Object.values(state.relations || {});
+  const byBvid = new Map<string, JsonRecord[]>();
   for (const relation of relations) {
-    if (!relation?.bvid) continue;
-    const list = byBvid.get(relation.bvid) || [];
+    const bvid = String(relation.bvid || "");
+    if (!bvid) continue;
+    const list = byBvid.get(bvid) || [];
     list.push(relation);
-    byBvid.set(relation.bvid, list);
+    byBvid.set(bvid, list);
   }
-  const items = Object.values<any>(videos)
-    .filter((video) => video?.biliStatus === "unavailable")
+  const items = Object.values(videos)
+    .filter((video) => video.biliStatus === "unavailable")
     .map((video) => {
-      const relation = byBvid.get(video.bvid)?.[0];
+      const relation = byBvid.get(String(video.bvid || ""))?.[0];
+      const original = record(video.originalMeta);
       return {
         bvid: String(video.bvid || ""),
         title: videoDisplayTitle(video),
         upperName: videoDisplayUpperName(video),
         cover: videoDisplayCover(video),
-        coverLocalPath: video?.originalMeta?.coverLocalPath,
-        backupStatus: relation?.backupStatus || video.backupStatus,
-        remotePath: relation?.remotePath || video.remotePath,
-        remoteFiles: relation?.remoteFiles || video.remoteFiles,
-        folderTitle: relation?.folderTitle,
-        mediaId: relation?.mediaId,
-        lastSeenAt: relation?.lastSeenAt || video.lastSeenAt,
+        coverLocalPath: typeof original.coverLocalPath === "string" ? original.coverLocalPath : undefined,
+        backupStatus: String(relation?.backupStatus || video.backupStatus || "") || undefined,
+        remotePath: String(relation?.remotePath || video.remotePath || "") || undefined,
+        remoteFiles: remoteFiles(relation?.remoteFiles || video.remoteFiles),
+        folderTitle: String(relation?.folderTitle || "") || undefined,
+        mediaId: Number.isFinite(Number(relation?.mediaId)) ? Number(relation?.mediaId) : undefined,
+        lastSeenAt: String(relation?.lastSeenAt || video.lastSeenAt || "") || undefined,
       };
     });
   return {
@@ -267,14 +319,15 @@ function buildUnavailableIndex(state: any): UnavailableVideoIndex {
   };
 }
 
-function buildCounts(state: any, users: any[]) {
-  const videos = state?.videos && typeof state.videos === "object" ? Object.values<any>(state.videos) : [];
-  const relations = state?.relations && typeof state.relations === "object" ? Object.values<any>(state.relations) : [];
+function buildCounts(input: unknown, users: unknown[]) {
+  const state = stateSnapshot(input);
+  const videos = Object.values(state.videos || {});
+  const relations = Object.values(state.relations || {});
   return {
     users: Array.isArray(users) ? users.length : 0,
     videos: videos.length,
     relations: relations.length,
-    unavailableVideos: videos.filter((video) => video?.biliStatus === "unavailable").length,
+    unavailableVideos: videos.filter((video) => video.biliStatus === "unavailable").length,
   };
 }
 
@@ -338,7 +391,7 @@ export async function createMigrationExport(options: MigrationExportOptions = {}
     const usersPath = path.join(dataDir, "users.json");
     const state = stateAccess?.getStateSnapshot() || { videos: {}, relations: {} };
     let stateForExport = includes.mode === "lightweight" ? sanitizeLightweightStateSnapshot(state) : state;
-    const users = readJsonFile<any[]>(usersPath, []);
+    const users = readJsonFile<unknown[]>(usersPath, []);
 
     if (includes.includeConfig) await copyIfExists(path.join(dataDir, "config.json"), path.join(staging, "data", "config.json"));
     if (includes.includeUsers) await copyIfExists(usersPath, path.join(staging, "data", "users.json"));
@@ -597,10 +650,11 @@ async function validateMigrationPayload(root: string, manifest: MigrationManifes
             (SELECT COUNT(*) FROM videos) AS videos,
             (SELECT COUNT(*) FROM favorite_relations) AS relations,
             (SELECT COUNT(*) FROM videos WHERE bili_status='unavailable') AS unavailableVideos
-        `).get() as any;
-        assertManifestCount("videos", manifest.counts?.videos, Number(counts.videos || 0));
-        assertManifestCount("relations", manifest.counts?.relations, Number(counts.relations || 0));
-        assertManifestCount("unavailableVideos", manifest.counts?.unavailableVideos, Number(counts.unavailableVideos || 0));
+        `).get() as { videos?: unknown; relations?: unknown; unavailableVideos?: unknown } | undefined;
+        const countRow = counts || {};
+        assertManifestCount("videos", manifest.counts?.videos, Number(countRow.videos || 0));
+        assertManifestCount("relations", manifest.counts?.relations, Number(countRow.relations || 0));
+        assertManifestCount("unavailableVideos", manifest.counts?.unavailableVideos, Number(countRow.unavailableVideos || 0));
       }
     } finally {
       database.close();
@@ -632,7 +686,7 @@ export async function extractMigrationPackageFile(archivePath: string) {
     for (const relative of discardedCredentialPaths) {
       await fs.promises.rm(path.join(extractDir, relative), { recursive: true, force: true });
     }
-    for (const entry of await fs.promises.readdir(path.join(extractDir, "temp"), { withFileTypes: true }).catch(() => [])) {
+    for (const entry of await readDirectoryOrEmpty(path.join(extractDir, "temp"))) {
       if (entry.isDirectory() && !entry.isSymbolicLink() && isBBDownCredentialDirectoryName(entry.name)) {
         await fs.promises.rm(path.join(extractDir, "temp", entry.name), { recursive: true, force: true });
       }
@@ -655,7 +709,7 @@ export async function previewMigrationPackageFile(archivePath: string) {
   try {
     await validateMigrationPayload(extracted.extractDir, extracted.manifest);
     const tempConflicts = extracted.manifest.mode === "complete"
-      ? await fs.promises.readdir(tempDir).catch(() => [])
+      ? await readNamesOrEmpty(tempDir)
       : [];
     return {
       manifest: extracted.manifest,
@@ -676,7 +730,7 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
     await copyIfExists(path.join(dataDir, "config.json"), path.join(staging, "data", "config.json"));
     await copyIfExists(path.join(dataDir, "users.json"), path.join(staging, "data", "users.json"));
     const state = stateAccess?.getStateSnapshot() || { videos: {}, relations: {} };
-    let stateForBackup = sanitizeLightweightStateSnapshot(state);
+    let stateForBackup: unknown = sanitizeLightweightStateSnapshot(state);
     await fs.promises.mkdir(path.join(staging, "data"), { recursive: true });
     if (stateAccess) await stateAccess.backupDatabase(path.join(staging, "data", "bfb.sqlite"));
     else await copyIfExists(databasePath, path.join(staging, "data", "bfb.sqlite"));
@@ -719,7 +773,7 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
       },
       counts: buildCounts(
         stateForBackup,
-        readJsonFile<any[]>(path.join(dataDir, "users.json"), [])
+        readJsonFile<unknown[]>(path.join(dataDir, "users.json"), [])
       ),
       warning: "Automatic backup created before importing a migration package.",
     });
@@ -743,14 +797,15 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
   restoreCovers?: boolean;
   restoreLogs?: boolean;
   restoreDebug?: boolean;
-  reload?: () => void | Promise<void>;
+  reload?: (restored: string[]) => void | Promise<void>;
+  resume?: () => void | Promise<void>;
 } = {}, stateAccess?: MigrationStateAccess) {
   const extracted = await extractMigrationPackageFile(archivePath);
   try {
     await validateMigrationPayload(extracted.extractDir, extracted.manifest);
     const complete = extracted.manifest.mode === "complete" && await pathExists(path.join(extracted.extractDir, "temp"));
     if (complete) {
-      const currentTemp = await fs.promises.readdir(tempDir).catch(() => []);
+      const currentTemp = await readNamesOrEmpty(tempDir);
       if (currentTemp.length > 0) {
         throw new MigrationConflictError(`完整迁移要求目标temp为空；当前占用：${currentTemp.slice(0, 10).join("、")}${currentTemp.length > 10 ? ` 等${currentTemp.length}项` : ""}`);
       }
@@ -834,15 +889,16 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
         }
       }
 
-      await options.reload?.();
+      await options.reload?.([...restored]);
       transaction.commit();
       committed = true;
       await stateReplacement?.commit();
+      await options.resume?.();
       for (const item of switched) await rmWithRetry(item.backup);
       transaction.finish();
       return { manifest: extracted.manifest, backupPath, restored };
     } catch (error) {
-      if (committed || (error as any)?.recoveryRequired) {
+      if (committed || Boolean(record(error).recoveryRequired)) {
         recoveryPending = true;
         throw Object.assign(new Error("Import requires recovery; files retained"), { cause: error, recoveryRequired: true });
       }
@@ -864,9 +920,16 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       }
       if (options.reload) {
         try {
-          await options.reload();
+          await options.reload([]);
         } catch (reloadError) {
           rollbackErrors.push(`reload: ${safeErrorSummary(reloadError)}`);
+        }
+      }
+      if (rollbackErrors.length === 0 && options.resume) {
+        try {
+          await options.resume();
+        } catch (resumeError) {
+          rollbackErrors.push(`resume: ${safeErrorSummary(resumeError)}`);
         }
       }
       if (rollbackErrors.length > 0) {

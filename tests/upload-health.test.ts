@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readString } from "./contract-values.js";
 import test from "node:test";
 import { Readable } from "node:stream";
 import { computeTaskRetryDelayMs } from "../src/queue.js";
@@ -22,10 +23,10 @@ test("upload error text redacts credentials", () => {
 });
 
 test("upload response body is captured with a hard size limit before sanitizing", async () => {
-  const error: any = { response: { body: Readable.from(["InvalidArgument token=secret ", "x".repeat(5000)]) } };
+  const error: { response: { body: Readable }; responseBody?: string } = { response: { body: Readable.from(["InvalidArgument token=secret ", "x".repeat(5000)]) } };
   await captureUploadResponseBody(error, 64);
-  assert.ok(Buffer.byteLength(error.responseBody) <= 64);
-  assert.doesNotMatch(sanitizeUploadText(error.responseBody), /secret/);
+  assert.ok(Buffer.byteLength(readString(error.responseBody)) <= 64);
+  assert.doesNotMatch(sanitizeUploadText(readString(error.responseBody)), /secret/);
 });
 
 test("upload errors are classified without treating wrapped network 405 as deterministic", () => {

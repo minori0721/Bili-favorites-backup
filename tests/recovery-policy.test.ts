@@ -25,13 +25,13 @@ test("remote visibility becomes actionable only after independent observations o
 test("candidate action is offered only after the complete local group is eligible", () => {
   const blocked = planRecoveryActions({
     domain: "upload",
-    kind: "remote_size_conflict",
+    kind: "remote_size_conflict" as const,
     localStatus: "available",
     candidateEligible: false,
   });
   const allowed = planRecoveryActions({
     domain: "upload",
-    kind: "remote_size_conflict",
+    kind: "remote_size_conflict" as const,
     localStatus: "available",
     candidateEligible: true,
   });
@@ -44,14 +44,14 @@ test("download and quality policies expose bounded recovery choices", () => {
   const accounts = [{ value: "u2", label: "备用账号" }];
   assert.deepEqual(planRecoveryActions({
     domain: "download",
-    kind: "download_account_required",
+    kind: "download_account_required" as const,
     downloadCategory: "account",
     alternateAccounts: accounts,
   }).map((action) => action.id), ["retry_download_with_account", "retry_download", "defer_download", "abandon_attempt"]);
 
   const combinedDownload = planRecoveryActions({
     domain: "download",
-    kind: "download_tool_failure",
+    kind: "download_tool_failure" as const,
     downloadQualityEligible: true,
     downloadQualityChoices: [{ value: "1080P", label: "1080P" }],
     downloadEncodingEligible: true,
@@ -61,13 +61,13 @@ test("download and quality policies expose bounded recovery choices", () => {
 
   assert.deepEqual(planRecoveryActions({
     domain: "quality",
-    kind: "quality_failed",
+    kind: "quality_failed" as const,
     qualityEncodingEligible: true,
   }).map((action) => action.id), ["retry_quality_with_encoding", "retry_quality", "abandon_attempt"]);
 
   const combinedQuality = planRecoveryActions({
     domain: "quality",
-    kind: "quality_failed",
+    kind: "quality_failed" as const,
     qualityQualityEligible: true,
     qualityChoices: [{ value: "4K", label: "4K" }],
     qualityEncodingEligible: true,
@@ -77,7 +77,7 @@ test("download and quality policies expose bounded recovery choices", () => {
 
   assert.deepEqual(planRecoveryActions({
     domain: "quality",
-    kind: "quality_failed",
+    kind: "quality_failed" as const,
     qualityEncodingEligible: false,
   }).map((action) => action.id), ["retry_quality", "abandon_attempt"]);
 });

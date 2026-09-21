@@ -1,3 +1,4 @@
+import { PersistentJobStore } from '../src/job-store.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -30,8 +31,8 @@ test("queue board restores manual remote verification metadata after restart", a
           cover: "https://example.test/cover.jpg",
           firstSeenAt: "2026-08-15T00:00:00.000Z",
           lastSeenAt: "2026-08-15T00:00:00.000Z",
-          biliStatus: "available",
-          backupStatus: "upload_failed",
+          biliStatus: "available" as const,
+          backupStatus: "upload_failed" as const,
         },
       },
       relations: {},
@@ -40,14 +41,15 @@ test("queue board restores manual remote verification metadata after restart", a
     });
 
     const manager = new StateManager({ statePath, dbPath });
+    const jobs = new PersistentJobStore(manager.getDatabase(), {normalizeRecovery: false});
     const scheduler = new SyncScheduler(
-      { get: () => testConfig({ queuePrefetchLimit: 25 }) } as any,
-      { list: () => [], getById: () => undefined } as any,
+      { get: () => testConfig({ queuePrefetchLimit: 25 }) },
+      { list: () => [], getById: () => null, updatePartial: () => null },
       manager,
-    ) as any;
+    );
     try {
-      scheduler.jobStore.enqueue({
-        kind: "upload",
+      jobs.enqueue({
+        kind: "upload" as const,
         dedupeKey: `upload:user-1:101:${bvid}:main`,
         bvid,
         userId: "user-1",
@@ -60,7 +62,7 @@ test("queue board restores manual remote verification metadata after restart", a
           folderTitle: "惨6",
           awaitingManualRecovery: true,
           recoveryAssessment: {
-            kind: "remote_visibility_timeout",
+            kind: "remote_visibility_timeout" as const,
             checkedAt: Date.now(),
             nextCheckAt,
             localStatus: "available",
@@ -70,7 +72,7 @@ test("queue board restores manual remote verification metadata after restart", a
         },
       });
 
-      const item = scheduler.getQueueSnapshot().uploadPending.find((candidate: any) => candidate.bvid === bvid);
+      const item = scheduler.getQueueSnapshot().uploadPending.find((candidate) => candidate.bvid === bvid);
       assert.ok(item);
       assert.equal(item.title, "99ninth_ AZUR LANE 2026 Summer Festival");
       assert.equal(item.upperName, "-キリリ-");
@@ -102,14 +104,15 @@ test("queue board presents strict media retry failures without raw upload errors
       statePath: path.join(dataDir, "state.json"),
       dbPath: path.join(dataDir, "state.db"),
     });
+    const jobs = new PersistentJobStore(manager.getDatabase(), {normalizeRecovery: false});
     const scheduler = new SyncScheduler(
-      { get: () => testConfig({ queuePrefetchLimit: 25 }) } as any,
-      { list: () => [], getById: () => undefined } as any,
+      { get: () => testConfig({ queuePrefetchLimit: 25 }) },
+      { list: () => [], getById: () => null, updatePartial: () => null },
       manager,
-    ) as any;
+    );
     try {
-      scheduler.jobStore.enqueue({
-        kind: "upload",
+      jobs.enqueue({
+        kind: "upload" as const,
         dedupeKey: "upload:user-1:101:BVMEDIARETRY:main",
         bvid: "BVMEDIARETRY",
         userId: "user-1",
@@ -129,7 +132,7 @@ test("queue board presents strict media retry failures without raw upload errors
             originalLocalDir: path.join(runtime, "original"),
           },
           recoveryAssessment: {
-            kind: "encoding_retry_failed",
+            kind: "encoding_retry_failed" as const,
             checkedAt: Date.now(),
             localStatus: "available",
             remoteStatus: "unknown",
@@ -139,7 +142,7 @@ test("queue board presents strict media retry failures without raw upload errors
         },
       });
 
-      const item = scheduler.getQueueSnapshot().uploadPending.find((candidate: any) => candidate.bvid === "BVMEDIARETRY");
+      const item = scheduler.getQueueSnapshot().uploadPending.find((candidate) => candidate.bvid === "BVMEDIARETRY");
       assert.ok(item);
       assert.equal(item.recoveryKind, "encoding_retry_failed");
       assert.match(item.detail, /新候选未通过远端确认/);

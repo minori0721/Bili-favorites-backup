@@ -11,11 +11,11 @@ test('construction and repeated snapshots do not normalize jobs or start filesys
   const directory = await createTestDir('query-projection');
   const state = new StateManager({statePath:path.join(directory,'state.json'),dbPath:path.join(directory,'state.sqlite')});
   const jobs = new PersistentJobStore(state.getDatabase());
-  jobs.enqueue({kind:'upload',dedupeKey:'stopped-fixture',initialStatus:'manual_wait',payload:{userDisposition:'abandoned',awaitingManualRecovery:true}});
-  const changes = () => state.getDatabase().db.prepare('SELECT total_changes() AS count').get();
+  jobs.enqueue({kind:'upload' as const,dedupeKey:'stopped-fixture',initialStatus:'manual_wait',payload:{userDisposition:'abandoned',awaitingManualRecovery:true}});
+  const changes = () => state.getDatabase().db.prepare<unknown[], { "count": number }>('SELECT total_changes() AS count').get();
   const before = changes();
   let inspections = 0;
-  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => undefined,updatePartial:() => undefined}, state,
+  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state,
     {cacheInspector:async () => {inspections+=1;return inspectDownloadCache(directory);}});
   try {
     for(let index=0;index<5;index++) {

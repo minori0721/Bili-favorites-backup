@@ -1,5 +1,7 @@
+import { required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import http from "node:http";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import express from "express";
 import { StateDatabase } from "../src/database.js";
@@ -12,20 +14,30 @@ import {
   fetchPlaybackUpstream,
   playbackAvailability,
   PlaybackHttpError,
+  type PlaybackRequest,
+  type PlaybackResponse,
   resolvePlaybackFile,
   safePlaybackRedirectLocation,
   streamPlaybackFile,
 } from "../src/playback.js";
+import { testConfig } from "./helpers.js";
 import type { FavoriteRelation, RemoteFileRecord, StateFile, VideoArchiveEntry } from "../src/state.js";
 
 const now = "2026-07-24T08:00:00.000Z";
+
+class MockPlaybackResponse extends PassThrough implements PlaybackResponse {
+  headersSent = false;
+  statusCode = 200;
+  status(code: number): this { this.statusCode = code; return this; }
+  setHeader(_name: string, _value: string | number): this { return this; }
+}
 
 function remoteFile(name: string, options: Partial<RemoteFileRecord> = {}): RemoteFileRecord {
   return {
     name,
     path: `/archive/${name}`,
     size: 128,
-    verificationStatus: "verified",
+    verificationStatus: "verified" as const,
     ...options,
   };
 }
@@ -38,8 +50,8 @@ function video(bvid: string, title: string, files: RemoteFileRecord[]): VideoArc
     cover: `https://example.invalid/${bvid}.jpg`,
     firstSeenAt: now,
     lastSeenAt: now,
-    biliStatus: "available",
-    backupStatus: "verified",
+    biliStatus: "available" as const,
+    backupStatus: "verified" as const,
     remotePath: `/archive/${bvid}`,
     remoteFiles: files,
   };
@@ -55,7 +67,7 @@ function relation(bvid: string, order: number, files: RemoteFileRecord[], active
     lastSeenAt: now,
     favOrder: order,
     activeInFavorite: active,
-    backupStatus: "verified",
+    backupStatus: "verified" as const,
     remotePath: `/archive/${bvid}`,
     remoteFiles: files,
   };
@@ -67,7 +79,7 @@ function playbackState(): StateFile {
     qualityProfile: { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false },
     mediaMetadata: {
       width: 1920, height: 1080, duration: 120, fps: 60, codec: "h264",
-      source: "ffprobe", observedAt: now,
+      source: "ffprobe" as const, observedAt: now,
     },
     filenameMetadata: { pageIndex: 1, cid: 301, bilibiliQuality: "1080P60", dfn: "1080P", videoCodecs: "AVC" },
   });
@@ -84,7 +96,7 @@ function playbackState(): StateFile {
   const history = remoteFile("BVHISTORY.mp4", { path: "/archive/BVHISTORY/BVHISTORY.mp4" });
   const pending = remoteFile("BVPENDING.mp4", {
     path: "/archive/BVPENDING/BVPENDING.mp4",
-    verificationStatus: "awaiting_verification",
+    verificationStatus: "awaiting_verification" as const,
   });
   const records = [
     ["BVPLAY001", "第一条", [one], 1, true],
@@ -118,7 +130,7 @@ test("browser parsers accept real SQLite queue responses including manual archiv
     assert.equal(parsePlaybackQueuePage(getPlaybackQueue(database, "u1", 999, {})).focusIndex, -1);
     assert.ok(parsePlaybackQueuePage(getPlaybackQueue(database, "u1", 10, {})).items.length > 0);
     assert.ok(parsePlaybackSearchPage(getPlaybackSearch(database, "u1", 10, { query: "第一" })).items.length > 0);
-    state.relations = Object.fromEntries(Object.values(state.relations).map(value => [
+    state.relations = Object.fromEntries(Object.values(state.relations ?? {}).map(value => [
       `${value.userId}:-1:${value.bvid}`, { ...value, mediaId: -1 },
     ]));
     database.replaceState(state);
@@ -141,7 +153,7 @@ test("playback availability only exposes verified playable archive files", () =>
   });
   assert.equal(playbackAvailability("uploaded", [remoteFile("video.mp4")]).reason, "awaiting_verification");
   assert.equal(playbackAvailability("verified", [remoteFile("video.mkv")]).reason, "no_playable_media");
-  assert.equal(playbackAvailability("verified", [remoteFile("video.mp4", { verificationStatus: "failed" })]).available, false);
+  assert.equal(playbackAvailability("verified", [remoteFile("video.mp4", { verificationStatus: "failed" as const })]).available, false);
 });
 
 test("playback redirect validation only accepts external public HTTPS locations", () => {
@@ -204,7 +216,7 @@ test("playback proxy validates every redirect and strips AList authorization acr
     false,
     {
       fetch: fetchImpl as typeof fetch,
-      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]),
     }
   );
   assert.equal(result.response?.status, 206);
@@ -235,7 +247,7 @@ test("playback proxy never restores AList authorization after an external redire
     false,
     {
       fetch: fetchImpl as typeof fetch,
-      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]),
     }
   );
   assert.equal(result.response?.status, 206);
@@ -260,7 +272,7 @@ test("playback proxy binds an external hop to the address that passed DNS valida
     false,
     {
       fetch: fetchImpl as typeof fetch,
-      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+      lookup: (async () => [{ address: "93.184.216.34", family: 4 }]),
       fetchPinned: async (url, _init, address) => {
         pinned.push({ host: url.hostname, address: address.address, family: address.family });
         return new Response("data", { status: 206, headers: { "Content-Type": "video/mp4" } });
@@ -281,28 +293,28 @@ test("playback proxy rejects private DNS, HTTP, cyclic, and excessive redirects"
   await assert.rejects(
     () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
       fetch: redirectFetch("https://private.example/video.mp4"),
-      lookup: (async () => [{ address: "10.0.0.2", family: 4 }]) as any,
+      lookup: (async () => [{ address: "10.0.0.2", family: 4 }]),
     }),
-    (error: any) => error?.code === "PLAYBACK_REDIRECT_UNSAFE"
+    (error: unknown) => readField(error, 'code') === "PLAYBACK_REDIRECT_UNSAFE"
   );
   await assert.rejects(
     () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
       fetch: redirectFetch("http://public.example/video.mp4"),
     }),
-    (error: any) => error?.code === "PLAYBACK_REDIRECT_UNSAFE"
+    (error: unknown) => readField(error, 'code') === "PLAYBACK_REDIRECT_UNSAFE"
   );
   await assert.rejects(
     () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
       fetch: redirectFetch("/dav/video.mp4"),
     }),
-    (error: any) => error?.code === "PLAYBACK_REDIRECT_LOOP"
+    (error: unknown) => readField(error, 'code') === "PLAYBACK_REDIRECT_LOOP"
   );
   let hop = 0;
   await assert.rejects(
     () => fetchPlaybackUpstream(new URL("http://alist:5244/dav/video.mp4"), alistBase, "GET", auth, signal, false, {
       fetch: (async () => new Response(null, { status: 302, headers: { Location: `/hop-${++hop}` } })) as typeof fetch,
     }),
-    (error: any) => error?.code === "PLAYBACK_REDIRECT_LIMIT"
+    (error: unknown) => readField(error, 'code') === "PLAYBACK_REDIRECT_LIMIT"
   );
 });
 
@@ -390,7 +402,7 @@ test("playback excludes sources throughout archive deletion preparation and exec
   const database = new StateDatabase(":memory:");
   try {
     database.replaceState(playbackState());
-    const file = database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001' LIMIT 1").get() as any;
+    const file = database.db.prepare<unknown[], { "id": number }>("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001' LIMIT 1").get();
     database.db.prepare(`
       INSERT INTO archive_deletions(
         id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
@@ -404,16 +416,19 @@ test("playback excludes sources throughout archive deletion preparation and exec
         user_id,media_id,bvid,deletion_id,status,file_count,total_bytes,retained_count
       ) VALUES('u1',10,'BVPLAY001','delete-playback','preparing',1,128,0)
     `).run();
-    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
+    assert.ok(file);
+    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: unknown) => readField(error, 'code') === "PLAYBACK_FILE_NOT_FOUND");
     const queue = getPlaybackQueue(database, "u1", 10, { pageSize: 50 });
-    assert.equal(queue?.items.some((item) => item.bvid === "BVPLAY001"), false);
+    assert.equal(required(queue?.items).some((item) => item.bvid === "BVPLAY001"), false);
 
     database.db.prepare("UPDATE archive_deletions SET status='pending' WHERE id='delete-playback'").run();
     database.db.prepare("UPDATE archive_deleted_sources SET status='pending' WHERE deletion_id='delete-playback'").run();
-    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: any) => error?.code === "PLAYBACK_FILE_NOT_FOUND");
+    assert.ok(file);
+    assert.throws(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)), (error: unknown) => readField(error, 'code') === "PLAYBACK_FILE_NOT_FOUND");
 
     database.db.prepare("UPDATE archive_deletions SET status='failed' WHERE id='delete-playback'").run();
     database.db.prepare("UPDATE archive_deleted_sources SET status='failed' WHERE deletion_id='delete-playback'").run();
+    assert.ok(file);
     assert.doesNotThrow(() => resolvePlaybackFile(database, "u1", 10, Number(file.id)));
   } finally {
     database.close();
@@ -464,12 +479,13 @@ test("browser metadata fills missing dimensions in place without replacing ffpro
     file.qualityProfile = { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false };
     state.videos!.BVPLAY001.remoteFiles = [file];
     database.replaceState(state);
-    const before = database.db.prepare(`
+    const before = database.db.prepare<unknown[], { "id": number; "expected_size": number | null; "updated_at": number }>(`
       SELECT id, expected_size, updated_at FROM remote_files
       WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
-    `).get() as any;
+    `).get();
     const fingerprint = getPlaybackQueue(database, 'u1', 10, {})!.items
       .find(item => item.bvid === 'BVPLAY001')!.parts[0].fingerprint;
+    assert.ok(before);
     const result = database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
       fingerprint,
       width: 1080,
@@ -477,10 +493,12 @@ test("browser metadata fills missing dimensions in place without replacing ffpro
       duration: 90,
     });
     assert.equal(result?.status, "updated");
-    const after = database.db.prepare(`
+    assert.ok(before);
+    const after = database.db.prepare<unknown[], { "id": number; "updated_at": number; "actual_width": number | null; "actual_height": number | null; "actual_duration": number | null; "actual_metadata_source": string | null }>(`
       SELECT id, updated_at, actual_width, actual_height, actual_duration, actual_metadata_source
       FROM remote_files WHERE id=?
-    `).get(before.id) as any;
+    `).get(before.id);
+    assert.ok(before);
     assert.deepEqual(after, {
       id: before.id,
       updated_at: before.updated_at,
@@ -490,15 +508,17 @@ test("browser metadata fills missing dimensions in place without replacing ffpro
       actual_metadata_source: "browser",
     });
     const queue = getPlaybackQueue(database, "u1", 10, { focusBvid: "BVPLAY001" });
-    assert.equal(queue?.items[0].parts[0].requestedQuality, "4K");
-    assert.equal(queue?.items[0].parts[0].actualQuality, "1080p");
+    assert.equal(required(required(queue?.items[0].parts)[0]).requestedQuality, "4K");
+    assert.equal(required(queue?.items[0].parts[0]).actualQuality, "1080p");
     assert.equal(queue?.items[0].parts[0].codec, undefined);
+    assert.ok(before);
     assert.equal(database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
       fingerprint,
       width: 720,
       height: 1280,
       duration: 80,
     })?.status, "unchanged");
+    assert.ok(before);
     assert.equal(database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
       fingerprint: `${before.id}:999:${before.updated_at}`,
       width: 720,
@@ -506,10 +526,12 @@ test("browser metadata fills missing dimensions in place without replacing ffpro
       duration: 80,
     }), null);
 
+    assert.ok(before);
     database.db.prepare(`
       UPDATE remote_files SET actual_width=3840, actual_height=2160, actual_codec='hevc',
         actual_metadata_source='ffprobe', actual_metadata_at=? WHERE id=?
     `).run(Date.parse(now), before.id);
+    assert.ok(before);
     assert.equal(database.updateBrowserMediaMetadata("u1", 10, Number(before.id), {
       fingerprint,
       width: 720,
@@ -533,15 +555,16 @@ test("browser metadata propagates only to equivalent verified remote-file rows",
       folderTitle: "Second folder",
     };
     database.replaceState(state);
-    const primary = database.db.prepare(`
+    const primary = database.db.prepare<unknown[], { "id": number; "expected_size": number | null; "updated_at": number }>(`
       SELECT id, expected_size, updated_at FROM remote_files
       WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
-    `).get() as any;
+    `).get();
     database.db.prepare(`
       INSERT INTO remote_files(bvid,user_id,media_id,name,remote_path,expected_size,status,updated_at)
       VALUES('BVPLAY001','isolated',99,'same.mp4',?,999,'verified',?)
     `).run(shared.path, Date.now());
 
+    assert.ok(primary);
     const result = database.updateBrowserMediaMetadata("u1", 10, Number(primary.id), {
       fingerprint: getPlaybackQueue(database, 'u1', 10, {})!.items
         .find(item => item.bvid === 'BVPLAY001')!.parts[0].fingerprint,
@@ -550,23 +573,24 @@ test("browser metadata propagates only to equivalent verified remote-file rows",
       duration: 120,
     });
     assert.equal(result?.status, "updated");
-    const equivalent = database.db.prepare(`
+    const equivalent = database.db.prepare<unknown[], { "actual_width": number | null; "actual_height": number | null; "actual_metadata_source": string | null }>(`
       SELECT actual_width,actual_height,actual_metadata_source FROM remote_files
       WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
-    `).get() as any;
+    `).get();
     assert.deepEqual(equivalent, {
       actual_width: 1920,
       actual_height: 1080,
       actual_metadata_source: "browser",
     });
-    const isolated = database.db.prepare(`
+    const isolated = database.db.prepare<unknown[], { "actual_width": number | null }>(`
       SELECT actual_width FROM remote_files WHERE user_id='isolated' AND media_id=99
-    `).get() as any;
+    `).get();
+    assert.ok(isolated);
     assert.equal(isolated.actual_width, null);
-    const relationPayload = JSON.parse(String((database.db.prepare(`
+    const relationPayload = JSON.parse(String(required((database.db.prepare<unknown[], { "payload_json": string }>(`
       SELECT payload_json FROM favorite_relations
       WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
-    `).get() as any).payload_json));
+    `).get())).payload_json));
     assert.equal(relationPayload.remoteFiles[0].mediaMetadata.width, 1920);
 
     database.db.prepare(`
@@ -574,6 +598,7 @@ test("browser metadata propagates only to equivalent verified remote-file rows",
         actual_metadata_source='ffprobe',actual_metadata_at=?
       WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
     `).run(Date.parse(now));
+    assert.ok(primary);
     database.updateBrowserMediaMetadata("u1", 10, Number(primary.id), {
       fingerprint: getPlaybackQueue(database, 'u1', 10, {})!.items
         .find(item => item.bvid === 'BVPLAY001')!.parts[0].fingerprint,
@@ -581,10 +606,10 @@ test("browser metadata propagates only to equivalent verified remote-file rows",
       height: 720,
       duration: 60,
     });
-    const protectedRow = database.db.prepare(`
+    const protectedRow = database.db.prepare<unknown[], { "actual_width": number | null; "actual_height": number | null; "actual_metadata_source": string | null }>(`
       SELECT actual_width,actual_height,actual_metadata_source FROM remote_files
       WHERE user_id='u1' AND media_id=11 AND bvid='BVPLAY001'
-    `).get() as any;
+    `).get();
     assert.deepEqual(protectedRow, {
       actual_width: 3840,
       actual_height: 2160,
@@ -605,16 +630,16 @@ test("AList browser links preserve base paths and encode archive paths without e
     state.relations!["u1:10:BVPLAY001"].remotePath = "/天翼云盘/收藏 夹";
     state.videos!.BVPLAY001.remoteFiles = [file];
     database.replaceState(state);
-    const fileId = Number((database.db.prepare(`
+    const fileId = Number(required((database.db.prepare<unknown[], { "id": number }>(`
       SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'
-    `).get() as any).id);
+    `).get())).id);
     const location = playbackFileAlistLocation(database, {
       alistBrowserUrl: "https://alist.example.com/base/",
-    } as any, "u1", 10, fileId);
+    }, "u1", 10, fileId);
     assert.equal(location, "https://alist.example.com/base/%E5%A4%A9%E7%BF%BC%E4%BA%91%E7%9B%98/%E6%94%B6%E8%97%8F%20%E5%A4%B9/%E8%A7%86%E9%A2%91%231.mp4");
     assert.throws(() => playbackFileAlistLocation(database, {
       alistBrowserUrl: "https://user:pass@alist.example.com/base",
-    } as any, "u1", 10, fileId), PlaybackHttpError);
+    }, "u1", 10, fileId), PlaybackHttpError);
     const queue = getPlaybackQueue(database, "u1", 10, { focusBvid: "BVPLAY001" });
     assert.equal(JSON.stringify(queue).includes("天翼云盘"), false);
   } finally {
@@ -666,8 +691,8 @@ test("playback pagination and search stay bounded with 10000 SQLite relations", 
 
     const previous = getPlaybackQueue(database, "scale-user", 88, { page: 10, pageSize: 50 });
     const next = getPlaybackQueue(database, "scale-user", 88, { page: 12, pageSize: 50 });
-    assert.deepEqual([previous?.items[0].queuePosition, previous?.items.at(-1)?.queuePosition], [451, 500]);
-    assert.deepEqual([next?.items[0].queuePosition, next?.items.at(-1)?.queuePosition], [551, 600]);
+    assert.deepEqual([required(required(previous?.items)[0]).queuePosition, required(previous?.items).at(-1)?.queuePosition], [451, 500]);
+    assert.deepEqual([required(required(next?.items)[0]).queuePosition, required(next?.items).at(-1)?.queuePosition], [551, 600]);
 
     const search = getPlaybackSearch(database, "scale-user", 88, { query: "Needle UP 9876", pageSize: 50 });
     assert.equal(search.total, 1);
@@ -678,8 +703,8 @@ test("playback pagination and search stay bounded with 10000 SQLite relations", 
       WHERE r.user_id=? AND r.media_id=? AND r.active_in_favorite=1
       ORDER BY CASE WHEN r.fav_order IS NULL THEN 1 ELSE 0 END, r.fav_order ASC, r.last_seen_at DESC, r.bvid ASC
       LIMIT 50
-    `).all("scale-user", 88) as any[];
-    const planText = plan.map((row) => String(row.detail || "")).join("\n");
+    `).all("scale-user", 88) as unknown[];
+    const planText = plan.map((row) => String(readField(row, 'detail') || "")).join("\n");
     assert.match(planText, /idx_relations_(?:folder_page|library_folder)/);
     assert.doesNotMatch(planText, /SCAN r(?:\s|$)/);
   } finally {
@@ -737,7 +762,7 @@ test("playback retries an OpenList-escaped path only after the original path ret
   relation.remoteFiles = [remoteFile(specialName, { path: logicalPath, size: 2 })];
   video.remoteFiles = [...relation.remoteFiles];
   database.replaceState(state);
-  const fileId = Number((database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'").get() as any).id);
+  const fileId = Number(required((database.db.prepare<unknown[], { "id": number }>("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'").get())).id);
   const requestedPaths: string[] = [];
   const app = express();
   app.get("/stream", async (req, res) => {
@@ -747,7 +772,7 @@ test("playback retries an OpenList-escaped path only after the original path ret
         alistUsername: "user",
         alistPassword: "pass",
         playbackDeliveryMode: "proxy",
-      } as any, req, res, {
+      }, req, res, {
         userId: "u1",
         mediaId: 10,
         fileId,
@@ -758,7 +783,7 @@ test("playback retries an OpenList-escaped path only after the original path ret
             requestedPaths.push(url.pathname);
             if (url.pathname.includes("%5C")) return new Response("ok", { status: 200, headers: { "Content-Length": "2" } });
             return new Response(null, { status: 404 });
-          }) as any,
+          }),
           resolveRemotePath: async (remotePath) => remotePath === logicalPath ? accessPath : undefined,
         },
       });
@@ -848,7 +873,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
   file.name = "video.mp4";
   state.videos!.BVPLAY001.remoteFiles = [file];
   database.replaceState(state);
-  const fileId = Number((database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'").get() as any).id);
+  const fileId = Number(required((database.db.prepare<unknown[], { "id": number }>("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'").get())).id);
   upstreamBase = await listen(upstream);
   const app = express();
   app.all("/stream", async (req, res) => {
@@ -858,7 +883,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
         alistUsername: "alist-user",
         alistPassword: "alist-pass",
         playbackDeliveryMode: "auto",
-      } as any, req, res, {
+      }, req, res, {
         userId: "u1",
         mediaId: 10,
         fileId,
@@ -866,7 +891,7 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
         attemptId: typeof req.query.attempt === "string" ? req.query.attempt : undefined,
         forceProxy: req.query.forceProxy === "1",
         transport: {
-          lookup: (async () => [{ address: "93.184.216.34", family: 4 }]) as any,
+          lookup: (async () => [{ address: "93.184.216.34", family: 4 }]),
         },
       });
     } catch (error) {
@@ -1009,18 +1034,21 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
 test("playback file resolver rejects wrong relation and replaced paths", async () => {
   const database = new StateDatabase(":memory:");
   database.replaceState(playbackState());
-  const row = database.db.prepare("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 LIMIT 1").get() as any;
-  const request = { headers: {}, method: "GET", once() {}, off() {} } as any;
-  const response = { once() {}, off() {} } as any;
+  const row = database.db.prepare<unknown[], { "id": number }>("SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 LIMIT 1").get();
+  const request: PlaybackRequest = { headers: {}, method: "GET", once() {}, off() {} };
+  const response: PlaybackResponse = new MockPlaybackResponse();
   try {
+    assert.ok(row);
     await assert.rejects(
-      streamPlaybackFile(database, {} as any, request, response, { userId: "other", mediaId: 10, fileId: Number(row.id), ownerKey: "test" }),
-      (error: any) => error instanceof PlaybackHttpError && error.statusCode === 404
+      streamPlaybackFile(database, testConfig(), request, response, { userId: "other", mediaId: 10, fileId: Number(row.id), ownerKey: "test" }),
+      (error: unknown) => error instanceof PlaybackHttpError && error.statusCode === 404
     );
+    assert.ok(row);
     database.db.prepare("UPDATE remote_files SET remote_path='/archive/replaced.mp4' WHERE id=?").run(row.id);
+    assert.ok(row);
     await assert.rejects(
-      streamPlaybackFile(database, {} as any, request, response, { userId: "u1", mediaId: 10, fileId: Number(row.id), ownerKey: "test" }),
-      (error: any) => error instanceof PlaybackHttpError && error.statusCode === 404
+      streamPlaybackFile(database, testConfig(), request, response, { userId: "u1", mediaId: 10, fileId: Number(row.id), ownerKey: "test" }),
+      (error: unknown) => error instanceof PlaybackHttpError && error.statusCode === 404
     );
   } finally {
     database.close();

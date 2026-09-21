@@ -26,8 +26,9 @@ export async function cleanupStaleBBDownCredentialDirectories(root = os.tmpdir()
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(root, { withFileTypes: true });
-  } catch (error: any) {
-    if (error?.code === "ENOENT") return 0;
+  } catch (error: unknown) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT") return 0;
     throw error;
   }
 

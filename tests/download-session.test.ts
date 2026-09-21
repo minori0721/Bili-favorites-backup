@@ -1,3 +1,4 @@
+import { readArray, required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -104,20 +105,20 @@ test("interactive download expands the root snapshot, protects the page set and 
     `);
     const options = {
       downloadDir, command: process.execPath, commandArgsPrefix: [script],
-      pageSnapshot: { available: true, interactive: true, access: { classification: "normal", source: "view" },
-        pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] } as const,
+      pageSnapshot: { available: true, interactive: true, access: { classification: "normal" as const, source: "view" as const },
+        pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] },
     };
-    const cookie = { SESSDATA: "fake", DedeUserID: "1" };
+    const cookie = { bili_jct: '', SESSDATA: "fake", DedeUserID: "1" };
     const runOptions = { ...options, accessRecheck: async () => options.pageSnapshot };
-    await assert.rejects(downloadWithBBDown(bvid, cookie, testConfig(), runOptions as any), /remaining 1/);
+    await assert.rejects(downloadWithBBDown(bvid, cookie, testConfig(), runOptions), /remaining 1/);
     assert.equal(readDownloadSession(downloadDir)?.status, "failed");
-    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 2);
-    const first = await downloadWithBBDown(bvid, cookie, testConfig(), runOptions as any);
+    assert.equal(required(readDownloadSession(downloadDir)?.outputs).length, 2);
+    const first = await downloadWithBBDown(bvid, cookie, testConfig(), runOptions);
     assert.equal(first.files.length, 3);
     assert.equal(first.totalPages, 3);
     assert.equal(readDownloadSession(downloadDir)?.status, "complete");
-    assert.deepEqual(readDownloadSession(downloadDir)?.pages.map(p => p.cid), [101, 102, 103]);
-    const second = await downloadWithBBDown(bvid, cookie, testConfig(), runOptions as any);
+    assert.deepEqual(required(readDownloadSession(downloadDir)?.pages).map(p => p.cid), [101, 102, 103]);
+    const second = await downloadWithBBDown(bvid, cookie, testConfig(), runOptions);
     assert.equal(second.files.length, 3);
     const calls = (await fs.promises.readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.equal(calls.length, 2);
@@ -136,9 +137,9 @@ test("interactive inventory failures preserve the existing manifest and page-set
     const script = path.join(runtime, "fake.mjs");
     const records = [{ version: 2, bvid, cid: "101", pageIndex: 1, pageTitle: "Root", tracks: [] }];
     const options = { downloadDir, command: process.execPath, commandArgsPrefix: [script],
-      pageSnapshot: { available: true, interactive: true, pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] } };
+      pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, interactive: true, pages: [{ index: 1, cid: 101, title: "Root", duration: 2 }] } };
     await fs.promises.writeFile(script, `console.log('BFB_PROBE_JSON:' + ${JSON.stringify(JSON.stringify(records[0]))});`);
-    await assert.rejects(downloadWithBBDown(bvid, { SESSDATA: "fake", DedeUserID: "1" }, testConfig(), options as any), /片段清单不完整/);
+    await assert.rejects(downloadWithBBDown(bvid, { bili_jct: '', SESSDATA: "fake", DedeUserID: "1" }, testConfig(), options), /片段清单不完整/);
     assert.deepEqual(readDownloadSession(downloadDir), before);
     await fs.promises.writeFile(script, `
       if (process.argv.includes('--bfb-pages-json')) {
@@ -146,9 +147,9 @@ test("interactive inventory failures preserve the existing manifest and page-set
         console.log('BFB_PAGES_COMPLETE:${interactivePageSetHash(records)}');
       } else { console.log('BFB_SIGNAL:INTERACTIVE_CHANGED'); process.exit(1); }
     `);
-    await assert.rejects(downloadWithBBDown(bvid, { SESSDATA: "fake", DedeUserID: "1" }, testConfig(), options as any), /片段清单发生变化/);
+    await assert.rejects(downloadWithBBDown(bvid, { bili_jct: '', SESSDATA: "fake", DedeUserID: "1" }, testConfig(), options), /片段清单发生变化/);
     assert.equal(readDownloadSession(downloadDir)?.status, "failed");
-    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 0);
+    assert.equal(required(readDownloadSession(downloadDir)?.outputs).length, 0);
   } finally { await removeTestDir(runtime); }
 });
 
@@ -156,7 +157,7 @@ function uploadMetadataManifest(overrides: Partial<DownloadSessionManifest> = {}
   return {
     schemaVersion: 1,
     sessionId: "metadata-session",
-    kind: "quality_upgrade",
+    kind: "quality_upgrade" as const,
     bvid: "BVMETADATA",
     accountUid: 1,
     bbdownCommit: "test",
@@ -173,7 +174,7 @@ function uploadMetadataManifest(overrides: Partial<DownloadSessionManifest> = {}
     updatedAt: "2026-07-29T00:00:00.000Z",
     snapshotAt: "2026-07-29T00:00:00.000Z",
     publishedAt: 1_700_000_000,
-    status: "complete",
+    status: "complete" as const,
     pages: [{ index: 1, cid: 501, title: "P1", duration: 30, publishedAt: 1_700_000_100 }],
     selectedStreams: [{
       pageIndex: 1,
@@ -221,7 +222,7 @@ test("upload metadata is rebuilt from the persistent download session", async ()
         duration: 30,
         fps: 60,
         codec: "HEVC",
-        source: "ffprobe",
+        source: "ffprobe" as const,
         observedAt: "2026-07-29T00:00:02.000Z",
       },
     });
@@ -231,8 +232,8 @@ test("upload metadata is rebuilt from the persistent download session", async ()
     const legacyMetadata = buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], {
       requireVerifiedMediaMetadata: true,
     });
-    assert.equal(legacyMetadata?.["parts/sample.mp4"].bilibiliQuality, undefined);
-    assert.equal(legacyMetadata?.["parts/sample.mp4"].dfn, "1772p60");
+    assert.equal(required(legacyMetadata?.["parts/sample.mp4"]).bilibiliQuality, undefined);
+    assert.equal(required(legacyMetadata?.["parts/sample.mp4"]).dfn, "1772p60");
   } finally {
     await removeTestDir(runtime);
   }
@@ -262,7 +263,7 @@ test("strict upload metadata preflight rejects incomplete quality-upgrade artifa
       /lack verified ffprobe dimensions/
     );
     assert.equal(
-      buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"])?.["parts/sample.mp4"].mediaMetadata,
+      required(buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"])?.["parts/sample.mp4"]).mediaMetadata,
       undefined
     );
 
@@ -400,7 +401,7 @@ test("invalid quarantined files are cleanup bytes instead of resumable retained 
     writeJsonFile(path.join(downloadDir, ".bfb-download.json"), {
       schemaVersion: 1,
       sessionId: "invalid-session",
-      kind: "backup",
+      kind: "backup" as const,
       bvid: "BVINVALID",
       accountUid: 1,
       bbdownCommit: "test",
@@ -409,7 +410,7 @@ test("invalid quarantined files are cleanup bytes instead of resumable retained 
       createdAt: "2026-07-12T00:00:00.000Z",
       updatedAt: "2026-07-12T00:00:00.000Z",
       snapshotAt: "2026-07-12T00:00:00.000Z",
-      status: "failed",
+      status: "failed" as const,
       pages: [{ index: 1, cid: 1, title: "P1", duration: 60 }],
       outputs: [],
       history: [],
@@ -446,7 +447,7 @@ test("manual fragment cleanup preserves verified outputs and resumable aria2 tra
     writeJsonFile(path.join(downloadDir, ".bfb-download.json"), {
       schemaVersion: 1,
       sessionId: "selective-cleanup-session",
-      kind: "backup",
+      kind: "backup" as const,
       bvid: "BVSELECTIVECLEANUP",
       accountUid: 1,
       bbdownCommit: "test",
@@ -455,7 +456,7 @@ test("manual fragment cleanup preserves verified outputs and resumable aria2 tra
       createdAt: "2026-07-12T00:00:00.000Z",
       updatedAt: "2026-07-12T00:00:00.000Z",
       snapshotAt: "2026-07-12T00:00:00.000Z",
-      status: "failed",
+      status: "failed" as const,
       pages: [{ index: 1, cid: 1, title: "P1", duration: 60 }],
       outputs: [{ pageIndex: 1, cid: 1, relativePath: "verified.mp4", size: 2048, duration: 60, videoCodec: "h264", quickHash: "hash", verifiedAt: "2026-07-12T00:00:00.000Z" }],
       history: [],
@@ -497,18 +498,18 @@ test("a late charging restriction removes only invalid files created by the curr
         downloadDir,
         pageSnapshot: {
           available: true,
-          access: { classification: "unknown", source: "unknown" },
+          access: { classification: "unknown", source: "unknown" as const },
           pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
         },
         command: process.execPath,
         commandArgsPrefix: [fakeScript],
         accessRecheck: async () => ({
           available: true,
-          access: { classification: "charging_restricted", isUPowerExclusive: true, isUPowerPlay: false, previewAvailable: true, source: "view_detail" },
+          access: { classification: "charging_restricted", isUPowerExclusive: true, isUPowerPlay: false, previewAvailable: true, source: "view_detail" as const },
           pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
         }),
       }
-    ), (error: any) => error?.chargingRestricted === true);
+    ), (error: unknown) => readField(error, 'chargingRestricted') === true);
     assert.equal(fs.existsSync(oldInvalid), true);
     const invalidFiles = fs.readdirSync(path.join(downloadDir, "_invalid"), { recursive: true }).map(String);
     assert.equal(invalidFiles.some((name) => name.includes("new-preview")), false);
@@ -683,7 +684,7 @@ test("cleanup preserves changed files and their manifest records", async () => {
     const result = await cleanupUploadedSessionFiles(runtime, { confirmedRelativePaths: [output.relativePath] });
     assert.equal(result.removedFiles, 0);
     assert.equal(fs.existsSync(target), true);
-    assert.equal(readDownloadSession(runtime)?.outputs.length, 1);
+    assert.equal(required(readDownloadSession(runtime)?.outputs).length, 1);
   } finally {
     await removeTestDir(runtime);
   }
@@ -704,7 +705,7 @@ test("explicit cleanup authorization cannot fall back to legacy paths after iden
     });
     assert.equal(result.removedFiles, 0);
     assert.equal(fs.existsSync(target), true);
-    assert.equal(readDownloadSession(runtime)?.outputs.length, 1);
+    assert.equal(required(readDownloadSession(runtime)?.outputs).length, 1);
   } finally {
     await removeTestDir(runtime);
   }
@@ -1008,7 +1009,7 @@ test("recovery summary separates managed sessions from legacy fragments", async 
       bvid: "BV1QUALITY",
       accountUid: 1,
       config: testConfig(),
-      kind: "quality_upgrade",
+      kind: "quality_upgrade" as const,
       pages: [{ index: 1, cid: 2, title: "One", duration: 1 }],
     });
     await fs.promises.writeFile(path.join(quality, "track.m4a.aria2"), "resume");
@@ -1073,23 +1074,23 @@ test("strict encoding retry stops before download when BBDown explicitly selects
       console.log('[视频] [4K 超清] [AVC] [1000 kbps]');
       setInterval(() => {}, 1000);
     `, "utf8");
-    const error: any = await downloadWithBBDown(
+    const error: unknown = await downloadWithBBDown(
       "BVSTRICTEARLY",
       { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
       testConfig(),
       {
         downloadDir,
         expectedEncoding: "AV1",
-        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
         command: process.execPath,
         commandArgsPrefix: [fakeScript, pidFile],
       },
     ).then(() => null, (caught) => caught);
-    assert.equal(error?.code, "BFB_ENCODING_SELECTED_MISMATCH");
-    assert.equal(error?.source, "selected_stream");
-    assert.equal(error?.encodingAssessment?.actualEncodings?.[0], "AVC");
+    assert.equal(readField(error, 'code'), "BFB_ENCODING_SELECTED_MISMATCH");
+    assert.equal(readField(error, 'source'), "selected_stream");
+    assert.equal(readArray(readField(readField(error, 'encodingAssessment'), 'actualEncodings'))?.[0], "AVC");
     assert.equal(readDownloadSession(downloadDir)?.status, "failed");
-    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 0);
+    assert.equal(required(readDownloadSession(downloadDir)?.outputs).length, 0);
     assert.equal(isProcessAlive(Number(await fs.promises.readFile(pidFile, "utf8"))), false);
   } finally {
     await removeTestDir(runtime);
@@ -1106,23 +1107,23 @@ test("strict quality retry stops before download when BBDown explicitly selects 
       console.log('[视频] [1080P 高清] [AV1] [1000 kbps]');
       setInterval(() => {}, 1000);
     `, "utf8");
-    const error: any = await downloadWithBBDown(
+    const error: unknown = await downloadWithBBDown(
       "BVSTRICTQUALITY",
       { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
       testConfig(),
       {
         downloadDir,
         expectedQuality: "4K",
-        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
         command: process.execPath,
         commandArgsPrefix: [fakeScript],
       },
     ).then(() => null, (caught) => caught);
-    assert.equal(error?.code, "BFB_QUALITY_MISMATCH");
-    assert.equal(error?.source, "selected_stream");
-    assert.equal(error?.qualityAssessment?.actualQualities?.[0], "1080P");
+    assert.equal(readField(error, 'code'), "BFB_QUALITY_MISMATCH");
+    assert.equal(readField(error, 'source'), "selected_stream");
+    assert.equal(readArray(readField(readField(error, 'qualityAssessment'), 'actualQualities'))?.[0], "1080P");
     assert.equal(readDownloadSession(downloadDir)?.status, "failed");
-    assert.equal(readDownloadSession(downloadDir)?.outputs.length, 0);
+    assert.equal(required(readDownloadSession(downloadDir)?.outputs).length, 0);
   } finally {
     await removeTestDir(runtime);
   }
@@ -1148,23 +1149,23 @@ test("strict encoding retry uses ffprobe as the final gate and allows a matching
     process.env.FAKE_MEDIA_SOURCE = fixture;
     try {
       const mismatchDir = path.join(runtime, "BVSTRICTFFPROBE-MISMATCH");
-      const mismatch: any = await downloadWithBBDown(
+      const mismatch: unknown = await downloadWithBBDown(
         "BVSTRICTFFPROBE",
         { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
         testConfig(),
         {
           downloadDir: mismatchDir,
           expectedEncoding: "AV1",
-          pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+          pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
           command: process.execPath,
           commandArgsPrefix: [fakeScript],
         },
       ).then(() => null, (caught) => caught);
-      assert.equal(mismatch?.code, "BFB_ENCODING_MISMATCH");
-      assert.equal(mismatch?.source, "ffprobe");
-      assert.deepEqual(mismatch?.encodingAssessment?.actualEncodings, ["AVC"]);
+      assert.equal(readField(mismatch, 'code'), "BFB_ENCODING_MISMATCH");
+      assert.equal(readField(mismatch, 'source'), "ffprobe");
+      assert.deepEqual(readField(readField(mismatch, 'encodingAssessment'), 'actualEncodings'), ["AVC"]);
       assert.equal(readDownloadSession(mismatchDir)?.status, "failed");
-      assert.equal(readDownloadSession(mismatchDir)?.outputs.length, 1);
+      assert.equal(required(readDownloadSession(mismatchDir)?.outputs).length, 1);
 
       const matchedDir = path.join(runtime, "BVSTRICTFFPROBE-MATCH");
       const matched = await downloadWithBBDown(
@@ -1174,7 +1175,7 @@ test("strict encoding retry uses ffprobe as the final gate and allows a matching
         {
           downloadDir: matchedDir,
           expectedEncoding: "AVC",
-          pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+          pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
           command: process.execPath,
           commandArgsPrefix: [fakeScript],
         },
@@ -1225,7 +1226,7 @@ test("downloader invokes BBDown with aria2 once and reuses the verified session"
     try {
       const options = {
         downloadDir,
-        pageSnapshot: {
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const},
           available: true,
           pages: [{ index: 1, cid: 501, title: "One", duration: 2 }],
         },
@@ -1309,7 +1310,7 @@ test("APP empty play response falls back to Web exactly once", async () => {
       testConfig({ bbdownApiMode: "app" }),
       {
         downloadDir,
-        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
         command: process.execPath,
         commandArgsPrefix: [fakeScript],
         onApiReady: (mode) => readyModes.push(mode),
@@ -1346,20 +1347,20 @@ test("voucher signal defers without exposing the marker or running a debug probe
       console.error('[2026-07-11 00:00:00.000] - BFB_SIGNAL:RISK_V_VOUCHER');
     `, "utf8");
     process.env.FAKE_ARGS_LOG = argsLog;
-    const error: any = await downloadWithBBDown(
+    const error: unknown = await downloadWithBBDown(
       "BV1VOUCHER",
       { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
       testConfig(),
       {
         downloadDir,
-        pageSnapshot: { available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const}, available: true, pages: [{ index: 1, cid: 1, title: "One", duration: 2 }] },
         command: process.execPath,
         commandArgsPrefix: [fakeScript],
       }
     ).then(() => null, (caught) => caught);
-    assert.equal(error?.biliRiskControl, true);
-    assert.equal(error?.deferToNextCycle, true);
-    assert.doesNotMatch(String(error?.message || ""), /v_voucher/i);
+    assert.equal(readField(error, 'biliRiskControl'), true);
+    assert.equal(readField(error, 'deferToNextCycle'), true);
+    assert.doesNotMatch(String(readField(error, 'message') || ""), /v_voucher/i);
     const invocations = (await fs.promises.readFile(argsLog, "utf8")).trim().split(/\r?\n/);
     assert.equal(invocations.length, 1);
     assert.equal(fs.existsSync(path.join(runtime, "data", "debug")), false);
@@ -1393,7 +1394,7 @@ test("downloader quarantines only the broken aria2 track before the next retry",
       testConfig(),
       {
         downloadDir,
-        pageSnapshot: {
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const},
           available: true,
           pages: [{ index: 1, cid: 501, title: "One", duration: 2 }],
         },
@@ -1416,21 +1417,19 @@ test("Windows taskkill helper is bounded and reports success, failure, and timeo
   const calls: Array<{ command: string; args: string[] }> = [];
   const fakeSpawn = ((command: string, args: string[]) => {
     calls.push({ command, args });
-    const child = new EventEmitter() as any;
-    child.kill = () => true;
+    const child = Object.assign(new EventEmitter(), {kill: () => true});
     queueMicrotask(() => child.emit("close", 0));
     return child;
-  }) as typeof spawn;
+  });
   const success = await runWindowsTaskkill(1234, true, { timeoutMs: 50, spawnImpl: fakeSpawn });
   assert.deepEqual(success, { ok: true, timedOut: false, code: 0 });
   assert.deepEqual(calls[0], { command: "taskkill", args: ["/PID", "1234", "/T", "/F"] });
 
   const nonzeroSpawn = (() => {
-    const child = new EventEmitter() as any;
-    child.kill = () => true;
+    const child = Object.assign(new EventEmitter(), {kill: () => true});
     queueMicrotask(() => child.emit("close", 128));
     return child;
-  }) as typeof spawn;
+  });
   assert.deepEqual(
     await runWindowsTaskkill(9, false, { timeoutMs: 50, spawnImpl: nonzeroSpawn }),
     { ok: false, timedOut: false, code: 128 }
@@ -1438,16 +1437,15 @@ test("Windows taskkill helper is bounded and reports success, failure, and timeo
 
   let killed = false;
   const hangingSpawn = (() => {
-    const child = new EventEmitter() as any;
-    child.kill = () => { killed = true; return true; };
+    const child = Object.assign(new EventEmitter(), {kill: () => { killed = true; return true; }});
     return child;
-  }) as typeof spawn;
+  });
   const timedOut = await runWindowsTaskkill(10, false, { timeoutMs: 20, spawnImpl: hangingSpawn });
   assert.equal(timedOut.timedOut, true);
   assert.equal(timedOut.ok, false);
   assert.equal(killed, true);
 
-  const throwingSpawn = (() => { throw new Error("missing taskkill"); }) as typeof spawn;
+  const throwingSpawn = () => { throw new Error("missing taskkill"); };
   const failed = await runWindowsTaskkill(11, false, { timeoutMs: 20, spawnImpl: throwingSpawn });
   assert.equal(failed.ok, false);
   assert.match(failed.error || "", /missing taskkill/);
@@ -1474,7 +1472,7 @@ test("shutdown terminates the BBDown process tree", async () => {
       testConfig(),
       {
         downloadDir,
-        pageSnapshot: {
+        pageSnapshot: { access: {classification: 'normal' as const, source: 'view' as const},
           available: true,
           pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
         },

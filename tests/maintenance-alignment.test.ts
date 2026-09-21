@@ -54,7 +54,7 @@ test("schema 3 migration rejects allowed files missing from its checksum manifes
     }));
     await fs.promises.writeFile(path.join(source, "manifest.json"), JSON.stringify({
       schema: 3, app: "Bili-favorites-backup", version: "2.4.0", exportedAt: new Date().toISOString(),
-      mode: "lightweight", includes: {}, counts: {}, warning: "test",
+      mode: "lightweight" as const, includes: {}, counts: {}, warning: "test",
     }));
     const archive = path.join(runtime, "migration.zip");
     await createZipFromSources([{ root: source, prefix: false }], archive);
@@ -85,7 +85,7 @@ test("batch rename stages all paths and rolls back when a MOVE fails", async () 
       if (!paths.delete(from)) throw new Error("source missing");
       paths.add(to);
     },
-  } as any;
+  };
   const result = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [
     { oldPath: "/target/a-old.mp4", newPath: "/target/a.mp4" },
     { oldPath: "/target/b-old.mp4", newPath: "/target/b.mp4" },
@@ -114,10 +114,10 @@ test("schema 13 finds only active unbacked permanent failures for access classif
       schemaVersion: 12,
       processedByUser: {},
       failedByUser: { u1: { "1:BVLEGACY": { bvid: "BVLEGACY", mediaId: 1, failedAt: now, reason: "old", permanent: true } } },
-      videos: { BVLEGACY: { bvid: "BVLEGACY", title: "legacy", upperName: "up", firstSeenAt: now, lastSeenAt: now, biliStatus: "available", backupStatus: "failed" } },
-      relations: { "u1:1:BVLEGACY": { userId: "u1", mediaId: 1, bvid: "BVLEGACY", folderTitle: "fav", firstSeenAt: now, lastSeenAt: now, activeInFavorite: true, backupStatus: "failed" } },
+      videos: { BVLEGACY: { bvid: "BVLEGACY", title: "legacy", upperName: "up", firstSeenAt: now, lastSeenAt: now, biliStatus: "available" as const, backupStatus: "failed" as const } },
+      relations: { "u1:1:BVLEGACY": { userId: "u1", mediaId: 1, bvid: "BVLEGACY", folderTitle: "fav", firstSeenAt: now, lastSeenAt: now, activeInFavorite: true, backupStatus: "failed" as const } },
       folderScans: {}, userCooldowns: {},
-    } as any);
+    });
     const candidates = manager.listLegacyFailureClassificationCandidates();
     assert.equal(candidates.length, 1);
     manager.markLegacyAccessClassification("BVLEGACY", { result: "available", classifiedAt: now });
@@ -134,9 +134,9 @@ test("canceling a user removes credential-dependent jobs without deleting upload
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   try {
     const jobs = new PersistentJobStore(manager.getDatabase());
-    jobs.enqueue({ kind: "download", dedupeKey: "download:one", bvid: "BV1", payload: { primaryUserId: "u1" } });
-    jobs.enqueue({ kind: "quality_download", dedupeKey: "quality:one", bvid: "BV2", userId: "u1" });
-    jobs.enqueue({ kind: "upload", dedupeKey: "upload:one", bvid: "BV3", userId: "u1" });
+    jobs.enqueue({ kind: "download" as const, dedupeKey: "download:one", bvid: "BV1", payload: { primaryUserId: "u1" } });
+    jobs.enqueue({ kind: "quality_download" as const, dedupeKey: "quality:one", bvid: "BV2", userId: "u1" });
+    jobs.enqueue({ kind: "upload" as const, dedupeKey: "upload:one", bvid: "BV3", userId: "u1" });
     assert.equal(jobs.cancelUserDependentJobs("u1"), 2);
     assert.equal(jobs.findByDedupeKey("upload:one")?.kind, "upload");
   } finally {
@@ -156,19 +156,19 @@ test("detaching an account preserves video and remote proof while deactivating i
       videos: {
         BVDETACHED: {
           bvid: "BVDETACHED", title: "Preserved", upperName: "UP", firstSeenAt: now, lastSeenAt: now,
-          biliStatus: "available", backupStatus: "verified", remotePath: "/backup/BVDETACHED",
-          remoteFiles: [{ name: "video.mp4", path: "/backup/BVDETACHED/video.mp4", size: 42, verificationStatus: "verified" }],
+          biliStatus: "available" as const, backupStatus: "verified" as const, remotePath: "/backup/BVDETACHED",
+          remoteFiles: [{ name: "video.mp4", path: "/backup/BVDETACHED/video.mp4", size: 42, verificationStatus: "verified" as const }],
         },
       },
       relations: {
         "u1:1:BVDETACHED": {
           userId: "u1", mediaId: 1, bvid: "BVDETACHED", folderTitle: "One",
-          firstSeenAt: now, lastSeenAt: now, activeInFavorite: true, backupStatus: "verified",
+          firstSeenAt: now, lastSeenAt: now, activeInFavorite: true, backupStatus: "verified" as const,
           remotePath: "/backup/BVDETACHED",
-          remoteFiles: [{ name: "video.mp4", path: "/backup/BVDETACHED/video.mp4", size: 42, verificationStatus: "verified" }],
+          remoteFiles: [{ name: "video.mp4", path: "/backup/BVDETACHED/video.mp4", size: 42, verificationStatus: "verified" as const }],
         },
       },
-    } as any);
+    });
     assert.equal(manager.detachUserRelations("u1", now), 1);
     const relation = manager.getRelationStatus("u1", 1, "BVDETACHED");
     assert.equal(relation?.activeInFavorite, false);

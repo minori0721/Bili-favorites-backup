@@ -31,7 +31,7 @@ export function createShell(options: {
         try {
           await options.api.request('/api/logout', { method: 'POST', signal });
           if (!signal.aborted && lifetime === controller) options.loggedOut();
-        } catch { /* The request layer reports failures; remain on the usable page. */ }
+        } catch (error) { console.debug('[Shell] logout request failed; keeping the current page usable', error); }
         finally {
           if (lifetime === controller) { loggingOut = false; logout.disabled = false; }
         }

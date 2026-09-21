@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ConfigStore } from '../config.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import type { inspectRemoteFileSize } from '../uploader.js';
@@ -13,11 +13,11 @@ import { RECOVERY_AUTOMATION_INTERVAL_MS } from './recovery-automation.js';
 import { readTaskFailure } from './task-failure.js';
 import type { RecoveryAssessment } from './recovery-contracts.js';
 import type { RecoveryLockAccess } from './recovery-work.js';
-type Session = NonNullable<ReturnType<TransferSessionStore['get']>>;
-type Files = ReturnType<TransferSessionStore['listFiles']>;
+type Session = NonNullable<ReturnType<TransferSessionRepository['get']>>;
+type Files = ReturnType<TransferSessionRepository['listFiles']>;
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'complete'>;
-  transferSessions: Pick<TransferSessionStore, 'get' | 'listFiles' | 'supersede'>;
+  jobStore: Pick<JobRepository, 'findById' | 'complete'>;
+  transferSessions: Pick<TransferSessionRepository, 'get' | 'listFiles' | 'supersede'>;
   configStore: Pick<ConfigStore, 'get'>;
   recoveryJobLocks: RecoveryLockAccess;
   remoteFileInspector: typeof inspectRemoteFileSize;
@@ -128,8 +128,14 @@ export function createRecoveryAssessmentService(deps: Dependencies) {
               return { changed, resolved: changed };
             }
           }
-        } catch {
-          // Incomplete historical evidence must never become a successful new attempt.
+        } catch (error) {
+          console.warn('[Recovery] historical transfer evidence is incomplete; manual review remains required', error);
+          const assessment: RecoveryAssessment = {
+            kind: "manual_review", checkedAt: deps.now(), localStatus: "unknown", remoteStatus: "unknown",
+            summary: "当前传输代次缺少分P清单，已有归档证据尚不能确认；文件不会被上传或清理。",
+          };
+          deps.updateRecoveryAssessment(job.id, assessment);
+          return { changed: true, assessment };
         }
         const assessment: RecoveryAssessment = {
           kind: "manual_review", checkedAt: deps.now(), localStatus: "unknown", remoteStatus: "unknown",
@@ -183,6 +189,7 @@ export function createRecoveryAssessmentService(deps: Dependencies) {
           deps.updateRecoveryAssessment(job.id, assessment);
           return { changed: true, assessment };
         } catch (error) {
+          // boundary-critical: convert an inspection failure into an explicit manual-review assessment.
           const assessment = buildRemoteRecoveryAssessment("unknown", error, "冲突候选");
           deps.updateRecoveryAssessment(job.id, assessment);
           return { changed: true, assessment };
@@ -211,6 +218,7 @@ export function createRecoveryAssessmentService(deps: Dependencies) {
             return { changed: true, assessment };
           }
         } catch (error) {
+          // boundary-critical: convert an inspection failure into an explicit manual-review assessment.
           const assessment = buildRemoteRecoveryAssessment("unknown", error, "旧归档");
           deps.updateRecoveryAssessment(job.id, assessment);
           return { changed: true, assessment };
@@ -245,6 +253,7 @@ export function createRecoveryAssessmentService(deps: Dependencies) {
           results.push({ file, ...result });
         }
       } catch (error) {
+        // boundary-critical: convert an inspection failure into an explicit manual-review assessment.
         const assessment = buildRemoteRecoveryAssessment(local.status, error, "远端文件");
         deps.updateRecoveryAssessment(job.id, assessment);
         return { changed: true, assessment };

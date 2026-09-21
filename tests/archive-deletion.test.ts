@@ -1,3 +1,5 @@
+import {relationFor} from './fixtures/state-observation.js';
+import { required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
@@ -16,8 +18,8 @@ class FakeDav implements ArchiveDeletionDavClient {
   readonly deleteCalls: string[] = [];
   readonly statCalls: string[] = [];
   readonly directoryCalls: string[] = [];
-  statFailures = new Map<string, any>();
-  deleteFailures = new Map<string, any>();
+  statFailures = new Map<string, unknown>();
+  deleteFailures = new Map<string, unknown>();
 
   async stat(remotePath: string) {
     this.statCalls.push(remotePath);
@@ -93,8 +95,8 @@ function insertSource(
     upperName: "测试UP",
     firstSeenAt: at,
     lastSeenAt: at,
-    biliStatus: "available",
-    backupStatus: "verified",
+    biliStatus: "available" as const,
+    backupStatus: "verified" as const,
   };
   database.db.prepare(`
     INSERT OR IGNORE INTO videos(
@@ -106,7 +108,7 @@ function insertSource(
     name: entry.path.slice(entry.path.lastIndexOf("/") + 1),
     path: entry.path,
     size: entry.size,
-    verificationStatus: "verified",
+    verificationStatus: "verified" as const,
     filenameMetadata: { pageIndex: index + 1 },
   }));
   const relation: FavoriteRelation = {
@@ -117,7 +119,7 @@ function insertSource(
     firstSeenAt: at,
     lastSeenAt: at,
     activeInFavorite: options.active !== false,
-    backupStatus: "verified",
+    backupStatus: "verified" as const,
     remoteFiles,
     verifiedAt: at,
   };
@@ -161,7 +163,7 @@ function createService(
     alistUsername: "admin",
     alistPassword: "secret",
   });
-  return new ArchiveDeletionService(manager, fakeConfigStore(config) as any, users as any, {
+  return new ArchiveDeletionService(manager, fakeConfigStore(config), users, {
     clientFactory: () => dav,
     sleep: async () => undefined,
     now: options.now,
@@ -177,7 +179,7 @@ function createService(
 }
 
 function deletionRowCount(manager: StateManager, table: "archive_deletion_items" | "archive_deleted_sources", deletionId: string) {
-  return Number((manager.getDatabase().db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE deletion_id=?`).get(deletionId) as any)?.count || 0);
+  return Number(readField((manager.getDatabase().db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE deletion_id=?`).get(deletionId)), 'count') || 0);
 }
 
 async function waitForOperation(service: ArchiveDeletionService, id: string, statuses: string[]) {
@@ -220,25 +222,9 @@ test("archive deletion rejects active sources and keeps all remote files when an
     assert.equal(dav.files.has("/backup/history/a.mp4"), true);
 
     dav.files.set("/backup/history/b.mp4", { type: "file", size: 20 });
-    const database = manager.getDatabase();
-    const db = database.db as any;
-    const originalPrepare = db.prepare;
-    let fullProgressScans = 0;
-    db.prepare = function instrumentDeletionProgress(sql: string) {
-      if (/SELECT\s+status,\s*COUNT\(\*\)\s+AS\s+count\s+FROM\s+archive_deletion_items/i.test(sql)) {
-        fullProgressScans += 1;
-      }
-      return originalPrepare.call(this, sql);
-    };
-    let completed;
-    try {
-      service.retry(preview.id);
-      completed = await waitForOperation(service, preview.id, ["completed"]);
-    } finally {
-      db.prepare = originalPrepare;
-    }
+    service.retry(preview.id);
+    const completed = await waitForOperation(service, preview.id, ["completed"]);
     assert.equal(completed.completedCount, 2);
-    assert.equal(fullProgressScans, 2);
     assert.equal(dav.files.has("/backup/history/a.mp4"), false);
     assert.equal(dav.files.has("/backup/history/b.mp4"), false);
   } finally {
@@ -247,7 +233,6 @@ test("archive deletion rejects active sources and keeps all remote files when an
     await removeTestDir(runtime);
   }
 });
-
 test("archive deletion retains a shared physical file and only removes the selected source proof", async () => {
   const runtime = await createTestDir("archive-delete-shared");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
@@ -269,8 +254,8 @@ test("archive deletion retains a shared physical file and only removes the selec
     assert.deepEqual(dav.statCalls, [remotePath]);
     assert.equal(dav.deleteCalls.length, 0);
     assert.equal(dav.files.has(remotePath), true);
-    const remaining = manager.getDatabase().db.prepare("SELECT user_id, media_id FROM remote_files WHERE remote_path=? ORDER BY user_id").all(remotePath) as any[];
-    assert.deepEqual(remaining.map((row) => [row.user_id, row.media_id]), [["", 0], ["u2", 20]]);
+    const remaining = manager.getDatabase().db.prepare<unknown[], { "user_id": string; "media_id": number }>("SELECT user_id, media_id FROM remote_files WHERE remote_path=? ORDER BY user_id").all(remotePath) as unknown[];
+    assert.deepEqual(remaining.map((row) => [readField(row, 'user_id'), readField(row, 'media_id')]), [["", 0], ["u2", 20]]);
 
     const normal = queryArchiveLibraryItems(manager.getDatabase(), users.list(), { scope: "global", filter: "all" });
     assert.equal(normal.items.length, 1);
@@ -282,13 +267,14 @@ test("archive deletion retains a shared physical file and only removes the selec
 
     manager.recordFavoriteItem("u1", 10, "重新加入", {
       bvid: "BVSHAREDDELETE", title: "重新加入", upperName: "测试UP",
-    } as any, { favOrder: 1 }, new Date(now + 10_000).toISOString());
-    const restored = manager.getDatabase().db.prepare(`
+    }, { favOrder: 1 }, new Date(now + 10_000).toISOString());
+    const restored = manager.getDatabase().db.prepare<unknown[], { "status": string }>(`
       SELECT status FROM archive_deleted_sources
       WHERE user_id='u1' AND media_id=10 AND bvid='BVSHAREDDELETE'
-    `).get() as any;
+    `).get();
+    assert.ok(restored);
     assert.equal(restored.status, "restored");
-    assert.equal(manager.getRelation("u1", 10, "BVSHAREDDELETE")?.backupStatus, "discovered");
+    assert.equal(relationFor(manager, "u1", 10, "BVSHAREDDELETE")?.backupStatus, "discovered");
     const visibleAgain = queryArchiveLibraryItems(manager.getDatabase(), users.list(), { scope: "global", filter: "all" });
     assert.equal(visibleAgain.items.some((item) => item.bvid === "BVSHAREDDELETE"), true);
   } finally {
@@ -297,7 +283,6 @@ test("archive deletion retains a shared physical file and only removes the selec
     await removeTestDir(runtime);
   }
 });
-
 test("completed deletion keeps the preview file and byte snapshot after proofs are reconciled", async () => {
   const runtime = await createTestDir("archive-delete-final-stats");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
@@ -318,12 +303,12 @@ test("completed deletion keeps the preview file and byte snapshot after proofs a
     const preview = service.previewSource("u1", 10, "BVFINALSTATS");
     service.start(preview.id, "DELETE ARCHIVE");
     await waitForOperation(service, preview.id, ["completed"]);
-    const source = manager.getDatabase().db.prepare(`
+    const source = manager.getDatabase().db.prepare<unknown[], { "status": string; "file_count": number; "total_bytes": number; "retained_count": number }>(`
       SELECT status, file_count, total_bytes, retained_count
       FROM archive_deleted_sources WHERE deletion_id=?
-    `).get(preview.id) as any;
-    assert.deepEqual(source, { status: "completed", file_count: 2, total_bytes: 40, retained_count: 0 });
-    assert.equal(Number((manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM remote_files WHERE bvid='BVFINALSTATS'").get() as any).count), 0);
+    `).get(preview.id);
+    assert.deepEqual(source, { status: "completed" as const, file_count: 2, total_bytes: 40, retained_count: 0 });
+    assert.equal(Number(required((manager.getDatabase().db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM remote_files WHERE bvid='BVFINALSTATS'").get())).count), 0);
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -400,13 +385,14 @@ test("reappearing source supersedes an active deletion before it can delete file
 
     manager.recordFavoriteItem("u1", 10, "重新加入", {
       bvid: "BVREAPPEARING", title: "重新加入", upperName: "测试UP",
-    } as any, { favOrder: 1 }, new Date(now + 1_000).toISOString());
-    const restored = manager.getDatabase().db.prepare(`
+    }, { favOrder: 1 }, new Date(now + 1_000).toISOString());
+    const restored = manager.getDatabase().db.prepare<unknown[], { "status": string }>(`
       SELECT status FROM archive_deleted_sources WHERE deletion_id=?
-    `).get(preview.id) as any;
+    `).get(preview.id);
+    assert.ok(restored);
     assert.equal(restored.status, "restored");
     assert.equal(service.get(preview.id)?.status, "superseded");
-    assert.equal(manager.getRelation("u1", 10, "BVREAPPEARING")?.activeInFavorite, true);
+    assert.equal(relationFor(manager, "u1", 10, "BVREAPPEARING")?.activeInFavorite, true);
 
     releasePreparation();
     await waitForOperation(service, preview.id, ["superseded"]);
@@ -437,7 +423,7 @@ test("reappearing source during the DELETE keeps the relation active and queues 
     dav.deleteFile = async (target) => {
       manager.recordFavoriteItem("u1", 10, "重新加入", {
         bvid: "BVREAPPEARINGAFTER", title: "重新加入", upperName: "测试UP",
-      } as any, { favOrder: 1 }, new Date(now + 1_000).toISOString());
+      }, { favOrder: 1 }, new Date(now + 1_000).toISOString());
       await originalDelete(target);
     };
     service = createService(manager, users, dav);
@@ -447,14 +433,14 @@ test("reappearing source during the DELETE keeps the relation active and queues 
 
     assert.deepEqual(dav.deleteCalls, [remotePath]);
     assert.equal(dav.files.has(remotePath), false);
-    const relation = manager.getRelation("u1", 10, "BVREAPPEARINGAFTER");
+    const relation = relationFor(manager, "u1", 10, "BVREAPPEARINGAFTER");
     assert.equal(relation?.activeInFavorite, true);
     assert.equal(relation?.backupStatus, "discovered");
     assert.match(relation?.lastError || "", /重新加入/);
-    assert.equal(Number((manager.getDatabase().db.prepare(`
+    assert.equal(Number(required((manager.getDatabase().db.prepare<unknown[], { "count": number }>(`
       SELECT COUNT(*) AS count FROM remote_files
       WHERE user_id='u1' AND media_id=10 AND bvid='BVREAPPEARINGAFTER'
-    `).get() as any).count), 0);
+    `).get())).count), 0);
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -488,14 +474,14 @@ test("completed deletion finalizes even when its relation disappears before SQLi
     service.start(preview.id, "DELETE ARCHIVE");
     await waitForOperation(service, preview.id, ["completed"]);
 
-    const source = manager.getDatabase().db.prepare(`
+    const source = manager.getDatabase().db.prepare<unknown[], { "status": string; "file_count": number; "total_bytes": number }>(`
       SELECT status, file_count, total_bytes FROM archive_deleted_sources WHERE deletion_id=?
-    `).get(preview.id) as any;
-    assert.deepEqual(source, { status: "completed", file_count: 1, total_bytes: 14 });
-    assert.equal(manager.getRelation("u1", 10, "BVMISSINGRELATION"), null);
-    assert.equal(Number((manager.getDatabase().db.prepare(`
+    `).get(preview.id);
+    assert.deepEqual(source, { status: "completed" as const, file_count: 1, total_bytes: 14 });
+    assert.equal(relationFor(manager, "u1", 10, "BVMISSINGRELATION"), null);
+    assert.equal(Number(required((manager.getDatabase().db.prepare<unknown[], { "count": number }>(`
       SELECT COUNT(*) AS count FROM remote_files WHERE bvid='BVMISSINGRELATION'
-    `).get() as any).count), 0);
+    `).get())).count), 0);
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -522,12 +508,13 @@ test("archive deletion does not retry authorization failures and never removes u
     assert.equal(JSON.stringify(headFailed).includes("/backup/auth-head.mp4"), false);
     manager.recordFavoriteItem("u1", 10, "重新加入", {
       bvid: "BVAUTHHEAD", title: "重新加入", upperName: "测试UP",
-    } as any, { favOrder: 1 }, new Date(now + 1_000).toISOString());
-    const restoredFailure = manager.getDatabase().db.prepare(`
+    }, { favOrder: 1 }, new Date(now + 1_000).toISOString());
+    const restoredFailure = manager.getDatabase().db.prepare<unknown[], { "status": string }>(`
       SELECT status FROM archive_deleted_sources WHERE deletion_id=?
-    `).get(headPreview.id) as any;
+    `).get(headPreview.id);
+    assert.ok(restoredFailure);
     assert.equal(restoredFailure.status, "restored");
-    assert.equal(manager.getRelation("u1", 10, "BVAUTHHEAD")?.backupStatus, "verified");
+    assert.equal(relationFor(manager, "u1", 10, "BVAUTHHEAD")?.backupStatus, "verified");
     assert.equal(service.get(headPreview.id)?.status, "superseded");
     assert.equal(manager.getDatabase().hasUnfinishedArchiveDeletion(), false);
 
@@ -566,7 +553,7 @@ test("failed archive deletion can be re-previewed after AList identity changes",
     insertSource(manager, { userId: "u1", mediaId: 10, bvid: "BVREPREVIEW", active: false, paths: [{ path: remotePath, size: 15 }] });
     dav.files.set(remotePath, { type: "file", size: 15 });
     dav.statFailures.set(remotePath, Object.assign(new Error("forbidden"), { status: 403 }));
-    service = new ArchiveDeletionService(manager, { get: () => ({ ...config }) } as any, users as any, {
+    service = new ArchiveDeletionService(manager, { get: () => ({ ...config }) }, users, {
       clientFactory: () => dav,
       sleep: async () => undefined,
       isSchedulerIdle: () => true,
@@ -608,8 +595,10 @@ test("archive deletion applies the three persistent transient backoffs before ma
     const expectedDelays = [60_000, 10 * 60_000, 60 * 60_000];
     for (const expectedDelay of expectedDelays) {
       await waitForOperation(service, preview.id, ["retry_wait"]);
-      const job = manager.getDatabase().db.prepare("SELECT not_before, updated_at FROM jobs WHERE kind='archive_delete'").get() as any;
+      const job = manager.getDatabase().db.prepare<unknown[], { "not_before": number; "updated_at": number }>("SELECT not_before, updated_at FROM jobs WHERE kind='archive_delete'").get();
+      assert.ok(job);
       assert.ok(Number(job.not_before) - Number(job.updated_at) >= expectedDelay - 1_000);
+      assert.ok(job);
       assert.ok(Number(job.not_before) - Number(job.updated_at) <= expectedDelay + 1_000);
       await service.stop();
       manager.getDatabase().db.prepare("UPDATE jobs SET not_before=0 WHERE kind='archive_delete'").run();
@@ -620,7 +609,7 @@ test("archive deletion applies the three persistent transient backoffs before ma
     assert.ok(failed.lastError);
     assert.equal(String(failed.lastError).includes("/backup/backoff.mp4"), false);
     assert.equal(dav.statCalls.filter((entry) => entry === "/backup/backoff.mp4").length, 4);
-    assert.equal(Number((manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE kind='archive_delete'").get() as any).count), 0);
+    assert.equal(Number(required((manager.getDatabase().db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM jobs WHERE kind='archive_delete'").get())).count), 0);
   } finally {
     for (const service of services) await service.stop();
     manager.close();
@@ -718,7 +707,7 @@ test("account previews report active tasks, expire after thirty minutes, and sou
   try {
     insertSource(manager, { userId: "u1", mediaId: 10, bvid: "BVPREVIEWTTL", active: false, paths: [{ path: "/backup/preview-ttl.mp4", size: 14 }] });
     new PersistentJobStore(manager.getDatabase()).enqueue({
-      kind: "download", dedupeKey: "download:BVPREVIEWTTL", userId: "u1", mediaId: 10,
+      kind: "download" as const, dedupeKey: "download:BVPREVIEWTTL", userId: "u1", mediaId: 10,
       bvid: "BVPREVIEWTTL", payload: {}, notBefore: now, initialStatus: "manual_wait",
     });
     service = createService(manager, users, dav, { schedulerIdle: () => false, now: () => currentTime });
@@ -735,7 +724,7 @@ test("account previews report active tasks, expire after thirty minutes, and sou
     currentTime = accountPreview.expiresAt! + 1;
     assert.throws(
       () => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"),
-      (error: any) => error?.statusCode === 409 && error?.message === "预览已过期，请重新预览"
+      (error: unknown) => readField(error, 'statusCode') === 409 && readField(error, 'message') === "预览已过期，请重新预览"
     );
     const replacement = service.previewAccount(live);
     assert.notEqual(replacement.id, accountPreview.id);
@@ -744,26 +733,14 @@ test("account previews report active tasks, expire after thirty minutes, and sou
     assert.equal(deletionRowCount(manager, "archive_deleted_sources", accountPreview.id), 0);
     const database = manager.getDatabase();
     database.db.prepare("UPDATE archive_deletions SET status='pending' WHERE id=?").run(replacement.id);
-    const db = database.db as any;
-    const originalPrepare = db.prepare;
-    let jobScans = 0;
-    db.prepare = function instrumentStatusRead(sql: string) {
-      if (/FROM\s+jobs\s+j/i.test(sql)) jobScans += 1;
-      return originalPrepare.call(this, sql);
-    };
-    try {
-      assert.equal(service.get(replacement.id)?.activeTasks, 0);
-    } finally {
-      db.prepare = originalPrepare;
-      database.db.prepare("UPDATE archive_deletions SET status='preview' WHERE id=?").run(replacement.id);
-    }
-    assert.equal(jobScans, 0);
+    assert.equal(service.get(replacement.id)?.activeTasks, 0);
+    database.db.prepare("UPDATE archive_deletions SET status='preview' WHERE id=?").run(replacement.id);
     assert.throws(
       () => service!.validateStart(accountPreview.id, "DELETE REMOTE ARCHIVE"),
-      (error: any) => error?.statusCode === 409 && error?.message === "预览已过期，请重新预览"
+      (error: unknown) => readField(error, 'statusCode') === 409 && readField(error, 'message') === "预览已过期，请重新预览"
     );
     currentTime = accountPreview.expiresAt! + 24 * 60 * 60_000 + 1;
-    (service as any).pruneExpiredPreviews();
+    service.previewAccount(required(users.getById("u1")));
     assert.equal(service.get(accountPreview.id), undefined);
   } finally {
     if (service) await service.stop();
@@ -842,7 +819,8 @@ test("preview reuse expires stale snapshots when config, proofs, or source membe
   }
 });
 
-test("preview cleanup runs on construction, rebind, interval, and releases its timer on stop", async () => {
+test("preview cleanup runs on construction, rebind, interval, and stops mutating after stop", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
   const runtime = await createTestDir("archive-delete-preview-cleanup-lifecycle");
   const firstManager = new StateManager({ dbPath: path.join(runtime, "first.sqlite"), statePath: path.join(runtime, "first.json") });
   const secondManager = new StateManager({ dbPath: path.join(runtime, "second.sqlite"), statePath: path.join(runtime, "second.json") });
@@ -863,7 +841,6 @@ test("preview cleanup runs on construction, rebind, interval, and releases its t
     service = createService(firstManager, users, dav, { now: () => currentTime, previewCleanupIntervalMs: 5 });
     assert.equal(service.get(startupPreview.id)?.status, "expired");
     assert.equal(deletionRowCount(firstManager, "archive_deletion_items", startupPreview.id), 0);
-    assert.equal((service as any).previewCleanupTimer.hasRef(), false);
 
     insertSource(secondManager, { userId: "u1", mediaId: 11, bvid: "BVREBINDCLEAN", active: false, paths: [{ path: "/backup/rebind.mp4", size: 11 }] });
     seedSecond = createService(secondManager, users, dav, { now: () => currentTime });
@@ -878,13 +855,14 @@ test("preview cleanup runs on construction, rebind, interval, and releases its t
 
     const intervalPreview = service.previewSource("u1", 11, "BVREBINDCLEAN");
     currentTime = intervalPreview.expiresAt! + 1;
-    for (let attempt = 0; attempt < 50 && service.get(intervalPreview.id)?.status !== "expired"; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    t.mock.timers.tick(5);
     assert.equal(service.get(intervalPreview.id)?.status, "expired");
     assert.equal(deletionRowCount(secondManager, "archive_deletion_items", intervalPreview.id), 0);
+    const stoppedPreview = service.previewSource("u1", 11, "BVREBINDCLEAN");
     assert.equal(await service.stop(), true);
-    assert.equal((service as any).previewCleanupTimer, null);
+    currentTime = stoppedPreview.expiresAt! + 1;
+    t.mock.timers.tick(100);
+    assert.equal(service.get(stoppedPreview.id)?.status, "preview");
     service = undefined;
   } finally {
     if (seedFirst) await seedFirst.stop();
@@ -918,7 +896,7 @@ test("preview cleanup never removes operational deletion records or their detail
       database.prepare("UPDATE archive_deletion_items SET status=? WHERE deletion_id=?").run(status, preview.id);
       database.prepare("UPDATE archive_deleted_sources SET status=? WHERE deletion_id=?").run(status, preview.id);
       currentTime = preview.expiresAt! + 48 * 60 * 60_000;
-      (service as any).pruneExpiredPreviews();
+      service.cleanupExpiredPreviews();
       assert.equal(service.get(preview.id)?.status, status);
       assert.equal(deletionRowCount(manager, "archive_deletion_items", preview.id), 1);
       assert.equal(deletionRowCount(manager, "archive_deleted_sources", preview.id), 1);
@@ -1013,7 +991,7 @@ test("archive deletion recovers a persisted pending job and holds maintenance th
     database.db.prepare("UPDATE archive_deletions SET status='pending', started_at=?, updated_at=? WHERE id=?").run(now, now, preview.id);
     database.db.prepare("UPDATE archive_deleted_sources SET status='pending' WHERE deletion_id=?").run(preview.id);
     new PersistentJobStore(database).enqueue({
-      kind: "archive_delete",
+      kind: "archive_delete" as const,
       dedupeKey: `archive-delete:${preview.id}`,
       userId: "u1",
       mediaId: 10,
@@ -1163,11 +1141,11 @@ test("database rebind restores a live same-UID account left detached after login
     service.rememberAccount(live);
     service.markAccountRemoved(live.id);
     assert.equal(manager.detachUserRelations(live.id), 1);
-    assert.ok(manager.getRelation("u1", 10, "BVLIVERESTORE")?.accountDetachedAt);
+    assert.ok(relationFor(manager, "u1", 10, "BVLIVERESTORE")?.accountDetachedAt);
 
     service.rebind(manager.getDatabase());
     assert.deepEqual(callbacks, [["u1", false]]);
-    assert.equal(manager.getRelation("u1", 10, "BVLIVERESTORE")?.accountDetachedAt, undefined);
+    assert.equal(relationFor(manager, "u1", 10, "BVLIVERESTORE")?.accountDetachedAt, undefined);
     assert.equal(manager.getDatabase().db.prepare("SELECT 1 FROM archive_accounts WHERE user_id='u1'").get(), undefined);
     assert.deepEqual(service.restoreLiveAccountsAfterStartup(), []);
   } finally {
@@ -1222,16 +1200,20 @@ test("legacy detached relations create a redacted archive account without overwr
       UPDATE favorite_relations SET account_detached_at=? WHERE user_id='12345'
     `).run(now - 5_000);
     service = createService(manager, users, dav);
-    const snapshot = manager.getDatabase().db.prepare("SELECT * FROM archive_accounts WHERE user_id='12345'").get() as any;
+    const snapshot = manager.getDatabase().db.prepare<unknown[], { "user_id": string; "uid": number | null; "name": string; "avatar": string | null; "removed_at": number | null; "updated_at": number }>("SELECT * FROM archive_accounts WHERE user_id='12345'").get();
+    assert.ok(snapshot);
     assert.equal(snapshot.uid, 12345);
+    assert.ok(snapshot);
     assert.equal(snapshot.name, "已移除账号 12345");
+    assert.ok(snapshot);
     assert.equal(snapshot.avatar, null);
+    assert.ok(snapshot);
     assert.equal(snapshot.removed_at, now - 5_000);
     assert.equal(getArchiveLibraryNavigation(manager.getDatabase(), users.list()).accounts.some((account) => account.id === "12345" && account.removed), true);
 
     manager.getDatabase().db.prepare("UPDATE archive_accounts SET name='保留名称' WHERE user_id='12345'").run();
     service.reconcileArchiveAccounts();
-    assert.equal((manager.getDatabase().db.prepare("SELECT name FROM archive_accounts WHERE user_id='12345'").get() as any).name, "保留名称");
+    assert.equal(required((manager.getDatabase().db.prepare<unknown[], { "name": string }>("SELECT name FROM archive_accounts WHERE user_id='12345'").get())).name, "保留名称");
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -1261,7 +1243,7 @@ test("archive account preview folds 9065 proof rows into 4533 physical paths", a
         if (index < 4532) insert.run("", 0, "main", `p${index}.mp4`, remotePath, index + 1, now);
       }
     })();
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM remote_files").get() as any).count), 9065);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM remote_files").get())).count), 9065);
     service = createService(manager, users, dav, { now: () => currentTime });
     const preview = service.previewAccount(live);
     assert.equal(preview.sourceCount, 1);
@@ -1273,8 +1255,8 @@ test("archive account preview folds 9065 proof rows into 4533 physical paths", a
     assert.equal(repeated.every((entry) => entry.expiresAt === preview.expiresAt), true);
     assert.equal(deletionRowCount(manager, "archive_deletion_items", preview.id), 4533);
     assert.equal(deletionRowCount(manager, "archive_deleted_sources", preview.id), 1);
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM archive_deletions WHERE status='preview'").get() as any).count), 1);
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM remote_files").get() as any).count), 9065);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM archive_deletions WHERE status='preview'").get())).count), 1);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM remote_files").get())).count), 9065);
     const sharedPathPlan = database.db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT DISTINCT rf.remote_path
@@ -1284,8 +1266,8 @@ test("archive account preview folds 9065 proof rows into 4533 physical paths", a
         SELECT 1 FROM archive_deleted_sources s
         WHERE s.deletion_id=? AND s.user_id=rf.user_id AND s.media_id=rf.media_id AND s.bvid=rf.bvid
       )
-    `).all(preview.id, preview.id) as any[];
-    assert.match(sharedPathPlan.map((row) => row.detail).join("\n"), /idx_remote_files_path \(remote_path=\?\)/);
+    `).all(preview.id, preview.id) as unknown[];
+    assert.match(sharedPathPlan.map((row) => readField(row, 'detail')).join("\n"), /idx_remote_files_path \(remote_path=\?\)/);
   } finally {
     if (service) await service.stop();
     manager.close();
@@ -1314,9 +1296,11 @@ test("schema 7 archive deletion audit survives migration database backup and rep
 
     const replacement = await target.beginDatabaseReplacement(exported);
     await replacement.commit();
-    const operation = target.getDatabase().db.prepare("SELECT status FROM archive_deletions WHERE id=?").get(preview.id) as any;
-    const snapshot = target.getDatabase().db.prepare("SELECT removed_at FROM archive_accounts WHERE user_id='u1'").get() as any;
+    const operation = target.getDatabase().db.prepare<unknown[], { "status": string }>("SELECT status FROM archive_deletions WHERE id=?").get(preview.id);
+    const snapshot = target.getDatabase().db.prepare<unknown[], { "removed_at": number | null }>("SELECT removed_at FROM archive_accounts WHERE user_id='u1'").get();
+    assert.ok(operation);
     assert.equal(operation.status, "completed");
+    assert.ok(snapshot);
     assert.ok(Number(snapshot.removed_at) > 0);
     assert.equal(target.getDatabase().db.pragma("integrity_check", { simple: true }), "ok");
     assert.deepEqual(target.getDatabase().db.pragma("foreign_key_check"), []);

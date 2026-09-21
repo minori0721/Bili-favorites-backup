@@ -1,12 +1,12 @@
-import type { PersistentJobStore } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { StateManager } from '../state.js';
 import type { RecoveryLockAccess } from './recovery-work.js';
 import type { RecoveryIssue } from './recovery-contracts.js';
 import { logManager } from '../logger.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'abandonRecovery'>;
-  transferSessions: Pick<TransferSessionStore, 'get' | 'supersede'>;
+  jobStore: Pick<JobRepository, 'findById' | 'abandonRecovery'>;
+  transferSessions: Pick<TransferSessionRepository, 'get' | 'supersede'>;
   stateManager: Pick<StateManager, 'runAtomic' | 'getRelationStatus' | 'resolveRemoteConflictCandidate'>;
   recoveryWork: { locks: RecoveryLockAccess };
   getRecoveryIssueSnapshot(): { issues: RecoveryIssue[] };

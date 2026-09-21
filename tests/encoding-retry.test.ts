@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { SyncScheduler } from "../src/scheduler.js";
+import { recoveryFixture } from './fixtures/recovery.js';
+import { parseEncodingRetryContext, parseStrictMediaTarget } from '../src/scheduler/recovery-context.js';
+import { commitVerifiedTransfer } from '../src/scheduler/verified-transfer.js';
+import { isRecord } from '../src/shared/api/value.js';
+import type { RecoveryUploadItem } from '../src/scheduler/upload-work.js';
+import type { EncodingRetryContext } from '../src/tasks.js';
 import { StateManager } from "../src/state.js";
 import { UploadTask } from "../src/tasks.js";
 import { DOWNLOAD_RETAINED_FILE, writeDownloadSession } from "../src/download-session.js";
@@ -39,8 +44,8 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
         upperName: "Tester",
         firstSeenAt: now,
         lastSeenAt: now,
-        biliStatus: "available",
-        backupStatus: "upload_failed",
+        biliStatus: "available" as const,
+        backupStatus: "upload_failed" as const,
         localDir,
       },
     },
@@ -53,7 +58,7 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
         firstSeenAt: now,
         lastSeenAt: now,
         activeInFavorite: true,
-        backupStatus: "upload_failed",
+        backupStatus: "upload_failed" as const,
         remotePath: "/backup/BVENCODINGRETRY",
       },
     },
@@ -62,18 +67,11 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
   await fs.promises.writeFile(path.join(localDir, "video.mp4"), "original-avc");
 
   const config = testConfig({ bbdownEncoding: "", bbdownEncodingPriority: ["HEVC", "AVC", "AV1"] });
-  const scheduler = new SyncScheduler(
-    { get: () => config } as any,
-    { list: () => [user], getById: (id: string) => id === user.id ? user : undefined } as any,
-    state,
-    { legacyTempDir: tempDir },
-  ) as any;
-  scheduler.downloadQueue.setStartGate(() => false);
-  scheduler.uploadQueue.setStartGate(() => false);
+  const {service: scheduler, jobs, downloads} = recoveryFixture(state, [user], undefined, {config, tempDir});
 
   try {
-    const parent = scheduler.jobStore.enqueue({
-      kind: "upload",
+    const parent = jobs.enqueue({
+      kind: "upload" as const,
       dedupeKey: "upload:BVENCODINGRETRY",
       bvid: "BVENCODINGRETRY",
       userId: "u1",
@@ -85,7 +83,7 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
         files: ["video.mp4"],
         remotePath: "/backup/BVENCODINGRETRY",
         recoveryAssessment: {
-          kind: "remote_size_limit",
+          kind: "remote_size_limit" as const,
           checkedAt: Date.now(),
           localStatus: "available",
           remoteStatus: "size_limit",
@@ -100,11 +98,12 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
     assert.equal(first.idempotent, false);
     assert.ok(first.childJobId);
 
-    const afterStart = scheduler.jobStore.findById(parent.id)!;
-    const retry = (afterStart.payload as any).encodingRetry;
-    assert.equal((afterStart.payload as any).awaitingManualRecovery, false);
-    assert.equal((afterStart.payload as any).lifecycleState, "retrying");
-    assert.equal(scheduler.getRecoveryIssues().some((issue: any) => issue.id === `upload.${parent.id}`), false);
+    const afterStart = jobs.findById(parent.id)!;
+    const retry = parseEncodingRetryContext(afterStart.payload.encodingRetry);
+    assert.ok(retry);
+    assert.equal(afterStart.payload.awaitingManualRecovery, false);
+    assert.equal(afterStart.payload.lifecycleState, "retrying");
+    assert.equal(scheduler.getRecoveryIssues().some((issue) => issue.id === `upload.${parent.id}`), false);
     assert.deepEqual(retry.priority, options.encodingPriority);
     assert.equal(retry.quality, "1080P");
     assert.equal(retry.strict, true);
@@ -115,10 +114,11 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
     assert.equal(config.bbdownEncoding, "");
     assert.deepEqual(config.bbdownEncodingPriority, ["HEVC", "AVC", "AV1"]);
 
-    const child = scheduler.jobStore.findById(String(first.childJobId))!;
+    const child = jobs.findById(String(first.childJobId))!;
     assert.ok(["pending", "leased"].includes(child.status));
-    const task = scheduler.buildDownloadTask(child);
+    const task = downloads.build(child);
     assert.ok(task);
+    assert.ok(task.encodingRetry);
     assert.equal(task.encodingRetry.strict, true);
     assert.equal(task.encodingRetry.quality, "1080P");
     assert.deepEqual(task.encodingRetry.priority, options.encodingPriority);
@@ -136,9 +136,8 @@ test("one-off encoding retry stays pending, uses an isolated directory, and is i
     assert.equal(second.ok, true);
     assert.equal(second.idempotent, true);
     assert.equal(second.childJobId, first.childJobId);
-    assert.equal(scheduler.jobStore.list(["download"]).filter((job) => (job.payload as any).encodingRetry?.parentJobId === parent.id).length, 1);
+    assert.equal(jobs.list(["download"]).filter((job) => parseEncodingRetryContext(job.payload.encodingRetry)?.parentJobId === parent.id).length, 1);
   } finally {
-    scheduler.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -154,7 +153,7 @@ test("stale strict encoding upload tasks are blocked before any remote request",
     writeDownloadSession(candidateLocalDir, {
       schemaVersion: 1,
       sessionId: "encoding-retry-preflight-session",
-      kind: "backup",
+      kind: "backup" as const,
       bvid: "BVENCODINGPREFLIGHT",
       accountUid: 1,
       bbdownCommit: "test",
@@ -171,7 +170,7 @@ test("stale strict encoding upload tasks are blocked before any remote request",
       createdAt: now,
       updatedAt: now,
       snapshotAt: now,
-      status: "complete",
+      status: "complete" as const,
       pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
       outputs: [{
         pageIndex: 1,
@@ -206,10 +205,12 @@ test("stale strict encoding upload tasks are blocked before any remote request",
         },
       },
     );
-    const error: any = await task.run().then(() => null, (caught) => caught);
+    const error: unknown = await task.run().then(() => null, (caught: unknown) => caught);
+    assert.ok(isRecord(error));
     assert.equal(error?.code, "BFB_ENCODING_MISMATCH");
     assert.equal(error?.source, "upload_preflight");
-    assert.deepEqual(error?.encodingAssessment?.actualEncodings, ["AVC"]);
+    assert.ok(isRecord(error.encodingAssessment));
+    assert.deepEqual(error.encodingAssessment.actualEncodings, ["AVC"]);
     assert.equal(fs.existsSync(path.join(candidateLocalDir, "video.mp4")), true);
   } finally {
     await removeTestDir(runtime);
@@ -224,7 +225,7 @@ test("stale strict quality upload tasks are blocked before any remote request", 
     writeDownloadSession(runtime, {
       schemaVersion: 1,
       sessionId: "strict-quality-upload-session",
-      kind: "backup",
+      kind: "backup" as const,
       bvid: "BVQUALITYPREFLIGHT",
       accountUid: 1,
       bbdownCommit: "test",
@@ -241,7 +242,7 @@ test("stale strict quality upload tasks are blocked before any remote request", 
       createdAt: now,
       updatedAt: now,
       snapshotAt: now,
-      status: "complete",
+      status: "complete" as const,
       pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
       selectedStreams: [{ pageIndex: 1, cid: 1, bilibiliQuality: "1080P", observedAt: now }],
       outputs: [{
@@ -270,10 +271,12 @@ test("stale strict quality upload tasks are blocked before any remote request", 
         strictMediaTarget: { quality: "4K", encoding: "AVC" },
       },
     );
-    const error: any = await task.run().then(() => null, (caught) => caught);
+    const error: unknown = await task.run().then(() => null, (caught: unknown) => caught);
+    assert.ok(isRecord(error));
     assert.equal(error?.code, "BFB_QUALITY_MISMATCH");
     assert.equal(error?.source, "upload_preflight");
-    assert.deepEqual(error?.qualityAssessment?.actualQualities, ["1080P"]);
+    assert.ok(isRecord(error.qualityAssessment));
+    assert.deepEqual(error.qualityAssessment.actualQualities, ["1080P"]);
     assert.equal(fs.existsSync(path.join(runtime, "video.mp4")), true);
   } finally {
     await removeTestDir(runtime);
@@ -286,36 +289,29 @@ test("strict media target survives persistent upload task reconstruction", async
     dbPath: path.join(runtime, "state.sqlite"),
     statePath: path.join(runtime, "unused-state.json"),
   });
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => [], getById: () => undefined } as any,
-    state,
-    { legacyTempDir: path.join(runtime, "temp") },
-  ) as any;
-  scheduler.downloadQueue.setStartGate(() => false);
-  scheduler.uploadQueue.setStartGate(() => false);
+  const {transfers} = recoveryFixture(state, [], undefined, {tempDir: path.join(runtime, 'temp')});
 
   try {
-    const item = {
+    const item: RecoveryUploadItem = {
       bvid: "BVSTRICTPERSIST",
       localDir: runtime,
       remotePath: "/backup/BVSTRICTPERSIST",
       files: ["video.mp4"],
       strictMediaTarget: { quality: "4K", encoding: "AV1" },
     };
-    const persistent = scheduler.buildPersistentUploadJob(item);
+    const persistent = transfers.buildPersistentUploadJob(item);
+    assert.ok(persistent.payload);
     assert.deepEqual(persistent.payload.strictMediaTarget, item.strictMediaTarget);
 
-    const reconstructed = scheduler.buildUploadTask(persistent.payload);
+    const reconstructed = transfers.buildUploadTask({...item, strictMediaTarget: parseStrictMediaTarget(persistent.payload?.strictMediaTarget)});
     assert.deepEqual(reconstructed.strictMediaTarget, item.strictMediaTarget);
 
-    const invalid = scheduler.buildUploadTask({
-      ...persistent.payload,
-      strictMediaTarget: { quality: "", encoding: "VP9" },
+    const invalid = transfers.buildUploadTask({
+      ...item,
+      strictMediaTarget: parseStrictMediaTarget({ quality: "", encoding: "VP9" }),
     });
     assert.equal(invalid.strictMediaTarget, undefined);
   } finally {
-    scheduler.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -341,14 +337,7 @@ test("encoding retry cannot complete without committed archive evidence and pres
     lastLoginAt: new Date().toISOString(),
   };
   const config = testConfig({ bbdownEncoding: "AV1" });
-  const scheduler = new SyncScheduler(
-    { get: () => config } as any,
-    { list: () => [user], getById: (id: string) => id === user.id ? user : undefined } as any,
-    state,
-    { legacyTempDir: tempDir },
-  ) as any;
-  scheduler.downloadQueue.setStartGate(() => false);
-  scheduler.uploadQueue.setStartGate(() => false);
+  const {jobs, sessions} = recoveryFixture(state, [user], undefined, {config, tempDir});
 
   try {
     const output = "video.mp4";
@@ -362,7 +351,7 @@ test("encoding retry cannot complete without committed archive evidence and pres
     writeDownloadSession(candidateLocalDir, {
       schemaVersion: 1,
       sessionId: "encoding-retry-cleanup-session",
-      kind: "backup",
+      kind: "backup" as const,
       bvid,
       accountUid: 1,
       bbdownCommit: "test",
@@ -379,7 +368,7 @@ test("encoding retry cannot complete without committed archive evidence and pres
       createdAt: now,
       updatedAt: now,
       snapshotAt: now,
-      status: "complete",
+      status: "complete" as const,
       pages: [{ index: 1, cid: 1, title: "One", duration: 2 }],
       outputs: [{
         pageIndex: 1,
@@ -397,8 +386,8 @@ test("encoding retry cannot complete without committed archive evidence and pres
       history: [],
     });
 
-    const parent = scheduler.jobStore.enqueue({
-      kind: "upload",
+    const parent = jobs.enqueue({
+      kind: "upload" as const,
       dedupeKey: "upload:encoding-retry-cleanup",
       bvid,
       userId: "u1",
@@ -406,27 +395,30 @@ test("encoding retry cannot complete without committed archive evidence and pres
       initialStatus: "manual_wait",
       payload: { awaitingManualRecovery: true },
     });
-    const context = {
+    const context: EncodingRetryContext = {
       parentJobId: parent.id,
       generation: 1,
       priority: ["AV1", "HEVC", "AVC"],
       strict: true,
       candidateLocalDir,
       originalLocalDir,
-      state: "running",
+      state: "running" as const,
     };
-    assert.equal(scheduler.jobStore.updatePayload(parent.id, {
+    assert.equal(jobs.updatePayload(parent.id, {
       awaitingManualRecovery: true,
       encodingRetry: context,
     }), true);
 
-    assert.equal(typeof scheduler.completeEncodingRetrySuccess, "undefined");
+    assert.throws(() => commitVerifiedTransfer({state, sessions, jobs, now: Date.now, leaseOwner: 'test-owner'}, {
+      bvid, userId: user.id, mediaId: 1, jobId: 'unverified-child',
+      result: {remotePath: '/backup', files: [], allVerified: false},
+      partialBackup: false, historyOnly: false, encodingRetry: context,
+    }), /unverified upload group/);
     assert.equal(fs.existsSync(path.join(candidateLocalDir, output)), true);
     assert.equal(fs.existsSync(unknownArtifact), true);
     assert.equal(fs.existsSync(path.join(candidateLocalDir, ".bfb-download.json")), true);
-    assert.ok(scheduler.jobStore.findById(parent.id), "parent must remain until a verified archive commit exists");
+    assert.ok(jobs.findById(parent.id), "parent must remain until a verified archive commit exists");
   } finally {
-    scheduler.stop();
     state.close();
     await removeTestDir(runtime);
   }

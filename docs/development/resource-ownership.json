@@ -1,0 +1,819 @@
+{
+  "resources": [
+    {
+      "module": "scheduler/access-probe-workflow.ts",
+      "ownerSymbol": "createAccessProbeWorkflow",
+      "resourceSymbols": [
+        "active",
+        "jobId",
+        "stopped"
+      ],
+      "stop": "stop rejects new claims while the active probe remains busy until its promise settles",
+      "lateCallback": "generation and lease checks reject old probe results",
+      "rebind": "resetAfterRebind rejects an active promise or claimed job"
+    },
+    {
+      "module": "scheduler/account-retirement.ts",
+      "ownerSymbol": "createAccountRetirement",
+      "resourceSymbols": [
+        "abortedJobs",
+        "pending"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/download-admission.ts",
+      "ownerSymbol": "createDownloadAdmission",
+      "resourceSymbols": [
+        "health",
+        "nextStartAt",
+        "stopped"
+      ],
+      "stop": "stop cancels the owned download-start timer and rejects new starts",
+      "lateCallback": "health decisions require the current task identity",
+      "rebind": "the persisted cooldown is restored after adapter rebind"
+    },
+    {
+      "module": "scheduler/favorite-scan.ts",
+      "ownerSymbol": "createFavoriteScan",
+      "resourceSymbols": [
+        "epoch",
+        "selfVisibleProbeCache"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/legacy-cache-recovery.ts",
+      "ownerSymbol": "createLegacyCacheRecovery",
+      "resourceSymbols": [
+        "pending"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/legacy-import-recovery.ts",
+      "ownerSymbol": "createLegacyImportRecovery",
+      "resourceSymbols": [
+        "tempRecoveryPending"
+      ],
+      "stop": "database import keeps scheduling admission closed until the pending legacy cache decision is handed to the resumed runtime",
+      "lateCallback": "the pending flag is consumed only after the matching rebind resumes admission",
+      "rebind": "each reload recalculates the pending cache scan from the rebound database marker, including rollback reloads"
+    },
+    {
+      "module": "scheduler/local-capacity.ts",
+      "ownerSymbol": "createLocalCapacity",
+      "resourceSymbols": [
+        "epoch",
+        "snapshot",
+        "pending",
+        "wakePending",
+        "refreshQueued",
+        "dirty",
+        "recovery"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/local-cleanup.ts",
+      "ownerSymbol": "createLocalCleanup",
+      "resourceSymbols": [
+        "localCleanupRetryTimer",
+        "localCleanupSweepPromise",
+        "localCleanupInFlight",
+        "localCleanupRetries"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/maintenance-admission.ts",
+      "ownerSymbol": "createMaintenanceAdmission",
+      "resourceSymbols": [
+        "active"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/maintenance-coordinator.ts",
+      "ownerSymbol": "createMaintenanceCoordinator",
+      "resourceSymbols": [
+        "admission",
+        "state"
+      ],
+      "stop": "cleanup leases are released by the shared finally path; path and archive leases are released only by the matching operation identity",
+      "lateCallback": "a stale lease token cannot release a newer maintenance operation",
+      "rebind": "the cleanup lease remains held for the complete database replacement and resume sequence"
+    },
+    {
+      "module": "scheduler/maintenance-state.ts",
+      "ownerSymbol": "createMaintenanceState",
+      "resourceSymbols": [
+        "path",
+        "pathLease",
+        "archive",
+        "archiveLease"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/polling.ts",
+      "ownerSymbol": "createPollingSchedule",
+      "resourceSymbols": [
+        "cancelInterval",
+        "cancelStartup",
+        "activeInterval",
+        "generation",
+        "nextRunAt"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/quality-workflow.ts",
+      "ownerSymbol": "createQualityWorkflow",
+      "resourceSymbols": [
+        "cleanupLocks",
+        "stopped",
+        "dependencies"
+      ],
+      "stop": "stop rejects new quality admission and existing cleanup locks keep the runtime busy",
+      "lateCallback": "only the operation owning an artifact key can release its cleanup lock",
+      "rebind": "resetAfterRebind rejects any outstanding cleanup lock"
+    },
+    {
+      "module": "scheduler/queue-events.ts",
+      "ownerSymbol": "createQueueEventBindings",
+      "resourceSymbols": [
+        "disposed"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/recovery-automation.ts",
+      "ownerSymbol": "createRecoveryAutomation",
+      "resourceSymbols": [
+        "timer",
+        "startup",
+        "pending",
+        "epoch"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/recovery-work.ts",
+      "ownerSymbol": "createRecoveryWork",
+      "resourceSymbols": [
+        "locks",
+        "pending"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/remote-verification-io.ts",
+      "ownerSymbol": "createRemoteVerificationIO",
+      "resourceSymbols": [
+        "listings",
+        "pathReservations",
+        "nextAllowedAt",
+        "generation"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/runtime-timers.ts",
+      "ownerSymbol": "createRuntimeTimers",
+      "resourceSymbols": [
+        "registrations"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/scheduling-runtime.ts",
+      "ownerSymbol": "createSchedulingRuntime",
+      "resourceSymbols": [
+        "accepting",
+        "generation",
+        "shuttingDown",
+        "closed",
+        "shutdown",
+        "resumeAdmission",
+        "adaptersRebound",
+        "initialized"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/sync-runtime.ts",
+      "ownerSymbol": "createSyncRuntime",
+      "resourceSymbols": [
+        "running",
+        "pending",
+        "progress",
+        "cycle",
+        "lastError",
+        "stopped",
+        "activeUsers",
+        "workflow"
+      ],
+      "stop": "stop rejects new cycles, clears pending work and the scheduling runtime drains the running cycle",
+      "lateCallback": "the runtime generation and stopped flag reject stale progress and error writes",
+      "rebind": "resetAfterRebind requires an idle cycle before state is cleared"
+    },
+    {
+      "module": "scheduler/transfer-recovery-projection.ts",
+      "ownerSymbol": "createTransferRecoveryProjection",
+      "resourceSymbols": [
+        "reconciledAt"
+      ],
+      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
+    },
+    {
+      "module": "scheduler/transfer-runtime.ts",
+      "ownerSymbol": "createTransferRuntime",
+      "resourceSymbols": [
+        "circuit",
+        "stopped"
+      ],
+      "stop": "stop cancels the upload-probe timer and leaves persisted circuit evidence intact",
+      "lateCallback": "probe callbacks only dispatch current persisted work",
+      "rebind": "the upload circuit is restored from the rebound state store"
+    },
+    {
+      "module": "web/client/features/accounts/actions.ts",
+      "ownerSymbol": "createAccountActions",
+      "resourceSymbols": [
+        "generation",
+        "initialized",
+        "requests"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/accounts/favorites.ts",
+      "ownerSymbol": "createFavorites",
+      "resourceSymbols": [
+        "coverFolders",
+        "favoritesState",
+        "saveController",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/accounts/list.ts",
+      "ownerSymbol": "createAccountList",
+      "resourceSymbols": [
+        "controller",
+        "generation",
+        "loaded",
+        "disposed"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/accounts/login.ts",
+      "ownerSymbol": "createAccountLogin",
+      "resourceSymbols": [
+        "initialized",
+        "generation",
+        "loginId",
+        "startController",
+        "pollController",
+        "pollTimer",
+        "closeTimer"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/accounts/removal.ts",
+      "ownerSymbol": "createAccountRemoval",
+      "resourceSymbols": [
+        "requests",
+        "accountRemovalToken",
+        "accountRemovalState",
+        "initialized",
+        "submitting"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/archive/library.ts",
+      "ownerSymbol": "createArchiveLibrary",
+      "resourceSymbols": [
+        "requests",
+        "archiveLibraryState",
+        "events",
+        "timers",
+        "frames"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/archive/unavailable.ts",
+      "ownerSymbol": "createUnavailable",
+      "resourceSymbols": [
+        "unavailableStates",
+        "unavailableUserId",
+        "unavailableFilter",
+        "unavailableController",
+        "unavailableToken",
+        "unavailableThrottleTimer",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/archive/video-card.ts",
+      "ownerSymbol": "createVideoCards",
+      "resourceSymbols": [
+        "requests",
+        "buttons",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/archive/video-detail.ts",
+      "ownerSymbol": "createVideoDetail",
+      "resourceSymbols": [
+        "initialized",
+        "context",
+        "filter",
+        "page",
+        "hasMore",
+        "generation",
+        "request",
+        "timer",
+        "keys"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/online-content/controller.ts",
+      "ownerSymbol": "createOnlineContent",
+      "resourceSymbols": [
+        "initialized",
+        "onlineContentState"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/online-content/manual-archive.ts",
+      "ownerSymbol": "createManualArchive",
+      "resourceSymbols": [
+        "initialized",
+        "generation",
+        "probeGeneration",
+        "item",
+        "context",
+        "probe",
+        "submit",
+        "timer"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/path-migration/controller.ts",
+      "ownerSymbol": "createPathMigrationController",
+      "resourceSymbols": [
+        "pathMigrationPollTimer",
+        "pathMigrationGeneration",
+        "pathMigrationController",
+        "pathMigrationItemsController",
+        "pathMigrationItemsVisible",
+        "pathMigrationCurrentId",
+        "listeners",
+        "operationController"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/playback/controller.ts",
+      "ownerSymbol": "createPlayback",
+      "resourceSymbols": [
+        "artplayerLoader",
+        "playbackState",
+        "events",
+        "timers",
+        "frames"
+      ],
+      "stop": "destroyPlaybackSession aborts events and clears timers and animation frames",
+      "lateCallback": "session identity rejects callbacks from a released player",
+      "rebind": "a new playback session owns a fresh player and queue state"
+    },
+    {
+      "module": "web/client/features/settings/cleanup.ts",
+      "ownerSymbol": "createCleanup",
+      "resourceSymbols": [
+        "cleanupState",
+        "initialized",
+        "loaded",
+        "generation",
+        "read",
+        "action"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/controller.ts",
+      "ownerSymbol": "createSettings",
+      "resourceSymbols": [
+        "priority",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/help.ts",
+      "ownerSymbol": "createSettingsHelp",
+      "resourceSymbols": [
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/loader.ts",
+      "ownerSymbol": "createSettingsLoader",
+      "resourceSymbols": [
+        "configLoadState",
+        "disposed"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/migration.ts",
+      "ownerSymbol": "createMigration",
+      "resourceSymbols": [
+        "previewBlock",
+        "requests",
+        "initialized",
+        "generation",
+        "selected",
+        "blocked",
+        "confirming"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/quality.ts",
+      "ownerSymbol": "createQualityUpgrade",
+      "resourceSymbols": [
+        "qualityUpgradePreviewState",
+        "initialized",
+        "generation",
+        "confirming",
+        "read",
+        "action",
+        "stateRead"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/rename.ts",
+      "ownerSymbol": "createRename",
+      "resourceSymbols": [
+        "renamePreviewState",
+        "renameSelection",
+        "generation",
+        "request",
+        "action",
+        "timer",
+        "confirming",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/saver.ts",
+      "ownerSymbol": "createSettingsSaver",
+      "resourceSymbols": [
+        "initialized",
+        "controller",
+        "clearTimer"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/storage-check.ts",
+      "ownerSymbol": "createStorageCheck",
+      "resourceSymbols": [
+        "fields",
+        "initialized",
+        "controller",
+        "focusTimer"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/settings/template.ts",
+      "ownerSymbol": "createTemplateEditor",
+      "resourceSymbols": [
+        "keys",
+        "dragIndex",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/board-controller.ts",
+      "ownerSymbol": "createQueueBoardController",
+      "resourceSymbols": [
+        "active",
+        "generation",
+        "request",
+        "pollTimer",
+        "clockTimer",
+        "lastUpdatedAt"
+      ],
+      "stop": "stop aborts the request and clears both timers",
+      "lateCallback": "the generation token prevents stopped responses from rendering",
+      "rebind": "destroy resets controller state before another controller is created"
+    },
+    {
+      "module": "web/client/features/task-center/board-view.ts",
+      "ownerSymbol": "createQueueBoardView",
+      "resourceSymbols": [
+        "queueBoardState",
+        "timers",
+        "frames",
+        "animations"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/controller.ts",
+      "ownerSymbol": "createTaskCenter",
+      "resourceSymbols": [
+        "logMode",
+        "events"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/log-feed.ts",
+      "ownerSymbol": "createLogFeed",
+      "resourceSymbols": [
+        "running",
+        "connection",
+        "reconnect",
+        "checking"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/logs.ts",
+      "ownerSymbol": "createLogController",
+      "resourceSymbols": [
+        "mode"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/media-retry.ts",
+      "ownerSymbol": "createMediaRetryDialog",
+      "resourceSymbols": [
+        "encodingRetryDialogState",
+        "events"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/queue-recovery.ts",
+      "ownerSymbol": "createQueueRecoveryActions",
+      "resourceSymbols": [
+        "pending",
+        "generation"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/recovery-center.ts",
+      "ownerSymbol": "createRecoveryCenter",
+      "resourceSymbols": [
+        "recoveryIssuePollTimer",
+        "recoveryIssueRequestInFlight",
+        "recoveryIssueState",
+        "recoveryChoiceDialogState",
+        "actionRequests",
+        "busyActions",
+        "lifecycleGeneration",
+        "timers",
+        "events"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/snapshot.ts",
+      "ownerSymbol": "createQueueSnapshotResource",
+      "resourceSymbols": [
+        "active",
+        "snapshot"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/sync-actions.ts",
+      "ownerSymbol": "createSyncActions",
+      "resourceSymbols": [
+        "initialized",
+        "generation"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/task-center/sync-help.ts",
+      "ownerSymbol": "createSyncHelp",
+      "resourceSymbols": [
+        "syncHelpMode",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/features/updates/controller.ts",
+      "ownerSymbol": "createUpdatesController",
+      "resourceSymbols": [
+        "active",
+        "refreshAfter",
+        "timer",
+        "listeners"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/api.ts",
+      "ownerSymbol": "createApiClient",
+      "resourceSymbols": [
+        "request"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/confirmation.ts",
+      "ownerSymbol": "createConfirmation",
+      "resourceSymbols": [
+        "pending",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/lifecycle.ts",
+      "ownerSymbol": "createApplicationLifecycle",
+      "resourceSymbols": [
+        "mounted",
+        "active"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/modals.ts",
+      "ownerSymbol": "createModalManager",
+      "resourceSymbols": [
+        "modalAnimationState",
+        "modalBackgroundState",
+        "modalScrollState",
+        "timers",
+        "disposed",
+        "initialized"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/notifications.ts",
+      "ownerSymbol": "createNotifications",
+      "resourceSymbols": [
+        "active",
+        "disposed"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/session.ts",
+      "ownerSymbol": "createProtectedTransport",
+      "resourceSymbols": [
+        "expired",
+        "lifetime"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/shell.ts",
+      "ownerSymbol": "createShell",
+      "resourceSymbols": [
+        "lifetime",
+        "loggingOut"
+      ],
+      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
+      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    }
+  ]
+}

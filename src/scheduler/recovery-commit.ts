@@ -1,13 +1,13 @@
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager, LocalCleanupPlan, RemoteFileRecord } from '../state.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 
 interface RecoveryCommitDependencies {
   state: Pick<StateManager, 'runAtomic' | 'restoreExistingArchiveProof' | 'markVerifiedUpload' | 'recordLocalCleanupPlan'>;
-  jobs: Pick<PersistentJobStore, 'findById' | 'complete'>;
-  sessions: Pick<TransferSessionStore, 'get' | 'supersede' | 'listFiles' | 'updateFile' | 'updateSession'>;
+  jobs: Pick<JobRepository, 'findById' | 'complete'>;
+  sessions: Pick<TransferSessionRepository, 'get' | 'supersede' | 'listFiles' | 'updateFile' | 'updateSession'>;
 }
 
 class RecoveryCommitRejected extends Error {}
@@ -47,8 +47,8 @@ export function commitRetainedRecovery(deps: RecoveryCommitDependencies, jobId: 
 
 interface VerifiedRecoveryCommand {
   job: PersistentJobRecord;
-  session: NonNullable<ReturnType<TransferSessionStore['get']>>;
-  files: ReturnType<TransferSessionStore['listFiles']>;
+  session: NonNullable<ReturnType<TransferSessionRepository['get']>>;
+  files: ReturnType<TransferSessionRepository['listFiles']>;
   verifiedFiles: RemoteFileRecord[];
   cleanupPlan: LocalCleanupPlan | null;
   expectedGeneration: number;

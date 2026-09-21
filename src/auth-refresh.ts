@@ -14,14 +14,20 @@ const TRANSIENT_CODES = new Set([
 
 export const AUTH_REFRESH_MAX_UNKNOWN_ATTEMPTS = 3;
 
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
 function errorChain(error: unknown) {
-  const chain: any[] = [];
+  const chain: Record<string, unknown>[] = [];
   const seen = new Set<unknown>();
-  let current: any = error;
+  let current: unknown = error;
   while (current && !seen.has(current) && chain.length < 6) {
     seen.add(current);
-    chain.push(current);
-    current = current.originalError || current.cause || current.error || current.response?.data;
+    const item = record(current);
+    chain.push(item);
+    const response = record(item.response);
+    current = item.originalError || item.cause || item.error || response.data;
   }
   return chain;
 }
@@ -29,10 +35,13 @@ function errorChain(error: unknown) {
 export function classifyAuthRefreshError(error: unknown): AuthRefreshFailureCategory {
   const chain = errorChain(error);
   const hasPermanentSignal = chain.some((item) => {
-    const status = Number(item?.status || item?.statusCode || item?.response?.status || 0);
-    const apiCode = Number(item?.data?.code || item?.response?.data?.code || 0);
-    const code = String(item?.code || "").toUpperCase();
-    const message = String(item?.message || item || "");
+    const response = record(item.response);
+    const data = record(item.data);
+    const responseData = record(response.data);
+    const status = Number(item.status || item.statusCode || response.status || 0);
+    const apiCode = Number(data.code || responseData.code || 0);
+    const code = String(item.code || "").toUpperCase();
+    const message = String(item.message || item || "");
     return status === 401 || status === 403
       || [-101, -102, -111, -352, -403].includes(apiCode)
       || /refresh token|refresh_token|重新登录|登录会话.*失效|invalid.*token|token.*invalid|expired.*token/i.test(message)
@@ -41,9 +50,10 @@ export function classifyAuthRefreshError(error: unknown): AuthRefreshFailureCate
   if (hasPermanentSignal) return "permanent";
 
   const hasTransientSignal = chain.some((item) => {
-    const status = Number(item?.status || item?.statusCode || item?.response?.status || 0);
-    const code = String(item?.code || "").toUpperCase();
-    const message = String(item?.message || item || "");
+    const response = record(item.response);
+    const status = Number(item.status || item.statusCode || response.status || 0);
+    const code = String(item.code || "").toUpperCase();
+    const message = String(item.message || item || "");
     return TRANSIENT_CODES.has(code)
       || status === 408 || status === 425 || status === 429 || status >= 500
       || /timeout|timed out|socket hang up|network|temporarily unavailable|connection reset|connection refused/i.test(message);

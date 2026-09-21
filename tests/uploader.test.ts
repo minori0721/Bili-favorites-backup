@@ -1,3 +1,5 @@
+import {HttpFailure} from './fixtures/http-failure.js';
+import { required, readField, readString } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -33,18 +35,18 @@ test("upload MIME detection covers media subtitles images and JSON", () => {
 });
 
 test("remote visibility errors stay unknown instead of becoming a missing-file retry", async () => {
-  const error: any = new Error("backend busy");
+  const error = new HttpFailure("backend busy");
   error.status = 503;
   error.headers = { "retry-after": "11" };
   const client = {
     stat: async () => { throw error; },
     getDirectoryContents: async () => { throw error; },
-  } as any;
+  };
   await assert.rejects(
     () => verifyUploadedFile(client, "/target/video.mp4", 12, [0], createRemoteFileResolver(client)),
-    (caught: any) => {
-      assert.equal(caught.uploadFailure?.status, 503);
-      assert.equal(caught.uploadFailure?.retryAfterMs, 11_000);
+    (caught: unknown) => {
+      assert.equal(readField(readField(caught, 'uploadFailure'), 'status'), 503);
+      assert.equal(readField(readField(caught, 'uploadFailure'), 'retryAfterMs'), 11_000);
       return true;
     },
   );
@@ -71,8 +73,8 @@ test("uploads reject symlink files and symlinked parent directories", async (t) 
           files: [relativePath],
           log: noopLog,
         }),
-        (error: any) => {
-          assert.equal(error.uploadFailure?.status, 422);
+        (error: unknown) => {
+          assert.equal(readField(readField(error, 'uploadFailure'), 'status'), 422);
           return true;
         },
       );
@@ -104,9 +106,9 @@ test("upload rechecks the local file after preflight before opening the stream",
         },
         log: noopLog,
       }),
-      (error: any) => {
-        assert.equal(error.uploadFailure?.status, 422);
-        assert.match(error.message, /本地上传文件在校验后发生变化/);
+      (error: unknown) => {
+        assert.equal(readField(readField(error, 'uploadFailure'), 'status'), 422);
+        assert.match(readString(readField(error, 'message')), /本地上传文件在校验后发生变化/);
         return true;
       },
     );
@@ -301,7 +303,7 @@ test("upload result preserves selected Bilibili quality and actual media metadat
             duration: 30,
             fps: 60,
             codec: "HEVC",
-            source: "ffprobe",
+            source: "ffprobe" as const,
             observedAt: "2026-07-28T00:00:00.000Z",
           },
         },
@@ -320,7 +322,7 @@ test("upload result preserves selected Bilibili quality and actual media metadat
       duration: 30,
       fps: 60,
       codec: "HEVC",
-      source: "ffprobe",
+      source: "ffprobe" as const,
       observedAt: "2026-07-28T00:00:00.000Z",
     });
   } finally {
@@ -387,7 +389,7 @@ test("a 405 after completed files is treated as a temporary upload session failu
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure.status, 405);
         assert.equal(error.uploadFailure.category, "transient");
@@ -422,7 +424,7 @@ test("a later single-file limit is not rewritten as a transient multipart sessio
         log: noopLog,
         uploadIntent: "history_upload",
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
         assert.equal(error.uploadSessionTransient, undefined);
@@ -455,7 +457,7 @@ test("history preflight-verified files count as progress before a later 405", as
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadSessionTransient, true);
         assert.equal(error.completedFilesBeforeFailure, 1);
@@ -482,7 +484,7 @@ test("a 405 on the first upload file remains deterministic", async () => {
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure.category, "deterministic");
         assert.equal(error.uploadSessionTransient, undefined);
@@ -533,7 +535,7 @@ test("a 405 with a missing remote file remains a failure", async () => {
         log: noopLog,
         uploadIntent: "history_upload",
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure.status, 405);
         assert.equal(error.uploadFailure.category, "deterministic");
@@ -564,7 +566,7 @@ test("a 405 size-limit response survives post-PUT verification and enters manual
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
         assert.equal(error.uploadFailure?.summary, "远端拒绝上传：单文件超过存储限制");
@@ -599,7 +601,7 @@ test("a 405 provider error survives post-PUT verification with safe evidence", a
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure?.status, 405);
         assert.equal(error.uploadFailure?.remoteErrorCode, "AccessUserMsgError");
@@ -633,9 +635,9 @@ test("a 400 size-limit response does not trigger the extended-header fallback PU
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
-        assert.equal(error.uploadFailure?.code, "REMOTE_SINGLE_FILE_SIZE_LIMIT");
-        assert.equal(error.uploadFailure?.category, "deterministic");
+      (error: unknown) => {
+        assert.equal(readField(readField(error, 'uploadFailure'), 'code'), "REMOTE_SINGLE_FILE_SIZE_LIMIT");
+        assert.equal(readField(readField(error, 'uploadFailure'), 'category'), "deterministic");
         return true;
       },
     );
@@ -663,7 +665,7 @@ test("a 405 with a different remote size is reported as a conflict", async () =>
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
+      (error: unknown) => {
         assert.ok(error instanceof UploadOperationError);
         assert.equal(error.uploadFailure.status, 409);
         return true;
@@ -780,7 +782,7 @@ test("same-name same-size normal upload is rejected without proof", async () => 
         files: ["existing.mp4"],
         log: noopLog,
       }),
-      (error: any) => error instanceof UploadOperationError
+      (error: unknown) => error instanceof UploadOperationError
         && error.uploadFailure.code === "UPLOAD_UNKNOWN_SAME_SIZE_TARGET",
     );
     assert.equal(server.puts.length, 0);
@@ -847,24 +849,24 @@ test("direct PUT rejects an unproven same-size target that appears after preflig
   try {
     await fs.promises.writeFile(path.join(runtime, "video.mp4"), "same-size");
     let statCalls = 0;
-    let putOptions: any;
+    let putOptions: unknown;
     const client = {
       exists: async () => true,
       createDirectory: async () => undefined,
       stat: async () => {
         statCalls += 1;
         if (statCalls <= 2) {
-          const error: any = new Error("not found");
+          const error = new HttpFailure("not found");
           error.status = 404;
           throw error;
         }
         return { size: Buffer.byteLength("same-size") };
       },
-      putFileContents: async (_remote: string, _stream: any, options: any) => {
+      putFileContents: async (_remote: string, _stream: unknown, options: unknown) => {
         putOptions = options;
         return false;
       },
-    } as any;
+    };
     await assert.rejects(
       uploadWithAList(runtime, "/target", testConfig(), {
         cleanupLocal: false,
@@ -872,10 +874,10 @@ test("direct PUT rejects an unproven same-size target that appears after preflig
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => error instanceof UploadOperationError
+      (error: unknown) => error instanceof UploadOperationError
         && error.uploadFailure.code === "UPLOAD_CONDITIONAL_TARGET_APPEARED",
     );
-    assert.equal(putOptions.overwrite, false);
+    assert.equal(readField(putOptions, 'overwrite'), false);
   } finally {
     await removeTestDir(runtime);
   }
@@ -903,7 +905,7 @@ test("manual re-upload never bypasses a pre-existing size conflict and sends no 
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => error?.uploadFailure?.status === 409,
+      (error: unknown) => readField(readField(error, 'uploadFailure'), 'status') === 409,
     );
     assert.equal(server.puts.length, 0);
     const session = sessions.getByDedupeKey("upload:u1:1:BVPREEXISTINGCONFLICT:/target:main");
@@ -928,7 +930,7 @@ test("conditional PUT does not overwrite a different-size target that appears af
       stat: async () => {
         statCalls += 1;
         if (statCalls <= 2) {
-          const error: any = new Error("not found");
+          const error = new HttpFailure("not found");
           error.status = 404;
           throw error;
         }
@@ -938,7 +940,7 @@ test("conditional PUT does not overwrite a different-size target that appears af
         putCalls += 1;
         return false;
       },
-    } as any;
+    };
     await assert.rejects(
       uploadWithAList(runtime, "/target", testConfig(), {
         cleanupLocal: false,
@@ -946,8 +948,8 @@ test("conditional PUT does not overwrite a different-size target that appears af
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => {
-        assert.equal(error.uploadFailure.status, 409);
+      (error: unknown) => {
+        assert.equal(readField(readField(error, 'uploadFailure'), 'status'), 409);
         return true;
       },
     );
@@ -1065,7 +1067,7 @@ test("direct upload confirmation does not repeat PUT, while explicit recovery pe
     server.files.delete("/dav/target/video.mp4");
     const session = sessions.get(first.sessionId!)!;
     sessions.updateFile(session.id, "video.mp4", {
-      status: "awaiting_remote",
+      status: "awaiting_remote" as const,
       putAcceptedAt: Date.now(),
       verifiedAt: null,
       lastError: "test visibility loss",
@@ -1158,14 +1160,14 @@ test("a completed transfer session reopens in place when a later upload uses the
     assert.equal(sessions.get(sessionId!)?.phase, "completed");
     assert.equal(sessions.listFiles(sessionId!, firstGeneration).length, 1);
     assert.equal(sessions.listFiles(sessionId!, 2).length, 1);
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_session_files WHERE session_id=?").get(sessionId) as any).count), 2);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_session_files WHERE session_id=?").get(sessionId))).count), 2);
     await assert.rejects(
       () => resumeUploadSession(config, sessions, sessionId!, { sessionGeneration: firstGeneration, verificationDelaysMs: [0], log: noopLog }),
-      (error: any) => error?.uploadSessionStale === true,
+      (error: unknown) => readField(error, 'uploadSessionStale') === true,
     );
     assert.throws(
       () => sessions.updateFile(sessionId!, "video.mp4", { lastError: "stale" }, firstGeneration),
-      (error: any) => error?.uploadSessionStale === true,
+      (error: unknown) => readField(error, 'uploadSessionStale') === true,
     );
   } finally {
     database.close();
@@ -1258,21 +1260,21 @@ test("extended-header fallback refuses a second PUT when remote absence is unkno
       stat: async () => {
         statCalls += 1;
         if (statCalls <= 2) {
-          const missing: any = new Error("not found");
+          const missing = new HttpFailure("not found");
           missing.status = 404;
           throw missing;
         }
-        const unknown: any = new Error("method not allowed");
+        const unknown = new HttpFailure("method not allowed");
         unknown.status = 405;
         throw unknown;
       },
       putFileContents: async () => {
         putCalls += 1;
-        const rejected: any = new Error("extended headers are not supported");
+        const rejected = new HttpFailure("extended headers are not supported");
         rejected.status = 422;
         throw rejected;
       },
-    } as any;
+    };
     await assert.rejects(
       uploadWithAList(runtime, "/target", testConfig(), {
         cleanupLocal: false,
@@ -1280,7 +1282,7 @@ test("extended-header fallback refuses a second PUT when remote absence is unkno
         verificationDelaysMs: [0],
         log: noopLog,
       }),
-      (error: any) => error?.uploadFailure?.status === 422,
+      (error: unknown) => readField(readField(error, 'uploadFailure'), 'status') === 422,
     );
     assert.equal(putCalls, 1);
     assert.ok(statCalls >= 3);
@@ -1353,7 +1355,7 @@ test("history upload confirms an OpenList-escaped existing file without re-uploa
       exists: async () => true,
       createDirectory: async () => undefined,
       stat: async () => {
-        const error: any = new Error("not found");
+        const error = new HttpFailure("not found");
         error.status = 404;
         throw error;
       },
@@ -1370,7 +1372,7 @@ test("history upload confirms an OpenList-escaped existing file without re-uploa
         putCalls += 1;
         return true;
       },
-    } as any;
+    };
     const result = await uploadWithAList(runtime, "/target", testConfig(), {
       uploadIntent: "history_upload",
       cleanupLocal: false,
@@ -1421,7 +1423,7 @@ test("zero-byte and remote-size mismatch failures preserve local files", async (
       createDirectory: async () => undefined,
       putFileContents: async () => true,
       stat: async () => ({ size: 0 }),
-    } as any;
+    };
     await assert.rejects(
       uploadWithAList(zeroDir, "/target", testConfig(), { cleanupLocal: false, client, verificationDelaysMs: [0], log: noopLog }),
       UploadOperationError
@@ -1436,7 +1438,7 @@ test("zero-byte and remote-size mismatch failures preserve local files", async (
         createDirectory: async () => undefined,
         putFileContents: async () => true,
         stat: async () => ({ size: 4 }),
-      } as any;
+      };
       await assert.rejects(
         uploadWithAList(mismatchDir, "/target", testConfig(), { cleanupLocal: false, client: mismatchClient, verificationDelaysMs: [0], log: noopLog }),
         UploadOperationError
@@ -1460,17 +1462,17 @@ test("ensureRemoteDir ignores only a confirmed concurrent create", async () => {
     createDirectory: async () => {
       throw new Error("already exists");
     },
-  } as any;
+  };
   await ensureRemoteDir(concurrentClient, "/one");
 
   const authClient = {
     exists: async () => {
-      const error: any = new Error("unauthorized");
+      const error = new HttpFailure("unauthorized");
       error.status = 401;
       throw error;
     },
     createDirectory: async () => undefined,
-  } as any;
+  };
   await assert.rejects(ensureRemoteDir(authClient, "/one"), /unauthorized/);
 });
 
@@ -1482,20 +1484,21 @@ test("directory errors are classified before queue retry decisions", async () =>
       const client = {
         exists: async () => false,
         stat: async () => {
-          const error: any = new Error("missing");
+          const error = new HttpFailure("missing");
           error.status = 404;
           throw error;
         },
         createDirectory: async () => {
-          const error: any = new Error(`directory failure ${status}`);
+          const error = new HttpFailure(`directory failure ${status}`);
           error.status = status;
           if (status === 429) error.headers = { "retry-after": "7" };
           throw error;
         },
-      } as any;
+        putFileContents: async () => { throw new Error("unexpected upload"); },
+      };
       await assert.rejects(
         uploadWithAList(runtime, "/target", testConfig(), { cleanupLocal: false, client, log: noopLog }),
-        (error: any) => {
+        (error: unknown) => {
           assert.ok(error instanceof UploadOperationError);
           assert.equal(error.uploadFailure.status, status);
           if (status === 401 || status === 403) assert.equal(error.permanent, true);
@@ -1517,7 +1520,8 @@ test("an empty local directory is rejected and retained", async () => {
     const client = {
       exists: async () => true,
       createDirectory: async () => undefined,
-    } as any;
+      putFileContents: async () => { throw new Error("unexpected upload"); },
+    };
     await assert.rejects(
       uploadWithAList(runtime, "/target", testConfig(), { cleanupLocal: false, client, log: noopLog }),
       UploadOperationError
@@ -1536,12 +1540,12 @@ test("verifyUploadedFile retries delayed visibility and rejects mismatched size"
       if (calls < 2) throw new Error("not visible");
       return { size: 10 };
     },
-  } as any;
+  };
   await verifyUploadedFile(delayed, "/file", 10, [0, 0]);
   assert.equal(calls, 2);
 
   await assert.rejects(
-    verifyUploadedFile({ stat: async () => ({ size: 9 }) } as any, "/file", 10, [0]),
+    verifyUploadedFile({ stat: async () => ({ size: 9 }) }, "/file", 10, [0]),
     UploadOperationError
   );
 });

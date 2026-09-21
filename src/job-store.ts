@@ -1,26 +1,24 @@
+import { readPersistedJobPayload, rowToJob } from './repositories/job-codec.js';
+export { readPersistedJobPayload } from './repositories/job-codec.js';
+import { isRecord } from './shared/api/value.js';
+import type { JobRepository, PersistentJobKind, EnqueuePersistentJob, QualityDownloadMigrationPlan } from './repositories/jobs.js';
+export type { PersistentJobKind, EnqueuePersistentJob, QualityDownloadMigrationPlan } from './repositories/jobs.js';
 import crypto from "node:crypto";
 import type { StateDatabase, PersistentJobRecord } from "./database.js";
 
-export function isRecoveryStopped(payload: any): boolean {
-  return payload?.userDisposition === "abandoned" || payload?.lifecycleState === "abandoned";
+export function isRecoveryStopped(payload: unknown): boolean {
+  return isRecord(payload) && (payload.userDisposition === "abandoned" || payload.lifecycleState === "abandoned");
+}
+
+function retryRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new Error('Invalid persisted encoding retry');
+  return value;
 }
 
 const RECOVERY_NOT_STOPPED_SQL = `
   COALESCE(json_extract(payload_json, '$.userDisposition'), '')<>'abandoned'
   AND COALESCE(json_extract(payload_json, '$.lifecycleState'), '')<>'abandoned'`;
-
-export type PersistentJobKind =
-  | "download"
-  | "access_probe"
-  | "upload"
-  | "verify_upload"
-  | "history_upload"
-  | "quality_download"
-  | "quality_upload"
-  | "quality_replace"
-  | "quality_cleanup"
-  | "path_migration"
-  | "archive_delete";
 
 export const PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES = [
   "pending",
@@ -30,25 +28,8 @@ export const PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES = [
   "manual_wait",
 ] as const;
 
-export interface EnqueuePersistentJob {
-  kind: PersistentJobKind;
-  dedupeKey: string;
-  bvid?: string;
-  userId?: string;
-  mediaId?: number;
-  priority?: number;
-  payload?: Record<string, unknown>;
-  maxAttempts?: number;
-  notBefore?: number;
-  initialStatus?: PersistentJobRecord["status"];
-}
-
-export interface QualityDownloadMigrationPlan {
-  jobs: PersistentJobRecord[];
-  replacement: EnqueuePersistentJob;
-}
-
-function qualityTargetKey(target: any) {
+function qualityTargetKey(target: unknown) {
+  if (!isRecord(target)) return "";
   const userId = String(target?.userId || "");
   const mediaId = Number(target?.mediaId);
   return userId && Number.isInteger(mediaId) ? `${userId}:${mediaId}` : "";
@@ -63,40 +44,19 @@ export function qualityTargetIdentityKey(userId: unknown, mediaId: unknown, bvid
     : "";
 }
 
-function qualityTargetsFromPayload(payload: Record<string, any>) {
+function qualityTargetsFromPayload(payload: Record<string, unknown>) {
   const targets = Array.isArray(payload.targets) ? payload.targets : [];
   const candidates = payload.target ? [payload.target, ...targets] : targets;
-  const unique = new Map<string, any>();
+  const unique = new Map<string, Record<string, unknown>>();
   for (const target of candidates) {
     const key = qualityTargetKey(target);
-    if (key) unique.set(key, target);
+    if (key && isRecord(target)) unique.set(key, target);
   }
   return [...unique.values()];
 }
 
-function rowToJob(row: any): PersistentJobRecord {
-  return {
-    id: String(row.id),
-    kind: String(row.kind),
-    dedupeKey: String(row.dedupe_key),
-    bvid: row.bvid || undefined,
-    userId: row.user_id || undefined,
-    mediaId: typeof row.media_id === "number" ? row.media_id : undefined,
-    status: row.status,
-    priority: Number(row.priority || 100),
-    payload: JSON.parse(row.payload_json || "{}"),
-    attempts: Number(row.attempts || 0),
-    maxAttempts: Number(row.max_attempts || 3),
-    notBefore: Number(row.not_before || 0),
-    leaseOwner: row.lease_owner || undefined,
-    leaseExpiresAt: row.lease_expires_at || undefined,
-    lastError: row.last_error || undefined,
-    createdAt: Number(row.created_at || 0),
-    updatedAt: Number(row.updated_at || 0),
-  };
-}
 
-export class PersistentJobStore {
+export class PersistentJobStore implements JobRepository {
   private readonly now: () => number;
   constructor(private stateDatabase: StateDatabase, options: {normalizeRecovery?: boolean; now?: () => number} = {}) {
     this.now = options.now ?? Date.now;
@@ -196,13 +156,13 @@ export class PersistentJobStore {
   mergeQualityDownload(input: EnqueuePersistentJob) {
     if (input.kind !== "quality_download") throw new Error("mergeQualityDownload requires a quality_download job");
     const transaction = this.stateDatabase.db.transaction(() => {
-      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE dedupe_key=?").get(input.dedupeKey) as any;
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE dedupe_key=?").get(input.dedupeKey) as Record<string, unknown>;
       if (!row) {
         return { job: this.enqueue(input), created: true, targetAdded: true };
       }
       const existing = rowToJob(row);
-      const existingPayload = existing.payload as Record<string, any>;
-      const incomingPayload = (input.payload || {}) as Record<string, any>;
+      const existingPayload = existing.payload as Record<string, unknown>;
+      const incomingPayload = (input.payload || {}) as Record<string, unknown>;
       const existingTargets = qualityTargetsFromPayload(existingPayload);
       const incomingTargets = qualityTargetsFromPayload(incomingPayload);
       const targets = new Map(existingTargets.map((target) => [qualityTargetKey(target), target]));
@@ -276,14 +236,14 @@ export class PersistentJobStore {
   restartFailedQualityAsDownload(id: string, input: EnqueuePersistentJob) {
     if (input.kind !== "quality_download") throw new Error("restartFailedQualityAsDownload requires a quality_download replacement");
     return this.stateDatabase.db.transaction(() => {
-      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(id) as any;
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(id) as Record<string, unknown>;
       if (!row) return { ok: false as const, reason: "missing" as const };
       const current = rowToJob(row);
       if (!["quality_download", "quality_upload"].includes(current.kind)
         || !["failed", "manual_wait"].includes(current.status)) {
         return { ok: false as const, reason: "state_changed" as const };
       }
-      const payload = current.payload as Record<string, any>;
+      const payload = current.payload as Record<string, unknown>;
       if ((Array.isArray(payload.backupFiles) && payload.backupFiles.length > 0)
         || (Array.isArray(payload.finalFiles) && payload.finalFiles.length > 0)) {
         return { ok: false as const, reason: "replacement_started" as const };
@@ -305,7 +265,7 @@ export class PersistentJobStore {
         OR bvid IS NULL
         OR dedupe_key NOT LIKE ('quality-download:' || bvid || ':%')
       )
-    `).get() as any;
+    `).get() as Record<string, unknown>;
     return Number(row?.count || 0);
   }
 
@@ -320,7 +280,7 @@ export class PersistentJobStore {
       )
       ORDER BY created_at ASC, id ASC
       LIMIT ?
-    `).all(Math.max(1, Math.floor(limit))) as any[]).map(rowToJob);
+    `).all(Math.max(1, Math.floor(limit))) as Record<string, unknown>[]).map(rowToJob);
   }
 
   applyQualityDownloadMigration(plans: QualityDownloadMigrationPlan[], markerKey: string) {
@@ -347,7 +307,7 @@ export class PersistentJobStore {
         WHERE dedupe_key=? AND status IN ('pending','retry_wait') AND not_before<=?
           AND ${RECOVERY_NOT_STOPPED_SQL}
         LIMIT 1
-      `).get(dedupeKey, now) as any;
+      `).get(dedupeKey, now) as Record<string, unknown>;
       if (!row) return null;
       const leaseExpiresAt = now + Math.max(10_000, leaseMs);
       const updated = this.stateDatabase.db.prepare(`
@@ -382,7 +342,7 @@ export class PersistentJobStore {
           AND ${RECOVERY_NOT_STOPPED_SQL}
         ORDER BY priority ASC, not_before ASC, created_at ASC
         LIMIT ?
-      `).all(now, ...kinds, Math.max(0, Math.floor(limit))) as any[];
+      `).all(now, ...kinds, Math.max(0, Math.floor(limit))) as Record<string, unknown>[];
       const leaseExpiresAt = now + Math.max(10_000, leaseMs);
       const update = this.stateDatabase.db.prepare(`
         UPDATE jobs SET status='leased', lease_owner=?, lease_expires_at=?, updated_at=?
@@ -445,7 +405,7 @@ export class PersistentJobStore {
   }
   retry(id: string, leaseOwner: string, error: string, notBefore: number) {
     const now = this.now();
-    const row = this.stateDatabase.db.prepare("SELECT kind, attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
+    const row = this.stateDatabase.db.prepare("SELECT kind, attempts, max_attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as Record<string, unknown>;
     if (!row) return { updated: false, exhausted: false };
     const attempts = Number(row.attempts || 0) + 1;
     const exhausted = attempts >= Number(row.max_attempts || 1);
@@ -453,9 +413,9 @@ export class PersistentJobStore {
       if (["upload", "history_upload", "quality_download", "quality_upload", "quality_replace", "quality_cleanup"].includes(String(row.kind))) {
         let payloadPatch = "";
         if (["upload", "history_upload"].includes(String(row.kind))) {
-          const payloadRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
-          let payload: Record<string, unknown> = {};
-          try { payload = JSON.parse(String(payloadRow?.payload_json || "{}")); } catch { payload = {}; }
+          const payloadRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as Record<string, unknown>;
+          if (!payloadRow) throw new Error("Persistent job disappeared during retry transaction");
+          const payload = readPersistedJobPayload(payloadRow.payload_json);
           payloadPatch = JSON.stringify({ ...payload, awaitingManualRecovery: true, resumeOnly: true, allowReupload: false });
         }
         this.stateDatabase.db.prepare(`
@@ -494,13 +454,12 @@ export class PersistentJobStore {
     return this.stateDatabase.db.transaction(() => {
       const row = this.stateDatabase.db.prepare(
         "SELECT kind, attempts, max_attempts, payload_json FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')"
-      ).get(id, leaseOwner) as any;
+      ).get(id, leaseOwner) as Record<string, unknown>;
       if (!row || String(row.kind) !== "download") return { updated: false, exhausted: false, attempts: 0 };
       const attempts = Number(row.attempts || 0) + 1;
       const exhausted = attempts >= Number(row.max_attempts || 1);
       const now = this.now();
-      let payload: Record<string, unknown> = {};
-      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { payload = {}; }
+      const payload = readPersistedJobPayload(row.payload_json);
       if (exhausted) {
         const mergedPayload = {
           ...payload,
@@ -539,27 +498,34 @@ export class PersistentJobStore {
 
   normalizeTerminalUploadRecovery() {
     const now = this.now();
-    const result = this.stateDatabase.db.prepare(`
-      UPDATE jobs
-      SET payload_json=json_set(
-            CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,
-            '$.awaitingManualRecovery', json('true'),
-            '$.resumeOnly', json('true'),
-            '$.allowReupload', json('false')
-          ),
-          updated_at=?
-      WHERE kind IN ('upload','history_upload')
-        AND status='failed'
-        AND COALESCE(json_extract(payload_json, '$.userDisposition'), '')<>'abandoned'
-        AND COALESCE(json_extract(payload_json, '$.lifecycleState'), '')<>'abandoned'
-        AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0)<>1
-    `).run(now);
-    return Number(result.changes || 0);
+    return this.stateDatabase.db.transaction(() => {
+      // Validate the original evidence before any normalization can alter it.
+      const rows = this.stateDatabase.db.prepare<[], { payload_json: unknown }>(
+        "SELECT payload_json FROM jobs WHERE kind IN ('upload','history_upload') AND status='failed'",
+      ).all();
+      for (const row of rows) readPersistedJobPayload(row.payload_json);
+      const result = this.stateDatabase.db.prepare(`
+        UPDATE jobs
+        SET payload_json=json_set(
+              payload_json,
+              '$.awaitingManualRecovery', json('true'),
+              '$.resumeOnly', json('true'),
+              '$.allowReupload', json('false')
+            ),
+            updated_at=?
+        WHERE kind IN ('upload','history_upload')
+          AND status='failed'
+          AND COALESCE(json_extract(payload_json, '$.userDisposition'), '')<>'abandoned'
+          AND COALESCE(json_extract(payload_json, '$.lifecycleState'), '')<>'abandoned'
+          AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0)<>1
+      `).run(now);
+      return Number(result.changes || 0);
+    })();
   }
 
   retryIndefinitely(id: string, leaseOwner: string, error: string, notBefore: number) {
     const now = this.now();
-    const row = this.stateDatabase.db.prepare("SELECT attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
+    const row = this.stateDatabase.db.prepare("SELECT attempts FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as Record<string, unknown>;
     if (!row) return { updated: false, attempts: 0 };
     const attempts = Number(row.attempts || 0) + 1;
     const updated = this.stateDatabase.db.prepare(`
@@ -581,10 +547,9 @@ export class PersistentJobStore {
     return this.stateDatabase.db.transaction(() => {
       const row = this.stateDatabase.db.prepare(
         "SELECT payload_json FROM jobs WHERE id=? AND lease_owner=? AND status IN ('leased','running')"
-      ).get(id, leaseOwner) as any;
+      ).get(id, leaseOwner) as Record<string, unknown>;
       if (!row) return false;
-      let payload: Record<string, unknown> = {};
-      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { payload = {}; }
+      const payload = readPersistedJobPayload(row.payload_json);
       const normalizedPath = String(relativePath || "").replace(/\\/g, "/");
       const persistedFiles = Array.isArray(payload.reuploadAuthorizedFiles)
         ? payload.reuploadAuthorizedFiles
@@ -604,14 +569,9 @@ export class PersistentJobStore {
   }
 
   parkManualRecovery(id: string, leaseOwner: string, error: string, payloadPatch: Record<string, unknown> = {}) {
-    const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as any;
+    const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND lease_owner=?").get(id, leaseOwner) as Record<string, unknown>;
     if (!row) return false;
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = JSON.parse(String(row.payload_json || "{}"));
-    } catch {
-      payload = {};
-    }
+    const payload = readPersistedJobPayload(row.payload_json);
     const mergedPayload = { ...payload, ...payloadPatch };
     const now = this.now();
     return this.stateDatabase.db.prepare(`
@@ -650,20 +610,20 @@ export class PersistentJobStore {
     retryState: Record<string, unknown>,
   ) {
     return this.stateDatabase.db.transaction(() => {
-      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as any;
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as Record<string, unknown>;
       if (!row) return null;
       const parent = rowToJob(row);
       if (!['manual_wait', 'failed', 'retry_wait', 'pending'].includes(String(parent.status))) {
         return null;
       }
       if (isRecoveryStopped(parent.payload)) return null;
-      const currentRetry = (parent.payload as any)?.encodingRetry;
+      const currentRetry = retryRecord(parent.payload.encodingRetry);
       if (currentRetry && ['running', 'uploading', 'verifying'].includes(String(currentRetry.state || '')) && currentRetry.replacementJobId) {
         const existing = this.findById(String(currentRetry.replacementJobId));
         if (existing) return { parent, child: existing, idempotent: true };
         return null;
       }
-      if ((parent.payload as any)?.awaitingManualRecovery !== true) {
+      if (parent.payload.awaitingManualRecovery !== true) {
         return null;
       }
 
@@ -698,11 +658,11 @@ export class PersistentJobStore {
     payloadPatch: Record<string, unknown> = {},
   ) {
     return this.stateDatabase.db.transaction(() => {
-      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as any;
+      const row = this.stateDatabase.db.prepare("SELECT * FROM jobs WHERE id=?").get(parentId) as Record<string, unknown>;
       if (!row) return false;
-      const payload = JSON.parse(String(row.payload_json || "{}")) as Record<string, any>;
+      const payload = readPersistedJobPayload(row.payload_json);
       if (isRecoveryStopped(payload)) return false;
-      const retry = payload.encodingRetry;
+      const retry = retryRecord(payload.encodingRetry);
       if (!retry
         || Number(retry.generation) !== Number(generation)
         || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
@@ -726,12 +686,11 @@ export class PersistentJobStore {
 
   updateEncodingRetry(parentId: string, generation: number, patch: Record<string, unknown>) {
     return this.stateDatabase.db.transaction(() => {
-      const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+      const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as Record<string, unknown>;
       if (!row) return false;
-      let payload: Record<string, any>;
-      try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { return false; }
+      const payload = readPersistedJobPayload(row.payload_json);
       if (isRecoveryStopped(payload)) return false;
-      const retry = payload.encodingRetry;
+      const retry = retryRecord(payload.encodingRetry);
       if (!retry
         || Number(retry.generation) !== Number(generation)
         || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
@@ -756,12 +715,11 @@ export class PersistentJobStore {
     inputs: EnqueuePersistentJob[],
   ) {
     return this.stateDatabase.db.transaction(() => {
-      const parentRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+      const parentRow = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as Record<string, unknown>;
       if (!parentRow || inputs.length === 0) return null;
-      let payload: Record<string, any>;
-      try { payload = JSON.parse(String(parentRow.payload_json || "{}")); } catch { return null; }
+      const payload = readPersistedJobPayload(parentRow.payload_json);
       if (isRecoveryStopped(payload)) return null;
-      const retry = payload.encodingRetry;
+      const retry = retryRecord(payload.encodingRetry);
       if (!retry
         || Number(retry.generation) !== Number(generation)
         || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return null;
@@ -815,7 +773,7 @@ export class PersistentJobStore {
         AND COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0) <> 1
         AND json_extract(payload_json, '$.encodingRetry.parentJobId')=?
         AND CAST(json_extract(payload_json, '$.encodingRetry.generation') AS INTEGER)=?
-    `).get(parentId, parentId, generation) as any;
+    `).get(parentId, parentId, generation) as Record<string, unknown>;
     return Number(row?.count || 0);
   }
 
@@ -832,12 +790,11 @@ export class PersistentJobStore {
   }
 
   private completeEncodingRetryParentUnsafe(parentId: string, generation: number) {
-    const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as any;
+    const row = this.stateDatabase.db.prepare("SELECT payload_json FROM jobs WHERE id=?").get(parentId) as Record<string, unknown>;
     if (!row) return false;
-    let payload: Record<string, any>;
-    try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { return false; }
+    const payload = readPersistedJobPayload(row.payload_json);
     if (isRecoveryStopped(payload)) return false;
-    const retry = payload.encodingRetry;
+    const retry = retryRecord(payload.encodingRetry);
     if (!retry
       || Number(retry.generation) !== Number(generation)
       || !['running', 'uploading', 'verifying'].includes(String(retry.state || ''))) return false;
@@ -856,7 +813,7 @@ export class PersistentJobStore {
   completeEncodingRetryCommit(parentId: string, generation: number, childId?: string, leaseOwner?: string) {
     return this.stateDatabase.db.transaction(() => {
       const parent = this.findById(parentId);
-      const retry = (parent?.payload as any)?.encodingRetry;
+      const retry = retryRecord(parent?.payload.encodingRetry);
       if (isRecoveryStopped(parent?.payload) || !retry || Number(retry.generation) !== generation
         || !['running', 'uploading', 'verifying'].includes(String(retry.state))) {
         throw new Error("Encoding retry parent changed before commit");
@@ -876,14 +833,9 @@ export class PersistentJobStore {
   }
   wakeManualJob(id: string, payloadPatch: Record<string, unknown> = {}, notBefore = this.now()) {
     if (isRecoveryStopped(this.findById(id)?.payload)) return null;
-    const row = this.stateDatabase.db.prepare("SELECT status, payload_json FROM jobs WHERE id=?").get(id) as any;
+    const row = this.stateDatabase.db.prepare("SELECT status, payload_json FROM jobs WHERE id=?").get(id) as Record<string, unknown>;
     if (!row || !["manual_wait", "failed", "retry_wait", "pending"].includes(String(row.status))) return null;
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = JSON.parse(String(row.payload_json || "{}"));
-    } catch {
-      payload = {};
-    }
+    const payload = readPersistedJobPayload(row.payload_json);
     const mergedPayload = { ...payload, ...payloadPatch };
     const now = this.now();
     const updated = this.stateDatabase.db.prepare(`
@@ -904,16 +856,11 @@ export class PersistentJobStore {
   abandonRecovery(id: string, reason = "用户已放弃本次候选。", payloadPatch: Record<string, unknown> = {}) {
     const row = this.stateDatabase.db.prepare(
       "SELECT status, payload_json FROM jobs WHERE id=? AND status IN ('manual_wait','failed','retry_wait','pending')"
-    ).get(id) as any;
+    ).get(id) as Record<string, unknown>;
     if (!row) return false;
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = JSON.parse(String(row.payload_json || "{}"));
-    } catch {
-      payload = {};
-    }
+    const payload = readPersistedJobPayload(row.payload_json);
     if (payload.awaitingManualRecovery !== true) return false;
-    const nextPayload: Record<string, any> = {
+    const nextPayload: Record<string, unknown> = {
       ...payload,
       ...payloadPatch,
       awaitingManualRecovery: false,
@@ -923,9 +870,10 @@ export class PersistentJobStore {
       lifecycleState: "abandoned",
       abandonedAt: this.now(),
     };
-    if (nextPayload.recoveryAssessment && typeof nextPayload.recoveryAssessment === 'object') {
-      nextPayload.recoveryAssessment = { ...nextPayload.recoveryAssessment };
-      delete (nextPayload.recoveryAssessment as any).nextCheckAt;
+    if (isRecord(nextPayload.recoveryAssessment)) {
+      const assessment = { ...nextPayload.recoveryAssessment };
+      delete assessment.nextCheckAt;
+      nextPayload.recoveryAssessment = assessment;
     }
     const now = this.now();
     return this.stateDatabase.db.prepare(`
@@ -939,11 +887,13 @@ export class PersistentJobStore {
   counts() {
     const rows = this.stateDatabase.db.prepare(`
       SELECT kind, status, COUNT(*) AS count FROM jobs GROUP BY kind, status
-    `).all() as any[];
+    `).all() as Record<string, unknown>[];
     const result: Record<string, Record<string, number>> = {};
     for (const row of rows) {
-      result[row.kind] ||= {};
-      result[row.kind][row.status] = Number(row.count || 0);
+      const kind = String(row.kind);
+      const status = String(row.status);
+      result[kind] ||= {};
+      result[kind][status] = Number(row.count || 0);
     }
     return result;
   }
@@ -961,7 +911,7 @@ export class PersistentJobStore {
       SELECT * FROM jobs WHERE kind IN (${placeholders}) AND status IN (${statusPlaceholders})
         AND ${RECOVERY_NOT_STOPPED_SQL}
       ORDER BY priority ASC, not_before ASC, created_at ASC LIMIT ?
-    `).all(...kinds, ...statuses, Math.max(1, limit)) as any[]).map(rowToJob);
+    `).all(...kinds, ...statuses, Math.max(1, limit)) as Record<string, unknown>[]).map(rowToJob);
   }
 
   list(kinds: PersistentJobKind[], limit = 1000) {
@@ -970,7 +920,7 @@ export class PersistentJobStore {
     return (this.stateDatabase.db.prepare(`
       SELECT * FROM jobs WHERE kind IN (${placeholders}) AND status<>'completed'
       ORDER BY priority ASC, not_before ASC, created_at ASC LIMIT ?
-    `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
+    `).all(...kinds, Math.max(1, limit)) as Record<string, unknown>[]).map(rowToJob);
   }
 
   listLegacyDownloadRecovery(limit = 10_000) {
@@ -980,7 +930,7 @@ export class PersistentJobStore {
         AND json_type(payload_json, '$.legacyFailureKey')='text'
       ORDER BY updated_at ASC, created_at ASC
       LIMIT ?
-    `).all(Math.max(1, Math.floor(limit))) as any[]).map(rowToJob);
+    `).all(Math.max(1, Math.floor(limit))) as Record<string, unknown>[]).map(rowToJob);
   }
 
   findLegacyDownloadRecovery(issueKey: string) {
@@ -988,7 +938,7 @@ export class PersistentJobStore {
       SELECT * FROM jobs
       WHERE kind='download' AND json_extract(payload_json, '$.legacyFailureKey')=?
       ORDER BY updated_at DESC LIMIT 1
-    `).get(String(issueKey || "")) as any;
+    `).get(String(issueKey || "")) as Record<string, unknown>;
     return row ? rowToJob(row) : null;
   }
 
@@ -999,7 +949,7 @@ export class PersistentJobStore {
       SELECT DISTINCT bvid FROM jobs
       WHERE kind IN (${placeholders}) AND bvid IS NOT NULL AND bvid != ''
       LIMIT ?
-    `).all(...kinds, Math.max(1, Math.floor(limit))) as any[]).map((row) => String(row.bvid));
+    `).all(...kinds, Math.max(1, Math.floor(limit))) as Record<string, unknown>[]).map((row) => String(row.bvid));
   }
 
   listActiveTransferSessionKeys(
@@ -1026,7 +976,7 @@ export class PersistentJobStore {
           OR json_extract(payload_json, '$.awaitingManualRecovery')=1
         )
         AND json_type(payload_json, '$.sessionId') IN ('text', 'integer')
-    `).all(...kinds, ...statuses) as any[];
+    `).all(...kinds, ...statuses) as Record<string, unknown>[];
     return new Set(rows.flatMap((row) => {
       const sessionId = String(row.session_id || "");
       const generation = Number(row.session_generation || 1);
@@ -1047,7 +997,7 @@ export class PersistentJobStore {
         AND ${RECOVERY_NOT_STOPPED_SQL}
       ORDER BY priority ASC, updated_at ASC, created_at ASC
       LIMIT ?
-    `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
+    `).all(...kinds, Math.max(1, limit)) as Record<string, unknown>[]).map(rowToJob);
   }
 
   listDueManualRecovery(kinds: PersistentJobKind[], now = this.now(), limit = 25) {
@@ -1068,7 +1018,7 @@ export class PersistentJobStore {
         )
       ORDER BY priority ASC, updated_at ASC, created_at ASC
       LIMIT ?
-    `).all(...kinds, Math.max(0, Math.floor(now)), Math.max(1, limit)) as any[]).map(rowToJob);
+    `).all(...kinds, Math.max(0, Math.floor(now)), Math.max(1, limit)) as Record<string, unknown>[]).map(rowToJob);
   }
 
   listFailed(kinds: PersistentJobKind[], limit = 1000) {
@@ -1080,7 +1030,7 @@ export class PersistentJobStore {
         AND ${RECOVERY_NOT_STOPPED_SQL}
       ORDER BY updated_at DESC, created_at ASC
       LIMIT ?
-    `).all(...kinds, Math.max(1, limit)) as any[]).map(rowToJob);
+    `).all(...kinds, Math.max(1, limit)) as Record<string, unknown>[]).map(rowToJob);
   }
 
   /**
@@ -1129,7 +1079,7 @@ export class PersistentJobStore {
       WHERE ${conditions.join("\n        AND ")}
       ORDER BY updated_at ASC, created_at ASC, id ASC
       LIMIT ?
-    `).all(...params, Math.max(1, Math.floor(limit))) as any[]).map(rowToJob);
+    `).all(...params, Math.max(1, Math.floor(limit))) as Record<string, unknown>[]).map(rowToJob);
   }
 
   removeObsoleteArchiveRecoveryCandidate(id: string) {
@@ -1157,7 +1107,7 @@ export class PersistentJobStore {
     const placeholders = kinds.map(() => "?").join(",");
     const row = this.stateDatabase.db.prepare(`
       SELECT COUNT(*) AS count FROM jobs WHERE kind IN (${placeholders})
-    `).get(...kinds) as any;
+    `).get(...kinds) as Record<string, unknown>;
     return Number(row?.count || 0);
   }
 
@@ -1168,22 +1118,22 @@ export class PersistentJobStore {
       SELECT COUNT(*) AS count FROM jobs
       WHERE kind IN (${placeholders}) AND status IN ('pending','retry_wait')
         AND not_before <= ? AND priority <= ?
-    `).get(...kinds, now, maxPriority) as any;
+    `).get(...kinds, now, maxPriority) as Record<string, unknown>;
     return Number(row?.count || 0);
   }
 
   nextDueAt() {
-    const row = this.stateDatabase.db.prepare(`
+    const row = this.stateDatabase.db.prepare<[], { next_at: number | null }>(`
       SELECT MIN(not_before) AS next_at FROM jobs WHERE status IN ('pending','retry_wait')
-    `).get() as any;
+    `).get();
     return typeof row?.next_at === "number" ? row.next_at : undefined;
   }
 
   scheduleSummary(kind: PersistentJobKind) {
-    const row = this.stateDatabase.db.prepare(`
+    const row = this.stateDatabase.db.prepare<[string], { count: number; next_at: number | null }>(`
       SELECT COUNT(*) AS count, MIN(not_before) AS next_at
       FROM jobs WHERE kind=? AND status IN ('pending','retry_wait','leased','running')
-    `).get(kind) as any;
+    `).get(kind);
     return {
       count: Number(row?.count || 0),
       nextAt: typeof row?.next_at === "number" ? row.next_at : undefined,
@@ -1210,7 +1160,7 @@ export class PersistentJobStore {
             END
           )
         )
-    `).get(intent, intent, intent) as any;
+    `).get(intent, intent, intent) as Record<string, unknown>;
     return {
       count: Number(row?.count || 0),
       nextAt: Number.isFinite(Number(row?.next_at)) ? Number(row.next_at) : undefined,
@@ -1219,10 +1169,10 @@ export class PersistentJobStore {
 
   hasJobsForBvid(bvid: string, kinds?: PersistentJobKind[]) {
     if (!kinds?.length) {
-      return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE bvid=?").get(bvid) as any).count || 0) > 0;
+      return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE bvid=?").get(bvid) as Record<string, unknown>).count || 0) > 0;
     }
     const placeholders = kinds.map(() => "?").join(",");
-    return Number((this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as any).count || 0) > 0;
+    return Number((this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as Record<string, unknown>).count || 0) > 0;
   }
 
   hasActiveJobsForBvid(bvid: string, kinds?: PersistentJobKind[]) {
@@ -1246,7 +1196,7 @@ export class PersistentJobStore {
   countJobsForBvid(bvid: string, kinds: PersistentJobKind[]) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");
-    const row = this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as any;
+    const row = this.stateDatabase.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE bvid=? AND kind IN (${placeholders})`).get(bvid, ...kinds) as Record<string, unknown>;
     return Number(row?.count || 0);
   }
 
@@ -1256,7 +1206,7 @@ export class PersistentJobStore {
       SELECT COUNT(*) AS count FROM jobs
       WHERE kind IN ('quality_download','quality_upload','quality_replace','quality_cleanup')
         AND json_extract(payload_json, '$.artifactKey')=?
-    `).get(artifactKey) as any;
+    `).get(artifactKey) as Record<string, unknown>;
     return Number(row?.count || 0);
   }
 
@@ -1283,14 +1233,13 @@ export class PersistentJobStore {
       SELECT kind, bvid, user_id, media_id, payload_json FROM jobs
       WHERE kind IN ('quality_download','quality_upload','quality_replace','quality_cleanup')
         AND status<>'completed'
-    `).all() as any[];
+    `).all() as Record<string, unknown>[];
     const keys = new Set<string>();
     for (const row of rows) {
       const bvid = String(row.bvid || "");
       if (!bvid) continue;
       if (row.kind === "quality_download") {
-        let payload: Record<string, any> = {};
-        try { payload = JSON.parse(String(row.payload_json || "{}")); } catch { payload = {}; }
+        const payload = readPersistedJobPayload(row.payload_json);
         for (const target of qualityTargetsFromPayload(payload)) {
           const key = qualityTargetIdentityKey(target?.userId, target?.mediaId, bvid);
           if (key) keys.add(key);
@@ -1304,7 +1253,7 @@ export class PersistentJobStore {
   }
 
   hasDedupePrefix(prefix: string) {
-    return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed'").get(`${prefix}%`) as any).count || 0) > 0;
+    return Number((this.stateDatabase.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed'").get(`${prefix}%`) as Record<string, unknown>).count || 0) > 0;
   }
 
   wakeByBvid(bvid: string, kinds: PersistentJobKind[], now = this.now()) {
@@ -1346,7 +1295,7 @@ export class PersistentJobStore {
           OR json_extract(payload_json, '$.pausedForUserId')=?
         ))
       ORDER BY created_at ASC
-    `).all(id, id, id, id, id, id) as any[]).map(rowToJob);
+    `).all(id, id, id, id, id, id) as Record<string, unknown>[]).map(rowToJob);
   }
 
   reassignDownloadJob(id: string, downloadUserId: string, payload: Record<string, unknown>) {
@@ -1370,7 +1319,7 @@ export class PersistentJobStore {
     const jobs = (this.stateDatabase.db.prepare(`
       SELECT * FROM jobs WHERE kind IN ('download','quality_download')
         AND json_extract(payload_json, '$.pausedForUserId')=?
-    `).all(userId) as any[]).map(rowToJob);
+    `).all(userId) as Record<string, unknown>[]).map(rowToJob);
     const update = this.stateDatabase.db.prepare(`
       UPDATE jobs SET user_id=CASE WHEN kind='quality_download' THEN ? ELSE user_id END,
         payload_json=?, status='pending', not_before=?, lease_owner=NULL, lease_expires_at=NULL,
@@ -1378,8 +1327,8 @@ export class PersistentJobStore {
     `);
     const transaction = this.stateDatabase.db.transaction(() => {
       for (const job of jobs) {
-        const payload = { ...job.payload, downloadUserId: userId };
-        delete (payload as any).pausedForUserId;
+        const payload: Record<string, unknown> = { ...job.payload, downloadUserId: userId };
+        delete payload.pausedForUserId;
         update.run(userId, JSON.stringify(payload), now, now, job.id);
       }
     });

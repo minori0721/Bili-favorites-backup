@@ -1,3 +1,4 @@
+import { readField } from './contract-values.js';
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,7 +14,7 @@ async function fixture() {
   const active = path.join(root, "active.sqlite"), source = path.join(root, "source.sqlite");
   for (const [file, bvid] of [[active, "BVOLD"], [source, "BVNEW"]]) {
     const manager = new StateManager({ dbPath: file, statePath: path.join(root, "none.json") });
-    manager.recordFavoriteItem("u", 1, "folder", { bvid, title: bvid, upperName: "up" } as any);
+    manager.recordFavoriteItem("u", 1, "folder", { bvid, title: bvid, upperName: "up" });
     manager.close();
   }
   return { root, active, source };
@@ -22,11 +23,11 @@ async function fixture() {
 test("initial database rename failure preserves original records", async () => {
   const f = await fixture();
   const manager = new StateManager({ dbPath: f.active });
-  manager.recordFavoriteItem("u", 1, "folder", { bvid: "BVLATE", title: "late WAL write" } as any);
+  manager.recordFavoriteItem("u", 1, "folder", { bvid: "BVLATE", title: "late WAL write", upperName: "up" });
   const rename = fs.renameSync;
-  fs.renameSync = ((from: any, to: any) => {
+  fs.renameSync = ((from: unknown, to: unknown) => {
     if (String(from) === f.active && String(to).includes(".displaced-")) throw Object.assign(new Error("fixture EACCES"), { code: "EACCES" });
-    return rename(from, to);
+    return rename(String(from), String(to));
   }) as typeof fs.renameSync;
   try {
     await assert.rejects(manager.beginDatabaseReplacement(f.source), /fixture EACCES/);
@@ -108,9 +109,9 @@ test("database commit remains successful when backup deletion fails", async () =
   const rm = fs.rmSync;
   try {
     const handle = await manager.beginDatabaseReplacement(f.source);
-    fs.rmSync = ((target: any, options: any) => {
+    fs.rmSync = ((target: fs.PathLike, options?: Parameters<typeof fs.rmSync>[1]) => {
       if (String(target).startsWith(`${f.active}.before-import-`)) throw new Error("fixture cleanup denied");
-      return rm(target, options);
+      return rm(String(target), options);
     }) as typeof fs.rmSync;
     await handle.commit();
     await handle.rollback();
@@ -128,11 +129,11 @@ test("failed rollback retains its snapshot and can recover on next startup", asy
   const rename = fs.renameSync;
   try {
     const handle = await manager.beginDatabaseReplacement(f.source);
-    fs.renameSync = ((from: any, to: any) => {
+    fs.renameSync = ((from: unknown, to: unknown) => {
       if (String(from).endsWith(".restore")) throw Object.assign(new Error("fixture restore denied"), { code: "EACCES" });
-      return rename(from, to);
+      return rename(String(from), String(to));
     }) as typeof rename;
-    await assert.rejects(handle.rollback(), (error: any) => error.recoveryRequired === true);
+    await assert.rejects(handle.rollback(), (error: unknown) => readField(error, 'recoveryRequired') === true);
     assert.equal(fs.existsSync(`${f.active}.replacement.json`), true);
     assert.ok(fs.readdirSync(f.root).some(name => name.includes(".before-import-")));
   } finally { fs.renameSync = rename; try { manager.close(); } catch {} }

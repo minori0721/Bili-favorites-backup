@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { PersistentJobRecord } from '../database.js';
 import type { RecoveryIssueKind } from '../recovery-policy.js';
 import type { RecoveryAssessment } from './recovery-contracts.js';
-export function inspectConflictCandidateEligibility(transfers: Pick<TransferSessionStore, 'get' | 'listFiles'>, job: PersistentJobRecord, assessment: RecoveryAssessment | null) {
+export function inspectConflictCandidateEligibility(transfers: Pick<TransferSessionRepository, 'get' | 'listFiles'>, job: PersistentJobRecord, assessment: RecoveryAssessment | null) {
     const payload = job.payload;
     if (!job || !payload || job.kind !== "upload" || payload.historyOnly) {
       return { eligible: false, reason: "只有普通归档上传可以生成冲突候选", fileCount: 0, totalBytes: 0 };

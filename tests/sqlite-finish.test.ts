@@ -1,3 +1,5 @@
+import { required } from './contract-values.js';
+import { createHeldScheduler } from './fixtures/held-scheduler.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +27,7 @@ function insertVideoRelation(
     upperName: "Tester",
     firstSeenAt: timestamp,
     lastSeenAt: timestamp,
-    biliStatus: "available",
+    biliStatus: "available" as const,
     backupStatus: status,
     localDir: localDir || undefined,
   };
@@ -55,7 +57,7 @@ function writeCompleteManifest(localDir: string) {
   writeJsonFile(path.join(localDir, ".bfb-download.json"), {
     schemaVersion: 1,
     sessionId: "shared-session",
-    kind: "backup",
+    kind: "backup" as const,
     bvid: "BVSHARED",
     accountUid: 1,
     bbdownCommit: "test",
@@ -64,7 +66,7 @@ function writeCompleteManifest(localDir: string) {
     createdAt: timestamp,
     updatedAt: timestamp,
     snapshotAt: timestamp,
-    status: "complete",
+    status: "complete" as const,
     pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
     outputs: [{ pageIndex: 1, cid: 1, relativePath: "video.mp4", size: 1, duration: 1, videoCodec: "HEVC", quickHash: "test", verifiedAt: timestamp }],
     history: [],
@@ -135,7 +137,7 @@ test("runtime failure and cooldown changes update only their SQLite rows", async
   });
   try {
     manager.markFailed("u1", "BVFAIL", 1, "failed", true);
-    assert.equal(manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM failures").get().count, 2);
+    assert.equal(required(manager.getDatabase().db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM failures").get()).count, 2);
     assert.equal(manager.getDatabase().getFailure("u1", "BVFAIL", 1)?.reason, "failed");
     assert.equal(manager.getDatabase().getFailure("u2", "BVOTHER", 2)?.reason, "unrelated");
     assert.deepEqual(dirtyFailures, [false]);
@@ -163,7 +165,7 @@ test("runtime failure and cooldown changes update only their SQLite rows", async
       probeMode: "web",
       setAt: timestamp,
     });
-    manager.setUploadCooldown({ state: "open", retryAt: Date.now() + 60_000, reason: "backend" });
+    manager.setUploadCooldown({ state: "open" as const, retryAt: Date.now() + 60_000, reason: "backend" });
     manager.clearDownloadApiCooldown();
     assert.equal(manager.getDownloadApiCooldown(), null);
     assert.equal(manager.getUploadCooldown()?.reason, "backend");
@@ -187,7 +189,7 @@ test("1000 orphaned upload failures persist in bounded SQL pages and keep the ta
   await fs.promises.mkdir(invalidDir, { recursive: true });
   await fs.promises.writeFile(path.join(localDir, "video.mp4"), "x");
   writeCompleteManifest(localDir);
-  writeJsonFile(path.join(invalidDir, ".bfb-download.json"), { status: "failed", outputs: [] });
+  writeJsonFile(path.join(invalidDir, ".bfb-download.json"), { status: "failed" as const, outputs: [] });
 
   const database = new StateDatabase(dbPath);
   database.db.transaction(() => {
@@ -214,33 +216,34 @@ test("1000 orphaned upload failures persist in bounded SQL pages and keep the ta
     favorites: [{ mediaId: 1, title: "Recovery" }],
     lastLoginAt: timestamp,
   };
-  const scheduler = new SyncScheduler(
-    { get: () => config } as any,
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
-    manager
-  ) as any;
   const pageSizes: number[] = [];
   const originalPage = manager.listUploadFailuresForRecoveryPage.bind(manager);
-  manager.listUploadFailuresForRecoveryPage = ((cursor: any, limit: number) => {
+  manager.listUploadFailuresForRecoveryPage = (cursor, limit) => {
     const page = originalPage(cursor, limit);
     pageSizes.push(page.items.length);
     return page;
-  }) as typeof manager.listUploadFailuresForRecoveryPage;
+  };
+  const fixture = createHeldScheduler(
+    { get: () => config },
+    { list: () => [user], getById: (id: string) => id === user.id ? user : null },
+    manager
+  );
   try {
-    scheduler.uploadQueue.setStartGate(() => false);
-    scheduler.startupRecovery().recoverOrphanedUploadFailures();
-    assert.equal(scheduler.jobStore.countOutstanding(["upload"]), 999);
-    assert.equal(scheduler.uploadQueue.getSize(), 25);
+    fixture.queues.get('upload').setStartGate(() => false);
+    manager.markPersistentJobBootstrapComplete();
+    await fixture.scheduler.resumePersistedWorkOnStartup();
+    assert.equal(fixture.jobs.countOutstanding(["upload"]), 999);
+    assert.equal(fixture.queues.get('upload').getSize(), 25);
     assert.ok(pageSizes.length >= 10);
     assert.ok(pageSizes.every((size) => size <= 100));
     assert.deepEqual(enumerations, []);
     assert.equal(manager.getRelationStatus("u1", 1, "BVORPHAN000999")?.backupStatus, "upload_failed");
 
-    scheduler.startupRecovery().recoverOrphanedUploadFailures();
-    assert.equal(scheduler.jobStore.countOutstanding(["upload"]), 999);
-    assert.equal(scheduler.uploadQueue.getSize(), 25);
+    await fixture.scheduler.resumePersistedWorkOnStartup();
+    assert.equal(fixture.jobs.countOutstanding(["upload"]), 999);
+    assert.equal(fixture.queues.get('upload').getSize(), 25);
   } finally {
-    scheduler.stop();
+    fixture.scheduler.stop();
     manager.close();
     await removeTestDir(runtime);
   }

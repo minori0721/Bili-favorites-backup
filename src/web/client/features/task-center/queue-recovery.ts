@@ -18,7 +18,7 @@ export function createQueueRecoveryActions({ root, api, confirm, refresh, notify
   let generation = 0;
 
   async function recover(jobId: string, allowReupload: boolean, trigger: HTMLButtonElement) {
-    if (pending.has(jobId) || !root.contains(trigger)) return;
+    if (pending.has(jobId) || !root.contains(trigger)) return false;
     const token = generation;
     const controller = new AbortController();
     pending.set(jobId, controller);
@@ -30,23 +30,26 @@ export function createQueueRecoveryActions({ root, api, confirm, refresh, notify
         message: '会重新检查正式远端路径；只有目标不存在时才再次PUT。',
         detail: '如果远端已经存在不同大小的文件，系统仍会停在冲突状态，不会覆盖它。',
         confirmText: '继续上传', trigger,
-      })) return;
-      if (generation !== token || controller.signal.aborted) return;
+      })) return false;
+      if (generation !== token || controller.signal.aborted) return false;
       const result = await api.request('/api/queue/recover', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId, allowReupload }), signal: controller.signal,
       });
-      if (generation !== token || controller.signal.aborted) return;
+      if (generation !== token || controller.signal.aborted) return false;
       notify(!allowReupload && isRecord(result) && result.resolved === 'verified_archive'
         ? '已确认现有归档，未重复上传'
         : (allowReupload ? '已开始重新确认并允许一次重传' : '已开始重新确认远端文件'), 'success');
       await refresh();
     } catch (error) {
+      // boundary-critical: surface failed recovery to the user while preserving the request generation guard.
       if (generation === token && !controller.signal.aborted) notify(error instanceof Error ? error.message : '恢复上传失败', 'error');
+      return false;
     } finally {
       if (pending.get(jobId) === controller) pending.delete(jobId);
       if (generation === token) buttons.forEach(button => { button.disabled = false; });
     }
+    return true;
   }
 
     function render(card: HTMLElement, item: QueueBoardDisplayItem) {

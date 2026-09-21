@@ -45,5 +45,5 @@ test('startup exposes success, degradation and critical failure and never opens 
   await assert.rejects(startup.start(), error => error === failure);
   assert.equal(scheduled, false);
   assert.equal(errors.length, 1);
-  assert.deepEqual(startup.outcomes(), [{name: 'config', status: 'success'}, {name: 'covers', status: 'degraded'}, {name: 'database', status: 'failed'}]);
+  assert.deepEqual(startup.outcomes(), [{name: 'config', status: 'success' as const}, {name: 'covers', status: 'degraded' as const}, {name: 'database', status: 'failed' as const}]);
 });

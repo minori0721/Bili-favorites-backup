@@ -110,3 +110,42 @@ test('format errors do not inherit GitHub rate reset when quota is still availab
   assert.equal(result.errorCode, 'invalid_response');
   assert.equal(Date.parse(result.nextRefreshAt), now + 60000);
 });
+
+test('update response cleanup has one owner for normal, aborted and rejected bodies', async () => {
+  let cancelCalls = 0;
+  class ObservedBody extends ReadableStream<Uint8Array> {
+    bodyCancelCalls = 0;
+    override cancel(reason?: unknown) {
+      this.bodyCancelCalls++;
+      return super.cancel(reason);
+    }
+  }
+  const normalBody = new ObservedBody({
+    start(controller) { controller.enqueue(new TextEncoder().encode(JSON.stringify(release))); controller.close(); },
+    cancel() { cancelCalls++; },
+  });
+  const normal = await new UpdateCheckService((async () => new Response(normalBody)) as typeof fetch, Date.now, stable).check();
+  assert.equal(normal.error, null);
+  assert.equal(cancelCalls, 0);
+  assert.equal(normalBody.bodyCancelCalls, 0);
+  assert.equal(normalBody.locked, false);
+
+  const oversized = new ObservedBody({
+    start(controller) { controller.enqueue(new Uint8Array(1024 * 1024 + 1)); },
+    cancel() { cancelCalls++; },
+  });
+  const oversizedResult = await new UpdateCheckService((async () => new Response(oversized)) as typeof fetch, Date.now, stable).check();
+  assert.equal(oversizedResult.errorCode, 'response_limit');
+  assert.equal(cancelCalls, 1);
+  assert.equal(oversized.bodyCancelCalls, 0);
+  assert.equal(oversized.locked, false);
+
+  const rejectedBody = new ObservedBody({
+    start(controller) { controller.enqueue(new TextEncoder().encode('x')); },
+    cancel() { cancelCalls++; },
+  });
+  const rejected = await new UpdateCheckService((async () => new Response(rejectedBody, { status: 500 })) as typeof fetch, Date.now, stable).check();
+  assert.equal(rejected.errorCode, 'upstream_error');
+  assert.equal(cancelCalls, 2);
+  assert.equal(rejectedBody.bodyCancelCalls, 1);
+});

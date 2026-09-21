@@ -2,9 +2,9 @@ import { joinRemotePath, normalizeRemotePath, remoteBasename, remoteDirname } fr
 import type { RemoteBackendProfile } from "./remote-storage.js";
 
 export interface RemoteDirectoryClient {
-  stat(path: string): Promise<any>;
-  getDirectoryContents?(path: string, options?: Record<string, unknown>): Promise<any>;
-  createDirectory?(path: string): Promise<any>;
+  stat?(path: string): Promise<unknown>;
+  getDirectoryContents?(path: string, options?: Record<string, unknown>): Promise<unknown>;
+  createDirectory?(path: string): Promise<unknown>;
   exists?(path: string): Promise<boolean>;
 }
 
@@ -48,15 +48,24 @@ export class RemoteFileResolutionConflictError extends Error {
   }
 }
 
-export function remoteStatusCode(error: any) {
-  return Number(error?.statusCode || error?.response?.status || error?.status || 0) || undefined;
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-function retryAfterMs(error: any) {
-  const headers = error?.response?.headers || error?.headers;
-  const raw = typeof headers?.get === "function"
-    ? headers.get("retry-after")
-    : headers?.["retry-after"] ?? headers?.["Retry-After"];
+export function remoteStatusCode(error: unknown) {
+  const value = record(error);
+  const response = record(value.response);
+  return Number(value.statusCode || response.status || value.status || 0) || undefined;
+}
+
+function retryAfterMs(error: unknown) {
+  const value = record(error);
+  const response = record(value.response);
+  const headers = response.headers ?? value.headers;
+  const headerRecord = record(headers);
+  const raw = typeof headerRecord.get === "function"
+    ? (headerRecord.get as (name: string) => unknown)("retry-after")
+    : headerRecord["retry-after"] ?? headerRecord["Retry-After"];
   if (raw == null) return undefined;
   const seconds = Number(raw);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
@@ -64,7 +73,7 @@ function retryAfterMs(error: any) {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
-function failureInfo(category: RemoteFailureCategory, status: number | undefined, code: string | undefined, error: any): RemoteFailureInfo {
+function failureInfo(category: RemoteFailureCategory, status: number | undefined, code: string | undefined, error: unknown): RemoteFailureInfo {
   const retry = retryAfterMs(error);
   return {
     category,
@@ -74,10 +83,12 @@ function failureInfo(category: RemoteFailureCategory, status: number | undefined
   };
 }
 
-export function classifyRemoteFailure(error: any): RemoteFailureInfo {
+export function classifyRemoteFailure(error: unknown): RemoteFailureInfo {
+  const value = record(error);
+  const cause = record(value.cause);
   const status = remoteStatusCode(error);
-  const code = String(error?.code || error?.cause?.code || "").toUpperCase() || undefined;
-  const message = String(error?.message || error || "");
+  const code = String(value.code || cause.code || "").toUpperCase() || undefined;
+  const message = String(value.message || error || "");
   const networkLike = Boolean(code && new Set([
     "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "ESOCKETTIMEDOUT",
     "EAI_AGAIN", "ENETDOWN", "ENETUNREACH", "EHOSTUNREACH",
@@ -111,7 +122,7 @@ export function classifyRemoteFailure(error: any): RemoteFailureInfo {
   return failureInfo("unknown", status, code, error);
 }
 
-export function isRemoteNotFoundError(error: any) {
+export function isRemoteNotFoundError(error: unknown) {
   return classifyRemoteFailure(error).category === "not_found";
 }
 
@@ -240,12 +251,12 @@ function decodeHrefPath(value: string) {
     : decodedPath.replace(/^\/+/, "");
 }
 
-function entryField(entry: any, key: string) {
-  const value = entry?.[key];
+function entryField(entry: unknown, key: string) {
+  const value = record(entry)[key];
   return value === undefined || value === null || value === "" ? "" : String(value);
 }
 
-function entryNameHints(entry: any) {
+function entryNameHints(entry: unknown) {
   const hints: string[] = [];
   for (const key of ["basename", "name"] as const) {
     const value = entryField(entry, key);
@@ -262,11 +273,14 @@ function entryNameHints(entry: any) {
   return hints;
 }
 
-function entryResourceType(entry: any) {
-  return entry?.resourcetype ?? entry?.props?.resourcetype ?? entry?.props?.resourceType;
+function entryResourceType(entry: unknown) {
+  const value = record(entry);
+  const props = record(value.props);
+  return value.resourcetype ?? props.resourcetype ?? props.resourceType;
 }
 
-function entryIsDirectory(entry: any) {
+function entryIsDirectory(entry: unknown) {
+  const value = record(entry);
   const resourceType = entryResourceType(entry);
   const collection = typeof resourceType === "string"
     ? /collection/i.test(resourceType)
@@ -274,26 +288,28 @@ function entryIsDirectory(entry: any) {
       Object.prototype.hasOwnProperty.call(resourceType, "collection")
       || Object.prototype.hasOwnProperty.call(resourceType, "d:collection")
     ));
-  return entry?.type === "directory"
-    || entry?.isDirectory === true
-    || entry?.isDirectory === "true"
-    || entry?.is_dir === true
+  return value.type === "directory"
+    || value.isDirectory === true
+    || value.isDirectory === "true"
+    || value.is_dir === true
     || collection;
 }
 
-function entrySize(entry: any) {
-  const value = Number(
-    entry?.size
-      ?? entry?.contentLength
-      ?? entry?.getcontentlength
-      ?? entry?.props?.getcontentlength
-      ?? entry?.props?.["d:getcontentlength"]
-      ?? entry?.props?.["{DAV:}getcontentlength"]
+function entrySize(entry: unknown) {
+  const value = record(entry);
+  const props = record(value.props);
+  const size = Number(
+    value.size
+      ?? value.contentLength
+      ?? value.getcontentlength
+      ?? props.getcontentlength
+      ?? props["d:getcontentlength"]
+      ?? props["{DAV:}getcontentlength"]
   );
-  return Number.isFinite(value) && value >= 0 ? value : undefined;
+  return Number.isFinite(size) && size >= 0 ? size : undefined;
 }
 
-export function normalizeRemoteDirectoryEntry(parent: string, entry: any): NormalizedRemoteDirectoryEntry {
+export function normalizeRemoteDirectoryEntry(parent: string, entry: unknown): NormalizedRemoteDirectoryEntry {
   const structuredPaths = (["filename", "path"] as const)
     .map((key) => ({ key, value: entryField(entry, key) }))
     .filter((item) => item.value);
@@ -360,7 +376,7 @@ export function normalizeRemoteDirectoryEntry(parent: string, entry: any): Norma
   };
 }
 
-function entryMayMatchName(expectedName: string, entry: any) {
+function entryMayMatchName(expectedName: string, entry: unknown) {
   return entryNameHints(entry).some((hint) => remoteNameMatches(expectedName, hint));
 }
 
@@ -369,7 +385,7 @@ function isDirectChild(parent: string, child: string) {
 }
 
 export class RemoteFileResolver {
-  private readonly directoryCache = new Map<string, Promise<any[]>>();
+  private readonly directoryCache = new Map<string, Promise<unknown[]>>();
 
   constructor(
     private readonly client: RemoteDirectoryClient,
@@ -414,7 +430,7 @@ export class RemoteFileResolver {
 
   private async inspectDirectory(expectedPath: string): Promise<RemoteFileObservation> {
     const expectedName = remoteLookupBasename(expectedPath);
-    let entries: any[];
+    let entries: unknown[];
     try {
       entries = await this.listDirectory(remoteLookupDirname(expectedPath));
     } catch (listError) {
@@ -491,6 +507,7 @@ export class RemoteFileResolver {
   ): Promise<RemoteFileObservation> {
     const expectedPath = normalizeRemoteLookupPath(remotePath);
     try {
+      if (!this.client.stat) throw new Error('Remote client does not support stat');
       const stat = await this.client.stat(expectedPath);
       const size = entrySize(stat);
       return {

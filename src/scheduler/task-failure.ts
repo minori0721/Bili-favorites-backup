@@ -33,6 +33,7 @@ export function readTaskFailure(value: unknown) {
   const item = record(value);
   return {
     message: value instanceof Error ? value.message : typeof item.message === 'string' ? item.message : undefined,
+    biliRiskControl: item.biliRiskControl === true, apiMode: item.apiMode === 'web' || item.apiMode === 'app' ? item.apiMode : undefined,
     permanent: item.permanent === true, deferToNextCycle: item.deferToNextCycle === true,
     chargingRestricted: item.chargingRestricted === true, encodingValidation: item.encodingValidation === true,
     qualityValidation: item.qualityValidation === true, uploadSessionStale: item.uploadSessionStale === true,

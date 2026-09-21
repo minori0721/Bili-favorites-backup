@@ -1,6 +1,6 @@
 import { DownloadTask, QualityUpgradeDownloadTask, type QualityUpgradeTask, type QualityUpgradeTarget, type UploadTarget, type EncodingRetryContext, type StrictMediaTarget } from '../tasks.js';
 import { assessStrictEncoding, assessStrictQuality, createStrictEncodingValidationError, StrictQualityValidationError, markDownloadSessionStatus, strictEncodingDiagnosticPatch, strictQualityDiagnosticPatch, readDownloadSession, writeDownloadSession, historySessionGroups, buildUploadFileMetadataFromSession } from '../download-session.js';
-import type { PersistentJobStore, EnqueuePersistentJob } from '../job-store.js';
+import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { ConfigStore } from '../config.js';
 import type { RecoveryAssessment } from './recovery-contracts.js';
 import type { RecoveryUploadItem } from './upload-work.js';
@@ -8,7 +8,7 @@ import { serializeQualityUpgrade, qualityTargetsFromPayload } from './quality-ru
 import { joinRemotePath } from '../utils.js';
 
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'complete' | 'findById' | 'parkManualRecovery' | 'completeAndEnqueue' | 'enqueueBatch' | 'transitionEncodingRetryChildren'>;
+  jobStore: Pick<JobRepository, 'complete' | 'findById' | 'parkManualRecovery' | 'completeAndEnqueue' | 'enqueueBatch' | 'transitionEncodingRetryChildren'>;
   configStore: Pick<ConfigStore, 'get'>;
   leaseOwner: string;
   now(): number;

@@ -184,8 +184,8 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       prefs.progress = Object.fromEntries(entries);
       try {
         localStorage.setItem(PLAYBACK_STORAGE_KEY, JSON.stringify(prefs));
-      } catch (_) {
-        // Playback continues when private browsing or storage quotas block persistence.
+      } catch (error) {
+        console.debug('[Playback] preferences could not be persisted', error);
       }
     }
 
@@ -222,7 +222,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       if (!playbackState.art) return;
       const art = playbackState.art;
       playbackState.art = null;
-      try { art.destroy(true); } catch (_) {}
+      try { art.destroy(true); } catch (error) { console.debug('[Playback] player destroy failed', error); }
       elements.playbackArt.replaceChildren();
     }
 
@@ -233,7 +233,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           navigator.mediaSession.setActionHandler(action, null);
         });
         navigator.mediaSession.metadata = null;
-      } catch (_) {}
+      } catch (error) { console.debug('[Playback] media session cleanup failed', error); }
     }
 
     function destroyPlaybackSession() {
@@ -525,7 +525,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       swipe.deltaX = 0;
       swipe.deltaY = 0;
       swipe.tracking = true;
-      try { (event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId)); } catch (_) {}
+      try { (event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId)); } catch (error) { console.debug('[Playback] pointer capture skipped', error); }
     }
 
     function handlePlaybackSwipeMove(event: PointerEvent) {
@@ -706,12 +706,12 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       const error = playbackState.queueError;
       const loadingDirection = playbackState.queueLoadingDirection;
       if (error && error.direction === 'prepend') {
-        setPlaybackQueueFeedback(top, '前面的队列加载失败', () => loadPlaybackQueuePage(error.page, { direction:'prepend' }).catch(() => undefined));
+        setPlaybackQueueFeedback(top, '前面的队列加载失败', () => loadPlaybackQueuePage(error.page, { direction:'prepend' }).catch((loadError) => { console.debug('[Playback] retry previous queue page failed', loadError); }));
       } else {
         setPlaybackQueueFeedback(top, loadingDirection === 'prepend' ? '正在加载前面的归档' : '', null);
       }
       if (error && error.direction === 'append') {
-        setPlaybackQueueFeedback(bottom, '后面的队列加载失败', () => loadPlaybackQueuePage(error.page, { direction:'append' }).catch(() => undefined));
+        setPlaybackQueueFeedback(bottom, '后面的队列加载失败', () => loadPlaybackQueuePage(error.page, { direction:'append' }).catch((loadError) => { console.debug('[Playback] retry next queue page failed', loadError); }));
       } else {
         setPlaybackQueueFeedback(bottom, loadingDirection === 'append' ? '正在加载更多归档' : '', null);
       }
@@ -814,9 +814,9 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
             ? Boolean(lastCursor?.hasMore && lastCursor.nextCursor)
             : bounds.last * playbackState.pageSize < playbackState.total;
           if (direction === 'top' && canLoadPrevious) {
-            loadPlaybackQueuePage(bounds.first - 1, { direction:'prepend' }).catch(() => undefined);
+            loadPlaybackQueuePage(bounds.first - 1, { direction:'prepend' }).catch((loadError) => { console.debug('[Playback] previous queue page failed', loadError); });
           } else if (direction === 'bottom' && canLoadMore) {
-            loadPlaybackQueuePage(bounds.last + 1, { direction:'append' }).catch(() => undefined);
+            loadPlaybackQueuePage(bounds.last + 1, { direction:'append' }).catch((loadError) => { console.debug('[Playback] next queue page failed', loadError); });
           }
         }
       }, { root, rootMargin:'140px 0px' });
@@ -1024,7 +1024,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           playbackRate: rate > 0 ? rate : 1,
           position: Math.min(duration, Math.max(0, position))
         });
-      } catch (_) {}
+      } catch (error) { console.debug('[Playback] position state update skipped', error); }
     }
 
     function setupMediaSession(item: Item, part: Part) {
@@ -1050,7 +1050,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
         navigator.mediaSession.setActionHandler('seekto', (details) => {
           if (playbackState.art && Number.isFinite(Number(details.seekTime))) playbackState.art.currentTime = Number(details.seekTime);
         });
-      } catch (_) {}
+      } catch (error) { console.debug('[Playback] media session setup skipped', error); }
     }
 
     function createPlaybackAttemptId() {
@@ -1312,10 +1312,10 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           updateMediaSessionPosition();
         });
         listenToPlayer('video:play', () => {
-          try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; } catch (_) {}
+          try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; } catch (error) { console.debug('[Playback] media session play state skipped', error); }
         });
         listenToPlayer('video:pause', () => {
-          try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; } catch (_) {}
+          try { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; } catch (error) { console.debug('[Playback] media session pause state skipped', error); }
         });
         listenToPlayer('video:ended', () => {
           if (prefs.progress) delete prefs.progress[part.fingerprint];
@@ -1429,7 +1429,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       if (playbackState.queueLoading) {
         const pending = playbackState.queuePromise;
         if (!pending) return null;
-        await pending.catch(() => undefined);
+        await pending.catch((error) => { console.debug('[Playback] waiting for queue load failed', error); });
         if (playbackState.pages.has(normalizedPage) && !options.reset) return playbackState.pages.get(normalizedPage);
         if (playbackState.queueLoading) return null;
         return loadPlaybackQueuePage(normalizedPage, options);
@@ -1648,7 +1648,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       const contextToken = playbackState.loadingToken;
       if (playbackState.queueLoading) {
         const pending = playbackState.queuePromise;
-        if (pending) await pending.catch(() => undefined);
+        if (pending) await pending.catch((error) => { console.debug('[Playback] waiting for queue selection failed', error); });
         if (contextToken !== playbackState.loadingToken) return;
         if (playbackState.queueLoading) return;
       }

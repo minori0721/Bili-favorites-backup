@@ -1,3 +1,7 @@
+import { required, readField, readArray, readString } from './contract-values.js';
+import { createAccessFixture } from './fixtures/access-workflow.js';
+import { createHeldScheduler } from './fixtures/held-scheduler.js';
+import type { BackupStatus, StateFile } from '../src/state.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,27 +22,49 @@ import { StateManager } from "../src/state.js";
 import { DownloadTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
+function makeScheduler(...args: Parameters<typeof createHeldScheduler>) {
+  const fixture = createHeldScheduler(...args);
+  const [config, users, state, dependencies = {}] = args;
+  const access = createAccessFixture(state, fixture.jobs, config, users, fixture.owner,
+    dependencies.videoAccessProbe ?? (async () => { throw new Error('Unexpected remote probe'); }),
+    dependencies.now ?? Date.now, dependencies.random ?? Math.random);
+  fixtureResources.set(fixture.scheduler, {...fixture, ...access});
+  return fixture.scheduler;
+}
+const fixtureResources = new WeakMap<SyncScheduler, ReturnType<typeof createHeldScheduler> & ReturnType<typeof createAccessFixture>>();
+function resources(scheduler: SyncScheduler) {
+  const fixture = fixtureResources.get(scheduler);
+  assert.ok(fixture);
+  return fixture;
+}
+
 const checkedAt = "2026-09-04T00:00:00.000Z";
 
 test("archived favorite flags are display-only and folder counts match pages after restart", async () => {
   const runtime = await createTestDir("archived-favorite-display");
   const options = { statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") };
   const seed = availabilityState("verified");
+  assert.ok(seed.videos);
   const video = seed.videos.BVAVAIL;
   video.biliStatus = "unknown";
   video.favoriteUnavailable = true;
-  video.sourceAvailability = { state: "pending_confirmation", reason: "favorite_flag", firstSeenAt: checkedAt, checkRound: 0 };
-  video.remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 10, verificationStatus: "verified" }];
+  video.sourceAvailability = { state: "pending_confirmation" as const, reason: "favorite_flag", firstSeenAt: checkedAt, checkRound: 0 };
+  video.remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 10, verificationStatus: "verified" as const }];
+  assert.ok(seed.relations);
   seed.relations["u1:1:BVAVAIL"].favoriteUnavailable = true;
+  assert.ok(seed.relations);
   const r = seed.relations["u1:1:BVAVAIL"];
   for (const [id, changes] of Object.entries({
-    BVCONFIRMED: { biliStatus: "unavailable" }, BVPARTIAL: { backupStatus: "partial_verified" },
-    BVUPLOADED: { backupStatus: "uploaded" }, BVPENDING: { backupStatus: "discovered" },
-    BVSELF: { selfVisible: true }, BVMANUAL: { sourceKind: "manual" },
-  })) {
+    BVCONFIRMED: { biliStatus: "unavailable" as const }, BVPARTIAL: { backupStatus: "partial_verified" as const },
+    BVUPLOADED: { backupStatus: "uploaded" as const }, BVPENDING: { backupStatus: "discovered" as const },
+    BVSELF: { selfVisible: true }, BVMANUAL: { sourceKind: "manual" as const },
+  } as const)) {
+    assert.ok(seed.videos);
     seed.videos[id] = { ...video, bvid: id, ...changes };
+    assert.ok(seed.relations);
     seed.relations['u1:1:' + id] = { ...r, bvid: id, ...changes };
   }
+  assert.ok(seed.relations);
   seed.relations["u1:2:BVAVAIL"] = { ...r, mediaId: 2, favoriteUnavailable: false };
   await fs.promises.writeFile(options.statePath, JSON.stringify(seed));
   let manager = new StateManager(options);
@@ -86,7 +112,7 @@ function availableSnapshot(): VideoPageSnapshotResult {
   };
 }
 
-function availabilityState(status = "discovered") {
+function availabilityState(status: BackupStatus = "discovered"): StateFile {
   return {
     schemaVersion: 11,
     processedByUser: {},
@@ -99,7 +125,7 @@ function availabilityState(status = "discovered") {
         upperMid: 2,
         firstSeenAt: checkedAt,
         lastSeenAt: checkedAt,
-        biliStatus: "available",
+        biliStatus: "available" as const,
         backupStatus: status,
       },
     },
@@ -117,7 +143,7 @@ function availabilityState(status = "discovered") {
     },
     folderScans: {},
     userCooldowns: {},
-  } as any;
+  };
 }
 
 function testUsers() {
@@ -150,9 +176,9 @@ test("availability ignores unrelated accounts while charging probes retain them"
   manager.markAvailabilityPending("BVAVAIL", "favorite_flag", checkedAt);
   const users = [...testUsers(), { ...testUsers()[0], id: "u3", uid: 3, cookie: { SESSDATA: "three", bili_jct: "three", DedeUserID: "3" }, favorites: [] }];
   const checked: string[] = [];
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { videoAccessProbe: async (cookie) => {
       checked.push(String(cookie.DedeUserID));
@@ -160,16 +186,16 @@ test("availability ignores unrelated accounts while charging probes retain them"
       return unavailableSnapshot();
     } },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { notBefore: Date.now() });
-    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, Date.now());
-    await (scheduler as any).accessProbes.availability(job);
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { notBefore: Date.now() });
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, Date.now());
+    await resources(scheduler).probes.availability(job);
     assert.deepEqual(checked, ["2", "1"]);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
-    const chargingUsers = (scheduler as any).accessProbes.users("BVAVAIL", "", new Set(), true);
-    assert.equal(chargingUsers.some((user: any) => user.id === "u3"), true);
+    const chargingUsers = resources(scheduler).probes.users("BVAVAIL", "", new Set(), true);
+    assert.equal(chargingUsers.some((user) => user.id === "u3"), true);
     users.splice(0, 2);
     assert.equal(scheduler.requestAvailabilityRecheck("BVAVAIL").status, 409);
   } finally {
@@ -276,27 +302,33 @@ test("a favorite unavailable flag pauses download until an explicit probe confir
 test("source recovery preserves unrelated failures and manual archive relations", async () => {
   const runtime = await createTestDir("availability-precise-recovery");
   const state = availabilityState("failed");
+  assert.ok(state.videos);
   state.videos.BVAVAIL.biliStatus = "unavailable";
+  assert.ok(state.videos);
   state.videos.BVAVAIL.favoriteUnavailable = true;
+  assert.ok(state.videos);
   state.videos.BVAVAIL.sourceAvailability = {
-    state: "confirmed_unavailable",
+    state: "confirmed_unavailable" as const,
     reason: "api_not_found",
     firstSeenAt: checkedAt,
     lastCheckedAt: checkedAt,
     checkRound: 1,
   };
+  assert.ok(state.relations);
   state.relations["u1:1:BVAVAIL"].favoriteUnavailable = true;
+  assert.ok(state.relations);
   state.relations["u1:1:BVAVAIL"].lastError = "WebDAV permission denied";
+  assert.ok(state.relations);
   state.relations["u1:-1:BVAVAIL"] = {
     userId: "u1",
     mediaId: -1,
-    sourceKind: "manual",
+    sourceKind: "manual" as const,
     bvid: "BVAVAIL",
     folderTitle: "Manual",
     firstSeenAt: checkedAt,
     lastSeenAt: checkedAt,
     activeInFavorite: true,
-    backupStatus: "discovered",
+    backupStatus: "discovered" as const,
     lastError: "manual task error",
   };
   const manager = new StateManager({
@@ -322,9 +354,13 @@ test("source recovery preserves unrelated failures and manual archive relations"
 test("legacy unavailable recovery clears only a source-owned permanent failure", async () => {
   const runtime = await createTestDir("availability-legacy-recovery");
   const state = availabilityState("lost");
+  assert.ok(state.videos);
   state.videos.BVAVAIL.biliStatus = "unavailable";
+  assert.ok(state.videos);
   state.videos.BVAVAIL.favoriteUnavailable = true;
+  assert.ok(state.relations);
   state.relations["u1:1:BVAVAIL"].favoriteUnavailable = true;
+  assert.ok(state.relations);
   state.relations["u1:1:BVAVAIL"].lastError = "BBDown reported failure: 稿件不可见";
   state.failedByUser = {
     u1: {
@@ -346,7 +382,7 @@ test("legacy unavailable recovery clears only a source-owned permanent failure",
     manager.markLegacyAccessClassification("BVAVAIL", { result: "available", classifiedAt: checkedAt });
     assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "discovered");
     assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.lastError, undefined);
-    assert.equal(manager.getFailedEntry("u1", "BVAVAIL", 1), undefined);
+    assert.equal(manager.isFailed("u1", "BVAVAIL", 1), false);
   } finally {
     manager.close();
     await removeTestDir(runtime);
@@ -358,13 +394,13 @@ test("a definitive unavailable preflight never starts BBDown", async () => {
   const downloadDir = path.join(runtime, "BVAVAIL");
   try {
     await assert.rejects(
-      downloadWithBBDown("BVAVAIL", { DedeUserID: "1" }, testConfig(), {
+      downloadWithBBDown("BVAVAIL", { SESSDATA: "", bili_jct: "", DedeUserID: "1" }, testConfig(), {
         downloadDir,
         pageSnapshot: unavailableSnapshot(),
         command: "this-command-must-not-run",
       }),
-      (error: any) => error?.code === "BILI_VIDEO_UNAVAILABLE"
-        && error?.downloadFailureCategory === "source_unavailable",
+      (error: unknown) => error instanceof Error && readField(error, "code") === "BILI_VIDEO_UNAVAILABLE"
+        && readField(error, "downloadFailureCategory") === "source_unavailable",
     );
     assert.equal(fs.existsSync(downloadDir), false);
   } finally {
@@ -381,19 +417,21 @@ test("a source-unavailable download becomes a low-frequency probe without an upl
   });
   manager.replaceStateSnapshot(availabilityState("downloading"));
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs },
   );
   try {
-    (scheduler as any).acceptingJobs = false;
+    scheduler.stop();
     const task = new DownloadTask("BVAVAIL", users[0].cookie, testConfig());
     task.userId = "u1";
-    (scheduler as any).handleSourceUnavailableTask(task, { availabilityReason: "api_not_found" });
+    task.sourceUnavailable = true;
+    task.availabilityReason = 'api_not_found';
+    resources(scheduler).queues.get('download').emit('taskCompleted', task);
 
-    const store = (scheduler as any).jobStore as PersistentJobStore;
+    const store = resources(scheduler).jobs;
     const probe = store.findByDedupeKey("access_probe:BVAVAIL");
     assert.equal(probe?.notBefore, nowMs + computeAvailabilityUnavailableDelayMs(0, "BVAVAIL"));
     assert.deepEqual(probe?.payload.intents, ["availability"]);
@@ -418,9 +456,9 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
   manager.replaceStateSnapshot(availabilityState());
   manager.markAvailabilityPending("BVAVAIL", "favorite_flag", checkedAt);
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     {
       now: () => nowMs,
@@ -430,16 +468,16 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
       },
     },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
     const expectedDelays = [0, 1, 2].map((round) => computeAvailabilityUnavailableDelayMs(round, "BVAVAIL"));
     for (let round = 0; round < 4; round += 1) {
-      const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
+      const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
       assert.ok(job, `round ${round} should have a due probe`);
-      store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-      await (scheduler as any).accessProbes.availability(job);
+      store.markRunning(job.id, resources(scheduler).owner, 300_000);
+      await resources(scheduler).probes.availability(job);
       if (round < expectedDelays.length) {
         const next = store.findByDedupeKey("access_probe:BVAVAIL");
         assert.equal(next?.notBefore, nowMs + expectedDelays[round]);
@@ -469,9 +507,9 @@ test(`unknown availability (${diagnosticReason}) preserves the full backoff and 
   manager.replaceStateSnapshot(availabilityState());
   manager.markAvailabilityPending("BVAVAIL", "favorite_flag", checkedAt);
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     {
       now: () => nowMs,
@@ -484,16 +522,16 @@ test(`unknown availability (${diagnosticReason}) preserves the full backoff and 
       }),
     },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
     const delays = [0, 1, 2, 3, 4].map((round) => computeAvailabilityUnknownDelayMs(round, "BVAVAIL"));
     for (let round = 0; round <= delays.length; round += 1) {
-      const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
+      const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
       assert.ok(job, `unknown round ${round} should have a due probe`);
-      store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-      await (scheduler as any).accessProbes.availability(job);
+      store.markRunning(job.id, resources(scheduler).owner, 300_000);
+      await resources(scheduler).probes.availability(job);
       if (round < delays.length) {
         const next = store.findByDedupeKey("access_probe:BVAVAIL");
         assert.equal(next?.notBefore, nowMs + delays[round]);
@@ -529,25 +567,25 @@ test("manual recheck preserves an existing unavailable schedule when the source 
     2,
   );
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs, videoAccessProbe: async () => unavailableSnapshot() },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", {
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", {
       preferredUserId: "u1",
       notBefore: scheduledAt,
       availabilityRound: 2,
       availabilityReason: "api_not_found",
     });
     assert.equal(scheduler.requestAvailabilityRecheck("BVAVAIL").ok, true);
-    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
-    store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).accessProbes.availability(job);
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    await resources(scheduler).probes.availability(job);
 
     const next = store.findByDedupeKey("access_probe:BVAVAIL");
     assert.equal(next?.notBefore, scheduledAt);
@@ -571,19 +609,19 @@ test("one available account revives the relation and queues exactly one download
   manager.replaceStateSnapshot(availabilityState());
   manager.markAvailabilityConfirmedUnavailable("BVAVAIL", "api_not_found", checkedAt, checkedAt, 1);
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs, videoAccessProbe: async () => availableSnapshot() },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs, availabilityRound: 1 });
-    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
-    store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).accessProbes.availability(job);
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs, availabilityRound: 1 });
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    await resources(scheduler).probes.availability(job);
 
     assert.equal(manager.getSourceAvailability("BVAVAIL"), undefined);
     assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "queued");
@@ -606,20 +644,20 @@ test("ordinary availability probes do not download through an unrelated enabled 
     { id: "u3", uid: 3, name: "Fallback", cookie: { SESSDATA: "three", bili_jct: "three", DedeUserID: "3" }, favorites: [], enabled: true, lastLoginAt: checkedAt },
   ];
   const checkedUsers: string[] = [];
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs, videoAccessProbe: async (cookie) => { const uid = String(cookie.DedeUserID || ""); checkedUsers.push(uid); return uid === "3" ? availableSnapshot() : unavailableSnapshot(); } },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs, availabilityRound: 1 });
-    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs, availabilityRound: 1 });
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
     assert.ok(job);
-    store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).accessProbes.availability(job);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    await resources(scheduler).probes.availability(job);
     assert.deepEqual(checkedUsers, ["2", "1"]);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
     assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "lost");
@@ -641,19 +679,19 @@ test("an archived video keeps its source status without an automatic long-term p
   manager.markAvailabilityPending("BVAVAIL", "favorite_flag", checkedAt);
   const users = testUsers();
   let probeCalls = 0;
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs, videoAccessProbe: async () => { probeCalls += 1; return availableSnapshot(); } },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
-    const [job] = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs);
-    store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).accessProbes.availability(job);
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    await resources(scheduler).probes.availability(job);
     assert.equal(probeCalls, 0);
     assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "pending_confirmation");
@@ -672,19 +710,19 @@ test("charging and availability intents share one persistent probe", async () =>
   });
   manager.replaceStateSnapshot(availabilityState());
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: () => users[0] } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: () => users[0] },
     manager,
     { now: () => Date.parse(checkedAt) },
   );
   try {
-    (scheduler as any).acceptingJobs = false;
-    (scheduler as any).enqueueChargingAccessProbe("BVAVAIL", { intents: ["charging"] });
-    (scheduler as any).enqueueAvailabilityProbe("BVAVAIL", { availabilityRound: 1 });
-    const store = (scheduler as any).jobStore as PersistentJobStore;
+    scheduler.stop();
+    resources(scheduler).admission.enqueueProbe("BVAVAIL", { intents: ["charging"] });
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", { availabilityRound: 1 });
+    const store = resources(scheduler).jobs;
     const job = store.findByDedupeKey("access_probe:BVAVAIL");
-    assert.deepEqual(new Set(job?.payload.intents), new Set(["charging", "availability"]));
+    assert.deepEqual(new Set(readArray(readField(required(job?.payload), "intents"))), new Set(["charging", "availability"]));
     assert.equal(store.list(["access_probe"], 10).length, 1);
     assert.equal(store.accessProbeScheduleSummary("charging").count, 1);
     assert.equal(store.accessProbeScheduleSummary("availability").count, 1);
@@ -701,18 +739,18 @@ test("manual availability recheck requires an enabled account", async () => {
     dbPath: path.join(runtime, "data", "bfb.sqlite"),
   });
   manager.replaceStateSnapshot(availabilityState());
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => [], getById: () => null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => [], getById: () => null },
     manager,
     { now: () => Date.parse(checkedAt) },
   );
   try {
-    (scheduler as any).acceptingJobs = false;
+    scheduler.stop();
     const result = scheduler.requestAvailabilityRecheck("BVAVAIL");
     assert.equal(result.ok, false);
     assert.equal(result.status, 409);
-    assert.equal((scheduler as any).jobStore.findByDedupeKey("access_probe:BVAVAIL"), null);
+    assert.equal(resources(scheduler).jobs.findByDedupeKey("access_probe:BVAVAIL"), null);
   } finally {
     await scheduler.shutdown(100);
     await removeTestDir(runtime);
@@ -724,8 +762,11 @@ test("logging in wakes charging plus related or owner availability probes withou
   const nowMs = Date.parse(checkedAt);
   const future = nowMs + 7 * 24 * 60 * 60_000;
   const state = availabilityState();
+  assert.ok(state.videos);
   state.videos.BVOWNER = { ...state.videos.BVAVAIL, bvid: "BVOWNER", title: "Owner", upperMid: 1 };
+  assert.ok(state.videos);
   state.videos.BVOTHER = { ...state.videos.BVAVAIL, bvid: "BVOTHER", title: "Other", upperMid: 99 };
+  assert.ok(state.videos);
   state.videos.BVCHARGELOGIN = { ...state.videos.BVAVAIL, bvid: "BVCHARGELOGIN", title: "Charging", upperMid: 99 };
   const manager = new StateManager({
     statePath: path.join(runtime, "data", "state.json"),
@@ -733,15 +774,15 @@ test("logging in wakes charging plus related or owner availability probes withou
   });
   manager.replaceStateSnapshot(state);
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
+    scheduler.stop();
     for (const [bvid, intents] of [
       ["BVAVAIL", ["availability"]],
       ["BVOWNER", ["availability"]],
@@ -749,7 +790,7 @@ test("logging in wakes charging plus related or owner availability probes withou
       ["BVCHARGELOGIN", ["charging"]],
     ] as const) {
       store.enqueue({
-        kind: "access_probe",
+        kind: "access_probe" as const,
         dedupeKey: `access_probe:${bvid}`,
         bvid,
         priority: 90,
@@ -774,16 +815,21 @@ test("logging in wakes a related dormant video once without resetting its lifecy
   const runtime = await createTestDir("availability-dormant-login");
   const nowMs = Date.parse(checkedAt);
   const state = availabilityState("lost");
+  assert.ok(state.videos);
   state.videos.BVAVAIL.biliStatus = "unavailable";
+  assert.ok(state.videos);
   state.videos.BVAVAIL.favoriteUnavailable = true;
+  assert.ok(state.videos);
   state.videos.BVAVAIL.sourceAvailability = {
-    state: "dormant",
+    state: "dormant" as const,
     reason: "api_not_found",
     firstSeenAt: checkedAt,
     lastCheckedAt: checkedAt,
     checkRound: 3,
   };
+  assert.ok(state.relations);
   state.relations["u1:1:BVAVAIL"].favoriteUnavailable = true;
+  assert.ok(state.relations);
   state.relations["u1:1:BVAVAIL"].lastError = "Video is currently unavailable on Bilibili.";
   const manager = new StateManager({
     statePath: path.join(runtime, "data", "state.json"),
@@ -791,21 +837,21 @@ test("logging in wakes a related dormant video once without resetting its lifecy
   });
   manager.replaceStateSnapshot(state);
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs, videoAccessProbe: async () => unavailableSnapshot() },
   );
-  const store = (scheduler as any).jobStore as PersistentJobStore;
+  const store = resources(scheduler).jobs;
   try {
-    (scheduler as any).acceptingJobs = false;
+    scheduler.stop();
     assert.equal(scheduler.wakeChargingAccessProbes("u1"), 1);
     assert.equal(scheduler.wakeChargingAccessProbes("u1"), 1);
     assert.equal(store.list(["access_probe"], 10).length, 1);
-    const job = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs)[0];
-    store.markRunning(job.id, (scheduler as any).leaseOwner, 300_000);
-    await (scheduler as any).accessProbes.availability(job);
+    const job = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs)[0];
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    await resources(scheduler).probes.availability(job);
     assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "dormant");
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, 3);
@@ -831,18 +877,18 @@ test("startup migrates a legacy fixed availability schedule once and keeps one s
     2,
   );
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs },
   );
   try {
-    (scheduler as any).acceptingJobs = false;
-    const store = (scheduler as any).jobStore as PersistentJobStore;
-    (scheduler as any).ensurePersistedAvailabilityProbes();
+    scheduler.stop();
+    const store = resources(scheduler).jobs;
+    resources(scheduler).startup.ensureProbes();
     const migratedAt = nowMs + computeAvailabilityUnavailableDelayMs(1, "BVAVAIL");
-    (scheduler as any).ensurePersistedAvailabilityProbes();
+    resources(scheduler).startup.ensureProbes();
     const jobs = store.list(["access_probe"], 10).filter((job) => job.bvid === "BVAVAIL");
     assert.equal(jobs.length, 1);
     assert.equal(jobs[0].notBefore, migratedAt);
@@ -875,17 +921,17 @@ test("overdue legacy availability schedules migrate into a short stable catch-up
     2,
   );
   const users = testUsers();
-  const scheduler = new SyncScheduler(
-    { get: () => testConfig() } as any,
-    { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+  const scheduler = makeScheduler(
+    { get: () => testConfig() },
+    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
     manager,
     { now: () => nowMs },
   );
   try {
-    (scheduler as any).acceptingJobs = false;
-    const store = (scheduler as any).jobStore as PersistentJobStore;
-    (scheduler as any).ensurePersistedAvailabilityProbes();
-    (scheduler as any).ensurePersistedAvailabilityProbes();
+    scheduler.stop();
+    const store = resources(scheduler).jobs;
+    resources(scheduler).startup.ensureProbes();
+    resources(scheduler).startup.ensureProbes();
     const job = store.findByDedupeKey("access_probe:BVAVAIL");
     assert.equal(job?.notBefore, expectedCatchUpAt);
     assert.equal(Date.parse(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt || ""), expectedCatchUpAt);
@@ -922,17 +968,17 @@ test("startup migration leaves manual, merged charging, leased, and already-woke
       2,
     );
     const users = testUsers();
-    const scheduler = new SyncScheduler(
-      { get: () => testConfig() } as any,
-      { list: () => users, getById: (id: string) => users.find((user) => user.id === id) || null } as any,
+    const scheduler = makeScheduler(
+      { get: () => testConfig() },
+      { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
       manager,
       { now: () => nowMs },
     );
-    const store = (scheduler as any).jobStore as PersistentJobStore;
+    const store = resources(scheduler).jobs;
     try {
-      (scheduler as any).acceptingJobs = false;
+      scheduler.stop();
       store.enqueue({
-        kind: "access_probe",
+        kind: "access_probe" as const,
         dedupeKey: "access_probe:BVAVAIL",
         bvid: "BVAVAIL",
         priority: 90,
@@ -941,11 +987,11 @@ test("startup migration leaves manual, merged charging, leased, and already-woke
         payload: { ...scenario.payload },
       });
       if (scenario.leased) {
-        const leased = store.claimDue(["access_probe"], 1, (scheduler as any).leaseOwner, 300_000, nowMs)[0];
+        const leased = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs)[0];
         assert.ok(leased);
       }
 
-      (scheduler as any).ensurePersistedAvailabilityProbes();
+      resources(scheduler).startup.ensureProbes();
       assert.equal(Date.parse(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt || ""), legacyNextAt, scenario.name);
       const job = store.findByDedupeKey("access_probe:BVAVAIL");
       if (scenario.leased) assert.equal(job?.status, "leased", scenario.name);

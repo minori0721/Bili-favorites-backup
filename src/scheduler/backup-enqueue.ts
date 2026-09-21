@@ -1,7 +1,7 @@
 import type { AppConfig, ConfigStore } from '../config.js';
 import type { BiliUser } from '../users.js';
 import type { StateManager } from '../state.js';
-import type { PersistentJobStore, EnqueuePersistentJob } from '../job-store.js';
+import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { QualityEncodingOverride } from '../tasks.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import type { RecoveryUploadItem } from './upload-work.js';
@@ -16,7 +16,7 @@ export interface BackupEnqueueOptions {
 interface Dependencies {
   config: Pick<ConfigStore, 'get'>;
   state: Pick<StateManager, 'getCompletedLocalDownload' | 'getChargingRestriction' | 'clearChargingRestriction' | 'shouldEnqueueBackup' | 'getRelationStatus' | 'getVideoMeta' | 'markQueued' | 'runAtomic'>;
-  jobs: Pick<PersistentJobStore, 'findByDedupeKey' | 'complete' | 'enqueueBatch'>;
+  jobs: Pick<JobRepository, 'findByDedupeKey' | 'complete' | 'enqueueBatch'>;
   eligible(user: BiliUser): boolean;
   blocked(userId: string, mediaId: number, bvid: string): boolean;
   remotePath(user: BiliUser, mediaId: number, title: string, config: AppConfig): string;

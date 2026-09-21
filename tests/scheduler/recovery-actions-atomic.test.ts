@@ -1,3 +1,4 @@
+import { required } from '../contract-values.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
@@ -26,7 +27,7 @@ async function fixture() {
   const candidate = { id: 'candidate', originalRemotePath: '/original', candidateRemotePath: '/candidate', reasonCode: 'CONFLICT', reasonSummary: 'Fixture',
     files: [{ name: 'v.mp4', path: '/candidate/v.mp4', size: 12, verificationStatus: 'verified' as const }] };
   state.recordRemoteConflictCandidate(bvid, 'u', 1, candidate);
-  const job = jobs.enqueue({ kind: 'upload', dedupeKey: 'candidate', bvid, userId: 'u', mediaId: 1, initialStatus: 'manual_wait',
+  const job = jobs.enqueue({ kind: 'upload' as const, dedupeKey: 'candidate', bvid, userId: 'u', mediaId: 1, initialStatus: 'manual_wait',
     payload: { awaitingManualRecovery: true, conflictCandidate: candidate, sessionId: session.id, sessionGeneration: session.generation } });
   const work = createRecoveryWork<void>();
   return { directory, state, sessions, jobs, session, job, candidate, work, bvid,
@@ -41,19 +42,19 @@ for (const localStatus of ['missing', 'changed'] as const) {
         cookie:{SESSDATA:'',bili_jct:'',DedeUserID:'1'}};
       try {
         writeDownloadSession(f.directory, {
-          schemaVersion:1,sessionId:'local',kind:'backup',bvid:f.bvid,accountUid:1,bbdownCommit:'test',configFingerprint:'test',
+          schemaVersion:1,sessionId:'local',kind:'backup' as const,bvid:f.bvid,accountUid:1,bbdownCommit:'test',configFingerprint:'test',
           configSnapshot:{quality:'4K',encoding:'HEVC',apiMode:'web',hiRes:false,dolby:false,filenameTemplate:'<bvid>'},
           createdAt:'2026-09-08T00:00:00Z',updatedAt:'2026-09-08T00:00:00Z',snapshotAt:'2026-09-08T00:00:00Z',
-          status:'complete',pages:[{index:1,cid:1,title:'P1',duration:1}],history:[],
+          status:'complete' as const,pages:[{index:1,cid:1,title:'P1',duration:1}],history:[],
           outputs:[{pageIndex:1,cid:1,relativePath:'v.mp4',size:12,duration:1,videoCodec:'hevc',audioCodec:'aac',width:64,height:64,frameRate:30,quickHash:'old',verifiedAt:'2026-09-08T00:00:00Z'}],
         });
         if(localStatus === 'changed') await fs.writeFile(path.join(f.directory,'v.mp4'),'changed');
-        f.state.markDownloaded(f.bvid,f.directory,[{userId:'u',mediaId:1,folderTitle:'Favorites',remotePath:'/candidate'}]);
+        f.state.markDownloaded(f.bvid,f.directory,[{userId:'u',mediaId:1}]);
         assert.ok(f.state.getCompletedLocalDownload(f.bvid), 'stale manifest remains discoverable');
         let dispatches = 0;
         const enqueue = createBackupEnqueue({config:{get:()=>testConfig()},state:f.state,jobs:f.jobs,
           eligible:()=>true,blocked:()=>false,remotePath:()=>'/candidate',proof:()=>undefined,
-          uploadJob:()=>({kind:'upload',dedupeKey:f.job.dedupeKey,bvid:f.bvid}),historySegment:value=>value,
+          uploadJob:()=>({kind:'upload' as const,dedupeKey:f.job.dedupeKey,bvid:f.bvid}),historySegment:value=>value,
           probe:()=>assert.fail('unexpected probe'),cycleStartedAt:()=>undefined,generation:()=>1,now:()=>100,dispatch:()=>{dispatches++;},
         });
         assert.equal(enqueue.prepare(user,1,'Favorites',f.bvid,{persisted:true})?.kind,'upload');
@@ -98,8 +99,8 @@ for (const accepted of [false, true]) {
       videoAccessProbe: async () => { throw new Error('unexpected remote request'); },
       generation: () => 1, now: () => 100, resolveRelation: () => ({ user, mediaId: 1, folderTitle: 'Favorites' }),
       isUserSyncEligible: (value): value is BiliUser => value?.enabled === true,
-      prepareBackup: () => ({ kind: 'download', commit: () => {
-        f.jobs.enqueue({ kind: 'download', dedupeKey: `download:${f.bvid}`, bvid: f.bvid });
+      prepareBackup: () => ({ kind: 'download' as const, commit: () => {
+        f.jobs.enqueue({ kind: 'download' as const, dedupeKey: `download:${f.bvid}`, bvid: f.bvid });
         return accepted;
       } }),
       dispatchPersistentJobs: () => { dispatches++; }, getRecoveryIssueSnapshot: () => ({ issues: [] }),
@@ -129,8 +130,8 @@ for (const failCommit of [true, false]) {
     const service = createRecoveryFinalization({
       stateManager: f.state, jobStore: f.jobs, transferSessions: f.sessions,
       resolveRelation: () => ({ user, folderTitle: 'Favorites' }),
-      prepareDownload: () => ({ kind: 'download', commit: () => {
-        f.jobs.enqueue({ kind: 'download', dedupeKey: 'fresh', bvid: f.bvid });
+      prepareDownload: () => ({ kind: 'download' as const, commit: () => {
+        f.jobs.enqueue({ kind: 'download' as const, dedupeKey: 'fresh', bvid: f.bvid });
         return !failCommit;
       } }),
       verifiedFilesFromRecovery: () => [], buildLocalCleanupPlan: () => null, cleanup: () => {}, now: () => 100,
@@ -168,7 +169,7 @@ for (const scenario of ['complete', 'completion-rejected', 'late-generation', 'c
         if (scenario === 'late-generation') generation++;
         if (scenario === 'candidate-changed') f.state.recordRemoteConflictCandidate(f.bvid, 'u', 1, { ...f.candidate, reasonCode: 'CHANGED' });
         if (scenario === 'remote-error') throw new Error('offline');
-        return { status: 'verified', remoteSize: 12, parentStatus: 'visible' };
+        return { status: 'verified' as const, remoteSize: 12, parentStatus: 'visible' };
       },
       proof: () => null, generation: () => generation, now: () => 100,
       cleanup: () => { cleanups++; }, dispatch: () => { dispatched++; }, snapshot: () => ({ issues: [] }),
@@ -182,7 +183,7 @@ for (const scenario of ['complete', 'completion-rejected', 'late-generation', 'c
         assert.equal(f.sessions.get(f.session.id)?.phase, 'superseded');
         const relation = f.state.getRelationStatus('u', 1, f.bvid);
         assert.equal(relation?.remotePath, '/candidate');
-        assert.equal(relation?.remoteConflictCandidates?.[0].resolution, 'selected_candidate');
+        assert.equal(required(relation?.remoteConflictCandidates?.[0]).resolution, 'selected_candidate');
         assert.equal(cleanups, 1);
         assert.equal(dispatched, 1);
       } else {
@@ -210,11 +211,11 @@ test('abandon shares the task lock with remote verification and rolls back rejec
     assert.equal(f.work.locks.has(f.job.id), true);
     f.work.locks.delete(f.job.id);
     assert.equal(service.abandon(f.job.id, ['upload']).ok, false);
-    assert.equal(f.jobs.findById(f.job.id)?.payload.awaitingManualRecovery, true);
+    assert.equal(required(f.jobs.findById(f.job.id)?.payload).awaitingManualRecovery, true);
     assert.deepEqual(f.state.getStateSnapshot(), before);
     rejectSession = false;
     assert.equal(service.abandon(f.job.id, ['upload']).ok, true);
-    assert.equal(f.jobs.findById(f.job.id)?.payload.userDisposition, 'abandoned');
+    assert.equal(required(f.jobs.findById(f.job.id)?.payload).userDisposition, 'abandoned');
     assert.equal(f.sessions.get(f.session.id)?.phase, 'superseded');
     const repeated = service.abandon(f.job.id, ['upload']);
     assert.ok(repeated.ok && repeated.idempotent);

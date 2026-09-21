@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { isValidBBDownEncodingPriority, normalizeBBDownEncodingPriority, type BBDownEncoding, type ConfigStore } from '../config.js';
 import type { UserStore, BiliUser } from '../users.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { PersistentJobRecord } from '../database.js';
 import { normalizeQualityArtifactProfile, qualityArtifactProfileFromConfig, buildQualityArtifactKey } from '../quality-artifact.js';
 import { isSelectableBilibiliQuality } from '../media-metadata.js';
@@ -9,7 +9,7 @@ import { qualityTargetsFromPayload, resolveQualityUpgradeTarget } from './qualit
 import type { RecoveryIssue } from './recovery-contracts.js';
 import { logManager } from '../logger.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'restartFailedQualityAsDownload'>;
+  jobStore: Pick<JobRepository, 'findById' | 'restartFailedQualityAsDownload'>;
   configStore: Pick<ConfigStore, 'get'>;
   userStore: Pick<UserStore, 'getById'>;
   qualityQualityRetryEligibility(job: PersistentJobRecord): { eligible: boolean; reason: string };

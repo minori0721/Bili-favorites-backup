@@ -8,7 +8,7 @@ import {
 
 test('recovery assessment projection rejects unsafe values and keeps safe diagnostics', () => {
   const assessment = parseRecoveryAssessment({ recoveryAssessment: {
-    checkedAt: 100, kind: 'unknown_kind', localStatus: 'bad', remoteStatus: 'bad',
+    checkedAt: 100, kind: 'unknown_kind' as const, localStatus: 'bad', remoteStatus: 'bad',
     responseHeaders: { allow: 'GET', authorization: 'secret' },
     responseSnippet: 'x'.repeat(400), summary: 'manual', writeStatus: 500,
   } });
@@ -22,10 +22,10 @@ test('recovery assessment projection rejects unsafe values and keeps safe diagno
 test('verified archive proof requires matching directory, complete names and positive files', () => {
   const payload = { remotePath: '/archive/BV1', files: ['video.mp4', 'part-1.mp4'] };
   const proof = parseExistingArchiveProof({ existingArchiveProof: {
-    remotePath: '/archive/BV1', status: 'verified', verifiedAt: '2026-09-08T00:00:00Z',
+    remotePath: '/archive/BV1', status: 'verified' as const, verifiedAt: '2026-09-08T00:00:00Z',
     files: [
-      { name: 'video.mp4', path: '/archive/BV1/video.mp4', localRelativePath: 'video.mp4', size: 10, verificationStatus: 'verified' },
-      { name: 'part-1.mp4', path: '/archive/BV1/part-1.mp4', localRelativePath: 'part-1.mp4', size: 20, verificationStatus: 'verified' },
+      { name: 'video.mp4', path: '/archive/BV1/video.mp4', localRelativePath: 'video.mp4', size: 10, verificationStatus: 'verified' as const },
+      { name: 'part-1.mp4', path: '/archive/BV1/part-1.mp4', localRelativePath: 'part-1.mp4', size: 20, verificationStatus: 'verified' as const },
     ],
   } });
   assert.ok(proof);

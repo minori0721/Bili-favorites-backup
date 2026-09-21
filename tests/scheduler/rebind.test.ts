@@ -8,7 +8,7 @@ import { createTestDir, removeTestDir, testConfig } from '../helpers.js';
 test('storage rebind requires maintenance and cannot restart before all adapters complete', async () => {
   const directory = await createTestDir('scheduler-rebind');
   const state = new StateManager({statePath:path.join(directory,'state.json'),dbPath:path.join(directory,'state.sqlite')});
-  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => undefined,updatePartial:() => undefined}, state);
+  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state);
   try {
     assert.throws(() => scheduler.reloadStateDatabase(), /maintenance barrier/);
     await assert.rejects(scheduler.withCleanupLock(async () => {
@@ -34,7 +34,7 @@ test('a cache inspection from before rebind cannot publish into the new generati
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let calls = 0;
-  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => undefined,updatePartial:() => undefined}, state, {
+  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state, {
     cacheInspector:async () => {
       const first = ++calls === 1;
       if (first) await held;

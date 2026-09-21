@@ -18,7 +18,7 @@ test('sync routes preserve response contracts and pass every command through the
   try {
     for(const [path,label] of [['now','Sync'],['reconcile','Reconcile'],['reconcile-remote','Remote-only reconcile']]) {
       for(mode of ['started','queued','busy','error']) {
-        const response = await fetch(`http://127.0.0.1:${address.port}/api/sync/${path}`,{method:'POST'});
+        const response: Response = await fetch(`http://127.0.0.1:${address.port}/api/sync/${path}`,{method:'POST'});
         const body = await response.json();
         assert.equal(response.status,mode==='busy'?409:mode==='error'?500:200);
         if(mode==='started'||mode==='queued') assert.deepEqual(body,{success:true,data:{message:label+(mode==='started'?' triggered':' queued'),queued:mode==='queued'}});

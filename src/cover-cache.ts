@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { coversDir, tempDir } from "./paths.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import type { StateManager, VideoArchiveEntry } from "./state.js";
+import { decodeVideoPayload, parsePersistedJsonValue } from "./repositories/domain-decoders.js";
 import {
   LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER,
   UNAVAILABLE_COVER_BACKFILL_MARKER,
@@ -92,10 +93,18 @@ function ffmpegPath() {
   return process.env.FFMPEG_PATH || "ffmpeg";
 }
 
+export interface CoverProcess {
+  stderr: { on(event: 'data', listener: (chunk: Buffer) => void): unknown };
+  kill(signal: NodeJS.Signals): boolean;
+  on(event: 'error', listener: (error: Error) => void): unknown;
+  on(event: 'close', listener: (code: number | null) => void): unknown;
+}
+export type CoverSpawn = (command: string, args: string[], options: { windowsHide: boolean }) => CoverProcess;
+
 export function runCoverFfmpeg(
   inputPath: string,
   outputPath: string,
-  options: { timeoutMs?: number; spawnImpl?: typeof spawn; videoFilter?: string } = {}
+  options: { timeoutMs?: number; spawnImpl?: CoverSpawn; videoFilter?: string } = {}
 ) {
   return new Promise<void>((resolve, reject) => {
     const args = [
@@ -119,7 +128,7 @@ export function runCoverFfmpeg(
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      try { child.kill("SIGKILL"); } catch { /* process may already be gone */ }
+      try { child.kill("SIGKILL"); } catch (error) { console.debug('[CoverCache] converter already exited during timeout cleanup', error); }
       reject(new Error("ffmpeg cover conversion timed out"));
     }, Math.max(1, options.timeoutMs ?? 15_000));
     const finish = (error?: Error) => {
@@ -222,8 +231,9 @@ async function downloadCover(value: string, outputPath: string) {
           redirect: "manual",
           signal: controller.signal,
         });
-      } catch (error: any) {
-        throw new CoverDownloadError(error?.name === "AbortError" ? "cover download timed out" : "cover download failed", true);
+      } catch (error: unknown) {
+        const name = error && typeof error === "object" && "name" in error ? String(error.name) : "";
+        throw new CoverDownloadError(name === "AbortError" ? "cover download timed out" : "cover download failed", true);
       }
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get("location");
@@ -261,8 +271,9 @@ async function downloadCover(value: string, outputPath: string) {
 async function moveAcrossMounts(source: string, target: string) {
   try {
     await fs.promises.rename(source, target);
-  } catch (error: any) {
-    if (!["EXDEV", "EPERM", "EACCES"].includes(error?.code)) {
+  } catch (error: unknown) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (!["EXDEV", "EPERM", "EACCES"].includes(code)) {
       throw error;
     }
     await fs.promises.copyFile(source, target);
@@ -414,12 +425,17 @@ export function waitForCoverCacheIdle(timeoutMs = 20_000) {
   });
 }
 
-function parseVideoPayload(value: unknown) {
+type CoverVideoDecode =
+  | { ok: true; video: VideoArchiveEntry }
+  | { ok: false; error: Error };
+
+function parseVideoPayload(value: unknown, bvid: string): CoverVideoDecode {
   try {
-    return JSON.parse(String(value || "")) as VideoArchiveEntry;
+    return { ok: true, video: decodeVideoPayload(parsePersistedJsonValue(value, `cover video ${bvid}`), `cover video ${bvid}`) };
   } catch (error) {
-    console.warn(`[CoverBackfill] invalid persisted cover metadata: ${safeErrorSummary(error)}`);
-    return null;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    console.warn(JSON.stringify({ component: "cover-backfill", operation: "decode-video", bvid, error: safeErrorSummary(normalized) }));
+    return { ok: false, error: normalized };
   }
 }
 
@@ -453,8 +469,34 @@ export class UnavailableCoverBackfill {
       coverExists?: (bvid: string) => Promise<boolean>;
       enqueue?: (bvid: string, coverUrl: string) => Promise<{ path: string | null; retryable?: boolean }>;
       retryDelaysMs?: [number, number];
+      reportError?: (error: unknown) => void;
     } = {}
   ) {}
+
+  private reportError(error: unknown) {
+    if (this.options.reportError) {
+      try {
+        this.options.reportError(error);
+      } catch (reportingError) {
+        console.warn(JSON.stringify({
+          component: "cover-backfill",
+          operation: "report-background-error",
+          error: safeErrorSummary(reportingError),
+          originalError: safeErrorSummary(error),
+        }));
+      }
+      return;
+    }
+    console.warn(JSON.stringify({
+      component: "cover-backfill",
+      operation: "background-run",
+      error: safeErrorSummary(error),
+    }));
+  }
+
+  startBackground() {
+    void this.start().catch((error) => this.reportError(error));
+  }
 
   start() {
     if (!this.running) {
@@ -478,14 +520,17 @@ export class UnavailableCoverBackfill {
 
   restart() {
     if (!this.running) {
-      void this.start();
+      this.startBackground();
       return;
     }
     if (this.restartScheduled) return;
     this.restartScheduled = true;
-    void this.running.finally(() => {
+    void this.running.then(() => {
       this.restartScheduled = false;
-      if (this.stopped) void this.start();
+      if (this.stopped) this.startBackground();
+    }, () => {
+      this.restartScheduled = false;
+      if (this.stopped) this.startBackground();
     });
   }
 
@@ -493,26 +538,27 @@ export class UnavailableCoverBackfill {
     const database = this.stateManager.getDatabase();
     if (database.getMeta(UNAVAILABLE_COVER_BACKFILL_MARKER)) return;
     const summary = { linked: 0, downloaded: 0, skipped: 0, failed: 0 };
-    let rows: any[];
+    let rows: Array<{ bvid: string; payload_json: string }>;
     try {
-      rows = database.db.prepare(`
-        SELECT bvid, payload_json FROM videos
-        WHERE bili_status='unavailable'
-        ORDER BY bvid ASC
-      `).all() as any[];
+      rows = this.stateManager.listUnavailableVideoPayloads();
     } catch (error) {
-      console.warn(`[CoverBackfill] Unable to enumerate unavailable videos: ${safeErrorSummary(error)}`);
+      console.warn(JSON.stringify({ component: "cover-backfill", operation: "enumerate-unavailable-videos", error: safeErrorSummary(error) }));
       return;
     }
 
     for (const row of rows) {
       if (this.stopped) return;
-      const video = parseVideoPayload(row.payload_json);
-      const bvid = safeBvid(String(row.bvid || ""));
-      if (!video || !bvid) {
+      const bvid = safeBvid(row.bvid);
+      if (!bvid) {
         summary.skipped += 1;
         continue;
       }
+      const decoded = parseVideoPayload(row.payload_json, bvid);
+      if (!decoded.ok) {
+        summary.skipped += 1;
+        continue;
+      }
+      const video = decoded.video;
       const relativePath = coverRelativePathForBvid(bvid);
       const exists = this.options.coverExists
         ? await this.options.coverExists(bvid)

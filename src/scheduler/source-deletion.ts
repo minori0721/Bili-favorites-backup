@@ -1,7 +1,7 @@
+import { DownloadTask, QualityUpgradeDownloadTask } from '../tasks.js';
 import type { BiliUser, UserStore } from '../users.js';
 import type { StateManager } from '../state.js';
-import type { StateDatabase } from '../database.js';
-import type { PersistentJobStore, PersistentJobKind } from '../job-store.js';
+import type { JobRepository, PersistentJobKind } from '../repositories/jobs.js';
 import type { TaskQueue } from '../queue.js';
 import type { UploadTarget } from '../tasks.js';
 import type { cancelActiveDownloadsForAccount } from '../downloader.js';
@@ -11,10 +11,9 @@ import { retirementTargets, record, archiveTaskReferencesUser } from './retireme
 import { readTaskFailure } from './task-failure.js';
 type Queue = Pick<TaskQueue, 'getTasks' | 'removePendingTasks' | 'poke'>;
 interface Dependencies {
-  stateManager: Pick<StateManager, 'getCompletedLocalDownload' | 'detachUserRelations' | 'markDownloaded' | 'reload'>;
-  jobStore: Pick<PersistentJobStore, 'list' | 'updatePayload' | 'complete' | 'reassignDownloadJob' | 'wakeByBvid'>;
+  jobStore: Pick<JobRepository, 'list' | 'updatePayload' | 'complete' | 'reassignDownloadJob' | 'wakeByBvid'>;
   userStore: Pick<UserStore, 'getById' | 'list'>;
-  database(): Pick<StateDatabase, 'db' | 'listRelationsForUser'>;
+  stateManager: Pick<StateManager, 'getCompletedLocalDownload' | 'detachUserRelations' | 'markDownloaded' | 'reload' | 'listRelationsForUser' | 'runAtomic'>;
   downloadQueue: Queue; uploadQueue: Queue; verificationQueue: Queue;
   cancelDownloads: typeof cancelActiveDownloadsForAccount;
   isDeletionLocked(): boolean;
@@ -66,7 +65,7 @@ export function createSourceDeletion(deps: Dependencies) {
         task.mediaId = undefined;
         task.remotePath = undefined;
       }
-      const control = task.control;
+      const control = task instanceof QualityUpgradeDownloadTask ? task.control : undefined;
       if (control && Array.isArray(control.targets)) {
         const remaining = filterTargets(control.targets);
         if (typeof control.setTargets === "function") control.setTargets(remaining);
@@ -192,7 +191,8 @@ export function createSourceDeletion(deps: Dependencies) {
     }
     for (const task of deps.downloadQueue.getTasks()) {
       if (task.status !== "running") continue;
-      const downloadUserId = String(task.downloadUserId || task.userId || task.control?.downloadUserId || "");
+      const download = task instanceof QualityUpgradeDownloadTask ? task.control : task instanceof DownloadTask ? task : undefined;
+      const downloadUserId = String(download?.downloadUserId || task.userId || "");
       if (downloadUserId === user.id && task.persistentJobId) deps.markAborted(task.persistentJobId);
     }
     const canceledProcesses = await deps.cancelDownloads(String(user.uid || user.cookie.DedeUserID || ""));
@@ -219,7 +219,6 @@ export function createSourceDeletion(deps: Dependencies) {
       throw Object.assign(new Error("账号仍有正在执行的同步或传输任务"), { statusCode: 409 });
     }
 
-    const database = deps.database();
     const postCommitRetirements: Array<{
       bvid: string;
       local: NonNullable<ReturnType<StateManager["getCompletedLocalDownload"]>>;
@@ -227,8 +226,8 @@ export function createSourceDeletion(deps: Dependencies) {
     }> = [];
     try {
       let removedQueuedTasks = 0;
-      const result = database.db.transaction(() => {
-        const relationBvids = new Set(database.listRelationsForUser(userId).map((relation) => relation.bvid));
+      const result = deps.stateManager.runAtomic(() => {
+        const relationBvids = new Set(deps.stateManager.listRelationsForUser(userId).map((relation) => relation.bvid));
         const downloadJobs = deps.jobStore.list(["download", "quality_download"], 100_000);
         let reassignedJobs = 0;
         let canceledJobs = 0;
@@ -337,7 +336,7 @@ export function createSourceDeletion(deps: Dependencies) {
         const detachedRelations = deps.stateManager.detachUserRelations(userId);
         commit();
         return { canceledJobs, reassignedJobs, directUploadTargets, detachedRelations };
-      })();
+      });
       // The maintenance lock prevents these pending in-memory tasks from
       // starting while the SQLite transaction is being committed. Removing
       // them afterwards keeps a failed transaction fully reversible.

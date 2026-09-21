@@ -14,7 +14,7 @@ test("read-only storage check only stats the configured destination on success",
       calls.push(remotePath);
       return { type: "directory" };
     },
-  } as any);
+  });
   assert.equal(result.ok, true);
   assert.equal(result.readOnly, true);
   assert.equal(result.writeVerified, false);
@@ -29,7 +29,7 @@ test("missing destination is distinguished from a broken WebDAV endpoint", async
       if (remotePath === "/backup") throw httpError(404);
       return { type: "directory" };
     },
-  } as any);
+  });
   assert.equal(result.category, "path");
   assert.equal(result.field, "alistDest");
   assert.deepEqual(calls, ["/backup", "/"]);
@@ -46,7 +46,7 @@ test("storage diagnostic classifies auth, permission, unsupported and network fa
     let calls = 0;
     const result = await checkRemoteStorageReadOnly(testConfig(), {
       stat: async () => { calls += 1; throw item.error; },
-    } as any);
+    });
     assert.equal(result.category, item.category);
     assert.equal(result.field, item.field);
     assert.equal(calls, 1);
@@ -62,9 +62,17 @@ test("read-only storage check aborts a stalled WebDAV request", async () => {
     }),
   };
   const startedAt = Date.now();
-  const result = await checkRemoteStorageReadOnly(testConfig(), stalled as any, 10);
+  const result = await checkRemoteStorageReadOnly(testConfig(), stalled, 10);
   assert.equal(result.ok, false);
   assert.equal(result.category, "network");
   assert.equal(observedSignal?.aborted, true);
   assert.ok(Date.now() - startedAt < 1_000);
+});
+
+test("malformed storage stat cannot be reported as success", async () => {
+  for (const value of [null, {}, { type: "unknown" }, { data: {} }]) {
+    const result = await checkRemoteStorageReadOnly(testConfig(), { stat: async () => value });
+    assert.equal(result.ok, false);
+    assert.equal(result.category, "unknown");
+  }
 });

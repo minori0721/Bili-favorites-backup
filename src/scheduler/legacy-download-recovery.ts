@@ -1,6 +1,6 @@
 import type { StateDatabase } from '../database.js';
 import type { StateManager, FavoriteRelation } from '../state.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { downloadCredentialsForUser, type BiliUser, type UserStore } from '../users.js';
 import type { getVideoPageSnapshot } from '../bili.js';
 import type { RecoveryIssueActionId } from '../recovery-policy.js';
@@ -14,7 +14,7 @@ import type { createBackupEnqueue } from './backup-enqueue.js';
 interface Dependencies {
   database(): Pick<StateDatabase, 'getFailure' | 'upsertFailure' | 'isArchiveSourceDeletionBlocked'>;
   stateManager: Pick<StateManager, 'getRelationStatus' | 'runAtomic' | 'resetRelationForRetry' | 'getChargingRestriction'>;
-  jobStore: Pick<PersistentJobStore, 'findByDedupeKey'>;
+  jobStore: Pick<JobRepository, 'findByDedupeKey'>;
   userStore: Pick<UserStore, 'getById'>;
   recoveryWork: { locks: RecoveryLockAccess };
   videoAccessProbe: typeof getVideoPageSnapshot;
@@ -101,6 +101,7 @@ export function createLegacyDownloadRecovery(deps: Dependencies) {
             return { ok: false as const, status: 409, message: "所选账号当前无法访问这个视频，请换一个账号或稍后再试" };
           }
         } catch (error) {
+          // boundary-critical: account validation failure is returned as an explicit client result.
           return {
             ok: false as const,
             status: 409,
@@ -136,6 +137,7 @@ export function createLegacyDownloadRecovery(deps: Dependencies) {
           if (!queued) throw rejected;
         });
       } catch (error) {
+        // boundary-critical: only the known rejected sentinel becomes a client result; all other errors propagate.
         if (error !== rejected) throw error;
         return { ok: false as const, status: 409, message: "下载任务未能重新排队，请刷新待处理列表后重试" };
       }

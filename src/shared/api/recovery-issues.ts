@@ -30,15 +30,17 @@ export function parseRecoveryAction(value: unknown) {
   const id = choice(data.id, ['recheck','reupload','create_candidate','redownload','redownload_with_encoding','redownload_with_quality','retry_download','retry_download_with_account','defer_download','keep_existing','use_candidate','retry_quality','retry_quality_with_encoding','retry_quality_with_quality','abandon_attempt','open_settings']);
   if (!id) throw new Error('恢复动作缺少标识');
   const profile = data.mediaProfile == null ? undefined : record(data.mediaProfile);
-  if (data.choices != null && !Array.isArray(data.choices)) throw new Error('恢复动作选项格式错误');
+  const choices = data.choices;
+  if (choices != null && !Array.isArray(choices)) throw new Error('恢复动作选项格式错误');
   return { id, label: text(data.label, true)!, description: text(data.description) ?? '', danger: flag(data.danger),
     mediaProfile: profile ? { quality: flag(profile.quality), encoding: flag(profile.encoding) } : undefined,
-    choices: (Array.isArray(data.choices) ? data.choices : []).map(value => { const item=record(value);return {value:text(item.value,true)!,label:text(item.label,true)!}; }),
+    choices: (choices == null ? [] : choices).map(value => { const item=record(value);return {value:text(item.value,true)!,label:text(item.label,true)!}; }),
   };
 }
 export function parseRecoveryIssue(value: unknown) {
   const data=record(value);
-  if (data.availableActions != null && !Array.isArray(data.availableActions)) throw new Error('恢复动作列表格式错误');
+  const availableActions = data.availableActions;
+  if (availableActions != null && !Array.isArray(availableActions)) throw new Error('恢复动作列表格式错误');
   return {
     id: text(data.id, true)!,
     kind: text(data.kind),
@@ -69,7 +71,7 @@ export function parseRecoveryIssue(value: unknown) {
     severity: choice(data.severity, ['info','warning','danger']),
     disposition: choice(data.disposition, ['background','action_required','intentional_confirmation']),
     protectedFacts: texts(data.protectedFacts), actualEncodings: texts(data.actualEncodings), actualQualities: texts(data.actualQualities),
-    availableActions: (Array.isArray(data.availableActions) ? data.availableActions : []).map(parseRecoveryAction),
+    availableActions: (availableActions == null ? [] : availableActions).map(parseRecoveryAction),
     recommendedAction: data.recommendedAction == null ? undefined : parseRecoveryAction(data.recommendedAction),
   };
 }

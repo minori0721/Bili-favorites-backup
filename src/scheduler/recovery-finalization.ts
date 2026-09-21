@@ -1,6 +1,6 @@
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { StateManager, FavoriteRelation, RemoteFileRecord, LocalCleanupPlan } from '../state.js';
 import type { BiliUser } from '../users.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
@@ -12,11 +12,11 @@ import { logManager } from '../logger.js';
 import { AUTOMATIC_RECOVERY_REDOWNLOAD_LIMIT } from './retry-policy.js';
 interface Dependencies {
   stateManager: Parameters<typeof commitRetainedRecovery>[0]['state'] & Pick<StateManager, 'getRelationStatus' | 'resetRelationForRetry'>;
-  jobStore: Pick<PersistentJobStore, 'findById' | 'complete'>;
+  jobStore: Pick<JobRepository, 'findById' | 'complete'>;
   transferSessions: Parameters<typeof commitVerifiedRecovery>[0]['sessions'];
   resolveRelation(relation: FavoriteRelation): { user: BiliUser; folderTitle: string } | null;
   prepareDownload: ReturnType<typeof createBackupEnqueue>['prepareRecoveryDownload'];
-  verifiedFilesFromRecovery(job: PersistentJobRecord, files: ReturnType<TransferSessionStore['listFiles']>): RemoteFileRecord[];
+  verifiedFilesFromRecovery(job: PersistentJobRecord, files: ReturnType<TransferSessionRepository['listFiles']>): RemoteFileRecord[];
   buildLocalCleanupPlan(bvid: string, dir: string, files: RemoteFileRecord[], reason: LocalCleanupPlan['reason'], options: { id: string; transferSessionId: string; transferGeneration: number }): LocalCleanupPlan | null;
   cleanup(bvid: string, dir: string): unknown;
   now(): number;
@@ -47,7 +47,7 @@ export function createRecoveryFinalization(deps: Dependencies) {
     return true;
   }
 
-  function finalizeVerifiedRecovery(job: PersistentJobRecord, session: NonNullable<ReturnType<TransferSessionStore["get"]>>, files: ReturnType<TransferSessionStore["listFiles"]>) {
+  function finalizeVerifiedRecovery(job: PersistentJobRecord, session: NonNullable<ReturnType<TransferSessionRepository["get"]>>, files: ReturnType<TransferSessionRepository["listFiles"]>) {
     const current = deps.jobStore.findById(job.id);
     if (!current || !current.payload.awaitingManualRecovery) return false;
     const payload = current.payload;

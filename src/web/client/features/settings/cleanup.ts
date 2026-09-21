@@ -221,7 +221,7 @@ export function createCleanup(dependencies: {
                 try {
                     results = parseCleanupResults(e.details);
                 }
-                catch { }
+                catch (parseError) { console.debug('[Cleanup] failed to parse structured error details', parseError); }
             }
             results.forEach((item) => lines.push(item.ok
                 ? (item.skipped ? '已包含：' : '已清理：') + item.label

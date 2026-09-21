@@ -145,7 +145,9 @@ export class AdminSessionStore extends session.Store {
       chmodPrivateDatabase(this.filePath, this.warn);
       return database;
     } catch (error) {
-      try { if (database.open) database.close(); } catch {}
+      try { if (database.open) database.close(); } catch (closeError) {
+        console.warn(`[AdminSession] failed to close newly opened database: ${String(closeError)}`);
+      }
       throw error;
     }
   }
@@ -159,7 +161,9 @@ export class AdminSessionStore extends session.Store {
       if (!existed || !isCorruptDatabaseError(error)) throw error;
       try {
         if (this.db?.open) this.db.close();
-      } catch {}
+      } catch (closeError) {
+        console.warn(`[AdminSession] failed to close corrupt session database: ${String(closeError)}`);
+      }
       try {
         quarantineDatabase(this.filePath);
       } catch {
@@ -214,7 +218,7 @@ export class AdminSessionStore extends session.Store {
     return transaction();
   }
 
-  override get(sessionId: string, callback: (err: any, session?: session.SessionData | null) => void) {
+  override get(sessionId: string, callback: (err: unknown, session?: session.SessionData | null) => void) {
     try {
       if (this.closed) throw new Error("Admin session store is closed");
       const key = this.key(sessionId);
@@ -251,7 +255,7 @@ export class AdminSessionStore extends session.Store {
     }
   }
 
-  override set(sessionId: string, sessionData: session.SessionData, callback?: (err?: any) => void) {
+  override set(sessionId: string, sessionData: session.SessionData, callback?: (err?: unknown) => void) {
     try {
       if (this.closed) throw new Error("Admin session store is closed");
       const stored = sessionData as StoredAdminSession;
@@ -300,7 +304,7 @@ export class AdminSessionStore extends session.Store {
     }
   }
 
-  override destroy(sessionId: string, callback?: (err?: any) => void) {
+  override destroy(sessionId: string, callback?: (err?: unknown) => void) {
     try {
       if (this.closed) throw new Error("Admin session store is closed");
       this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(this.key(sessionId));

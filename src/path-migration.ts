@@ -15,13 +15,13 @@ import { classifyRemoteFailure, isRemoteNotFoundError, normalizeRemoteDirectoryE
 import { buildDavClient } from "./remote-storage.js";
 
 export interface PathMigrationDavClient {
-  getDirectoryContents(path: string): Promise<any>;
-  createDirectory(path: string): Promise<any>;
-  putFileContents(path: string, data: string | Buffer, options?: Record<string, unknown>): Promise<any>;
-  copyFile(source: string, destination: string, options?: Record<string, unknown>): Promise<any>;
-  moveFile(source: string, destination: string, options?: Record<string, unknown>): Promise<any>;
-  stat(path: string): Promise<any>;
-  deleteFile(path: string): Promise<any>;
+  getDirectoryContents(path: string): Promise<unknown>;
+  createDirectory(path: string): Promise<unknown>;
+  putFileContents(path: string, data: string | Buffer, options?: Record<string, unknown>): Promise<unknown>;
+  copyFile(source: string, destination: string, options?: Record<string, unknown>): Promise<unknown>;
+  moveFile(source: string, destination: string, options?: Record<string, unknown>): Promise<unknown>;
+  stat(path: string): Promise<unknown>;
+  deleteFile(path: string): Promise<unknown>;
 }
 
 export interface PathMigrationDavCapabilities {
@@ -33,8 +33,12 @@ export interface PathMigrationOptions {
   clientFactory?: (config: AppConfig) => PathMigrationDavClient;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
+  /** Testable lease-release boundary; production uses the persistent job store. */
+  releaseOwner?: (leaseOwner: string) => number;
   isSchedulerIdle?: () => boolean;
-  setMaintenance?: (locked: boolean, summary?: { id: string; status: string; sourceRoot: string; destinationRoot: string }) => void;
+  setMaintenance?: (locked: boolean, summary?:
+    | { id: string; status: string; sourceRoot: string; destinationRoot: string }
+    | { id: string }) => void;
   onConfigSwitched?: (previous: AppConfig, next: AppConfig) => void;
 }
 
@@ -70,29 +74,37 @@ function joinRemote(root: string, relative: string) {
   return joinRemotePath(root, relative);
 }
 
-function entryType(value: any): "file" | "directory" {
-  const resourceType = value?.resourcetype ?? value?.props?.resourcetype ?? value?.props?.resourceType;
+function remoteRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function entryType(value: unknown): "file" | "directory" {
+  const record = remoteRecord(value);
+  const props = remoteRecord(record.props);
+  const resourceType = record.resourcetype ?? props.resourcetype ?? props.resourceType;
   const collection = typeof resourceType === "string"
     ? /collection/i.test(resourceType)
     : Boolean(resourceType && typeof resourceType === "object" && (
       Object.prototype.hasOwnProperty.call(resourceType, "collection")
       || Object.prototype.hasOwnProperty.call(resourceType, "d:collection")
     ));
-  return value?.type === "directory"
-    || value?.isDirectory === true
-    || value?.isDirectory === "true"
+  return record.type === "directory"
+    || record.isDirectory === true
+    || record.isDirectory === "true"
     || collection ? "directory" : "file";
 }
 
-function statusCode(error: any) {
-  return Number(error?.statusCode || error?.response?.status || error?.status || 0);
+function statusCode(error: unknown) {
+  const value = remoteRecord(error);
+  const response = remoteRecord(value.response);
+  return Number(value.statusCode || response.status || value.status || 0);
 }
 
-function isTransientError(error: any) {
+function isTransientError(error: unknown) {
   return classifyRemoteFailure(error).category === "transient";
 }
 
-function isImmediateStopError(error: any) {
+function isImmediateStopError(error: unknown) {
   const category = classifyRemoteFailure(error).category;
   return category === "permission" || category === "unsupported" || category === "conflict";
 }
@@ -101,9 +113,10 @@ function migrationConflictError(message: string) {
   return Object.assign(new Error(message), { statusCode: 409 });
 }
 
-function matchesRemoteItem(item: PathMigrationItemRecord, stat: any) {
+function matchesRemoteItem(item: PathMigrationItemRecord, stat: unknown) {
+  const value = remoteRecord(stat);
   return entryType(stat) === item.itemType
-    && (item.itemType === "directory" || Number(stat?.size) === Number(item.expectedSize));
+    && (item.itemType === "directory" || Number(value.size) === Number(item.expectedSize));
 }
 
 function identityHash(config: AppConfig) {
@@ -125,11 +138,11 @@ function pathSummary(record: PathMigrationRecord) {
   };
 }
 
-function isUnsupportedDavMethod(error: any) {
+function isUnsupportedDavMethod(error: unknown) {
   const status = statusCode(error);
   if ([405, 501].includes(status)) return true;
   if (status) return false;
-  return /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
+  return /method not allowed|not supported|unsupported/i.test(String(remoteRecord(error).message || error || ""));
 }
 
 async function deleteProbePath(client: PathMigrationDavClient, target: string) {
@@ -150,7 +163,7 @@ async function putProbeFile(client: PathMigrationDavClient, target: string, body
   } catch (error) {
     if (!isUnsupportedDavMethod(error)) throw error;
     const stat = await client.stat(target);
-    if (entryType(stat) !== "file" || Number(stat?.size) !== body.length) throw error;
+    if (entryType(stat) !== "file" || Number(remoteRecord(stat).size) !== body.length) throw error;
   }
 }
 
@@ -173,7 +186,7 @@ export async function probePathMigrationDavCapabilities(
     try {
       await client.copyFile(source, copyTarget, { overwrite: false });
       const copied = await client.stat(copyTarget);
-      copy = entryType(copied) === "file" && Number(copied?.size) === probeBody.length;
+      copy = entryType(copied) === "file" && Number(remoteRecord(copied).size) === probeBody.length;
     } catch (error) {
       if (!isUnsupportedDavMethod(error)) throw error;
     }
@@ -189,7 +202,7 @@ export async function probePathMigrationDavCapabilities(
         if (isRemoteNotFoundError(error)) sourceVisible = false;
         else throw error;
       }
-      move = !sourceVisible && entryType(moved) === "file" && Number(moved?.size) === probeBody.length;
+      move = !sourceVisible && entryType(moved) === "file" && Number(remoteRecord(moved).size) === probeBody.length;
     } catch (error) {
       if (!isUnsupportedDavMethod(error)) throw error;
     }
@@ -219,7 +232,7 @@ export function validateArchiveMigrationRoots(sourceValue: string, destinationVa
 
 export class PathMigrationService {
   private db: StateDatabase;
-  private readonly configStore: ConfigStore;
+  private readonly configStore: Pick<ConfigStore, 'get' | 'update'>;
   private readonly jobStore: PersistentJobStore;
   private readonly clientFactory: (config: AppConfig) => PathMigrationDavClient;
   private readonly now: () => number;
@@ -227,6 +240,7 @@ export class PathMigrationService {
   private readonly isSchedulerIdle: () => boolean;
   private readonly setMaintenance: NonNullable<PathMigrationOptions["setMaintenance"]>;
   private readonly onConfigSwitched: NonNullable<PathMigrationOptions["onConfigSwitched"]>;
+  private readonly releaseOwner: NonNullable<PathMigrationOptions["releaseOwner"]>;
   private worker: Promise<void> | null = null;
   private previewTask: Promise<void> | null = null;
   private starting = false;
@@ -235,17 +249,30 @@ export class PathMigrationService {
   private readonly ensuredDirectories = new Set<string>();
   private readonly leaseOwner = `path-migration:${crypto.randomUUID()}`;
   private leaseTimer: NodeJS.Timeout | null = null;
+  private maintenanceId: string | null = null;
 
-  constructor(db: StateDatabase, configStore: ConfigStore, options: PathMigrationOptions = {}) {
+  constructor(db: StateDatabase, configStore: Pick<ConfigStore, 'get' | 'update'>, options: PathMigrationOptions = {}) {
     this.db = db;
     this.configStore = configStore;
     this.jobStore = new PersistentJobStore(db);
+    this.releaseOwner = options.releaseOwner || ((leaseOwner) => this.jobStore.releaseOwner(leaseOwner));
     this.clientFactory = options.clientFactory || ((config) => buildDavClient(config) as unknown as PathMigrationDavClient);
     this.now = options.now || Date.now;
     this.sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     this.isSchedulerIdle = options.isSchedulerIdle || (() => true);
     this.setMaintenance = options.setMaintenance || (() => undefined);
     this.onConfigSwitched = options.onConfigSwitched || (() => undefined);
+  }
+
+  private enterMaintenance(summary: { id: string; status: string; sourceRoot: string; destinationRoot: string }) {
+    this.maintenanceId = summary.id;
+    this.setMaintenance(true, summary);
+  }
+
+  private leaveMaintenance() {
+    const id = this.maintenanceId;
+    this.maintenanceId = null;
+    this.setMaintenance(false, id ? { id } : undefined);
   }
 
   getState() {
@@ -361,7 +388,7 @@ export class PathMigrationService {
   }
 
   private latestMigrationId() {
-    const row = this.db.db.prepare("SELECT id FROM path_migrations ORDER BY created_at DESC LIMIT 1").get() as any;
+    const row = this.db.db.prepare("SELECT id FROM path_migrations ORDER BY created_at DESC LIMIT 1").get() as { id?: unknown } | undefined;
     return row ? String(row.id) : "";
   }
 
@@ -394,9 +421,9 @@ export class PathMigrationService {
   ) {
     const walkDir = async (directory: string, depth: number): Promise<void> => {
       if (shouldContinue && !shouldContinue()) return;
-      let entries: any[];
+    let entries: unknown[];
       try {
-        entries = await client.getDirectoryContents(directory) as any[];
+        entries = await client.getDirectoryContents(directory) as unknown[];
       } catch (error) {
         if (allowMissing && isRemoteNotFoundError(error) && depth === 0) return;
         throw error;
@@ -419,7 +446,8 @@ export class PathMigrationService {
         let size = normalized.size;
         if (itemType === "file" && size === undefined) {
           const stat = await client.stat(entryPath);
-          size = Number.isFinite(Number(stat?.size)) ? Number(stat.size) : undefined;
+          const statRecord = remoteRecord(stat);
+          size = Number.isFinite(Number(statRecord.size)) ? Number(statRecord.size) : undefined;
         }
         await visit({ path: entryPath, relativePath: relativePath(root, entryPath), itemType, size });
         if (itemType === "directory") await walkDir(entryPath, depth + 1);
@@ -472,13 +500,13 @@ export class PathMigrationService {
       if (!this.previewStillActive(id)) return;
       const item = this.db.getPathMigrationItem(id, entry.relativePath);
       if (!item) return;
-      let target: any;
+      let target: unknown;
       try { target = await client.stat(item.destinationPath); } catch (error) {
         if (!isRemoteNotFoundError(error)) throw error;
       }
       if (!target) return;
       const sameType = entryType(target) === item.itemType;
-      const sameSize = item.itemType === "directory" || Number(target?.size) === Number(item.expectedSize);
+       const sameSize = item.itemType === "directory" || Number(remoteRecord(target).size) === Number(item.expectedSize);
       const status: PathMigrationItemStatus = sameType && sameSize ? "reusable" : "conflict";
       this.db.updatePathMigrationItem(id, item.relativePath, { status });
       if (status === "reusable") reusableCount += 1;
@@ -520,7 +548,7 @@ export class PathMigrationService {
       throw new Error("AList / OpenList 身份或当前归档路径已变化，请重新预览");
     }
     this.starting = true;
-    this.setMaintenance(true, pathSummary(record));
+    this.enterMaintenance(pathSummary(record));
     try {
       const client = this.clientFactory(config);
       // COPY is verified on each real item below. Do not create probe files
@@ -545,7 +573,7 @@ export class PathMigrationService {
         this.db.updatePathMigration(record.id, { lastError: safeErrorSummary(error) });
       }
       if (!current || !["copying", "verifying", "paused", "switching", "cleanup_pending"].includes(current.status)) {
-        this.setMaintenance(false);
+        this.leaveMaintenance();
       }
       throw error;
     } finally {
@@ -570,11 +598,11 @@ export class PathMigrationService {
           WHERE i.relative_path IS NULL OR i.item_type<>s.item_type OR COALESCE(i.expected_size,-1)<>COALESCE(s.expected_size,-1))
         OR EXISTS(SELECT 1 FROM path_migration_items i LEFT JOIN path_migration_scan s ON s.relative_path=i.relative_path
           WHERE i.migration_id=? AND s.relative_path IS NULL) AS changed
-      `).get(migrationId, migrationId) as any;
+      `).get(migrationId, migrationId) as { changed?: unknown } | undefined;
       if (changed?.changed) throw new Error("源目录条目在预览后发生变化");
     }
     const hash = crypto.createHash("sha256");
-    for (const row of this.db.db.prepare("SELECT relative_path,item_type,COALESCE(expected_size,-1) AS expected_size FROM path_migration_scan ORDER BY relative_path ASC").iterate() as Iterable<any>) {
+    for (const row of this.db.db.prepare("SELECT relative_path,item_type,COALESCE(expected_size,-1) AS expected_size FROM path_migration_scan ORDER BY relative_path ASC").iterate() as Iterable<{ relative_path?: unknown; item_type?: unknown; expected_size?: unknown }>) {
       hash.update(`${row.relative_path}\0${row.item_type}\0${row.expected_size}\n`);
     }
     this.db.db.exec("DELETE FROM path_migration_scan");
@@ -677,7 +705,7 @@ export class PathMigrationService {
         }
         this.db.updatePathMigrationItem(record.id, item.relativePath, { status: "verified", verificationStartedAt: 0 });
         return;
-      } catch (error: any) {
+      } catch (error: unknown) {
         if (!isRemoteNotFoundError(error)) {
           await this.handleItemError(record, item, error);
           return;
@@ -728,7 +756,7 @@ export class PathMigrationService {
         this.db.updatePathMigrationItem(record.id, item.relativePath, { status: "awaiting_verification" });
       }
       await this.verifyItem(record, this.db.getPathMigrationItem(record.id, item.relativePath)!);
-    } catch (error: any) {
+    } catch (error: unknown) {
       await this.handleItemError(record, this.db.getPathMigrationItem(record.id, item.relativePath) || item, error);
     }
   }
@@ -739,7 +767,7 @@ export class PathMigrationService {
     for (const segment of segments) {
       current += `/${segment}`;
       if (this.ensuredDirectories.has(current)) continue;
-      let stat: any;
+       let stat: unknown;
       try {
         stat = await client.stat(current);
       } catch (error) {
@@ -759,7 +787,7 @@ export class PathMigrationService {
 
   private async verifyItem(record: PathMigrationRecord, item: PathMigrationItemRecord) {
     const client = this.clientFactory(this.configStore.get());
-    let stat: any;
+    let stat: unknown;
     try { stat = await client.stat(item.destinationPath); } catch (error) {
       if (isRemoteNotFoundError(error)) {
         const startedAt = item.verificationStartedAt || item.updatedAt || this.now();
@@ -788,7 +816,7 @@ export class PathMigrationService {
       throw error;
     }
     const sameType = entryType(stat) === item.itemType;
-    const sameSize = item.itemType === "directory" || Number(stat?.size) === Number(item.expectedSize);
+    const sameSize = item.itemType === "directory" || Number(remoteRecord(stat).size) === Number(item.expectedSize);
     if (!sameType || !sameSize) {
       await this.handleItemError(record, item, migrationConflictError("目标类型或大小与源文件不一致"));
       return;
@@ -801,7 +829,7 @@ export class PathMigrationService {
     });
   }
 
-  private async handleItemError(record: PathMigrationRecord, item: PathMigrationItemRecord, error: any) {
+  private async handleItemError(record: PathMigrationRecord, item: PathMigrationItemRecord, error: unknown) {
     const status = statusCode(error);
     const message = safeErrorSummary(error);
     if (isImmediateStopError(error) || !isTransientError(error)) {
@@ -849,7 +877,7 @@ export class PathMigrationService {
       this.db.updatePathMigration(id, { status: "cleanup_pending", switchedAt: this.now(), lastError: undefined });
       const migrationJob = this.jobStore.findByDedupeKey(`path-migration:${id}`);
       if (migrationJob) this.jobStore.complete(migrationJob.id);
-      this.setMaintenance(false);
+      this.leaveMaintenance();
     } catch (error) {
       this.db.updatePathMigration(id, { status: "switching", lastError: safeErrorSummary(error) });
       throw error;
@@ -869,7 +897,7 @@ export class PathMigrationService {
     const record = this.db.getPathMigration(id || this.latestMigrationId());
     if (!record || record.status !== "paused") throw new Error("当前迁移不能继续");
     this.db.updatePathMigration(record.id, { status: "copying", lastError: undefined });
-    this.setMaintenance(true, pathSummary(this.db.getPathMigration(record.id)!));
+    this.enterMaintenance(pathSummary(this.db.getPathMigration(record.id)!));
     this.startWorker(record.id);
     return this.getState();
   }
@@ -881,7 +909,7 @@ export class PathMigrationService {
     this.db.updatePathMigration(record.id, { status: "cancelled" });
     const migrationJob = this.jobStore.findByDedupeKey(`path-migration:${record.id}`);
     if (migrationJob) this.jobStore.complete(migrationJob.id);
-    this.setMaintenance(false);
+    this.leaveMaintenance();
     return this.getState();
   }
 
@@ -910,7 +938,7 @@ export class PathMigrationService {
         const page = this.db.listPathMigrationItems(record.id, [], offset, 1000);
         for (const item of page) {
           const stat = await client.stat(item.destinationPath);
-          if (entryType(stat) !== item.itemType || (item.itemType === "file" && Number(stat?.size) !== Number(item.expectedSize))) {
+           if (entryType(stat) !== item.itemType || (item.itemType === "file" && Number(remoteRecord(stat).size) !== Number(item.expectedSize))) {
             throw new Error(`目标文件复核失败: ${item.relativePath}`);
           }
         }
@@ -960,7 +988,7 @@ export class PathMigrationService {
       return;
     }
     if (["copying", "verifying", "paused", "switching"].includes(record.status)) {
-      this.setMaintenance(true, pathSummary(record));
+      this.enterMaintenance(pathSummary(record));
       if (record.status !== "paused") this.startWorker(record.id);
     }
   }
@@ -974,12 +1002,8 @@ export class PathMigrationService {
     }
     const tasks = [this.previewTask, this.worker].filter((task): task is Promise<void> => Boolean(task));
     if (tasks.length === 0) {
-      try {
-        if (this.db.db.open) this.jobStore.releaseOwner(this.leaseOwner);
-      } catch {
-        // The state database may already have been replaced during shutdown/import.
-      }
-      this.setMaintenance(false);
+      if (!this.releaseMaintenanceLease()) return false;
+      this.leaveMaintenance();
       return true;
     }
     let timer: NodeJS.Timeout | null = null;
@@ -991,13 +1015,20 @@ export class PathMigrationService {
     const result = await Promise.race([completed, timedOut]);
     if (timer) clearTimeout(timer);
     if (result) {
-      try {
-        if (this.db.db.open) this.jobStore.releaseOwner(this.leaseOwner);
-      } catch {
-        // The state database may already have been replaced during shutdown/import.
-      }
-      this.setMaintenance(false);
+      if (!this.releaseMaintenanceLease()) return false;
+      this.leaveMaintenance();
     }
     return result;
+  }
+
+  private releaseMaintenanceLease() {
+    if (!this.db.db.open) return false;
+    try {
+      this.releaseOwner(this.leaseOwner);
+      return true;
+    } catch (error) {
+      console.warn('[PathMigration] could not release the maintenance lease', safeErrorSummary(error));
+      return false;
+    }
   }
 }

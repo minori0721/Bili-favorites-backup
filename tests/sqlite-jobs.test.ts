@@ -1,3 +1,4 @@
+import { required, readField, readArray } from './contract-values.js';
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -14,12 +15,13 @@ import {
 import { PersistentJobStore } from "../src/job-store.js";
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
+import { isRecord } from "../src/shared/api/value.js";
 
 test("stopped recovery cannot reappear, be claimed, or overwrite a newer attempt", () => {
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
   try {
-    const old = jobs.enqueue({ kind: "upload", dedupeKey: "stopped:g1", bvid: "BV1kg8Y6zEnZ",
+    const old = jobs.enqueue({ kind: "upload" as const, dedupeKey: "stopped:g1", bvid: "BV1kg8Y6zEnZ",
       payload: { sessionId: "session", sessionGeneration: 1, userDisposition: "abandoned",
         awaitingManualRecovery: true, recoveryAssessment: { nextCheckAt: 1 }, files: ["video.mp4"] } });
     assert.equal(jobs.listManualRecovery(["upload"]).length, 0);
@@ -32,7 +34,7 @@ test("stopped recovery cannot reappear, be claimed, or overwrite a newer attempt
     const stopped = jobs.findById(old.id)!;
     assert.equal(stopped.status, "failed");
     assert.equal(stopped.payload.awaitingManualRecovery, false);
-    assert.equal(stopped.payload.recoveryAssessment.nextCheckAt, undefined);
+    assert.equal(readField(stopped.payload.recoveryAssessment, 'nextCheckAt'), undefined);
     assert.deepEqual(stopped.payload.files, ["video.mp4"]);
     assert.equal(jobs.wakeManualJob(old.id), null);
     assert.equal(jobs.wakeManualJob(old.id, { awaitingManualRecovery: false }), null);
@@ -40,7 +42,7 @@ test("stopped recovery cannot reappear, be claimed, or overwrite a newer attempt
     assert.ok(jobs.listActiveTransferSessionKeys().has("session:g1"));
     jobs.rebind(database);
     assert.equal(new PersistentJobStore(database).normalizeStoppedRecovery(), 0);
-    const fresh = jobs.enqueue({ kind: "upload", dedupeKey: "stopped:g2", bvid: old.bvid,
+    const fresh = jobs.enqueue({ kind: "upload" as const, dedupeKey: "stopped:g2", bvid: old.bvid,
       initialStatus: "manual_wait", payload: { sessionId: "session", sessionGeneration: 2, awaitingManualRecovery: true } });
     assert.deepEqual(jobs.listManualRecovery(["upload"]).map(j => j.id), [fresh.id]);
     assert.ok(jobs.wakeManualJob(fresh.id));
@@ -53,7 +55,7 @@ test("startup and rebind clear legacy stopped leases without erasing evidence or
     const database = new StateDatabase(":memory:");
     const jobs = new PersistentJobStore(database);
     try {
-      const job = jobs.enqueue({ kind: "upload", dedupeKey: field, payload: { files: ["kept.mp4"] } });
+      const job = jobs.enqueue({ kind: "upload" as const, dedupeKey: field, payload: { files: ["kept.mp4"] } });
       const running = jobs.claimByDedupeKey(field, "old-worker")!;
       database.db.prepare("UPDATE jobs SET payload_json=? WHERE id=?").run(JSON.stringify({
         [field]: "abandoned", awaitingManualRecovery: true, files: ["kept.mp4"],
@@ -64,8 +66,8 @@ test("startup and rebind clear legacy stopped leases without erasing evidence or
       assert.equal(jobs.findById(job.id)?.leaseOwner, undefined);
       assert.equal(jobs.parkManualRecovery(job.id, running.leaseOwner!, "late", { awaitingManualRecovery: true }), false);
       assert.equal(jobs.normalizeTerminalUploadRecovery(), 0);
-      assert.deepEqual(jobs.findById(job.id)?.payload.files, ["kept.mp4"]);
-      assert.deepEqual(jobs.findById(job.id)?.payload.localCleanupPlans, [{ id: "existing-proof" }]);
+      assert.deepEqual(required(jobs.findById(job.id)?.payload).files, ["kept.mp4"]);
+      assert.deepEqual(required(jobs.findById(job.id)?.payload).localCleanupPlans, [{ id: "existing-proof" }]);
       assert.equal(jobs.normalizeStoppedRecovery(), 0);
     } finally { database.close(); }
   }
@@ -75,18 +77,18 @@ test("late encoding callbacks cannot reopen a stopped replacement parent", () =>
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
   try {
-    const parent = jobs.enqueue({ kind: "upload", dedupeKey: "late-encoding", payload: {
+    const parent = jobs.enqueue({ kind: "upload" as const, dedupeKey: "late-encoding", payload: {
       userDisposition: "abandoned", lifecycleState: "abandoned", awaitingManualRecovery: true,
-      encodingRetry: { generation: 4, state: "running", replacementJobId: "child" },
+      encodingRetry: { generation: 4, state: "running" as const, replacementJobId: "child" },
     } });
     jobs.normalizeStoppedRecovery();
     assert.equal(jobs.finishEncodingRetry(parent.id, 4, { manualRecoveryReason: "late" }), false);
-    assert.equal(jobs.updateEncodingRetry(parent.id, 4, { state: "uploading" }), false);
+    assert.equal(jobs.updateEncodingRetry(parent.id, 4, { state: "uploading" as const }), false);
     assert.equal(jobs.startEncodingRetry(parent.id, {
-      kind: "download", dedupeKey: "late-encoding-child", bvid: "BVLATE",
+      kind: "download" as const, dedupeKey: "late-encoding-child", bvid: "BVLATE",
     }, { generation: 5 }), null);
-    assert.equal(jobs.findById(parent.id)?.payload.awaitingManualRecovery, false);
-    assert.equal(jobs.findById(parent.id)?.payload.lifecycleState, "abandoned");
+    assert.equal(required(jobs.findById(parent.id)?.payload).awaitingManualRecovery, false);
+    assert.equal(required(jobs.findById(parent.id)?.payload).lifecycleState, "abandoned");
   } finally { database.close(); }
 });
 
@@ -94,19 +96,19 @@ test("completed upload jobs retain cleanup authorization without blocking a new 
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
   try {
-    const job = jobs.enqueue({ kind: "upload", bvid: "BVCLEANUP", dedupeKey: "upload:cleanup-test",
+    const job = jobs.enqueue({ kind: "upload" as const, bvid: "BVCLEANUP", dedupeKey: "upload:cleanup-test",
       payload: { localCleanupPlans: [{ id: "authorized-plan", files: [{ relativePath: "video.mp4", expectedSize: 10 }] }] } });
     assert.equal(jobs.complete(job.id), true);
     assert.equal(jobs.findById(job.id)?.status, "completed");
-    assert.equal(jobs.findById(job.id)?.payload.localCleanupPlans.length, 1);
+    assert.equal(readArray(required(jobs.findById(job.id)?.payload).localCleanupPlans).length, 1);
     assert.equal(jobs.list(["upload"]).length, 0);
     assert.equal(jobs.hasActiveJobsForBvid("BVCLEANUP"), false);
     assert.equal(jobs.normalizeTerminalUploadRecovery(), 0);
-    const next = jobs.enqueue({ kind: "upload", bvid: "BVCLEANUP", dedupeKey: "upload:cleanup-test" });
+    const next = jobs.enqueue({ kind: "upload" as const, bvid: "BVCLEANUP", dedupeKey: "upload:cleanup-test" });
     assert.notEqual(next.id, job.id);
     assert.equal(next.status, "pending");
     assert.equal(jobs.complete(job.id), true);
-    assert.ok(jobs.findById(job.id)?.payload.localCleanupPlans);
+    assert.ok(required(jobs.findById(job.id)?.payload).localCleanupPlans);
   } finally { database.close(); }
 });
 
@@ -120,21 +122,20 @@ test("encoding retry counts only replacement children and keeps duplicate starts
     strict: true,
     candidateLocalDir: "C:/temp/BVENC-encoding-retry",
     originalLocalDir: "C:/temp/BVENC",
-    state: "running",
+    state: "running" as const,
   };
   try {
     const parent = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload-parent",
       bvid: "BVENC",
       userId: "u1",
       mediaId: 1,
-      status: undefined,
       payload: { awaitingManualRecovery: true, encodingRetry: retry },
-    } as any);
+    });
     retry.parentJobId = parent.id;
-    const childInput: any = {
-      kind: "verify_upload",
+    const childInput = {
+      kind: "verify_upload" as const,
       dedupeKey: "encoding-retry-verify",
       bvid: "BVENC",
       userId: "u1",
@@ -158,12 +159,15 @@ test("encoding retry counts only replacement children and keeps duplicate starts
     assert.equal(jobs.finishEncodingRetry(parent.id, 1), true);
     assert.equal(jobs.completeEncodingRetryParent(parent.id, 1), false);
     assert.ok(jobs.findById(parent.id));
-    const failedPayload = jobs.findById(parent.id)!.payload as any;
+    const failedPayloadValue = jobs.findById(parent.id)!.payload;
+    assert.ok(isRecord(failedPayloadValue));
+    const failedPayload = failedPayloadValue;
+    const persistedRetry = isRecord(failedPayload.encodingRetry) ? failedPayload.encodingRetry : {};
     assert.equal(jobs.updatePayload(parent.id, {
       ...failedPayload,
       awaitingManualRecovery: false,
       lifecycleState: "retrying",
-      encodingRetry: { ...failedPayload.encodingRetry, state: "running" },
+      encodingRetry: { ...persistedRetry, state: "running" as const },
     }), true);
     assert.equal(jobs.completeEncodingRetryParent(parent.id, 1), true);
     assert.equal(jobs.findById(parent.id), null);
@@ -177,7 +181,7 @@ test("encoding retry hides its parent while running and restores it on failure",
   const jobs = new PersistentJobStore(database);
   try {
     const parent = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload-parent-lifecycle",
       bvid: "BVLIFECYCLE",
       userId: "u1",
@@ -191,36 +195,36 @@ test("encoding retry hides its parent while running and restores it on failure",
           generation: 1,
           priority: ["AV1", "HEVC", "AVC"],
           strict: true,
-          state: "failed",
+          state: "failed" as const,
         },
       },
-    } as any);
+    });
     const retry = {
       parentJobId: parent.id,
       generation: 2,
       priority: ["AV1", "HEVC", "AVC"],
       strict: true,
-      state: "running",
+      state: "running" as const,
     };
     const started = jobs.startEncodingRetry(parent.id, {
-      kind: "download",
+      kind: "download" as const,
       dedupeKey: "encoding-retry-download-lifecycle",
       bvid: "BVLIFECYCLE",
       userId: "u1",
       mediaId: 1,
       payload: { encodingRetry: retry },
-    } as any, retry);
+    }, retry);
     assert.equal(started?.idempotent, false);
     const running = jobs.findById(parent.id)!;
-    assert.equal((running.payload as any).awaitingManualRecovery, false);
-    assert.equal((running.payload as any).lifecycleState, "retrying");
+    assert.equal((running.payload).awaitingManualRecovery, false);
+    assert.equal((running.payload).lifecycleState, "retrying");
     assert.equal(jobs.listManualRecovery(["upload"]).length, 0);
 
     assert.equal(jobs.finishEncodingRetry(parent.id, 2, { manualRecoveryReason: "候选失败" }), true);
     const failed = jobs.findById(parent.id)!;
-    assert.equal((failed.payload as any).awaitingManualRecovery, true);
-    assert.equal((failed.payload as any).lifecycleState, "manual_required");
-    assert.equal((failed.payload as any).encodingRetry.state, "failed");
+    assert.equal((failed.payload).awaitingManualRecovery, true);
+    assert.equal((failed.payload).lifecycleState, "manual_required");
+    assert.equal(readField((failed.payload).encodingRetry, 'state'), "failed");
     assert.equal(jobs.listManualRecovery(["upload"]).length, 1);
   } finally {
     database.close();
@@ -229,10 +233,10 @@ test("encoding retry hides its parent while running and restores it on failure",
 
 test("archive source restoration skips write transactions when no deletion record exists", () => {
   const database = new StateDatabase(":memory:");
-  const sqlite = database.db as any;
+  const sqlite = database.db;
   const originalTransaction = sqlite.transaction.bind(sqlite);
   let transactionCalls = 0;
-  sqlite.transaction = (action: (...args: any[]) => any) => {
+  sqlite.transaction = (action: (...args: unknown[]) => unknown) => {
     transactionCalls += 1;
     return originalTransaction(action);
   };
@@ -258,9 +262,9 @@ test("archive source restoration skips write transactions when no deletion recor
     `).run();
     assert.equal(database.restoreCompletedArchiveSource("u1", 1, "BVRESTORETX", now + 1), 1);
     assert.equal(transactionCalls, 1);
-    assert.equal((database.db.prepare("SELECT status FROM archive_deleted_sources WHERE deletion_id='restore-tx'").get() as any).status, "restored");
+    assert.equal(required((database.db.prepare<unknown[], { "status": string }>("SELECT status FROM archive_deleted_sources WHERE deletion_id='restore-tx'").get())).status, "restored");
 
-    const indexSql = String((database.db.prepare("SELECT sql FROM sqlite_master WHERE name='idx_archive_deletions_active'").get() as any)?.sql || "");
+    const indexSql = String((database.db.prepare<unknown[], { "sql": string }>("SELECT sql FROM sqlite_master WHERE name='idx_archive_deletions_active'").get())?.sql || "");
     assert.match(indexSql, /preparing/);
   } finally {
     sqlite.transaction = originalTransaction;
@@ -271,13 +275,13 @@ test("archive source restoration skips write transactions when no deletion recor
 test("video status reads use relation priority with the video row as fallback", () => {
   const database = new StateDatabase(":memory:");
   try {
-    const baseVideo = (bvid: string, backupStatus: string) => ({
+  const baseVideo = (bvid: string, backupStatus: import("../src/state.js").BackupStatus) => ({
       bvid,
       title: bvid,
       upperName: "Tester",
       firstSeenAt: "2026-07-11T00:00:00.000Z",
       lastSeenAt: "2026-07-11T00:00:00.000Z",
-      biliStatus: "available",
+      biliStatus: "available" as const,
       backupStatus,
     });
     database.replaceState({
@@ -287,8 +291,8 @@ test("video status reads use relation priority with the video row as fallback", 
       folderScans: {},
       userCooldowns: {},
       videos: {
-        BVRELATION: baseVideo("BVRELATION", "verified") as any,
-        BVFALLBACK: baseVideo("BVFALLBACK", "failed") as any,
+        BVRELATION: baseVideo("BVRELATION", "verified"),
+        BVFALLBACK: baseVideo("BVFALLBACK", "failed"),
       },
       relations: {
         "u1:1:BVRELATION": {
@@ -299,7 +303,7 @@ test("video status reads use relation priority with the video row as fallback", 
           firstSeenAt: "2026-07-11T00:00:00.000Z",
           lastSeenAt: "2026-07-11T00:00:00.000Z",
           activeInFavorite: true,
-          backupStatus: "uploaded",
+          backupStatus: "uploaded" as const,
         },
         "u2:2:BVRELATION": {
           userId: "u2",
@@ -309,7 +313,7 @@ test("video status reads use relation priority with the video row as fallback", 
           firstSeenAt: "2026-07-11T00:00:00.000Z",
           lastSeenAt: "2026-07-11T00:00:00.000Z",
           activeInFavorite: true,
-          backupStatus: "upload_failed",
+          backupStatus: "upload_failed" as const,
         },
       },
     });
@@ -317,7 +321,7 @@ test("video status reads use relation priority with the video row as fallback", 
     assert.equal(database.getVideo("BVRELATION")?.backupStatus, "upload_failed");
     assert.equal(database.getVideo("BVFALLBACK")?.backupStatus, "failed");
     assert.equal(database.listVideos().find((video) => video.bvid === "BVRELATION")?.backupStatus, "upload_failed");
-    assert.equal(database.loadState().videos?.BVRELATION.backupStatus, "upload_failed");
+    assert.equal(required(database.loadState().videos?.BVRELATION).backupStatus, "upload_failed");
   } finally {
     database.close();
   }
@@ -327,7 +331,7 @@ test("full state replacement clears jobs and state markers while preserving the 
   const database = new StateDatabase(":memory:");
   try {
     const jobs = new PersistentJobStore(database);
-    jobs.enqueue({ kind: "download", dedupeKey: "download:stale", bvid: "BVSTALE" });
+    jobs.enqueue({ kind: "download" as const, dedupeKey: "download:stale", bvid: "BVSTALE" });
     database.setMeta("persistent_jobs_bootstrap_v1", "complete");
     database.setMeta("legacy_failure_classification_v1", "complete");
     database.setMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, "complete");
@@ -381,9 +385,9 @@ test("SQLite runtime pragmas and persistent job leasing are deterministic", () =
 
     const jobs = new PersistentJobStore(database);
     const base = Date.now();
-    jobs.enqueue({ kind: "download", dedupeKey: "download:later", bvid: "BVLATER", priority: 50, notBefore: base + 5_000 });
-    jobs.enqueue({ kind: "download", dedupeKey: "download:first", bvid: "BVFIRST", priority: 10 });
-    jobs.enqueue({ kind: "download", dedupeKey: "download:first", bvid: "BVFIRST", priority: 5 });
+    jobs.enqueue({ kind: "download" as const, dedupeKey: "download:later", bvid: "BVLATER", priority: 50, notBefore: base + 5_000 });
+    jobs.enqueue({ kind: "download" as const, dedupeKey: "download:first", bvid: "BVFIRST", priority: 10 });
+    jobs.enqueue({ kind: "download" as const, dedupeKey: "download:first", bvid: "BVFIRST", priority: 5 });
     assert.equal(jobs.countOutstanding(["download"]), 2);
 
     const claimed = jobs.claimDue(["download"], 5, "worker-a", 10_000, base);
@@ -406,7 +410,7 @@ test("10000 persistent jobs only claim the configured high-water batch", () => {
     database.db.transaction(() => {
       for (let index = 0; index < 10_000; index += 1) {
         jobs.enqueue({
-          kind: "download",
+          kind: "download" as const,
           dedupeKey: `download:BVSTRESS${index}`,
           bvid: `BVSTRESS${index}`,
           priority: 40,
@@ -443,7 +447,7 @@ test("10000 favorite relations are paged and aggregated in SQLite", () => {
         const status = index % 2 === 0 ? "verified" : "discovered";
         const video = {
           bvid, title: bvid, upperName: "Tester", firstSeenAt: new Date(timestamp).toISOString(),
-          lastSeenAt: new Date(timestamp).toISOString(), biliStatus: "available", backupStatus: status,
+          lastSeenAt: new Date(timestamp).toISOString(), biliStatus: "available" as const, backupStatus: status,
         };
         const relation = {
           userId: "u1", mediaId: 1, bvid, folderTitle: "Stress", favOrder: index,
@@ -477,7 +481,7 @@ test("persistent retry keeps not_before and does not consume attempts for a defe
   const database = new StateDatabase(":memory:");
   try {
     const jobs = new PersistentJobStore(database);
-    const queued = jobs.enqueue({ kind: "upload", dedupeKey: "upload:test", bvid: "BV1", maxAttempts: 3 });
+    const queued = jobs.enqueue({ kind: "upload" as const, dedupeKey: "upload:test", bvid: "BV1", maxAttempts: 3 });
     const claimed = jobs.claimDue(["upload"], 1, "worker", 60_000)[0];
     assert.equal(claimed.id, queued.id);
     const base = Date.now();
@@ -497,24 +501,24 @@ test("an exhausted normal upload stays visible to recovery and a normal enqueue 
   try {
     const jobs = new PersistentJobStore(database);
     const queued = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:revive",
       bvid: "BVREVIVE",
       maxAttempts: 1,
-      payload: { phase: "first" },
+      payload: { phase: "first" as const },
     });
     const claimed = jobs.claimDue(["upload"], 1, "worker", 60_000)[0];
     const result = jobs.retry(claimed.id, "worker", "remote conflict", Date.now() + 60_000);
     assert.equal(result.exhausted, true);
     assert.equal(jobs.findById(queued.id)?.status, "failed");
-    assert.equal(jobs.findById(queued.id)?.payload.awaitingManualRecovery, true);
+    assert.equal(required(jobs.findById(queued.id)?.payload).awaitingManualRecovery, true);
 
     const duplicate = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:revive",
       bvid: "BVREVIVE",
       maxAttempts: 3,
-      payload: { phase: "retry" },
+      payload: { phase: "retry" as const },
     });
     assert.equal(duplicate.id, queued.id);
     assert.equal(duplicate.status, "failed");
@@ -522,7 +526,7 @@ test("an exhausted normal upload stays visible to recovery and a normal enqueue 
     assert.equal(duplicate.payload.awaitingManualRecovery, true);
     assert.equal(duplicate.payload.phase, "first");
 
-    const revived = jobs.wakeManualJob(queued.id, { phase: "retry" });
+    const revived = jobs.wakeManualJob(queued.id, { phase: "retry" as const });
     assert.equal(revived?.status, "pending");
     assert.equal(revived?.attempts, 0);
     assert.equal(revived?.payload.phase, "retry");
@@ -536,21 +540,21 @@ test("startup normalization exposes legacy failed upload jobs without touching a
   try {
     const jobs = new PersistentJobStore(database);
     const legacy = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:legacy-recovery",
       bvid: "BVLEGACYRECOVERY",
       payload: { localDir: "/tmp/legacy" },
     });
     database.db.prepare("UPDATE jobs SET status='failed', payload_json='{}', lease_owner=NULL, lease_expires_at=NULL WHERE id=?").run(legacy.id);
     const retryWait = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:retry-wait-preserved",
       bvid: "BVRETRYWAIT",
       payload: { localDir: "/tmp/retry" },
     });
     database.db.prepare("UPDATE jobs SET status='retry_wait', payload_json='{}' WHERE id=?").run(retryWait.id);
     const quality = jobs.enqueue({
-      kind: "quality_upload",
+      kind: "quality_upload" as const,
       dedupeKey: "quality:failed-preserved",
       bvid: "BVQUALITYFAILED",
       payload: { localDir: "/tmp/quality" },
@@ -558,10 +562,10 @@ test("startup normalization exposes legacy failed upload jobs without touching a
     database.db.prepare("UPDATE jobs SET status='failed', payload_json='{}' WHERE id=?").run(quality.id);
 
     assert.equal(jobs.normalizeTerminalUploadRecovery(), 1);
-    assert.equal(jobs.findById(legacy.id)?.payload.awaitingManualRecovery, true);
-    assert.equal(jobs.findById(legacy.id)?.payload.allowReupload, false);
-    assert.equal(jobs.findById(retryWait.id)?.payload.awaitingManualRecovery, undefined);
-    assert.equal(jobs.findById(quality.id)?.payload.awaitingManualRecovery, undefined);
+    assert.equal(required(jobs.findById(legacy.id)?.payload).awaitingManualRecovery, true);
+    assert.equal(required(jobs.findById(legacy.id)?.payload).allowReupload, false);
+    assert.equal(required(jobs.findById(retryWait.id)?.payload).awaitingManualRecovery, undefined);
+    assert.equal(required(jobs.findById(quality.id)?.payload).awaitingManualRecovery, undefined);
     assert.equal(jobs.listManualRecovery(["upload"]).some((job) => job.id === legacy.id), true);
     assert.equal(jobs.normalizeTerminalUploadRecovery(), 0);
   } finally {
@@ -582,10 +586,10 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
       videos: {
         BVMIGRATE4: {
           bvid: "BVMIGRATE4", title: "Schema 4", upperName: "Tester",
-          firstSeenAt: checkedAt, lastSeenAt: checkedAt, biliStatus: "available",
-          backupStatus: "charging_restricted",
+          firstSeenAt: checkedAt, lastSeenAt: checkedAt, biliStatus: "available" as const,
+          backupStatus: "charging_restricted" as const,
           accessRestriction: {
-            type: "charging", firstDetectedAt: checkedAt, lastCheckedAt: checkedAt,
+            type: "charging", detectedAt: checkedAt, lastCheckedAt: checkedAt,
             nextCheckAt: checkedAt, previewAvailable: true, checkedAccountUids: [],
           },
         },
@@ -594,7 +598,7 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
         "u1:1:BVMIGRATE4": {
           userId: "u1", mediaId: 1, bvid: "BVMIGRATE4", folderTitle: "Migration",
           firstSeenAt: checkedAt, lastSeenAt: checkedAt, activeInFavorite: true,
-          backupStatus: "verified", lastRemoteCheckAt: remoteCheckedAt,
+          backupStatus: "verified" as const, lastRemoteCheckAt: remoteCheckedAt,
         },
       },
     });
@@ -607,20 +611,23 @@ test("database schema 4 refreshes the aggregate view and adds query columns", as
 
     const migrated = new StateDatabase(dbPath);
     try {
-      const row = migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get() as any;
+      const row = migrated.db.prepare<unknown[], { "sql": string }>("SELECT sql FROM sqlite_master WHERE type='view' AND name='video_backup_summary'").get();
       assert.match(String(row?.sql || ""), /charging_restricted/);
       assert.equal(migrated.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
-      const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as any[]).map((item) => item.name));
+      const columns = new Set((migrated.db.pragma("table_info(favorite_relations)") as unknown[]).map((item) => readField(item, 'name')));
       assert.equal(columns.has("fav_order"), true);
       assert.equal(columns.has("account_detached_at"), true);
       assert.equal(columns.has("last_remote_check_at"), true);
-      const videoColumns = new Set((migrated.db.pragma("table_info(videos)") as any[]).map((item) => item.name));
+      const videoColumns = new Set((migrated.db.pragma("table_info(videos)") as unknown[]).map((item) => readField(item, 'name')));
       assert.equal(videoColumns.has("access_restriction_type"), true);
       assert.equal(videoColumns.has("access_last_checked_at"), true);
-      const migratedVideo = migrated.db.prepare("SELECT access_restriction_type, access_last_checked_at FROM videos WHERE bvid='BVMIGRATE4'").get() as any;
+      const migratedVideo = migrated.db.prepare<unknown[], { "access_restriction_type": string | null; "access_last_checked_at": number | null }>("SELECT access_restriction_type, access_last_checked_at FROM videos WHERE bvid='BVMIGRATE4'").get();
+      assert.ok(migratedVideo);
       assert.equal(migratedVideo.access_restriction_type, "charging");
+      assert.ok(migratedVideo);
       assert.equal(migratedVideo.access_last_checked_at, Date.parse(checkedAt));
-      const migratedRelation = migrated.db.prepare("SELECT last_remote_check_at FROM favorite_relations WHERE bvid='BVMIGRATE4'").get() as any;
+      const migratedRelation = migrated.db.prepare<unknown[], { "last_remote_check_at": number | null }>("SELECT last_remote_check_at FROM favorite_relations WHERE bvid='BVMIGRATE4'").get();
+      assert.ok(migratedRelation);
       assert.equal(migratedRelation.last_remote_check_at, Date.parse(remoteCheckedAt));
     } finally {
       migrated.close();
@@ -649,12 +656,12 @@ test("state replacement and clearing remove transfer sessions with their child f
       remotePath: "/backup/BVSESSIONCLEAR",
     });
     sessions.ensureFile(session.id, { relativePath: "video.mp4", name: "video.mp4", expectedSize: 12 }, session.generation);
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_sessions").get() as any).count), 1);
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_session_files").get() as any).count), 1);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_sessions").get())).count), 1);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_session_files").get())).count), 1);
 
     database.clearStateAndJobs();
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_sessions").get() as any).count), 0);
-    assert.equal(Number((database.db.prepare("SELECT COUNT(*) AS count FROM transfer_session_files").get() as any).count), 0);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_sessions").get())).count), 0);
+    assert.equal(Number(required((database.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_session_files").get())).count), 0);
   } finally {
     database.close();
   }
@@ -667,7 +674,7 @@ test("prepared attempts roll back generation, files and binding together", () =>
     const input = { dedupeKey: "atomic-attempt", bvid: "BVATOMIC", localDir: "/tmp/BVATOMIC", remotePath: "/backup" };
     const files = [{ relativePath: "one.mp4", name: "one.mp4", expectedSize: 12 }];
     const first = sessions.ensurePrepared(input, files);
-    sessions.updateSession(first.id, { phase: "completed" }, first.generation);
+    sessions.updateSession(first.id, { phase: "completed" as const }, first.generation);
     assert.throws(() => sessions.ensurePrepared(input, files, () => { throw new Error("binding failed"); }), /binding failed/);
     assert.equal(sessions.get(first.id)?.generation, 1);
     assert.equal(sessions.get(first.id)?.phase, "completed");
@@ -704,7 +711,7 @@ test("history upload exhaustion remains a manual recovery item and normal enqueu
   try {
     const jobs = new PersistentJobStore(database);
     const job = jobs.enqueue({
-      kind: "history_upload",
+      kind: "history_upload" as const,
       dedupeKey: "upload:history-recovery",
       bvid: "BVHISTORYRECOVERY",
       maxAttempts: 1,
@@ -721,7 +728,7 @@ test("history upload exhaustion remains a manual recovery item and normal enqueu
     assert.equal(failed.payload.allowReupload, false);
 
     const duplicate = jobs.enqueue({
-      kind: "history_upload",
+      kind: "history_upload" as const,
       dedupeKey: "upload:history-recovery",
       bvid: "BVHISTORYRECOVERY",
       payload: { localDir: "/tmp/new-history" },
@@ -739,7 +746,7 @@ test("manual upload permission is atomically consumed from a claimed job", () =>
   try {
     const jobs = new PersistentJobStore(database);
     const job = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:consume-permission",
       bvid: "BVCONSUMEPERMISSION",
       payload: { allowReupload: true, files: ["p01.mp4", "p02.mp4"] },
@@ -750,8 +757,8 @@ test("manual upload permission is atomically consumed from a claimed job", () =>
     assert.equal(jobs.consumeUploadReuploadPermission(job.id, "permission-worker", "p01.mp4"), true);
     assert.equal(jobs.consumeUploadReuploadPermission(job.id, "permission-worker", "p01.mp4"), false);
     assert.equal(jobs.consumeUploadReuploadPermission(job.id, "permission-worker", "p02.mp4"), true);
-    assert.equal(jobs.findById(job.id)?.payload.allowReupload, false);
-    assert.deepEqual(jobs.findById(job.id)?.payload.reuploadAuthorizedFiles, []);
+    assert.equal(required(jobs.findById(job.id)?.payload).allowReupload, false);
+    assert.deepEqual(required(jobs.findById(job.id)?.payload).reuploadAuthorizedFiles, []);
   } finally {
     database.close();
   }
@@ -803,14 +810,14 @@ test("schema 6 adds actual media columns without treating requested quality as m
       videos: {
         BVSCHEMA6: {
           bvid: "BVSCHEMA6", title: "Schema 6", upperName: "Tester",
-          firstSeenAt: at, lastSeenAt: at, biliStatus: "available", backupStatus: "verified",
+          firstSeenAt: at, lastSeenAt: at, biliStatus: "available" as const, backupStatus: "verified" as const,
           remotePath: "/archive/BVSCHEMA6", remoteFiles: [file],
         },
       },
       relations: {
         "u1:1:BVSCHEMA6": {
           userId: "u1", mediaId: 1, bvid: "BVSCHEMA6", folderTitle: "Schema",
-          firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: "verified",
+          firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: "verified" as const,
           remotePath: "/archive/BVSCHEMA6", remoteFiles: [file],
         },
       },
@@ -828,19 +835,24 @@ test("schema 6 adds actual media columns without treating requested quality as m
     const upgraded = new StateDatabase(dbPath);
     try {
       assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
-      const columns = new Set((upgraded.db.pragma("table_info(remote_files)") as any[]).map((row) => String(row.name)));
+      const columns = new Set((upgraded.db.pragma("table_info(remote_files)") as unknown[]).map((row) => String(readField(row, 'name'))));
       for (const column of [
         "actual_width", "actual_height", "actual_fps", "actual_duration", "actual_codec",
         "actual_metadata_source", "actual_metadata_at",
       ]) assert.equal(columns.has(column), true, column);
-      const row = upgraded.db.prepare(`
+      const row = upgraded.db.prepare<unknown[], { "quality_json": string | null; "actual_width": number | null; "actual_height": number | null; "actual_codec": string | null; "actual_metadata_source": string | null }>(`
         SELECT quality_json, actual_width, actual_height, actual_codec, actual_metadata_source
         FROM remote_files WHERE user_id='u1' AND media_id=1
-      `).get() as any;
-      assert.equal(JSON.parse(row.quality_json).quality, "4K");
+      `).get();
+      assert.ok(row);
+       assert.equal(JSON.parse(required(row.quality_json)).quality, "4K");
+      assert.ok(row);
       assert.equal(row.actual_width, null);
+      assert.ok(row);
       assert.equal(row.actual_height, null);
+      assert.ok(row);
       assert.equal(row.actual_codec, null);
+      assert.ok(row);
       assert.equal(row.actual_metadata_source, null);
     } finally {
       upgraded.close();
@@ -873,12 +885,12 @@ test("schema 7 archive deletion tables survive a direct upgrade through the curr
     const upgraded = new StateDatabase(dbPath);
     try {
       assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
-      const tables = new Set((upgraded.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[]).map((row) => row.name));
+      const tables = new Set((upgraded.db.prepare<unknown[], { "name": string }>("SELECT name FROM sqlite_master WHERE type='table'").all() as unknown[]).map((row) => readField(row, 'name')));
       for (const table of ["archive_accounts", "archive_deletions", "archive_deletion_items", "archive_deleted_sources"]) {
         assert.equal(tables.has(table), true, table);
       }
-      const foreignKeys = upgraded.db.pragma("foreign_key_list(archive_deleted_sources)") as any[];
-      assert.deepEqual(new Set(foreignKeys.map((row) => row.table)), new Set(["archive_deletions", "videos"]));
+      const foreignKeys = upgraded.db.pragma("foreign_key_list(archive_deleted_sources)") as unknown[];
+      assert.deepEqual(new Set(foreignKeys.map((row) => readField(row, 'table'))), new Set(["archive_deletions", "videos"]));
       upgraded.db.prepare(`
         INSERT INTO archive_deletions(
           id,scope,user_id,status,alist_identity_hash,archive_root,created_at,updated_at
@@ -968,9 +980,9 @@ test("schema 9 to 10 adds upload generations and preserves the previous attempt"
     const upgraded = new StateDatabase(dbPath);
     try {
       assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
-      const session = upgraded.db.prepare("SELECT generation, phase FROM transfer_sessions WHERE id='session-schema10'").get() as any;
-      assert.deepEqual(session, { generation: 1, phase: "completed" });
-      const file = upgraded.db.prepare("SELECT generation, relative_path FROM transfer_session_files WHERE session_id='session-schema10'").get() as any;
+      const session = upgraded.db.prepare<unknown[], { "generation": number; "phase": string }>("SELECT generation, phase FROM transfer_sessions WHERE id='session-schema10'").get();
+      assert.deepEqual(session, { generation: 1, phase: "completed" as const });
+      const file = upgraded.db.prepare<unknown[], { "generation": number; "relative_path": string }>("SELECT generation, relative_path FROM transfer_session_files WHERE session_id='session-schema10'").get();
       assert.deepEqual(file, { generation: 1, relative_path: "video.mp4" });
       assert.equal(upgraded.db.pragma("integrity_check", { simple: true }), "ok");
     } finally {
@@ -996,13 +1008,13 @@ test("schema 9 atomically builds and preserves the archive library projection fr
       videos: {
         BVSCHEMA8: {
           bvid: "BVSCHEMA8", title: "Schema 8", upperName: "Tester",
-          firstSeenAt: at, lastSeenAt: at, biliStatus: "available", backupStatus: "queued",
+          firstSeenAt: at, lastSeenAt: at, biliStatus: "available" as const, backupStatus: "queued" as const,
         },
       },
       relations: {
         "u1:8:BVSCHEMA8": {
           userId: "u1", mediaId: 8, bvid: "BVSCHEMA8", folderTitle: "Schema 8",
-          firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: "queued",
+          firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: "queued" as const,
         },
       },
     });
@@ -1025,10 +1037,10 @@ test("schema 9 atomically builds and preserves the archive library projection fr
     assert.ok(upgraded);
     try {
       assert.equal(upgraded.db.pragma("user_version", { simple: true }), DATABASE_SCHEMA_VERSION);
-      const rows = upgraded.db.prepare(`
+      const rows = upgraded.db.prepare<unknown[], { "scope_type": string; "scope_id": string; "visibility": string; "bvid": string; "status_group": string }>(`
         SELECT scope_type, scope_id, visibility, bvid, status_group
         FROM archive_library_projection ORDER BY scope_type, scope_id
-      `).all() as any[];
+      `).all() as unknown[];
       assert.deepEqual(rows, [
         { scope_type: "account", scope_id: "u1", visibility: "normal", bvid: "BVSCHEMA8", status_group: "pending" },
         { scope_type: "global", scope_id: "", visibility: "normal", bvid: "BVSCHEMA8", status_group: "pending" },
@@ -1050,7 +1062,7 @@ test("schema 9 atomically builds and preserves the archive library projection fr
 
     const reopened = new StateDatabase(dbPath);
     try {
-      assert.equal(Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM archive_library_projection").get() as any).count), 2);
+      assert.equal(Number(required((reopened.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM archive_library_projection").get())).count), 2);
     } finally {
       reopened.close();
     }
@@ -1119,7 +1131,7 @@ test("schema 9 projection rebuild rolls back the whole upgrade when projection i
     const raw = new Database(dbPath);
     try {
       assert.equal(raw.pragma("user_version", { simple: true }), 7);
-      assert.equal(Number((raw.prepare("SELECT COUNT(*) AS count FROM archive_library_projection").get() as any).count), 2);
+      assert.equal(Number(required((raw.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM archive_library_projection").get())).count), 2);
       raw.exec("DROP TRIGGER reject_schema9_projection");
     } finally {
       raw.close();
@@ -1137,11 +1149,11 @@ test("folder detail keeps current order ahead of historical relations", () => {
   const at = "2026-07-22T00:00:00.000Z";
   const video = (bvid: string) => ({
     bvid, title: bvid, upperName: "Tester", firstSeenAt: at, lastSeenAt: at,
-    biliStatus: "available", backupStatus: "verified",
+    biliStatus: "available" as const, backupStatus: "verified" as const,
   });
   const relation = (bvid: string, activeInFavorite: boolean, favOrder: number, lastSeenAt: string) => ({
     userId: "u1", mediaId: 1, bvid, folderTitle: "Detail", firstSeenAt: at, lastSeenAt,
-    activeInFavorite, favOrder, backupStatus: "verified",
+    activeInFavorite, favOrder, backupStatus: "verified" as const,
   });
   try {
     database.replaceState({
@@ -1151,14 +1163,14 @@ test("folder detail keeps current order ahead of historical relations", () => {
       folderScans: {},
       userCooldowns: {},
       videos: {
-        BVCURRENT2: video("BVCURRENT2") as any,
-        BVCURRENT1: video("BVCURRENT1") as any,
-        BVHISTORY: video("BVHISTORY") as any,
+        BVCURRENT2: video("BVCURRENT2"),
+        BVCURRENT1: video("BVCURRENT1"),
+        BVHISTORY: video("BVHISTORY"),
       },
       relations: {
-        "u1:1:BVCURRENT2": relation("BVCURRENT2", true, 2, "2026-07-20T00:00:00.000Z") as any,
-        "u1:1:BVCURRENT1": relation("BVCURRENT1", true, 1, "2026-07-19T00:00:00.000Z") as any,
-        "u1:1:BVHISTORY": relation("BVHISTORY", false, 0, "2026-07-22T00:00:00.000Z") as any,
+        "u1:1:BVCURRENT2": relation("BVCURRENT2", true, 2, "2026-07-20T00:00:00.000Z"),
+        "u1:1:BVCURRENT1": relation("BVCURRENT1", true, 1, "2026-07-19T00:00:00.000Z"),
+        "u1:1:BVHISTORY": relation("BVHISTORY", false, 0, "2026-07-22T00:00:00.000Z"),
       },
     });
 
@@ -1182,9 +1194,9 @@ test("schema 4 query projections keep invalid compatibility timestamps out of in
         BVINVALIDTIME: {
           bvid: "BVINVALIDTIME", title: "Invalid time", upperName: "Tester",
           firstSeenAt: "2026-07-15T00:00:00.000Z", lastSeenAt: "2026-07-15T00:00:00.000Z",
-          biliStatus: "available", backupStatus: "charging_restricted",
+          biliStatus: "available" as const, backupStatus: "charging_restricted" as const,
           accessRestriction: {
-            type: "charging", firstDetectedAt: "invalid", lastCheckedAt: "invalid",
+            type: "charging", detectedAt: "invalid", lastCheckedAt: "invalid",
             nextCheckAt: "invalid", previewAvailable: false, checkedAccountUids: [],
           },
         },
@@ -1193,16 +1205,20 @@ test("schema 4 query projections keep invalid compatibility timestamps out of in
         "u1:1:BVINVALIDTIME": {
           userId: "u1", mediaId: 1, bvid: "BVINVALIDTIME", folderTitle: "Invalid",
           firstSeenAt: "2026-07-15T00:00:00.000Z", lastSeenAt: "2026-07-15T00:00:00.000Z",
-          activeInFavorite: true, backupStatus: "charging_restricted",
+          activeInFavorite: true, backupStatus: "charging_restricted" as const,
           lastRemoteCheckAt: "invalid", nextRemoteCheckAt: "invalid",
         },
       },
     });
-    const video = database.db.prepare("SELECT access_restriction_type, access_last_checked_at FROM videos WHERE bvid='BVINVALIDTIME'").get() as any;
-    const relation = database.db.prepare("SELECT last_remote_check_at, next_remote_check_at FROM favorite_relations WHERE bvid='BVINVALIDTIME'").get() as any;
+    const video = database.db.prepare<unknown[], { "access_restriction_type": string | null; "access_last_checked_at": number | null }>("SELECT access_restriction_type, access_last_checked_at FROM videos WHERE bvid='BVINVALIDTIME'").get();
+    const relation = database.db.prepare<unknown[], { "last_remote_check_at": number | null; "next_remote_check_at": number | null }>("SELECT last_remote_check_at, next_remote_check_at FROM favorite_relations WHERE bvid='BVINVALIDTIME'").get();
+    assert.ok(video);
     assert.equal(video.access_restriction_type, "charging");
+    assert.ok(video);
     assert.equal(video.access_last_checked_at, null);
+    assert.ok(relation);
     assert.equal(relation.last_remote_check_at, null);
+    assert.ok(relation);
     assert.equal(relation.next_remote_check_at, null);
   } finally {
     database.close();
@@ -1213,18 +1229,18 @@ test("pending upload verification query only returns awaiting relations", () => 
   const database = new StateDatabase(":memory:");
   try {
     const now = "2026-07-12T00:00:00.000Z";
-    const video = (bvid: string) => ({ bvid, title: bvid, upperName: "UP", firstSeenAt: now, lastSeenAt: now, biliStatus: "available", backupStatus: "uploaded" });
-    const relation = (bvid: string, verificationStatus: string) => ({
+    const video = (bvid: string) => ({ bvid, title: bvid, upperName: "UP", firstSeenAt: now, lastSeenAt: now, biliStatus: "available" as const, backupStatus: "uploaded" as const });
+     const relation = (bvid: string, verificationStatus: "awaiting_verification" | "verified") => ({
       userId: "u1", mediaId: 1, bvid, folderTitle: "One", firstSeenAt: now, lastSeenAt: now,
-      activeInFavorite: true, backupStatus: "uploaded",
+      activeInFavorite: true, backupStatus: "uploaded" as const,
       remoteFiles: [{ name: `${bvid}.mp4`, path: `/remote/${bvid}.mp4`, size: 42, verificationStatus }],
     });
     database.replaceState({
       schemaVersion: 13, processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
-      videos: { BVWAIT: video("BVWAIT") as any, BVDONE: video("BVDONE") as any },
+      videos: { BVWAIT: video("BVWAIT"), BVDONE: video("BVDONE") },
       relations: {
-        "u1:1:BVWAIT": relation("BVWAIT", "awaiting_verification") as any,
-        "u1:1:BVDONE": relation("BVDONE", "verified") as any,
+        "u1:1:BVWAIT": relation("BVWAIT", "awaiting_verification"),
+        "u1:1:BVDONE": relation("BVDONE", "verified"),
       },
     });
     const pending = database.listPendingUploadVerifications(10);
@@ -1234,8 +1250,8 @@ test("pending upload verification query only returns awaiting relations", () => 
       SELECT user_id, media_id, bvid FROM remote_files
       WHERE status='awaiting_verification'
       ORDER BY next_verify_at ASC LIMIT 10
-    `).all() as any[];
-    assert.match(plan.map((row) => row.detail).join("\n"), /idx_remote_files_verify/);
+    `).all() as unknown[];
+    assert.match(plan.map((row) => readField(row, 'detail')).join("\n"), /idx_remote_files_verify/);
   } finally {
     database.close();
   }
@@ -1244,21 +1260,21 @@ test("completeAndEnqueue rolls back the source job when downstream creation fail
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
   try {
-    const source = jobs.enqueue({ kind: "quality_download", dedupeKey: "quality-transition-source", bvid: "BVTRANSITION" });
+    const source = jobs.enqueue({ kind: "quality_download" as const, dedupeKey: "quality-transition-source", bvid: "BVTRANSITION" });
     const claimed = jobs.claimDue(["quality_download"], 1, "owner")[0];
     assert.equal(claimed.id, source.id);
     assert.equal(jobs.markRunning(source.id, "owner"), true);
     assert.throws(() => jobs.completeAndEnqueue(source.id, "owner", [{
-      kind: "quality_upload",
+      kind: "quality_upload" as const,
       dedupeKey: "quality-transition-next-invalid",
       bvid: "BVTRANSITION",
-      initialStatus: "completed" as any,
+      initialStatus: "completed",
     }]), /Unsupported initial persistent job status/);
     assert.equal(jobs.findById(source.id)?.status, "running");
     assert.equal(jobs.findByDedupeKey("quality-transition-next-invalid"), null);
 
     const transitioned = jobs.completeAndEnqueue(source.id, "owner", [{
-      kind: "quality_upload",
+      kind: "quality_upload" as const,
       dedupeKey: "quality-transition-next",
       bvid: "BVTRANSITION",
     }]);
@@ -1275,17 +1291,17 @@ test("encoding retry child and parent completion roll back together when generat
   const jobs = new PersistentJobStore(database);
   try {
     const parent = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "encoding-parent-atomic",
       bvid: "BVENCATOMIC",
       initialStatus: "manual_wait",
-      payload: { encodingRetry: { parentJobId: "self", generation: 2, state: "uploading" } },
+      payload: { encodingRetry: { parentJobId: "self", generation: 2, state: "uploading" as const } },
     });
     const child = jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "encoding-child-atomic",
       bvid: "BVENCATOMIC",
-      payload: { encodingRetry: { parentJobId: parent.id, generation: 1, state: "uploading" } },
+      payload: { encodingRetry: { parentJobId: parent.id, generation: 1, state: "uploading" as const } },
     });
     const claimed = jobs.claimDue(["upload"], 1, "owner").find((job) => job.id === child.id);
     assert.ok(claimed);
@@ -1294,7 +1310,7 @@ test("encoding retry child and parent completion roll back together when generat
     assert.equal(jobs.findById(child.id)?.status, "running", "child deletion must roll back");
     assert.ok(jobs.findById(parent.id));
 
-    jobs.updatePayload(parent.id, { encodingRetry: { parentJobId: parent.id, generation: 1, state: "uploading" } });
+    jobs.updatePayload(parent.id, { encodingRetry: { parentJobId: parent.id, generation: 1, state: "uploading" as const } });
     assert.equal(jobs.completeEncodingRetryCommit(parent.id, 1, child.id, "owner"), true);
     assert.equal(jobs.findById(child.id), null);
     assert.equal(jobs.findById(parent.id), null);
@@ -1306,11 +1322,11 @@ test("encoding retry commits keep their parent until all siblings finish", () =>
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);
   try {
-    const parent = jobs.enqueue({ kind: "upload", dedupeKey: "commit-parent", bvid: "BVCOMMIT",
-      initialStatus: "manual_wait", payload: { encodingRetry: { generation: 1, state: "uploading" } } });
+    const parent = jobs.enqueue({ kind: "upload" as const, dedupeKey: "commit-parent", bvid: "BVCOMMIT",
+      initialStatus: "manual_wait", payload: { encodingRetry: { generation: 1, state: "uploading" as const } } });
     const encodingRetry = { parentJobId: parent.id, generation: 1 };
-    jobs.enqueue({ kind: "upload", dedupeKey: "commit-a", bvid: "BVCOMMIT", payload: { encodingRetry } });
-    jobs.enqueue({ kind: "upload", dedupeKey: "commit-b", bvid: "BVCOMMIT", payload: { encodingRetry } });
+    jobs.enqueue({ kind: "upload" as const, dedupeKey: "commit-a", bvid: "BVCOMMIT", payload: { encodingRetry } });
+    jobs.enqueue({ kind: "upload" as const, dedupeKey: "commit-b", bvid: "BVCOMMIT", payload: { encodingRetry } });
     const children = jobs.claimDue(["upload"], 2, "owner");
     assert.equal(children.length, 2);
     assert.equal(jobs.completeEncodingRetryCommit(parent.id, 1, children[0].id, "owner"), true);
@@ -1326,40 +1342,40 @@ test("encoding retry transitions preserve sibling job ids and ignore completed c
   const jobs = new PersistentJobStore(database);
   try {
     const parent = jobs.enqueue({
-      kind: "upload", dedupeKey: "encoding-parent-siblings", bvid: "BVENCIDS", initialStatus: "manual_wait",
+      kind: "upload" as const, dedupeKey: "encoding-parent-siblings", bvid: "BVENCIDS", initialStatus: "manual_wait",
       payload: { awaitingManualRecovery: true },
     });
-    const retry = { parentJobId: parent.id, generation: 1, priority: ["AV1", "HEVC", "AVC"], strict: true, state: "running" };
+    const retry = { parentJobId: parent.id, generation: 1, priority: ["AV1", "HEVC", "AVC"], strict: true, state: "running" as const };
     const started = jobs.startEncodingRetry(parent.id, {
-      kind: "download", dedupeKey: "encoding-download-siblings", bvid: "BVENCIDS",
+      kind: "download" as const, dedupeKey: "encoding-download-siblings", bvid: "BVENCIDS",
       payload: { encodingRetry: retry },
-    } as any, retry);
+    }, retry);
     assert.ok(started);
     const download = started!.child;
     const claimedDownload = jobs.claimDue(["download"], 1, "owner")[0];
     assert.equal(claimedDownload.id, download.id);
     assert.equal(jobs.markRunning(download.id, "owner"), true);
     const uploads = jobs.transitionEncodingRetryChildren(parent.id, 1, download.id, "owner", "uploading", [
-      { kind: "upload", dedupeKey: "encoding-upload-a", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
-      { kind: "upload", dedupeKey: "encoding-upload-b", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
+      { kind: "upload" as const, dedupeKey: "encoding-upload-a", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
+      { kind: "upload" as const, dedupeKey: "encoding-upload-b", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
     ]);
     assert.equal(uploads?.length, 2);
-    let parentRetry = (jobs.findById(parent.id)?.payload as any).encodingRetry;
-    assert.deepEqual(new Set(parentRetry.replacementJobIds), new Set(uploads!.map((job) => job.id)));
+    let parentRetry = required((jobs.findById(parent.id)?.payload)).encodingRetry;
+     assert.deepEqual(new Set(readArray(readField(parentRetry, 'replacementJobIds'))), new Set(uploads!.map((job) => job.id)));
 
     const first = jobs.claimDue(["upload"], 1, "owner")[0];
     assert.ok(first);
     assert.equal(jobs.markRunning(first.id, "owner"), true);
     const verify = jobs.transitionEncodingRetryChildren(parent.id, 1, first.id, "owner", "verifying", [
-      { kind: "verify_upload", dedupeKey: "encoding-verify-a", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
+      { kind: "verify_upload" as const, dedupeKey: "encoding-verify-a", bvid: "BVENCIDS", payload: { encodingRetry: retry } },
     ]);
     assert.equal(verify?.length, 1);
     const sibling = uploads!.find((job) => job.id !== first.id)!;
-    parentRetry = (jobs.findById(parent.id)?.payload as any).encodingRetry;
-    assert.deepEqual(new Set(parentRetry.replacementJobIds), new Set([sibling.id, verify![0].id]));
+    parentRetry = required((jobs.findById(parent.id)?.payload)).encodingRetry;
+     assert.deepEqual(new Set(readArray(readField(parentRetry, 'replacementJobIds'))), new Set([sibling.id, verify![0].id]));
 
     const retained = jobs.enqueue({
-      kind: "upload", dedupeKey: "encoding-completed-proof", bvid: "BVENCIDS",
+      kind: "upload" as const, dedupeKey: "encoding-completed-proof", bvid: "BVENCIDS",
       payload: {
         encodingRetry: retry,
         localCleanupPlans: [{ id: "proof-plan", localDir: "x", manifestSessionId: "m", reason: "upload_verified", files: [{ relativePath: "x.mp4", expectedSize: 1, expectedIdentity: { dev: 1, ino: 1, mtimeMs: 1, ctimeMs: 1 }, remotePaths: ["/x.mp4"] }], createdAt: new Date().toISOString() }],

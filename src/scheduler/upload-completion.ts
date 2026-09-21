@@ -1,5 +1,5 @@
 import { UploadTask, QualityUpgradeUploadReplaceTask, QualityUpgradeReplaceTask, QualityUpgradeCleanupTask, type EncodingRetryContext } from '../tasks.js';
-import type { PersistentJobStore, EnqueuePersistentJob } from '../job-store.js';
+import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
 import type { ConfigStore } from '../config.js';
 import type { UploadCircuitBreaker } from '../upload-health.js';
@@ -14,7 +14,7 @@ function isQualityUploadPhaseTask(task: unknown): task is QualityUploadPhaseTask
   return task instanceof QualityUpgradeUploadReplaceTask || task instanceof QualityUpgradeReplaceTask || task instanceof QualityUpgradeCleanupTask;
 }
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'complete' | 'completeAndEnqueue' | 'enqueue' | 'parkManualRecovery' | 'completeEncodingRetryCommit' | 'transitionEncodingRetryChildren'>;
+  jobStore: Pick<JobRepository, 'complete' | 'completeAndEnqueue' | 'enqueue' | 'parkManualRecovery' | 'completeEncodingRetryCommit' | 'transitionEncodingRetryChildren'>;
   stateManager: Pick<StateManager, 'clearUploadCooldown' | 'restoreExistingArchiveProof' | 'markUploadFailed' | 'recordRemoteConflictCandidate' | 'runAtomic' | 'markVerifiedUpload' | 'resolveRemoteConflictCandidate' | 'markUploadedPendingVerification'>;
   configStore: Pick<ConfigStore, 'get'>;
   uploadCircuit: Pick<UploadCircuitBreaker, 'recordSuccess'>;

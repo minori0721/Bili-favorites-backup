@@ -1,7 +1,19 @@
 import type { QueueSnapshot } from '../../../../shared/api/queue-snapshot.js';
 
+export interface QueueBoardRoot {
+  ownerDocument: {
+    hidden: boolean;
+    createElement(tagName: string): HTMLElement;
+  };
+  querySelector<T extends Element = HTMLElement>(selectors: string): T | null;
+  querySelectorAll<T extends Element = HTMLElement>(selectors: string): Iterable<T> & { forEach(callbackfn: (value: T) => void): void };
+  setAttribute(qualifiedName: string, value: string): void;
+  prepend(node: Node): void;
+  innerHTML: string;
+}
+
 interface Options {
-  root: HTMLElement;
+  root: QueueBoardRoot;
   request(signal: AbortSignal): Promise<QueueSnapshot>;
   render(snapshot: QueueSnapshot): void;
   tick(): void;
@@ -72,7 +84,7 @@ export function createQueueBoardController(options: Options) {
         const element = notice('队列看板暂时无法加载，稍后自动重试。', true);
         root.querySelectorAll('[data-queue-loading="1"]').forEach(item => { item.textContent = '暂未取得任务状态'; });
         const retry = root.ownerDocument.createElement('button');
-        retry.type = 'button';
+        retry.setAttribute('type', 'button');
         retry.textContent = '重试';
         retry.addEventListener('click', () => { void refresh(); });
         element?.appendChild(retry);

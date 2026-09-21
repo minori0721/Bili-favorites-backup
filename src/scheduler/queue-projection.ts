@@ -1,15 +1,15 @@
 import type { QueueBoardItem, Task, TaskQueue } from '../queue.js';
-import type { PersistentJobStore, PersistentJobKind } from '../job-store.js';
+import type { JobRepository, PersistentJobKind } from '../repositories/jobs.js';
 
 interface Dependencies {
   downloadQueue: Pick<TaskQueue,'getTasks'>;
   uploadQueue: Pick<TaskQueue,'getTasks'>;
   verificationQueue: Pick<TaskQueue,'getTasks'>;
   config: {queuePrefetchLimit?: number};
-  jobs: Pick<PersistentJobStore,'listForBoard' | 'counts' | 'accessProbeScheduleSummary'>;
+  jobs: Pick<JobRepository,'listForBoard' | 'counts' | 'accessProbeScheduleSummary'>;
   chargingRestrictions: {lastCheckedAt?: string};
   mapTask(task: Task, stage: QueueBoardItem['stage']): QueueBoardItem;
-  mapJob(job: ReturnType<PersistentJobStore['listForBoard']>[number]): QueueBoardItem | null;
+  mapJob(job: ReturnType<JobRepository['listForBoard']>[number]): QueueBoardItem | null;
   enrich(items: QueueBoardItem[]): void;
 }
 

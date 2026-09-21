@@ -1,3 +1,7 @@
+import { required } from './contract-values.js';
+import { heldQueues } from './fixtures/held-queues.js';
+import { PersistentJobStore } from '../src/job-store.js';
+import type { StateFile, BackupStatus } from '../src/state.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,7 +18,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     const dataDir = path.join(runtime, "data");
     await fs.promises.mkdir(dataDir, { recursive: true });
     await fs.promises.mkdir(path.join(runtime, "temp"), { recursive: true });
-    const state: any = {
+    const state: StateFile = {
       schemaVersion: 11,
       processedByUser: {},
       failedByUser: {},
@@ -26,6 +30,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
     const padding = "x".repeat(6000);
     for (let index = 0; index < 1000; index += 1) {
       const bvid = `BVSTRESS${String(index).padStart(6, "0")}`;
+      assert.ok(state.videos);
       state.videos[bvid] = {
         bvid,
         title: `Stress ${index}`,
@@ -33,9 +38,10 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
         description: padding,
         firstSeenAt: "2026-07-10T00:00:00.000Z",
         lastSeenAt: "2026-07-10T00:00:00.000Z",
-        biliStatus: "available",
+        biliStatus: "available" as const,
         backupStatus: index % 2 === 0 ? "uploading" : "queued",
       };
+      assert.ok(state.relations);
       state.relations[`u1:1:${bvid}`] = {
         userId: "u1",
         mediaId: 1,
@@ -106,7 +112,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     const writeCompleteManifest = (localDir: string, bvid: string, fileName: string) => writeJsonFile(path.join(localDir, ".bfb-download.json"), {
       schemaVersion: 1,
       sessionId: `${bvid}-session`,
-      kind: "backup",
+      kind: "backup" as const,
       bvid,
       accountUid: 1,
       bbdownCommit: "test",
@@ -115,7 +121,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
       createdAt: "2026-07-10T00:00:00.000Z",
       updatedAt: "2026-07-10T00:00:00.000Z",
       snapshotAt: "2026-07-10T00:00:00.000Z",
-      status: "complete",
+      status: "complete" as const,
       pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
       outputs: [{ pageIndex: 1, cid: 1, relativePath: fileName, size: 1, duration: 1, videoCodec: "test", quickHash: "test", verifiedAt: "2026-07-10T00:00:00.000Z" }],
       history: [],
@@ -123,7 +129,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     writeCompleteManifest(downloadedDir, "BVDOWNLOADED", "downloaded.mp4");
     writeCompleteManifest(failedDir, "BVFAILED", "failed.mp4");
 
-    const state: any = {
+    const state: StateFile = {
       schemaVersion: 11,
       processedByUser: {},
       failedByUser: {},
@@ -132,17 +138,19 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
       folderScans: {},
       userCooldowns: {},
     };
-    const add = (bvid: string, status: string, localDir?: string) => {
+    const add = (bvid: string, status: BackupStatus, localDir?: string) => {
+      assert.ok(state.videos);
       state.videos[bvid] = {
         bvid,
         title: bvid,
         upperName: "Tester",
         firstSeenAt: "2026-07-10T00:00:00.000Z",
         lastSeenAt: "2026-07-10T00:00:00.000Z",
-        biliStatus: "available",
+        biliStatus: "available" as const,
         backupStatus: status,
         localDir,
       };
+      assert.ok(state.relations);
       state.relations[`u1:1:${bvid}`] = {
         userId: "u1",
         mediaId: 1,
@@ -203,7 +211,7 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
   writeJsonFile(path.join(localDir, ".bfb-download.json"), {
     schemaVersion: 1,
     sessionId: "orphan-session",
-    kind: "backup",
+    kind: "backup" as const,
     bvid: "BVORPHAN",
     accountUid: 1,
     bbdownCommit: "test",
@@ -212,7 +220,7 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
     createdAt: "2026-07-12T00:00:00.000Z",
     updatedAt: "2026-07-12T00:00:00.000Z",
     snapshotAt: "2026-07-12T00:00:00.000Z",
-    status: "complete",
+    status: "complete" as const,
     pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
     outputs: [{ pageIndex: 1, cid: 1, relativePath: "orphan.mp4", size: 14, duration: 1, videoCodec: "test", quickHash: "test", verifiedAt: "2026-07-12T00:00:00.000Z" }],
     history: [],
@@ -229,8 +237,8 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
         upperName: "Tester",
         firstSeenAt: "2026-07-12T00:00:00.000Z",
         lastSeenAt: "2026-07-12T00:00:00.000Z",
-        biliStatus: "available",
-        backupStatus: "upload_failed",
+        biliStatus: "available" as const,
+        backupStatus: "upload_failed" as const,
         localDir,
       },
     },
@@ -243,7 +251,7 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
         firstSeenAt: "2026-07-12T00:00:00.000Z",
         lastSeenAt: "2026-07-12T00:00:00.000Z",
         activeInFavorite: true,
-        backupStatus: "upload_failed",
+        backupStatus: "upload_failed" as const,
         remotePath: "/backup/orphan-a",
       },
       "u2:2:BVORPHAN": {
@@ -254,19 +262,20 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
         firstSeenAt: "2026-07-12T00:00:00.000Z",
         lastSeenAt: "2026-07-12T00:00:00.000Z",
         activeInFavorite: true,
-        backupStatus: "upload_failed",
+        backupStatus: "upload_failed" as const,
         remotePath: "/backup/orphan-b",
       },
     },
     folderScans: {},
     userCooldowns: {},
-  } as any);
+  });
   manager.markPersistentJobBootstrapComplete();
   const config = testConfig({ queuePrefetchLimit: 25 });
   const user = {
     id: "u1",
     uid: 1,
     name: "Tester",
+    lastLoginAt: new Date().toISOString(),
     enabled: true,
     cookie: { SESSDATA: "test", bili_jct: "test", DedeUserID: "1" },
     favorites: [{ mediaId: 1, title: "Favorites" }],
@@ -279,11 +288,14 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
     favorites: [{ mediaId: 2, title: "Second Favorites" }],
   };
   const users = [user, secondUser];
-  const scheduler = new SyncScheduler({ get: () => config } as any, { list: () => users, getById: (id: string) => users.find((item) => item.id === id) } as any, manager) as any;
+  const queues = heldQueues();
+  const jobs = new PersistentJobStore(manager.getDatabase(), {normalizeRecovery: false});
+  const scheduler = new SyncScheduler({ get: () => config }, {
+    list: () => users, getById: id => users.find(item => item.id === id) ?? null, updatePartial: () => null,
+  }, manager, {createQueue: queues.create});
   try {
-    scheduler.uploadQueue.setStartGate(() => false);
-    scheduler.jobStore.enqueue({
-      kind: "upload",
+    jobs.enqueue({
+      kind: "upload" as const,
       dedupeKey: "upload:u1:1:BVORPHAN:/backup/orphan-a:main",
       bvid: "BVORPHAN",
       userId: "u1",
@@ -301,15 +313,15 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
         priority: true,
       },
     });
-    scheduler.resumePersistedWorkOnStartup();
-    const job = scheduler.jobStore.findByDedupeKey("upload:u2:2:BVORPHAN:/backup/orphan-b:main");
+    await scheduler.resumePersistedWorkOnStartup();
+    const job = jobs.findByDedupeKey("upload:u2:2:BVORPHAN:/backup/orphan-b:main");
     assert.ok(job);
     assert.notEqual(job.status, "failed");
     assert.equal(job.payload.conflictArchiveSegment, undefined);
-    const existingJob = scheduler.jobStore.findByDedupeKey("upload:u1:1:BVORPHAN:/backup/orphan-a:main");
+    const existingJob = jobs.findByDedupeKey("upload:u1:1:BVORPHAN:/backup/orphan-a:main");
     assert.equal(existingJob?.id !== job.id, true);
-    assert.equal(existingJob?.payload.conflictArchiveSegment, undefined);
-    assert.equal(scheduler.getQueueSnapshot().uploadPending.filter((item: any) => item.bvid === "BVORPHAN").length, 2);
+    assert.equal(required(existingJob?.payload).conflictArchiveSegment, undefined);
+    assert.equal(scheduler.getQueueSnapshot().uploadPending.filter((item) => item.bvid === "BVORPHAN").length, 2);
   } finally {
     scheduler.stop();
     manager.close();
@@ -335,8 +347,8 @@ test("one deterministic upload failure is isolated without blocking unrelated do
           upperName: "Tester",
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: "2026-07-10T00:00:00.000Z",
-          biliStatus: "available",
-          backupStatus: "uploading",
+          biliStatus: "available" as const,
+          backupStatus: "uploading" as const,
           localDir,
         },
       },
@@ -349,7 +361,7 @@ test("one deterministic upload failure is isolated without blocking unrelated do
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: "2026-07-10T00:00:00.000Z",
           activeInFavorite: true,
-          backupStatus: "uploading",
+          backupStatus: "uploading" as const,
           remotePath: "/backup/isolated",
         },
       },
@@ -411,8 +423,8 @@ test("a provider single-file limit is parked in the recovery center without open
           upperName: "Tester",
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: "2026-07-10T00:00:00.000Z",
-          biliStatus: "available",
-          backupStatus: "uploading",
+          biliStatus: "available" as const,
+          backupStatus: "uploading" as const,
           localDir,
         },
       },
@@ -425,7 +437,7 @@ test("a provider single-file limit is parked in the recovery center without open
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: "2026-07-10T00:00:00.000Z",
           activeInFavorite: true,
-          backupStatus: "uploading",
+          backupStatus: "uploading" as const,
           remotePath: "/backup/isolated",
         },
       },
@@ -488,8 +500,8 @@ test("a progressive 405 persists a five-minute upload retry without opening the 
           upperName: "Tester",
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: "2026-07-10T00:00:00.000Z",
-          biliStatus: "available",
-          backupStatus: "uploading",
+          biliStatus: "available" as const,
+          backupStatus: "uploading" as const,
           localDir,
         },
       },
@@ -502,7 +514,7 @@ test("a progressive 405 persists a five-minute upload retry without opening the 
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: "2026-07-10T00:00:00.000Z",
           activeInFavorite: true,
-          backupStatus: "uploading",
+          backupStatus: "uploading" as const,
           remotePath: "/backup/isolated",
         },
       },

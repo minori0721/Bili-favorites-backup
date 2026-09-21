@@ -22,7 +22,7 @@ for (const interruption of ['generation', 'maintenance', 'lease', 'attempt'] as 
     try {
       state.recordFavoriteItem('u', 1, 'Favorites', { bvid: 'BVPROBE', title: 'Fixture', upperName: 'UP', unavailable: true });
       state.markAvailabilityPending('BVPROBE', 'favorite_flag', new Date().toISOString());
-      jobs.enqueue({ kind: 'access_probe', dedupeKey: 'probe:fixture', bvid: 'BVPROBE', payload: { intents: ['availability'] } });
+      jobs.enqueue({ kind: 'access_probe' as const, dedupeKey: 'probe:fixture', bvid: 'BVPROBE', payload: { intents: ['availability'] } });
       const [job] = jobs.claimDue(['access_probe'], 1, 'fixture', 300_000);
       assert.ok(job);
       const before = state.getSourceAvailability('BVPROBE');

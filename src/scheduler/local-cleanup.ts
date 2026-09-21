@@ -4,15 +4,17 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import type { StateManager, LocalCleanupPlan, RemoteFileRecord } from '../state.js';
-import type { PersistentJobStore } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { inspectRemoteFileSize } from '../uploader.js';
 import { cleanupUploadedSessionFiles, readDownloadSession, type DownloadCleanupAuthorization, type DownloadCleanupOptions } from '../download-session.js';
 import { logManager } from '../logger.js';
 import { safeErrorSummary } from '../diagnostics.js';
 import { computeLocalCleanupRetryDelayMs } from './retry-policy.js';
 import { isRecord } from '../shared/api/value.js';
+import type { ScheduleTimer } from '../ports/timer.js';
 interface LocalCleanupDependencies {
+    schedule?: ScheduleTimer;
     canRun(): boolean;
     generation(): number;
     now(): number;
@@ -21,8 +23,8 @@ interface LocalCleanupDependencies {
     };
     state: Pick<StateManager, 'getLocalCleanupPlans' | 'listVerifiedLocalCleanupPage' | 'listRelationsForBvid' | 'getVideoMeta' | 'reconcileLocalCleanupPlans' | 'markLocalUploadGroupComplete'>;
     storage: ReturnType<typeof createLocalCleanupStorage>;
-    jobs: Pick<PersistentJobStore, 'hasActiveJobsForBvid'>;
-    transfers: Pick<TransferSessionStore, 'get' | 'hasActiveForBvid'>;
+    jobs: Pick<JobRepository, 'hasActiveJobsForBvid'>;
+    transfers: Pick<TransferSessionRepository, 'get' | 'hasActiveForBvid'>;
     tempRoot: string;
     inspectRemote: typeof inspectRemoteFileSize;
     safeCandidate(path: string): boolean;
@@ -30,7 +32,7 @@ interface LocalCleanupDependencies {
 }
 /** Owns cleanup work, retry scheduling and authorization checks. Stores are rebound by the maintenance barrier. */
 export function createLocalCleanup(deps: LocalCleanupDependencies) {
-    let localCleanupRetryTimer: NodeJS.Timeout | null = null;
+    let localCleanupRetryTimer: (() => void) | null = null;
     let localCleanupSweepPromise: Promise<void> | null = null;
     const localCleanupInFlight = new Map<string, Promise<void>>();
     const localCleanupRetries = new Map<string, {
@@ -40,7 +42,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
     }>();
     function scheduleLocalCleanupRetryTimer() {
         if (localCleanupRetryTimer) {
-            clearTimeout(localCleanupRetryTimer);
+            localCleanupRetryTimer();
             localCleanupRetryTimer = null;
         }
         if (!deps.canRun() || localCleanupRetries.size === 0)
@@ -50,7 +52,12 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             .reduce((minimum, value) => Math.min(minimum, value), Number.POSITIVE_INFINITY);
         if (!Number.isFinite(next))
             return;
-        localCleanupRetryTimer = setTimeout(() => {
+        const schedule = deps.schedule || ((callback: () => void, delayMs: number, _recurring: boolean) => {
+            const timer = setTimeout(callback, delayMs);
+            timer.unref?.();
+            return () => clearTimeout(timer);
+        });
+        localCleanupRetryTimer = schedule(() => {
             localCleanupRetryTimer = null;
             const now = deps.now();
             for (const [bvid, item] of localCleanupRetries) {
@@ -58,8 +65,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                     requestLocalCleanup(bvid, item.localDir);
             }
             scheduleLocalCleanupRetryTimer();
-        }, Math.max(1000, next - deps.now()));
-        localCleanupRetryTimer.unref?.();
+        }, Math.max(1000, next - deps.now()), false);
     }
     function scheduleLocalCleanupRetry(bvid: string, localDir: string) {
         const previous = localCleanupRetries.get(bvid);
@@ -462,7 +468,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                             manifestSessionId: manifest.sessionId,
                             expectedIdentity: { dev: stat.dev, ino: stat.ino, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs } });
                     }
-                    catch { /* Missing or changed files are not deletion candidates. */ }
+                    catch (error) { console.debug('[LocalCleanup] skipped a missing or changed release candidate', error); }
                 }
                 if (!files.size)
                     continue;
@@ -474,7 +480,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                     fileCount: manualFiles.length, totalBytes: manualFiles.reduce((sum, file) => sum + file.expectedSize, 0),
                     manualFiles, sessionStamp, hasVerifiedArchive });
             }
-            catch { /* Only existing, bounded, manifest-backed directories qualify. */ }
+            catch (error) { console.debug('[LocalCleanup] skipped a directory that no longer qualifies for release', error); }
         }
         return candidates;
     }
@@ -609,7 +615,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
     }
     function stop() {
         if (localCleanupRetryTimer)
-            clearTimeout(localCleanupRetryTimer);
+            localCleanupRetryTimer();
         localCleanupRetryTimer = null;
     }
     function reset() {

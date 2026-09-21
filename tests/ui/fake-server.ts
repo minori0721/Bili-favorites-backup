@@ -116,7 +116,7 @@ const baseItems = [
     title: "Alpha 归档视频",
     upperName: "测试UP主",
     statusGroup: "playable",
-    backupStatus: "verified",
+    backupStatus: "verified" as const,
     unavailable: false,
     membershipCount: 1,
     memberships: [{ userId: "u1", mediaId: 1, folderTitle: "历史收藏夹" }],
@@ -127,10 +127,10 @@ const baseItems = [
     title: "Beta 历史归档",
     upperName: "另一位UP主",
     statusGroup: "issue",
-    backupStatus: "missing",
+    backupStatus: "missing" as const,
     unavailable: true,
     sourceAvailability: {
-      state: "dormant",
+      state: "dormant" as const,
       reason: "api_not_found",
       firstSeenAt: "2026-07-01T08:00:00.000Z",
       lastCheckedAt: "2026-08-01T08:00:00.000Z",
@@ -182,7 +182,7 @@ function detailItem(bvid: string) {
       mediaId: 202,
       userName: "测试账号",
       folderTitle: "历史收藏夹",
-      backupStatus: "verified",
+      backupStatus: "verified" as const,
       activeInFavorite: false,
       selectedFolder: false,
       ownerRemoved: false,
@@ -386,8 +386,8 @@ app.get("/api/queue/state", (_request, response) => {
     userId: "user-1",
     mediaId: 101,
     detail: "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
-    status: "manual_wait",
-    phase: "background_wait",
+    status: "manual_wait" as const,
+    phase: "background_wait" as const,
     nextAction: "recheck",
     nextActionAt: Date.now() + 5 * 60_000,
     retries: 0,
@@ -405,8 +405,8 @@ app.get("/api/queue/state", (_request, response) => {
     userId: "user-1",
     mediaId: 101,
     detail: "新候选未通过远端确认；系统已停止替换并保留原归档。",
-    status: "manual_wait",
-    phase: "manual_action",
+    status: "manual_wait" as const,
+    phase: "manual_action" as const,
     nextAction: "recheck",
     retries: 0,
     maxRetries: 3,
@@ -428,8 +428,8 @@ app.get("/api/queue/state", (_request, response) => {
     userId: "user-1",
     mediaId: 101,
     detail: "已确认 2/5 个分P，剩余 3 个等待处理；已确认分P不会重复上传。",
-    status: "manual_wait",
-    phase: "manual_action",
+    status: "manual_wait" as const,
+    phase: "manual_action" as const,
     lifecycleState: "partial_upload",
     verifiedPages: 2,
     totalPages: 5,
@@ -447,7 +447,7 @@ app.get("/api/queue/state", (_request, response) => {
   const candidateIssue = state.recoveryIssueKind === "candidate";
   const issueByKind = {
     visibility: {
-      kind: "remote_visibility_timeout",
+      kind: "remote_visibility_timeout" as const,
       severity: "info",
       title: "远端文件仍在等待可见",
       summary: "远端文件暂不可见，系统会继续只读复核，不会自动重复上传。",
@@ -455,7 +455,7 @@ app.get("/api/queue/state", (_request, response) => {
       availableActions: [{ id: "recheck", label: "立即重新检查", description: "只读取远端状态，不上传或删除文件。" }],
     },
     candidate: {
-      kind: "conflict_candidate_ready",
+      kind: "conflict_candidate_ready" as const,
       severity: "info",
       title: "远端冲突候选等待选择",
       summary: "正式旧路径保持不变，新文件候选已完整验证；请选择保留现有归档或采用候选。",
@@ -468,7 +468,7 @@ app.get("/api/queue/state", (_request, response) => {
       ],
     },
     create_candidate: {
-      kind: "remote_size_conflict",
+      kind: "remote_size_conflict" as const,
       severity: "danger",
       title: "远端文件与本地候选冲突",
       summary: "完整本地文件组已通过预检，可以上传到隔离候选目录等待选择。",
@@ -479,7 +479,7 @@ app.get("/api/queue/state", (_request, response) => {
       ],
     },
     download: {
-      kind: "download_account_required",
+      kind: "download_account_required" as const,
       severity: "danger",
       title: "当前账号无法继续下载",
       summary: "任务和本地进度已保留，可以先验证备用账号后继续。",
@@ -501,7 +501,7 @@ app.get("/api/queue/state", (_request, response) => {
       ],
     },
     quality: {
-      kind: "quality_failed",
+      kind: "quality_failed" as const,
       severity: "warning",
       title: "画质重调遇到编码问题",
       summary: "旧归档仍然可用，可以保持目标画质并生成新的编码版本。",
@@ -522,7 +522,7 @@ app.get("/api/queue/state", (_request, response) => {
       ],
     },
     storage: {
-      kind: "remote_permission",
+      kind: "remote_permission" as const,
       severity: "danger",
       title: "远端存储认证或权限异常",
       summary: "请先检查当前草稿配置的只读连接，再决定是否保存设置。",
@@ -556,7 +556,7 @@ app.get("/api/queue/state", (_request, response) => {
   response.json(ok({
     downloadPending: [], downloadRunning: [], uploadPending: queueItems, uploadRunning: [],
     scheduler: {
-      status: "idle",
+      status: "idle" as const,
       title: manualWaitQueue ? "同步空闲，后台队列待处理" : "当前调度空闲",
       detail: "没有运行中的任务",
       queuedActions: [],
@@ -575,7 +575,7 @@ app.get("/api/queue/state", (_request, response) => {
       background: disposition === "background" ? 1 : 0,
     },
     recovery: manualWaitQueue || partialUploadQueue ? { pendingUploads: 1 } : {},
-    chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" }, downloadApiHealth: { state: "healthy" },
+    chargingAccess: {}, downloadRecovery: {}, uploadHealth: { state: "closed" as const }, downloadApiHealth: { state: "healthy" as const },
   }));
 });
 app.post("/api/recovery-issues/:id/actions/:action", (request, response) => {
@@ -630,13 +630,13 @@ app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, respons
   response.json(ok({ previewId: "source-preview", fileCount: 2, totalBytes: 15 * 1024 * 1024, sharedCount: 0 }));
 });
 app.get("/api/archive-library/playback-queue", (_request, response) => response.json(ok({
-  mode: "library", page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [],
+  mode: "library" as const, page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [],
 })));
 
 app.get("/api/online-content/navigation", (_request, response) => {
   state.onlineNavigationCount += 1;
-  const sources = [{ kind: "favorite", mediaId: 101, title: "在线收藏夹", count: 11, countLabel: "个视频" }];
-  if (state.onlineSourceRace) sources.push({ kind: "favorite", mediaId: 202, title: "第二在线收藏夹" });
+  const sources = [{ kind: "favorite" as const, mediaId: 101, title: "在线收藏夹", count: 11, countLabel: "个视频" }];
+  if (state.onlineSourceRace) sources.push({ kind: "favorite" as const, mediaId: 202, title: "第二在线收藏夹", count: 0, countLabel: "个视频" });
   response.json(ok({
     accounts: [{
       userId: "user-1",
@@ -659,7 +659,7 @@ app.get("/api/online-content/items", async (request, response) => {
   const item = {
     id: `online-item-${suffix}`,
     userId: "user-1",
-    kind: "favorite",
+    kind: "favorite" as const,
     bvid: mediaId === 202 ? "BV1ONLINE002" : "BV1ONLINE001",
     title,
     upperName: "在线UP主",
@@ -674,14 +674,14 @@ app.get("/api/online-content/items", async (request, response) => {
 app.post("/api/media-probe", (request, response) => {
   state.mediaProbeStartCount += 1;
   state.mediaProbeBodies.push(request.body ?? null);
-  response.status(202).json(ok({ probeId: "probe-online-1", status: "running", bvid: "BV1ONLINE001" }));
+  response.status(202).json(ok({ probeId: "probe-online-1", status: "running" as const, bvid: "BV1ONLINE001" }));
 });
 app.get("/api/media-probe/:id", (_request, response) => {
   if (state.mediaProbeMode === "failed") {
     response.json(ok({
       probeId: "probe-online-1",
       bvid: "BV1RECOVERY1",
-      status: "failed",
+      status: "failed" as const,
       error: "B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小",
     }));
     return;
@@ -690,7 +690,7 @@ app.get("/api/media-probe/:id", (_request, response) => {
     response.json(ok({
       probeId: "probe-online-1",
       bvid: "BV1RECOVERY1",
-      status: "complete",
+      status: "complete" as const,
       pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [
         { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true },
       ] }],
@@ -703,7 +703,7 @@ app.get("/api/media-probe/:id", (_request, response) => {
   response.json(ok({
   probeId: "probe-online-1",
   bvid: "BV1ONLINE001",
-  status: "complete",
+  status: "complete" as const,
   pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [
     { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true },
     { bilibiliQuality: "1080P", quality: "1080P", codec: "hevc", encoding: "HEVC", resolution: "1080x1920", frameRate: 60, duration: 120, estimatedBytes: 12 * 1024 * 1024, sizeSource: "api", available: true },
@@ -721,7 +721,7 @@ app.get("/api/media-probe/:id", (_request, response) => {
 });
 app.post("/api/online-content/manual-archive", (_request, response) => {
   state.manualArchiveCount += 1;
-  response.status(202).json(ok({ status: "queued", bvid: "BV1ONLINE001" }));
+  response.status(202).json(ok({ status: "queued" as const, bvid: "BV1ONLINE001" }));
 });
 
 app.post("/api/users/:id/removal-preview", (_request, response) => response.json(ok({
@@ -745,11 +745,11 @@ app.post("/api/archive-deletions/:id/start", async (request, response) => {
   else state.startCount += 1;
   if (!request.params.id.startsWith("account") && state.sourceStartDelayMs) await wait(state.sourceStartDelayMs);
   const id = request.params.id.startsWith("account") ? "account-operation-2" : "source-operation";
-  response.status(202).json(ok({ id, status: "pending", fileCount: 2, completedCount: 0 }));
+  response.status(202).json(ok({ id, status: "pending" as const, fileCount: 2, completedCount: 0 }));
 });
 app.get("/api/archive-deletions/:id", (request, response) => {
   if (request.params.id.startsWith("account")) {
-    response.json(ok({ id: request.params.id, status: "failed", fileCount: 2, completedCount: 0, lastError: "隔离测试失败" }));
+    response.json(ok({ id: request.params.id, status: "failed" as const, fileCount: 2, completedCount: 0, lastError: "隔离测试失败" }));
     return;
   }
   state.sourceStatusPolls += 1;
@@ -766,7 +766,7 @@ app.get("/api/archive-deletions/:id", (request, response) => {
 app.post("/api/archive-deletions/:id/retry", (_request, response) => response.json(ok({ accepted: true })));
 
 if (process.env.BFB_REVIEW_PREVIEW === "1") {
-  const migration = {
+  const migration: { id: string; status: "ready" | "cancelled"; sourceRoot: string; destinationRoot: string; entryCount: number; fileCount: number; directoryCount: number; totalBytes: number; conflictCount: number; failedCount: number } = {
     id: "review-migration", status: "ready", sourceRoot: "/测试旧归档", destinationRoot: "/测试新归档",
     entryCount: 24, fileCount: 24, directoryCount: 0, totalBytes: 2516582400, conflictCount: 24, failedCount: 0,
   };
@@ -776,7 +776,7 @@ if (process.env.BFB_REVIEW_PREVIEW === "1") {
     const limit = Math.min(21, Math.max(1, Number(request.query.limit || 21)));
     response.json(ok(Array.from({ length: 24 }, (_, index) => ({
       migrationId: migration.id, relativePath: `测试收藏夹/视频${index + 1}/P1.mp4`,
-      itemType: "file", expectedSize: 104857600, status: "conflict", lastError: "目标大小与源文件不一致（隔离演示）",
+      itemType: "file", expectedSize: 104857600, status: "conflict" as const, lastError: "目标大小与源文件不一致（隔离演示）",
     })).slice(offset, offset + limit)));
   });
   app.post("/api/path-migration/preview", (_request, response) => {

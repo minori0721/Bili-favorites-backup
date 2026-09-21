@@ -24,10 +24,13 @@ function cacheKey(value: string) {
 async function moveAtomic(source: string, target: string) {
   try {
     await fs.promises.rename(source, target);
-  } catch (error: any) {
-    if (! ["EXDEV", "EPERM", "EACCES"].includes(error?.code)) throw error;
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    if (! ["EXDEV", "EPERM", "EACCES"].includes(code)) throw error;
     await fs.promises.copyFile(source, target);
-    await fs.promises.unlink(source).catch(() => undefined);
+    await fs.promises.unlink(source).catch((cleanupError) => {
+      console.warn(`[OnlineCoverCache] source cleanup deferred: ${String(cleanupError)}`);
+    });
   }
 }
 
@@ -74,7 +77,19 @@ async function downloadImage(urlValue: string, outputPath: string) {
   }
 }
 
+export interface OnlineCoverAdapters {
+  directory?: string;
+  temporaryDirectory?: string;
+  download?: typeof downloadImage;
+  transcode?: typeof runCoverFfmpeg;
+  promote?: typeof promoteOnlineCoverToArchive;
+  unlink?: typeof fs.promises.unlink;
+  removeTemporary?: typeof fs.promises.rm;
+}
+
 export class OnlineCoverCache {
+  private readonly directory: string;
+  private readonly temporaryDirectory: string;
   private readonly entries = new Map<string, OnlineCoverEntry>();
   private readonly active = new Map<string, Promise<string | null>>();
   private initialized = false;
@@ -88,7 +103,9 @@ export class OnlineCoverCache {
   private readonly fetchWaiters: Array<() => void> = [];
   private generation = 0;
 
-  constructor(limitMb = 256) {
+  constructor(limitMb = 256, private readonly adapters: OnlineCoverAdapters = {}) {
+    this.directory = adapters.directory ?? onlineCoversDir;
+    this.temporaryDirectory = adapters.temporaryDirectory ?? tempDir;
     this.limitBytes = Math.max(64, Math.min(2048, Math.trunc(limitMb))) * 1024 * 1024;
   }
 
@@ -101,14 +118,20 @@ export class OnlineCoverCache {
     if (this.initialized) return;
     if (this.initializePromise) return this.initializePromise;
     this.initializePromise = (async () => {
-      await fs.promises.mkdir(onlineCoversDir, { recursive: true });
-      const files = await fs.promises.readdir(onlineCoversDir, { withFileTypes: true }).catch(() => []);
+      await fs.promises.mkdir(this.directory, { recursive: true });
+      const files = await fs.promises.readdir(this.directory, { withFileTypes: true }).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      });
       this.entries.clear();
       this.totalBytes = 0;
       for (const file of files) {
         if (!file.isFile() || !file.name.endsWith(".webp")) continue;
-        const fullPath = path.join(onlineCoversDir, file.name);
-        const stat = await fs.promises.stat(fullPath).catch(() => null);
+        const fullPath = path.join(this.directory, file.name);
+        const stat = await fs.promises.stat(fullPath).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw error;
+        });
         if (!stat || stat.size <= 0) continue;
         const accessedAt = stat.atimeMs || stat.mtimeMs;
         const entry = { fileName: file.name, bytes: stat.size, accessedAt, lastAccessPersistAt: accessedAt };
@@ -125,7 +148,7 @@ export class OnlineCoverCache {
 
   private fileForKey(key: string) {
     const digest = cacheKey(key);
-    return { digest, filePath: path.join(onlineCoversDir, `${digest}.webp`) };
+    return { digest, filePath: path.join(this.directory, `${digest}.webp`) };
   }
 
   async get(key: string) {
@@ -135,8 +158,9 @@ export class OnlineCoverCache {
     if (!entry) return null;
     let stat;
     try { stat = await fs.promises.stat(filePath); }
-    catch (error: any) {
-      if (error?.code !== "ENOENT") return null; // Unknown is not proof that disk space was freed.
+    catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (code !== "ENOENT") return null; // Unknown is not proof that disk space was freed.
       stat = null;
     }
     if (!stat || stat.size <= 0) {
@@ -148,7 +172,9 @@ export class OnlineCoverCache {
     entry.accessedAt = now;
     if (now - entry.lastAccessPersistAt >= 60 * 60_000) {
       entry.lastAccessPersistAt = now;
-      void fs.promises.utimes(filePath, now / 1000, now / 1000).catch(() => undefined);
+      void fs.promises.utimes(filePath, now / 1000, now / 1000).catch((error) => {
+        console.debug(`[OnlineCoverCache] access timestamp deferred: ${String(error)}`);
+      });
     }
     return { path: filePath, relativePath: `online-covers/${entry.fileName}`, bytes: stat.size };
   }
@@ -190,7 +216,7 @@ export class OnlineCoverCache {
   private async promoteBvidNow(bvid: string, key: string) {
     const cached = await this.get(key);
     if (!cached) return null;
-    return promoteOnlineCoverToArchive(bvid, cached.path);
+    return (this.adapters.promote ?? promoteOnlineCoverToArchive)(bvid, cached.path);
   }
 
   async clear() {
@@ -237,19 +263,19 @@ export class OnlineCoverCache {
     const { digest, filePath } = this.fileForKey(key);
     let root = "";
     try {
-      await fs.promises.mkdir(tempDir, { recursive: true });
-      root = await fs.promises.mkdtemp(path.join(tempDir, "online-cover-"));
+      await fs.promises.mkdir(this.temporaryDirectory, { recursive: true });
+      root = await fs.promises.mkdtemp(path.join(this.temporaryDirectory, "online-cover-"));
       const source = path.join(root, "source");
       const converted = path.join(root, "cover.webp");
-      await downloadImage(url, source);
-      await runCoverFfmpeg(source, converted, {
+      await (this.adapters.download ?? downloadImage)(url, source);
+      await (this.adapters.transcode ?? runCoverFfmpeg)(source, converted, {
         videoFilter: "scale=320:180:force_original_aspect_ratio=increase,crop=320:180",
       });
       const stat = await fs.promises.stat(converted);
       if (!stat.size) throw new Error("online cover conversion produced an empty file");
       if (stat.size > MAX_OUTPUT_BYTES) throw new Error("online cover conversion exceeded size limit");
       if (generation !== this.generation) return null;
-      await moveAtomic(converted, filePath).catch(async (error: any) => {
+      await moveAtomic(converted, filePath).catch(async (error) => {
         if (error?.code === "EEXIST") return;
         throw error;
       });
@@ -266,7 +292,7 @@ export class OnlineCoverCache {
       return null;
     } finally {
       try {
-        if (root) await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+        if (root) await (this.adapters.removeTemporary ?? fs.promises.rm)(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
       } catch (error) {
         console.warn(`[OnlineCoverCache] temporary cleanup deferred: ${safeErrorSummary(error)}`);
       } finally { this.releaseFetchSlot(); }
@@ -293,9 +319,10 @@ export class OnlineCoverCache {
   }
 
   private async removeEntryFile(entry: OnlineCoverEntry) {
-    try { await fs.promises.unlink(path.join(onlineCoversDir, entry.fileName)); return true; }
-    catch (error: any) {
-      if (error?.code === "ENOENT") return true;
+    try { await (this.adapters.unlink ?? fs.promises.unlink)(path.join(this.directory, entry.fileName)); return true; }
+    catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (code === "ENOENT") return true;
       console.warn(`[OnlineCoverCache] eviction deferred: ${safeErrorSummary(error)}`);
       return false;
     }

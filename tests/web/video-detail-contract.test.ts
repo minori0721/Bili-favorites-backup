@@ -3,7 +3,7 @@ import test from 'node:test';
 import { parseVideoDetailItem, parseUnavailablePage, parseVideoDetailPage } from '../../src/shared/api/video-detail.js';
 
 test('video display boundary preserves favorite-only evidence independently from recovery unavailability',()=>{
-  const item=parseVideoDetailItem({bvid:'BVfixture',unavailable:false,archivedSourceUnavailable:true,processed:true,sourceAvailability:{state:'pending_confirmation',reason:'favorite_flag'},cookie:'private'});
+  const item=parseVideoDetailItem({bvid:'BVfixture',unavailable:false,archivedSourceUnavailable:true,processed:true,sourceAvailability:{state:'pending_confirmation' as const,reason:'favorite_flag'},cookie:'private'});
   assert.equal(item.unavailable,false);assert.equal(item.archivedSourceUnavailable,true);assert.equal('cookie' in item,false);
   assert.equal(item.sourceAvailability?.reason,'favorite_flag');
   for(const value of [{bvid:''},{bvid:'BV',processed:'false'},{bvid:'BV',playback:{available:'true'}},{bvid:'BV',mediaId:NaN}]) assert.throws(()=>parseVideoDetailItem(value));

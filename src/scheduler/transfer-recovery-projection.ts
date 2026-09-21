@@ -1,5 +1,5 @@
-import type { PersistentJobStore, EnqueuePersistentJob } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { StateManager, RemoteFileRecord } from '../state.js';
 import type { ConfigStore } from '../config.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
@@ -10,8 +10,8 @@ import { buildUploadFileMetadataFromSession } from '../download-session.js';
 import { logManager } from '../logger.js';
 import { safeErrorSummary } from '../diagnostics.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'normalizeStoppedRecovery' | 'listActiveTransferSessionKeys' | 'enqueueBatch'>;
-  transferSessions: Pick<TransferSessionStore, 'listRecoverablePage' | 'listFiles'>;
+  jobStore: Pick<JobRepository, 'normalizeStoppedRecovery' | 'listActiveTransferSessionKeys' | 'enqueueBatch'>;
+  transferSessions: Pick<TransferSessionRepository, 'listRecoverablePage' | 'listFiles'>;
   stateManager: Pick<StateManager, 'getVideoMeta' | 'getRelationStatus'>;
   configStore: Pick<ConfigStore, 'get'>;
   now(): number;
@@ -80,22 +80,19 @@ export function createTransferRecoveryProjection(deps: Dependencies) {
           ...(waitingRemote || emptyAttempt || verifiedPages === files.length ? { nextCheckAt: now + 2_000 } : {}),
         };
         let filenameMetadataByPath: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>> | undefined;
-        try {
-          filenameMetadataByPath = buildUploadFileMetadataFromSession(session.localDir, files.map((file) => file.relativePath));
-        } catch {
-          filenameMetadataByPath = undefined;
-        }
+        // A malformed session is recovery evidence failure, not an empty
+        // metadata set. Abort projection so the persisted session remains
+        // visible for manual repair instead of creating a partial job.
+        filenameMetadataByPath = buildUploadFileMetadataFromSession(session.localDir, files.map((file) => file.relativePath));
         const meta = deps.stateManager.getVideoMeta(session.bvid);
         const relation = session.userId && session.mediaId !== undefined && Number.isInteger(session.mediaId)
           ? deps.stateManager.getRelationStatus(session.userId, session.mediaId, session.bvid)
           : null;
         let existingArchiveProof: ExistingArchiveProof | undefined;
         if (!session.historyOnly && session.userId && Number.isInteger(session.mediaId)) {
-          try {
-            existingArchiveProof = deps.captureExistingArchiveProof(session.userId, session.mediaId, session.bvid);
-          } catch {
-            existingArchiveProof = undefined;
-          }
+          // A failed proof read must stop projection; undefined means there is
+          // no proof, while an exception means the recovery store is unhealthy.
+          existingArchiveProof = deps.captureExistingArchiveProof(session.userId, session.mediaId, session.bvid);
         }
         inputs.push({
           kind: session.historyOnly ? "history_upload" : "upload",

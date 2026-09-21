@@ -1,3 +1,4 @@
+import { required, readArray } from '../contract-values.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
@@ -13,30 +14,30 @@ test('verified transfer rolls back session, in-memory archive and cleanup permis
   try {
     const bvid = 'BVATOMIC', now = '2026-09-07T00:00:00.000Z';
     state.replaceStateSnapshot({schemaVersion:13,processedByUser:{},failedByUser:{},folderScans:{},userCooldowns:{},relations:{},
-      videos:{[bvid]:{bvid,title:'Atomic',upperName:'Fixture',firstSeenAt:now,lastSeenAt:now,biliStatus:'available',backupStatus:'downloaded',localDir:directory}}});
+      videos:{[bvid]:{bvid,title:'Atomic',upperName:'Fixture',firstSeenAt:now,lastSeenAt:now,biliStatus:'available' as const,backupStatus:'downloaded' as const,localDir:directory}}});
     const jobs = new PersistentJobStore(state.getDatabase());
     const sessions = new TransferSessionStore(state.getDatabase());
-    const job = jobs.enqueue({kind:'upload',dedupeKey:'atomic',bvid});
+    const job = jobs.enqueue({kind:'upload' as const,dedupeKey:'atomic',bvid});
     assert.ok(jobs.claimByDedupeKey('atomic','actual-owner'));
     const session = sessions.ensure({dedupeKey:'atomic',bvid,localDir:directory,remotePath:'/backup'});
     const file = sessions.ensureFile(session.id,{relativePath:'video.mp4',name:'video.mp4',expectedSize:12},session.generation);
     assert.ok(file);
-    sessions.updateFile(session.id,'video.mp4',{status:'verified'},session.generation);
+    sessions.updateFile(session.id,'video.mp4',{status:'verified' as const},session.generation);
     const cleanupPlan: LocalCleanupPlan = {id:'cleanup',localDir:directory,manifestSessionId:'manifest',reason:'upload_verified',createdAt:now,
       transferSessionId:session.id,transferGeneration:session.generation,
       files:[{relativePath:'video.mp4',expectedSize:12,expectedIdentity:{dev:1,ino:1,mtimeMs:1,ctimeMs:1},remotePaths:[file.finalPath]}]};
     const command: VerifiedTransferCommit = {bvid,jobId:job.id,partialBackup:false,historyOnly:false,cleanupPlan,
       result:{remotePath:'/backup',allVerified:true,sessionId:session.id,sessionGeneration:session.generation,
-        files:[{name:'video.mp4',path:file.finalPath,size:12,verificationStatus:'verified'}]}};
+        files:[{name:'video.mp4',path:file.finalPath,size:12,verificationStatus:'verified' as const}]}};
     const dependencies = {state,sessions,jobs,now:() => Date.parse(now),leaseOwner:'old-owner'};
     assert.throws(() => commitVerifiedTransfer(dependencies,command),/ownership changed/);
     assert.notEqual(sessions.get(session.id)?.phase,'completed');
     assert.equal(state.getStateSnapshot().videos?.[bvid]?.backupStatus,'downloaded');
-    assert.equal(jobs.findById(job.id)?.payload.localCleanupPlans,undefined);
+    assert.equal(required(jobs.findById(job.id)?.payload).localCleanupPlans,undefined);
     commitVerifiedTransfer({...dependencies,leaseOwner:'actual-owner'},command);
     assert.equal(sessions.get(session.id)?.phase,'completed');
     assert.equal(state.getStateSnapshot().videos?.[bvid]?.backupStatus,'verified');
-    assert.equal(jobs.findById(job.id)?.payload.localCleanupPlans.length,1);
+    assert.equal(readArray(required(jobs.findById(job.id)?.payload).localCleanupPlans).length,1);
     assert.equal(jobs.findById(job.id)?.status,'completed');
   } finally { state.close(); await removeTestDir(directory); }
 });

@@ -50,8 +50,9 @@ export async function removeTestDir(target: string) {
     try {
       await fs.promises.rm(target, { recursive: true, force: true });
       return;
-    } catch (error: any) {
-      if (!retryableCodes.has(error?.code) || attempt === maxAttempts) throw error;
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !('code' in error) || typeof error.code !== 'string'
+        || !retryableCodes.has(error.code) || attempt === maxAttempts) throw error;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }

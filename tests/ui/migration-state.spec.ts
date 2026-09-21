@@ -6,7 +6,7 @@ test('migration imports only the latest successfully previewed file',async({page
   let previews=0;let imports=0;let imported='';
   await page.route('**/api/migration/**',async route=>{
     const path=new URL(route.request().url()).pathname;
-    if(path.endsWith('/estimate'))return route.fulfill({json:{success:true,data:{mode:'lightweight',files:2,expandedBytes:100}}});
+    if(path.endsWith('/estimate'))return route.fulfill({json:{success:true,data:{mode:'lightweight' as const,files:2,expandedBytes:100}}});
     if(path.endsWith('/import-preview')){
       const current=++previews;
       if(current===1)await new Promise(resolve=>setTimeout(resolve,650));

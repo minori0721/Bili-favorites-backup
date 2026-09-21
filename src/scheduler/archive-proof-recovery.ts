@@ -1,8 +1,8 @@
 import path from 'node:path';
 import type { StateManager } from '../state.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { PersistentJobRecord } from '../database.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ConfigStore } from '../config.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import type { inspectRemoteFileSize } from '../uploader.js';
@@ -11,8 +11,8 @@ import { isVerifiedArchiveProofForRecovery } from './recovery-projection.js';
 import { logManager } from '../logger.js';
 interface Dependencies {
   stateManager: Pick<StateManager, 'getRelationStatus' | 'restoreExistingArchiveProof' | 'runAtomic'>;
-  jobStore: Pick<PersistentJobStore, 'listObsoleteArchiveRecoveryCandidates' | 'removeObsoleteArchiveRecoveryCandidate' | 'findById'>;
-  transferSessions: Pick<TransferSessionStore, 'findForTarget'>;
+  jobStore: Pick<JobRepository, 'listObsoleteArchiveRecoveryCandidates' | 'removeObsoleteArchiveRecoveryCandidate' | 'findById'>;
+  transferSessions: Pick<TransferSessionRepository, 'findForTarget'>;
   configStore: Pick<ConfigStore, 'get'>;
   recoveryWork: { locks: RecoveryLockAccess };
   remoteFileInspector: typeof inspectRemoteFileSize;
@@ -59,7 +59,10 @@ export function createArchiveProofRecovery(deps: Dependencies) {
       try {
         const result = await deps.remoteFileInspector(deps.configStore.get(), String(file.path), Number(file.size));
         if (result.status !== "verified") return result.status;
+      // boundary-critical: an inspection error is an unknown proof, never a
+      // verified proof or an automatic deletion authorization.
       } catch {
+        // boundary-critical: proof decoding failure is unknown, never verified.
         return "unknown" as const;
       }
     }

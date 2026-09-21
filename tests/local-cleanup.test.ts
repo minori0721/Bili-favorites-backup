@@ -1,3 +1,4 @@
+import { required } from './contract-values.js';
 import { inspectLocalArchiveDirectory } from '../src/scheduler/local-archive-evidence.js';
 import { createLocalCleanupStorage } from '../src/scheduler/local-cleanup-storage.js';
 import assert from "node:assert/strict";
@@ -9,7 +10,7 @@ import { cleanupUploadedSessionFiles, readDownloadSession, writeDownloadSession 
 import { SyncScheduler } from "../src/scheduler.js";
 import { createLocalCleanup } from '../src/scheduler/local-cleanup.js';
 import type { inspectRemoteFileSize } from '../src/uploader.js';
-import { StateManager } from "../src/state.js";
+import { StateManager, type RemoteFileRecord } from "../src/state.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
@@ -27,7 +28,7 @@ function writeManifest(downloadDir: string, bvid: string, outputs: Array<{ relat
   writeJsonFile(path.join(downloadDir, ".bfb-download.json"), {
     schemaVersion: 1,
     sessionId: `${bvid}-session`,
-    kind: "backup",
+    kind: "backup" as const,
     bvid,
     accountUid: 1,
     bbdownCommit: "test",
@@ -36,7 +37,7 @@ function writeManifest(downloadDir: string, bvid: string, outputs: Array<{ relat
     createdAt: "2026-08-18T00:00:00.000Z",
     updatedAt: "2026-08-18T00:00:00.000Z",
     snapshotAt: "2026-08-18T00:00:00.000Z",
-    status: "complete",
+    status: "complete" as const,
     pages: outputs.map((output, index) => ({ index: index + 1, cid: index + 1, title: `P${index + 1}`, duration: 1 })),
     outputs: outputs.map((output, index) => ({
       pageIndex: index + 1,
@@ -52,7 +53,7 @@ function writeManifest(downloadDir: string, bvid: string, outputs: Array<{ relat
   });
 }
 
-function seedVerifiedState(state: StateManager, bvid: string, localDir: string, remoteFiles: any[], authorizeCleanup = true) {
+function seedVerifiedState(state: StateManager, bvid: string, localDir: string, remoteFiles: RemoteFileRecord[], authorizeCleanup = true) {
   const now = "2026-08-18T00:00:00.000Z";
   state.replaceStateSnapshot({
     schemaVersion: 13,
@@ -67,8 +68,8 @@ function seedVerifiedState(state: StateManager, bvid: string, localDir: string, 
         upperName: "Tester",
         firstSeenAt: now,
         lastSeenAt: now,
-        biliStatus: "available",
-        backupStatus: "verified",
+        biliStatus: "available" as const,
+        backupStatus: "verified" as const,
         localDir,
         remotePath: "/archive",
         remoteFiles,
@@ -83,20 +84,20 @@ function seedVerifiedState(state: StateManager, bvid: string, localDir: string, 
         firstSeenAt: now,
         lastSeenAt: now,
         activeInFavorite: true,
-        backupStatus: "verified",
+        backupStatus: "verified" as const,
         remotePath: "/archive",
         remoteFiles,
       },
     },
-  } as any);
+  });
   if (authorizeCleanup) {
     const jobs = new PersistentJobStore(state.getDatabase());
-    const job = jobs.enqueue({ kind: "upload", dedupeKey: `cleanup-test:${bvid}`, bvid });
+    const job = jobs.enqueue({ kind: "upload" as const, dedupeKey: `cleanup-test:${bvid}`, bvid });
     const transfers = new TransferSessionStore(state.getDatabase());
     const session = transfers.ensurePrepared({ dedupeKey: `cleanup-test:${bvid}`, bvid, localDir, remotePath: "/archive" },
-      remoteFiles.map((file) => ({ relativePath: file.localRelativePath, name: file.name, expectedSize: file.size })));
-    for (const file of remoteFiles) transfers.updateFile(session.id, file.localRelativePath, { status: "verified", verifiedAt: Date.now(), putAcceptedAt: Date.now() }, session.generation);
-    transfers.updateSession(session.id, { phase: "completed" }, session.generation);
+      remoteFiles.map((file) => ({ relativePath: required(file.localRelativePath), name: file.name, expectedSize: required(file.size) })));
+    for (const file of remoteFiles) transfers.updateFile(session.id, required(file.localRelativePath), { status: "verified" as const, verifiedAt: Date.now(), putAcceptedAt: Date.now() }, session.generation);
+    transfers.updateSession(session.id, { phase: "completed" as const }, session.generation);
     state.recordLocalCleanupPlan(bvid, {
     id: `cleanup:${bvid}`,
     localDir,
@@ -106,8 +107,8 @@ function seedVerifiedState(state: StateManager, bvid: string, localDir: string, 
     transferGeneration: session.generation,
     createdAt: now,
     files: remoteFiles.map((file) => {
-      const stat = fs.lstatSync(path.join(localDir, file.localRelativePath));
-      return { relativePath: file.localRelativePath, expectedSize: file.size, remotePaths: [file.path],
+      const stat = fs.lstatSync(path.join(localDir, required(file.localRelativePath)));
+      return { relativePath: required(file.localRelativePath), expectedSize: required(file.size), remotePaths: [file.path],
         expectedIdentity: { dev: stat.dev, ino: stat.ino, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs } };
     }),
     }, job.id);
@@ -118,12 +119,12 @@ function seedVerifiedState(state: StateManager, bvid: string, localDir: string, 
 function makeScheduler(
   state: StateManager,
   tempRoot: string,
-  remoteFileInspector: any,
+  remoteFileInspector: typeof inspectRemoteFileSize,
 ) {
   const config = testConfig({ pollIntervalMinutes: 60 });
   return new SyncScheduler(
-    { get: () => config } as any,
-    { list: () => [], getById: () => undefined } as any,
+    { get: () => config },
+    { list: () => [], getById: () => null, updatePartial: () => { throw new Error('Unexpected user update'); } },
     state,
     {
       legacyTempDir: tempRoot,
@@ -144,7 +145,7 @@ function makeScheduler(
         },
       }),
     },
-  ) as any;
+  );
 }
 
 function makeCleanup(state: StateManager, tempRoot: string, inspectRemote: typeof inspectRemoteFileSize) {
@@ -176,26 +177,27 @@ test("startup cleanup verifies remote proof before removing a completed local se
   const localDir = path.join(tempRoot, "BVLOCALCLEAN");
   const state = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
   const inspected: string[] = [];
-  const scheduler = makeCleanup(state, tempRoot, async (_config: any, remotePath: string, expectedSize: number) => {
+  const cleanup = makeCleanup(state, tempRoot, async (_config, remotePath, expectedSize) => {
     inspected.push(remotePath);
-    return { status: "verified", remoteSize: expectedSize };
+    return { status: "verified" as const, remoteSize: expectedSize };
   });
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "video.mp4"), "hello");
-    const remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }];
+    const remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }];
     writeManifest(localDir, "BVLOCALCLEAN", [{ relativePath: "video.mp4", size: 5 }]);
     seedVerifiedState(state, "BVLOCALCLEAN", localDir, remoteFiles);
 
-    scheduler.startSweep();
-    await waitForCondition(() => !scheduler.busy && !fs.existsSync(localDir));
+    cleanup.startSweep();
+    await waitForCondition(() => !cleanup.busy && !fs.existsSync(localDir));
 
     assert.deepEqual(inspected, ["/archive/video.mp4"]);
     assert.equal(fs.existsSync(localDir), false);
-    const row = state.getDatabase().db.prepare("SELECT local_dir FROM videos WHERE bvid=?").get("BVLOCALCLEAN") as any;
+    const row = state.getDatabase().db.prepare<[string], { local_dir: string | null }>("SELECT local_dir FROM videos WHERE bvid=?").get("BVLOCALCLEAN");
+    assert.ok(row);
     assert.equal(row.local_dir, null);
   } finally {
-    scheduler.stop();
+    cleanup.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -208,22 +210,22 @@ test("cleanup plans survive SQLite reopen and are removed only after authorized 
   const localDir = path.join(tempRoot, bvid);
   const options = { statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") };
   let state = new StateManager(options);
-  let scheduler: any;
+  let cleanup: ReturnType<typeof makeCleanup> | undefined;
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "video.mp4"), "hello");
     writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
-    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }]);
+    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }]);
     state.close();
     state = new StateManager(options);
     assert.equal(state.getLocalCleanupPlans(bvid).length, 1);
-    scheduler = makeCleanup(state, tempRoot, async () => ({ status: "verified", remoteSize: 5 }));
-    await scheduler.perform(bvid, localDir);
+    cleanup = makeCleanup(state, tempRoot, async () => ({ status: "verified" as const, remoteSize: 5 }));
+    await cleanup.perform(bvid, localDir);
     assert.equal(fs.existsSync(path.join(localDir, "video.mp4")), false);
     assert.equal(state.getLocalCleanupPlans(bvid).length, 0);
-    assert.equal((state.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE bvid=?").get(bvid) as any).count, 0);
+    assert.equal(state.getDatabase().db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM jobs WHERE bvid=?").get(bvid)?.count, 0);
   } finally {
-    scheduler?.stop(); state.close(); await removeTestDir(runtime);
+    cleanup?.stop(); state.close(); await removeTestDir(runtime);
   }
 });
 
@@ -234,17 +236,17 @@ test("a verified archive alone never authorizes deleting an uncommitted local co
   const localDir = path.join(tempRoot, bvid);
   const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
   let inspections = 0;
-  const scheduler = makeCleanup(state, tempRoot, async () => { inspections++; return { status: "verified", remoteSize: 5 }; });
+  const cleanup = makeCleanup(state, tempRoot, async () => { inspections++; return { status: "verified" as const, remoteSize: 5 }; });
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "video.mp4"), "hello");
     writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
-    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }], false);
-    await scheduler.perform(bvid, localDir);
+    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }], false);
+    await cleanup.perform(bvid, localDir);
     assert.equal(fs.existsSync(path.join(localDir, "video.mp4")), true);
     assert.equal(inspections, 0);
   } finally {
-    scheduler.stop();
+    cleanup.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -258,31 +260,31 @@ for (const change of ["same-size replacement", "new active job", "new transfer g
     const localDir = path.join(tempRoot, bvid);
     const target = path.join(localDir, "video.mp4");
     const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
-    const scheduler = makeCleanup(state, tempRoot, async () => {
+    const cleanup = makeCleanup(state, tempRoot, async () => {
       if (change === "same-size replacement") {
         await fs.promises.writeFile(target, "other");
         await fs.promises.utimes(target, new Date("2020-01-01"), new Date("2020-01-01"));
       } else if (change === "runtime generation") {
-        scheduler.invalidate();
+        cleanup.invalidate();
       } else if (change === "maintenance admission") {
-        scheduler.setAdmission(false);
+        cleanup.setAdmission(false);
       } else if (change === "new active job") {
-        scheduler.jobStore.enqueue({ kind: "upload", dedupeKey: "upload:race", bvid, initialStatus: "pending" });
+        cleanup.jobStore.enqueue({ kind: "upload" as const, dedupeKey: "upload:race", bvid, initialStatus: "pending" });
       } else {
         state.getDatabase().db.prepare("UPDATE transfer_sessions SET generation=generation+1, phase='completed' WHERE bvid=?").run(bvid);
       }
-      return { status: "verified", remoteSize: 5 };
+      return { status: "verified" as const, remoteSize: 5 };
     });
     try {
       await fs.promises.mkdir(localDir, { recursive: true });
       await fs.promises.writeFile(target, "hello");
       writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
-      seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }]);
-      await scheduler.perform(bvid, localDir);
+      seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }]);
+      await cleanup.perform(bvid, localDir);
       assert.equal(fs.existsSync(target), true);
       assert.equal(state.getLocalCleanupPlans(bvid).length, 1);
     } finally {
-      scheduler.stop();
+      cleanup.stop();
       state.close();
       await removeTestDir(runtime);
     }
@@ -295,19 +297,19 @@ test("cleanup resumes after unlink succeeded but manifest reconciliation was int
   const bvid = "BVLOCALCRASH";
   const localDir = path.join(tempRoot, bvid);
   const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
-  const scheduler = makeCleanup(state, tempRoot, async () => ({ status: "verified", remoteSize: 5 }));
+  const cleanup = makeCleanup(state, tempRoot, async () => ({ status: "verified" as const, remoteSize: 5 }));
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     const target = path.join(localDir, "video.mp4");
     await fs.promises.writeFile(target, "hello");
     writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
-    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }]);
+    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }]);
     await fs.promises.unlink(target);
-    await scheduler.perform(bvid, localDir);
+    await cleanup.perform(bvid, localDir);
     assert.equal(fs.existsSync(localDir), false);
     assert.equal(state.getLocalCleanupPlans(bvid).length, 0);
   } finally {
-    scheduler.stop(); state.close(); await removeTestDir(runtime);
+    cleanup.stop(); state.close(); await removeTestDir(runtime);
   }
 });
 
@@ -316,21 +318,21 @@ test("startup cleanup skips a BVID while any persistent task is active", async (
   const tempRoot = path.join(runtime, "temp");
   const localDir = path.join(tempRoot, "BVLOCALBLOCKED");
   const state = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
-  const scheduler = makeCleanup(state, tempRoot, async (_config: any, _remotePath: string, expectedSize: number) => ({ status: "verified", remoteSize: expectedSize }));
+  const cleanup = makeCleanup(state, tempRoot, async (_config, _remotePath, expectedSize) => ({ status: "verified" as const, remoteSize: expectedSize }));
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "video.mp4"), "hello");
-    const remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }];
+    const remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }];
     writeManifest(localDir, "BVLOCALBLOCKED", [{ relativePath: "video.mp4", size: 5 }]);
     seedVerifiedState(state, "BVLOCALBLOCKED", localDir, remoteFiles);
-    scheduler.jobStore.enqueue({ kind: "upload", dedupeKey: "upload:blocked", bvid: "BVLOCALBLOCKED", status: "pending" });
+    cleanup.jobStore.enqueue({ kind: "upload" as const, dedupeKey: "upload:blocked", bvid: "BVLOCALBLOCKED", initialStatus: "pending" });
 
-    scheduler.startSweep();
+    cleanup.startSweep();
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(fs.existsSync(path.join(localDir, "video.mp4")), true);
-    assert.ok(state.getDatabase().db.prepare("SELECT local_dir FROM videos WHERE bvid=?").get("BVLOCALBLOCKED"));
+    assert.ok(state.getDatabase().db.prepare<unknown[], { "local_dir": string | null }>("SELECT local_dir FROM videos WHERE bvid=?").get("BVLOCALBLOCKED"));
   } finally {
-    scheduler.stop();
+    cleanup.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -341,23 +343,23 @@ test("remote size conflicts keep the local file and enter bounded retry state", 
   const tempRoot = path.join(runtime, "temp");
   const localDir = path.join(tempRoot, "BVLOCALCONFLICT");
   const state = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
-  const scheduler = makeCleanup(state, tempRoot, async () => ({ status: "mismatch", remoteSize: 7 })) as any;
+  const cleanup = makeCleanup(state, tempRoot, async () => ({ status: "mismatch" as const, remoteSize: 7 }));
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "video.mp4"), "hello");
-    const remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }];
+    const remoteFiles = [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }];
     writeManifest(localDir, "BVLOCALCONFLICT", [{ relativePath: "video.mp4", size: 5 }]);
     seedVerifiedState(state, "BVLOCALCONFLICT", localDir, remoteFiles);
 
-    const work = scheduler.request("BVLOCALCONFLICT", localDir);
+    const work = cleanup.request("BVLOCALCONFLICT", localDir);
     assert.ok(work);
     await work;
     assert.equal(fs.existsSync(path.join(localDir, "video.mp4")), true);
-    assert.equal(scheduler.retryState("BVLOCALCONFLICT").attempts, 1);
-    const retryDelay = scheduler.retryState("BVLOCALCONFLICT").nextAt - scheduler.now();
+    assert.equal(required(cleanup.retryState("BVLOCALCONFLICT")).attempts, 1);
+    const retryDelay = required(cleanup.retryState("BVLOCALCONFLICT")).nextAt - cleanup.now();
     assert.ok(retryDelay >= 59_000 && retryDelay <= 60_000);
   } finally {
-    scheduler.stop();
+    cleanup.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -368,19 +370,19 @@ test("cleanup keeps unconfirmed manifest outputs and never deletes unknown artif
   const tempRoot = path.join(runtime, "temp");
   const localDir = path.join(tempRoot, "BVLOCALSELECTIVE");
   const state = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
-  const scheduler = makeCleanup(state, tempRoot, async (_config: any, remotePath: string, expectedSize: number) => (
+  const cleanup = makeCleanup(state, tempRoot, async (_config, remotePath, expectedSize) => (
     remotePath.endsWith("first.mp4")
-      ? { status: "verified", remoteSize: expectedSize }
-      : { status: "missing" }
-  )) as any;
+      ? { status: "verified" as const, remoteSize: expectedSize }
+      : { status: "missing" as const }
+  ));
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "first.mp4"), "first");
     await fs.promises.writeFile(path.join(localDir, "second.mp4"), "second");
     await fs.promises.writeFile(path.join(localDir, "unknown.bin"), "unknown");
     const remoteFiles = [
-      { name: "first.mp4", path: "/archive/first.mp4", size: 5, localRelativePath: "first.mp4", verificationStatus: "verified" },
-      { name: "second.mp4", path: "/archive/second.mp4", size: 6, localRelativePath: "second.mp4", verificationStatus: "verified" },
+      { name: "first.mp4", path: "/archive/first.mp4", size: 5, localRelativePath: "first.mp4", verificationStatus: "verified" as const },
+      { name: "second.mp4", path: "/archive/second.mp4", size: 6, localRelativePath: "second.mp4", verificationStatus: "verified" as const },
     ];
     writeManifest(localDir, "BVLOCALSELECTIVE", [
       { relativePath: "first.mp4", size: 5 },
@@ -388,12 +390,12 @@ test("cleanup keeps unconfirmed manifest outputs and never deletes unknown artif
     ]);
     seedVerifiedState(state, "BVLOCALSELECTIVE", localDir, remoteFiles);
 
-    await assert.rejects(() => scheduler.perform("BVLOCALSELECTIVE", localDir));
+    await assert.rejects(() => cleanup.perform("BVLOCALSELECTIVE", localDir));
     assert.equal(fs.existsSync(path.join(localDir, "first.mp4")), true);
     assert.equal(fs.existsSync(path.join(localDir, "second.mp4")), true);
     assert.equal(fs.existsSync(path.join(localDir, "unknown.bin")), true);
   } finally {
-    scheduler.stop();
+    cleanup.stop();
     state.close();
     await removeTestDir(runtime);
   }
@@ -402,12 +404,12 @@ test("cleanup keeps unconfirmed manifest outputs and never deletes unknown artif
 test("verified local cleanup candidates use the paged SQLite index and exclude active jobs", () => {
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `local-cleanup-page-${Date.now()}.json`) });
   try {
-    const plan = state.getDatabase().db.prepare(`
+    const plan = state.getDatabase().db.prepare<[], { detail: string }>(`
       EXPLAIN QUERY PLAN
       SELECT v.bvid FROM videos v
       WHERE v.local_dir IS NOT NULL AND v.backup_status IN ('verified','partial_verified')
       ORDER BY v.updated_at ASC, v.bvid ASC
-    `).all().map((row: any) => row.detail).join("\n");
+    `).all().map(row => row.detail).join("\n");
     assert.match(plan, /idx_videos_local_cleanup|idx_videos_status/);
     const page = state.listVerifiedLocalCleanupPage(null, 25);
     assert.equal(page.items.length, 0);
@@ -421,7 +423,7 @@ test("local archive proof never treats a directory shell or partial manifest as 
   const bvid = "BVLOCALPROOF";
   const localDir = path.join(tempRoot, bvid);
   const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
-  const scheduler = makeScheduler(state, tempRoot, async () => ({ status: "verified", remoteSize: 5 }));
+  const cleanup = makeScheduler(state, tempRoot, async () => ({ status: "verified" as const, remoteSize: 5 }));
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     assert.equal(inspectLocalArchiveDirectory(localDir).status, "unknown");
@@ -436,7 +438,7 @@ test("local archive proof never treats a directory shell or partial manifest as 
     assert.equal(proof.verifiedFiles, 1);
     assert.equal(proof.totalFiles, 2);
   } finally {
-    scheduler.stop(); state.close(); await removeTestDir(runtime);
+    cleanup.stop(); state.close(); await removeTestDir(runtime);
   }
 });
 
@@ -463,7 +465,7 @@ test("cleanup does not overwrite a changed manifest after deleting the first pag
     assert.equal(fs.existsSync(path.join(runtime, "first.mp4")), false);
     assert.equal(fs.existsSync(path.join(runtime, "second.mp4")), true);
     assert.equal(readDownloadSession(runtime)?.sessionId, "new-attempt");
-    assert.equal(readDownloadSession(runtime)?.outputs.length, 2);
+    assert.equal(required(readDownloadSession(runtime)?.outputs).length, 2);
   } finally { await removeTestDir(runtime); }
 });
 
@@ -474,7 +476,7 @@ test("explicit release removes stopped local media without requiring remote succ
   const localDir = path.join(tempRoot, bvid);
   const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
   let requests = 0;
-  const scheduler = makeCleanup(state, tempRoot, async () => { requests++; throw new Error("must not access remote"); });
+  const cleanup = makeCleanup(state, tempRoot, async () => { requests++; throw new Error("must not access remote"); });
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(path.join(localDir, "video.mp4"), "hello");
@@ -482,23 +484,25 @@ test("explicit release removes stopped local media without requiring remote succ
     writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
     seedVerifiedState(state, bvid, localDir, [], false);
     state.markUploadFailed(bvid, localDir, "u1", 1, "Remote write rejected");
-    const preview = scheduler.preview(bvid);
+    const preview = cleanup.preview(bvid);
+    assert.ok(preview.candidates);
     assert.equal(preview.candidates[0].requiresExplicitDeletion, true);
+    assert.ok(preview.candidates);
     assert.equal(preview.candidates[0].hasVerifiedArchive, false);
     assert.equal(preview.totalBytes, 5);
-    assert.equal(scheduler.release(bvid, preview.candidates[0].releaseId, "DELETE").ok, false);
+    assert.equal(cleanup.release(bvid, preview.candidates[0].releaseId, "DELETE").ok, false);
     assert.ok(fs.existsSync(path.join(localDir, "video.mp4")));
     const jobs = new PersistentJobStore(state.getDatabase());
-    const running = jobs.enqueue({ kind: "upload", dedupeKey: "release-running", bvid });
-    assert.equal(scheduler.release(bvid, preview.candidates[0].releaseId, "DELETE LOCAL").status, 409);
+    const running = jobs.enqueue({ kind: "upload" as const, dedupeKey: "release-running", bvid });
+    assert.equal(cleanup.release(bvid, preview.candidates[0].releaseId, "DELETE LOCAL").status, 409);
     assert.ok(fs.existsSync(path.join(localDir, "video.mp4")));
     jobs.complete(running.id);
-    assert.equal(scheduler.release(bvid, preview.candidates[0].releaseId, "DELETE LOCAL").ok, true);
+    assert.equal(cleanup.release(bvid, preview.candidates[0].releaseId, "DELETE LOCAL").ok, true);
     await waitForCondition(() => !fs.existsSync(path.join(localDir, "video.mp4")));
     assert.equal(fs.existsSync(path.join(localDir, "unknown.txt")), true);
     assert.equal(requests, 0);
-    assert.equal(scheduler.preview(bvid).fileCount, 0);
-  } finally { scheduler.stop(); state.close(); await removeTestDir(runtime); }
+    assert.equal(cleanup.preview(bvid).fileCount, 0);
+  } finally { cleanup.stop(); state.close(); await removeTestDir(runtime); }
 });
 
 test("manual local release rejects a stale same-size replacement after preview", async () => {
@@ -509,25 +513,25 @@ test("manual local release rejects a stale same-size replacement after preview",
   const target = path.join(localDir, "video.mp4");
   const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
   let inspections = 0;
-  const scheduler = makeCleanup(state, tempRoot, async () => { inspections += 1; return { status: "verified", remoteSize: 5 }; });
+  const cleanup = makeCleanup(state, tempRoot, async () => { inspections += 1; return { status: "verified" as const, remoteSize: 5 }; });
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(target, "hello");
     writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
-    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }]);
-    const preview = scheduler.preview(bvid);
+    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }]);
+    const preview = cleanup.preview(bvid);
     assert.equal(preview.ok, true);
     assert.equal(preview.fileCount, 1);
     const releaseId = preview.candidates[0].releaseId;
     await new Promise((resolve) => setTimeout(resolve, 5));
     await fs.promises.writeFile(target, "other");
-    const result = scheduler.release(bvid, releaseId, "DELETE LOCAL");
+    const result = cleanup.release(bvid, releaseId, "DELETE LOCAL");
     assert.equal(result.ok, false);
     assert.equal(result.status, 409);
     assert.equal(fs.existsSync(target), true);
     assert.equal(inspections, 0, "stale UI requests must fail before remote verification or deletion");
   } finally {
-    scheduler.stop(); state.close(); await removeTestDir(runtime);
+    cleanup.stop(); state.close(); await removeTestDir(runtime);
   }
 });
 
@@ -539,31 +543,31 @@ test("manual local release uses persisted cleanup authorization and the verified
   const target = path.join(localDir, "video.mp4");
   const state = new StateManager({ statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "bfb.sqlite") });
   const inspected: string[] = [];
-  const scheduler = makeCleanup(state, tempRoot, async (_config: any, remotePath: string, expectedSize: number) => {
+  const cleanup = makeCleanup(state, tempRoot, async (_config, remotePath, expectedSize) => {
     inspected.push(remotePath);
-    return { status: "verified", remoteSize: expectedSize };
+    return { status: "verified" as const, remoteSize: expectedSize };
   });
   try {
     await fs.promises.mkdir(localDir, { recursive: true });
     await fs.promises.writeFile(target, "hello");
     writeManifest(localDir, bvid, [{ relativePath: "video.mp4", size: 5 }]);
-    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" }]);
-    const preview = scheduler.preview(bvid);
+    seedVerifiedState(state, bvid, localDir, [{ name: "video.mp4", path: "/archive/video.mp4", size: 5, localRelativePath: "video.mp4", verificationStatus: "verified" as const }]);
+    const preview = cleanup.preview(bvid);
     assert.equal(preview.ok, true);
     assert.equal(preview.fileCount, 1);
     assert.equal(preview.totalBytes, 5);
-    const denied = scheduler.release(bvid, preview.candidates[0].releaseId, "DELETE");
+    const denied = cleanup.release(bvid, preview.candidates[0].releaseId, "DELETE");
     assert.equal(denied.ok, false);
     assert.equal(denied.status, 400);
     assert.equal(fs.existsSync(target), true);
 
-    const started = scheduler.release(bvid, preview.candidates[0].releaseId, "DELETE LOCAL");
+    const started = cleanup.release(bvid, preview.candidates[0].releaseId, "DELETE LOCAL");
     assert.equal(started.ok, true);
     assert.equal(started.fileCount, 1);
     await waitForCondition(() => !fs.existsSync(target) && state.getLocalCleanupPlans(bvid).length === 0);
     assert.deepEqual(inspected, ["/archive/video.mp4"]);
     assert.equal(state.getLocalCleanupPlans(bvid).length, 0);
   } finally {
-    scheduler.stop(); state.close(); await removeTestDir(runtime);
+    cleanup.stop(); state.close(); await removeTestDir(runtime);
   }
 });

@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import type { ConfigStore, AppConfig } from '../config.js';
 import type { BiliUser } from '../users.js';
 import type { StateManager, FavoriteRelation } from '../state.js';
-import type { PersistentJobStore, EnqueuePersistentJob } from '../job-store.js';
-import type { PersistentJobKind } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
+import type { PersistentJobKind } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import { readDownloadSession, historySessionGroups, buildUploadFileMetadataFromSession } from '../download-session.js';
 import { joinRemotePath } from '../utils.js';
 import { logManager } from '../logger.js';
@@ -17,8 +17,8 @@ type VerificationCandidate = {
 } & Record<string, unknown>;
 interface Dependencies {
   stateManager: Pick<StateManager, 'listStaleActiveBackups' | 'runBatch' | 'markDownloadInterrupted' | 'markUploadFailed' | 'resetRelationForRetry' | 'hasPersistentJobBootstrap' | 'normalizePersistedWorkForRecovery' | 'listBackupsToResume' | 'listPendingUploadVerifications' | 'getRelationStatus' | 'getVideoMeta' | 'markPersistentJobBootstrapComplete' | 'listUploadFailuresForRecoveryPage'>;
-  jobStore: Pick<PersistentJobStore, 'hasJobsForBvid' | 'enqueue' | 'counts' | 'enqueueBatch'>;
-  transferSessions: Pick<TransferSessionStore, 'listFiles' | 'findForTarget'>;
+  jobStore: Pick<JobRepository, 'hasJobsForBvid' | 'enqueue' | 'counts' | 'enqueueBatch'>;
+  transferSessions: Pick<TransferSessionRepository, 'listFiles' | 'findForTarget'>;
   configStore: Pick<ConfigStore, 'get'>;
   staleActiveBackupMs: number;
   resolveRelation(relation: FavoriteRelation): ResolvedRelation | null;
@@ -196,7 +196,7 @@ export function createStartupRecovery(deps: Dependencies) {
       deps.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid, { persisted: true });
     }
 
-    const sessionFilesCache = new Map<string, ReturnType<TransferSessionStore["listFiles"]>>();
+    const sessionFilesCache = new Map<string, ReturnType<TransferSessionRepository["listFiles"]>>();
     const sessionVerificationJobs = new Map<string, VerificationCandidate>();
     // Bootstrap is synchronous: enqueuing jobs does not mutate these source rows,
     // so stable ordered offset pages traverse the same set without a hard cap.

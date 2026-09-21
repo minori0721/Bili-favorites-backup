@@ -1,16 +1,16 @@
 import { UploadTask } from '../tasks.js';
 import type { StateManager, FavoriteRelation } from '../state.js';
 import type { ConfigStore } from '../config.js';
-import type { PersistentJobStore } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import { parseStrictMediaTarget } from './recovery-context.js';
 import type { RecoveryUploadItem } from './upload-work.js';
 interface Dependencies {
   stateManager: Pick<StateManager, 'getRelationStatus' | 'markRemoteConflictArchived' | 'markUploading'>;
   configStore: Pick<ConfigStore, 'get'>;
-  jobStore: Pick<PersistentJobStore, 'findById' | 'updatePayload' | 'consumeUploadReuploadPermission'>;
-  transferSessions: TransferSessionStore;
+  jobStore: Pick<JobRepository, 'findById' | 'updatePayload' | 'consumeUploadReuploadPermission'>;
+  transferSessions: TransferSessionRepository;
   leaseOwner: string;
   generation(): number;
   captureExistingArchiveProof(userId: string | undefined, mediaId: number | undefined, bvid: string): ExistingArchiveProof | undefined;

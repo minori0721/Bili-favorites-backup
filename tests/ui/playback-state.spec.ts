@@ -26,9 +26,9 @@ test('player falls back once and ignores events from a released instance', async
     parts: [{ fileId: index + 1, pageIndex: 1, label: '正片', fingerprint: bvid, streamUrl: '/fixture-media/' + bvid, codec: 'avc1' }],
   }));
   await page.route('**/api/archive-library/playback-queue?**', route => route.fulfill({ json: { success: true, data: {
-    mode: 'library', page: 1, pageSize: 50, total: 2, focusIndex: 0, hasMore: false, items,
+    mode: 'library' as const, page: 1, pageSize: 50, total: 2, focusIndex: 0, hasMore: false, items,
   } } }));
-  await page.route('**/playback/delivery/**', route => route.fulfill({ json: { success: true, data: { status: 'direct' } } }));
+  await page.route('**/playback/delivery/**', route => route.fulfill({ json: { success: true, data: { status: 'direct' as const } } }));
   await page.goto('/');
   await page.locator('#archiveLibraryBtn').click();
   if (info.project.name !== 'desktop') await page.locator('.archive-nav-item[data-archive-scope="global"]').click();

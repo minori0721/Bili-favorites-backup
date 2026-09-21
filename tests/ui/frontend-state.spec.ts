@@ -334,7 +334,7 @@ test('late manual archive submission cannot close a newly opened options dialog'
   await page.route('**/api/online-content/manual-archive',async route=>{
     submissions++;
     await responseGate;
-    await route.fulfill({json:{success:true,data:{status:'queued'}}});
+    await route.fulfill({json:{success:true,data:{status:'queued' as const}}});
   });
   await boot(page);
   await page.locator('#onlineContentBtn').click();

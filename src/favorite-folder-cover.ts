@@ -1,6 +1,6 @@
 import { getFavoriteFolderCover } from "./bili.js";
 import type { BiliCookie, BiliUser } from "./users.js";
-import { OnlineCoverCache } from "./online-cover-cache.js";
+import type { OnlineContentCoverPort } from "./online-content.js";
 import { safeErrorSummary } from "./diagnostics.js";
 
 const URL_CACHE_TTL_MS = 5 * 60_000;
@@ -30,7 +30,7 @@ export class FavoriteFolderCoverService {
   private readonly metadataWaitersByUser = new Map<string, Array<() => void>>();
 
   constructor(
-    private readonly coverCache: OnlineCoverCache,
+    private readonly coverCache: Pick<OnlineContentCoverPort, "get" | "getOrFetch">,
     private readonly loadCover: FavoriteFolderCoverLoader = getFavoriteFolderCover,
   ) {}
 

@@ -1,6 +1,6 @@
 import { isValidBBDownEncodingPriority, normalizeBBDownEncodingPriority, type BBDownEncoding, type ConfigStore } from '../config.js';
 import { isSelectableBilibiliQuality } from '../media-metadata.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { PersistentJobRecord } from '../database.js';
 import type { RecoveryIssueActionId } from '../recovery-policy.js';
 import type { RecoveryAssessment, RecoveryIssue } from './recovery-contracts.js';
@@ -8,7 +8,7 @@ import type { RecoveryLockAccess } from './recovery-work.js';
 import type { RecoveryActionOptions, RecoveryActionResult } from './recovery-action-contracts.js';
 type Action = RecoveryActionResult | Promise<RecoveryActionResult>;
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'wakeManualJob'>;
+  jobStore: Pick<JobRepository, 'findById' | 'wakeManualJob'>;
   configStore: Pick<ConfigStore, 'get'>;
   recoveryWork: { locks: RecoveryLockAccess };
   getRecoveryIssueSnapshot(): { issues: RecoveryIssue[] };

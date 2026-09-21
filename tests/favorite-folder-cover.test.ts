@@ -29,7 +29,7 @@ test("收藏夹封面命中在线缓存时不重复查询B站", async () => {
       files.set(key, `/cache/${key}.webp`);
       return { path: files.get(key)!, relativePath: `online-covers/${key}.webp`, bytes: 1 };
     },
-  } as any;
+  };
   const service = new FavoriteFolderCoverService(cache, async () => {
     metadataCalls += 1;
     return "https://i0.hdslb.com/bfs/archive/folder-cover.jpg";
@@ -52,7 +52,7 @@ test("收藏夹列表提供的封面提示可以跳过详情元数据请求", as
       assert.match(url, /^https:\/\//);
       return { path: "/cache/folder-hint.webp", relativePath: "online-covers/folder-hint.webp", bytes: 1 };
     },
-  } as any;
+  };
   const service = new FavoriteFolderCoverService(cache, async () => {
     metadataCalls += 1;
     return "https://i0.hdslb.com/bfs/archive/fallback.jpg";
@@ -72,7 +72,7 @@ test("同一收藏夹并发首次加载只查询一次元数据", async () => {
   const cache = {
     async get() { return null; },
     async getOrFetch() { return { path: "/cache/folder.webp", relativePath: "online-covers/folder.webp", bytes: 1 }; },
-  } as any;
+  };
   const service = new FavoriteFolderCoverService(cache, async () => {
     metadataCalls += 1;
     return metadata;
@@ -94,7 +94,7 @@ test("不同收藏夹的详情元数据请求按账号限制为两个并发", as
     async getOrFetch(_key: string, _url: string) {
       return { path: "/cache/folder.webp", relativePath: "online-covers/folder.webp", bytes: 1 };
     },
-  } as any;
+  };
   const service = new FavoriteFolderCoverService(cache, async (_cookie, mediaId) => {
     metadataCalls += 1;
     active += 1;

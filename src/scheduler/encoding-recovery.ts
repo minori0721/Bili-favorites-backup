@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { ConfigStore, BBDownEncoding } from '../config.js';
 import type { UserStore } from '../users.js';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore, EnqueuePersistentJob } from '../job-store.js';
+import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
 import type { EncodingRetryContext, UploadTarget } from '../tasks.js';
 import { isSelectableBilibiliQuality } from '../media-metadata.js';
@@ -15,7 +15,7 @@ import type { RecoveryAssessment } from './recovery-contracts.js';
 import type { inspectRecoveryLocalFiles } from './recovery-local-files.js';
 import type { RecoveryLockAccess } from './recovery-work.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'startEncodingRetry'>;
+  jobStore: Pick<JobRepository, 'findById' | 'startEncodingRetry'>;
   configStore: Pick<ConfigStore, 'get'>;
   userStore: Pick<UserStore, 'getById'>;
   stateManager: Pick<StateManager, 'getRelationStatus'>;

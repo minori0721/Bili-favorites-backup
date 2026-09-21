@@ -1,3 +1,5 @@
+import type { BiliUser } from '../src/users.js';
+import { readField, readArray, readString } from './contract-values.js';
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -156,7 +158,7 @@ test("rename supports path swaps and reports a file stranded at its temporary pa
       if (swapPaths.has(to)) throw Object.assign(new Error("conflict"), { status: 409 });
       swapPaths.add(to);
     },
-  } as any;
+  };
   const swapped = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [
     { oldPath: "/target/a.mp4", newPath: "/target/b.mp4" },
     { oldPath: "/target/b.mp4", newPath: "/target/a.mp4" },
@@ -175,7 +177,7 @@ test("rename supports path swaps and reports a file stranded at its temporary pa
       if (!strandedPaths.delete(from)) throw new Error("missing");
       strandedPaths.add(to);
     },
-  } as any;
+  };
   const stranded = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [
     { oldPath: "/target/old.mp4", newPath: "/target/new.mp4" },
   ], strandedClient);
@@ -213,7 +215,7 @@ test("rename re-resolves an OpenList escaped source before the first MOVE", asyn
       files.set(target, size);
       moves.push([source, target]);
     },
-  } as any;
+  };
 
   const result = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [{
     oldPath: logicalPath,
@@ -237,7 +239,7 @@ test("rename reports an OpenList alias ambiguity without issuing MOVE", async ()
       { filename: "/target/旅谣'米砂-BV1TEST.mp4", basename: "旅谣'米砂-BV1TEST.mp4", type: "file", size: 99 },
     ],
     moveFile: async (source: string, target: string) => { moves.push([source, target]); },
-  } as any;
+  };
 
   const result = await batchRenameRemotePaths(testConfig({ alistDest: "/target" }), [{
     oldPath: "/target/旅谣'米砂-BV1TEST.mp4",
@@ -266,7 +268,7 @@ test("SQLite rename writeback applies swaps from the original path snapshot", as
       videos: {
         BVSWAP: {
           bvid: "BVSWAP", title: "swap", upperName: "up", firstSeenAt: now, lastSeenAt: now,
-          biliStatus: "available", backupStatus: "verified", remotePath: "/target",
+          biliStatus: "available" as const, backupStatus: "verified" as const, remotePath: "/target",
           remoteFiles: [
             { name: "a.mp4", path: "/target/a.mp4" },
             { name: "b.mp4", path: "/target/b.mp4" },
@@ -276,14 +278,14 @@ test("SQLite rename writeback applies swaps from the original path snapshot", as
       relations: {
         "u1:1:BVSWAP": {
           userId: "u1", mediaId: 1, bvid: "BVSWAP", folderTitle: "fav", firstSeenAt: now, lastSeenAt: now,
-          activeInFavorite: true, backupStatus: "verified", remotePath: "/target",
+          activeInFavorite: true, backupStatus: "verified" as const, remotePath: "/target",
           remoteFiles: [
             { name: "a.mp4", path: "/target/a.mp4" },
             { name: "b.mp4", path: "/target/b.mp4" },
           ],
         },
       },
-    } as any);
+    });
     assert.equal(manager.renameRemoteFilesBatch("BVSWAP", [
       { oldPath: "/target/a.mp4", newPath: "/target/b.mp4" },
       { oldPath: "/target/b.mp4", newPath: "/target/a.mp4" },
@@ -305,8 +307,8 @@ test("StateManager database replacement can roll back until explicitly committed
   const oldManager = new StateManager({ dbPath: path.join(runtime, "active.sqlite"), statePath: path.join(runtime, "old.json") });
   const importedManager = new StateManager({ dbPath: path.join(runtime, "import.sqlite"), statePath: path.join(runtime, "new.json") });
   try {
-    oldManager.recordFavoriteItem("u1", 1, "old", { bvid: "BVOLD", title: "old", upperName: "up" } as any);
-    importedManager.recordFavoriteItem("u2", 2, "new", { bvid: "BVNEW", title: "new", upperName: "up" } as any);
+    oldManager.recordFavoriteItem("u1", 1, "old", { bvid: "BVOLD", title: "old", upperName: "up" });
+    importedManager.recordFavoriteItem("u2", 2, "new", { bvid: "BVNEW", title: "new", upperName: "up" });
     importedManager.close();
 
     const first = await oldManager.beginDatabaseReplacement(path.join(runtime, "import.sqlite"));
@@ -340,7 +342,7 @@ test("LogManager persists and emits the same sanitized object", async () => {
   try {
     assert.doesNotMatch(JSON.stringify(manager.getAll()), /old-secret/);
     manager.clear();
-    let emitted: any;
+    let emitted: unknown;
     manager.once("log", (entry) => { emitted = entry; });
     manager.push({
       timestamp: new Date().toISOString(),
@@ -429,9 +431,9 @@ test("quality cleanup keeps local files and completion state when DELETE fails",
     await fs.promises.writeFile(path.join(runtime, "new.mp4"), "new");
     let completed = false;
     task.onCompletedUpgrade = () => { completed = true; };
-    await assert.rejects(task.runCleanupPhase(), (error: any) => {
-      assert.match(error.message, /Failed to delete/);
-      assert.equal(error.status, 500);
+    await assert.rejects(task.runCleanupPhase(), (error: unknown) => {
+      assert.match(readString(readField(error, 'message')), /Failed to delete/);
+      assert.equal(readField(error, 'status'), 500);
       return true;
     });
     assert.equal(completed, false);
@@ -456,7 +458,7 @@ test("quality cleanup retry is persistent, unbounded and capped at six hours", a
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   try {
     const jobs = new PersistentJobStore(manager.getDatabase());
-    const job = jobs.enqueue({ kind: "quality_cleanup", dedupeKey: "quality-cleanup:u:1:BV", maxAttempts: 1 });
+    const job = jobs.enqueue({ kind: "quality_cleanup" as const, dedupeKey: "quality-cleanup:u:1:BV", maxAttempts: 1 });
     const claimed = jobs.claimDue(["quality_cleanup"], 1, "owner")[0];
     assert.equal(claimed.id, job.id);
     const result = jobs.retryIndefinitely(job.id, "owner", "DELETE failed", Date.now() + 60_000);
@@ -476,28 +478,31 @@ test("account retirement reassigns credentials while preserving detached upload 
   const users = [
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
     { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [], enabled: true, lastLoginAt: "" },
-  ] as any[];
-  const userStore = {
+  ] satisfies BiliUser[];
+  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
     list: () => [...users],
-    getById: (id: string) => users.find((user) => user.id === id) || null,
-  } as any;
-  const configStore = { get: () => testConfig() } as any;
+    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
+  };
+  const configStore = { get: () => testConfig() };
   const scheduler = new SyncScheduler(configStore, userStore, manager);
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
     scheduler.beginShutdown();
-    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVDETACH", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVDETACH", title: "video", upperName: "up" });
     manager.markQueued("BVDETACH", "/backup/one/one-fav", "u1", 10);
-    (scheduler as any).jobStore.enqueue({
-      kind: "download",
+    jobs.enqueue({
+      kind: "download" as const,
       dedupeKey: "download:BVDETACH",
       bvid: "BVDETACH",
       payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "one-fav", downloadUserId: "u1" },
     });
     const result = await scheduler.retireUser(users[0]);
     assert.equal(result.reassignedJobs, 1);
-    const job = (scheduler as any).jobStore.findByDedupeKey("download:BVDETACH");
+    const job = jobs.findByDedupeKey("download:BVDETACH");
+    assert.ok(job);
     assert.equal(job.payload.downloadUserId, "u2");
-    assert.equal(job.payload.detachedTargets[0].remotePath, "/backup/one/one-fav");
+    assert.ok(job);
+    assert.equal(readField(readArray(job.payload.detachedTargets)[0], 'remotePath'), "/backup/one/one-fav");
     assert.ok(manager.getRelationStatus("u1", 10, "BVDETACH")?.accountDetachedAt);
   } finally {
     await scheduler.shutdown(100);
@@ -509,37 +514,43 @@ test("account retirement reassigns credentials while preserving detached upload 
 test("account retirement pauses without an alternate and same-UID login resumes the job", async () => {
   const runtime = await createTestDir("account-pause-resume");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const users: any[] = [
+  const users: BiliUser[] = [
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "fav" }], enabled: true, lastLoginAt: "" },
   ];
-  const userStore = {
+  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
     list: () => [...users],
-    getById: (id: string) => users.find((user) => user.id === id) || null,
-  } as any;
-  const scheduler = new SyncScheduler({ get: () => testConfig() } as any, userStore, manager);
+    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
+  };
+  const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
     scheduler.beginShutdown();
-    manager.recordFavoriteItem("u1", 10, "fav", { bvid: "BVPAUSED", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u1", 10, "fav", { bvid: "BVPAUSED", title: "video", upperName: "up" });
     manager.markQueued("BVPAUSED", "/backup/one/fav", "u1", 10);
-    (scheduler as any).jobStore.enqueue({
-      kind: "download",
+    jobs.enqueue({
+      kind: "download" as const,
       dedupeKey: "download:BVPAUSED",
       bvid: "BVPAUSED",
       payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "fav", downloadUserId: "u1" },
     });
     const retired = await scheduler.retireUser(users[0]);
     assert.equal(retired.pausedJobs, 1);
-    let job = (scheduler as any).jobStore.findByDedupeKey("download:BVPAUSED");
+    let job = jobs.findByDedupeKey("download:BVPAUSED");
+    assert.ok(job);
     assert.equal(job.status, "retry_wait");
+    assert.ok(job);
     assert.equal(job.payload.pausedForUserId, "u1");
 
     users.splice(0, users.length);
     users.push({ id: "u1", uid: 1, name: "one-new", cookie: { SESSDATA: "new", bili_jct: "new", DedeUserID: "1" }, favorites: [], enabled: true, lastLoginAt: "" });
     const restored = scheduler.restoreUserAfterLogin("u1");
     assert.equal(restored.resumedJobs, 1);
-    job = (scheduler as any).jobStore.findByDedupeKey("download:BVPAUSED");
+    job = jobs.findByDedupeKey("download:BVPAUSED");
+    assert.ok(job);
     assert.equal(job.status, "pending");
+    assert.ok(job);
     assert.equal(job.payload.downloadUserId, "u1");
+    assert.ok(job);
     assert.equal(job.payload.pausedForUserId, undefined);
     assert.equal(manager.getRelationStatus("u1", 10, "BVPAUSED")?.accountDetachedAt, undefined);
   } finally {
@@ -552,13 +563,14 @@ test("account retirement pauses without an alternate and same-UID login resumes 
 test("account retirement turns a complete local download into upload work without redownloading", async () => {
   const runtime = await createTestDir("account-local-upload");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const user: any = {
+  const user = {
     id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" },
     favorites: [{ mediaId: 10, title: "fav" }], enabled: true, lastLoginAt: "",
   };
-  const userStore = { list: () => [user], getById: (id: string) => id === "u1" ? user : null } as any;
-  const scheduler = new SyncScheduler({ get: () => testConfig() } as any, userStore, manager);
+  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); }, list: () => [user], getById: (id: string) => id === "u1" ? user : null };
+  const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
   const downloadDir = path.join(runtime, "BVLOCAL");
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
     scheduler.beginShutdown();
     await fs.promises.mkdir(downloadDir, { recursive: true });
@@ -567,7 +579,7 @@ test("account retirement turns a complete local download into upload work withou
     writeDownloadSession(downloadDir, {
       schemaVersion: 1,
       sessionId: "local-session",
-      kind: "backup",
+      kind: "backup" as const,
       bvid: "BVLOCAL",
       accountUid: 1,
       bbdownCommit: "test",
@@ -576,7 +588,7 @@ test("account retirement turns a complete local download into upload work withou
       createdAt: now,
       updatedAt: now,
       snapshotAt: now,
-      status: "complete",
+      status: "complete" as const,
       pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
       outputs: [{
         pageIndex: 1,
@@ -590,18 +602,18 @@ test("account retirement turns a complete local download into upload work withou
       }],
       history: [],
     });
-    manager.recordFavoriteItem("u1", 10, "fav", { bvid: "BVLOCAL", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u1", 10, "fav", { bvid: "BVLOCAL", title: "video", upperName: "up" });
     manager.markDownloaded("BVLOCAL", downloadDir, [{ userId: "u1", mediaId: 10 }]);
-    (scheduler as any).jobStore.enqueue({
-      kind: "download",
+    jobs.enqueue({
+      kind: "download" as const,
       dedupeKey: "download:BVLOCAL",
       bvid: "BVLOCAL",
       payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "fav", downloadUserId: "u1" },
     });
     const retired = await scheduler.retireUser(user);
     assert.equal(retired.directUploadTargets, 1);
-    assert.equal((scheduler as any).jobStore.findByDedupeKey("download:BVLOCAL"), null);
-    const upload = (scheduler as any).jobStore.list(["upload"])[0];
+    assert.equal(jobs.findByDedupeKey("download:BVLOCAL"), null);
+    const upload = jobs.list(["upload"])[0];
     assert.equal(upload.payload.localDir, downloadDir);
     assert.deepEqual(upload.payload.files, ["video.mp4"]);
     assert.equal(fs.existsSync(path.join(downloadDir, "video.mp4")), true);
@@ -615,31 +627,31 @@ test("account retirement turns a complete local download into upload work withou
 test("remote account deletion prunes only that account from shared persistent work", async () => {
   const runtime = await createTestDir("account-remote-prune");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const users: any[] = [
+  const users: BiliUser[] = [
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
     { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [{ mediaId: 20, title: "two-fav" }], enabled: true, lastLoginAt: "" },
   ];
-  const userStore = {
+  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
     list: () => [...users],
-    getById: (id: string) => users.find((user) => user.id === id) || null,
-  } as any;
-  const scheduler = new SyncScheduler({ get: () => testConfig() } as any, userStore, manager);
+    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
+  };
+  const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
     scheduler.beginShutdown();
-    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVREMOTEPRUNE", title: "video", upperName: "up" } as any);
-    manager.recordFavoriteItem("u2", 20, "two-fav", { bvid: "BVREMOTEPRUNE", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVREMOTEPRUNE", title: "video", upperName: "up" });
+    manager.recordFavoriteItem("u2", 20, "two-fav", { bvid: "BVREMOTEPRUNE", title: "video", upperName: "up" });
     manager.markQueued("BVREMOTEPRUNE", "/backup/one/one-fav", "u1", 10);
     manager.markQueued("BVREMOTEPRUNE", "/backup/two/two-fav", "u2", 20);
-    const jobs = (scheduler as any).jobStore as PersistentJobStore;
     jobs.enqueue({
-      kind: "download",
+      kind: "download" as const,
       dedupeKey: "download:BVREMOTEPRUNE",
       bvid: "BVREMOTEPRUNE",
       userId: "u1",
       payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "one-fav", downloadUserId: "u1" },
     });
     jobs.enqueue({
-      kind: "quality_download",
+      kind: "quality_download" as const,
       dedupeKey: "quality-download:BVREMOTEPRUNE:shared",
       bvid: "BVREMOTEPRUNE",
       userId: "u1",
@@ -653,7 +665,7 @@ test("remote account deletion prunes only that account from shared persistent wo
       },
     });
     jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:u1:10:BVREMOTEPRUNE",
       bvid: "BVREMOTEPRUNE",
       userId: "u1",
@@ -661,7 +673,7 @@ test("remote account deletion prunes only that account from shared persistent wo
       payload: { localDir: runtime, remotePath: "/backup/one/one-fav" },
     });
 
-    scheduler.setArchiveDeletionMaintenance(true, { id: "delete-u1", status: "preparing", scope: "account" });
+    scheduler.setArchiveDeletionMaintenance(true, { id: "delete-u1", status: "preparing" as const, scope: "account" });
     const result = scheduler.finalizeUserRemoteDeletion("u1");
     assert.equal(result.reassignedJobs, 2);
     assert.equal(result.canceledJobs, 1);
@@ -669,10 +681,10 @@ test("remote account deletion prunes only that account from shared persistent wo
     const download = jobs.findByDedupeKey("download:BVREMOTEPRUNE")!;
     assert.equal(download.userId, "u2");
     assert.equal(download.payload.downloadUserId, "u2");
-    assert.deepEqual((download.payload.detachedTargets as any[]).map((target) => target.userId), ["u2"]);
+    assert.deepEqual((download.payload.detachedTargets as unknown[]).map((target) => readField(target, 'userId')), ["u2"]);
     const quality = jobs.findByDedupeKey("quality-download:BVREMOTEPRUNE:shared")!;
     assert.equal(quality.userId, "u2");
-    assert.deepEqual((quality.payload.targets as any[]).map((target) => target.userId), ["u2"]);
+    assert.deepEqual((quality.payload.targets as unknown[]).map((target) => readField(target, 'userId')), ["u2"]);
     assert.equal(jobs.findByDedupeKey("upload:u1:10:BVREMOTEPRUNE"), null);
     assert.ok(manager.getRelationStatus("u1", 10, "BVREMOTEPRUNE")?.accountDetachedAt);
     assert.equal(manager.getRelationStatus("u2", 20, "BVREMOTEPRUNE")?.accountDetachedAt, undefined);
@@ -687,31 +699,31 @@ test("remote account deletion prunes only that account from shared persistent wo
 test("remote account deletion rolls back task pruning when account persistence fails", async () => {
   const runtime = await createTestDir("account-remote-prune-rollback");
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
-  const users: any[] = [
+  const users: BiliUser[] = [
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
     { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [{ mediaId: 20, title: "two-fav" }], enabled: true, lastLoginAt: "" },
   ];
-  const userStore = {
+  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
     list: () => [...users],
-    getById: (id: string) => users.find((user) => user.id === id) || null,
-  } as any;
-  const scheduler = new SyncScheduler({ get: () => testConfig() } as any, userStore, manager);
+    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
+  };
+  const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
     scheduler.beginShutdown();
-    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVREMOTEROLLBACK", title: "video", upperName: "up" } as any);
-    manager.recordFavoriteItem("u2", 20, "two-fav", { bvid: "BVREMOTEROLLBACK", title: "video", upperName: "up" } as any);
+    manager.recordFavoriteItem("u1", 10, "one-fav", { bvid: "BVREMOTEROLLBACK", title: "video", upperName: "up" });
+    manager.recordFavoriteItem("u2", 20, "two-fav", { bvid: "BVREMOTEROLLBACK", title: "video", upperName: "up" });
     manager.markQueued("BVREMOTEROLLBACK", "/backup/one/one-fav", "u1", 10);
     manager.markQueued("BVREMOTEROLLBACK", "/backup/two/two-fav", "u2", 20);
-    const jobs = (scheduler as any).jobStore as PersistentJobStore;
     jobs.enqueue({
-      kind: "download",
+      kind: "download" as const,
       dedupeKey: "download:BVREMOTEROLLBACK",
       bvid: "BVREMOTEROLLBACK",
       userId: "u1",
       payload: { primaryUserId: "u1", primaryMediaId: 10, primaryFolderTitle: "one-fav", downloadUserId: "u1" },
     });
     jobs.enqueue({
-      kind: "upload",
+      kind: "upload" as const,
       dedupeKey: "upload:u1:10:BVREMOTEROLLBACK",
       bvid: "BVREMOTEROLLBACK",
       userId: "u1",
@@ -719,7 +731,7 @@ test("remote account deletion rolls back task pruning when account persistence f
       payload: { localDir: runtime, remotePath: "/backup/one/one-fav" },
     });
 
-    scheduler.setArchiveDeletionMaintenance(true, { id: "delete-u1", status: "preparing", scope: "account" });
+    scheduler.setArchiveDeletionMaintenance(true, { id: "delete-u1", status: "preparing" as const, scope: "account" });
     assert.throws(() => scheduler.finalizeUserRemoteDeletion("u1", () => {
       throw new Error("users.json write failed");
     }), /write failed/);

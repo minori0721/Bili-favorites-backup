@@ -1,13 +1,13 @@
 import type { BiliUser, UserStore } from '../users.js';
 import type { StateManager } from '../state.js';
 import type { StateDatabase, PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { TaskQueue } from '../queue.js';
 import type { UploadTarget } from '../tasks.js';
 import type { cancelActiveDownloadsForAccount } from '../downloader.js';
 import { retirementTargets } from './retirement-targets.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'listUserDependentJobs' | 'findByDedupeKey' | 'updatePayload' | 'complete' | 'reassignDownloadJob' | 'pauseDetachedUserJob' | 'list' | 'wakeByBvid' | 'resumeDetachedUserJobs'>;
+  jobStore: Pick<JobRepository, 'listUserDependentJobs' | 'findByDedupeKey' | 'updatePayload' | 'complete' | 'reassignDownloadJob' | 'pauseDetachedUserJob' | 'list' | 'wakeByBvid' | 'resumeDetachedUserJobs'>;
   stateManager: Pick<StateManager, 'getCompletedLocalDownload' | 'detachUserRelations' | 'reattachUserRelations'>;
   userStore: Pick<UserStore, 'getById' | 'list'>;
   downloadQueue: Pick<TaskQueue, 'getTasks' | 'removePendingTasks'>;

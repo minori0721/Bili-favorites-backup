@@ -148,7 +148,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           sort:archiveLibraryState.sort,
           scrollPositions:archiveLibraryState.scrollPositions
         }));
-      } catch (_) {}
+      } catch (error) { console.debug('[ArchiveLibrary] preference persistence skipped', error); }
     }
 
     function saveArchiveLibraryScroll() {
@@ -817,7 +817,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         const navigation = await requestArchiveLibraryNavigation(sessionToken);
         if (!navigation || detailToken !== archiveLibraryState.detailToken) return false;
         renderArchiveLibraryNavigation();
-      } catch (_) {}
+      } catch (error) { console.debug('[ArchiveLibrary] refresh after deletion failed', error); }
       if (!archiveLibrarySessionCurrent(sessionToken) || detailToken !== archiveLibraryState.detailToken) return false;
       await loadArchiveLibraryItems(true);
       return archiveLibrarySessionCurrent(sessionToken) && detailToken === archiveLibraryState.detailToken;

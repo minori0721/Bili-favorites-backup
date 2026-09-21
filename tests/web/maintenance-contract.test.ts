@@ -12,12 +12,12 @@ test('rename boundary validates authorization identities and strips private sour
   for (const malformed of [{...data,previewId:''}, {...data,revision:'1'}, {...data,candidates:[candidate,candidate]}, {...data,candidates:[{...candidate,candidateId:undefined}]}]) {
     assert.throws(() => parseRenamePreview(malformed));
   }
-  assert.deepEqual(parseRenameUpdate({unchanged:true,remoteScan:{status:'scanning'}}), {unchanged:true,remoteScan:{status:'scanning',complete:undefined,error:''}});
-  assert.throws(() => parseRenameUpdate({unchanged:true,remoteScan:{status:'ready',complete:'false'}}));
+  assert.deepEqual(parseRenameUpdate({unchanged:true,remoteScan:{status:'scanning' as const}}), {unchanged:true,remoteScan:{status:'scanning' as const,complete:undefined,error:''}});
+  assert.throws(() => parseRenameUpdate({unchanged:true,remoteScan:{status:'ready' as const,complete:'false'}}));
 });
 
 test('rename result retains recovery evidence without accepting malformed paths', () => {
-  const result = parseRenameResult({success:0,failed:1,results:[{ok:false,status:'stranded',oldPath:'/old',newPath:'/new',actualPath:'/tmp',observedPaths:['/tmp','/old'],error:'fixture'}]});
+  const result = parseRenameResult({success:0,failed:1,results:[{ok:false,status:'stranded' as const,oldPath:'/old',newPath:'/new',actualPath:'/tmp',observedPaths:['/tmp','/old'],error:'fixture'}]});
   assert.equal(result.results[0].actualPath, '/tmp');
   assert.deepEqual(result.results[0].observedPaths, ['/tmp','/old']);
   assert.throws(() => parseRenameResult({success:0,failed:1,results:[{ok:false,observedPaths:[7]}]}));

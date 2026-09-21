@@ -1,3 +1,5 @@
+import type { ArchiveLibraryQuery } from "../src/archive-library.js";
+import { required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -95,14 +97,14 @@ function insertArchive(
         name: `${options.bvid}_P${pageIndex}.mp4`,
         path: remotePath,
         size: 1000 + pageIndex,
-        verificationStatus: "verified",
+        verificationStatus: "verified" as const,
         filenameMetadata: { pageIndex, bilibiliQuality: options.playable.quality || "1080P" },
         ...(options.playable.width && options.playable.height ? {
           mediaMetadata: {
             width: options.playable.width,
             height: options.playable.height,
             fps: options.playable.fps,
-            source: "ffprobe",
+            source: "ffprobe" as const,
             observedAt: new Date(seen).toISOString(),
           },
         } : {}),
@@ -173,25 +175,25 @@ function fixture() {
   const database = new StateDatabase(":memory:");
   insertArchive(database, {
     userId: "u1", mediaId: 10, folderTitle: "正在同步", bvid: "BVSHARED", title: "共享归档 100%_测试",
-    upperName: "UP甲", status: "verified", order: 2, playable: { width: 1920, height: 1080, fps: 30, parts: 1 },
+    upperName: "UP甲", status: "verified" as const, order: 2, playable: { width: 1920, height: 1080, fps: 30, parts: 1 },
   });
   insertArchive(database, {
     userId: "u2", mediaId: 20, folderTitle: "另一个收藏夹", bvid: "BVSHARED", title: "共享归档 100%_测试",
-    upperName: "UP甲", status: "verified", order: 1, seenOffset: 1000,
+    upperName: "UP甲", status: "verified" as const, order: 1, seenOffset: 1000,
     playable: { width: 3840, height: 2160, fps: 60, parts: 2, quality: "4K" },
   });
   insertArchive(database, {
     userId: "u1", mediaId: 10, folderTitle: "正在同步", bvid: "BVCURRENT", title: "当前项目",
-    upperName: "UP乙", status: "queued", order: 1, seenOffset: 2000,
+    upperName: "UP乙", status: "queued" as const, order: 1, seenOffset: 2000,
   });
   insertArchive(database, {
     userId: "u1", mediaId: 10, folderTitle: "正在同步", bvid: "BVHISTORY", title: "历史可播放",
-    upperName: "UP乙", status: "partial_verified", active: false, seenOffset: -1000,
+    upperName: "UP乙", status: "partial_verified" as const, active: false, seenOffset: -1000,
     playable: { width: 1280, height: 720, fps: 30, parts: 1 },
   });
   insertArchive(database, {
     userId: "u1", mediaId: 12, folderTitle: "已经停用", bvid: "BVISSUE", title: "失效异常",
-    upperName: "UP丙", status: "failed", unavailable: true, seenOffset: -2000,
+    upperName: "UP丙", status: "failed" as const, unavailable: true, seenOffset: -2000,
     error: "failed path=/secret.mp4 token=do-not-return",
   });
   database.rebuildArchiveLibraryProjection();
@@ -308,7 +310,7 @@ test("folder order, keyset cursors and current-to-global search remain stable", 
       { scope: "global", query: "\0" },
       { scope: "global", pageSize: 51 },
     ]) {
-      assert.throws(() => queryArchiveLibraryItems(database, users(), invalid as any), ArchiveLibraryQueryError);
+      assert.throws(() => queryArchiveLibraryItems(database, users(), invalid as Partial<ArchiveLibraryQuery>), ArchiveLibraryQueryError);
     }
   } finally {
     database.close();
@@ -328,7 +330,7 @@ test("archive details redact source errors and library playback preserves the fi
     }, { focusBvid: "BVSHARED", pageSize: 50 })!;
     assert.equal(queue.mode, "library");
     assert.equal(queue.total, 2);
-    assert.equal(queue.items.find((item) => item.bvid === "BVSHARED")?.source.userId, "u2");
+    assert.equal(required(queue.items.find((item) => item.bvid === "BVSHARED")?.source).userId, "u2");
 
     const search = getArchiveLibraryPlaybackSearch(database, users(), {
       scope: "global", query: "可播放", searchScope: "current",
@@ -343,7 +345,7 @@ test("archive details redact source errors and library playback preserves the fi
     const replacement = getArchiveLibraryPlaybackQueue(database, users(), {
       scope: "global", sort: "title_asc", filter: "all",
     }, { focusBvid: "BVSHARED", pageSize: 50 })!;
-    assert.equal(replacement.items.find((item) => item.bvid === "BVSHARED")?.source.userId, "u1");
+    assert.equal(required(replacement.items.find((item) => item.bvid === "BVSHARED")?.source).userId, "u1");
   } finally {
     database.close();
   }
@@ -367,9 +369,9 @@ test("projection keeps normal and deleted visibility independent across shared s
 
     const normal = queryArchiveLibraryItems(database, users(), { scope: "global" });
     assert.equal(normal.items.find((item) => item.bvid === "BVSHARED")?.membershipCount, 1);
-    assert.equal(normal.items.find((item) => item.bvid === "BVSHARED")?.memberships[0].userId, "u2");
+    assert.equal(required(required(normal.items.find((item) => item.bvid === "BVSHARED")?.memberships)[0]).userId, "u2");
     const deleted = queryArchiveLibraryItems(database, users(), { scope: "global", filter: "deleted" });
-    assert.equal(deleted.items.find((item) => item.bvid === "BVSHARED")?.memberships[0].userId, "u1");
+    assert.equal(required(required(deleted.items.find((item) => item.bvid === "BVSHARED")?.memberships)[0]).userId, "u1");
     assert.equal(queryArchiveLibraryItems(database, users(), {
       scope: "account", userId: "u1", filter: "all",
     }).items.some((item) => item.bvid === "BVSHARED"), false);
@@ -424,7 +426,7 @@ test("historical folder pagination preserves every row without unsafe integer cu
         folderTitle: "正在同步",
         bvid: `BVHIST${String(index).padStart(4, "0")}`,
         title: `历史视频 ${index}`,
-        status: "failed",
+        status: "failed" as const,
         active: false,
         seenOffset: index,
       });
@@ -458,7 +460,7 @@ test("historical folder pagination preserves every row without unsafe integer cu
     assert.throws(() => queryArchiveLibraryItems(database, users(), {
       scope: "folder", userId: "u1", mediaId: 10, pageSize: 17,
       cursor: Buffer.from(JSON.stringify(stale)).toString("base64url"),
-    }), (error: any) => error?.code === "ARCHIVE_CURSOR_STALE");
+    }), (error: unknown) => readField(error, 'code') === "ARCHIVE_CURSOR_STALE");
   } finally {
     database.close();
   }
@@ -474,7 +476,7 @@ test("library playback locates focus without a window scan and pages in both dir
         folderTitle: "正在同步",
         bvid: `BVQUEUE${String(index).padStart(4, "0")}`,
         title: `队列视频 ${String(index).padStart(4, "0")}`,
-        status: "verified",
+        status: "verified" as const,
         order: index,
         seenOffset: index,
         playable: { width: 1920, height: 1080, fps: 30 },
@@ -518,7 +520,7 @@ test("large archive pagination stays bounded and library indexes serve both orde
     id: `stress-${index + 1}`,
     uid: 100 + index,
     name: `压力账号 ${index + 1}`,
-    cookie: { SESSDATA: `test-${index}`, DedeUserID: String(100 + index) },
+    cookie: { bili_jct: '', SESSDATA: `test-${index}`, DedeUserID: String(100 + index) },
     favorites: [{ mediaId: 100 + index, title: `压力收藏夹 ${index + 1}` }],
     enabled: true,
     lastLoginAt: new Date(now).toISOString(),
@@ -544,8 +546,8 @@ test("large archive pagination stays bounded and library indexes serve both orde
           upperName: `UP ${index % 23}`,
           firstSeenAt: new Date(seen).toISOString(),
           lastSeenAt: new Date(seen).toISOString(),
-          biliStatus: "available",
-          backupStatus: "failed",
+          biliStatus: "available" as const,
+          backupStatus: "failed" as const,
         };
         insertVideo.run(bvid, "failed", "available", null, null, null, JSON.stringify(video), seen);
         for (let userIndex = 0; userIndex < stressUsers.length; userIndex += 1) {
@@ -560,7 +562,7 @@ test("large archive pagination stays bounded and library indexes serve both orde
             lastSeenAt: new Date(seen).toISOString(),
             favOrder: index + 1,
             activeInFavorite: true,
-            backupStatus: "failed",
+            backupStatus: "failed" as const,
           };
           insertRelation.run(
             user.id, mediaId, bvid, "failed", 1, relation.folderTitle, relation.favOrder,
@@ -597,8 +599,8 @@ test("large archive pagination stays bounded and library indexes serve both orde
       WHERE scope_type='global' AND scope_id='' AND visibility='normal' AND status_group='issue'
       ORDER BY recent_key DESC,bvid
       LIMIT 51
-    `).all() as any[];
-    const recentDetails = recentPlan.map((row) => row.detail).join("\n");
+    `).all() as unknown[];
+    const recentDetails = recentPlan.map((row) => readField(row, 'detail')).join("\n");
     assert.match(recentDetails, /idx_archive_library_projection_status_recent/);
     assert.doesNotMatch(recentDetails, /USE TEMP B-TREE|MATERIALIZE/i);
     const titlePlan = database.db.prepare(`
@@ -607,16 +609,16 @@ test("large archive pagination stays bounded and library indexes serve both orde
       WHERE scope_type='account' AND scope_id='stress-1' AND visibility='normal' AND status_group='issue'
       ORDER BY title_key ASC,bvid
       LIMIT 51
-    `).all() as any[];
-    assert.match(titlePlan.map((row) => row.detail).join("\n"), /idx_archive_library_projection_status_title_asc/);
+    `).all() as unknown[];
+    assert.match(titlePlan.map((row) => readField(row, 'detail')).join("\n"), /idx_archive_library_projection_status_title_asc/);
     const folderPlan = database.db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT bvid FROM favorite_relations
       WHERE user_id=? AND media_id=?
       ORDER BY active_in_favorite DESC,fav_order,last_seen_at DESC,bvid
       LIMIT 51
-    `).all("stress-1", 100) as any[];
-    assert.match(folderPlan.map((row) => row.detail).join("\n"), /idx_relations_library_folder/);
+    `).all("stress-1", 100) as unknown[];
+    assert.match(folderPlan.map((row) => readField(row, 'detail')).join("\n"), /idx_relations_library_folder/);
   } finally {
     database.close();
   }

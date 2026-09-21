@@ -1,8 +1,8 @@
 import type { UploadTask, UploadVerificationTask, EncodingRetryContext } from '../tasks.js';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { UploadCircuitBreaker, UploadFailureInfo } from '../upload-health.js';
 import { markHistoryGroupUploaded } from '../download-session.js';
 import { logManager } from '../logger.js';
@@ -15,12 +15,13 @@ import type { RecoveryAssessment } from './recovery-contracts.js';
 import type { RecoveryUploadItem } from './upload-work.js';
 
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'complete' | 'countEncodingRetryJobs' | 'completeEncodingRetryParent' | 'hasDedupePrefix' | 'defer' | 'retry' | 'findByDedupeKey' | 'updatePayload'>;
+  jobStore: Pick<JobRepository, 'complete' | 'countEncodingRetryJobs' | 'completeEncodingRetryParent' | 'hasDedupePrefix' | 'defer' | 'retry' | 'findByDedupeKey' | 'updatePayload'>;
   stateManager: Pick<StateManager, 'clearUploadCooldown' | 'deferUploadFileVerification' | 'runAtomic' | 'markUploadFileVerified' | 'failUploadFileVerification' | 'setUploadCooldown'>;
-  transferSessions: Pick<TransferSessionStore, 'get' | 'listFiles'>;
+  transferSessions: Pick<TransferSessionRepository, 'get' | 'listFiles'>;
   uploadCircuit: Pick<UploadCircuitBreaker, 'recordSuccess' | 'recordFailure' | 'getSnapshot'>;
   localCleanup: { request(bvid: string, dir: string): unknown };
   leaseOwner: string;
+  now(): number;
   isEncodingRetryParentActive(context: EncodingRetryContext): boolean;
   dispatchPersistentJobs(): void;
   commitVerifiedTransfer(task: UploadVerificationTask, result: NonNullable<UploadTask['result']>, partial?: boolean, history?: boolean, retry?: EncodingRetryContext): void;
@@ -39,7 +40,7 @@ export function createVerificationHandlers(deps: Dependencies) {
     const payload = parseVerificationPayload(job.payload);
     const encodingRetry = task.encodingRetry || parseEncodingRetryContext(payload.encodingRetry);
     if (encodingRetry && !deps.isEncodingRetryParentActive(encodingRetry)) {
-      deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+      deps.jobStore.complete(job.id, deps.leaseOwner);
       deps.dispatchPersistentJobs();
       return;
     }
@@ -58,7 +59,7 @@ export function createVerificationHandlers(deps: Dependencies) {
         deps.dispatchPersistentJobs();
         return;
       }
-      const nextAt = Date.now() + Math.max(2_000, UPLOAD_VERIFY_SCHEDULE_MS[Math.min(UPLOAD_VERIFY_SCHEDULE_MS.length - 1, Number(job.attempts || 0))] || 10 * 60_000);
+      const nextAt = deps.now() + Math.max(2_000, UPLOAD_VERIFY_SCHEDULE_MS[Math.min(UPLOAD_VERIFY_SCHEDULE_MS.length - 1, Number(job.attempts || 0))] || 10 * 60_000);
       const reason = "正式文件等待远端确认，未重复上传";
       if (!payload.historyOnly) {
         for (const pending of transfer.pendingChecks || []) {
@@ -76,7 +77,7 @@ export function createVerificationHandlers(deps: Dependencies) {
         let retryCommitted = false;
         deps.stateManager.runAtomic(() => {
           const relationVerified = deps.stateManager.markUploadFileVerified(task.bvid, task.userId, task.mediaId, task.remoteFile);
-          if (!deps.jobStore.complete(task.persistentJobId, deps.leaseOwner)) throw new Error("Encoding retry verification ownership changed before commit");
+          if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error("Encoding retry verification ownership changed before commit");
           if (relationVerified && deps.jobStore.countEncodingRetryJobs(encodingRetry.parentJobId, encodingRetry.generation) === 0) {
             if (!deps.jobStore.completeEncodingRetryParent(encodingRetry.parentJobId, encodingRetry.generation)) throw new Error("Encoding retry parent changed before final file verification commit");
             retryCommitted = true;
@@ -86,7 +87,7 @@ export function createVerificationHandlers(deps: Dependencies) {
         if (retryCommitted) deps.afterEncodingRetryCommitted(task.bvid, encodingRetry);
         return;
       }
-      deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+      deps.jobStore.complete(job.id, deps.leaseOwner);
       if (deps.uploadCircuit.recordSuccess(`verify:${task.bvid}`)) deps.stateManager.clearUploadCooldown();
       if (payload.historyOnly) {
         const prefix = `verify:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:history:${payload.historySnapshotAt || "unknown"}:`;
@@ -106,7 +107,7 @@ export function createVerificationHandlers(deps: Dependencies) {
         deps.finishEncodingRetryFailure(task.bvid, encodingRetry, reason, "mismatch", task.persistentJobId);
         return;
       }
-      deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+      deps.jobStore.complete(job.id, deps.leaseOwner);
       if (!payload.historyOnly) {
         deps.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
       }
@@ -130,12 +131,12 @@ export function createVerificationHandlers(deps: Dependencies) {
         : [];
       const timing = computeUploadVerificationTiming(
         pendingFiles.map((file) => file.putAcceptedAt || fallbackPutAt).filter((value) => Number.isFinite(value)),
-        Date.now(),
+        deps.now(),
       );
       if (!timing.timedOut && timing.nextAt !== undefined) {
-        const nextAt = Math.max(Date.now() + 1_000, timing.nextAt);
+        const nextAt = Math.max(deps.now() + 1_000, timing.nextAt);
         const reason = "远端暂不可见，按各文件PUT时间继续确认";
-        deps.jobStore.defer(task.persistentJobId, deps.leaseOwner, reason, nextAt);
+        deps.jobStore.defer(job.id, deps.leaseOwner, reason, nextAt);
         if (!payload.historyOnly) {
           for (const file of pendingFiles) {
             deps.stateManager.deferUploadFileVerification(task.bvid, task.userId, task.mediaId, file.finalPath, nextAt, reason);
@@ -145,13 +146,13 @@ export function createVerificationHandlers(deps: Dependencies) {
         return;
       }
     }
-    const putAt = Date.parse(String(payload.putCompletedAt || "")) || Date.now();
-    const elapsed = Math.max(0, Date.now() - putAt);
+    const putAt = Date.parse(String(payload.putCompletedAt || "")) || deps.now();
+    const elapsed = Math.max(0, deps.now() - putAt);
     const nextDelay = UPLOAD_VERIFY_SCHEDULE_MS.find((delayMs) => delayMs > elapsed + 250);
     if (nextDelay !== undefined) {
-      const nextAt = Math.max(Date.now() + 1_000, putAt + nextDelay);
+      const nextAt = Math.max(deps.now() + 1_000, putAt + nextDelay);
       const reason = "远端暂不可见，等待下一次确认";
-      deps.jobStore.retry(task.persistentJobId, deps.leaseOwner, reason, nextAt);
+      deps.jobStore.retry(job.id, deps.leaseOwner, reason, nextAt);
       if (!payload.historyOnly) {
         deps.stateManager.deferUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, nextAt, reason);
       }
@@ -170,7 +171,7 @@ export function createVerificationHandlers(deps: Dependencies) {
       );
       return;
     }
-    deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+    deps.jobStore.complete(job.id, deps.leaseOwner);
     if (!payload.historyOnly) {
       deps.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
     }
@@ -279,7 +280,7 @@ export function createVerificationHandlers(deps: Dependencies) {
       timestamp: new Date().toISOString(),
       type: "upload",
       level: "error",
-      summary: `${task.historyOnly ? "历史分P" : "上传"}确认发现远端文件冲突，已暂停 ${task.bvid}：请处理后重新确认或继续上传`,
+      summary: `${payload.historyOnly ? "历史分P" : "上传"}确认发现远端文件冲突，已暂停 ${task.bvid}：请处理后重新确认或继续上传`,
       raw: `[UploadVerify] conflict parked path=${redactRemotePathForDisplay(conflictRemotePath)}`,
       bvid: task.bvid,
       simpleVisible: true,
@@ -292,7 +293,7 @@ export function createVerificationHandlers(deps: Dependencies) {
     if (!job || !task.persistentJobId) return;
     const encodingRetry = task.encodingRetry || parseEncodingRetryContext(job.payload.encodingRetry);
     if (encodingRetry && !deps.isEncodingRetryParentActive(encodingRetry)) {
-      deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+      deps.jobStore.complete(job.id, deps.leaseOwner);
       deps.dispatchPersistentJobs();
       return;
     }
@@ -301,7 +302,7 @@ export function createVerificationHandlers(deps: Dependencies) {
         deps.finishEncodingRetryFailure(task.bvid, encodingRetry, "上传确认会话已失效；未执行归档替换。", "error", task.persistentJobId);
         return;
       }
-      deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+      deps.jobStore.complete(job.id, deps.leaseOwner);
       deps.dispatchPersistentJobs();
       return;
     }
@@ -316,7 +317,7 @@ export function createVerificationHandlers(deps: Dependencies) {
       return;
     }
     const delayMs = failure.retryAfterMs || 60_000;
-    const result = deps.jobStore.retry(task.persistentJobId, deps.leaseOwner, failure.summary, Date.now() + delayMs);
+    const result = deps.jobStore.retry(job.id, deps.leaseOwner, failure.summary, deps.now() + delayMs);
     if (result.exhausted) {
       if (encodingRetry) {
         deps.finishEncodingRetryFailure(task.bvid, encodingRetry, `编码替换远端确认失败：${failure.summary}`, "error", task.persistentJobId);

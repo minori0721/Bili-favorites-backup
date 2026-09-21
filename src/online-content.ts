@@ -13,7 +13,11 @@ import {
 import type { BiliUser } from "./users.js";
 import { coversDir } from "./paths.js";
 import { hasArchiveCover } from "./cover-cache.js";
-import { OnlineCoverCache } from "./online-cover-cache.js";
+export interface OnlineContentCoverPort {
+  get(key: string): Promise<{ path: string } | null>;
+  getOrFetch(key: string, url: string): Promise<{ path: string } | null>;
+  promoteBvid(bvid: string, key: string): Promise<string | null>;
+}
 import { safeErrorSummary } from "./diagnostics.js";
 
 export interface OnlineContentQuery {
@@ -88,7 +92,7 @@ export class OnlineContentService {
   private readonly navigation = new Map<string, { expiresAt: number; value: {folders:FavoriteFolderInfo[]} }>();
 
   constructor(
-    private readonly coverCache: OnlineCoverCache,
+    private readonly coverCache: OnlineContentCoverPort,
     private readonly loaders: OnlineContentLoaders = {},
   ) {}
 

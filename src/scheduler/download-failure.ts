@@ -1,5 +1,5 @@
 import { DownloadTask, QualityUpgradeDownloadTask, type UploadTarget, type QualityUpgradeTask } from '../tasks.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
 import type { ConfigStore } from '../config.js';
 import { computeTaskRetryDelayMs } from '../queue.js';
@@ -13,7 +13,7 @@ import { readTaskFailure, taskUploadFailure } from './task-failure.js';
 
 type Download = DownloadTask | QualityUpgradeDownloadTask;
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'complete' | 'updatePayload' | 'parkManualRecovery' | 'defer' | 'retry' | 'retryDownloadWithManualFallback'>;
+  jobStore: Pick<JobRepository, 'complete' | 'updatePayload' | 'parkManualRecovery' | 'defer' | 'retry' | 'retryDownloadWithManualFallback'>;
   stateManager: Pick<StateManager, 'markDownloadInterrupted' | 'markRelationRetryPending' | 'markFailed'>;
   configStore: Pick<ConfigStore, 'get'>;
   retirementAbortedJobIds: Pick<Set<string>, 'delete'>;

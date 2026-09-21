@@ -1,132 +1,113 @@
-import { createRecoveryRouter } from './http/recovery.js';
-import { createLocalReleaseRouter } from './http/local-release.js';
-import { createQualityMaintenance } from './scheduler/quality-maintenance.js';
-import { createQualityMaintenanceRouter } from './http/quality-maintenance.js';
-import { createOnlineContentRouter } from './http/online-content.js';
-import { createSyncControlRouter } from './http/sync-control.js';
-import { createPathMigrationRouter } from './http/path-migration.js';
-import { ImportMaintenance } from "./import-maintenance.js";
-import { createStartupLifecycle, optionalStartupStep } from "./startup-lifecycle.js";
-import { recoverImportTransaction } from "./import-transaction.js";
-import express from "express";
-import { UpdateCheckService } from "./update-check.js";
-import session from "express-session";
-import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import { fileURLToPath } from "node:url";
 import { TvQrcodeLogin } from "@renmu/bili-api";
+import express from "express";
+import crypto from "node:crypto";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
-import { authSessionDatabasePath, backupsDir, coversDir, dataDir, databasePath, ensureAppDirs, exportsDir, onlineCoversDir, tempDir } from "./paths.js";
-import { type AppConfig, ConfigStore, normalizeBBDownEncodingPriority, validateBBDownRuntimeConfig, validateConfig } from "./config.js";
-import { downloadCredentialsForUser, type BiliUser, UserStore } from "./users.js";
-import { FolderDetailFilter, MANUAL_ARCHIVE_MEDIA_ID, type RemoteFileRecord, StateManager, relationKey } from "./state.js";
-import { mergeLiveFavoriteDetailItem, selectFavoriteDetailSource } from "./favorite-detail.js";
-import {
-  BiliFavoriteFolderResponseError,
-  BiliRiskOrLoginError,
-  getFavoriteFolderCover,
-  getVideoPageSnapshot,
-  getUserInfo,
-  listFavoriteFolders,
-  listFavoriteItemsPage,
-  normalizeTvAuthResult,
-  refreshUserAuth,
-  resolveSelfVisibleFavoriteItem,
-} from "./bili.js";
-import { shutdownActiveDownloads } from "./downloader.js";
-import { cleanupStaleBBDownCredentialDirectories } from "./credential-temp.js";
-import { BBDOWN_SOURCE_COMMIT, cleanupDownloadRecoveryArtifacts, inspectDownloadCache, readDownloadSession } from "./download-session.js";
-import { clearDirectoryContents } from "./storage.js";
-import { renderLoginPage, renderAppPage } from "./web.js";
-import { readAssetManifest, serveAppAsset } from "./web/server/assets.js";
-import { appInfo } from "./app-info.js";
-import { SyncScheduler } from "./scheduler.js";
-import { logManager, logsPath } from "./logger.js";
-import { QualityUpgradeTask } from "./tasks.js";
-import {
-  applyQualityArtifactProfile,
-  buildQualityArtifactKey,
-  normalizeQualityArtifactProfile,
-  qualityArtifactProfileFromConfig,
-} from "./quality-artifact.js";
-import {
-  batchRenameRemotePaths,
-  deleteRemoteFiles,
-  listRemoteFilesRecursive,
-  isRemoteNotFoundError,
-} from "./uploader.js";
-import { joinRemotePath, sanitizeSegment } from "./utils.js";
-import { sanitizeUploadText } from "./upload-health.js";
-import { sqlitePaths, UNAVAILABLE_COVER_BACKFILL_MARKER, type UnavailablePageCursor, type UnavailablePageFilter } from "./database.js";
-import { redactRemotePathForDisplay, safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
-import {
-  AUTH_REFRESH_MAX_UNKNOWN_ATTEMPTS,
-  classifyAuthRefreshError,
-  isAuthRefreshAttemptBlocked,
-  nextAuthRefreshFailureState,
-} from "./auth-refresh.js";
-import {
-  applyMigrationPackageFile,
-  createMigrationExport,
-  estimateMigrationExport,
-  previewMigrationPackageFile,
-} from "./migration.js";
-import { collectSecurityConfigurationWarnings, createLoginRateLimiter } from "./security.js";
-import { rotateDebugLogs } from "./debug-log-retention.js";
-import { PathMigrationService } from "./path-migration.js";
-import { createRemoteReplacementRunner } from "./remote-operations.js";
-import { remoteStorageIdentity } from "./remote-storage.js";
-import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
-import { normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
-import { RenamePreviewSessionStore, type RenamePreviewRemoteScanInfo } from "./rename-preview-session.js";
-import {
-  closePlaybackDeliveryTracker,
-  getPlaybackDeliveryStatus,
-  getPlaybackQueue,
-  getPlaybackSearch,
-  playbackFileAlistLocation,
-  PlaybackHttpError,
-  resolvePlaybackFile,
-  streamPlaybackFile,
-} from "./playback.js";
-import { actualQualityLabel, isSelectableBilibiliQuality, validBrowserMediaMetadata } from "./media-metadata.js";
-import { UnavailableCoverBackfill, waitForCoverCacheIdle } from "./cover-cache.js";
-import { OnlineCoverCache } from "./online-cover-cache.js";
-import { OnlineContentService, sendOnlineCover, type OnlineArchiveStateResolver } from "./online-content.js";
-import { FavoriteFolderCoverService } from "./favorite-folder-cover.js";
-import { FavoriteFolderListCache } from "./favorite-folder-cache.js";
-import { MediaProbeBusyError, MediaProbeService } from "./media-probe.js";
-import {
-  ADMIN_REMEMBER_TTL_MS,
-  ADMIN_SESSION_COOKIE_NAME,
-  ADMIN_SESSION_TTL_MS,
-  AdminSessionStore,
-  buildAdminAuthFingerprint,
-} from "./admin-session.js";
-import {
-  ArchiveLibraryQueryError,
-  getArchiveLibraryItemDetail,
-  getArchiveLibraryNavigation,
-  getArchiveLibraryPlaybackQueue,
-  getArchiveLibraryPlaybackSearch,
-  queryArchiveLibraryItems,
-  type ArchiveLibraryFilter,
-  type ArchiveLibraryQuery,
-  type ArchiveLibraryScope,
-  type ArchiveLibrarySearchScope,
-  type ArchiveLibrarySort,
-} from "./archive-library.js";
-import { ArchiveDeletionService } from "./archive-deletion.js";
+import { createAccountLogin } from './account-login-service.js';
+import { createAccountRefresh } from './account-refresh-service.js';
 import { executeAccountRemoval } from "./account-removal.js";
-import { BackgroundPreviewCache, type BackgroundPreviewSnapshot } from "./preview-cache.js";
+import { createAccountService } from './account-service.js';
 import {
-  buildIndexedRemoteFiles,
-  buildRenamePreviewInternal,
-  mergeRenamePreviewInternals,
-  type InternalRenamePreviewData,
-} from "./rename-preview.js";
+AdminSessionStore
+} from "./admin-session.js";
+import { appInfo } from "./app-info.js";
+import { ArchiveDeletionService } from "./archive-deletion.js";
+import { createArchiveLibraryService } from './archive-library-service.js';
+import {
+getFavoriteFolderCover,
+getUserInfo,
+getVideoPageSnapshot,
+listFavoriteFolders,
+listFavoriteItemsPage,
+normalizeTvAuthResult,
+refreshUserAuth,
+resolveSelfVisibleFavoriteItem,
+} from "./bili.js";
+import { ConfigStore } from "./config.js";
+import { createConfigurationService } from './configuration-service.js';
+import { UnavailableCoverBackfill,waitForCoverCacheIdle } from "./cover-cache.js";
+import { cleanupStaleBBDownCredentialDirectories } from "./credential-temp.js";
+import { UNAVAILABLE_COVER_BACKFILL_MARKER } from "./database.js";
+import { rotateDebugLogs } from "./debug-log-retention.js";
+import { safeErrorSummary } from "./diagnostics.js";
+import { BBDOWN_SOURCE_COMMIT } from "./download-session.js";
+import { shutdownActiveDownloads } from "./downloader.js";
+import { createFavoriteBrowsing } from './favorite-browsing-service.js';
+import { createFavoriteDetailService } from './favorite-detail-service.js';
+import { FavoriteFolderListCache } from "./favorite-folder-cache.js";
+import { FavoriteFolderCoverService } from "./favorite-folder-cover.js";
+import { createAccountLoginRouter } from './http/account-login.js';
+import { createAccountRemovalRouter } from './http/account-removal.js';
+import { createAccountRouter } from './http/accounts.js';
+import { createArchiveDeletionRouter } from './http/archive-deletion.js';
+import { createArchiveLibraryRouter } from './http/archive-library.js';
+import { createAvailabilityRecheckRouter } from './http/availability-recheck.js';
+import { createAuthentication,requireAuth,requireSameOrigin } from './http/authentication.js';
+import { createConfigurationRouter } from './http/configuration.js';
+import { createFavoritesRouter } from './http/favorites.js';
+import { createLocalReleaseRouter } from './http/local-release.js';
+import { createLogRouter } from './http/logs.js';
+import { createManualArchiveRouter } from './http/manual-archive.js';
+import { createMediaProbeRouter } from './http/media-probe.js';
+import { createMigrationRouter } from './http/migration.js';
+import { createOnlineContentRouter } from './http/online-content.js';
+import { createPageRouter } from './http/pages.js';
+import { createPathMigrationRouter } from './http/path-migration.js';
+import { createPlaybackRouter } from './http/playback.js';
+import { createQualityMaintenanceRouter } from './http/quality-maintenance.js';
+import { createQueueStateRouter } from './http/queue-state.js';
+import { createRecoveryRouter } from './http/recovery.js';
+import { createRenameRouter } from './http/rename.js';
+import { createHttpErrorHandler,createMaintenanceGuard,createRequestBoundary } from './http/request-boundary.js';
+import { createStorageCleanupRouter } from './http/storage-cleanup.js';
+import { createSyncControlRouter } from './http/sync-control.js';
+import { createUnavailableRouter } from './http/unavailable.js';
+import { createUpdatesRouter } from './http/updates.js';
+import { ImportMaintenance } from "./import-maintenance.js";
+import { recoverImportTransaction } from "./import-transaction.js";
+import { logManager } from "./logger.js";
+import { createManualArchiveService } from './manual-archive-service.js';
+import { createMediaProbeRequests } from './media-probe-service.js';
+import { MediaProbeService } from "./media-probe.js";
+import { createMigrationService } from './migration-service.js';
+import {
+applyMigrationPackageFile,
+createMigrationExport,
+estimateMigrationExport,
+previewMigrationPackageFile,
+} from "./migration.js";
+import { createOnlineArchiveProjection } from './online-archive-projection.js';
+import { OnlineContentService } from "./online-content.js";
+import { OnlineCoverCache } from "./online-cover-cache.js";
+import { PathMigrationService } from "./path-migration.js";
+import { authSessionDatabasePath,coversDir,ensureAppDirs,onlineCoversDir,tempDir } from "./paths.js";
+import { createPlaybackService } from './playback-service.js';
+import { closePlaybackDeliveryTracker } from './playback.js';
+import { previewDetailLimit } from './preview-options.js';
+import { createRemoteReplacementRunner } from "./remote-operations.js";
+import { createRenameService } from './rename-service.js';
+import { SyncScheduler } from "./scheduler.js";
+import { recoverInterruptedQualityDownloads } from './scheduler/quality-download-recovery.js';
+import { createQualityMaintenance } from './scheduler/quality-maintenance.js';
+import { createQualityStartupRecovery } from './scheduler/quality-startup-recovery.js';
+import type { LegacyRecoveryMarkers } from './scheduler/legacy-import-recovery.js';
+import { collectSecurityConfigurationWarnings,createLoginRateLimiter } from "./security.js";
+import { createStartupLifecycle,optionalStartupStep } from "./startup-lifecycle.js";
+import { StateManager } from "./state.js";
+import { createStorageCleanup } from './storage-cleanup-service.js';
+import { checkRemoteStorageReadOnly } from "./storage-diagnostic.js";
+import { createUnavailableService } from './unavailable-service.js';
+import { UpdateCheckService } from "./update-check.js";
+import {
+batchRenameRemotePaths,
+deleteRemoteFiles,
+listRemoteFilesRecursive
+} from "./uploader.js";
+import { UserStore } from "./users.js";
+import { renderAppPage,renderLoginPage } from "./web.js";
+import { readAssetManifest } from "./web/server/assets.js";
 
 readAssetManifest();
 ensureAppDirs();
@@ -137,6 +118,7 @@ const importMaintenance = new ImportMaintenance();
 const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
+const archiveLibrary = createArchiveLibraryService({database: () => stateManager.getDatabase(), users: () => userStore.list()});
 const scheduler = new SyncScheduler(configStore, userStore, stateManager, {deferAdmissionUntilStart: true});
 const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
 const onlineCoverCache = new OnlineCoverCache(configStore.get().onlineCoverCacheLimitMB);
@@ -148,6 +130,7 @@ const favoriteFolderListCache = new FavoriteFolderListCache(
     for (const folder of folders) favoriteFolderCover.prime(user, folder.mediaId, folder.cover);
   },
 );
+const favoriteBrowsing = createFavoriteBrowsing({folders: favoriteFolderListCache, covers: favoriteFolderCover, users: userStore, load: listFavoriteFolders});
 const mediaProbe = new MediaProbeService(
   configStore,
   undefined,
@@ -155,9 +138,6 @@ const mediaProbe = new MediaProbeService(
   getVideoPageSnapshot,
 );
 
-function isPlaybackMediaId(mediaId: number) {
-  return Number.isInteger(mediaId) && (mediaId >= 1 || mediaId === MANUAL_ARCHIVE_MEDIA_ID);
-}
 const pathMigration = new PathMigrationService(stateManager.getDatabase(), configStore, {
   isSchedulerIdle: () => !scheduler.hasRunningTransferTasks()
     && !scheduler.hasPersistentTransferWork()
@@ -183,41 +163,28 @@ const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, us
   },
 });
 
-const favoriteItemsCache = new Map<
-  string,
-  {
-    expiresAt: number;
-    data: Awaited<ReturnType<typeof listFavoriteItemsPage>>;
-  }
->();
-const favoriteItemsCacheTtlMs = 60 * 1000;
-const loginSessionTtlMs = 10 * 60 * 1000;
+const accountLogin = createAccountLogin({
+  create() {
+    const login = new TvQrcodeLogin();
+    return {login: () => login.login(), completed: callback => {login.emitter.on('completed', callback);},
+      failed: callback => {login.emitter.on('error', callback);}, stop: () => login.interrupt()};
+  },
+  qr: url => QRCode.toDataURL(url), normalize: normalizeTvAuthResult, info: getUserInfo,
+  users: userStore, maintenance: importMaintenance, id: () => crypto.randomUUID(), now: Date.now,
+  restore(id) {
+    if (archiveDeletion.restoreAccount(id)) {scheduler.restoreUserAfterLogin(id); scheduler.wakeChargingAccessProbes(id);}
+  },
+});
+const favoriteDetail = createFavoriteDetailService({state: stateManager, listPage: listFavoriteItemsPage, resolveVisible: resolveSelfVisibleFavoriteItem, now: Date.now});
 const artplayerAssetPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/artplayer/dist/artplayer.js");
-type RemoteRenameScan = Awaited<ReturnType<typeof listRemoteFilesRecursive>>;
-const renamePreviewScans = new BackgroundPreviewCache<RemoteRenameScan>({ ttlMs: 5 * 60_000, failedTtlMs: 30_000, maxEntries: 32 });
-const renamePreviewSessions = new RenamePreviewSessionStore({ ttlMs: 5 * 60_000, maxEntries: 8 });
+const renameService = createRenameService({ config: () => configStore.get(), state: stateManager, hasUnfinishedDeletion: () => archiveDeletion.hasUnfinishedOperation(), scan: listRemoteFilesRecursive, rename: batchRenameRemotePaths });
 
-type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "online-covers" | "exports" | "backups" | "state" | "users" | "config";
-
-const cleanupItems: Record<CleanupItem, { label: string; important: boolean; path?: string }> = {
-  "memory-cache": { label: "页面缓存", important: false },
-  temp: { label: "全部临时下载文件", important: true, path: tempDir },
-  "orphan-fragments": { label: "无法续传的下载残片", important: true },
-  logs: { label: "网页日志", important: false, path: logsPath },
-  "debug-logs": { label: "Debug 日志", important: false, path: path.join(dataDir, "debug") },
-  covers: { label: "归档封面（永久保存）", important: true, path: coversDir },
-  "online-covers": { label: "在线缩略图缓存", important: false, path: onlineCoversDir },
-  exports: { label: "导出压缩包", important: false, path: exportsDir },
-  backups: { label: "导入前备份", important: false, path: backupsDir },
-  state: { label: "备份状态与持久化任务", important: true, path: databasePath },
-  users: { label: "账号登录信息", important: true, path: path.join(dataDir, "users.json") },
-  config: { label: "全局配置", important: true, path: path.join(dataDir, "config.json") },
-};
-
-const allCleanupKeys = Object.keys(cleanupItems) as CleanupItem[];
+const qualityStartupRecovery = createQualityStartupRecovery({
+  state: stateManager, config: configStore, remove: deleteRemoteFiles,
+  replacement: createRemoteReplacementRunner, log: entry => logManager.push(entry), now: Date.now,
+});
 
 const startupLifecycle = createStartupLifecycle([
-  () => { void unavailableCoverBackfill.start(); },
   optionalStartupStep("OnlineCoverCache", () => onlineCoverCache.initialize(), (error) => {
     console.warn(`[OnlineCoverCache] 初始化失败: ${safeErrorSummary(error)}`);
   }),
@@ -228,15 +195,17 @@ const startupLifecycle = createStartupLifecycle([
     console.warn(`[Security] Failed to clean stale BBDown credential directories: ${safeErrorSummary(error)}`);
   }),
   { name: 'path-migration', run: () => pathMigration.resumePersisted() },
-  { name: 'quality-replacement', run: () => recoverInterruptedQualityUpgrades() },
-  { name: 'quality-downloads', run: () => recoverInterruptedQualityDownloads() },
+  { name: 'quality-replacement', run: () => qualityStartupRecovery.recover() },
+  { name: 'quality-downloads', run: () => recoverInterruptedQualityDownloads({state: stateManager, config: configStore, users: userStore, directory: tempDir, enqueue: task => scheduler.enqueueQualityUpgrade(task)}) },
   { name: 'archive-accounts', run: () => archiveDeletion.restoreLiveAccountsAfterStartup() },
   { name: 'persistent-jobs', run: () => scheduler.resumePersistedWorkOnStartup() },
   { name: 'scheduling', run: () => { scheduler.start(); } },
 ]);
 
 if (process.env.NODE_ENV !== "test") {
-  void startupLifecycle.start().catch(error => {
+  void startupLifecycle.start().then(() => {
+    unavailableCoverBackfill.startBackground();
+  }).catch(error => {
     scheduler.beginShutdown();
     console.error(`[Startup] Recovery failed; scheduling remains stopped: ${safeErrorSummary(error)}`);
   });
@@ -249,229 +218,13 @@ async function cleanupBBDownCredentialResidue() {
   return removed;
 }
 
-async function recoverInterruptedQualityDownloads() {
-  const remoteRecoveryBlocked = new Set(
-    stateManager.listInterruptedQualityUpgrades().map((relation) => relationKey(relation.userId, relation.mediaId, relation.bvid))
-  );
-  let entries: fs.Dirent[] = [];
-  try { entries = await fs.promises.readdir(tempDir, { withFileTypes: true }); }
-  catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return;
-    throw error;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith("quality-upgrade-")) continue;
-    const downloadDir = path.join(tempDir, entry.name);
-    const manifest = readDownloadSession(downloadDir);
-    const target = manifest?.qualityUpgrade;
-    if (!manifest || manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;
-    const targets = (Array.isArray(target.targets) && target.targets.length > 0 ? target.targets : [target])
-      .filter((candidate) => !remoteRecoveryBlocked.has(relationKey(candidate.userId, candidate.mediaId, manifest.bvid)));
-    if (targets.length === 0) continue;
-    const user = (target.downloadUserId ? userStore.getById(target.downloadUserId) : null)
-      || userStore.list().find((candidate) => candidate.enabled && Number(candidate.uid || candidate.cookie.DedeUserID || 0) === manifest.accountUid)
-      || userStore.getById(targets[0].userId);
-    if (!user || !user.enabled) continue;
-    const qualityProfile = normalizeQualityArtifactProfile(
-      target.qualityProfile || manifest.configSnapshot || qualityArtifactProfileFromConfig(configStore.get())
-    );
-    const artifactKey = target.artifactKey || buildQualityArtifactKey(manifest.bvid, qualityProfile);
-    const meta = stateManager.getVideoMeta(manifest.bvid);
-    const task = new QualityUpgradeTask(
-      manifest.bvid,
-      downloadCredentialsForUser(user),
-      applyQualityArtifactProfile(configStore.get(), qualityProfile),
-      targets[0],
-      { targets, artifactKey, qualityProfile }
-    );
-    task.downloadDir = downloadDir;
-    task.runId = `resume-${manifest.sessionId}`;
-    task.videoTitle = meta?.title || manifest.bvid;
-    task.folderTitle = targets.length > 1 ? `${targets.length}个目标` : targets[0].folderTitle;
-    task.downloadUserId = user.id;
-    task.userId = user.id;
-    task.mediaId = targets[0].mediaId;
-    scheduler.enqueueQualityUpgrade(task);
-  }
-}
-
-function formatExpiresText(expires?: number) {
-  if (!expires || expires <= 0) {
-    return "未知过期时间";
-  }
-  const diff = expires - Date.now();
-  if (diff <= 0) {
-    return "已过期";
-  }
-  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
-  return `${days}天后过期`;
-}
-
-function buildAuthHealth(user: BiliUser) {
-  const autoRefreshEnabled = Boolean(user.accessToken && user.refreshToken);
-  const lastError = sanitizeDiagnosticText(user.lastAuthRefreshError || "", 500);
-  const failureCategory = user.authRefreshFailureCategory
-    || (lastError ? classifyAuthRefreshError(lastError) : undefined);
-  const failureAttempts = Math.max(0, Math.floor(Number(user.authRefreshFailureAttempts) || 0));
-  const retryAtMs = user.authRefreshRetryAt ? Date.parse(user.authRefreshRetryAt) : NaN;
-  const expired = Boolean(user.expires && user.expires <= Date.now());
-  const expiringSoon = Boolean(user.expires && user.expires > Date.now() && user.expires - Date.now() < 10 * 24 * 60 * 60 * 1000);
-  const unknownExhausted = failureCategory === "unknown" && failureAttempts >= AUTH_REFRESH_MAX_UNKNOWN_ATTEMPTS;
-  const needsManualLogin = !autoRefreshEnabled || failureCategory === "permanent" || unknownExhausted;
-  let level: "ok" | "warn" | "error" = "ok";
-  let summary = "自动刷新已启用";
-  let detail = "普通登录过期会自动刷新，无需人工处理。";
-
-  if (!autoRefreshEnabled) {
-    level = "error";
-    summary = "需要重新扫码登录";
-    detail = "当前账号缺少自动刷新凭据，无法无人值守续期。";
-  } else if (failureCategory === "permanent") {
-    level = "error";
-    summary = "登录授权已失效，需要重新登录";
-    detail = lastError || "refreshToken 已失效，后台不会继续重复尝试。请重新扫码登录。";
-  } else if (unknownExhausted) {
-    level = "error";
-    summary = "授权刷新连续异常，需要检查";
-    detail = lastError || "后台已完成有限次数重试，仍无法判断授权状态，请检查网络或重新登录。";
-  } else if (failureCategory === "transient" || failureCategory === "unknown") {
-    level = "warn";
-    summary = "授权刷新后台重试中";
-    const retryText = Number.isFinite(retryAtMs) && retryAtMs > Date.now()
-      ? `预计 ${new Date(retryAtMs).toLocaleString("zh-CN", { hour12: false })} 后重试。`
-      : "将在后台继续重试。";
-    detail = `${lastError || "上次刷新暂未成功。"} ${retryText}不会立即要求重新扫码。`;
-  } else if (expired) {
-    level = "warn";
-    summary = "登录态已过期，等待自动刷新";
-    detail = "账号保留了 refreshToken，后台会自动尝试恢复。";
-  } else if (expiringSoon) {
-    level = "warn";
-    summary = "登录态临近过期，将自动刷新";
-    detail = "后台会在任务空闲时刷新授权。";
-  }
-
-  return {
-    level,
-    summary,
-    detail,
-    autoRefreshEnabled,
-    needsManualLogin,
-    lastSuccessAt: user.lastAuthRefreshAt || "",
-    lastError,
-    failureCategory: failureCategory || "",
-    failureAttempts,
-    retryAt: user.authRefreshRetryAt || "",
-  };
-}
-
-async function refreshUserAuthForStore(userId: string, reason: "manual" | "auto" | "on_error") {
-  return importMaintenance.run(() => refreshUserAuthForStoreUnlocked(userId, reason));
-}
-
-async function refreshUserAuthForStoreUnlocked(userId: string, reason: "manual" | "auto" | "on_error") {
-  const user = userStore.getById(userId);
-  if (!user) {
-    throw new Error("User not found");
-  }
-  if (!user.accessToken || !user.refreshToken) {
-    throw new Error("当前账号缺少 accessToken 或 refreshToken，请重新扫码登录。");
-  }
-
-  try {
-    const refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
-    const info = await getUserInfo(refreshed.cookie);
-    const nowIso = new Date().toISOString();
-    userStore.updatePartial(user.id, {
-      name: info.name,
-      avatar: info.avatar,
-      cookie: refreshed.cookie,
-      rawAuth: refreshed.rawAuth,
-      accessToken: refreshed.accessToken || user.accessToken,
-      refreshToken: refreshed.refreshToken || user.refreshToken,
-      expires: refreshed.expires || user.expires,
-      lastAuthRefreshAt: nowIso,
-      lastAuthRefreshError: "",
-      authRefreshFailureCategory: undefined,
-      authRefreshFailureAttempts: undefined,
-      authRefreshRetryAt: undefined,
-      lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
-    });
-    scheduler.wakeChargingAccessProbes(user.id);
-  } catch (error: any) {
-    const current = userStore.getById(user.id) || user;
-    const failure = nextAuthRefreshFailureState(
-      current.authRefreshFailureCategory,
-      current.authRefreshFailureAttempts,
-      error,
-    );
-    userStore.updatePartial(user.id, {
-      lastAuthRefreshError: safeErrorSummary(error),
-      authRefreshFailureCategory: failure.category,
-      authRefreshFailureAttempts: failure.attempts,
-      authRefreshRetryAt: failure.retryAt,
-    });
-    throw error;
-  }
-}
-
-// ---------- auto token refresh (biliLive-tools pattern) ----------
-function startTokenRefreshLoop() {
-  const CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
-  const RETRY_INTERVAL_ON_BUSY = 60 * 60 * 1000; // 1 hour
-
-  async function checkAndRefresh() {
-    let nextInterval = CHECK_INTERVAL;
-    try {
-      if (importMaintenance.blocked || scheduler.hasRunningTransferTasks()) {
-        console.warn("[Auth] Skip auto refresh because transfer tasks are running; retry in 1 hour.");
-        nextInterval = RETRY_INTERVAL_ON_BUSY;
-        return;
-      }
-
-      const users = userStore.list();
-      for (const user of users) {
-        const now = Date.now();
-        const failureCategory = user.authRefreshFailureCategory;
-        const failureAttempts = Math.max(0, Math.floor(Number(user.authRefreshFailureAttempts) || 0));
-        const retryAt = user.authRefreshRetryAt ? Date.parse(user.authRefreshRetryAt) : NaN;
-        if (isAuthRefreshAttemptBlocked(failureCategory, failureAttempts, user.authRefreshRetryAt, now)) {
-          if (Number.isFinite(retryAt) && retryAt > now) {
-            nextInterval = Math.min(nextInterval, Math.max(60_000, retryAt - now));
-          }
-          continue;
-        }
-        // Refresh if expires in less than 10 days, or if we have refreshToken
-        const tenDays = 10 * 24 * 60 * 60 * 1000;
-        if (user.refreshToken && user.accessToken) {
-          if (!user.expires || user.expires - now < tenDays) {
-            console.log(`[Auth] Refreshing token for user ${user.name} (${user.id})`);
-            try {
-              await refreshUserAuthForStore(user.id, "auto");
-              console.log(`[Auth] Token refreshed for user ${user.name}`);
-            } catch (error: any) {
-              const updated = userStore.getById(user.id);
-              const retry = updated?.authRefreshRetryAt ? Date.parse(updated.authRefreshRetryAt) : NaN;
-              if (Number.isFinite(retry)) nextInterval = Math.min(nextInterval, Math.max(60_000, retry - Date.now()));
-              console.warn(`[Auth] Token refresh failed for user ${user.name}: ${safeErrorSummary(error)}`);
-            }
-          }
-        }
-      }
-    } catch (error: any) {
-      console.error(`[Auth] Token refresh check failed: ${safeErrorSummary(error)}`);
-      nextInterval = RETRY_INTERVAL_ON_BUSY;
-    } finally {
-      setTimeout(checkAndRefresh, nextInterval);
-    }
-  }
-
-  // Start first check after 1 minute (let server settle)
-  setTimeout(checkAndRefresh, 60_000);
-}
-if (process.env.NODE_ENV !== "test") {
-  startTokenRefreshLoop();
-}
+const accountRefresh = createAccountRefresh({
+  users: userStore, maintenance: importMaintenance, refresh: refreshUserAuth, info: getUserInfo,
+  wake: userId => scheduler.wakeChargingAccessProbes(userId),
+  transfersRunning: () => scheduler.hasRunningTransferTasks(), now: Date.now,
+  timers: {set: setTimeout, clear: clearTimeout},
+});
+if (process.env.NODE_ENV !== "test") accountRefresh.start();
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -482,1291 +235,89 @@ const adminUser = process.env.ADMIN_USER || "admin";
 const adminPass = process.env.ADMIN_PASS || "admin";
 const cookieExportEnabled = process.env.ALLOW_COOKIE_EXPORT !== "false";
 const secureSessionCookie = process.env.COOKIE_SECURE === "true";
-const adminAuthFingerprint = buildAdminAuthFingerprint(sessionSecret, adminUser, adminPass);
 const adminSessionStore = new AdminSessionStore({
   filePath: authSessionDatabasePath,
   sessionSecret,
   adminUser,
   adminPassword: adminPass,
 });
-const sessionCookieOptions = {
-  httpOnly: true,
-  sameSite: "lax" as const,
-  secure: secureSessionCookie,
-  path: "/",
-};
+const authentication = createAuthentication({secret: sessionSecret, username: adminUser, password: adminPass,
+  secure: secureSessionCookie, store: adminSessionStore, rateLimit: createLoginRateLimiter(), now: Date.now});
+app.set('trust proxy', 1);
+app.use(authentication.session);
+app.use(createPageRouter({coversDirectory: coversDir, onlineCoversDirectory: onlineCoversDir,
+  playerAssetPath: artplayerAssetPath, loginPage: renderLoginPage, appPage: renderAppPage}));
+app.use(authentication.login);
 
-const loginRateLimiter = createLoginRateLimiter();
-
-app.set("trust proxy", 1);
-
-app.use(
-  session({
-    name: ADMIN_SESSION_COOKIE_NAME,
-    secret: sessionSecret,
-    store: adminSessionStore,
-    resave: false,
-    saveUninitialized: false,
-    rolling: false,
-    cookie: sessionCookieOptions,
-  })
-);
-
-declare module "express-session" {
-  interface SessionData {
-    user?: { name: string };
-    authFingerprint?: string;
-    absoluteExpiresAt?: number;
-    remember?: boolean;
-  }
-}
-
-function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (req.session.user) {
-    return next();
-  }
-  return res.status(401).json({ success: false, message: "Unauthorized" });
-}
-
-function requireSameOrigin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
-    return next();
-  }
-  const source = req.get("origin") || req.get("referer") || "";
-  if (!source) {
-    res.status(403).json({ success: false, message: "Missing request origin" });
-    return;
-  }
-  try {
-    const sourceUrl = new URL(source);
-    if (sourceUrl.host === req.get("host")) {
-      return next();
-    }
-  } catch {
-    res.status(403).json({ success: false, message: "Invalid request origin" });
-    return;
-  }
-  res.status(403).json({ success: false, message: "Invalid request origin" });
-}
-
-app.get('/assets/app/:name', requireAuth, serveAppAsset);
-app.use("/covers", requireAuth, express.static(coversDir, {
-  maxAge: "30d",
-  immutable: true,
-}));
-
-app.use("/online-covers", requireAuth, express.static(onlineCoversDir, {
-  maxAge: "1d",
-  immutable: false,
-  setHeaders: (res) => res.setHeader("Cache-Control", "private, max-age=86400"),
-}));
-
-app.get("/assets/vendor/artplayer-5.4.0.js", requireAuth, (req, res, next) => {
-  res.sendFile(artplayerAssetPath, {
-    headers: {
-      "Cache-Control": "private, max-age=31536000, immutable",
-      "Content-Type": "text/javascript; charset=utf-8",
-    },
-  }, (error) => {
-    if (error) next(error);
-  });
-});
-
-function parsePositiveInteger(value: unknown, fallback: number) {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function normalizePageSize(value: unknown) {
-  return Math.min(parsePositiveInteger(value, 20), 50);
-}
-
-function parseArchiveLibraryQuery(query: Record<string, unknown>): Partial<ArchiveLibraryQuery> {
-  const pageSize = query.pageSize === undefined ? 50 : Number(query.pageSize);
-  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
-    throw new ArchiveLibraryQueryError("Invalid archive page size");
-  }
-  const mediaId = query.mediaId === undefined || query.mediaId === "" ? undefined : Number(query.mediaId);
-  return {
-    scope: String(query.scope || "global") as ArchiveLibraryScope,
-    userId: String(query.userId || "") || undefined,
-    mediaId,
-    query: String(query.q || ""),
-    searchScope: String(query.searchScope || "current") as ArchiveLibrarySearchScope,
-    filter: String(query.filter || "all") as ArchiveLibraryFilter,
-    sort: String(query.sort || "context") as ArchiveLibrarySort,
-    cursor: String(query.cursor || "") || undefined,
-    pageSize,
-  };
-}
-
-function sendArchiveLibraryError(res: express.Response, error: unknown) {
-  if (error instanceof ArchiveLibraryQueryError) {
-    res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
-    return;
-  }
-  throw error;
-}
-
-function parseFolderDetailFilter(value: unknown): FolderDetailFilter {
-  const raw = String(value || "all");
-  if (
-    raw === "all" ||
-    raw === "uploaded" ||
-    raw === "pending" ||
-    raw === "pending_unavailable" ||
-    raw === "uploaded_unavailable"
-  ) {
-    return raw;
-  }
-  return "all";
-}
-
-async function resolveFavoritePageSelfVisibleItems(
-  user: BiliUser,
-  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
-) {
-  const nextItems = [];
-  for (const item of pageResult.items) {
-    nextItems.push(await resolveSelfVisibleFavoriteItem(user.cookie, user.uid, item));
-  }
-  return {
-    ...pageResult,
-    items: nextItems,
-  };
-}
-
-function markFavoriteItemProcessed(
-  userId: string,
-  mediaId: number,
-  item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]
-) {
-  return {
-    ...item,
-    processed: stateManager.isProcessed(userId, item.bvid, mediaId),
-    failed: stateManager.isFailed(userId, item.bvid, mediaId),
-  };
-}
-
-function withProcessedStatus(
-  userId: string,
-  mediaId: number,
-  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
-) {
-  return {
-    ...pageResult,
-    items: pageResult.items.map((item) => markFavoriteItemProcessed(userId, mediaId, item)),
-  };
-}
-
-async function recordFavoritePageMetadata(
-  user: BiliUser,
-  mediaId: number,
-  folderTitle: string,
-  pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>
-) {
-  const resolvedPage = await resolveFavoritePageSelfVisibleItems(user, pageResult);
-  resolvedPage.items.forEach((item, indexInPage) => {
-    const favOrder = (Math.max(1, pageResult.page) - 1) * Math.max(1, pageResult.pageSize) + indexInPage + 1;
-    stateManager.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
-      favOrder,
-      favPage: pageResult.page,
-      favIndexInPage: indexInPage,
-    });
-  });
-  return resolvedPage;
-}
-
-function getBiliListErrorMessage(error: unknown) {
-  if (error instanceof BiliRiskOrLoginError) {
-    return "B 站返回了风控/登录异常响应，请稍后重试；如持续失败请重新扫码登录。";
-  }
-  if (error instanceof BiliFavoriteFolderResponseError) {
-    return error.message;
-  }
-  return error instanceof Error && error.message ? error.message : "Failed to list items";
-}
-
-async function loadFavoriteDetailData(
-  user: BiliUser,
-  mediaId: number,
-  folderTitle: string,
-  page: number,
-  pageSize: number,
-  filter: FolderDetailFilter
-) {
-  const trackedFolder = user.favorites.find((favorite) => favorite.mediaId === mediaId);
-  const tracked = Boolean(trackedFolder);
-  const source = selectFavoriteDetailSource(tracked, filter);
-  const resolvedFolderTitle = trackedFolder?.title || folderTitle;
-  const scan = stateManager.getExistingFolderScan(user.id, mediaId);
-
-  if (source === "state") {
-    const offset = (page - 1) * pageSize;
-    const result = stateManager.listFolderItemsForUser(user.id, mediaId, offset, pageSize, filter);
-    const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, scan?.total);
-    return {
-      items: result.items,
-      summary: result.summary,
-      indexSummary,
-      page,
-      pageSize,
-      hasMore: result.hasMore,
-      total: result.totalFiltered,
-      source,
-      tracked,
-      lastSyncedAt: scan?.lastScannedAt,
-      coverage: indexSummary.complete ? "complete" : "partial",
-    };
-  }
-
-  pruneFavoriteItemsCache();
-  const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
-  const cached = favoriteItemsCache.get(cacheKey);
-  let pageResult: Awaited<ReturnType<typeof listFavoriteItemsPage>>;
-  if (cached && cached.expiresAt > Date.now()) {
-    pageResult = cached.data;
-  } else {
-    if (cached) favoriteItemsCache.delete(cacheKey);
-    pageResult = await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
-    favoriteItemsCache.set(cacheKey, {
-      expiresAt: Date.now() + favoriteItemsCacheTtlMs,
-      data: pageResult,
-    });
-  }
-
-  pageResult = await recordFavoritePageMetadata(user, mediaId, resolvedFolderTitle, pageResult);
-  const items = pageResult.items.map((item) => mergeLiveFavoriteDetailItem(
-    item,
-    stateManager.getFolderItemForUser(user.id, mediaId, item.bvid),
-    { mediaId, folderTitle: resolvedFolderTitle }
-  ));
-  const indexed = stateManager.listFolderItemsForUser(user.id, mediaId, 0, 1, "all");
-  const indexSummary = stateManager.getFolderIndexSummary(user.id, mediaId, pageResult.total);
-  return {
-    items,
-    summary: {
-      ...indexed.summary,
-      total: pageResult.total ?? indexed.summary.activeTotal,
-    },
-    indexSummary,
-    page: pageResult.page,
-    pageSize: pageResult.pageSize,
-    hasMore: pageResult.hasMore,
-    total: pageResult.total ?? items.length,
-    source,
-    tracked,
-    lastSyncedAt: scan?.lastScannedAt,
-    coverage: "live" as const,
-  };
-}
-
-function parseUnavailableFilter(value: unknown): UnavailablePageFilter {
-  const filter = String(value || "all");
-  return filter === "missing" || filter === "uploaded" ? filter : "all";
-}
-
-function parseUnavailableCursor(value: unknown, filter: UnavailablePageFilter) {
-  if (!value) {
-    return { cursor: null, legacyOffset: 0 };
-  }
-  try {
-    const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    if (typeof parsed !== "object" || parsed === null) {
-      return { cursor: null, legacyOffset: 0 };
-    }
-    if (parsed.version === 2 && parsed.filter === filter) {
-      const lastSeenAt = Number(parsed.lastSeenAt);
-      const bvid = String(parsed.bvid || "");
-      const mediaId = Number(parsed.mediaId);
-      if (Number.isFinite(lastSeenAt) && lastSeenAt >= 0 && bvid.length > 0 && bvid.length <= 64
-        && Number.isInteger(mediaId) && mediaId > 0) {
-        return { cursor: { lastSeenAt, bvid, mediaId } satisfies UnavailablePageCursor, legacyOffset: 0 };
-      }
-    }
-    const offset = Math.max(0, Number(parsed.offset) || 0);
-    if (offset > 1_000_000) {
-      return { cursor: null, legacyOffset: 0 };
-    }
-    return { cursor: null, legacyOffset: offset };
-  } catch {
-    return { cursor: null, legacyOffset: 0 };
-  }
-}
-
-function encodeUnavailableCursor(cursor: UnavailablePageCursor, filter: UnavailablePageFilter) {
-  return Buffer.from(JSON.stringify({ version: 2, filter, ...cursor }), "utf8").toString("base64url");
-}
-
-const loginSessions = new Map<
-  string,
-  {
-    status: "pending" | "completed" | "error";
-    qrDataUrl?: string;
-    message?: string;
-    userId?: string;
-    createdAt: number;
-    updatedAt: number;
-  }
->();
-
-function pruneFavoriteItemsCache(now = Date.now()) {
-  for (const [key, value] of favoriteItemsCache) {
-    if (value.expiresAt <= now) {
-      favoriteItemsCache.delete(key);
-    }
-  }
-}
-
-function pruneLoginSessions(now = Date.now()) {
-  for (const [key, value] of loginSessions) {
-    if (now - value.updatedAt > loginSessionTtlMs) {
-      loginSessions.delete(key);
-    }
-  }
-}
-
-function setLoginSession(
-  loginId: string,
-  patch: Partial<{
-    status: "pending" | "completed" | "error";
-    qrDataUrl?: string;
-    message?: string;
-    userId?: string;
-  }>
-) {
-  const now = Date.now();
-  const previous = loginSessions.get(loginId);
-  if (!previous) {
-    loginSessions.set(loginId, {
-      status: patch.status || "pending",
-      qrDataUrl: patch.qrDataUrl,
-      message: patch.message,
-      userId: patch.userId,
-      createdAt: now,
-      updatedAt: now,
-    });
-    return;
-  }
-  loginSessions.set(loginId, {
-    ...previous,
-    ...patch,
-    updatedAt: now,
-  });
-}
-
-function asyncHandler(
-  handler: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void> | void
-) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.path === "/api/migration/import") {
-      Promise.resolve().then(() => handler(req, res, next)).catch(next);
-      return;
-    }
-    importMaintenance.run(async () => { await handler(req, res, next); }).catch(next);
-  };
-}
-
-class BadRequestError extends Error {
-  statusCode = 400;
-}
-
-function badRequest(message: string) {
-  return new BadRequestError(message);
-}
-
-app.get("/login", (req, res) => {
-  if (req.session.user) {
-    res.redirect("/");
-    return;
-  }
-  res.send(renderLoginPage());
-});
-
-app.get("/", (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  if (!req.session.user) {
-    res.redirect("/login");
-    return;
-  }
-  res.send(renderAppPage());
-});
-
-app.post("/api/login", requireSameOrigin, loginRateLimiter, (req, res) => {
-  const { username, password, remember } = req.body as { username?: string; password?: string; remember?: boolean };
-  if (username === adminUser && password === adminPass) {
-    req.session.regenerate((error) => {
-      if (error) {
-        res.status(500).json({ success: false, message: "Failed to create session" });
-        return;
-      }
-      const keepSignedIn = remember === true;
-      const sessionTtlMs = keepSignedIn ? ADMIN_REMEMBER_TTL_MS : ADMIN_SESSION_TTL_MS;
-      req.session.user = { name: username };
-      req.session.authFingerprint = adminAuthFingerprint;
-      req.session.absoluteExpiresAt = Date.now() + sessionTtlMs;
-      req.session.remember = keepSignedIn;
-      if (keepSignedIn) req.session.cookie.maxAge = ADMIN_REMEMBER_TTL_MS;
-      req.session.save((saveError) => {
-        if (saveError) {
-          res.status(500).json({ success: false, message: "Failed to save session" });
-          return;
-        }
-        res.json({ success: true });
-      });
-    });
-    return;
-  }
-  res.status(401).json({ success: false, message: "Invalid credentials" });
-});
+const asyncHandler = createRequestBoundary(importMaintenance);
 
 app.use("/api", requireAuth, requireSameOrigin);
-app.use("/api", (_req, res, next) => {
-  if (importMaintenance.blocked) {
-    res.status(409).json({ success: false, message: "状态导入维护中，请稍后重试" });
-    return;
-  }
-  next();
-});
+app.use("/api", createMaintenanceGuard(importMaintenance));
+
+app.use(authentication.logout);
 
 const updateCheckService = new UpdateCheckService();
-app.get("/api/updates", asyncHandler(async (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, data: await updateCheckService.check(req.query.refresh === "1") });
-}));
+app.use(createUpdatesRouter({ boundary: asyncHandler, check: refresh => updateCheckService.check(refresh) }));
 
-app.post("/api/logout", (req, res) => {
-  req.session.destroy((error) => {
-    res.clearCookie(ADMIN_SESSION_COOKIE_NAME, sessionCookieOptions);
-    if (error) {
-      res.status(500).json({ success: false, message: "Failed to destroy session" });
-      return;
-    }
-    res.json({ success: true });
-  });
-});
-
-app.get("/api/config", (req, res) => {
-  res.json({ success: true, data: configStore.get() });
-});
-
-app.post("/api/storage/check", asyncHandler(async (req, res) => {
-  const allowed = new Set(["alistUrl", "alistUsername", "alistPassword", "alistDest"]);
-  const input = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
-  if (Object.keys(input).some((key) => !allowed.has(key))) {
-    res.status(400).json({ success: false, message: "存储检查包含不支持的字段" });
-    return;
-  }
-  const draft: Partial<AppConfig> = {};
-  for (const key of allowed) {
-    if (Object.prototype.hasOwnProperty.call(input, key)) (draft as any)[key] = input[key];
-  }
-  const configError = validateConfig(draft);
-  if (configError) {
-    res.status(400).json({ success: false, message: configError });
-    return;
-  }
-  const candidate = { ...configStore.get(), ...draft };
-  const result = await checkRemoteStorageReadOnly(candidate);
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: result });
-}));
-
-app.put("/api/config", (req, res) => {
-  const error = validateConfig(req.body);
-  if (error) {
-    res.status(400).json({ success: false, message: error });
-    return;
-  }
-  const previous = configStore.get();
-  const activePathMigration = stateManager.getDatabase().getActivePathMigration();
-  const activeArchiveDeletion = stateManager.getDatabase().hasActiveArchiveDeletion();
-  const protectedAlistKeys = ["alistUrl", "alistUsername", "alistPassword", "alistDest", "uploadLayout"] as const;
-  const protectedChanged = activePathMigration && protectedAlistKeys.some((key) => {
-    if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
-    if (key === "alistDest") {
-      return normalizeRemotePath(String(req.body[key] || ""), { allowTrailingSlash: true })
-        !== normalizeRemotePath(String(previous[key] || ""), { allowTrailingSlash: true });
-    }
-    return req.body[key] !== previous[key];
-  });
-  if (protectedChanged) {
-    res.status(409).json({ success: false, code: "PATH_MIGRATION_ACTIVE", message: "归档路径迁移期间不能修改 AList / OpenList 连接、路径或目录结构" });
-    return;
-  }
-  const archiveDeletionProtectedChanged = activeArchiveDeletion && protectedAlistKeys.some((key) => {
-    if (!Object.prototype.hasOwnProperty.call(req.body, key)) return false;
-    if (key === "alistDest") {
-      return normalizeRemotePath(String(req.body[key] || ""), { allowTrailingSlash: true })
-        !== normalizeRemotePath(String(previous[key] || ""), { allowTrailingSlash: true });
-    }
-    return req.body[key] !== previous[key];
-  });
-  if (archiveDeletionProtectedChanged) {
-    res.status(409).json({ success: false, code: "ARCHIVE_DELETION_ACTIVE", message: "归档清理期间不能修改 AList / OpenList 连接、路径或目录结构" });
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body, "alistDest")
-    && String(req.body.alistDest || "").trim() !== String(previous.alistDest || "").trim()
-    && stateManager.getDatabase().hasRemoteArchivePathData()) {
-    res.status(409).json({ success: false, code: "PATH_MIGRATION_REQUIRED", message: "已有归档数据，请先使用“迁移归档路径”完成远端复制和确认" });
-    return;
-  }
-  const candidate = { ...previous, ...req.body };
-  const runtimeError = validateBBDownRuntimeConfig(candidate, userStore.list());
-  if (runtimeError) {
-    res.status(400).json({ success: false, message: runtimeError });
-    return;
-  }
-  const updated = configStore.update(req.body);
-  const updatedRoot = normalizeRemotePath(updated.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  renamePreviewSessions.invalidateConfig(renamePreviewConfigKey(updated, updatedRoot, renameScanLimit(updated)));
-  onlineCoverCache.setLimitMb(updated.onlineCoverCacheLimitMB);
-  scheduler.applyConfigUpdate(previous, updated);
-  res.json({ success: true, data: updated });
-});
+app.use(createConfigurationRouter({boundary: asyncHandler, service: createConfigurationService({
+  config: configStore, users: () => userStore.list(),
+  hasPathMigration: () => Boolean(stateManager.getDatabase().getActivePathMigration()),
+  hasArchiveDeletion: () => stateManager.getDatabase().hasActiveArchiveDeletion(),
+  hasRemotePaths: () => stateManager.getDatabase().hasRemoteArchivePathData(),
+  changed(previous, next) {
+    renameService.invalidateConfig(next);
+    onlineCoverCache.setLimitMb(next.onlineCoverCacheLimitMB);
+    scheduler.applyConfigUpdate(previous, next);
+  },
+  inspectStorage: checkRemoteStorageReadOnly,
+})}));
 
 app.use(createPathMigrationRouter({pathMigration, archiveDeletion, boundary:asyncHandler}));
 
-app.get("/api/users", (req, res) => {
-  const users = userStore.list().map((user) => ({
-    id: user.id,
-    uid: user.uid,
-    name: user.name,
-    favoritesCount: user.favorites.length,
-    favorites: user.favorites,
-    enabled: user.enabled,
-    lastLoginAt: user.lastLoginAt,
-    avatar: user.avatar || "",
-    expires: user.expires || 0,
-    expiresText: formatExpiresText(user.expires),
-    lastAuthRefreshAt: user.lastAuthRefreshAt || "",
-    lastAuthRefreshError: sanitizeDiagnosticText(user.lastAuthRefreshError || "", 500),
-    authHealth: buildAuthHealth(user),
-  }));
-  res.json({ success: true, data: users });
-});
 
-app.post("/api/users/login/start", asyncHandler(async (req, res) => {
-  try {
-    pruneLoginSessions();
-    const loginId = crypto.randomUUID();
-    const login = new TvQrcodeLogin();
-    const url = await login.login();
-    const qrDataUrl = await QRCode.toDataURL(url);
 
-    setLoginSession(loginId, { status: "pending", qrDataUrl });
+app.use(createAccountRouter({boundary: asyncHandler, service: createAccountService({
+  users: userStore, info: getUserInfo, refresh: id => accountRefresh.refresh(id, 'manual'),
+  cookieExportEnabled, log: entry => logManager.push(entry), now: Date.now,
+  wake: id => scheduler.wakeChargingAccessProbes(id),
+})}));
 
-    login.emitter.on("completed", async (result: any) => {
-      let release: (() => void) | undefined;
-      try {
-        release = importMaintenance.enter();
-        const authData = normalizeTvAuthResult(result);
-        const info = await getUserInfo(authData.cookie);
-        const userId = String(info.uid);
+app.use(createAccountLoginRouter({service: accountLogin, boundary: asyncHandler}));
 
-        userStore.upsert({
-          id: userId,
-          uid: info.uid,
-          name: info.name,
-          avatar: info.avatar,
-          cookie: authData.cookie,
-          favorites: [],
-          enabled: true,
-          lastLoginAt: new Date().toISOString(),
-          rawAuth: authData.rawAuth,
-          accessToken: authData.accessToken,
-          refreshToken: authData.refreshToken,
-          expires: authData.expires,
-          lastAuthRefreshAt: new Date().toISOString(),
-          lastAuthRefreshError: "",
-          authRefreshFailureCategory: undefined,
-          authRefreshFailureAttempts: undefined,
-          authRefreshRetryAt: undefined,
-        });
-        if (archiveDeletion.restoreAccount(userId)) {
-          scheduler.restoreUserAfterLogin(userId);
-          scheduler.wakeChargingAccessProbes(userId);
-        }
-        setLoginSession(loginId, { status: "completed", qrDataUrl, userId });
-      } catch (error: any) {
-        setLoginSession(loginId, { status: "error", qrDataUrl, message: safeErrorSummary(error, "Failed to save user") });
-      } finally { release?.(); }
-    });
+app.use(createOnlineContentRouter({content:onlineContent,users:userStore,archiveStates:createOnlineArchiveProjection(stateManager),boundary:asyncHandler}));
 
-    login.emitter.on("error", (error: any) => {
-      const msg = safeErrorSummary({ message: error?.data?.message || error?.message }, "Login failed");
-      setLoginSession(loginId, { status: "error", qrDataUrl, message: msg });
-    });
+app.use(createManualArchiveRouter({boundary: asyncHandler, service: createManualArchiveService({
+  users: userStore, content: onlineContent, config: () => configStore.get(),
+  enqueue: (id, item) => scheduler.enqueueManualArchive(id, item),
+  coverFailure: error => console.warn(`[Cover] promotion failed: ${safeErrorSummary(error)}`),
+})}));
 
-    res.json({ success: true, data: { loginId, qrDataUrl } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: safeErrorSummary(err, "Failed to start login") });
-  }
-}));
+app.use(createMediaProbeRouter({boundary: asyncHandler, service: createMediaProbeRequests({users: userStore, probe: mediaProbe})}));
 
-app.post("/api/users/:id/refresh-info", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const info = await getUserInfo(user.cookie);
-  userStore.updatePartial(user.id, {
-    name: info.name,
-    avatar: info.avatar,
-  });
-  res.json({ success: true, data: { name: info.name, avatar: info.avatar } });
-}));
-
-app.post("/api/users/:id/refresh-auth", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  await refreshUserAuthForStore(user.id, "manual");
-  const updated = userStore.getById(user.id);
-  res.json({
-    success: true,
-    data: {
-      expires: updated?.expires || 0,
-      expiresText: formatExpiresText(updated?.expires),
-      lastAuthRefreshAt: updated?.lastAuthRefreshAt || "",
-      lastAuthRefreshError: sanitizeDiagnosticText(updated?.lastAuthRefreshError || "", 500),
-      authHealth: updated ? buildAuthHealth(updated) : null,
-    },
-  });
-}));
-
-app.post("/api/users/:id/cookie/export", (req, res) => {
-  if (!cookieExportEnabled) {
-    res.status(403).json({ success: false, message: "Cookie export is disabled" });
-    return;
-  }
-  if (req.body.confirm !== "EXPORT_COOKIE") {
-    res.status(400).json({ success: false, message: "Cookie export confirmation required" });
-    return;
-  }
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const entries = Object.entries(user.cookie || {}).filter(([key, value]) => {
-    if (key === "accessToken" || key === "refreshToken") return false;
-    return value !== undefined && value !== null && String(value).length > 0;
-  });
-  const cookie = entries.map(([key, value]) => `${key}=${value}`).join("; ");
-  logManager.push({
-    timestamp: new Date().toISOString(),
-    type: "system",
-    level: "warn",
-    summary: `Cookie 已导出: ${user.name}`,
-    raw: `[Security] Cookie exported for user ${user.id}`,
-    simpleVisible: true,
-  });
-  res.json({ success: true, data: { cookie } });
-});
-
-app.get("/api/users/login/status", (req, res) => {
-  pruneLoginSessions();
-  const loginId = String(req.query.loginId || "");
-  const current = loginSessions.get(loginId);
-  if (!current) {
-    res.status(404).json({ success: false, message: "Login session not found" });
-    return;
-  }
-  res.json({ success: true, data: { status: current.status, message: current.message } });
-});
-
-const onlineArchiveStates: OnlineArchiveStateResolver = (items) => {
-  const bvids = [...new Set(items.map((item) => item.bvid).filter((bvid): bvid is string => Boolean(bvid)))];
-  const relations = stateManager.listRelationsForBvids(bvids);
-  const byBvid = new Map<string, typeof relations>();
-  for (const relation of relations) {
-    const current = byBvid.get(relation.bvid) || [];
-    current.push(relation);
-    byBvid.set(relation.bvid, current);
-  }
-  const states = new Map<string, "archived" | "processing" | "unarchived">();
-  for (const bvid of bvids) {
-    const currentRelations = byBvid.get(bvid) || [];
-    const state = currentRelations.some((relation) => ["verified", "partial_verified"].includes(String(relation.backupStatus || ""))
-      && (relation.remoteFiles || []).some((file) => file.verificationStatus === "verified" || file.verificationStatus === undefined))
-      ? "archived" as const
-      : currentRelations.some((relation) => ["discovered", "queued", "downloading", "downloaded", "uploading", "uploaded"].includes(String(relation.backupStatus || "")))
-        ? "processing" as const
-        : "unarchived" as const;
-    states.set(bvid, state);
-  }
-  return states;
-};
-
-app.use(createOnlineContentRouter({content:onlineContent,users:userStore,archiveStates:onlineArchiveStates,boundary:asyncHandler}));
-
-app.post("/api/online-content/manual-archive", asyncHandler(async (req, res) => {
-  const userId = String(req.body?.userId || "").trim();
-  const token = String(req.body?.token || "").trim();
-  const user = userStore.getById(userId);
-  const reference = onlineContent.getItem(token);
-  const bvid = reference?.item.bvid;
-  if (!user || !user.enabled || !reference || reference.userId !== userId || !bvid) {
-    res.status(400).json({ success: false, message: "在线条目已过期，请重新打开当前页面" });
-    return;
-  }
-  const item = reference.item;
-  const requestedQuality = String(req.body?.quality || "").trim().toUpperCase();
-  const requestedEncoding = String(req.body?.encoding || "").trim().toUpperCase();
-  const allowedEncodings = new Set(["HEVC", "AVC", "AV1"]);
-  if ((requestedQuality && !isSelectableBilibiliQuality(requestedQuality))
-    || (requestedEncoding && !allowedEncodings.has(requestedEncoding))) {
-    res.status(400).json({ success: false, message: "手动归档的画质或编码选项无效" });
-    return;
-  }
-  const exactRequest = Boolean(requestedQuality || requestedEncoding);
-  const currentProfile = qualityArtifactProfileFromConfig(configStore.get());
-  const qualityProfile = exactRequest
-    ? normalizeQualityArtifactProfile({
-      ...currentProfile,
-      quality: requestedQuality || currentProfile.quality,
-      encoding: requestedEncoding || currentProfile.encoding,
-    })
-    : undefined;
-  const qualityEncodingOverride = requestedEncoding
-    ? {
-      generation: 1,
-      priority: normalizeBBDownEncodingPriority(undefined, requestedEncoding),
-      strict: true,
-    }
-    : undefined;
-  const result = scheduler.enqueueManualArchive(userId, {
-    bvid,
-    title: item.title,
-    upperName: item.upperName || "Unknown",
-    upperMid: item.upperMid,
-    cover: item.cover,
-    qualityProfile,
-    qualityStrict: Boolean(requestedQuality),
-    qualityEncodingOverride,
-  });
-  await onlineContent.promoteCover(token).catch(error => console.warn(`[Cover] promotion failed: ${safeErrorSummary(error)}`));
-  res.status(result.status === "queued" ? 202 : 200).json({ success: true, data: result });
-}));
-
-app.post("/api/media-probe", asyncHandler(async (req, res) => {
-  const userId = String(req.body?.userId || "").trim();
-  const bvid = String(req.body?.bvid || "").trim();
-  const user = userStore.getById(userId);
-  if (!user || !user.enabled || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
-    res.status(400).json({ success: false, message: "媒体探测参数无效" });
-    return;
-  }
-  const requestedQuality = String(req.body?.quality || "").trim().toUpperCase();
-  const requestedEncoding = String(req.body?.encoding || "").trim().toUpperCase();
-  if ((requestedQuality && !isSelectableBilibiliQuality(requestedQuality))
-    || (requestedEncoding && !["HEVC", "AVC", "AV1"].includes(requestedEncoding))) {
-    res.status(400).json({ success: false, message: "媒体探测的画质或编码无效" });
-    return;
-  }
-  let result;
-  try {
-    result = mediaProbe.start(user, bvid, {
-      quality: requestedQuality || undefined,
-      encoding: ["HEVC", "AVC", "AV1"].includes(requestedEncoding) ? requestedEncoding as "HEVC" | "AVC" | "AV1" : undefined,
-      strict: Boolean(req.body?.strict || requestedQuality || requestedEncoding),
-    });
-  } catch (error) {
-    if (error instanceof MediaProbeBusyError) {
-      res.status(409).json({ success: false, code: error.code, message: error.message });
-      return;
-    }
-    throw error;
-  }
-  res.status(202).json({ success: true, data: { probeId: result.probeId, status: result.status, bvid } });
-}));
-
-app.get("/api/media-probe/:id", (req, res) => {
-  const result = mediaProbe.get(String(req.params.id || ""));
-  if (!result) {
-    res.status(404).json({ success: false, message: "媒体探测不存在或已过期" });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: result });
-});
-
-app.post("/api/videos/:bvid/availability-recheck", (req, res) => {
-  const bvid = String(req.params.bvid || "").trim();
-  if (!/^BV[0-9A-Za-z]+$/.test(bvid)) {
-    res.status(400).json({ success: false, message: "BV号格式无效" });
-    return;
-  }
-  const result = scheduler.requestAvailabilityRecheck(bvid);
-  if (!result.ok) {
-    res.status(result.status).json({ success: false, message: result.message });
-    return;
-  }
-  res.status(202).json({ success: true, data: result });
-});
+app.use(createAvailabilityRecheckRouter({ request: bvid => scheduler.requestAvailabilityRecheck(bvid) }));
 
 app.use(createLocalReleaseRouter({
   service: { preview: bvid => scheduler.previewLocalArchiveRelease(bvid), release: (bvid, id, confirmation) => scheduler.requestLocalArchiveRelease(bvid, id, confirmation) },
   boundary: asyncHandler,
 }));
-app.get("/api/archive-library/navigation", (req, res) => {
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({
-    success: true,
-    data: getArchiveLibraryNavigation(stateManager.getDatabase(), userStore.list()),
-  });
-});
-
-app.get("/api/archive-library/items", (req, res) => {
-  try {
-    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
-    const data = queryArchiveLibraryItems(stateManager.getDatabase(), userStore.list(), input);
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({ success: true, data });
-  } catch (error) {
-    sendArchiveLibraryError(res, error);
-  }
-});
-
-app.get("/api/archive-library/items/:bvid", (req, res) => {
-  try {
-    const bvid = String(req.params.bvid || "").trim();
-    if (!bvid || bvid.length > 64 || /[\\/\0]/.test(bvid)) {
-      throw new ArchiveLibraryQueryError("Invalid archive BVID");
-    }
-    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
-    const data = getArchiveLibraryItemDetail(stateManager.getDatabase(), userStore.list(), input, bvid);
-    if (!data) {
-      res.status(404).json({ success: false, message: "Archive item not found" });
-      return;
-    }
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({ success: true, data });
-  } catch (error) {
-    sendArchiveLibraryError(res, error);
-  }
-});
-
+app.use(createArchiveLibraryRouter(archiveLibrary));
 app.use(createArchiveDeletionRouter({ service: archiveDeletion, boundary: asyncHandler }));
 
-app.get("/api/archive-library/playback-queue", (req, res) => {
-  try {
-    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
-    const focusBvid = String(req.query.focusBvid || "").trim();
-    const page = req.query.page === undefined ? undefined : Number(req.query.page);
-    const cursor = String(req.query.cursor || "").trim();
-    const direction = String(req.query.direction || "after");
-    if ((focusBvid && (focusBvid.length > 64 || /[\\/\0]/.test(focusBvid)))
-      || (page !== undefined && (!Number.isInteger(page) || page < 1))
-      || (cursor.length > 4096)
-      || !["after", "before"].includes(direction)
-      || (cursor && page === undefined)) {
-      throw new ArchiveLibraryQueryError("Invalid archive playback request");
-    }
-    const data = getArchiveLibraryPlaybackQueue(stateManager.getDatabase(), userStore.list(), input, {
-      focusBvid: focusBvid || undefined,
-      page,
-      pageSize: input.pageSize,
-      cursor: cursor || undefined,
-      direction: direction as "after" | "before",
-    });
-    if (!data) {
-      res.status(404).json({ success: false, code: "PLAYBACK_NOT_AVAILABLE", message: "该归档当前不可播放" });
-      return;
-    }
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({ success: true, data });
-  } catch (error) {
-    sendArchiveLibraryError(res, error);
-  }
-});
-
-app.get("/api/archive-library/playback-search", (req, res) => {
-  try {
-    const input = parseArchiveLibraryQuery(req.query as Record<string, unknown>);
-    const query = String(req.query.queueQ || "").trim();
-    const page = req.query.page === undefined ? 1 : Number(req.query.page);
-    if (!query || query.length > 80 || query.includes("\0") || !Number.isInteger(page) || page < 1) {
-      throw new ArchiveLibraryQueryError("Invalid archive playback search");
-    }
-    const data = getArchiveLibraryPlaybackSearch(stateManager.getDatabase(), userStore.list(), input, {
-      query,
-      page,
-      pageSize: input.pageSize,
-    });
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({ success: true, data });
-  } catch (error) {
-    sendArchiveLibraryError(res, error);
-  }
-});
-
-app.get("/api/users/:id/favorites", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  try {
-    const folders = await favoriteFolderListCache.get(user);
-    const selected = new Set(user.favorites.map((fav) => fav.mediaId));
-    const data = folders.map((folder) => ({
-      ...folder,
-      selected: selected.has(folder.mediaId),
-    }));
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({ success: true, data });
-  } catch (error) {
-    res.status(502).json({ success: false, message: getBiliListErrorMessage(error) });
-  }
+app.use(createFavoritesRouter({users: userStore, detail: favoriteDetail, boundary: asyncHandler,
+  select: (id, input) => favoriteBrowsing.select(id, input), folders: user => favoriteBrowsing.folders(user), cover: (user, mediaId) => favoriteBrowsing.cover(user, mediaId),
 }));
 
-app.get("/api/users/:id/favorites/:mediaId/cover", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const mediaId = Number(req.params.mediaId);
-  if (!Number.isInteger(mediaId) || mediaId < 1) {
-    res.status(400).json({ success: false, message: "Invalid mediaId" });
-    return;
-  }
-  const coverHint = favoriteFolderListCache.peek(user.id, mediaId)?.cover;
-  const filePath = await favoriteFolderCover.resolve(user, mediaId, coverHint);
-  sendOnlineCover(res, filePath);
-}));
+app.use(createPlaybackRouter({boundary: asyncHandler, service: createPlaybackService({
+  database: () => stateManager.getDatabase(), config: () => configStore.get(),
+  users: userStore, isKnownOwner: id => archiveDeletion.isKnownOwner(id),
+  updateMetadata: (userId, mediaId, fileId, metadata) => stateManager.updatePlaybackMediaMetadata(userId, mediaId, fileId, metadata),
+})}));
 
-app.get("/api/users/:id/favorites/:mediaId/items", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  try {
-    pruneFavoriteItemsCache();
-    const mediaId = Number(req.params.mediaId);
-    if (!Number.isFinite(mediaId) || mediaId < 1) {
-      res.status(400).json({ success: false, message: "Invalid mediaId" });
-      return;
-    }
+app.use(createUnavailableRouter({boundary: asyncHandler, service: createUnavailableService({users: userStore, state: stateManager})}));
 
-    const page = parsePositiveInteger(req.query.page, 1);
-    const pageSize = 20;
-    const cacheKey = `${user.id}:${mediaId}:${page}:${pageSize}`;
-    const cached = favoriteItemsCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      res.json({ success: true, data: withProcessedStatus(user.id, mediaId, cached.data) });
-      return;
-    }
-    if (cached) {
-      favoriteItemsCache.delete(cacheKey);
-    }
 
-    const pageResult = await listFavoriteItemsPage(user.cookie, mediaId, page, pageSize);
-    favoriteItemsCache.set(cacheKey, {
-      expiresAt: Date.now() + favoriteItemsCacheTtlMs,
-      data: pageResult,
-    });
-    res.json({ success: true, data: withProcessedStatus(user.id, mediaId, pageResult) });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
-  }
-}));
 
-app.get([
-  "/api/users/:id/favorites/:mediaId/detail-items",
-  "/api/users/:id/favorites/:mediaId/state-items",
-], asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const mediaId = Number(req.params.mediaId);
-  if (!Number.isFinite(mediaId) || mediaId < 1) {
-    res.status(400).json({ success: false, message: "Invalid mediaId" });
-    return;
-  }
 
-  try {
-    const pageSize = normalizePageSize(req.query.pageSize);
-    const page = parsePositiveInteger(req.query.page, 1);
-    const filter = parseFolderDetailFilter(req.query.filter);
-    const folderTitle = String(req.query.folderTitle || "favorites");
-    const data = await loadFavoriteDetailData(user, mediaId, folderTitle, page, pageSize, filter);
-    res.json({ success: true, data });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
-  }
-}));
-
-app.get("/api/users/:id/favorites/:mediaId/playback-queue", (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const mediaId = Number(req.params.mediaId);
-  if (!isPlaybackMediaId(mediaId)) {
-    res.status(400).json({ success: false, message: "Invalid mediaId" });
-    return;
-  }
-  const page = req.query.page === undefined ? undefined : Number(req.query.page);
-  const pageSize = req.query.pageSize === undefined ? 30 : Number(req.query.pageSize);
-  if ((page !== undefined && (!Number.isInteger(page) || page < 1))
-    || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
-    res.status(400).json({ success: false, message: "Invalid playback pagination" });
-    return;
-  }
-  const focusBvid = String(req.query.focusBvid || "").trim();
-  if (focusBvid.length > 64 || /[\\/\0]/.test(focusBvid)) {
-    res.status(400).json({ success: false, message: "Invalid focusBvid" });
-    return;
-  }
-  const data = getPlaybackQueue(stateManager.getDatabase(), user.id, mediaId, {
-    focusBvid: focusBvid || undefined,
-    page,
-    pageSize,
-  });
-  if (!data) {
-    res.status(404).json({ success: false, code: "PLAYBACK_NOT_AVAILABLE", message: "该归档当前不可播放" });
-    return;
-  }
-  res.json({ success: true, data });
-});
-
-app.get("/api/users/:id/favorites/:mediaId/playback-search", (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const mediaId = Number(req.params.mediaId);
-  const page = req.query.page === undefined ? 1 : Number(req.query.page);
-  const pageSize = req.query.pageSize === undefined ? 50 : Number(req.query.pageSize);
-  const query = String(req.query.q || "").trim();
-  if (!isPlaybackMediaId(mediaId)
-    || !Number.isInteger(page) || page < 1
-    || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50
-    || !query || query.length > 80 || query.includes("\0")) {
-    res.status(400).json({ success: false, message: "Invalid playback search" });
-    return;
-  }
-  const data = getPlaybackSearch(stateManager.getDatabase(), user.id, mediaId, {
-    query,
-    page,
-    pageSize,
-  });
-  res.json({ success: true, data });
-});
-
-function playbackOwnerExists(userId: string) {
-  return Boolean(userStore.getById(userId) || archiveDeletion.isKnownOwner(userId));
-}
-
-app.put("/api/users/:id/favorites/:mediaId/playback/files/:fileId/media-metadata", (req, res) => {
-  const userId = String(req.params.id || "");
-  const mediaId = Number(req.params.mediaId);
-  const fileId = Number(req.params.fileId);
-  const fingerprint = String(req.body?.fingerprint || "");
-  const metadata = validBrowserMediaMetadata(req.body || {});
-  if (!playbackOwnerExists(userId)) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  if (!isPlaybackMediaId(mediaId) || !Number.isInteger(fileId) || fileId < 1
-    || !metadata || !fingerprint || fingerprint.length > 160 || fingerprint.includes("\0")) {
-    res.status(400).json({ success: false, message: "Invalid playback media metadata" });
-    return;
-  }
-  try {
-    resolvePlaybackFile(stateManager.getDatabase(), userId, mediaId, fileId);
-    const result = stateManager.updatePlaybackMediaMetadata(userId, mediaId, fileId, { fingerprint, ...metadata });
-    if (!result) {
-      res.status(409).json({ success: false, code: "PLAYBACK_FILE_CHANGED", message: "播放文件记录已变化，请重新打开播放器" });
-      return;
-    }
-    res.json({
-      success: true,
-      data: {
-        ...result,
-        actualQuality: actualQualityLabel(result.mediaMetadata),
-      },
-    });
-  } catch (error) {
-    if (error instanceof PlaybackHttpError) {
-      res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
-      return;
-    }
-    throw error;
-  }
-});
-
-app.get("/api/users/:id/favorites/:mediaId/playback/delivery/:attemptId", (req, res) => {
-  const userId = String(req.params.id || "");
-  const mediaId = Number(req.params.mediaId);
-  const attemptId = String(req.params.attemptId || "");
-  if (!playbackOwnerExists(userId)) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  if (!isPlaybackMediaId(mediaId) || !/^[0-9a-f]{32}$/i.test(attemptId)) {
-    res.status(400).json({ success: false, message: "Invalid playback delivery attempt" });
-    return;
-  }
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ success: true, data: getPlaybackDeliveryStatus(req.sessionID, userId, mediaId, attemptId) });
-});
-
-app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId/open-in-alist", (req, res) => {
-  const userId = String(req.params.id || "");
-  const mediaId = Number(req.params.mediaId);
-  const fileId = Number(req.params.fileId);
-  if (!playbackOwnerExists(userId)) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  if (!isPlaybackMediaId(mediaId) || !Number.isInteger(fileId) || fileId < 1) {
-    res.status(400).json({ success: false, message: "Invalid playback file" });
-    return;
-  }
-  try {
-    const location = playbackFileAlistLocation(stateManager.getDatabase(), configStore.get(), userId, mediaId, fileId);
-    res.status(302);
-    res.setHeader("Location", location);
-    res.setHeader("Cache-Control", "private, no-store");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("Content-Length", "0");
-    res.end();
-  } catch (error) {
-    if (error instanceof PlaybackHttpError) {
-      res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
-      return;
-    }
-    throw error;
-  }
-});
-
-const playbackFileHandler = asyncHandler(async (req, res) => {
-  const userId = String(req.params.id || "");
-  if (!playbackOwnerExists(userId)) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const mediaId = Number(req.params.mediaId);
-  const fileId = Number(req.params.fileId);
-  if (!isPlaybackMediaId(mediaId) || !Number.isInteger(fileId) || fileId < 1) {
-    res.status(400).json({ success: false, message: "Invalid playback file" });
-    return;
-  }
-  const delivery = req.query.delivery;
-  const attemptId = req.query.attempt === undefined ? undefined : String(req.query.attempt);
-  if (delivery !== undefined && delivery !== "proxy") {
-    res.status(400).json({ success: false, message: "Invalid playback delivery mode" });
-    return;
-  }
-  if (attemptId !== undefined && !/^[0-9a-f]{32}$/i.test(attemptId)) {
-    res.status(400).json({ success: false, message: "Invalid playback delivery attempt" });
-    return;
-  }
-  try {
-    await streamPlaybackFile(stateManager.getDatabase(), configStore.get(), req, res, {
-      userId,
-      mediaId,
-      fileId,
-      ownerKey: req.sessionID,
-      attemptId,
-      forceProxy: delivery === "proxy",
-    });
-  } catch (error) {
-    if (error instanceof PlaybackHttpError && !res.headersSent) {
-      res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
-      return;
-    }
-    throw error;
-  }
-});
-
-app.get("/api/users/:id/favorites/:mediaId/playback/files/:fileId", playbackFileHandler);
-app.head("/api/users/:id/favorites/:mediaId/playback/files/:fileId", playbackFileHandler);
-
-app.get("/api/users/:id/unavailable", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-
-  try {
-    const pageSize = normalizePageSize(req.query.pageSize);
-    const filter = parseUnavailableFilter(req.query.filter);
-    const cursor = parseUnavailableCursor(req.query.cursor, filter);
-    const page = stateManager.listUnavailableForUser(user.id, { filter, ...cursor }, pageSize);
-    res.json({
-      success: true,
-      data: {
-        items: page.items,
-        hasMore: page.hasMore,
-        nextCursor: page.hasMore && page.nextCursor ? encodeUnavailableCursor(page.nextCursor, filter) : null,
-      },
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: getBiliListErrorMessage(err) });
-  }
-}));
-
-app.put("/api/users/:id/favorites", asyncHandler(async (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const mediaIds = Array.isArray(req.body.mediaIds)
-    ? req.body.mediaIds
-        .map((value: unknown) => Number(value))
-      .filter((value: number) => Number.isInteger(value) && value > 0)
-    : [];
-  let folders;
-  try {
-    folders = await listFavoriteFolders(user.cookie);
-  } catch (error) {
-    res.status(502).json({ success: false, message: getBiliListErrorMessage(error) });
-    return;
-  }
-  const selected = folders.filter((folder) => mediaIds.includes(folder.mediaId));
-  userStore.updateFavorites(user.id, selected.map((folder) => ({ mediaId: folder.mediaId, title: folder.title })));
-  favoriteFolderListCache.set(user, folders);
-  res.json({ success: true, data: selected });
-}));
-
-app.patch("/api/users/:id", (req, res) => {
-  const user = userStore.getById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, message: "User not found" });
-    return;
-  }
-  const requestedEnabled = typeof req.body.enabled === "boolean"
-    ? req.body.enabled
-    : req.body.toggle
-      ? !user.enabled
-      : null;
-  if (requestedEnabled !== null) {
-    const updated = userStore.updatePartial(user.id, { enabled: requestedEnabled });
-    if (updated?.enabled) scheduler.wakeChargingAccessProbes(user.id);
-    res.json({ success: true, data: updated });
-    return;
-  }
-  res.json({ success: true, data: user });
-});
 
 app.use(createAccountRemovalRouter({
   user: id => userStore.getById(id), preview: user => archiveDeletion.previewAccount(user), boundary: asyncHandler,
@@ -1779,663 +330,79 @@ app.use(createSyncControlRouter({
   sync:() => scheduler.runNow(),reconcile:() => scheduler.runReconcileNow(),remote:() => scheduler.runRemoteReconcileNow(),boundary:asyncHandler,
 }));
 
-app.get("/api/logs/stream", (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
+app.use(createLogRouter({
+  getAll: () => logManager.getAll(),
+  subscribe: listener => {
+    logManager.on('log', listener);
+    return () => { logManager.removeListener('log', listener); };
+  },
+}));
 
-  const existing = logManager.getAll();
-  for (const entry of existing) {
-    res.write(`data: ${JSON.stringify(entry)}\n\n`);
-  }
-
-  const onLog = (entry: any) => {
-    res.write(`data: ${JSON.stringify(entry)}\n\n`);
-  };
-  logManager.on("log", onLog);
-
-  req.on("close", () => {
-    logManager.removeListener("log", onLog);
-  });
-});
-
-app.get("/api/logs", (req, res) => {
-  res.json({ success: true, data: logManager.getAll() });
-});
-
-app.get("/api/queue/state", (_req, res) => {
-  res.json({ success: true, data: scheduler.getQueueSnapshot() });
-});
+app.use(createQueueStateRouter({ snapshot: () => scheduler.getQueueSnapshot() }));
 
 app.use(createRecoveryRouter({ boundary: asyncHandler,
   recoverUploadJob: scheduler.recoverUploadJob.bind(scheduler),
   resolveRecoveryIssue: scheduler.resolveRecoveryIssue.bind(scheduler),
 }));
 
-async function pathSize(targetPath: string): Promise<number> {
+app.use(createStorageCleanupRouter({ boundary: asyncHandler, service: createStorageCleanup({
+  scheduler: {
+    refreshLocalCacheState: () => scheduler.refreshLocalCacheState(), updateInterval: () => scheduler.updateInterval(),
+    hasRunningTransferTasks: () => scheduler.hasRunningTransferTasks(),
+    hasActiveOrQueuedSchedulerWork: () => scheduler.hasActiveOrQueuedSchedulerWork(),
+    withCleanupLock: work => scheduler.withCleanupLock(work),
+  },
+  stateManager, userStore, configStore, onlineCoverCache, unavailableCoverBackfill,
+  waitForCoverCacheIdle, clearMemoryCaches: () => { favoriteDetail.clear(); favoriteFolderListCache.clear(); },
+  clearLogs: () => logManager.clear(),
+  clearCoverBackfillMarker: () => stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER),
+  hasPathMigration: () => Boolean(stateManager.getDatabase().getActivePathMigration()),
+  hasUnfinishedDeletion: () => archiveDeletion.hasUnfinishedOperation(),
+}) }));
+
+async function reloadStoresAfterImport(restored: string[], previousMarkers: LegacyRecoveryMarkers) {
   try {
-    const stat = await fs.promises.stat(targetPath);
-    if (stat.isFile()) return stat.size;
-    if (!stat.isDirectory()) return 0;
-    const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
-    let total = 0;
-    for (const entry of entries) {
-      total += await pathSize(path.join(targetPath, entry.name));
-    }
-    return total;
-  } catch {
-    return 0;
-  }
-}
-
-function normalizeCleanupItems(value: unknown): CleanupItem[] {
-  if (!Array.isArray(value)) return [];
-  const picked = new Set<CleanupItem>();
-  for (const item of value) {
-    if (typeof item === "string" && allCleanupKeys.includes(item as CleanupItem)) {
-      picked.add(item as CleanupItem);
-    }
-  }
-  return [...picked];
-}
-
-function cleanupRequiresIdle(items: CleanupItem[]) {
-  return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs" && item !== "exports" && item !== "backups");
-}
-
-function cleanupConfirmationRequired(items: CleanupItem[]) {
-  if (items.length === 1 && items[0] === "covers") return "DELETE ARCHIVE COVERS";
-  const important = items.some((item) => cleanupItems[item].important);
-  const full = allCleanupKeys.every((key) => items.includes(key));
-  if (full) return "DELETE ALL PROJECT DATA";
-  if (important) return "DELETE";
-  return "";
-}
-
-async function removeCleanupTarget(item: CleanupItem) {
-  if (item === "memory-cache") {
-    favoriteItemsCache.clear();
-    favoriteFolderListCache.clear();
-    return;
-  }
-  if (item === "logs") {
-    logManager.clear();
-    return;
-  }
-  if (item === "online-covers") {
-    await onlineCoverCache.clear();
-    return;
-  }
-  if (item === "orphan-fragments") {
-    await cleanupDownloadRecoveryArtifacts(tempDir);
-    scheduler.refreshLocalCacheState();
-    return;
-  }
-  if (item === "state") {
-    stateManager.clear();
-    return;
-  }
-  const targetPath = cleanupItems[item].path;
-  if (!targetPath) return;
-  if (item === "temp") {
-    await clearDirectoryContents(tempDir);
-    scheduler.refreshLocalCacheState();
-    return;
-  }
-  await fs.promises.rm(targetPath, { recursive: true, force: true });
-  if (item === "covers") {
-    await fs.promises.mkdir(coversDir, { recursive: true });
-    stateManager.clearCoverCachePaths();
-    stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
-  } else if (item === "exports") {
-    await fs.promises.mkdir(exportsDir, { recursive: true });
-  } else if (item === "backups") {
-    await fs.promises.mkdir(backupsDir, { recursive: true });
-  } else if (item === "users") {
-    userStore.clear();
-  } else if (item === "config") {
-    configStore.reset();
+    accountLogin.invalidate();
+    configStore.reload();
     onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
-    scheduler.updateInterval();
-  }
-}
-
-app.get("/api/storage/cleanup", asyncHandler(async (_req, res) => {
-  const cacheInspection = await inspectDownloadCache(tempDir);
-  const downloadRecovery = cacheInspection.recovery;
-  const items = await Promise.all(allCleanupKeys.map(async (key) => ({
-    key,
-    label: cleanupItems[key].label,
-    important: cleanupItems[key].important,
-    bytes: key === "orphan-fragments"
-      ? downloadRecovery.cleanupEligibleBytes
-      : key === "temp"
-        ? cacheInspection.usedBytes
-      : key === "state"
-        ? (await Promise.all(sqlitePaths(databasePath).map((file) => pathSize(file)))).reduce((sum, value) => sum + value, 0)
-      : key === "online-covers"
-        ? (await onlineCoverCache.inspect()).bytes
-      : cleanupItems[key].path ? await pathSize(cleanupItems[key].path) : 0,
-  })));
-  res.json({
-    success: true,
-    data: {
-      items,
-      runningTransfers: scheduler.hasRunningTransferTasks(),
-      activeScheduler: scheduler.hasActiveOrQueuedSchedulerWork(),
-      downloadRecovery,
-    },
-  });
-}));
-
-app.post("/api/storage/cleanup", asyncHandler(async (req, res) => {
-  const items = normalizeCleanupItems(req.body?.items);
-  if (items.length === 0) {
-    res.status(400).json({ success: false, message: "请选择要清理的内容" });
-    return;
-  }
-  if (items.includes("state") && stateManager.getDatabase().getActivePathMigration()) {
-    res.status(409).json({ success: false, message: "归档路径迁移期间不能清理业务状态" });
-    return;
-  }
-  if (items.some((item) => item === "state" || item === "users" || item === "config") && archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能清理业务状态、账号或配置" });
-    return;
-  }
-  const requiresIdle = cleanupRequiresIdle(items);
-  if (requiresIdle && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
-    res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再清理重要数据。" });
-    return;
-  }
-  const required = cleanupConfirmationRequired(items);
-  if (required && String(req.body?.confirmation || "") !== required) {
-    res.status(400).json({ success: false, message: `请输入 ${required} 确认清理` });
-    return;
-  }
-  const runCleanup = async () => {
-    const quiesceCoverWork = items.includes("covers") || items.includes("state");
-    if (quiesceCoverWork) {
-      const stopped = await unavailableCoverBackfill.stop(30_000);
-      const idle = stopped && await waitForCoverCacheIdle(30_000);
-      if (!stopped || !idle) {
-        unavailableCoverBackfill.restart();
-        throw Object.assign(new Error("封面任务未能在安全期限内停止，请稍后重试清理"), { statusCode: 409 });
-      }
-    }
-    const results: Array<{ key: CleanupItem; label: string; ok: boolean; error?: string; skipped?: boolean; note?: string }> = [];
-    for (const item of items) {
-      if (item === "orphan-fragments" && items.includes("temp")) {
-        const tempResult = results.find((result) => result.key === "temp");
-        if (tempResult?.ok) {
-          results.push({
-            key: item,
-            label: cleanupItems[item].label,
-            ok: true,
-            skipped: true,
-            note: "已包含在全部临时下载文件中",
-          });
-          continue;
-        }
-      }
-      try {
-        await removeCleanupTarget(item);
-        results.push({ key: item, label: cleanupItems[item].label, ok: true });
-      } catch (error: any) {
-        results.push({ key: item, label: cleanupItems[item].label, ok: false, error: safeErrorSummary(error) });
-      }
-    }
-    if (quiesceCoverWork) unavailableCoverBackfill.restart();
-    return results;
-  };
-  const results = requiresIdle ? await scheduler.withCleanupLock(runCleanup) : await runCleanup();
-  const failed = results.filter((item) => !item.ok);
-  if (failed.length > 0) {
-    res.status(500).json({ success: false, message: `有 ${failed.length} 项清理失败`, data: { results } });
-    return;
-  }
-  res.json({ success: true, data: { results } });
-}));
-
-function parseMigrationOptions(value: any) {
-  return {
-    mode: value?.mode === "complete" ? "complete" as const : "lightweight" as const,
-    includeConfig: value?.includeConfig !== false,
-    includeUsers: value?.includeUsers !== false,
-    includeState: value?.includeState !== false,
-    includeLogs: Boolean(value?.includeLogs),
-    includeDebug: Boolean(value?.includeDebug),
-    includeCovers: value?.includeCovers !== false,
-  };
-}
-
-async function receiveMigrationArchive(req: express.Request) {
-  const maxBytes = Number(process.env.MIGRATION_MAX_ARCHIVE_GB || 100) * 1024 ** 3;
-  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "bfb-migration-upload-"));
-  const archivePath = path.join(root, "migration.zip");
-  const handle = await fs.promises.open(archivePath, "wx");
-  let bytes = 0;
-  try {
-    for await (const chunk of req) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      bytes += buffer.length;
-      if (bytes > maxBytes) throw new BadRequestError("迁移压缩包超过允许大小");
-      await handle.write(buffer);
-    }
-    if (bytes === 0) throw new BadRequestError("迁移压缩包为空");
-    return { root, archivePath, bytes };
+    favoriteFolderListCache.clear();
+    favoriteDetail.clear();
+    userStore.reload();
+    stateManager.reload();
+    scheduler.reloadStateDatabase();
+    pathMigration.rebindWithinLifecycleBarrier(stateManager.getDatabase());
+    archiveDeletion.rebind(stateManager.getDatabase());
+    logManager.reload();
+    await scheduler.recheckLegacyRecoveryAfterImport(restored, previousMarkers);
   } catch (error) {
-    await handle.close();
-    await fs.promises.rm(root, { recursive: true, force: true });
-    throw error;
-  } finally {
-    await handle.close(); // FileHandle.close is idempotent; a failed close must remain observable.
+    scheduler.beginShutdown();
+    throw Object.assign(new Error(`导入后恢复失败：${safeErrorSummary(error)}`), { cause: error, recoveryRequired: true });
   }
 }
 
-function parseBooleanOption(value: unknown, fallback: boolean) {
-  if (value === undefined || value === null || value === "") return fallback;
-  if (value === true || value === "true" || value === "1") return true;
-  if (value === false || value === "false" || value === "0") return false;
-  return fallback;
-}
-
-function reloadStoresAfterImport() {
-  configStore.reload();
-  onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
-  favoriteFolderListCache.clear();
-  userStore.reload();
-  stateManager.reload();
-  scheduler.reloadStateDatabase();
-  pathMigration.rebindWithinLifecycleBarrier(stateManager.getDatabase());
-  archiveDeletion.rebind(stateManager.getDatabase());
-  logManager.reload();
+function resumeStoresAfterImport() {
   scheduler.resumeAfterStateRebind();
   scheduler.updateInterval();
 }
 
-app.post("/api/migration/export", asyncHandler(async (req, res) => {
-  const activePathMigration = stateManager.getDatabase().getActivePathMigration();
-  if (activePathMigration && activePathMigration.status !== "cleanup_pending") {
-    res.status(409).json({ success: false, message: "归档路径迁移期间禁止导出迁移包" });
-    return;
-  }
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导出迁移包" });
-    return;
-  }
-  const options = parseMigrationOptions(req.body);
-  if (options.mode === "complete" && (scheduler.hasRunningTransferTasks() || scheduler.hasActiveOrQueuedSchedulerWork())) {
-    res.status(409).json({ success: false, message: "完整迁移要求调度和传输任务全部空闲。" });
-    return;
-  }
-  const result = options.mode === "complete"
-    ? await scheduler.withCleanupLock(() => createMigrationExport(options, stateManager))
-    : await createMigrationExport(options, stateManager);
-  const fileName = path.basename(result.outputPath);
-  res.download(result.outputPath, fileName, (error) => {
-    if (error && !res.headersSent) {
-      res.status(500).json({ success: false, message: error.message });
-    }
-  });
-}));
-
-app.post("/api/migration/estimate", asyncHandler(async (req, res) => {
-  const activePathMigration = stateManager.getDatabase().getActivePathMigration();
-  if (activePathMigration && activePathMigration.status !== "cleanup_pending") {
-    res.status(409).json({ success: false, message: "归档路径迁移期间禁止估算迁移包" });
-    return;
-  }
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止估算迁移包" });
-    return;
-  }
-  res.json({ success: true, data: await estimateMigrationExport(parseMigrationOptions(req.body), stateManager) });
-}));
-
-app.post("/api/migration/import-preview", asyncHandler(async (req, res) => {
-  if (pathMigration.isBusy()) {
-    res.status(409).json({ success: false, message: "归档路径任务仍在运行，禁止导入预览包" });
-    return;
-  }
-  if (stateManager.getDatabase().getActivePathMigration()) {
-    res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
-    return;
-  }
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导入迁移包" });
-    return;
-  }
-  const upload = await receiveMigrationArchive(req);
-  let preview: Awaited<ReturnType<typeof previewMigrationPackageFile>>;
-  try {
-    preview = await previewMigrationPackageFile(upload.archivePath);
-  } catch (error: any) {
-    if (error?.statusCode === 409) throw error;
-    throw badRequest(error?.message || "导入包无法解析");
-  } finally {
-    await fs.promises.rm(upload.root, { recursive: true, force: true });
-  }
-  res.json({ success: true, data: preview });
-}));
-
-app.post("/api/migration/import", asyncHandler(async (req, res) => {
-  if (pathMigration.isBusy()) {
-    res.status(409).json({ success: false, message: "归档路径任务仍在运行，禁止导入迁移包" });
-    return;
-  }
-  if (stateManager.getDatabase().getActivePathMigration()) {
-    res.status(409).json({ success: false, message: "归档路径迁移期间禁止导入迁移包" });
-    return;
-  }
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，禁止导入迁移包" });
-    return;
-  }
-  if (scheduler.hasRunningTransferTasks() || scheduler.hasPersistentTransferWork() || scheduler.hasActiveOrQueuedSchedulerWork()) {
-    res.status(409).json({ success: false, message: "当前有同步/扫描/对账或下载/上传任务正在运行，请等任务完成后再导入。" });
-    return;
-  }
-  const previousLegacyRecoveryMarkers = scheduler.captureLegacyRecoveryMarkers();
-  const upload = await receiveMigrationArchive(req);
-  let releaseMaintenance: (() => void) | undefined;
-  let result: Awaited<ReturnType<typeof applyMigrationPackageFile>>;
-  try {
-    // Validate the uploaded archive before taking the exclusive maintenance boundary.
-    await previewMigrationPackageFile(upload.archivePath);
-    releaseMaintenance = await importMaintenance.acquire();
-    archiveDeletion.setImportMaintenance(true);
-    if (mediaProbe.isBusy() || archiveDeletion.hasUnfinishedOperation() || stateManager.getDatabase().getActivePathMigration()
-      || scheduler.hasRunningTransferTasks() || scheduler.hasPersistentTransferWork() || scheduler.hasActiveOrQueuedSchedulerWork()) {
-      throw Object.assign(new Error("导入准备期间任务状态已变化，请稍后重试"), { statusCode: 409 });
-    }
-    if (!await renamePreviewScans.waitForIdle(30_000)) throw Object.assign(new Error("重命名预览尚未结束，请稍后重试"), { statusCode: 409 });
-    const backfillStopped = await unavailableCoverBackfill.stop(30_000);
-    const coverQueueIdle = backfillStopped && await waitForCoverCacheIdle(30_000);
-    if (!backfillStopped || !coverQueueIdle) {
-      throw Object.assign(new Error("封面任务未能在安全期限内停止，请稍后重试导入"), { statusCode: 409 });
-    }
-    result = await scheduler.withCleanupLock(async () => {
-      if (!await pathMigration.waitForIdle(30_000)) {
-        throw Object.assign(new Error("归档路径任务未能在安全期限内停止，请稍后重试导入"), { statusCode: 409 });
-      }
-      if (!pathMigration.tryAcquireLifecycleBarrier()) {
-        throw Object.assign(new Error("归档路径任务刚刚开始运行，请稍后重试导入"), { statusCode: 409 });
-      }
-      try {
-        return await applyMigrationPackageFile(upload.archivePath, {
-          restoreConfig: parseBooleanOption(req.query.restoreConfig, true),
-          restoreUsers: parseBooleanOption(req.query.restoreUsers, true),
-          restoreState: parseBooleanOption(req.query.restoreState, true),
-          restoreCovers: parseBooleanOption(req.query.restoreCovers, true),
-          restoreLogs: parseBooleanOption(req.query.restoreLogs, false),
-          restoreDebug: parseBooleanOption(req.query.restoreDebug, false),
-          reload: reloadStoresAfterImport,
-        }, stateManager);
-      } finally {
-        pathMigration.releaseLifecycleBarrier();
-      }
-    });
-    if (result.restored.some((item) => item === "state" || item === "covers")) {
-      stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
-    }
-  } catch (error: any) {
-    if (error?.recoveryRequired) {
-      importMaintenance.failClosed();
-      scheduler.beginShutdown();
-      throw error;
-    }
-    if (error?.statusCode === 409) throw error;
-    throw badRequest(error?.message || "导入包无法解析");
-  } finally {
-    try { await fs.promises.rm(upload.root, { recursive: true, force: true }); }
-    finally {
-      releaseMaintenance?.();
-      if (!importMaintenance.blocked) {
-        archiveDeletion.setImportMaintenance(false);
-        unavailableCoverBackfill.restart();
-      }
-    }
-  }
-  try {
-    scheduler.recheckLegacyRecoveryAfterImport(result.restored, previousLegacyRecoveryMarkers);
-  } catch (error) {
-    console.warn(`[Recovery] Failed to start post-import legacy checks: ${safeErrorSummary(error)}`);
-  }
-  res.json({ success: true, data: result });
-}));
-
-function extractBvid(value: string) {
-  return String(value || "").match(/BV[0-9A-Za-z]+/)?.[0] || "";
-}
-
-function renameScanLimit(config: AppConfig) {
-  const configured = Number(config.renameScanMaxFiles || 10_000);
-  return Number.isFinite(configured)
-    ? Math.max(100, Math.min(100_000, Math.floor(configured)))
-    : 10_000;
-}
-
-function renameRemoteScanKey(config: AppConfig, root: string, scanLimit: number) {
-  return crypto.createHash("sha256").update(JSON.stringify({
-    url: config.alistUrl,
-    username: config.alistUsername,
-    password: config.alistPassword,
-    root,
-    scanLimit,
-    maxDepth: 8,
-    maxEntries: Math.max(10_000, Math.min(500_000, scanLimit * 5)),
-    maxDirectories: Math.max(1_000, Math.min(50_000, scanLimit)),
-  })).digest("hex");
-}
-
-function renamePreviewConfigKey(config: AppConfig, root: string, scanLimit: number) {
-  return crypto.createHash("sha256").update(JSON.stringify({
-    storage: remoteStorageIdentity(config),
-    root,
-    scanLimit,
-    maxDepth: 8,
-    filenameTemplate: config.filenameTemplate,
-  })).digest("hex");
-}
-
-function previewDetailLimit(value: unknown) {
-  if (value === undefined || value === null || value === "") return undefined;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return undefined;
-  return Math.max(0, Math.min(200, Math.floor(parsed)));
-}
-
-function buildLocalRenamePreview(
-  config: AppConfig,
-  root: string,
-  scanLimit: number,
-  detailLimit: number | undefined,
-  records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
-) {
-  const indexedFiles = buildIndexedRemoteFiles(records, root);
-  return buildRenamePreviewInternal({
-    config,
-    root,
-    records,
-    scanned: { files: indexedFiles, skipped: [], skippedTotal: 0, skippedByReason: {}, complete: true },
-    scanLimit,
-    detailLimit,
-    indexedFiles: indexedFiles.length,
-    coverage: "local",
-  });
-}
-
-function buildRemoteRenamePreview(
-  config: AppConfig,
-  root: string,
-  scanLimit: number,
-  detailLimit: number | undefined,
-  records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
-  scanned: RemoteRenameScan,
-) {
-  return buildRenamePreviewInternal({
-    config,
-    root,
-    records,
-    scanned,
-    scanLimit,
-    detailLimit,
-    coverage: "remote",
-  });
-}
-
-function renameScanMetadata(snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>) {
-  const result = snapshot.result;
-  return {
-    id: snapshot.id,
-    status: snapshot.status,
-    startedAt: snapshot.startedAt,
-    ...(snapshot.completedAt === undefined ? {} : { completedAt: snapshot.completedAt }),
-    ...(snapshot.expiresAt === undefined ? {} : { expiresAt: snapshot.expiresAt }),
-    ...(snapshot.error ? { error: snapshot.error } : {}),
-    ...(result ? {
-      complete: result.complete,
-      scannedFiles: result.files.length,
-      skippedTotal: result.skippedTotal,
-      ...(result.scannedEntries === undefined ? {} : { scannedEntries: result.scannedEntries }),
-      ...(result.scannedDirectories === undefined ? {} : { scannedDirectories: result.scannedDirectories }),
-    } : {}),
-  };
-}
-
-function renameScanSignature(snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>) {
-  const result = snapshot.result;
-  return JSON.stringify([
-    snapshot.status,
-    snapshot.completedAt || 0,
-    snapshot.error || "",
-    result?.complete === true,
-    result?.files.length || 0,
-    result?.skippedTotal || 0,
-    result?.scannedEntries || 0,
-    result?.scannedDirectories || 0,
-  ]);
-}
-
-function buildRenameSessionCurrent(
-  config: AppConfig,
-  root: string,
-  scanLimit: number,
-  detailLimit: number | undefined,
-  records: ReturnType<StateManager["getRemoteFilePreviewRecords"]>,
-  local: InternalRenamePreviewData,
-  snapshot: BackgroundPreviewSnapshot<RemoteRenameScan>,
-) {
-  if (snapshot.status !== "ready" || !snapshot.result) return local;
-  return mergeRenamePreviewInternals(
-    local,
-    buildRemoteRenamePreview(config, root, scanLimit, detailLimit, records, snapshot.result),
-    detailLimit,
-  );
-}
-
-function syncRenamePreviewSession(
-  previewId: string,
-  config: AppConfig,
-  root: string,
-  scanLimit: number,
-  detailLimit: number | undefined,
-) {
-  const session = renamePreviewSessions.get(previewId);
-  if (!session) return undefined;
-  const scanId = renamePreviewSessions.getScanId(previewId);
-  const snapshot = scanId ? renamePreviewScans.get(scanId) : undefined;
-  if (snapshot) {
-    const signature = renameScanSignature(snapshot);
-    if (signature !== renamePreviewSessions.getRemoteSignature(previewId)) {
-      const records = stateManager.getRemoteFilePreviewRecords();
-      const local = renamePreviewSessions.getLocalPreview(previewId);
-      if (!local) return renamePreviewSessions.getResponse(previewId);
-      const current = buildRenameSessionCurrent(config, root, scanLimit, detailLimit, records, local, snapshot);
-      renamePreviewSessions.applyScan(previewId, {
-        current,
-        remoteScan: renameScanMetadata(snapshot) as RenamePreviewRemoteScanInfo,
-        remoteSignature: signature,
-      });
-    }
-  }
-  return renamePreviewSessions.getResponse(previewId);
-}
-
-async function restoreInterruptedQualityUpgrade(relation: ReturnType<StateManager["listInterruptedQualityUpgrades"]>[number]) {
-  const operation = relation.qualityUpgrade;
-  const config = configStore.get();
-  if (operation.finalizedAt && operation.newFiles?.length) {
-    const backupFiles = operation.backupFiles?.length
-      ? operation.backupFiles
-      : operation.oldFiles.map((file) => ({
-          ...file,
-          path: joinRemotePath(operation.backupRemotePath, file.name),
-        }));
-    const cleanup = await deleteRemoteFiles(config, backupFiles);
-    if (cleanup.failed > 0) {
-      throw new Error(`Failed to clean interrupted quality-upgrade backups for ${relation.bvid}`);
-    }
-    stateManager.completeQualityUpgrade(relation.bvid, relation.userId, relation.mediaId, operation.oldRemotePath, operation.newFiles);
-    return;
-  }
-  const replace = await createRemoteReplacementRunner(config);
-  for (const newFile of operation.newFiles || []) {
-    await replace(config, newFile.path, joinRemotePath(operation.stageRemotePath, newFile.name), newFile.size, { targetPreviouslyVerified: true });
-  }
-  const backupFiles = [...(operation.backupFiles || [])];
-  for (const backupFile of [...backupFiles].reverse()) {
-    const oldFile = operation.oldFiles.find((file) => file.name === backupFile.name);
-    if (oldFile) {
-      await replace(config, backupFile.path, oldFile.path, oldFile.size);
-    }
-  }
-  const stageNames = new Set([
-    ...operation.oldFiles.map((file) => file.name),
-    ...(operation.newFiles || []).map((file) => file.name),
-  ]);
-  const cleanup = await deleteRemoteFiles(config, [...stageNames].map((name) => ({
-    name,
-    path: joinRemotePath(operation.stageRemotePath, name),
-  })));
-  if (cleanup.failed > 0) {
-    throw new Error(`Failed to clean interrupted quality-upgrade stage files for ${relation.bvid}`);
-  }
-  stateManager.resetRelationForRetry(relation.bvid, relation.userId, relation.mediaId, "Interrupted quality upgrade was restored for retry.");
-  logManager.push({
-    timestamp: new Date().toISOString(),
-    type: "system",
-    level: "warn",
-    summary: `已恢复中断的画质重调任务 ${relation.bvid}`,
-    raw: `[QualityUpgrade] restored interrupted upgrade ${relation.userId}/${relation.mediaId}/${relation.bvid}`,
-    bvid: relation.bvid,
-    simpleVisible: true,
-    debugVisible: true,
-  });
-}
-
-async function recoverInterruptedQualityUpgrades() {
-  const interrupted = stateManager.listInterruptedQualityUpgrades();
-  for (const relation of interrupted) {
-    try {
-      await restoreInterruptedQualityUpgrade(relation);
-    } catch (error: any) {
-      const safeError = sanitizeUploadText(error?.message || error);
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "system",
-        level: "error",
-        summary: `恢复中断的画质重调失败 ${relation.bvid}: ${safeError}`,
-        raw: `[QualityUpgrade] interrupted restore failed ${relation.userId}/${relation.mediaId}/${relation.bvid}: ${safeError}`,
-        bvid: relation.bvid,
-        simpleVisible: true,
-        debugVisible: true,
-      });
-    }
-  }
-}
+app.use(createMigrationRouter({boundary:asyncHandler,service:createMigrationService({
+  scheduler: {
+    hasRunningTransferTasks: () => scheduler.hasRunningTransferTasks(),
+    hasActiveOrQueuedSchedulerWork: () => scheduler.hasActiveOrQueuedSchedulerWork(),
+    hasPersistentTransferWork: () => scheduler.hasPersistentTransferWork(),
+    withCleanupLock: work => scheduler.withCleanupLock(work),
+    captureLegacyRecoveryMarkers: () => scheduler.captureLegacyRecoveryMarkers(),
+    beginShutdown: () => scheduler.beginShutdown(),
+  },
+  pathMigration,archiveDeletion,importMaintenance,mediaProbe,unavailableCoverBackfill,
+  waitForRenamePreviewIdle: timeout => renameService.waitForIdle(timeout), waitForCoverCacheIdle,
+  activePathMigration: () => stateManager.getDatabase().getActivePathMigration(),
+  clearCoverBackfillMarker: () => stateManager.getDatabase().deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER),
+  reload:reloadStoresAfterImport,resume:resumeStoresAfterImport,
+  exportArchive: options => createMigrationExport(options,stateManager),
+  estimate: options => estimateMigrationExport(options,stateManager), preview: previewMigrationPackageFile,
+  apply: (archive,options) => applyMigrationPackageFile(archive,options,stateManager),
+})}));
 
 const qualityMaintenance = createQualityMaintenance({
   config: () => configStore.get(), records: () => stateManager.getRemoteFilePreviewRecords(),
@@ -2444,202 +411,28 @@ const qualityMaintenance = createQualityMaintenance({
 });
 app.use(createQualityMaintenanceRouter({service:qualityMaintenance,state:()=>scheduler.getQualityUpgradeState(),detailLimit:previewDetailLimit,boundary:asyncHandler}));
 
-app.post("/api/rename/preview", asyncHandler(async (req, res) => {
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能扫描远端重命名候选" });
-    return;
-  }
-  const body = req.body && typeof req.body === "object" ? req.body as { detailLimit?: unknown; refresh?: unknown } : {};
-  const config = configStore.get();
-  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  const scanLimit = renameScanLimit(config);
-  const detailLimit = previewDetailLimit(body.detailLimit);
-  const configKey = renamePreviewConfigKey(config, root, scanLimit);
-  const scanKey = renameRemoteScanKey(config, root, scanLimit);
-  const snapshot = renamePreviewScans.start(
-    scanKey,
-    () => listRemoteFilesRecursive(config, root, {
-      maxDepth: 8,
-      maxFiles: scanLimit,
-      maxEntries: Math.max(10_000, Math.min(500_000, scanLimit * 5)),
-      maxDirectories: Math.max(1_000, Math.min(50_000, scanLimit)),
-      concurrency: 2,
-      skippedLimit: 50,
-    }),
-    { force: body.refresh === true },
-  );
-  const records = stateManager.getRemoteFilePreviewRecords();
-  const local = buildLocalRenamePreview(config, root, scanLimit, detailLimit, records);
-  const current = buildRenameSessionCurrent(config, root, scanLimit, detailLimit, records, local, snapshot);
-  const response = renamePreviewSessions.create({
-    key: configKey,
-    configKey,
-    scanId: snapshot.id,
-    local,
-    current,
-    remoteScan: renameScanMetadata(snapshot) as RenamePreviewRemoteScanInfo,
-    remoteSignature: renameScanSignature(snapshot),
-    force: body.refresh === true,
-  });
-  res.json({ success: true, data: response });
-}));
+app.use(createRenameRouter({service: renameService, boundary: asyncHandler}));
 
-app.get("/api/rename/preview/status", asyncHandler(async (req, res) => {
-  const previewId = String(req.query.previewId || "").trim();
-  if (!previewId) {
-    res.status(404).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
-    return;
-  }
-  const config = configStore.get();
-  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  const scanLimit = renameScanLimit(config);
-  const configKey = renamePreviewConfigKey(config, root, scanLimit);
-  const previewConfigKey = renamePreviewSessions.getConfigKey(previewId);
-  if (previewConfigKey === undefined) {
-    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
-    return;
-  }
-  if (previewConfigKey !== configKey) {
-    res.status(409).json({ success: false, message: "远端配置或扫描范围已变化，请重新预览" });
-    return;
-  }
-  const detailLimit = previewDetailLimit(req.query.detailLimit);
-  const sinceRevisionValue = req.query.sinceRevision;
-  const sinceRevision = sinceRevisionValue === undefined || sinceRevisionValue === ""
-    ? undefined
-    : Number(sinceRevisionValue);
-  if (sinceRevision !== undefined && (!Number.isInteger(sinceRevision) || sinceRevision < 1)) {
-    res.status(400).json({ success: false, message: "预览版本号无效" });
-    return;
-  }
-  const full = syncRenamePreviewSession(previewId, config, root, scanLimit, detailLimit);
-  if (!full) {
-    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
-    return;
-  }
-  const response = sinceRevision !== undefined && sinceRevision === full.revision
-    ? renamePreviewSessions.getResponse(previewId, true)
-    : full;
-  res.json({ success: true, data: response });
-}));
-
-app.post("/api/rename", asyncHandler(async (req, res) => {
-  if (archiveDeletion.hasUnfinishedOperation()) {
-    res.status(409).json({ success: false, message: "仍有未完成的归档清理，不能重命名远端文件" });
-    return;
-  }
-  const body = req.body && typeof req.body === "object" ? req.body as {
-    previewId?: unknown;
-    candidateIds?: unknown;
-    items?: unknown;
-  } : {};
-  const config = configStore.get();
-  if (Array.isArray(body.items)) {
-    res.status(400).json({ success: false, message: "请先创建重命名预览，再使用 previewId 和 candidateIds 执行" });
-    return;
-  }
-  const previewId = String(body.previewId || "").trim();
-  const candidateIds = Array.isArray(body.candidateIds) ? body.candidateIds.map((value) => String(value || "")) : [];
-  if (!previewId || candidateIds.length === 0 || candidateIds.length > 10_000) {
-    res.status(400).json({ success: false, message: "previewId 和 candidateIds 必填" });
-    return;
-  }
-  const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
-  const previewConfigKey = renamePreviewSessions.getConfigKey(previewId);
-  if (previewConfigKey === undefined) {
-    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
-    return;
-  }
-  if (previewConfigKey !== renamePreviewConfigKey(config, root, renameScanLimit(config))) {
-    res.status(409).json({ success: false, message: "远端配置或扫描范围已变化，请重新预览" });
-    return;
-  }
-  const started = renamePreviewSessions.beginExecution(previewId, candidateIds);
-  if (started.kind === "missing") {
-    res.status(409).json({ success: false, message: "远端重命名预览已过期，请重新预览" });
-    return;
-  }
-  if (started.kind === "invalid") {
-    res.status(409).json({ success: false, message: started.message });
-    return;
-  }
-  if (started.kind === "in_progress") {
-    res.status(202).json({ success: true, data: { status: "running" } });
-    return;
-  }
-  if (started.kind === "completed") {
-    res.json({ success: true, data: started.result });
-    return;
-  }
-  const safeItems = started.candidates.map((item) => ({
-    bvid: item.bvid,
-    oldPath: item.oldPath,
-    newPath: item.newPath,
-    expectedSize: item.expectedSize,
-    sourceAccessPath: item.sourceAccessPath,
-  }));
-  try {
-    const result = await batchRenameRemotePaths(config, safeItems);
-    const stateRenames = new Map<string, Array<{ oldPath: string; newPath: string }>>();
-    for (const item of result.results) {
-      const source = safeItems.find((candidate) => candidate.oldPath === item.oldPath && candidate.newPath === item.newPath);
-      const bvid = source?.bvid || extractBvid(item.oldPath) || extractBvid(item.newPath);
-      if (bvid && item.actualPath && item.actualPath !== item.oldPath) {
-        const itemsForBvid = stateRenames.get(bvid) || [];
-        itemsForBvid.push({ oldPath: item.oldPath, newPath: item.actualPath });
-        stateRenames.set(bvid, itemsForBvid);
-      }
-    }
-    for (const [bvid, renames] of stateRenames) stateManager.renameRemoteFilesBatch(bvid, renames);
-    const safeResult = {
-      ...result,
-      results: result.results.map((entry: any) => ({
-        ...entry,
-        oldPath: redactRemotePathForDisplay(entry.oldPath),
-        newPath: redactRemotePathForDisplay(entry.newPath),
-        actualPath: entry.actualPath ? redactRemotePathForDisplay(entry.actualPath) : entry.actualPath,
-        observedPaths: Array.isArray(entry.observedPaths)
-          ? entry.observedPaths.map((value: string) => redactRemotePathForDisplay(value))
-          : entry.observedPaths,
-        error: entry.error ? sanitizeDiagnosticText(entry.error, 500) : entry.error,
-      })),
-    };
-    renamePreviewSessions.finishExecution(previewId, safeResult);
-    res.json({ success: true, data: safeResult });
-  } catch (error) {
-    const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 300);
-    const failure = { success: 0, failed: safeItems.length, results: [], error: message };
-    renamePreviewSessions.finishExecution(previewId, failure);
-    throw error;
-  }
-}));
-
-app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error(`[HTTP] ${req.method} ${req.path} failed: ${safeErrorSummary(err)}`);
-  if (res.headersSent) {
-    return;
-  }
-  const statusCode = Number(err?.statusCode || err?.status);
-  const safeStatus = statusCode >= 400 && statusCode < 600 ? statusCode : 500;
-  res.status(safeStatus).json({ success: false, message: safeErrorSummary(err, "Internal server error") });
-});
-
-
+app.use(createHttpErrorHandler(message => console.error(message)));
 
 export async function closeAppResources() {
   startupLifecycle.stop();
+  const accountRefreshStopped = accountRefresh.stop(5_000);
+  const accountLoginStopped = accountLogin.stop(5_000);
   scheduler.beginShutdown();
   const startupStopped = await startupLifecycle.waitForIdle(5_000);
   const pathMigrationStopped = pathMigration.stop(5_000);
   const archiveDeletionStopped = archiveDeletion.stop(5_000);
-  const renamePreviewStopped = renamePreviewScans.stop(5_000);
+  const renamePreviewStopped = renameService.stop(5_000);
   await shutdownActiveDownloads(5_000);
   await scheduler.shutdown(5_000, {closeDatabase:false});
+  if (!await accountLoginStopped) throw new Error("Account login did not stop before closing resources");
+  if (!await accountRefreshStopped) throw new Error("Account refresh did not stop before closing resources");
   if (!startupStopped) throw new Error("Startup recovery did not stop before closing the state database");
   if (!await pathMigrationStopped) throw new Error("Path migration did not stop before closing the state database");
   if (!await archiveDeletionStopped) throw new Error("Archive deletion did not stop before closing the state database");
   if (!await renamePreviewStopped) throw new Error("Rename preview scan did not stop before closing the state database");
-  renamePreviewSessions.clear();
+  renameService.clear();
   const coverBackfillStopped = await unavailableCoverBackfill.stop(30_000);
   const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
   if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
@@ -2672,12 +465,14 @@ if (process.env.NODE_ENV !== "test") {
     shuttingDown = true;
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
     startupLifecycle.stop();
+    const accountRefreshStopped = accountRefresh.stop(20_000);
+    const accountLoginStopped = accountLogin.stop(20_000);
     scheduler.beginShutdown();
     const startupStopped = await startupLifecycle.waitForIdle(20_000);
     if (!startupStopped) console.warn("[Shutdown] Startup recovery did not stop before the shutdown deadline");
     const pathMigrationStopped = pathMigration.stop(20_000);
     const archiveDeletionStopped = archiveDeletion.stop(20_000);
-    const renamePreviewStopped = renamePreviewScans.stop(20_000);
+    const renamePreviewStopped = renameService.stop(20_000);
     server.close();
     let downloadsStopped = true;
     await shutdownActiveDownloads(20_000).catch((error) => {
@@ -2710,7 +505,7 @@ if (process.env.NODE_ENV !== "test") {
     const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
     closePlaybackDeliveryTracker();
     adminSessionStore.close();
-    const quiesced = startupStopped && downloadsStopped && schedulerStopped && await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle;
+    const quiesced = await accountLoginStopped && await accountRefreshStopped && startupStopped && downloadsStopped && schedulerStopped && await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle;
     if (quiesced) {
       stateManager.close();
     } else {
@@ -2730,5 +525,3 @@ if (process.env.NODE_ENV !== "test") {
     process.once('disconnect', () => { void shutdown('development launcher disconnected'); });
   }
 }
-import { createArchiveDeletionRouter } from './http/archive-deletion.js';
-import { createAccountRemovalRouter } from './http/account-removal.js';

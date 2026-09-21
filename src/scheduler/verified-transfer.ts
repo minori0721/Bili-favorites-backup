@@ -1,14 +1,14 @@
 import type { StateManager, LocalCleanupPlan } from '../state.js';
-import type { TransferSessionStore } from '../transfer-session.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { UploadResult } from '../uploader.js';
 import type { EncodingRetryContext } from '../tasks.js';
 
 /** Dependencies are supplied per commit; this operation never retains a database connection. */
 export interface VerifiedTransferDependencies {
   state: Pick<StateManager, 'runAtomic' | 'markVerifiedUpload' | 'recordLocalCleanupPlan'>;
-  sessions: Pick<TransferSessionStore, 'assertGeneration' | 'listFiles' | 'updateSession'>;
-  jobs: Pick<PersistentJobStore, 'complete' | 'completeEncodingRetryCommit'>;
+  sessions: Pick<TransferSessionRepository, 'assertGeneration' | 'listFiles' | 'updateSession'>;
+  jobs: Pick<JobRepository, 'complete' | 'completeEncodingRetryCommit'>;
   now(): number;
   leaseOwner: string;
 }

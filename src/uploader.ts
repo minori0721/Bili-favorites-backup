@@ -1,3 +1,4 @@
+import type { TransferSessionRepository } from './repositories/transfer-sessions.js';
 import { sanitizeSegment, joinRemotePath } from "./utils.js";
 import { UploadLayout } from "./config.js";
 
@@ -41,15 +42,12 @@ import {
   sanitizeUploadText,
   UploadOperationError,
 } from "./upload-health.js";
-import {
-  TransferSessionStore,
-  type TransferSessionFileRecord,
-  type TransferSessionPhase,
-} from "./transfer-session.js";
+import type { TransferSessionFileRecord, TransferSessionPhase } from "./repositories/transfer-sessions.js";
 import {
   asRemoteOperationsClient,
   createRemoteReplacementRunner,
   type RemoteReplacementRunner,
+  type RemoteOperationsClient,
 } from "./remote-operations.js";
 import {
   decideUploadGroupPreflight,
@@ -70,15 +68,29 @@ import {
   remoteLookupDirname,
   type RemoteFileResolver,
   type RemoteFailureInfo,
+  type RemoteDirectoryClient,
 } from "./remote-file-resolver.js";
 import { buildDavClient as buildSharedDavClient, getRemoteBackendProfile, type RemoteBackendProfile } from "./remote-storage.js";
 import { isRemotePathWithin, normalizeRemotePath, remoteBasename, remoteDirname } from "./remote-path.js";
 import { SkippedPreviewCollector } from "./preview-summary.js";
 
+type UploadError = Error & Record<string, unknown>;
+
+function errorRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function withUploadErrorMetadata<T extends Error>(error: T, metadata: Record<string, unknown>): T & UploadError {
+  Object.assign(error, metadata);
+  return error as T & UploadError;
+}
+
 export const buildDavClient = buildSharedDavClient;
 
-export async function ensureRemoteDir(client: WebDAVClient, remotePath: string, profile?: RemoteBackendProfile) {
-  await ensureRemoteDirectory(client as any, remotePath, profile);
+export async function ensureRemoteDir(client: RemoteDirectoryClient, remotePath: string, profile?: RemoteBackendProfile) {
+  await ensureRemoteDirectory(client, remotePath, profile);
 }
 
 export interface UploadResult {
@@ -253,7 +265,7 @@ async function toUploadOperationError(error: unknown, remotePath: string) {
 }
 
 export async function verifyUploadedFile(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   remoteFile: string,
   expectedSize: number,
   delaysMs: number[] = [0, 500, 1500],
@@ -271,38 +283,40 @@ export async function verifyUploadedFile(
       if (observed.status === "exists" && !observed.directory && Number.isFinite(lastSize) && lastSize === expectedSize) {
         return;
       }
-      const mismatch: any = new Error(
+      const mismatch = withUploadErrorMetadata(new Error(
         observed.status === "unknown"
           ? "Remote upload visibility could not be confirmed"
           : observed.directory
           ? "Remote upload target is a directory"
           : `Remote size mismatch: expected ${expectedSize}, received ${Number.isFinite(lastSize) ? lastSize : "unknown"}`
-      );
-      mismatch.status = observed.status === "missing"
-        ? 404
-        : observed.failure?.status || (observed.failure?.category === "transient" ? 503 : 409);
-      if (observed.failure) {
-        mismatch.remoteFailure = observed.failure;
-        mismatch.retryAfterMs = observed.failure.retryAfterMs;
-      }
+      ), {
+        status: observed.status === "missing"
+          ? 404
+          : observed.failure?.status || (observed.failure?.category === "transient" ? 503 : 409),
+        ...(observed.failure ? {
+          remoteFailure: observed.failure,
+          retryAfterMs: observed.failure.retryAfterMs,
+        } : {}),
+      });
       lastError = mismatch;
     } catch (error) {
       lastError = error;
     }
   }
-  const verificationError: any = new Error(
-    `Remote upload verification failed for ${remoteFile}: ${(lastError as Error)?.message || "file not visible"}`
-  );
-  verificationError.status = Number((lastError as any)?.status || 0)
-    || (isRemoteNotFoundError(lastError) ? 404 : 409);
-  verificationError.remoteFailure = (lastError as any)?.remoteFailure;
-  verificationError.retryAfterMs = (lastError as any)?.retryAfterMs;
-  verificationError.cause = lastError;
+  const lastDetails = errorRecord(lastError);
+  const verificationError = withUploadErrorMetadata(new Error(
+    `Remote upload verification failed for ${remoteFile}: ${String(lastDetails.message || "file not visible")}`
+  ), {
+    status: Number(lastDetails.status || 0) || (isRemoteNotFoundError(lastError) ? 404 : 409),
+    remoteFailure: lastDetails.remoteFailure,
+    retryAfterMs: lastDetails.retryAfterMs,
+    cause: lastError,
+  });
   throw new UploadOperationError(classifyUploadError(verificationError, remoteFile));
 }
 
 async function inspectExpectedRemoteFile(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   remoteFile: string,
   expectedSize: number,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
@@ -311,8 +325,7 @@ async function inspectExpectedRemoteFile(
   const observed = await resolver.inspect(remoteFile, { fallback });
   if (observed.status === "missing") return "missing" as const;
   if (observed.directory) {
-    const directoryConflict: any = new Error("Remote upload target is a directory");
-    directoryConflict.status = 409;
+    const directoryConflict = withUploadErrorMetadata(new Error("Remote upload target is a directory"), { status: 409 });
     throw directoryConflict;
   }
   if (observed.status === "unknown") {
@@ -322,13 +335,12 @@ async function inspectExpectedRemoteFile(
     );
   }
   if (Number.isFinite(observed.size) && observed.size === expectedSize) return "verified" as const;
-  const mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(observed.size) ? observed.size : "unknown"}`);
-  mismatch.status = 409;
+  const mismatch = withUploadErrorMetadata(new Error(`Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(observed.size) ? observed.size : "unknown"}`), { status: 409 });
   throw mismatch;
 }
 
 async function inspectRemoteFile(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   remoteFile: string,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
   fallback: "risk_only" | "always" = "risk_only",
@@ -352,22 +364,25 @@ async function inspectRemoteFile(
   };
 }
 
-function uploadStatus(error: any) {
-  return Number(error?.status || error?.statusCode || error?.response?.status || 0);
+function uploadStatus(error: unknown) {
+  const details = errorRecord(error);
+  const response = errorRecord(details.response);
+  return Number(details.status || details.statusCode || response.status || 0);
 }
 
-function carryUploadResponseEvidence(target: any, sources: readonly unknown[]) {
+function carryUploadResponseEvidence(target: Record<string, unknown>, sources: readonly unknown[]) {
   for (const source of sources) {
     if (!source || typeof source !== "object") continue;
-    const remoteErrorCode = extractRemoteErrorCode(source as any);
+    const sourceDetails = errorRecord(source);
+    const remoteErrorCode = extractRemoteErrorCode(sourceDetails);
     if (remoteErrorCode && !target.remoteErrorCode) target.remoteErrorCode = remoteErrorCode;
-    const responseHeaders = extractSafeUploadResponseHeaders(source as any);
+    const responseHeaders = extractSafeUploadResponseHeaders(sourceDetails);
     if (responseHeaders) {
-      target.headers = { ...(target.headers || {}), ...responseHeaders };
+      target.headers = { ...errorRecord(target.headers), ...responseHeaders };
     }
-    const responseBody = (source as any).responseBody
-      ?? (source as any).body
-      ?? (source as any).response?.body;
+    const responseBody = sourceDetails.responseBody
+      ?? sourceDetails.body
+      ?? errorRecord(sourceDetails.response).body;
     if (!target.responseBody && (typeof responseBody === "string" || Buffer.isBuffer(responseBody))) {
       target.responseBody = responseBody;
     }
@@ -375,7 +390,7 @@ function carryUploadResponseEvidence(target: any, sources: readonly unknown[]) {
 }
 
 async function verify405WrittenFile(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   remoteFile: string,
   expectedSize: number,
   delaysMs: number[],
@@ -397,12 +412,11 @@ async function verify405WrittenFile(
         sawMissing = true;
         if (observed.parentStatus !== "visible") allParentsVisible = false;
       }
-      const mismatch: any = new Error(
+      const mismatch = withUploadErrorMetadata(new Error(
         observed.directory
           ? "Remote upload target is a directory"
           : `Remote size conflict: expected ${expectedSize}, received ${Number.isFinite(remoteSize) ? remoteSize : "unknown"}`
-      );
-      mismatch.status = observed.status === "missing" ? 404 : 409;
+      ), { status: observed.status === "missing" ? 404 : 409 });
       throw mismatch;
     } catch (error) {
       if (isRemoteNotFoundError(error)) {
@@ -412,10 +426,9 @@ async function verify405WrittenFile(
       throw error;
     }
   }
-  const notVisible: any = new Error(
-    `Remote upload verification failed after 405 response: ${(lastError as Error)?.message || "file not visible"}`
-  );
-  notVisible.status = 405;
+  const notVisible = withUploadErrorMetadata(new Error(
+    `Remote upload verification failed after 405 response: ${String(errorRecord(lastError).message || "file not visible")}`
+  ), { status: 405 });
   // The provider's useful 405 evidence belongs to the original PUT error.
   // Carry only the already-captured body, safe error code and whitelisted
   // headers to the post-verification error; never copy raw response headers.
@@ -449,7 +462,7 @@ async function confirmRemoteMissing(resolver: RemoteFileResolver, remoteFile: st
 }
 
 async function verifyOrAwaitRemoteVisibility(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   remoteFile: string,
   expectedSize: number,
   delaysMs: number[],
@@ -459,14 +472,16 @@ async function verifyOrAwaitRemoteVisibility(
     await verifyUploadedFile(client, remoteFile, expectedSize, delaysMs, resolver);
     return "verified" as const;
   } catch (error) {
-    if (Number((error as any)?.uploadFailure?.status || (error as any)?.status || 0) === 404) {
+    const details = errorRecord(error);
+    const uploadFailure = errorRecord(details.uploadFailure);
+    if (Number(uploadFailure.status || details.status || 0) === 404) {
       return "awaiting_verification" as const;
     }
-    if (isRemoteNotFoundError((error as any)?.cause || error)
-      || isRemoteNotFoundError((error as any)?.uploadFailure?.summary || error)) {
+    if (isRemoteNotFoundError(details.cause || error)
+      || isRemoteNotFoundError(uploadFailure.summary || error)) {
       return "awaiting_verification" as const;
     }
-    const summary = String((error as any)?.message || error || "");
+    const summary = String(details.message || error || "");
     if (/404|not found|object not found/i.test(summary)) {
       return "awaiting_verification" as const;
     }
@@ -525,7 +540,9 @@ async function openVerifiedLocalUpload(localRoot: string, localFile: string, exp
     // the handle before the post-transfer fstat below runs.
     return { handle, stream: handle.createReadStream({ autoClose: false }), stat: opened };
   } catch (error) {
-    await handle.close().catch(() => undefined);
+    await handle.close().catch((closeError) => {
+      console.warn(`[Uploader] failed to close file after open error: ${String(closeError)}`);
+    });
     throw error;
   }
 }
@@ -551,7 +568,7 @@ async function assertLocalUploadUnchanged(
 }
 
 async function putAndVerifyLocalFile(
-  client: WebDAVClient,
+  client: UploadClient,
   localRoot: string,
   localFile: string,
   remoteFile: string,
@@ -576,7 +593,7 @@ async function putAndVerifyLocalFile(
   const putOnce = async (includeExtendedTimestamps: boolean) => {
     const opened = await openVerifiedLocalUpload(localRoot, localFile, stat.size);
     try {
-      const putAccepted = await client.putFileContents(remoteFile, opened.stream as any, {
+      const putAccepted = await client.putFileContents(remoteFile, opened.stream, {
         contentLength: false,
         // The preflight is advisory; conditional PUT closes the race where
         // another writer creates a different file before this request starts.
@@ -586,7 +603,9 @@ async function putAndVerifyLocalFile(
       return { putAccepted, openedStat: opened.stat };
     } finally {
       opened.stream.destroy();
-      await opened.handle.close().catch(() => undefined);
+      await opened.handle.close().catch((closeError) => {
+        console.warn(`[Uploader] file close failed after upload: ${String(closeError)}`);
+      });
     }
   };
 
@@ -611,7 +630,7 @@ async function putAndVerifyLocalFile(
     await inspectLocalUploadPath(localRoot, localFile);
     return { verificationStatus: "verified" as const, skippedUpload: false, putAccepted: true };
   };
-  let putAccepted: any;
+  let putAccepted: unknown;
   let openedStat: fs.Stats;
   try {
     ({ putAccepted, openedStat } = await putOnce(includeExtendedTimestamps));
@@ -695,18 +714,22 @@ function shouldRetryWithCompatibilityName(error: UploadOperationError, fileName:
     && [400, 405, 422].includes(status);
 }
 
-interface UploadOptions {
+export interface UploadClient extends RemoteDirectoryClient {
+  putFileContents(path: string, data: import('node:stream').Readable, options?: import('webdav').PutFileContentsOptions): Promise<unknown>;
+}
+
+export interface UploadOptions {
   deferSessionCompletion?: boolean;
   onPreparedSession?: (session: { id: string; generation: number }) => void;
   /** @deprecated Local cleanup belongs to the committed archive owner, never the transport. */
   cleanupLocal?: boolean;
-  client?: WebDAVClient;
+  client?: UploadClient;
   verificationDelaysMs?: number[];
   log?: Pick<typeof logManager, "push">;
   files?: string[];
   filenameMetadataByPath?: Record<string, UploadFileMetadata>;
-  uploadStartLimiter?: UploadStartLimiter;
-  transferSessionStore?: TransferSessionStore;
+  uploadStartLimiter?: Pick<UploadStartLimiter, 'wait'>;
+  transferSessionStore?: TransferSessionRepository;
   sessionId?: string;
   sessionGeneration?: number;
   sessionDedupeKey?: string;
@@ -759,8 +782,7 @@ async function uploadWithAListDirect(
   for (const entry of uploadEntries) {
     const localFile = path.resolve(localDir, entry.relativePath);
     if (localFile !== localRoot && !localFile.startsWith(`${localRoot}${path.sep}`)) {
-      const localError: any = new Error(`Local upload path escapes the download directory: ${entry.relativePath}`);
-      localError.status = 422;
+      const localError = withUploadErrorMetadata(new Error(`Local upload path escapes the download directory: ${entry.relativePath}`), { status: 422 });
       throw new UploadOperationError(classifyUploadError(localError, remotePath));
     }
     const remoteFile = remotePath.replace(/\/$/, "") + "/" + entry.name;
@@ -768,9 +790,10 @@ async function uploadWithAListDirect(
     try {
       stat = await inspectLocalUploadPath(localRoot, localFile);
     } catch (error) {
-      const localError: any = new Error(`Local upload file is empty or invalid: ${localFile}`);
-      localError.status = 422;
-      localError.cause = error;
+      const localError = withUploadErrorMetadata(new Error(`Local upload file is empty or invalid: ${localFile}`), {
+        status: 422,
+        cause: error,
+      });
       throw new UploadOperationError(classifyUploadError(localError, remoteFile));
     }
     preparedEntries.push({ ...entry, localFile, remoteFile, stat });
@@ -945,8 +968,7 @@ async function uploadWithAListDirect(
   }
 
   if (uploadedFiles.length === 0) {
-    const emptyError: any = new Error(`Local upload directory contains no files: ${localDir}`);
-    emptyError.status = 422;
+    const emptyError = withUploadErrorMetadata(new Error(`Local upload directory contains no files: ${localDir}`), { status: 422 });
     throw new UploadOperationError(classifyUploadError(emptyError, remotePath));
   }
 
@@ -992,7 +1014,7 @@ function transferFileRecord(
 }
 
 async function inspectPathForExpectedSize(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   remotePath: string,
   expectedSize: number,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
@@ -1000,25 +1022,22 @@ async function inspectPathForExpectedSize(
   const result = await inspectRemoteFile(client, remotePath, resolver, "always");
   if (result.status === "missing") return result;
   if (result.status === "unknown") {
-    const unknown: any = new Error("远端上传目标状态无法确认");
-    unknown.status = 409;
+    const unknown = withUploadErrorMetadata(new Error("远端上传目标状态无法确认"), { status: 409 });
     throw unknown;
   }
   if (result.directory) {
-    const directoryConflict: any = new Error("Remote upload target is a directory");
-    directoryConflict.status = 409;
+    const directoryConflict = withUploadErrorMetadata(new Error("Remote upload target is a directory"), { status: 409 });
     throw directoryConflict;
   }
   if (result.size !== expectedSize) {
-    const mismatch: any = new Error(`Remote size conflict: expected ${expectedSize}, received ${result.size ?? "unknown"}`);
-    mismatch.status = 409;
+    const mismatch = withUploadErrorMetadata(new Error(`Remote size conflict: expected ${expectedSize}, received ${result.size ?? "unknown"}`), { status: 409 });
     throw mismatch;
   }
   return result;
 }
 
 async function preflightUploadGroup(
-  client: WebDAVClient,
+  client: RemoteDirectoryClient,
   entries: Array<{ remoteFile: string; expectedSize: number; currentSessionPutAccepted: boolean }>,
   options: UploadOptions,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
@@ -1107,16 +1126,16 @@ async function uploadWithTransferSession(
       stat = await inspectLocalUploadPath(localRoot, localFile);
       if (!stat.isFile() || stat.size <= 0) throw new Error("Invalid local output");
     } catch (cause) {
-      const error: any = new Error(`Local upload file is missing or invalid: ${entry.relativePath}`);
-      error.status = 422;
-      error.cause = cause;
+      const error = withUploadErrorMetadata(new Error(`Local upload file is missing or invalid: ${entry.relativePath}`), {
+        status: 422,
+        cause,
+      });
       throw new UploadOperationError(classifyUploadError(error, remotePath));
     }
     validatedEntries.push({ ...entry, localFile, stat });
   }
   if (validatedEntries.length === 0) {
-    const error: any = new Error("Local upload directory contains no files");
-    error.status = 422;
+    const error = withUploadErrorMetadata(new Error("Local upload directory contains no files"), { status: 422 });
     throw new UploadOperationError(classifyUploadError(error, remotePath));
   }
   const session = store.ensurePrepared({
@@ -1173,7 +1192,7 @@ async function uploadWithTransferSession(
     }
     await ensureRemoteDir(client, remotePath, profile);
   } catch (error) {
-    store.updateSession(session.id, { phase: "failed", lastError: sanitizeUploadText((error as any)?.message || error) }, sessionGeneration);
+    store.updateSession(session.id, { phase: "failed", lastError: sanitizeUploadText(String(errorRecord(error).message || error)) }, sessionGeneration);
     throw await toUploadOperationError(error, remotePath);
   }
 
@@ -1244,9 +1263,10 @@ async function uploadWithTransferSession(
           const granted = legacyAllowReupload
             || Boolean(options.consumeReuploadPermission?.(entry.relativePath.replace(/\\/g, "/")));
           if (!granted) {
-            const permissionError: any = new Error("Re-upload permission is no longer available for this file");
-            permissionError.status = 409;
-            permissionError.code = "UPLOAD_REUPLOAD_PERMISSION_MISSING";
+            const permissionError = withUploadErrorMetadata(new Error("Re-upload permission is no longer available for this file"), {
+              status: 409,
+              code: "UPLOAD_REUPLOAD_PERMISSION_MISSING",
+            });
             throw permissionError;
           }
           reuploadPermissionConsumed = true;
@@ -1329,10 +1349,10 @@ async function uploadWithTransferSession(
     } catch (error) {
       store.updateFile(session.id, entry.relativePath, {
         status: "failed",
-        lastError: sanitizeUploadText((error as any)?.message || error),
+        lastError: sanitizeUploadText(String(errorRecord(error).message || error)),
         nextCheckAt: null,
       }, sessionGeneration);
-      store.updateSession(session.id, { phase: "failed", lastError: sanitizeUploadText((error as any)?.message || error) }, sessionGeneration);
+      store.updateSession(session.id, { phase: "failed", lastError: sanitizeUploadText(String(errorRecord(error).message || error)) }, sessionGeneration);
       throw await toUploadOperationError(error, entry.sessionFile.finalPath);
     }
   }
@@ -1361,7 +1381,7 @@ export async function uploadWithAList(localDir: string, remotePath: string, conf
 
 export async function resumeUploadSession(
   config: AppConfig,
-  transferSessionStore: TransferSessionStore,
+  transferSessionStore: TransferSessionRepository,
   sessionId: string,
   options: Omit<UploadOptions, "transferSessionStore" | "sessionId"> = {},
 ) {
@@ -1463,6 +1483,10 @@ export interface RemoteListedFile {
   size?: number;
 }
 
+export interface RemoteDirectoryListingClient {
+  getDirectoryContents(path: string): Promise<unknown>;
+}
+
 export interface RenameRemoteItem {
   bvid?: string;
   oldPath: string;
@@ -1475,17 +1499,15 @@ export interface RenameRemoteItem {
 /** List remote directory contents */
 export async function listRemoteDir(config: AppConfig, remotePath: string): Promise<string[]> {
   const client = buildDavClient(config);
-  const items = await client.getDirectoryContents(remotePath) as any[];
+  const items = await client.getDirectoryContents(remotePath) as unknown;
   if (!Array.isArray(items)) throw new Error("远端目录响应格式无效");
   const names: string[] = [];
   for (const item of items) {
     try {
       const normalized = normalizeRemoteDirectoryEntry(remotePath, item);
       if (normalized.type === "file" && normalized.name) names.push(normalized.name);
-    } catch {
-      // A malformed unrelated entry should not hide valid files in the same
-      // directory. A resolver doing an exact lookup still fails closed when a
-      // malformed entry could be the requested name.
+    } catch (error) {
+      console.debug('[WebDAV] ignored a malformed unrelated directory entry', error);
     }
   }
   return names;
@@ -1502,7 +1524,7 @@ export async function listRemoteFilesRecursive(
     concurrency?: number;
     skippedLimit?: number;
   } = {},
-  clientOverride?: Pick<WebDAVClient, "getDirectoryContents">
+  clientOverride?: RemoteDirectoryListingClient
 ): Promise<{
   files: RemoteListedFile[];
   skipped: Array<{ path: string; reason: string }>;
@@ -1549,17 +1571,17 @@ export async function listRemoteFilesRecursive(
 
   async function readDirectory(dir: string) {
     try {
-      const items = await client.getDirectoryContents(dir) as any[];
+      const items = await client.getDirectoryContents(dir) as unknown;
       if (!Array.isArray(items)) throw new Error("远端目录响应格式无效");
       return items;
-    } catch (error: any) {
+    } catch (error) {
       complete = false;
-      skipped.add({ path: dir, reason: `远端目录读取失败：${error?.message || error}` });
+      skipped.add({ path: dir, reason: `远端目录读取失败：${String(errorRecord(error).message || error)}` });
       return null;
     }
   }
 
-  function processDirectoryItems(dir: string, depth: number, items: any[]) {
+  function processDirectoryItems(dir: string, depth: number, items: unknown[]) {
     const children: DirectoryTask[] = [];
     for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
       if (scannedEntries >= maxEntries) {
@@ -1676,7 +1698,15 @@ export async function listRemoteFilesRecursive(
 export async function batchRenameRemotePaths(
   config: AppConfig,
   items: RenameRemoteItem[],
-  clientOverride?: WebDAVClient
+  clientOverride?: {
+    exists?(path: string): Promise<boolean>;
+    stat?(path: string): Promise<unknown>;
+    getDirectoryContents?(path: string): Promise<unknown>;
+    moveFile(path: string, target: string, options?: Record<string, unknown>): Promise<unknown>;
+    copyFile?(path: string, target: string, options?: Record<string, unknown>): Promise<unknown>;
+    putFileContents?(path: string, data: unknown, options?: Record<string, unknown>): Promise<unknown>;
+    deleteFile?(path: string): Promise<unknown>;
+  }
 ): Promise<{
   success: number;
   failed: number;
@@ -1691,9 +1721,9 @@ export async function batchRenameRemotePaths(
   }>;
 }> {
   const client = clientOverride || buildDavClient(config);
-  const resolver = typeof (client as any).stat === "function"
-    && typeof (client as any).getDirectoryContents === "function"
-    ? createRemoteFileResolver(client as any, getRemoteBackendProfile(config))
+  const resolver = typeof client.stat === "function"
+    && typeof client.getDirectoryContents === "function"
+    ? createRemoteFileResolver(client, getRemoteBackendProfile(config))
     : undefined;
   const operationId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
   const root = normalizeRemotePath(config.alistDest || "/bili-backup/videos", { allowTrailingSlash: true });
@@ -1716,10 +1746,10 @@ export async function batchRenameRemotePaths(
       if (observed.status === "unknown") throw new Error("远端文件状态无法确认");
       return observed.status === "exists";
     }
-    if (typeof (client as any).exists === "function") return Boolean(await (client as any).exists(target));
-    if (typeof (client as any).stat === "function") {
+    if (typeof client.exists === "function") return Boolean(await client.exists(target));
+    if (typeof client.stat === "function") {
       try {
-        await (client as any).stat(target);
+        await client.stat(target);
         return true;
       } catch (error) {
         if (isRemoteNotFoundError(error)) return false;
@@ -1808,9 +1838,9 @@ export async function batchRenameRemotePaths(
         preflight.set(item, { status: "missing", error: "源文件不存在" });
         continue;
       }
-      if (typeof (client as any).stat === "function") {
-        const stat = await (client as any).stat(item.oldPath);
-        const size = Number(stat?.size);
+      if (typeof client.stat === "function") {
+        const stat = errorRecord(await client.stat(item.oldPath));
+        const size = Number(stat.size);
         if (!Number.isFinite(size)) {
           preflight.set(item, { status: "conflict", error: "无法确认源文件大小" });
           continue;
@@ -1861,10 +1891,10 @@ export async function batchRenameRemotePaths(
   }
 
   const replacementRunner: RemoteReplacementRunner = clientOverride
-    && (typeof (clientOverride as any).copyFile !== "function"
-      || typeof (clientOverride as any).putFileContents !== "function"
-      || typeof (clientOverride as any).deleteFile !== "function"
-      || typeof (clientOverride as any).stat !== "function")
+    && (typeof clientOverride.copyFile !== "function"
+      || typeof clientOverride.putFileContents !== "function"
+      || typeof clientOverride.deleteFile !== "function"
+      || typeof clientOverride.stat !== "function")
     ? async (_config, oldPath, newPath, _expectedSize, attempt) => {
       const source = attempt?.sourceAccessPath
         ? normalizeObservedRemoteAccessPath(oldPath, attempt.sourceAccessPath)
@@ -1872,7 +1902,7 @@ export async function batchRenameRemotePaths(
       await client.moveFile(source, normalizeRemotePath(newPath), { overwrite: false });
     }
     : await createRemoteReplacementRunner(config, {
-      client: asRemoteOperationsClient(client),
+      client: client as unknown as RemoteOperationsClient,
     });
 
   const staged: typeof prepared = [];
@@ -1893,14 +1923,18 @@ export async function batchRenameRemotePaths(
       resolver?.invalidatePath(item.newPath);
       completed.push(item);
     }
-  } catch (error: any) {
-    operationError = sanitizeUploadText(error?.message || error);
+  } catch (error) {
+    operationError = sanitizeUploadText(String(errorRecord(error).message || error));
     for (const item of [...completed].reverse()) {
-      await replacementRunner(config, item.newPath, item.oldPath, item.oldSize).catch(() => undefined);
+      await replacementRunner(config, item.newPath, item.oldPath, item.oldSize).catch((rollbackError) => {
+        console.warn(`[Uploader] replacement rollback deferred: ${String(rollbackError)}`);
+      });
     }
     for (const item of [...staged].reverse()) {
       if (completed.includes(item)) continue;
-        await replacementRunner(config, item.tempPath, item.oldPath, item.oldSize).catch(() => undefined);
+        await replacementRunner(config, item.tempPath, item.oldPath, item.oldSize).catch((rollbackError) => {
+          console.warn(`[Uploader] staged replacement rollback deferred: ${String(rollbackError)}`);
+        });
     }
   }
 
@@ -1954,7 +1988,7 @@ export async function moveRemoteFile(config: AppConfig, oldPath: string, newPath
   await client.moveFile(normalizeRemotePath(oldPath), targetPath, { overwrite: false });
 }
 
-export function isRemoteNotFoundError(error: any) {
+export function isRemoteNotFoundError(error: unknown) {
   return isResolvedRemoteNotFoundError(error);
 }
 
@@ -1981,16 +2015,19 @@ export async function deleteRemoteFiles(
         raw: `[Delete] ${redactRemotePathForDisplay(targetPath)}`,
         simpleVisible: true,
       });
-    } catch (error: any) {
+    } catch (error) {
       if (isRemoteNotFoundError(error)) {
         success++;
         results.push({ path: targetPath, ok: true });
         continue;
       }
       failed++;
-      const message = sanitizeUploadText(error?.message || error);
-      const status = Number(error?.status || error?.response?.status || error?.statusCode || 0) || undefined;
-      const code = String(error?.code || error?.cause?.code || "") || undefined;
+      const details = errorRecord(error);
+      const response = errorRecord(details.response);
+      const cause = errorRecord(details.cause);
+      const message = sanitizeUploadText(String(details.message || error));
+      const status = Number(details.status || response.status || details.statusCode || 0) || undefined;
+      const code = String(details.code || cause.code || "") || undefined;
       results.push({ path: targetPath, ok: false, error: message, status, code });
       logManager.push({
         timestamp: new Date().toISOString(),

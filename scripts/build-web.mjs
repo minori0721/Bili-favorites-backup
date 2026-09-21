@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { publishAsset } from './publish-asset.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 export const assetDirectory = path.join(root, 'dist/web/assets');
@@ -29,14 +30,13 @@ export async function buildWeb({ watch = false } = {}) {
           const entries = {};
           for (const output of result.outputFiles) {
             const name = path.basename(output.path);
-            await fs.writeFile(output.path, output.contents);
+            await publishAsset(output.path, output.contents);
             const kind = name.endsWith('.js') ? 'script' : name.endsWith('.css') ? 'style' : null;
             if (kind) entries[kind] = {file:name, sha256:createHash('sha256').update(output.contents).digest('hex')};
           }
           if (!entries.script || !entries.style) throw new Error('Incomplete browser build');
           // Publish only after both content-addressed resources exist.
-          await fs.writeFile(path.join(assetDirectory, 'manifest.next.json'), JSON.stringify({version:1,...entries}, null, 2));
-          await fs.rename(path.join(assetDirectory, 'manifest.next.json'), path.join(assetDirectory, 'manifest.json'));
+          await publishAsset(path.join(assetDirectory, 'manifest.json'), JSON.stringify({version:1,...entries}, null, 2));
         });
       },
     }],

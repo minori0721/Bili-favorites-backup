@@ -1,7 +1,7 @@
 import type { ConfigStore } from '../config.js';
 import type { UserStore } from '../users.js';
 import { LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, type StateDatabase } from '../database.js';
-import type { PersistentJobStore, QualityDownloadMigrationPlan } from '../job-store.js';
+import type { JobRepository, QualityDownloadMigrationPlan } from '../repositories/jobs.js';
 import { qualityUpgradeTargetKey, type QualityUpgradeTarget } from '../tasks.js';
 import { normalizeQualityArtifactProfile, qualityArtifactProfileFromConfig, buildQualityArtifactKey, type QualityArtifactProfile } from '../quality-artifact.js';
 import { readDownloadSession } from '../download-session.js';
@@ -10,7 +10,7 @@ import { qualityTargetsFromPayload } from './quality-rules.js';
 interface Dependencies {
   configStore: Pick<ConfigStore, 'get'>;
   userStore: Pick<UserStore, 'getById'>;
-  jobStore: Pick<PersistentJobStore, 'countLegacyQualityDownloadJobs' | 'listLegacyQualityDownloadJobs' | 'applyQualityDownloadMigration' | 'findByDedupeKey'>;
+  jobStore: Pick<JobRepository, 'countLegacyQualityDownloadJobs' | 'listLegacyQualityDownloadJobs' | 'applyQualityDownloadMigration' | 'findByDedupeKey'>;
   database(): Pick<StateDatabase, 'getMeta'>;
 }
 function record(value: unknown): Record<string, unknown> {

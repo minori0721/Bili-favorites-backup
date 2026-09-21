@@ -1,3 +1,5 @@
+import { normalizeTvAuthResult } from './bili-auth-response.js';
+export { normalizeTvAuthResult } from './bili-auth-response.js';
 import { Client, Auth, TvQrcodeLogin, utils } from "@renmu/bili-api";
 import { BiliCookie, biliWebCookieValues } from "./users.js";
 import { delay } from "./utils.js";
@@ -77,10 +79,14 @@ export class BiliFavoriteFolderResponseError extends Error {
   }
 }
 
-export function normalizeFavoriteFolderListResponse(value: unknown): Array<Record<string, any>> {
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function normalizeFavoriteFolderListResponse(value: unknown): Array<Record<string, unknown>> {
   const list = (value as { list?: unknown } | null | undefined)?.list;
   if (!Array.isArray(list)) throw new BiliFavoriteFolderResponseError();
-  return list as Array<Record<string, any>>;
+  return list.map(record);
 }
 
 // ---------- helpers ----------
@@ -109,43 +115,48 @@ async function requestBiliJson(cookie: BiliCookie, url: string, referer = "https
       headers: { referer },
       extra: { rawResponse: true },
     });
-  } catch (error: any) {
-    const statusCode = Number(error?.statusCode || error?.response?.status || 0);
-    const message = String(error?.message || error);
+  } catch (error: unknown) {
+    const value = record(error);
+    const response = record(value.response);
+    const statusCode = Number(value.statusCode || response.status || 0);
+    const message = String(value.message || error);
     if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(0, message)) {
       throw new BiliRiskOrLoginError(`Bili API error (status ${statusCode || "unknown"})`);
     }
     throw error;
   }
-  const envelope = (responseBody as Record<string, any>)?.data ?? {};
-  const apiCode = Number(envelope?.code ?? 0);
+  const envelope = record(record(responseBody).data);
+  const apiCode = Number(envelope.code ?? 0);
   if (apiCode !== 0) {
-    const message = String(envelope?.message || `Bili API returned code ${apiCode}`);
+    const message = String(envelope.message || `Bili API returned code ${apiCode}`);
     if (isRiskOrLoginApiError(apiCode, message)) throw new BiliRiskOrLoginError(`Bili API code ${apiCode}`);
     throw new Error(message);
   }
-  return envelope?.data ?? envelope;
+  return envelope.data ?? envelope;
 }
 
-function onlineItemFromRaw(raw: any, kind: OnlineContentKind, index: number): OnlineContentItem | null {
-  const archive = raw?.arc || raw?.archive || raw?.history || raw?.video || raw;
-  const bvid = String(raw?.bvid || archive?.bvid || "").trim() || undefined;
-  const stableId = raw?.season_id || raw?.seasonId || raw?.ep_id || raw?.epid || raw?.id || raw?.aid;
+function onlineItemFromRaw(raw: unknown, kind: OnlineContentKind, index: number): OnlineContentItem | null {
+  const source = record(raw);
+  const archive = record(source.arc || source.archive || source.history || source.video || source);
+  const season = record(source.season);
+  const ogv = record(source.ogv_info);
+  const upper = record(source.owner || archive.owner || source.upper);
+  const bvid = String(source.bvid || archive.bvid || "").trim() || undefined;
+  const stableId = source.season_id || source.seasonId || source.ep_id || source.epid || source.id || source.aid;
   const id = String(bvid || stableId || `${kind}-${index}`).trim();
-  const title = String(raw?.title || archive?.title || raw?.show_name || raw?.season_title || raw?.name || id).trim();
-  const cover = String(raw?.pic || raw?.cover || archive?.pic || archive?.cover || raw?.season?.cover || raw?.ogv_info?.cover || "").trim() || undefined;
-  const upper = raw?.owner || archive?.owner || raw?.upper || {};
-  const upperName = String(upper?.name || raw?.author || raw?.up_name || "").trim() || undefined;
-  const upperMid = Number(upper?.mid || raw?.mid || raw?.up_mid || 0) || undefined;
-  const duration = Number(raw?.duration || archive?.duration || 0) || undefined;
-  const publishedAt = Number(raw?.pubdate || archive?.pubdate || raw?.ctime || 0) > 0
-    ? Number(raw?.pubdate || archive?.pubdate || raw?.ctime) * 1000
+  const title = String(source.title || archive.title || source.show_name || source.season_title || source.name || id).trim();
+  const cover = String(source.pic || source.cover || archive.pic || archive.cover || season.cover || ogv.cover || "").trim() || undefined;
+  const upperName = String(upper.name || source.author || source.up_name || "").trim() || undefined;
+  const upperMid = Number(upper.mid || source.mid || source.up_mid || 0) || undefined;
+  const duration = Number(source.duration || archive.duration || 0) || undefined;
+  const publishedAt = Number(source.pubdate || archive.pubdate || source.ctime || 0) > 0
+    ? Number(source.pubdate || archive.pubdate || source.ctime) * 1000
     : undefined;
-  const seasonId = Number(raw?.season_id || raw?.seasonId || raw?.season?.season_id || 0);
-  const episodeId = Number(raw?.ep_id || raw?.epid || raw?.episode_id || 0);
-  const collectionId = Number(raw?.id || raw?.season_id || 0);
-  const collectionMid = Number(raw?.mid || raw?.upper?.mid || raw?.owner?.mid || 0);
-  const rawUrl = String(raw?.uri || raw?.url || raw?.link || "").trim();
+  const seasonId = Number(source.season_id || source.seasonId || season.season_id || 0);
+  const episodeId = Number(source.ep_id || source.epid || source.episode_id || 0);
+  const collectionId = Number(source.id || source.season_id || 0);
+  const collectionMid = Number(source.mid || record(source.upper).mid || record(source.owner).mid || 0);
+  const rawUrl = String(source.uri || source.url || source.link || "").trim();
   let openUrl: string | undefined;
   if (bvid) {
     openUrl = `https://www.bilibili.com/video/${encodeURIComponent(bvid)}`;
@@ -179,7 +190,7 @@ function onlineItemFromRaw(raw: any, kind: OnlineContentKind, index: number): On
     publishedAt,
     playable: Boolean(bvid),
     openUrl,
-    rawType: String(raw?.business || raw?.type || kind),
+    rawType: String(source.business || source.type || kind),
   };
 }
 
@@ -214,20 +225,23 @@ export function encodeHistoryCursor(cursor: Record<string, unknown>) {
 export function decodeHistoryCursor(value: string | undefined) {
   if (!value) return { max: 0, view_at: 0, business: "" };
   try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    if (!parsed || typeof parsed !== "object") throw new Error("invalid history cursor");
+    const parsedValue: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) throw new Error("invalid history cursor");
+    const parsed = record(parsedValue);
     return {
-      max: Number((parsed as any).max || 0) || 0,
-      view_at: Number((parsed as any).viewAt ?? (parsed as any).view_at ?? 0) || 0,
-      business: String((parsed as any).business ?? "").slice(0, 32),
+      max: Number(parsed.max || 0) || 0,
+      view_at: Number(parsed.viewAt ?? parsed.view_at ?? 0) || 0,
+      business: String(parsed.business ?? "").slice(0, 32),
     };
   } catch {
     throw new Error("在线历史游标无效，请重新加载");
   }
 }
 
-function onlineArray(data: any) {
-  const candidates = [data?.medias, data?.list, data?.items, data?.archives, data?.result, data?.history, data?.data?.list];
+function onlineArray(data: unknown) {
+  const value = record(data);
+  const nested = record(value.data);
+  const candidates = [value.medias, value.list, value.items, value.archives, value.result, value.history, nested.list];
   return candidates.find((value) => Array.isArray(value)) || [];
 }
 
@@ -297,13 +311,17 @@ export async function listOnlineContentPage(
     }
   }
   const data = await requestBiliJson(cookie, url);
+  const dataRecord = record(data);
+  const infoRecord = record(dataRecord.info);
+  const pageRecord = record(dataRecord.page);
+  const cursorRecord = record(dataRecord.cursor);
   const rawItems = onlineArray(data);
-  const items = rawItems.map((raw: any, index: number) => onlineItemFromRaw(raw, kind, index)).filter((item): item is OnlineContentItem => Boolean(item));
-  const total = Number(data?.total || data?.info?.media_count || data?.page?.count || 0) || undefined;
-  const nextCursor = data?.cursor && typeof data.cursor === "object"
-    ? encodeHistoryCursor(data.cursor)
-    : String(data?.next_cursor ?? data?.cursor?.next ?? "").trim() || undefined;
-  const explicitHasMore = data?.has_more ?? data?.hasMore;
+  const items = rawItems.map((raw, index) => onlineItemFromRaw(raw, kind, index)).filter((item): item is OnlineContentItem => Boolean(item));
+  const total = Number(dataRecord.total || infoRecord.media_count || pageRecord.count || 0) || undefined;
+  const nextCursor = dataRecord.cursor && typeof dataRecord.cursor === "object"
+    ? encodeHistoryCursor(cursorRecord)
+    : String(dataRecord.next_cursor ?? cursorRecord.next ?? "").trim() || undefined;
+  const explicitHasMore = dataRecord.has_more ?? dataRecord.hasMore;
   const hasMore = typeof explicitHasMore === "boolean" || typeof explicitHasMore === "number"
     ? Boolean(explicitHasMore)
     : Boolean(nextCursor) || (total ? page * pageSize < total : items.length >= pageSize);
@@ -328,10 +346,11 @@ export class BiliAuthRefreshError extends Error {
     super("B站授权刷新请求失败");
     this.name = "BiliAuthRefreshError";
     this.originalError = originalError;
-    const source = originalError as any;
-    const status = Number(source?.status || source?.statusCode || source?.response?.status || 0);
+    const source = record(originalError);
+    const response = record(source.response);
+    const status = Number(source.status || source.statusCode || response.status || 0);
     this.status = status > 0 ? status : undefined;
-    this.code = typeof source?.code === "string" ? source.code : undefined;
+    this.code = typeof source.code === "string" ? source.code : undefined;
   }
 }
 
@@ -358,53 +377,15 @@ export async function getUserInfo(cookie: BiliCookie): Promise<BiliUserInfo> {
   };
 }
 
-export function normalizeTvAuthResult(result: any): NormalizedTvAuth {
-  const rawData = result?.data || result || {};
-  const tokenInfo = rawData?.token_info || {};
-  const merged = { ...rawData, ...tokenInfo };
-  const cookieArray = merged?.cookie_info?.cookies || [];
-  const cookie: BiliCookie = {
-    SESSDATA: "",
-    bili_jct: "",
-    DedeUserID: "",
-  };
-
-  for (const item of cookieArray) {
-    if (!item?.name) {
-      continue;
-    }
-    cookie[item.name] = item.value ?? "";
-  }
-
-  const accessToken = String(merged.access_token || "");
-  const refreshToken = String(merged.refresh_token || "");
-  if (accessToken) {
-    cookie.accessToken = accessToken;
-  }
-
-  const uid = Number(merged.mid || cookie.DedeUserID || 0) || undefined;
-  const sessdataExpires = cookieArray.find((item: any) => item?.name === "SESSDATA")?.expires;
-  const expires = Number(sessdataExpires || 0) > 0 ? Number(sessdataExpires) * 1000 : 0;
-
-  return {
-    rawAuth: JSON.stringify(rawData),
-    cookie,
-    accessToken,
-    refreshToken,
-    expires,
-    uid,
-  };
-}
-
 export async function listFavoriteFolders(cookie: BiliCookie): Promise<FavoriteFolderInfo[]> {
   const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
   const res = await client.video.listFavoriteBox({ aid: 0, type: 2 });
   const list = normalizeFavoriteFolderListResponse(res);
   return list.map((item) => ({
-    mediaId: item.id,
-    title: item.title,
-    mediaCount: item.media_count,
-    cover: (item as any).cover || undefined,
+    mediaId: Number(item.id || 0),
+    title: String(item.title || ""),
+    mediaCount: Number(item.media_count || 0),
+    cover: typeof item.cover === "string" ? item.cover : undefined,
   }));
 }
 
@@ -422,7 +403,7 @@ export async function getFavoriteFolderCover(cookie: BiliCookie, mediaId: number
     cookie,
     `https://api.bilibili.com/x/v3/fav/folder/info?${params.toString()}`,
   );
-  const cover = typeof data?.cover === "string" ? data.cover.trim() : "";
+  const cover = typeof record(data).cover === "string" ? String(record(data).cover).trim() : "";
   return cover || undefined;
 }
 
@@ -454,10 +435,12 @@ export async function listFavoriteItemsPage(
       headers: { referer: "https://www.bilibili.com/" },
       extra: { rawResponse: true },
     });
-  } catch (error: any) {
-    const statusCode = error?.statusCode || error?.response?.status;
-    const errMsg = error?.message || String(error);
-    if (isRiskOrLoginStatus(Number(statusCode || 0)) || isRiskOrLoginApiError(0, errMsg)) {
+  } catch (error: unknown) {
+    const value = record(error);
+    const response = record(value.response);
+    const statusCode = value.statusCode || response.status;
+    const errMsg = value.message || String(error);
+    if (isRiskOrLoginStatus(Number(statusCode || 0)) || isRiskOrLoginApiError(0, String(errMsg))) {
       throw new BiliRiskOrLoginError(
         `Bili API error (status ${statusCode || "unknown"}): ${errMsg}`
       );
@@ -465,30 +448,31 @@ export async function listFavoriteItemsPage(
     throw error;
   }
 
-  const body = (responseBody as Record<string, any>)?.data ?? {};
+  const body = record(record(responseBody).data);
   const apiCode = Number(body.code ?? 0);
 
   if (apiCode !== 0) {
-    const msg = body.message || `Bili API returned code ${apiCode}`;
+    const msg = String(body.message || `Bili API returned code ${apiCode}`);
     if (isRiskOrLoginApiError(apiCode, msg)) {
       throw new BiliRiskOrLoginError(`Bili API code ${apiCode}: ${msg}`);
     }
     throw new Error(msg);
   }
 
-  const data = body.data as Record<string, any> | undefined;
-  const medias = Array.isArray(data?.medias) ? data.medias : [];
+  const data = record(body.data);
+  const medias = Array.isArray(data.medias) ? data.medias : [];
   const items = medias
-    .filter((media: any) => Boolean(media.bvid))
-    .map((media: any) => ({
-      bvid: media.bvid as string,
-      title: media.title || "Untitled",
-      upperName: media.upper?.name || "Unknown",
-      upperMid: Number(media.upper?.mid || 0) || undefined,
-      cover: media.cover || undefined,
+    .map(record)
+    .filter((media) => Boolean(media.bvid))
+    .map((media) => ({
+      bvid: String(media.bvid),
+      title: String(media.title || "Untitled"),
+      upperName: String(record(media.upper).name || "Unknown"),
+      upperMid: Number(record(media.upper).mid || 0) || undefined,
+      cover: typeof media.cover === "string" ? media.cover : undefined,
       unavailable: media.attr !== undefined && media.attr !== 0,
     }));
-  const total = data?.info?.media_count as number | undefined;
+  const total = Number(record(data.info).media_count || 0) || undefined;
   // has_more can be 1/0 (number), true/false (boolean), or missing
   const rawHasMore = data?.has_more;
   const hasMore = rawHasMore === 1 || rawHasMore === true
@@ -633,10 +617,13 @@ async function resolveVideoAccessFallback(
     const player = await client.video.playerInfo({ bvid, cid }) as unknown as Record<string, unknown>;
     const fallback = classifyVideoAccess(player, "player");
     return fallback.classification === "unknown" ? current : fallback;
-  } catch (error: any) {
-    const statusCode = Number(error?.statusCode || error?.response?.status || 0);
-    const apiCode = Number(error?.code || error?.response?.data?.code || 0);
-    const message = String(error?.message || error);
+  } catch (error: unknown) {
+    const value = record(error);
+    const response = record(value.response);
+    const responseData = record(response.data);
+    const statusCode = Number(value.statusCode || response.status || 0);
+    const apiCode = Number(value.code || responseData.code || 0);
+    const message = String(value.message || error);
     if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(apiCode, message)) {
       throw new BiliRiskOrLoginError(`Bili player API error (status ${statusCode || "unknown"}): ${message}`);
     }
@@ -668,16 +655,18 @@ export async function resolveSelfVisibleFavoriteItem(
         headers: { referer: `https://www.bilibili.com/video/${item.bvid}/` },
         extra: { rawResponse: true },
       });
-    } catch (error: any) {
-      const statusCode = error?.statusCode || error?.response?.status;
-      const errMsg = error?.message || String(error);
-      if (isRiskOrLoginStatus(Number(statusCode || 0)) || isRiskOrLoginApiError(0, errMsg)) {
+    } catch (error: unknown) {
+      const value = record(error);
+      const response = record(value.response);
+      const statusCode = value.statusCode || response.status;
+      const errMsg = value.message || String(error);
+      if (isRiskOrLoginStatus(Number(statusCode || 0)) || isRiskOrLoginApiError(0, String(errMsg))) {
         return item;
       }
       continue;
     }
 
-    const body = (responseBody as Record<string, any>)?.data ?? {};
+    const body = record(record(responseBody).data);
     const apiCode = Number(body.code ?? 0);
     if (apiCode !== 0) {
       const msg = String(body.message || `Bili API returned code ${apiCode}`);
@@ -687,16 +676,17 @@ export async function resolveSelfVisibleFavoriteItem(
       continue;
     }
 
-    const data = body.data as Record<string, any> | undefined;
-    const view = data?.View || data;
-    const ownerMid = Number(view?.owner?.mid || 0);
+    const data = record(body.data);
+    const view = record(data.View || data);
+    const ownerMid = Number(record(view.owner).mid || 0);
     if (!view || ownerMid !== expectedOwnerMid) {
       continue;
     }
 
     const title = typeof view.title === "string" && view.title.trim() ? view.title.trim() : item.title;
-    const upperName = typeof view.owner?.name === "string" && view.owner.name.trim()
-      ? view.owner.name.trim()
+    const owner = record(view.owner);
+    const upperName = typeof owner.name === "string" && owner.name.trim()
+      ? owner.name.trim()
       : item.upperName;
     const cover = typeof view.pic === "string" && view.pic.trim() ? view.pic.trim() : item.cover;
     const description = typeof view.desc === "string" ? view.desc : item.description;
@@ -735,17 +725,19 @@ export async function getVideoPageSnapshot(
         headers: { referer: `https://www.bilibili.com/video/${bvidValue}/` },
         extra: { rawResponse: true },
       });
-    } catch (error: any) {
-      const statusCode = Number(error?.statusCode || error?.response?.status || 0);
-      const message = error?.message || String(error);
-      if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(0, message)) {
+    } catch (error: unknown) {
+      const value = record(error);
+      const response = record(value.response);
+      const statusCode = Number(value.statusCode || response.status || 0);
+      const message = value.message || String(error);
+      if (isRiskOrLoginStatus(statusCode) || isRiskOrLoginApiError(0, String(message))) {
         throw new BiliRiskOrLoginError(`Bili API error (status ${statusCode || "unknown"}): ${message}`);
       }
       observations.push({ availability: "unknown", reason: "temporary_error" });
       continue;
     }
 
-    const body = (responseBody as Record<string, any>)?.data ?? {};
+    const body = record(record(responseBody).data);
     const apiCode = Number(body.code ?? 0);
     if (apiCode !== 0) {
       const message = String(body.message || `Bili API returned code ${apiCode}`);
@@ -760,8 +752,8 @@ export async function getVideoPageSnapshot(
       });
       continue;
     }
-    const data = body.data as Record<string, any> | undefined;
-    const view = data?.View || data;
+    const data = record(body.data);
+    const view = record(data.View || data);
     if (!view) {
       observations.push({ availability: "unknown", reason: "empty_response", apiCode });
       continue;
@@ -774,15 +766,18 @@ export async function getVideoPageSnapshot(
     );
     const rawPages = Array.isArray(view.pages) ? view.pages : [];
     const pages = rawPages
-      .map((page: any, offset: number) => ({
-        index: Number(page?.page || offset + 1),
-        cid: Number(page?.cid || 0),
-        title: String(page?.part || page?.title || `P${offset + 1}`),
-        duration: Number(page?.duration || 0),
-        publishedAt: Number(page?.ctime || page?.pubdate || view?.pubdate || 0) > 0
-          ? Number(page?.ctime || page?.pubdate || view?.pubdate) * 1000
+      .map((rawPage, offset: number) => {
+        const page = record(rawPage);
+        return {
+        index: Number(page.page || offset + 1),
+        cid: Number(page.cid || 0),
+        title: String(page.part || page.title || `P${offset + 1}`),
+        duration: Number(page.duration || 0),
+        publishedAt: Number(page.ctime || page.pubdate || view.pubdate || 0) > 0
+          ? Number(page.ctime || page.pubdate || view.pubdate) * 1000
           : undefined,
-      }))
+        };
+      })
       .filter((page: { index: number; cid: number }) => page.index > 0 && page.cid > 0);
     if (pages.length === 0 && Number(view.cid || 0) > 0) {
       pages.push({
@@ -797,12 +792,12 @@ export async function getVideoPageSnapshot(
       return {
         available: true,
         availability: "available",
-        interactive: Number(view.rights?.is_stein_gate || 0) === 1,
+        interactive: Number(record(view.rights).is_stein_gate || 0) === 1,
         apiCodes: [...new Set(observations
           .map((observation) => observation.apiCode)
           .filter((code): code is number => Number.isFinite(code)))],
         title: typeof view.title === "string" ? view.title : undefined,
-        upperName: typeof view.owner?.name === "string" ? view.owner.name : undefined,
+        upperName: typeof record(view.owner).name === "string" ? String(record(view.owner).name) : undefined,
         publishedAt: Number(view.pubdate || 0) > 0 ? Number(view.pubdate) * 1000 : undefined,
         access,
         pages,
@@ -833,14 +828,14 @@ export async function refreshUserAuth(
 ): Promise<NormalizedTvAuth> {
   try {
     const tv = new TvQrcodeLogin();
-    const result: any = await tv.refresh(accessToken, refreshToken);
+    const result: unknown = await tv.refresh(accessToken, refreshToken);
     const auth = normalizeTvAuthResult(result);
     if (!auth.accessToken) {
       throw new Error("刷新响应缺少 access token");
     }
     console.log("[Bili] Token refreshed successfully");
     return auth;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[Bili] Token refresh failed: ${safeErrorSummary(error)}`);
     throw new BiliAuthRefreshError(error);
   }

@@ -1,3 +1,4 @@
+import { readField, required, readArray, readString } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -91,8 +92,8 @@ test("real app supports login, queue state, config update and migration preview 
       body: JSON.stringify({ queuePrefetchLimit: 30 }),
     });
     assert.equal(configUpdate.status, 200);
-    const configJson: any = await configUpdate.json();
-    assert.equal(configJson.data.queuePrefetchLimit, 30);
+    const configJson: unknown = await configUpdate.json();
+    assert.equal(readField(readField(configJson, 'data'), 'queuePrefetchLimit'), 30);
 
     const sessionDatabasePath = path.join(runtime, "data", "auth-sessions.sqlite");
     const sessionDatabaseBefore = new Database(sessionDatabasePath, { readonly: true });
@@ -106,13 +107,13 @@ test("real app supports login, queue state, config update and migration preview 
       assert.equal(queueResponse.headers.has("set-cookie"), false);
     }
     assert.equal(queueResponse.status, 200);
-    const queueJson: any = await queueResponse.json();
-    assert.equal(queueJson.data.uploadHealth.state, "closed");
-    assert.equal(queueJson.data.downloadApiHealth.state, "healthy");
-    assert.equal(queueJson.data.downloadApiHealth.configuredMode, "web");
-    assert.equal(queueJson.data.recovery.prefetchLimit, 30);
-    assert.equal(typeof queueJson.data.localCache.reserveBytes, "number");
-    assert.equal(typeof queueJson.data.downloadRecovery.resumableSessions, "number");
+    const queueJson: unknown = await queueResponse.json();
+    assert.equal(readField(readField(readField(queueJson, 'data'), 'uploadHealth'), 'state'), "closed");
+    assert.equal(readField(readField(readField(queueJson, 'data'), 'downloadApiHealth'), 'state'), "healthy");
+    assert.equal(readField(readField(readField(queueJson, 'data'), 'downloadApiHealth'), 'configuredMode'), "web");
+    assert.equal(readField(readField(readField(queueJson, 'data'), 'recovery'), 'prefetchLimit'), 30);
+    assert.equal(typeof readField(readField(readField(queueJson, 'data'), 'localCache'), 'reserveBytes'), "number");
+    assert.equal(typeof readField(readField(readField(queueJson, 'data'), 'downloadRecovery'), 'resumableSessions'), "number");
     const sessionDatabaseAfter = new Database(sessionDatabasePath, { readonly: true });
     const sessionRowAfter = sessionDatabaseAfter.prepare("SELECT updated_at FROM admin_sessions").get() as { updated_at: number };
     sessionDatabaseAfter.close();
@@ -140,15 +141,15 @@ test("real app supports login, queue state, config update and migration preview 
       body: JSON.stringify({ includeConfig: false, includeUsers: false, includeState: false, includeLogs: false, includeCovers: false }),
     });
     assert.equal(estimate.status, 200);
-    const estimateJson: any = await estimate.json();
-    assert.equal(estimateJson.data.files, 0);
-    assert.equal(estimateJson.data.expandedBytes, 0);
+    const estimateJson: unknown = await estimate.json();
+    assert.equal(readField(readField(estimateJson, 'data'), 'files'), 0);
+    assert.equal(readField(readField(estimateJson, 'data'), 'expandedBytes'), 0);
 
     const cleanupPreview = await fetch(`${base}/api/storage/cleanup`, { headers: { Cookie: cookie } });
     assert.equal(cleanupPreview.status, 200);
-    const cleanupPreviewJson: any = await cleanupPreview.json();
-    const orphanItem = cleanupPreviewJson.data.items.find((item: any) => item.key === "orphan-fragments");
-    assert.equal(orphanItem?.bytes, 0);
+    const cleanupPreviewJson: unknown = await cleanupPreview.json();
+    const orphanItem = readArray(readField(readField(cleanupPreviewJson, 'data'), 'items')).find((item: unknown) => readField(item, 'key') === "orphan-fragments");
+    assert.equal(readField(orphanItem, 'bytes'), 0);
 
     const cleanup = await fetch(`${base}/api/storage/cleanup`, {
       method: "POST",
@@ -167,9 +168,9 @@ test("real app supports login, queue state, config update and migration preview 
       body: JSON.stringify({ items: ["temp", "orphan-fragments"], confirmation: "DELETE" }),
     });
     assert.equal(cleanupAllTemp.status, 200);
-    const cleanupAllTempJson: any = await cleanupAllTemp.json();
-    assert.equal(cleanupAllTempJson.data.results.find((item: any) => item.key === "temp")?.ok, true);
-    assert.equal(cleanupAllTempJson.data.results.find((item: any) => item.key === "orphan-fragments")?.skipped, true);
+    const cleanupAllTempJson: unknown = await cleanupAllTemp.json();
+    assert.equal(readField(readArray(readField(readField(cleanupAllTempJson, 'data'), 'results')).find((item: unknown) => readField(item, 'key') === "temp"), 'ok'), true);
+    assert.equal(readField(readArray(readField(readField(cleanupAllTempJson, 'data'), 'results')).find((item: unknown) => readField(item, 'key') === "orphan-fragments"), 'skipped'), true);
     assert.equal(fs.existsSync(tempRoot), true);
     assert.deepEqual(await fs.promises.readdir(tempRoot), []);
 
@@ -181,8 +182,8 @@ test("real app supports login, queue state, config update and migration preview 
     `).run(JSON.stringify({
       bvid: "BVLIGHTWEIGHT", title: "Lightweight runtime", upperName: "Tester",
       firstSeenAt: new Date(runtimeNow).toISOString(), lastSeenAt: new Date(runtimeNow).toISOString(),
-      biliStatus: "available", backupStatus: "queued", localDir: "/old/app/temp/BVLIGHTWEIGHT",
-      downloadSession: { id: "download-session-old", localDir: "/old/app/temp/BVLIGHTWEIGHT", kind: "main", status: "partial", completedPages: 1, totalPages: 2, updatedAt: new Date(runtimeNow).toISOString() },
+      biliStatus: "available" as const, backupStatus: "queued" as const, localDir: "/old/app/temp/BVLIGHTWEIGHT",
+      downloadSession: { id: "download-session-old", localDir: "/old/app/temp/BVLIGHTWEIGHT", kind: "main" as const, status: "partial" as const, completedPages: 1, totalPages: 2, updatedAt: new Date(runtimeNow).toISOString() },
     }), runtimeNow);
     migrationRuntimeDb.prepare(`
       INSERT INTO download_sessions(bvid, session_id, local_dir, kind, status, completed_pages, total_pages, updated_at, payload_json)
@@ -216,13 +217,16 @@ test("real app supports login, queue state, config update and migration preview 
     const lightweightExtractDir = path.join(runtime, "lightweight-runtime-extract");
     await extractZipFile(lightweightArchivePath, lightweightExtractDir);
     const lightweightDb = new Database(path.join(lightweightExtractDir, "data", "bfb.sqlite"), { readonly: true });
-    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM jobs").get() as any).count), 0);
-    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM transfer_sessions").get() as any).count), 0);
-    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM transfer_session_files").get() as any).count), 0);
-    assert.equal(Number((lightweightDb.prepare("SELECT COUNT(*) AS count FROM download_sessions").get() as any).count), 0);
-    const lightweightVideo = lightweightDb.prepare("SELECT local_dir, payload_json, backup_status FROM videos WHERE bvid='BVLIGHTWEIGHT'").get() as any;
+    assert.equal(Number(required((lightweightDb.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM jobs").get())).count), 0);
+    assert.equal(Number(required((lightweightDb.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_sessions").get())).count), 0);
+    assert.equal(Number(required((lightweightDb.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM transfer_session_files").get())).count), 0);
+    assert.equal(Number(required((lightweightDb.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM download_sessions").get())).count), 0);
+    const lightweightVideo = lightweightDb.prepare<unknown[], { "local_dir": string | null; "payload_json": string; "backup_status": string }>("SELECT local_dir, payload_json, backup_status FROM videos WHERE bvid='BVLIGHTWEIGHT'").get();
+    assert.ok(lightweightVideo);
     assert.equal(lightweightVideo.local_dir, null);
+    assert.ok(lightweightVideo);
     assert.equal(lightweightVideo.backup_status, "queued");
+    assert.ok(lightweightVideo);
     assert.doesNotMatch(String(lightweightVideo.payload_json), /old\/app\/temp|downloadSession/);
     lightweightDb.close();
     await fs.promises.rm(lightweightExtractDir, { recursive: true, force: true });
@@ -233,13 +237,13 @@ test("real app supports login, queue state, config update and migration preview 
       body: archive,
     });
     assert.equal(preview.status, 200);
-    const previewJson: any = await preview.json();
-    assert.equal(previewJson.success, true);
-    assert.equal(previewJson.data.manifest.schema, 3);
-    assert.ok(previewJson.data.files.includes("data/bfb.sqlite"));
-    assert.ok(previewJson.data.files.includes("data/state.json"));
-    assert.ok(previewJson.data.files.includes("indexes/unavailable-videos.json"));
-    assert.equal(previewJson.data.files.some((name: string) => name.includes("auth-sessions")), false);
+    const previewJson: unknown = await preview.json();
+    assert.equal(readField(previewJson, 'success'), true);
+    assert.equal(readField(readField(readField(previewJson, 'data'), 'manifest'), 'schema'), 3);
+    assert.ok(readArray(readField(previewJson, 'data', 'files')).includes("data/bfb.sqlite"));
+    assert.ok(readArray(readField(previewJson, 'data', 'files')).includes("data/state.json"));
+    assert.ok(readArray(readField(previewJson, 'data', 'files')).includes("indexes/unavailable-videos.json"));
+    assert.equal(readArray(readField(readField(previewJson, 'data'), 'files')).some((name) => readString(name).includes("auth-sessions")), false);
 
     const importSchema2 = await fetch(`${base}/api/migration/import?restoreConfig=false&restoreUsers=false&restoreCovers=false`, {
       method: "POST",
@@ -263,7 +267,7 @@ test("real app supports login, queue state, config update and migration preview 
     const completeExport = await fetch(`${base}/api/migration/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: base, Cookie: cookie },
-      body: JSON.stringify({ mode: "complete", includeConfig: false, includeUsers: false, includeState: true, includeCovers: false }),
+      body: JSON.stringify({ mode: "complete" as const, includeConfig: false, includeUsers: false, includeState: true, includeCovers: false }),
     });
     assert.equal(completeExport.status, 200);
     const completeArchive = Buffer.from(await completeExport.arrayBuffer());
@@ -273,12 +277,12 @@ test("real app supports login, queue state, config update and migration preview 
     let entered!: () => void;
     const blocked = new Promise<void>(resolve => { unblock = resolve; });
     const atSwitch = new Promise<void>(resolve => { entered = resolve; });
-    fs.promises.rename = (async (from: any, to: any) => {
+    fs.promises.rename = (async (from: unknown, to: unknown) => {
       if (String(from).startsWith(`${tempRoot}.migration-`) && String(to) === tempRoot) {
         entered();
         await blocked;
       }
-      return originalRename(from, to);
+      return originalRename(String(from), String(to));
     }) as typeof originalRename;
     let completeImport: Response;
     try {
@@ -307,12 +311,12 @@ test("real app supports login, queue state, config update and migration preview 
 
     const legacyStaging = path.join(runtime, "legacy-package");
     await fs.promises.mkdir(path.join(legacyStaging, "data"), { recursive: true });
-    const legacyState: any = {
+    const legacyState = {
       schemaVersion: 11,
       processedByUser: {},
       failedByUser: {},
-      videos: { BVLEGACYIMPORT: { bvid: "BVLEGACYIMPORT", title: "Legacy import", upperName: "Tester", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), biliStatus: "available", backupStatus: "discovered" } },
-      relations: { "u1:1:BVLEGACYIMPORT": { userId: "u1", mediaId: 1, bvid: "BVLEGACYIMPORT", folderTitle: "Legacy", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), activeInFavorite: true, backupStatus: "discovered" } },
+      videos: { BVLEGACYIMPORT: { bvid: "BVLEGACYIMPORT", title: "Legacy import", upperName: "Tester", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), biliStatus: "available" as const, backupStatus: "discovered" as const } },
+      relations: { "u1:1:BVLEGACYIMPORT": { userId: "u1", mediaId: 1, bvid: "BVLEGACYIMPORT", folderTitle: "Legacy", firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), activeInFavorite: true, backupStatus: "discovered" as const } },
       folderScans: {},
       userCooldowns: {},
     };
@@ -346,8 +350,8 @@ test("real app supports login, queue state, config update and migration preview 
       headers: { "Content-Type": "application/zip", Origin: base, Cookie: cookie },
       body: Buffer.from(await reexported.arrayBuffer()),
     });
-    const reexportJson: any = await reexportPreview.json();
-    assert.equal(reexportJson.data.manifest.counts.videos, 1);
+    const reexportJson: unknown = await reexportPreview.json();
+    assert.equal(readField(readField(readField(readField(reexportJson, 'data'), 'manifest'), 'counts'), 'videos'), 1);
 
     const automaticBackups = (await fs.promises.readdir(path.join(runtime, "data", "backups")))
       .filter((name) => name.startsWith("before-import-") && name.endsWith(".zip"));
@@ -358,8 +362,8 @@ test("real app supports login, queue state, config update and migration preview 
       body: await fs.promises.readFile(path.join(runtime, "data", "backups", automaticBackups[0])),
     });
     assert.equal(automaticBackupPreview.status, 200);
-    const automaticBackupJson: any = await automaticBackupPreview.json();
-    assert.equal(automaticBackupJson.data.files.some((name: string) => name.includes("auth-sessions")), false);
+    const automaticBackupJson: unknown = await automaticBackupPreview.json();
+    assert.equal(readArray(readField(readField(automaticBackupJson, 'data'), 'files')).some((name) => readString(name).includes("auth-sessions")), false);
 
     const rememberedLogin = await fetch(`${base}/api/login`, {
       method: "POST",

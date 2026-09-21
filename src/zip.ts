@@ -77,7 +77,9 @@ export async function extractZipFile(archivePath: string, outputDir: string, lim
       const fail = (error: unknown) => {
         if (settled) return;
         settled = true;
-        try { zip.close(); } catch {}
+        try { zip.close(); } catch (closeError) {
+          console.warn(`[Zip] failed to close archive after error: ${String(closeError)}`);
+        }
         reject(error);
       };
       zip.on("error", fail);

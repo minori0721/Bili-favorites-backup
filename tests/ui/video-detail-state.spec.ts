@@ -15,7 +15,7 @@ test('detail filters discard late responses and validate before updating counts'
 
 test('closing detail cancels recheck and prevents a late success notice',async({page})=>{
   await page.request.post('/__test/reset',{data:{}});await page.route('https://fonts.googleapis.com/**',route=>route.fulfill({body:''}));
-  await page.route('**/api/users/*/favorites/*/detail-items?**',route=>route.fulfill({json:{success:true,data:{items:[{bvid:'BVfixture',sourceAvailability:{state:'unknown'}}],page:1,hasMore:false}}}));
+  await page.route('**/api/users/*/favorites/*/detail-items?**',route=>route.fulfill({json:{success:true,data:{items:[{bvid:'BVfixture',sourceAvailability:{state:'unknown' as const}}],page:1,hasMore:false}}}));
   let requests=0;
   await page.route('**/api/videos/*/availability-recheck',async route=>{requests++;await new Promise(resolve=>setTimeout(resolve,650));return route.fulfill({json:{success:true,data:{}}});});
   await page.goto('/');await page.locator('[data-action="favorite_detail"]').first().click();

@@ -1,5 +1,5 @@
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import { joinRemotePath } from '../utils.js';
 import { sanitizeUploadText } from '../upload-health.js';
@@ -7,7 +7,7 @@ import { logManager } from '../logger.js';
 import type { RecoveryAssessment } from './recovery-contracts.js';
 import type { RecoveryLockAccess } from './recovery-work.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'wakeManualJob'>;
+  jobStore: Pick<JobRepository, 'findById' | 'wakeManualJob'>;
   recoveryWork: { locks: RecoveryLockAccess };
   recoveryAssessment(payload: unknown): RecoveryAssessment | null;
   inspectConflictCandidateEligibility(job: PersistentJobRecord, assessment: RecoveryAssessment | null): { eligible: boolean; reason?: string; fileCount?: number; totalBytes?: number };

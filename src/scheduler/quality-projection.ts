@@ -29,3 +29,12 @@ export function projectQualityUpgradeState(jobs: readonly PersistentJobRecord[],
   });
   return {running,completed:[]};
 }
+
+export function createQualityUpgradeProjection(dependencies: {
+  jobs(): readonly PersistentJobRecord[];
+  targetCount(payload: unknown): number;
+}) {
+  return {
+    getState: () => projectQualityUpgradeState(dependencies.jobs(), dependencies.targetCount),
+  };
+}

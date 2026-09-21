@@ -1,7 +1,7 @@
 import path from 'node:path';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager, RemoteFileRecord } from '../state.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ConfigStore } from '../config.js';
 import type { inspectRemoteFileSize } from '../uploader.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
@@ -13,9 +13,9 @@ import type { RecoveryIssue } from './recovery-contracts.js';
 import type { RecoveryActionResult } from './recovery-action-contracts.js';
 
 interface Dependencies {
-  jobs: Pick<PersistentJobStore, 'findById' | 'complete'>;
+  jobs: Pick<JobRepository, 'findById' | 'complete'>;
   state: Pick<StateManager, 'runAtomic' | 'getRelationStatus' | 'restoreExistingArchiveProof' | 'markVerifiedUpload' | 'resolveRemoteConflictCandidate'>;
-  sessions: Pick<TransferSessionStore, 'get' | 'supersede'>;
+  sessions: Pick<TransferSessionRepository, 'get' | 'supersede'>;
   config: Pick<ConfigStore, 'get'>;
   locks: RecoveryLockAccess;
   inspect: typeof inspectRemoteFileSize;

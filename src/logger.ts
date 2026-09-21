@@ -62,8 +62,8 @@ export class LogManager extends EventEmitter {
     }
     try {
       fs.rmSync(this.filePath, { force: true });
-    } catch {
-      // ignore log cleanup failure
+    } catch (error) {
+      console.warn('[Logger] failed to remove persisted log file', error);
     }
   }
 

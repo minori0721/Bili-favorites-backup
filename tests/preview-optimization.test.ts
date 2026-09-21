@@ -81,7 +81,7 @@ test("background preview cache deduplicates, reuses, expires, and contains failu
 });
 
 test("recursive remote preview bounds directory-list concurrency and summarizes skips", async () => {
-  const entries: Record<string, any[]> = {
+  const entries: Record<string, unknown[]> = {
     "/target": [
       { filename: "/target/a", basename: "a", type: "directory" },
       { filename: "/target/b", basename: "b", type: "directory" },
@@ -104,7 +104,7 @@ test("recursive remote preview bounds directory-list concurrency and summarizes 
         active -= 1;
         return entries[directory] || [];
       },
-    } as any,
+    },
   );
 
   assert.equal(result.complete, true);
@@ -131,7 +131,7 @@ test("recursive remote preview stops at entry and directory caps and avoids repe
         ];
         return [];
       },
-    } as any,
+    },
   );
 
   assert.equal(result.complete, false);
@@ -154,7 +154,7 @@ test("recursive remote preview stops at entry and directory caps and avoids repe
         ];
         return [{ filename: "/target/a/video.mp4", basename: "video.mp4", type: "file", size: 1 }];
       },
-    } as any,
+    },
   );
   assert.equal(repeated.complete, false);
   assert.deepEqual(repeatedCalls, ["/target", "/target/a"]);
@@ -168,16 +168,16 @@ test("local rename index deduplicates proofs and excludes unverified files", () 
     upperName: "Tester",
     remotePath: "/backup",
     remoteFiles: [
-      { name: "old-BVINDEX.mp4", path: "/backup/old-BVINDEX.mp4", size: 42, verificationStatus: "verified" },
-      { name: "pending-BVINDEX.mp4", path: "/backup/pending-BVINDEX.mp4", size: 99, verificationStatus: "awaiting_verification" },
+      { name: "old-BVINDEX.mp4", path: "/backup/old-BVINDEX.mp4", size: 42, verificationStatus: "verified" as const },
+      { name: "pending-BVINDEX.mp4", path: "/backup/pending-BVINDEX.mp4", size: 99, verificationStatus: "awaiting_verification" as const },
     ],
     relations: [{
       userId: "u1",
       mediaId: 1,
       folderTitle: "Favorites",
-      backupStatus: "verified",
+      backupStatus: "verified" as const,
       hasInterruptedQualityUpgrade: false,
-      remoteFiles: [{ name: "old-BVINDEX.mp4", path: "/backup/old-BVINDEX.mp4", size: 42, verificationStatus: "verified" }],
+      remoteFiles: [{ name: "old-BVINDEX.mp4", path: "/backup/old-BVINDEX.mp4", size: 42, verificationStatus: "verified" as const }],
     }],
   };
   const indexed = buildIndexedRemoteFiles([record], "/backup");

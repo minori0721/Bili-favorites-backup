@@ -4,10 +4,10 @@ import { findDevTestEvidence } from '../scripts/dev-test-evidence.mjs';
 
 const repository = 'owner/repo';
 const sha = 'a'.repeat(40);
-const run = { id: 42, run_attempt: 1, path: '.github/workflows/docker-publish.yml', head_sha: sha, head_branch: 'dev', event: 'push', status: 'completed', conclusion: 'success', repository: { full_name: repository }, head_repository: { full_name: repository } };
+const run = { id: 42, run_attempt: 1, path: '.github/workflows/docker-publish.yml', head_sha: sha, head_branch: 'dev', event: 'push', status: 'completed' as const, conclusion: 'success', repository: { full_name: repository }, head_repository: { full_name: repository } };
 const options = { ref: 'refs/heads/main', event: 'push', sha, workflowSha: sha, repository, token: 'test', report: () => {} };
-const step = {name: 'Test application', status: 'completed', conclusion: 'success', started_at: '2026-09-13T00:00:00Z', completed_at: '2026-09-13T00:01:00Z'};
-const job = {head_sha: sha, status: 'completed', conclusion: 'success', steps: [step]};
+const step = {name: 'Test application', status: 'completed' as const, conclusion: 'success', started_at: '2026-09-13T00:00:00Z', completed_at: '2026-09-13T00:01:00Z'};
+const job = {head_sha: sha, status: 'completed' as const, conclusion: 'success', steps: [step]};
 const respond = (workflow_runs: unknown[], jobs: unknown[] = [job]) => async (url: URL) => new Response(JSON.stringify(url.pathname.endsWith('/jobs') ? {jobs} : { workflow_runs }));
 
 test('main reuses only a successful dev push for the identical commit', async () => {
@@ -30,7 +30,7 @@ test('main reuses only a successful dev push for the identical commit', async ()
 test('changed code, incomplete or failed runs and foreign repositories require tests', async () => {
   for (const change of [
     { head_sha: 'b'.repeat(40) }, { head_branch: 'main' }, { event: 'workflow_dispatch' },
-    { status: 'in_progress' }, { conclusion: 'failure' }, { conclusion: 'cancelled' },
+    { status: 'in_progress' as const }, { conclusion: 'failure' }, { conclusion: 'cancelled' },
     { repository: { full_name: 'other/repo' } }, { head_repository: { full_name: 'fork/repo' } }, { id: undefined },
     {path: '.github/workflows/other.yml'}, {run_attempt: undefined},
   ]) {
@@ -39,7 +39,7 @@ test('changed code, incomplete or failed runs and foreign repositories require t
 });
 
 test('green runs with missing or skipped tests are not evidence; workflow revision must match', async () => {
-  for (const change of [{conclusion: 'skipped'}, {status: 'in_progress'}, {started_at: undefined}, {name: 'Build application'}]) {
+  for (const change of [{conclusion: 'skipped'}, {status: 'in_progress' as const}, {started_at: undefined}, {name: 'Build application'}]) {
     assert.equal(await findDevTestEvidence({...options, fetchImpl: respond([run], [{...job, steps: [{...step, ...change}]}])}), null);
   }
   assert.equal(await findDevTestEvidence({...options, fetchImpl: respond([run], [])}), null);

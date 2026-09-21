@@ -50,7 +50,7 @@ test('scan preserves page policy and rejects a late cover callback after reset',
       deletions: { folder: (u,m) => state.getDatabase().isArchiveFolderDeletionActive(u,m), source: (u,m,b) => state.getDatabase().isArchiveSourceDeletionActive(u,m,b) },
     state, users: { getById: () => user, updatePartial: () => user }, now: () => 1_000, random: () => 0.5,
     sleep: async ms => { waits.push(ms); }, generation: () => 0, canRun: () => true,
-    listPage: async (_cookie, _mediaId, page, pageSize) => { pages.push(page); return { items: [item], page, pageSize, hasMore: true, total: 100 }; },
+    listPage: async (_cookie, _mediaId, page = 1, pageSize = 20) => { pages.push(page); return { items: [item], page, pageSize, hasMore: true, total: 100 }; },
     refreshAuth: async () => { throw new Error('unexpected refresh'); }, resolveSelfVisible: async (_cookie, _uid, value) => value,
     cacheCover(_bvid, _url, callback) { cover = callback; }, progress() {}, recordCount(n) { fresh += n; }, probe() {}, enqueue: () => false,
   });

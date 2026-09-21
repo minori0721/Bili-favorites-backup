@@ -28,8 +28,8 @@ function unavailableState(): StateFile {
       cover: `https://i0.hdslb.com/bfs/archive/${bvid}.jpg`,
       firstSeenAt: at,
       lastSeenAt: at,
-      biliStatus: "unavailable",
-      backupStatus: "lost",
+      biliStatus: "unavailable" as const,
+      backupStatus: "lost" as const,
     }])),
     relations: Object.fromEntries(ids.map((bvid, index) => [`u1:1:${bvid}`, {
       userId: "u1",
@@ -40,7 +40,7 @@ function unavailableState(): StateFile {
       lastSeenAt: at,
       favOrder: index + 1,
       activeInFavorite: false,
-      backupStatus: "lost",
+      backupStatus: "lost" as const,
       favoriteUnavailable: true,
     }])),
   };
@@ -114,11 +114,11 @@ test("cover URL validation upgrades legacy Bilibili HTTP URLs without weakening 
 test("cover ffmpeg conversion has a hard timeout and terminates its child", async () => {
   let killed = false;
   const hangingSpawn = (() => {
-    const child = new EventEmitter() as any;
-    child.stderr = new EventEmitter();
-    child.kill = () => { killed = true; return true; };
+    const child = Object.assign(new EventEmitter(), {
+      stderr: new EventEmitter(), kill: () => { killed = true; return true; },
+    });
     return child;
-  }) as typeof spawn;
+  });
   await assert.rejects(
     () => runCoverFfmpeg("input", "output", { timeoutMs: 20, spawnImpl: hangingSpawn }),
     /timed out/
@@ -158,6 +158,33 @@ test("timed out cover backfill stop can restart only after the old run exits", a
     }
     assert.ok(manager.getDatabase().getMeta(UNAVAILABLE_COVER_BACKFILL_MARKER));
     assert.ok(attempts > 1);
+    assert.equal(await backfill.stop(100), true);
+  } finally {
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("background cover backfill reports asynchronous failure without an unhandled rejection", async () => {
+  const runtime = await createTestDir("cover-backfill-background-error");
+  const manager = new StateManager({
+    dbPath: path.join(runtime, "bfb.sqlite"),
+    statePath: path.join(runtime, "missing-state.json"),
+  });
+  const failures: unknown[] = [];
+  try {
+    manager.getDatabase().replaceState(unavailableState());
+    manager.reload();
+    const backfill = new UnavailableCoverBackfill(manager, {
+      coverExists: async () => { throw new Error("cover storage unavailable"); },
+      reportError: error => { failures.push(error); },
+    });
+    backfill.startBackground();
+    for (let index = 0; index < 100 && failures.length === 0; index += 1) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal(failures.length, 1);
+    assert.match(failures[0] instanceof Error ? failures[0].message : String(failures[0]), /cover storage unavailable/);
     assert.equal(await backfill.stop(100), true);
   } finally {
     manager.close();

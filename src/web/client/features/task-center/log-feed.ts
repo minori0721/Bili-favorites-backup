@@ -55,7 +55,11 @@ export function createLogFeed(dependencies: {
       checking = check;
       void Promise.resolve().then(() => {
         if (!check.signal.aborted) return dependencies.checkSession?.(check.signal);
-      }).catch(() => { /* Authentication expiry stops this feed through application disposal. */ }).finally(() => {
+      }).catch(() => {
+        // A failed session check is an authentication boundary: stop this
+        // connection and let the application recreate it after login.
+        running = false;
+      }).finally(() => {
         if (checking !== check) return;
         checking = null;
         if (running && !check.signal.aborted && reconnect === null) reconnect = schedule(() => { reconnect = null; connect(); },3000);

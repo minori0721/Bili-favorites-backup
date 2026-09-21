@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { JobRepository } from '../repositories/jobs.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import type { RecoveryLockAccess } from './recovery-work.js';
 
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'wakeManualJob'>;
-  transferSessions: Pick<TransferSessionStore, 'get' | 'listFiles'>;
+  jobStore: Pick<JobRepository, 'findById' | 'wakeManualJob'>;
+  transferSessions: Pick<TransferSessionRepository, 'get' | 'listFiles'>;
   recoveryWork: { locks: RecoveryLockAccess };
   isPlainObsoleteArchiveRecovery(job: PersistentJobRecord): boolean;
   captureExistingArchiveProof(userId: string | undefined, mediaId: number | undefined, bvid: string): ExistingArchiveProof | undefined;

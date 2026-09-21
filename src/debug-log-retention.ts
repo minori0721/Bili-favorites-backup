@@ -75,8 +75,9 @@ async function rotateDebugLogsNow(options: {
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(options.directory, { withFileTypes: true });
-  } catch (error: any) {
-    if (error?.code === "ENOENT") return result;
+  } catch (error: unknown) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT") return result;
     options.warn(`[DebugLog] 无法读取日志目录 (${errorCode(error)})。`);
     return result;
   }
@@ -161,8 +162,12 @@ export async function writeDebugLogAtomic(filePath: string, content: string) {
     await fs.promises.writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
     await fs.promises.rename(temporary, filePath);
   } finally {
-    await fs.promises.rm(temporary, { force: true }).catch(() => undefined);
+    await fs.promises.rm(temporary, { force: true }).catch((error) => {
+      console.warn(`[DebugLog] temporary cleanup deferred: ${String(error)}`);
+    });
   }
-  await rotateDebugLogs({ directory }).catch(() => undefined);
+  await rotateDebugLogs({ directory }).catch((error) => {
+    console.warn(`[DebugLog] rotation deferred: ${String(error)}`);
+  });
   return filePath;
 }

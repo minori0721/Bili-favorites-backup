@@ -11,7 +11,28 @@ export abstract class Task {
   retries: number = 0;
   status: "pending" | "running" | "retry_wait" | "completed" | "error" = "pending";
   error?: Error;
-  [key: string]: any; // Allow dynamic properties for task metadata (userId, mediaId, etc)
+  queuedAt?: number;
+  startedAt?: number;
+  retryAt?: number;
+  sequence?: number;
+  persistentJobId?: string;
+  persistentJob?: import('./database.js').PersistentJobRecord;
+  runtimeGeneration?: number;
+  bvid?: string;
+  userId?: string;
+  mediaId?: number;
+  videoTitle?: string;
+  title?: string;
+  upperName?: string;
+  cover?: string;
+  coverLocalPath?: string;
+  folderTitle?: string;
+  remotePath?: string;
+  private taskDetail?: string;
+  get detail(): string | undefined { return this.taskDetail; }
+  set detail(value: string | undefined) { this.taskDetail = value; }
+  target?: {userId: string; mediaId: number; folderTitle: string; remotePath: string};
+  targets?: Array<{userId: string; mediaId: number; folderTitle: string; remotePath: string}>;
 
   constructor(
     name: string,
@@ -26,8 +47,8 @@ export abstract class Task {
   abstract run(): Promise<void>;
 }
 
-export function mapQueueBoardTask(task: any, stage: QueueBoardStage, overrides: Partial<QueueBoardItem> = {}): QueueBoardItem {
-  const target = task.target || {};
+export function mapQueueBoardTask(task: Omit<Partial<Pick<Task, 'id' | 'bvid' | 'videoTitle' | 'title' | 'upperName' | 'cover' | 'folderTitle' | 'remotePath' | 'target' | 'detail' | 'userId' | 'mediaId' | 'retries' | 'maxRetries' | 'queuedAt' | 'startedAt' | 'retryAt' | 'sequence' | 'error' | 'coverLocalPath' | 'persistentJobId'>>, 'cover' | 'coverLocalPath' | 'error'> & { status?: string; cover?: unknown; coverLocalPath?: unknown; error?: unknown }, stage: QueueBoardStage, overrides: Partial<QueueBoardItem> = {}): QueueBoardItem {
+  const target = task.target;
   const status = String(task.status || "pending");
   const isRetryWait = status === "retry_wait";
   const phase: QueueBoardPhase = status === "running"
@@ -35,17 +56,20 @@ export function mapQueueBoardTask(task: any, stage: QueueBoardStage, overrides: 
     : status === "retry_wait"
       ? "retry_wait"
       : "queued";
+  const errorMessage = task.error && typeof task.error === "object" && "message" in task.error && typeof task.error.message === "string"
+    ? task.error.message
+    : undefined;
   return {
     id: String(task.id || ""),
     bvid: String(task.bvid || ""),
     title: String(task.videoTitle || task.title || task.bvid || ""),
     upperName: String(task.upperName || ""),
     cover: typeof task.cover === "string" ? task.cover : "",
-    folderTitle: String(task.folderTitle || target.folderTitle || ""),
-    remotePath: String(task.remotePath || target.remotePath || ""),
+    folderTitle: String(task.folderTitle || target?.folderTitle || ""),
+    remotePath: String(task.remotePath || target?.remotePath || ""),
     detail: String(task.detail || ""),
-    userId: task.userId ? String(task.userId) : (target.userId ? String(target.userId) : ""),
-    mediaId: Number(task.mediaId || target.mediaId || 0),
+    userId: task.userId ? String(task.userId) : (target?.userId ? String(target?.userId) : ""),
+    mediaId: Number(task.mediaId || target?.mediaId || 0),
     retries: Number(task.retries || 0),
     maxRetries: Number(task.maxRetries || 0),
     queuedAt: typeof task.queuedAt === "number" ? task.queuedAt : undefined,
@@ -57,7 +81,7 @@ export function mapQueueBoardTask(task: any, stage: QueueBoardStage, overrides: 
     nextAction: isRetryWait ? "retry" : undefined,
     nextActionAt: isRetryWait && typeof task.retryAt === "number" ? task.retryAt : undefined,
     actionRequired: false,
-    lastError: task.error?.message ? sanitizeDiagnosticText(task.error.message, 500) : undefined,
+    lastError: errorMessage ? sanitizeDiagnosticText(errorMessage, 500) : undefined,
     coverLocalPath: typeof task.coverLocalPath === "string" ? task.coverLocalPath : undefined,
     persistentJobId: task.persistentJobId ? String(task.persistentJobId) : undefined,
     ...overrides,
@@ -200,9 +224,13 @@ export class TaskQueue extends EventEmitter {
       await task.run();
       task.status = "completed";
       this.emit("taskCompleted", task);
-    } catch (error: any) {
-      task.error = error;
-      if (error?.permanent || error?.deferToNextCycle || task.retries >= task.maxRetries) {
+    } catch (error: unknown) {
+      task.error = error instanceof Error ? error : new Error(String(error));
+      const failure = error !== null && typeof error === 'object' ? error : {};
+      const permanent = 'permanent' in failure && failure.permanent === true;
+      const deferred = 'deferToNextCycle' in failure && failure.deferToNextCycle === true;
+      const retryDelay = 'retryAfterMs' in failure ? failure.retryAfterMs : undefined;
+      if (permanent || deferred || task.retries >= task.maxRetries) {
         task.status = "error";
         this.emit("taskError", task, error);
       } else {
@@ -210,7 +238,7 @@ export class TaskQueue extends EventEmitter {
         task.retries++;
         task.status = "retry_wait";
         task.startedAt = undefined;
-        const retryAfterMs = computeTaskRetryDelayMs(task.retryDelaySeconds, retryIndex, error?.retryAfterMs);
+        const retryAfterMs = computeTaskRetryDelayMs(task.retryDelaySeconds, retryIndex, typeof retryDelay === 'number' ? retryDelay : undefined);
         task.retryAt = Date.now() + retryAfterMs;
         this.emit("taskRetry", task, error);
         if (!this.queue.includes(task) || task.status !== 'retry_wait') return;

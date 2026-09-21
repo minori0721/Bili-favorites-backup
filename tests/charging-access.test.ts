@@ -1,3 +1,4 @@
+import { required } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -53,7 +54,7 @@ function createChargingState(status: BackupStatus = "failed") {
         upperName: "UP",
         firstSeenAt: at,
         lastSeenAt: at,
-        biliStatus: "available",
+        biliStatus: "available" as const,
         backupStatus: status,
       },
     },
@@ -166,15 +167,15 @@ test("access probe checks enabled accounts in order and queues download with the
     return chargingSnapshot(cookie.DedeUserID === "2");
   }, Date.parse(at));
   try {
-    store.enqueue({ kind: "access_probe", dedupeKey: "access_probe:BVCHARGE", bvid: "BVCHARGE", notBefore: 0, payload: { preferredUserId: "u1" } });
+    store.enqueue({ kind: "access_probe" as const, dedupeKey: "access_probe:BVCHARGE", bvid: "BVCHARGE", notBefore: 0, payload: { preferredUserId: "u1" } });
     const [job] = store.claimDue(["access_probe"], 1, "charging-test", 300_000, Date.parse(at));
     store.markRunning(job.id, "charging-test", 300_000);
     await probes.charging(job);
     assert.deepEqual(checked, ["1", "2"]);
     assert.equal(manager.getChargingRestriction("BVCHARGE"), undefined);
     const downloadJob = store.findByDedupeKey("download:BVCHARGE");
-    assert.equal(downloadJob?.payload.downloadUserId, "u2");
-    assert.equal(downloadJob?.payload.primaryUserId, "u1");
+    assert.equal(required(downloadJob?.payload).downloadUserId, "u2");
+    assert.equal(required(downloadJob?.payload).primaryUserId, "u1");
   } finally {
     manager.close();
     await removeTestDir(runtime);
@@ -196,7 +197,7 @@ test("a complete local session uploads immediately instead of waiting for chargi
   writeJsonFile(path.join(localDir, ".bfb-download.json"), {
     schemaVersion: 1,
     sessionId: "complete-session",
-    kind: "backup",
+    kind: "backup" as const,
     bvid: "BVCHARGE",
     accountUid: 1,
     bbdownCommit: "test",
@@ -205,7 +206,7 @@ test("a complete local session uploads immediately instead of waiting for chargi
     createdAt: at,
     updatedAt: at,
     snapshotAt: at,
-    status: "complete",
+    status: "complete" as const,
     pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
     outputs: [{ pageIndex: 1, cid: 1, relativePath: "complete.mp4", size: 8, duration: 1, videoCodec: "test", quickHash: "test", verifiedAt: at }],
     history: [],
@@ -278,7 +279,7 @@ test("access probe maps restricted, transient, unavailable, and no-account resul
       const store = new PersistentJobStore(manager.getDatabase());
       const probes = accessFixture(manager, store, scenario.users, async () => scenario.snapshot, nowMs);
       try {
-        store.enqueue({ kind: "access_probe", dedupeKey: "access_probe:BVCHARGE", bvid: "BVCHARGE", notBefore: 0, payload: { preferredUserId: "u1" } });
+        store.enqueue({ kind: "access_probe" as const, dedupeKey: "access_probe:BVCHARGE", bvid: "BVCHARGE", notBefore: 0, payload: { preferredUserId: "u1" } });
         const [job] = store.claimDue(["access_probe"], 1, "charging-test", 300_000, nowMs);
         store.markRunning(job.id, "charging-test", 300_000);
         await probes.charging(job);
@@ -304,7 +305,7 @@ test("access probe maps restricted, transient, unavailable, and no-account resul
 function backupFixture(state: StateManager, jobs: PersistentJobStore) {
   return createBackupEnqueue({state, jobs, config: {get: () => testConfig()},
     eligible: user => user.enabled, blocked: () => false, remotePath: () => '/archive', proof: () => undefined,
-    uploadJob: item => ({kind: 'upload', dedupeKey: `upload:${item.bvid}`, bvid: item.bvid}),
+    uploadJob: item => ({kind: 'upload' as const, dedupeKey: `upload:${item.bvid}`, bvid: item.bvid}),
     historySegment: value => value, probe: () => assert.fail('unexpected access probe'),
     cycleStartedAt: () => undefined, generation: () => 0, now: () => Date.parse(at), dispatch: () => {},
   });
@@ -329,7 +330,7 @@ test('access recovery rolls back permission, probe completion and download state
     state.markChargingRestricted('BVCHARGE', {checkedAt: at, nextCheckAt: at, checkedAccountUids: []});
     const jobs = new PersistentJobStore(state.getDatabase());
     const users: BiliUser[] = [{id: 'u1', uid: 1, name: 'One', enabled: true, favorites: [{mediaId: 1, title: 'Favorites'}], lastLoginAt: at, cookie: {SESSDATA: 'test', bili_jct: 'test', DedeUserID: '1'}}];
-    jobs.enqueue({kind: 'access_probe', dedupeKey: 'access_probe:BVCHARGE', bvid: 'BVCHARGE', notBefore: 0});
+    jobs.enqueue({kind: 'access_probe' as const, dedupeKey: 'access_probe:BVCHARGE', bvid: 'BVCHARGE', notBefore: 0});
     const [job] = jobs.claimDue(['access_probe'], 1, 'charging-test', 300_000, Date.parse(at));
     const before = state.getChargingRestriction('BVCHARGE');
     state.getDatabase().db.exec("CREATE TRIGGER fail_download BEFORE INSERT ON jobs WHEN NEW.kind='download' BEGIN SELECT RAISE(ABORT, 'injected task insert failure'); END");

@@ -389,7 +389,7 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
         });
         if (!confirmed) return;
       }
-      if (actionToken !== lifecycleGeneration) return;
+      if (actionToken !== lifecycleGeneration) return false;
       const controller = new AbortController();
       actionRequests.add(controller);
       const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.recovery-issues-detail button'));
@@ -399,14 +399,16 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
           method:'POST', signal:controller.signal,
           ...(actionBody ? { headers:{'Content-Type':'application/json'}, body:JSON.stringify(actionBody) } : {}),
         });
-        if (actionToken !== lifecycleGeneration || controller.signal.aborted) return;
+        if (actionToken !== lifecycleGeneration || controller.signal.aborted) return false;
         queueSnapshots.applyIssueUpdate(data);
         elements.recoveryIssuesLive.textContent = action.label + '已执行，待处理列表已更新。';
         showToast(action.label + '已执行', 'success');
-      } catch (error) {
-        if (actionToken !== lifecycleGeneration || controller.signal.aborted) return;
+    } catch (error) {
+        // boundary-critical: surface the action error unless the request is stale or cancelled.
+        if (actionToken !== lifecycleGeneration || controller.signal.aborted) return false;
         buttons.forEach((button) => { button.disabled = false; });
         if (!(error instanceof Error && error.name === 'AbortError')) showToast(error instanceof Error ? error.message : '处理失败', 'error');
+        return false;
       } finally { actionRequests.delete(controller);
       }
     }
@@ -563,10 +565,13 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
       recoveryIssueState.controller = controller;
       try {
         const snapshot = await queueSnapshots.request(controller.signal);
-        if (token !== recoveryIssueState.token) return;
+        if (token !== recoveryIssueState.token) return false;
 
+      // boundary-critical: retain the last valid issue list and expose a retry
+      // state; a failed read never becomes an empty recovery center.
       } catch (error) {
-        if (token !== recoveryIssueState.token) return;
+        // boundary-critical: retain the last known list and surface the read failure.
+        if (token !== recoveryIssueState.token) return false;
         if (!(error instanceof Error && error.name === 'AbortError') && elements.recoveryIssuesModal?.classList.contains('active')) {
           recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请点击“重试”再次加载。';
           elements.recoveryIssuesLive.textContent = '待处理问题加载失败，请稍后重试。';
@@ -574,6 +579,7 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
         } else if (!(error instanceof Error && error.name === 'AbortError')) {
           recoveryIssueState.error = '待处理问题加载失败，已有列表会保留；请打开面板后重试。';
         }
+        return false;
       } finally {
         if (token === recoveryIssueState.token) {
           recoveryIssueState.controller = null;

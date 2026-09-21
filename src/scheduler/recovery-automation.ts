@@ -1,9 +1,9 @@
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 
 export const RECOVERY_AUTOMATION_INTERVAL_MS = 5 * 60_000;
 
 interface RecoveryAutomationDependencies {
-  jobs: Pick<PersistentJobStore, 'listDueManualRecovery'>;
+  jobs: Pick<JobRepository, 'listDueManualRecovery'>;
   now(): number;
   canRun(): boolean;
   generation(): number;

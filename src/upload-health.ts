@@ -1,4 +1,11 @@
-import { sanitizeDiagnosticText } from "./diagnostics.js";
+import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
+
+function fields(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+function isAsyncBody(value: unknown): value is AsyncIterable<unknown> {
+  return value !== null && typeof value === 'object' && Symbol.asyncIterator in value && typeof value[Symbol.asyncIterator] === 'function';
+}
 
 export type UploadFailureCategory =
   | "auth"
@@ -38,6 +45,18 @@ export interface UploadHealthSnapshot {
   pausedDownloads: boolean;
 }
 
+/** The only upload-health shape persisted in the state database. */
+export interface PersistedUploadCooldown {
+  state: UploadHealthSnapshot["state"];
+  reason?: string;
+  category?: UploadFailureCategory;
+  consecutiveFailures?: number;
+  openedAt?: number;
+  retryAt?: number;
+  probeInFlight?: boolean;
+  pausedDownloads?: boolean;
+}
+
 export const REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE = "REMOTE_SINGLE_FILE_SIZE_LIMIT";
 
 const SAFE_RESPONSE_HEADERS = [
@@ -70,7 +89,7 @@ function stringifyErrorDetail(value: unknown) {
     try {
       return JSON.stringify(value);
     } catch {
-      return "";
+      return '[unserializable error detail]';
     }
   }
   return value == null ? "" : String(value);
@@ -92,18 +111,19 @@ function sanitizeResponseSnippet(value: unknown, remotePath: string) {
   return text === "Unknown upload error" ? undefined : text;
 }
 
-function headerValue(headers: any, name: string) {
-  if (!headers) return undefined;
-  if (typeof headers.get === "function") return headers.get(name) ?? headers.get(name.toLowerCase());
-  if (typeof headers === "object") {
-    const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
-    return key ? headers[key] : undefined;
+function headerValue(headers: unknown, name: string) {
+  const values = fields(headers);
+  if (typeof values.get === 'function') {
+    const result: unknown = values.get.call(headers, name);
+    return result;
   }
-  return undefined;
+  const key = Object.keys(values).find(candidate => candidate.toLowerCase() === name.toLowerCase());
+  return key ? values[key] : undefined;
 }
 
-function responseHeaders(error: any) {
-  return error?.response?.headers || error?.headers;
+function responseHeaders(input: unknown) {
+  const error = fields(input);
+  return fields(error.response).headers || error?.headers;
 }
 
 function safeHeaderValue(value: unknown) {
@@ -113,7 +133,8 @@ function safeHeaderValue(value: unknown) {
   return text || undefined;
 }
 
-export function extractSafeUploadResponseHeaders(error: any) {
+export function extractSafeUploadResponseHeaders(input: unknown) {
+  const error = fields(input);
   const headers = responseHeaders(error);
   const result: Record<string, string> = {};
   for (const name of SAFE_RESPONSE_HEADERS) {
@@ -129,7 +150,8 @@ function isSafeProviderCode(value: unknown) {
     && !NETWORK_CODES.has(code.toUpperCase());
 }
 
-export function extractRemoteErrorCode(error: any) {
+export function extractRemoteErrorCode(input: unknown) {
+  const error = fields(input);
   const headers = responseHeaders(error);
   const headerCode = ["x-openlist-error-code", "x-alist-error-code", "x-error-code"]
     .map((name) => headerValue(headers, name))
@@ -140,20 +162,22 @@ export function extractRemoteErrorCode(error: any) {
   return value ? String(value).trim().slice(0, 81) : undefined;
 }
 
-function uploadErrorDetails(error: any) {
+function uploadErrorDetails(input: unknown) {
+  const error = fields(input);
   return [
     error?.code,
-    error?.cause?.code,
+    fields(error.cause).code,
     error?.responseBody,
     error?.body,
-    error?.response?.body,
+    fields(error.response).body,
     error?.data,
     extractRemoteErrorCode(error),
     error?.message,
   ].map(stringifyErrorDetail).filter(Boolean).join(" ");
 }
 
-export function isSingleFileSizeLimitError(error: any) {
+export function isSingleFileSizeLimitError(input: unknown) {
+  const error = fields(input);
   const detail = uploadErrorDetails(error);
   return new RegExp([
     REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE,
@@ -166,16 +190,16 @@ export function isSingleFileSizeLimitError(error: any) {
   ].join("|"), "i").test(detail);
 }
 
-export async function captureUploadResponseBody(error: any, maxBytes = 4096) {
-  if (typeof error?.responseBody === "string" || Buffer.isBuffer(error?.responseBody)) {
-    return error;
-  }
-  const body = error?.response?.body;
-  if (!body || typeof body[Symbol.asyncIterator] !== "function") return error;
+export async function captureUploadResponseBody<T>(error: T, maxBytes = 4096): Promise<T> {
+  const source = fields(error);
+  if (typeof source.responseBody === 'string' || Buffer.isBuffer(source.responseBody)) return error;
+  const body = fields(source.response).body;
+  if (!isAsyncBody(body)) return error;
   const chunks: Buffer[] = [];
   let total = 0;
   try {
     for await (const chunk of body) {
+      if (typeof chunk !== 'string' && !(chunk instanceof Uint8Array)) throw new Error('Unsupported upload error response chunk');
       const buffer = Buffer.from(chunk);
       const remaining = maxBytes - total;
       if (remaining <= 0) break;
@@ -183,27 +207,26 @@ export async function captureUploadResponseBody(error: any, maxBytes = 4096) {
       total += Math.min(buffer.length, remaining);
       if (total >= maxBytes) break;
     }
-    if (chunks.length > 0) {
-      error.responseBody = Buffer.concat(chunks).toString("utf-8");
-    }
-  } catch {
-    // Keep the original error when the response stream is already consumed.
+    if (chunks.length > 0) source.responseBody = Buffer.concat(chunks).toString('utf-8');
+  } catch (captureError) {
+    // Diagnostic enrichment is optional; preserve the original operational error.
+    console.warn(`[UploadDiagnostics] Response body capture failed: ${safeErrorSummary(captureError)}`);
   }
   return error;
 }
 
-function extractStatus(error: any) {
-  const value = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+function extractStatus(input: unknown) {
+  const error = fields(input);
+  const value = Number(error?.status ?? error?.statusCode ?? fields(error.response).status);
   return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
 }
 
-function extractRetryAfterMs(error: any) {
+function extractRetryAfterMs(input: unknown) {
+  const error = fields(input);
   const carried = Number(error?.retryAfterMs);
   if (Number.isFinite(carried) && carried >= 0) return carried;
-  const headers = error?.response?.headers || error?.headers;
-  const raw = typeof headers?.get === "function"
-    ? headers.get("retry-after")
-    : headers?.["retry-after"] ?? headers?.["Retry-After"];
+  const headers = fields(error.response).headers || error?.headers;
+  const raw = headerValue(headers, 'retry-after');
   if (raw == null) return undefined;
   const seconds = Number(raw);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
@@ -223,31 +246,32 @@ function buildFingerprint(category: UploadFailureCategory, status: number | unde
   return `${category}|${status || 0}|${code || ""}|${normalized}`.slice(0, 600);
 }
 
-export function classifyUploadError(error: any, remotePath: string): UploadFailureInfo {
+export function classifyUploadError(input: unknown, remotePath: string): UploadFailureInfo {
+  const error = fields(input);
   const status = extractStatus(error);
   const strictEncodingFailure = Boolean(error?.encodingValidation)
     || ["BFB_ENCODING_SELECTED_MISMATCH", "BFB_ENCODING_MISMATCH", "BFB_ENCODING_UNVERIFIED"].includes(
-      String(error?.code || error?.cause?.code || "").toUpperCase(),
+      String(error?.code || fields(error.cause).code || "").toUpperCase(),
     );
   const sizeLimit = isSingleFileSizeLimitError(error);
   const remoteErrorCode = extractRemoteErrorCode(error);
   const capturedHeaders = extractSafeUploadResponseHeaders(error);
   const code = strictEncodingFailure
-    ? String(error?.code || error?.cause?.code || "BFB_ENCODING_MISMATCH").toUpperCase()
+    ? String(error?.code || fields(error.cause).code || "BFB_ENCODING_MISMATCH").toUpperCase()
     : sizeLimit
     ? REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE
-    : (String(error?.code || error?.cause?.code || "").toUpperCase() || undefined);
-  const responseDetail = error?.responseBody ?? error?.body ?? error?.response?.body;
+    : (String(error?.code || fields(error.cause).code || "").toUpperCase() || undefined);
+  const responseDetail = error?.responseBody ?? error?.body ?? fields(error.response).body;
   const usableResponseDetail = typeof responseDetail === "string" || Buffer.isBuffer(responseDetail)
     ? responseDetail
     : undefined;
-  const detail = usableResponseDetail ?? error?.data ?? error?.message ?? error;
+  const detail = usableResponseDetail ?? error?.data ?? error?.message ?? input;
   const responseSnippet = usableResponseDetail
     ? sanitizeResponseSnippet(usableResponseDetail, remotePath)
     : undefined;
-  const remoteWriteEvidence = error?.remoteWriteEvidence || error?.cause?.remoteWriteEvidence;
-  const remoteWriteStatus = Number(error?.remoteWriteStatus ?? error?.cause?.remoteWriteStatus);
-  const remoteParentStatus = error?.remoteParentStatus || error?.cause?.remoteParentStatus;
+  const remoteWriteEvidence = error?.remoteWriteEvidence || fields(error.cause).remoteWriteEvidence;
+  const remoteWriteStatus = Number(error?.remoteWriteStatus ?? fields(error.cause).remoteWriteStatus);
+  const remoteParentStatus = error?.remoteParentStatus || fields(error.cause).remoteParentStatus;
   const summary = strictEncodingFailure
     ? sanitizeUploadText(error?.message || "严格编码校验未通过")
     : sizeLimit
@@ -293,7 +317,7 @@ export function classifyUploadError(error: any, remotePath: string): UploadFailu
     retryAfterMs: extractRetryAfterMs(error),
     ...(remoteWriteEvidence === "target_missing_parent_visible" ? { remoteWriteEvidence } : {}),
     ...(Number.isInteger(remoteWriteStatus) && remoteWriteStatus >= 100 && remoteWriteStatus <= 599 ? { remoteWriteStatus } : {}),
-    ...(["visible", "missing", "unknown"].includes(remoteParentStatus) ? { remoteParentStatus } : {}),
+    ...((remoteParentStatus === "visible" || remoteParentStatus === "missing" || remoteParentStatus === "unknown") ? { remoteParentStatus } : {}),
   };
 }
 
@@ -333,7 +357,7 @@ export class UploadCircuitBreaker {
   private probeTaskKey?: string;
   private cooldownMs = 60_000;
 
-  restore(snapshot: Partial<UploadHealthSnapshot> | null | undefined) {
+  restore(snapshot: PersistedUploadCooldown | null | undefined) {
     if (!snapshot || !["open", "half_open"].includes(String(snapshot.state)) || !snapshot.retryAt) return;
     this.state = "open";
     this.openedAt = snapshot.openedAt;

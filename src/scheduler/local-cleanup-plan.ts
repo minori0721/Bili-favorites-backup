@@ -32,6 +32,7 @@ export function buildLocalCleanupPlan(
       const verifiedAt = Date.parse(manifestFile.verifiedAt);
       if (!identity.isFile() || identity.size !== manifestFile.size || !Number.isFinite(verifiedAt)
         || identity.mtimeMs > verifiedAt + 1 || identity.ctimeMs > verifiedAt + 1) return null;
+    // boundary-fail-closed: a file identity error cannot authorize deletion.
     } catch { return null; }
     const previous = files.find(file => file.relativePath === relativePath);
     if (previous) {

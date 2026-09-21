@@ -1,4 +1,4 @@
-import type { WebDAVClient } from "webdav";
+
 import type { AppConfig } from "./config.js";
 import { classifyRemoteFailure } from "./remote-file-resolver.js";
 import { buildDavClient } from "./remote-storage.js";
@@ -24,7 +24,9 @@ export interface StorageDiagnosticResult {
   status?: number;
 }
 
-type StorageDiagnosticClient = Pick<WebDAVClient, "stat">;
+interface StorageDiagnosticClient {
+  stat(path: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+}
 const DEFAULT_STORAGE_DIAGNOSTIC_TIMEOUT_MS = 15_000;
 
 async function statWithTimeout(client: StorageDiagnosticClient, remotePath: string, timeoutMs: number) {
@@ -35,8 +37,7 @@ async function statWithTimeout(client: StorageDiagnosticClient, remotePath: stri
     return await client.stat(remotePath, { signal: controller.signal });
   } catch (error) {
     if (!controller.signal.aborted) throw error;
-    const timeoutError: any = new Error("WebDAV read-only check timed out");
-    timeoutError.code = "ETIMEDOUT";
+    const timeoutError = Object.assign(new Error("WebDAV read-only check timed out"), { code: "ETIMEDOUT" });
     throw timeoutError;
   } finally {
     clearTimeout(timer);
@@ -77,9 +78,13 @@ export async function checkRemoteStorageReadOnly(
 ): Promise<StorageDiagnosticResult> {
   const destination = String(config.alistDest || "/").trim() || "/";
   try {
-    const stat = await statWithTimeout(client, destination, timeoutMs) as any;
-    if (String(stat?.type || "").toLowerCase() === "file") {
+    const stat = await statWithTimeout(client, destination, timeoutMs);
+    const statType = stat && typeof stat === "object" && "type" in stat ? String(stat.type || "") : "";
+    if (statType.toLowerCase() === "file") {
       return failed("path", "归档路径不是目录", "当前归档路径指向了文件，请填写一个远端目录。", "alistDest");
+    }
+    if (statType.toLowerCase() !== "directory") {
+      return failed("unknown", "存储返回未知结果", "目录响应缺少有效类型，无法确认归档目录可读取。", "alistDest");
     }
     return {
       ok: true,

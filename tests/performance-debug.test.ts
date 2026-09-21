@@ -1,3 +1,4 @@
+import { readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -35,7 +36,7 @@ function insertStateRows(database: StateDatabase, count: number) {
         upperName: "Tester",
         firstSeenAt: new Date(timestamp).toISOString(),
         lastSeenAt: new Date(timestamp).toISOString(),
-        biliStatus: "available",
+        biliStatus: "available" as const,
         backupStatus: status,
       };
       const relation = {
@@ -88,7 +89,7 @@ test("runtime state reads avoid lazy full enumeration and keep caches bounded", 
 test("SQLite hot-path indexes are present and selected by representative plans", () => {
   const database = new StateDatabase(":memory:");
   try {
-    const indexes = new Set((database.db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as any[]).map((row) => row.name));
+    const indexes = new Set((database.db.prepare<unknown[], { "name": string }>("SELECT name FROM sqlite_master WHERE type='index'").all() as unknown[]).map((row) => readField(row, 'name')));
     for (const name of [
       "idx_videos_bili_status",
       "idx_relations_folder_status",
@@ -108,7 +109,7 @@ test("SQLite hot-path indexes are present and selected by representative plans",
       database.db.prepare("EXPLAIN QUERY PLAN SELECT bvid FROM favorite_relations WHERE user_id=? AND media_id=? AND backup_status=? ORDER BY last_seen_at DESC LIMIT 10").all("u1", 1, "failed"),
       database.db.prepare("EXPLAIN QUERY PLAN SELECT bvid FROM failures WHERE user_id=? AND media_id=? ORDER BY failed_at DESC LIMIT 10").all("u1", 1),
       database.db.prepare("EXPLAIN QUERY PLAN SELECT id FROM jobs WHERE status='pending' AND not_before<=? ORDER BY priority, created_at LIMIT 10").all(Date.now()),
-    ].map((rows) => (rows as any[]).map((row) => row.detail).join("\n"));
+    ].map((rows) => (rows as unknown[]).map((row) => readField(row, 'detail')).join("\n"));
     assert.match(plans[0], /idx_videos_bili_status/);
     assert.match(plans[1], /idx_relations_folder_status/);
     assert.match(plans[2], /idx_failures_folder_time/);
@@ -203,13 +204,13 @@ test("schema 4 charging and remote verification queries stay indexed at 10000 ro
     const chargingPlan = (database.db.prepare(`
       EXPLAIN QUERY PLAN SELECT bvid FROM videos
       WHERE access_restriction_type='charging' ORDER BY access_last_checked_at DESC LIMIT 10
-    `).all() as any[]).map((row) => row.detail).join("\n");
+    `).all() as unknown[]).map((row) => readField(row, 'detail')).join("\n");
     const remotePlan = (database.db.prepare(`
       EXPLAIN QUERY PLAN SELECT bvid FROM favorite_relations
       WHERE backup_status IN ('verified','partial_verified')
         AND COALESCE(next_remote_check_at,last_remote_check_at,0)<=?
       ORDER BY COALESCE(next_remote_check_at,last_remote_check_at,0), bvid LIMIT 10
-    `).all(checkedAt + 20_000) as any[]).map((row) => row.detail).join("\n");
+    `).all(checkedAt + 20_000) as unknown[]).map((row) => readField(row, 'detail')).join("\n");
     assert.match(chargingPlan, /idx_videos_access_restriction/);
     assert.match(remotePlan, /idx_relations_remote_schedule/);
     assert.doesNotMatch(StateDatabase.prototype.listChargingRestrictedVideos.toString(), /json_extract/);

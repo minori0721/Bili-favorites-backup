@@ -29,6 +29,8 @@ export function parseProbeCombination(value: unknown) {
 export function parseProbeResult(value: unknown) {
   const summary = parseProbeSummary(value);
   if (!isRecord(value)) throw new ResponseFormatError('媒体探测结果格式错误');
+  // A running/failed probe has no usable combinations. This is a valid
+  // optional result, distinct from a malformed complete response.
   if (summary.status !== 'complete') return {...summary, combinations: []};
   if (!Array.isArray(value.combinations)) throw new ResponseFormatError('媒体探测结果缺少组合');
   return { ...summary, combinations: value.combinations.map(parseProbeCombination) };
@@ -58,7 +60,9 @@ export function parseProbeSummary(value:unknown) {
   };
   if(value.pages!==undefined&&!Array.isArray(value.pages))throw new ResponseFormatError('媒体探测分P格式错误');
   if(value.combinations!==undefined&&!Array.isArray(value.combinations))throw new ResponseFormatError('媒体探测组合格式错误');
-  const combinations = (Array.isArray(value.combinations)?value.combinations:[]).map((item:unknown)=>{
+  const rawCombinations = value.combinations;
+  const combinationValues = rawCombinations === undefined ? [] : Array.isArray(rawCombinations) ? rawCombinations : (() => { throw new ResponseFormatError('媒体探测组合格式错误'); })();
+  const combinations = combinationValues.map((item:unknown)=>{
     if(!isRecord(item)||typeof item.available!=='boolean')throw new ResponseFormatError('媒体探测可用性格式错误');
     return {available:item.available};
   });

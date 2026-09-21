@@ -21,7 +21,7 @@ function baseState(): StateFile {
   };
 }
 
-function addVideo(state: StateFile, index: number, status: any, localDir?: string, description = "") {
+function addVideo(state: StateFile, index: number, status: import("../src/state.js").BackupStatus, localDir?: string, description = "") {
   const bvid = `BVTEST${String(index).padStart(6, "0")}`;
   state.videos![bvid] = {
     bvid,
@@ -30,7 +30,7 @@ function addVideo(state: StateFile, index: number, status: any, localDir?: strin
     description,
     firstSeenAt: now,
     lastSeenAt: now,
-    biliStatus: "available",
+    biliStatus: "available" as const,
     backupStatus: status,
     localDir,
   };
@@ -47,6 +47,23 @@ function addVideo(state: StateFile, index: number, status: any, localDir?: strin
   };
   return bvid;
 }
+
+test('runAtomic rejects an asynchronous callback before committing it', async () => {
+  const runtime = await createTestDir('state-atomic-callback');
+  const manager = new StateManager({
+    statePath: path.join(runtime, 'state.json'),
+    dbPath: path.join(runtime, 'bfb.sqlite'),
+  });
+  try {
+    assert.throws(
+      () => manager.runAtomic(async () => undefined),
+      /runAtomic callback must be synchronous/,
+    );
+  } finally {
+    manager.close();
+    await removeTestDir(runtime);
+  }
+});
 
 test("schema 8 failed state with an existing local directory migrates to upload_failed", async () => {
   const runtime = await createTestDir("state-migration");
@@ -83,7 +100,7 @@ test("an incomplete schema 10 download session resumes downloading instead of up
     writeJsonFile(path.join(localDir, ".bfb-download.json"), {
       schemaVersion: 1,
       sessionId: "session-1",
-      kind: "backup",
+      kind: "backup" as const,
       bvid: "BVTEST000077",
       accountUid: 1,
       bbdownCommit: "test",
@@ -92,7 +109,7 @@ test("an incomplete schema 10 download session resumes downloading instead of up
       createdAt: now,
       updatedAt: now,
       snapshotAt: now,
-      status: "downloading",
+      status: "downloading" as const,
       pages: [{ index: 1, cid: 1, title: "P1", duration: 10 }],
       outputs: [],
       history: [],
@@ -150,7 +167,7 @@ test("schema 8 migrates a failed relation even when another target kept the vide
       firstSeenAt: now,
       lastSeenAt: now,
       activeInFavorite: true,
-      backupStatus: "verified",
+      backupStatus: "verified" as const,
     };
     const statePath = path.join(runtime, "state.json");
     writeJsonFile(statePath, state);
@@ -180,7 +197,7 @@ test("multi-target upload keeps local data until every target is verified", asyn
       firstSeenAt: now,
       lastSeenAt: now,
       activeInFavorite: true,
-      backupStatus: "downloaded",
+      backupStatus: "downloaded" as const,
       remotePath: `/second/${bvid}`,
     };
     const statePath = path.join(runtime, "state.json");
@@ -223,7 +240,7 @@ test("partial uploads remain distinguishable from complete verified backups", as
       firstSeenAt: now,
       lastSeenAt: now,
       activeInFavorite: true,
-      backupStatus: "downloaded",
+      backupStatus: "downloaded" as const,
     };
     const statePath = path.join(runtime, "state.json");
     writeJsonFile(statePath, state);
@@ -252,11 +269,11 @@ test("remote conflict archival clears stale current proofs and keeps an audit re
     firstSeenAt: now,
     lastSeenAt: now,
     activeInFavorite: true,
-    backupStatus: "uploading",
+    backupStatus: "uploading" as const,
     remotePath: "/backup",
-    remoteFiles: [{ name: "p01.mp4", path: "/backup/p01.mp4", size: 8, verificationStatus: "verified" }],
+    remoteFiles: [{ name: "p01.mp4", path: "/backup/p01.mp4", size: 8, verificationStatus: "verified" as const }],
   };
-  state.videos![bvid].remoteFiles = [{ name: "p01.mp4", path: "/backup/p01.mp4", size: 8, verificationStatus: "verified" }];
+  state.videos![bvid].remoteFiles = [{ name: "p01.mp4", path: "/backup/p01.mp4", size: 8, verificationStatus: "verified" as const }];
   const manager = new StateManager({ statePath, dbPath });
   try {
     manager.replaceStateSnapshot(state);
@@ -274,9 +291,11 @@ test("remote conflict archival clears stale current proofs and keeps an audit re
     assert.equal(relation.remoteConflictArchives?.length, 1);
     assert.equal(relation.remoteConflictArchives?.[0].files[0].archivedPath, "/backup/_history/20260712T120000000Z/p01.mp4");
     assert.equal(manager.getStateSnapshot().videos![bvid].remoteFiles?.length ?? 0, 0);
-    const relationRemoteRows = manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM remote_files WHERE bvid=? AND user_id=? AND media_id=?").get(bvid, "u1", 1) as any;
+    const relationRemoteRows = manager.getDatabase().db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM remote_files WHERE bvid=? AND user_id=? AND media_id=?").get(bvid, "u1", 1);
+    assert.ok(relationRemoteRows);
     assert.equal(Number(relationRemoteRows.count), 0);
-    const allRemoteRows = manager.getDatabase().db.prepare("SELECT COUNT(*) AS count FROM remote_files WHERE bvid=?").get(bvid) as any;
+    const allRemoteRows = manager.getDatabase().db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM remote_files WHERE bvid=?").get(bvid);
+    assert.ok(allRemoteRows);
     assert.equal(Number(allRemoteRows.count), 0);
   } finally {
     manager.close();
@@ -420,7 +439,7 @@ test("clearing backup state empties SQLite tables without deleting the open data
     const manager = new StateManager({ statePath, dbPath });
     manager.getDatabase().db.prepare("INSERT INTO jobs(id,kind,dedupe_key,status,priority,payload_json,attempts,max_attempts,not_before,created_at,updated_at) VALUES('j1','download','download:test','pending',1,'{}',0,1,0,0,0)").run();
     manager.clear();
-    const counts = manager.getDatabase().db.prepare("SELECT (SELECT COUNT(*) FROM videos) videos, (SELECT COUNT(*) FROM favorite_relations) relations, (SELECT COUNT(*) FROM jobs) jobs").get() as any;
+    const counts = manager.getDatabase().db.prepare("SELECT (SELECT COUNT(*) FROM videos) videos, (SELECT COUNT(*) FROM favorite_relations) relations, (SELECT COUNT(*) FROM jobs) jobs").get();
     assert.deepEqual(counts, { videos: 0, relations: 0, jobs: 0 });
     assert.equal(fs.existsSync(dbPath), true);
     manager.close();

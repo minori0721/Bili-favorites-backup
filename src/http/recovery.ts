@@ -1,13 +1,8 @@
 import { Router } from 'express';
 import type { RouteBoundary } from './route-boundary.js';
 import type { RecoveryIssueActionId } from '../recovery-policy.js';
-import type { RecoveryActionOptions, RecoveryActionResult } from '../scheduler/recovery-action-contracts.js';
-import type { createUploadResumeService } from '../scheduler/upload-resume.js';
-interface Dependencies {
-  boundary: RouteBoundary;
-  recoverUploadJob: ReturnType<typeof createUploadResumeService>['recover'];
-  resolveRecoveryIssue(id: string, action: RecoveryIssueActionId, options: RecoveryActionOptions): Promise<RecoveryActionResult>;
-}
+import type { RecoveryPort } from '../ports/task-control.js';
+interface Dependencies extends RecoveryPort { boundary: RouteBoundary; }
 export function createRecoveryRouter(deps: Dependencies) {
   const router = Router();
 router.post("/api/queue/recover", deps.boundary(async (req, res) => {

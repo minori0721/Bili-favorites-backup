@@ -119,7 +119,7 @@ export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecov
   for (const key of configKeys) {
     const value = input[key];
     if (value !== undefined) {
-      (merged as any)[key] = value;
+      (merged as unknown as Record<keyof AppConfig, unknown>)[key] = value;
     }
   }
   const legacyPrefetch = Number(input.startupRecoveryBatchSize);
@@ -222,6 +222,18 @@ const allowedKeys = new Set<keyof AppConfig>([
 
 const allowedEncodings = new Set(["", ...DEFAULT_BBDOWN_ENCODING_PRIORITY]);
 const allowedQualities = new Set(["", "8K", "4K", "1080P60", "1080P", "720P"]);
+
+/** Validate network fields before allowing them into the configuration store. */
+export function parseConfigPatch(input: unknown): { ok: true; value: Partial<AppConfig> } | { ok: false; message: string } {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return { ok: false, message: 'Config must be an object' };
+  }
+  const fields = Object.fromEntries(Object.entries(input));
+  // validateConfig checks every permitted field, including enum and array members.
+  const message = validateConfig(fields);
+  if (message) return { ok: false, message };
+  return { ok: true, value: fields };
+}
 
 export function validateConfig(input: Partial<AppConfig>) {
   for (const key of Object.keys(input)) {

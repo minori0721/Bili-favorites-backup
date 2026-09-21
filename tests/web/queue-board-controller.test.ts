@@ -1,7 +1,7 @@
 import { queueResponse, parseQueueFixture } from './queue-fixture.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createQueueBoardController, queueBoardRefreshDelay } from '../../src/web/client/features/task-center/board-controller.js';
+import { createQueueBoardController, queueBoardRefreshDelay, type QueueBoardRoot } from '../../src/web/client/features/task-center/board-controller.js';
 import { parseQueueSnapshot, type QueueSnapshot } from '../../src/shared/api/queue-snapshot.js';
 
 test('board lifecycle deduplicates starts and prevents stopped responses from rendering or scheduling', async context => {
@@ -10,12 +10,20 @@ test('board lifecycle deduplicates starts and prevents stopped responses from re
   const rendered: QueueSnapshot[] = [];
   let ticks = 0;
   let resets = 0;
-  const ownerDocument = { hidden: false };
+  const ownerDocument = {
+    hidden: false,
+    createElement: (_tagName: string): HTMLElement => { throw new Error('not used in this scenario'); },
+  };
   const root = {
     ownerDocument,
-    querySelector(selector: string) { return selector === '.queue-board' ? {} : null; },
-    setAttribute() {},
-  } as unknown as HTMLElement;
+    querySelector<T extends Element = HTMLElement>(_selector: string): T | null { return null; },
+    querySelectorAll<T extends Element = HTMLElement>(_selector: string): Iterable<T> & { forEach(callbackfn: (value: T) => void): void } {
+      return { forEach: () => {}, *[Symbol.iterator]() {} };
+    },
+    setAttribute(_name: string, _value: string) {},
+    prepend(_node: Node) {},
+    innerHTML: '',
+  } satisfies QueueBoardRoot;
   const board = createQueueBoardController({
     root, request: signal => new Promise(resolve => pending.push({ signal, resolve })),
     render: snapshot => rendered.push(snapshot), tick: () => { ticks++; },
@@ -51,9 +59,9 @@ test('board lifecycle deduplicates starts and prevents stopped responses from re
 });
 
 test('board polling intervals retain running, waiting, maintenance and idle behavior', () => {
-  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ downloadRunning: [{ phase: 'running' }] })), 2_000);
-  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ uploadPending: [{ phase: 'remote_verifying' }] })), 2_000);
-  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ uploadPending: [{ phase: 'retry_wait' }] })), 5_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ downloadRunning: [{ phase: 'running' as const }] })), 2_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ uploadPending: [{ phase: 'remote_verifying' as const }] })), 2_000);
+  assert.equal(queueBoardRefreshDelay(parseQueueFixture({ uploadPending: [{ phase: 'retry_wait' as const }] })), 5_000);
   assert.equal(queueBoardRefreshDelay(parseQueueFixture({ maintenance: { active: true } })), 5_000);
   assert.equal(queueBoardRefreshDelay(parseQueueFixture({})), 15_000);
 });

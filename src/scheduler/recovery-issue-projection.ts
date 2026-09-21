@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
 import type { UserStore, BiliUser } from '../users.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
@@ -22,7 +22,7 @@ import {
   resolveQualityUpgradeTarget,
 } from './quality-rules.js';
 
-type RecoveryJobStore = Pick<PersistentJobStore, 'listFailed' | 'listManualRecovery'>;
+type RecoveryJobStore = Pick<JobRepository, 'listFailed' | 'listManualRecovery'>;
 
 interface RecoveryIssueProjectionDependencies {
   jobs: RecoveryJobStore;

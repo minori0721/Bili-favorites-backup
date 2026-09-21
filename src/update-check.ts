@@ -66,6 +66,7 @@ export class UpdateCheckService {
       response = await this.request(endpoint + suffix, { signal: controller.signal, redirect: "error", headers: {
         Accept: "application/vnd.github+json", "User-Agent": "BFB-update-check", "X-GitHub-Api-Version": "2022-11-28",
       } });
+      let readerOwnsBody = false;
       try {
         if (response.status === 404 && suffix === "/latest") return { data: null, next: false };
         if (!response.ok) {
@@ -74,8 +75,10 @@ export class UpdateCheckService {
         }
         const reader = response.body?.getReader();
         if (!reader) throw new UpdateError("invalid_response", "更新源返回为空");
+        readerOwnsBody = true;
         const chunks: Uint8Array[] = [];
         let size = 0;
+        let completed = false;
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -85,10 +88,19 @@ export class UpdateCheckService {
             if (size > 1024 * 1024 || totalBytes > 2 * 1024 * 1024) throw new UpdateError("response_limit", "发布记录过大，无法完整确认最新版本");
             chunks.push(value);
           }
-        } finally { await reader.cancel().catch(() => {}); }
+          completed = true;
+        } finally {
+          if (!completed) await reader.cancel().catch((error) => { console.debug(`[Update] reader cancellation: ${String(error)}`); });
+          reader.releaseLock();
+        }
         try { return { data: JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown, next: /rel="next"/.test(response.headers.get("link") || "") }; }
         catch { throw new UpdateError("invalid_response", "更新源返回格式异常"); }
-      } finally { await response.body?.cancel().catch(() => {}); }
+      } finally {
+        // Once a reader owns the body, releasing/cancelling that reader is the
+        // single cleanup path. Cancelling the body here would race with it and
+        // produces the misleading "ReadableStream is locked" diagnostic.
+        if (!readerOwnsBody) await response.body?.cancel().catch((error) => { console.debug(`[Update] response cancellation: ${String(error)}`); });
+      }
     };
     try {
       const latest = await read("/latest");

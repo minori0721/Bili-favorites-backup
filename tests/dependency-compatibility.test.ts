@@ -1,3 +1,4 @@
+import { readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import test from "node:test";
 import http from "node:http";
@@ -55,7 +56,7 @@ test("Express qs override preserves forms and query arrays while body limits sti
   app.use(express.json({ limit: "1kb" }));
   app.use(express.urlencoded({ extended: true }));
   app.post("/", (req, res) => res.json({ body: req.body, query: req.query }));
-  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.sendStatus(err.status || 500));
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.sendStatus(Number(readField(err, 'status')) || 500));
   const { server, url } = await listen(app);
   t.after(() => new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve())));
   const response = await fetch(`${url}/?ids[]=1&ids[]=2`, {
@@ -64,7 +65,7 @@ test("Express qs override preserves forms and query arrays while body limits sti
   });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { body: { name: "中文", options: { enabled: "true" } }, query: { ids: ["1", "2"] } });
-  assert.equal(({} as any).polluted, undefined);
+  assert.equal(readField(({}), 'polluted'), undefined);
   const oversized = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: "x".repeat(2048) }) });
   assert.equal(oversized.status, 413);
 });

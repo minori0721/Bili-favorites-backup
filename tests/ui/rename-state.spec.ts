@@ -13,7 +13,7 @@ test('rename polling preserves deselection and submits one reviewed preview', as
     if(url.pathname.endsWith('/status')) { polls++; return route.fulfill({json:{success:true,data:preview('current',2)}}); }
     submissions.push(route.request().postDataJSON());
     await new Promise(resolve=>setTimeout(resolve,300));
-    return route.fulfill({json:{success:true,data:{success:1,failed:0,results:[{ok:true,status:'renamed',oldPath:'/old/two',newPath:'/new/two'}]}}});
+    return route.fulfill({json:{success:true,data:{success:1,failed:0,results:[{ok:true,status:'renamed' as const,oldPath:'/old/two',newPath:'/new/two'}]}}});
   });
   await page.goto('/');await page.locator('#renameBtn').click();
   await page.locator('[data-rename-candidate-id="one"]').uncheck();

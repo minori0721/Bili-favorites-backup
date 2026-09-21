@@ -1,4 +1,6 @@
+import { readField } from './contract-values.js';
 import assert from "node:assert/strict";
+import { Readable } from 'node:stream';
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -49,12 +51,12 @@ class MemoryRemote implements RemoteOperationsClient {
     this.directories.add(target);
   }
 
-  async putFileContents(value: string, data: string | Buffer) {
+  async putFileContents(value: string, data: string | Buffer | Readable) {
     const target = this.normalize(value);
     const chunks: Buffer[] = [];
     if (Buffer.isBuffer(data)) chunks.push(data);
     else if (typeof data === "string") chunks.push(Buffer.from(data));
-    else for await (const chunk of data as any) chunks.push(Buffer.from(chunk));
+    else for await (const chunk of data) chunks.push(Buffer.from(chunk));
     this.files.set(target, Buffer.concat(chunks));
     this.directories.add(this.parent(target));
     this.puts.push(target);
@@ -199,10 +201,10 @@ test("COPY response loss with a same-size target preserves both files without pr
   let targetVerified = false;
   await assert.rejects(
     () => runner(config, "/target/old.mp4", "/target/new.mp4"),
-    (error: any) => {
-      assert.equal(error.code, "REMOTE_COPY_RESULT_UNCERTAIN");
-      assert.equal(error.targetReady, true);
-      assert.equal(error.sourceStillPresent, true);
+    (error: unknown) => {
+      assert.equal(readField(error, 'code'), "REMOTE_COPY_RESULT_UNCERTAIN");
+      assert.equal(readField(error, 'targetReady'), true);
+      assert.equal(readField(error, 'sourceStillPresent'), true);
       return true;
     },
   );
@@ -243,7 +245,7 @@ test("quality upgrade persists a copied backup proof before DELETE and resumes w
   const persistedBackupFiles: Array<{ name: string; path: string; size?: number }> = [];
   const persistedFinalFiles: Array<{ name: string; path: string; size?: number }> = [];
   const buildTask = () => {
-    const task = new QualityUpgradeTask("BVQUALITYPROOF", {}, config, {
+    const task = new QualityUpgradeTask("BVQUALITYPROOF", { SESSDATA: "", bili_jct: "", DedeUserID: "1" }, config, {
       userId: "u1",
       mediaId: 1,
       folderTitle: "Favorites",
@@ -252,7 +254,7 @@ test("quality upgrade persists a copied backup proof before DELETE and resumes w
         name: "old.mp4",
         path: "/target/old.mp4",
         size: 3,
-        verificationStatus: "verified",
+        verificationStatus: "verified" as const,
       }],
     });
     task.stageRemotePath = "/target/.quality-upgrade-run";
@@ -263,13 +265,13 @@ test("quality upgrade persists a copied backup proof before DELETE and resumes w
         name: "new.mp4",
         path: "/target/.quality-upgrade-run/new.mp4",
         size: 3,
-        verificationStatus: "verified",
+        verificationStatus: "verified" as const,
       }],
     };
     task.backupFiles = persistedBackupFiles.map((file) => ({ ...file }));
     task.finalFiles = persistedFinalFiles.map((file) => ({ ...file }));
     task.replacementRunner = runner;
-    task.verifyRunner = async () => ({ ok: true, missing: [] });
+    task.verifyRunner = async () => ({ ok: true, missing: [], unknown: [], failures: {} });
     task.onBackupFileMoved = (_task, file) => {
       if (!persistedBackupFiles.some((candidate) => candidate.path === file.path)) persistedBackupFiles.push({ ...file });
     };
@@ -359,7 +361,7 @@ test("batch rename uses COPY plus DELETE on a MOVE-unsupported backend", async (
   const client = new MemoryRemote();
   client.moveSupported = false;
   client.files.set("/target/old.mp4", Buffer.from("old"));
-  const result = await batchRenameRemotePaths(config, [{ oldPath: "/target/old.mp4", newPath: "/target/new.mp4" }], client as any);
+  const result = await batchRenameRemotePaths(config, [{ oldPath: "/target/old.mp4", newPath: "/target/new.mp4" }], client);
   assert.equal(result.success, 1);
   assert.equal(client.copies.filter(([source]) => source === "/target/old.mp4").length, 1);
   assert.equal(client.files.has("/target/old.mp4"), false);
@@ -375,17 +377,17 @@ test("ordinary upload retains a verified old archive without COPY MOVE or PUT", 
     await fs.promises.writeFile(path.join(runtime, "video.mp4"), "new-content-longer");
     const result = await uploadWithAList(runtime, "/target", config, {
       cleanupLocal: false,
-      client: client as any,
+      client: client,
       files: ["video.mp4"],
       existingArchiveProof: {
         remotePath: "/target",
-        status: "verified",
+        status: "verified" as const,
         verifiedAt: new Date().toISOString(),
         files: [{
           name: "video.mp4",
           path: "/target/video.mp4",
           size: Buffer.byteLength("old-content"),
-          verificationStatus: "verified",
+          verificationStatus: "verified" as const,
         }],
       },
       verificationDelaysMs: [0],
@@ -411,7 +413,7 @@ test("legacy conflict archival side effects stop without further remote writes",
     await fs.promises.writeFile(path.join(runtime, "video.mp4"), "new-content-longer");
     const options = {
       cleanupLocal: false,
-      client: client as any,
+      client: client,
       files: ["video.mp4"],
       legacyConflictSideEffectsStarted: true,
       verificationDelaysMs: [0],
@@ -419,7 +421,7 @@ test("legacy conflict archival side effects stop without further remote writes",
     };
     await assert.rejects(
       () => uploadWithAList(runtime, "/target", config, options),
-      (error: any) => error.uploadFailure?.code === "UPLOAD_LEGACY_CONFLICT_ARCHIVE_INTERRUPTED",
+      (error: unknown) => readField(readField(error, 'uploadFailure'), 'code') === "UPLOAD_LEGACY_CONFLICT_ARCHIVE_INTERRUPTED",
     );
     assert.equal(client.files.has("/target/video.mp4"), true);
     assert.equal(client.copies.length, 0);

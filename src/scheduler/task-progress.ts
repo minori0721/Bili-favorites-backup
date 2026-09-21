@@ -1,5 +1,5 @@
 import { DownloadTask, QualityUpgradeDownloadTask, UploadTask, QualityUpgradeUploadReplaceTask, QualityUpgradeReplaceTask, QualityUpgradeCleanupTask, type UploadVerificationTask, type QualityUpgradeTask } from '../tasks.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText, type UploadFailureInfo } from '../upload-health.js';
 import { qualityDownloadStageLabel } from './quality-rules.js';
@@ -12,7 +12,7 @@ function isQualityUpload(task: unknown): task is QualityUpload {
   return task instanceof QualityUpgradeUploadReplaceTask || task instanceof QualityUpgradeReplaceTask || task instanceof QualityUpgradeCleanupTask;
 }
 interface Dependencies {
-  jobs: Pick<PersistentJobStore, 'markRunning'>;
+  jobs: Pick<JobRepository, 'markRunning'>;
   leaseOwner: string;
   markDownloadStarted(): void;
   syncQuality(task: QualityUpgradeDownloadTask | QualityUpload, status: QualityUpgradeTask['status']): void;

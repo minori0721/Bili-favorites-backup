@@ -1,3 +1,4 @@
+import { required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,7 +25,7 @@ function user(): BiliUser {
     id: "probe-user",
     uid: 123,
     name: "探测账号",
-    cookie: { DedeUserID: "123", SESSDATA: "redacted" },
+    cookie: { bili_jct: '', DedeUserID: "123", SESSDATA: "redacted" },
     favorites: [],
     enabled: true,
     lastLoginAt: new Date().toISOString(),
@@ -94,7 +95,7 @@ test("unknown and legacy availability never claim that a video is invisible", as
   ]) {
     let calls = 0;
     const service = new MediaProbeService({ get: () => testConfig() }, async (bvid) => {
-      calls++; return { bvid, pages: pages(), source: "bbdown" };
+      calls++; return { bvid, pages: pages(), source: "bbdown" as const };
     }, undefined, async () => availability);
     const result = await waitFor(service.start(user(), "BV1Probe00001"));
     assert.equal(result.status, "failed");
@@ -144,15 +145,15 @@ test("strict media probe marks unavailable codec/quality combinations without fa
       assert.equal(bvid, "BV1Probe00001");
       assert.equal(cookie.DedeUserID, "123");
       forwardedTarget = target;
-      return { bvid, pages: pages(), source: "bbdown" };
+      return { bvid, pages: pages(), source: "bbdown" as const };
     },
   );
 
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: true }));
   assert.equal(result.status, "complete");
   assert.deepEqual(result.target, { quality: "4K", encoding: "AV1", strict: true });
-  assert.equal(result.pages?.[0].tracks[0].encoding, "AV1");
-  assert.equal(result.pages?.[0].tracks[0].available, true);
+  assert.equal(required(required(result.pages?.[0].tracks)[0]).encoding, "AV1");
+  assert.equal(required(result.pages?.[0].tracks[0]).available, true);
   assert.equal(result.pages?.[0].tracks[1].encoding, "AVC");
   assert.equal(result.pages?.[0].tracks[1].available, false);
   assert.equal(result.pages?.[1].tracks[0].available, true);
@@ -177,7 +178,7 @@ test("Bilibili visibility failure stops BBDown probing and returns a safe explan
     { get: () => testConfig() },
     async (bvid) => {
       runnerCalls += 1;
-      return { bvid, pages: pages(), source: "bbdown" };
+      return { bvid, pages: pages(), source: "bbdown" as const };
     },
     undefined,
     async () => ({ available: false, availability: "unavailable", pages: [] }),
@@ -193,13 +194,13 @@ test("non-strict media probe keeps all normalized combinations and does not over
     { get: () => testConfig() },
     async (bvid, _cookie, _config, target) => {
       assert.equal(target, undefined);
-      return { bvid, pages: pages(), source: "bbdown" };
+      return { bvid, pages: pages(), source: "bbdown" as const };
     },
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: false }));
   assert.equal(result.status, "complete");
   assert.equal(result.target, undefined);
-  assert.equal(result.pages?.flatMap((page) => page.tracks).every((track) => track.available), true);
+  assert.equal(required(result.pages?.flatMap((page) => page.tracks)).every((track) => track.available), true);
   assert.equal(result.estimatedBytes, 3000);
 });
 
@@ -213,7 +214,7 @@ test("catalog probe never exposes an unknown codec as an exact selectable combin
   }));
   const service = new MediaProbeService(
     { get: () => testConfig() },
-    async (bvid) => ({ bvid, pages: unknownCodecPages, source: "bbdown" }),
+    async (bvid) => ({ bvid, pages: unknownCodecPages, source: "bbdown" as const }),
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001"));
   assert.equal(result.status, "complete");
@@ -233,14 +234,14 @@ test("exact probe sources preserve HEAD and Range provenance", async () => {
   }));
   const service = new MediaProbeService(
     { get: () => testConfig() },
-    async (bvid) => ({ bvid, pages: exactPages, source: "bbdown" }),
+    async (bvid) => ({ bvid, pages: exactPages, source: "bbdown" as const }),
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: true }));
   assert.equal(result.status, "complete");
   assert.equal(result.estimatedBytes, 3300);
   assert.equal(result.estimatedBytesSource, "mixed");
-  assert.equal(result.pages?.[0].tracks[0].sizeSource, "head");
-  assert.equal(result.pages?.[1].tracks[0].sizeSource, "range");
+  assert.equal(required(required(result.pages?.[0].tracks)[0]).sizeSource, "head");
+  assert.equal(required(result.pages?.[1].tracks[0]).sizeSource, "range");
 });
 
 test("probe args only request exact size refinement for an explicit target", () => {
@@ -270,7 +271,7 @@ test("structured probe JSON survives stdout chunks split inside one record", () 
   const line = `BFB_PROBE_JSON:${JSON.stringify(pages()[0])}`;
   const splitAt = Math.floor(line.length / 2);
   const parsed = parseBBDownProbeOutput([line.slice(0, splitAt), line.slice(splitAt), "\n"].join(""));
-  assert.deepEqual(parsed, { kind: 'ok', pages: [pages()[0]] });
+  assert.deepEqual(parsed, { kind: 'ok' as const, pages: [pages()[0]] });
 });
 
 test("structured probe parser fails the complete probe on malformed or duplicate page records", () => {
@@ -281,23 +282,23 @@ test("structured probe parser fails the complete probe on malformed or duplicate
     { ...valid, tracks: [{ ...valid.tracks[0], estimatedBytes: -1 }] },
     valid,
   ].map((record) => `BFB_PROBE_JSON:${JSON.stringify(record)}`).join("\n");
-  assert.deepEqual(parseBBDownProbeOutput(malformed, valid.bvid), {kind: 'invalid', reason: 'invalid_page', line: 1});
-  assert.deepEqual(parseBBDownProbeOutput(`BFB_PROBE_JSON:${JSON.stringify(valid)}`, valid.bvid), {kind: 'ok', pages: [valid]});
+  assert.deepEqual(parseBBDownProbeOutput(malformed, valid.bvid), {kind: 'invalid' as const, reason: 'invalid_page', line: 1});
+  assert.deepEqual(parseBBDownProbeOutput(`BFB_PROBE_JSON:${JSON.stringify(valid)}`, valid.bvid), {kind: 'ok' as const, pages: [valid]});
 
   const duplicatePage = { ...pages()[1], pageIndex: valid.pageIndex };
   const duplicates = [valid, duplicatePage]
     .map((record) => `BFB_PROBE_JSON:${JSON.stringify(record)}`)
     .join("\n");
-  assert.deepEqual(parseBBDownProbeOutput(duplicates, valid.bvid), {kind: 'partial', pages: [valid], reason: 'duplicate_page', line: 2});
+  assert.deepEqual(parseBBDownProbeOutput(duplicates, valid.bvid), {kind: 'partial' as const, pages: [valid], reason: 'duplicate_page', line: 2});
 });
 
 test('probe parsing distinguishes missing framing, damaged JSON, missing fields and partial output', () => {
-  assert.deepEqual(parseBBDownProbeOutput('ordinary diagnostics'), {kind: 'empty'});
-  assert.deepEqual(parseBBDownProbeOutput('BFB_PROBE_JSON:{'), {kind: 'invalid', reason: 'malformed_json', line: 1});
-  assert.deepEqual(parseBBDownProbeOutput('BFB_PROBE_JSON:{}'), {kind: 'invalid', reason: 'invalid_page', line: 1});
+  assert.deepEqual(parseBBDownProbeOutput('ordinary diagnostics'), {kind: 'empty' as const});
+  assert.deepEqual(parseBBDownProbeOutput('BFB_PROBE_JSON:{'), {kind: 'invalid' as const, reason: 'malformed_json', line: 1});
+  assert.deepEqual(parseBBDownProbeOutput('BFB_PROBE_JSON:{}'), {kind: 'invalid' as const, reason: 'invalid_page', line: 1});
   const valid = pages()[0];
   assert.deepEqual(parseBBDownProbeOutput(`BFB_PROBE_JSON:${JSON.stringify(valid)}\nBFB_PROBE_JSON:{`),
-    {kind: 'partial', pages: [valid], reason: 'malformed_json', line: 2});
+    {kind: 'partial' as const, pages: [valid], reason: 'malformed_json', line: 2});
   const duplicateCid = {...pages()[1], cid: valid.cid};
   assert.equal(parseBBDownProbeOutput([valid, duplicateCid].map(value => `BFB_PROBE_JSON:${JSON.stringify(value)}`).join('\n')).kind, 'partial');
 });
@@ -313,7 +314,7 @@ test("structured probe output cap waits for the BBDown process to exit", { timeo
       process.stdout.write('x'.repeat(5 * 1024 * 1024));
       setInterval(() => {}, 1000);
     `, "utf8");
-    const error: any = await probeMediaWithBBDown(
+    const error: unknown = await probeMediaWithBBDown(
       "BV1Probe00001",
       user().cookie,
       testConfig(),
@@ -324,7 +325,7 @@ test("structured probe output cap waits for the BBDown process to exit", { timeo
         workingRoot: path.join(runtime, "missing-probe-root"),
       },
     ).then(() => null, (caught) => caught);
-    assert.equal(error?.code, "BBDOWN_PROBE_OUTPUT_TOO_LARGE");
+    assert.equal(readField(error, 'code'), "BBDOWN_PROBE_OUTPUT_TOO_LARGE");
     const pid = Number(await fs.promises.readFile(pidFile, "utf8"));
     assert.equal(Number.isInteger(pid) && pid > 0, true);
     assert.throws(() => process.kill(pid, 0));
@@ -338,7 +339,7 @@ test("multi-page combinations allow different dimensions at the same Bilibili ti
   multiPage[1].tracks[0].resolution = "2160x3840";
   const service = new MediaProbeService(
     { get: () => testConfig() },
-    async (bvid) => ({ bvid, pages: multiPage, source: "bbdown" }),
+    async (bvid) => ({ bvid, pages: multiPage, source: "bbdown" as const }),
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: true }));
   const combination = result.combinations?.find((item) => item.encoding === "AV1");
@@ -359,7 +360,7 @@ test("protocol v2 includes audio, mux allowance, peak space, and current cache c
   }));
   const service = new MediaProbeService(
     { get: () => testConfig() },
-    async (bvid) => ({ bvid, pages: v2Pages, source: "bbdown" }),
+    async (bvid) => ({ bvid, pages: v2Pages, source: "bbdown" as const }),
     async () => ({ limitBytes: 10_000, usedBytes: 1_000, reserveBytes: 500 }),
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: true }));
@@ -392,7 +393,7 @@ test("selected combinations expose exact confidence only when every final compon
   }));
   const service = new MediaProbeService(
     { get: () => testConfig() },
-    async (bvid) => ({ bvid, pages: exactPages, source: "bbdown" }),
+    async (bvid) => ({ bvid, pages: exactPages, source: "bbdown" as const }),
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "4K", encoding: "AV1", strict: true }));
   assert.equal(result.combinations?.find((item) => item.encoding === "AV1")?.totalSizeConfidence, "exact");
@@ -401,7 +402,7 @@ test("selected combinations expose exact confidence only when every final compon
 test("cache inspection failure does not discard a valid media probe", async () => {
   const service = new MediaProbeService(
     { get: () => testConfig() },
-    async (bvid) => ({ bvid, pages: pages(), source: "bbdown" }),
+    async (bvid) => ({ bvid, pages: pages(), source: "bbdown" as const }),
     async () => { throw new Error("cache unavailable"); },
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001"));
@@ -415,7 +416,7 @@ test("strict quality probe does not treat 1080P60 as exact 1080P", async () => {
     { get: () => testConfig() },
     async (bvid) => ({
       bvid,
-      source: "bbdown",
+      source: "bbdown" as const,
       pages: [{
         ...pages()[0],
         tracks: [{
@@ -431,7 +432,7 @@ test("strict quality probe does not treat 1080P60 as exact 1080P", async () => {
   );
   const result = await waitFor(service.start(user(), "BV1Probe00001", { quality: "1080P", strict: true }));
   assert.equal(result.status, "complete");
-  assert.equal(result.pages?.[0].tracks[0].available, false);
-  assert.equal(result.combinations?.[0].available, false);
+  assert.equal(required(required(result.pages?.[0].tracks)[0]).available, false);
+  assert.equal(required(result.combinations?.[0]).available, false);
   assert.equal(result.estimatedBytes, undefined);
 });

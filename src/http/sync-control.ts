@@ -1,9 +1,10 @@
+import type { SyncControlPort } from '../ports/task-control.js';
 import { Router } from 'express';
 import type { RouteBoundary } from './route-boundary.js';
 import { safeErrorSummary } from '../diagnostics.js';
 
-type Trigger = () => {started: boolean; queued: boolean};
-export function createSyncControlRouter(dependencies: {sync: Trigger; reconcile: Trigger; remote: Trigger; boundary: RouteBoundary}) {
+type Trigger = SyncControlPort['sync'];
+export function createSyncControlRouter(dependencies: SyncControlPort & {boundary: RouteBoundary}) {
   const router = Router();
   const commands: Array<{path: string; run: Trigger; label: string; failure: string}> = [
     {path:'/api/sync/now',run:dependencies.sync,label:'Sync',failure:'Sync failed'},

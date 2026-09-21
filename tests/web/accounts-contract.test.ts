@@ -18,8 +18,8 @@ test('public account boundaries retain display data without forwarding credentia
 test('destructive account previews require an identifier and finite nonnegative counts', () => {
   assert.equal(parseRemovalPreview({previewId:'preview',fileCount:3}).fileCount,3);
   for (const value of [{fileCount:3},{previewId:'preview',totalBytes:-1},{previewId:'preview',fileCount:Infinity}]) assert.throws(() => parseRemovalPreview(value));
-  assert.throws(() => parseRemovalOperation({status:'pending'}));
-  assert.equal(parseRemovalOperation({id:'operation',status:'pending'}).id,'operation');
+  assert.throws(() => parseRemovalOperation({status:'pending' as const}));
+  assert.equal(parseRemovalOperation({id:'operation',status:'pending' as const}).id,'operation');
 });
 
 test('account deletion submission accepts an operation reference while polling requires status', () => {

@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveRenameLogicalFile } from "../src/rename-proof.js";
 
+function failureReason(value: ReturnType<typeof resolveRenameLogicalFile>) {
+  assert.equal(value.ok, false);
+  if (value.ok) throw new Error("expected rename resolution failure");
+  return value.reason;
+}
+
 test("strict rename scan entries preserve the legacy path-first behavior", () => {
   const observation = {
     name: "old-BV1TEST.mp4",
@@ -36,11 +42,11 @@ test("OpenList escaped rename entries map only through matching path and size pr
   assert.equal(resolved.ok, true);
   if (resolved.ok) assert.equal(resolved.logicalPath, "/target/旅谣'米砂-BV1TEST.mp4");
 
-  assert.match(resolveRenameLogicalFile(observation, [{
+  assert.match(failureReason(resolveRenameLogicalFile(observation, [{
     name: "旅谣'米砂-BV1TEST.mp4",
     path: "/target/旅谣'米砂-BV1TEST.mp4",
     size: 100,
-  }]).reason, /没有匹配/);
+  }])), /没有匹配/);
 });
 
 test("Unicode-equivalent proofs remain ambiguous instead of being guessed", () => {

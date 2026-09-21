@@ -4,6 +4,26 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value)) : {};
 }
+function parseExistingArchiveProof(value: unknown) {
+  const proof = record(record(value).existingArchiveProof);
+  if (!Array.isArray(proof.files) || proof.files.length === 0) return undefined;
+  if (proof.status !== 'verified' && proof.status !== 'partial_verified') return undefined;
+  const files = proof.files.filter((item): item is Record<string, unknown> =>
+    item !== null && typeof item === 'object' && !Array.isArray(item)
+  ).map(item => ({
+    name: text(item.name) || '', path: text(item.path) || '',
+    size: number(item.size), verificationStatus: item.verificationStatus === 'verified' ? 'verified' as const : undefined,
+  })).filter(item => item.name && item.path && item.verificationStatus);
+  if (files.length === 0) return undefined;
+  const uploadedAt = text(proof.uploadedAt);
+  const verifiedAt = text(proof.verifiedAt);
+  return {
+    remotePath: text(proof.remotePath) || '', files,
+    status: proof.status,
+    ...(uploadedAt ? { uploadedAt } : {}),
+    ...(verifiedAt ? { verifiedAt } : {}),
+  };
+}
 const text = (value: unknown) => typeof value === 'string' ? value : undefined;
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 const boolean = (value: unknown) => typeof value === 'boolean' ? value : undefined;
@@ -22,6 +42,7 @@ export function parseRecoveryIssuePayload(value: unknown) {
   const retry = record(raw.encodingRetry);
   const target = record(raw.target);
   const candidate = record(raw.conflictCandidate);
+  const existingArchiveProof = parseExistingArchiveProof(raw);
   const headers = record(raw.responseHeaders);
   return {
     ...raw,
@@ -38,6 +59,7 @@ export function parseRecoveryIssuePayload(value: unknown) {
     responseHeaders: raw.responseHeaders && Object.values(headers).every(value => typeof value === 'string')
       ? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined,
     conflictCandidate: { existingArchiveProof: candidate.existingArchiveProof },
+    existingArchiveProof: existingArchiveProof || undefined,
     encodingRetry: raw.encodingRetry == null ? undefined : { ...retry, state: text(retry.state) },
     downloadRecovery: {
       category: text(download.category), kind: text(download.kind), downloadUserId: text(download.downloadUserId),

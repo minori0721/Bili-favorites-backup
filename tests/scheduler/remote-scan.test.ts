@@ -20,7 +20,15 @@ for (const failure of ['generation', 'worker'] as const) {
       const video = state.getDatabase().getVideo(bvid);
       const relation = state.listRelationsForBvid(bvid)[0];
       assert.ok(video && relation);
-      return { ...video, relation: { ...relation, remotePath: '/archive', remoteFiles: [{ name: bvid + '.mp4', path: '/archive/' + bvid + '.mp4' }] } };
+      return {
+        ...video,
+        remotePath: '/archive',
+        remoteFiles: [{ name: bvid + '.mp4', path: '/archive/' + bvid + '.mp4', verificationStatus: 'verified' as const }],
+        lastRemoteCheckAt: relation.lastRemoteCheckAt,
+        nextRemoteCheckAt: relation.nextRemoteCheckAt,
+        remoteMissingCount: relation.remoteMissingCount,
+        relation: { ...relation, remotePath: '/archive', remoteFiles: [{ name: bvid + '.mp4', path: '/archive/' + bvid + '.mp4', verificationStatus: 'verified' as const }] },
+      };
     });
     let generation = 0, writes = 0;
     const resolves: Array<(value: Awaited<ReturnType<typeof verifyRemoteFiles>>) => void> = [];

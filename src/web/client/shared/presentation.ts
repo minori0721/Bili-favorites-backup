@@ -37,8 +37,8 @@ export function createPresentation(document: Document, navigator: Navigator) {
                 await navigator.clipboard.writeText(text);
                 return true;
             }
-            catch (_) {
-                // Fall through to the textarea method when browser clipboard permission is blocked.
+            catch (error) {
+                console.debug('[Clipboard] navigator clipboard failed; using the textarea fallback', error);
             }
         }
         const input = document.createElement('textarea');

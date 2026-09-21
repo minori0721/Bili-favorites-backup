@@ -1,6 +1,6 @@
 import { DownloadTask, QualityUpgradeDownloadTask, type QualityUpgradeTask } from '../tasks.js';
 import type { StateManager, SourceAvailabilityReason } from '../state.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { readDownloadSession, markDownloadSessionStatus } from '../download-session.js';
 import { normalizeSourceAvailabilityReason } from './access-rules.js';
 import { computeAvailabilityUnavailableDelayMs, computeChargingRecheckDelayMs } from './retry-policy.js';
@@ -8,7 +8,7 @@ import type { serializeQualityUpgrade } from './quality-rules.js';
 import { logManager } from '../logger.js';
 interface Dependencies {
   stateManager: Pick<StateManager, 'listRelationsForBvid' | 'getSourceAvailability' | 'markAvailabilityConfirmedUnavailable' | 'markChargingRestricted'>;
-  jobStore: Pick<PersistentJobStore, 'complete' | 'completeEncodingRetryParent' | 'cancelEncodingRetryChildren' | 'updatePayload' | 'defer'>;
+  jobStore: Pick<JobRepository, 'complete' | 'completeEncodingRetryParent' | 'cancelEncodingRetryChildren' | 'updatePayload' | 'defer'>;
   leaseOwner: string;
   now(): number;
   random(): number;
@@ -123,7 +123,7 @@ export function createAccessFailureHandlers(deps: Dependencies) {
     const checkedAt = new Date(checkedAtMs).toISOString();
     const error = record(rawError);
     const access = record(error.access);
-    const checkedUid = String(error?.accountUid || task.cookie?.DedeUserID || "");
+    const checkedUid = String(error?.accountUid || (task instanceof QualityUpgradeDownloadTask ? task.control.cookie : task.cookie)?.DedeUserID || "");
     const previewValue = access.previewAvailable ?? access.isUgcPayPreview;
     const previewAvailable = typeof previewValue === 'boolean' ? previewValue : undefined;
     deps.stateManager.markChargingRestricted(task.bvid, {

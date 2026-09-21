@@ -13,12 +13,14 @@ export function readJsonFile<T>(filePath: string, defaultValue: T): T {
     return JSON.parse(raw) as T;
   } catch (error) {
     const backupPath = `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    let preservedAt = filePath;
     try {
       fs.copyFileSync(filePath, backupPath);
-    } catch {
-      // Keep the original file in place even if the backup copy fails.
+      preservedAt = backupPath;
+    } catch (backupError) {
+      console.warn(`[Storage] corrupt JSON backup could not be created for ${filePath}`, backupError);
     }
-    throw new Error(`Failed to read JSON file ${filePath}; corrupt data was preserved at ${backupPath}: ${(error as Error).message}`);
+    throw new Error(`Failed to read JSON file ${filePath}; corrupt data was preserved at ${preservedAt}: ${(error as Error).message}`);
   }
 }
 

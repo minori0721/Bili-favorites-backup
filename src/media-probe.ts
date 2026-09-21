@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { MediaToolPort } from './ports/external.js';
 import type { AppConfig } from "./config.js";
 import {
   probeMediaWithBBDown,
@@ -72,12 +73,7 @@ export class MediaProbeBusyError extends Error {
   }
 }
 
-type MediaProbeRunner = (
-  bvid: string,
-  cookie: BiliUser["cookie"],
-  config: AppConfig,
-  target?: BBDownProbeTarget,
-) => Promise<{ bvid: string; pages: BBDownProbePage[]; source: "bbdown" }>;
+type MediaProbeRunner = MediaToolPort['probe'];
 
 type MediaAvailabilityProbe = (
   cookie: BiliUser["cookie"],
@@ -274,9 +270,8 @@ export class MediaProbeService {
         let capacity: MediaProbeCacheCapacity | undefined;
         try {
           capacity = await this.cacheCapacityProvider?.();
-        } catch {
-          // Capacity is advisory. A local cache inspection failure must not
-          // discard otherwise valid media probe results.
+        } catch (error) {
+          console.warn('[MediaProbe] cache capacity is unavailable; continuing without capacity advice', error);
         }
         const cacheAvailableBytes = capacity && capacity.limitBytes > 0
           ? Math.max(0, capacity.limitBytes - capacity.reserveBytes - capacity.usedBytes)

@@ -1,3 +1,4 @@
+import { isRecord } from './shared/api/value.js';
 import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
@@ -18,7 +19,7 @@ import {
 } from "./download-session.js";
 import { sanitizeUploadText } from "./upload-health.js";
 import { redactRemotePathForDisplay } from "./diagnostics.js";
-import { TransferSessionStore } from "./transfer-session.js";
+import type { TransferSessionRepository } from "./repositories/transfer-sessions.js";
 import { createRemoteReplacementRunner, type RemoteReplacementRunner } from "./remote-operations.js";
 import {
   applyQualityArtifactProfile,
@@ -61,6 +62,7 @@ export interface StrictMediaTarget {
 }
 
 export class DownloadTask extends Task {
+  automaticRecoveryAttempts?: number;
   bvid: string;
   cookie: BiliCookie;
   config: AppConfig;
@@ -71,14 +73,14 @@ export class DownloadTask extends Task {
   qualityProfile?: QualityArtifactProfile;
   qualityStrict = false;
   qualityEncodingOverride?: QualityEncodingOverride;
-  videoTitle?: string;
-  upperName?: string;
-  cover?: string;
-  userId?: string;
-  mediaId?: number;
-  folderTitle?: string;
-  remotePath?: string;
-  targets?: UploadTarget[];
+  declare videoTitle?: string;
+  declare upperName?: string;
+  declare cover?: string;
+  declare userId?: string;
+  declare mediaId?: number;
+  declare folderTitle?: string;
+  declare remotePath?: string;
+  declare targets?: UploadTarget[];
   outputFiles: string[] = [];
   partialBackup = false;
   sourceUnavailable = false;
@@ -185,16 +187,16 @@ export class QualityUpgradeTask extends Task {
   backupRemotePath?: string;
   qualityStage?: "download" | "upload";
   qualityStageLabel?: string;
-  videoTitle?: string;
-  folderTitle?: string;
-  userId?: string;
-  mediaId?: number;
+  declare videoTitle?: string;
+  declare folderTitle?: string;
+  declare userId?: string;
+  declare mediaId?: number;
   status: "pending" | "running" | "retry_wait" | "completed" | "error" = "pending";
-  error?: Error;
-  queuedAt?: number;
-  startedAt?: number;
-  retryAt?: number;
-  sequence?: number;
+  declare error?: Error;
+  declare queuedAt?: number;
+  declare startedAt?: number;
+  declare retryAt?: number;
+  declare sequence?: number;
   retries: number = 0;
   onStartUpgrade?: (task: QualityUpgradeTask) => void;
   onReplacing?: (task: QualityUpgradeTask, stageRemotePath: string, backupRemotePath: string) => void;
@@ -202,7 +204,7 @@ export class QualityUpgradeTask extends Task {
   onFinalFileMoved?: (task: QualityUpgradeTask, file: RemoteFileRecord) => void;
   onUploaded?: (task: QualityUpgradeTask, result: UploadResult) => void;
   onCompletedUpgrade?: (task: QualityUpgradeTask) => void | Promise<void>;
-  onFailed?: (task: QualityUpgradeTask, error: any) => void;
+  onFailed?: (task: QualityUpgradeTask, error: unknown) => void;
   shouldCleanupLocal?: () => boolean;
   onLocalCleanupFinished?: (task: QualityUpgradeTask) => void;
   apiModeOverride?: BBDownApiMode;
@@ -419,7 +421,7 @@ export class QualityUpgradeTask extends Task {
           try {
             await replace(this.config, finalFile.path, stagedFile.path, finalFile.size);
           } catch (rollbackError) {
-            console.warn(`[Task] Failed to roll back upgraded file ${redactRemotePathForDisplay(finalFile.path)}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
+            console.warn(`[Task] Failed to roll back upgraded file ${redactRemotePathForDisplay(finalFile.path)}: ${sanitizeUploadText(rollbackError instanceof Error ? rollbackError.message : rollbackError)}`);
           }
         }
       }
@@ -430,7 +432,7 @@ export class QualityUpgradeTask extends Task {
           try {
             await replace(this.config, backupFile.path, oldFile.path, backupFile.size);
           } catch (rollbackError) {
-            console.warn(`[Task] Failed to restore backup file ${redactRemotePathForDisplay(backupFile.path)}: ${sanitizeUploadText((rollbackError as any)?.message || rollbackError)}`);
+            console.warn(`[Task] Failed to restore backup file ${redactRemotePathForDisplay(backupFile.path)}: ${sanitizeUploadText(rollbackError instanceof Error ? rollbackError.message : rollbackError)}`);
           }
         }
       }
@@ -452,11 +454,9 @@ export class QualityUpgradeTask extends Task {
         .slice(0, 5);
       this.qualityStageLabel = "旧文件清理重试中";
       const first = failedItems[0];
-      const error: any = new Error(
+      const error = Object.assign(new Error(
         `Failed to delete ${this.deleteResult.failed} old quality backup file(s): ${failedPaths.join(", ")}${first?.error ? `; ${first.error}` : ""}`
-      );
-      if (first?.status) error.status = first.status;
-      if (first?.code) error.code = first.code;
+      ), {status: first?.status, code: first?.code});
       throw error;
     }
     this.qualityStageLabel = "画质重调完成";
@@ -543,16 +543,18 @@ export class QualityUpgradeCleanupTask extends QualityUpgradePhaseTask {
 }
 
 export class UploadTask extends Task {
+  automaticRecoveryAttempts?: number;
+  sharedDownloadDir?: string;
   bvid: string;
   downloadDir: string;
   remotePath: string;
   config: AppConfig;
-  videoTitle?: string;
-  upperName?: string;
-  cover?: string;
-  userId?: string;
-  mediaId?: number;
-  folderTitle?: string;
+  declare videoTitle?: string;
+  declare upperName?: string;
+  declare cover?: string;
+  declare userId?: string;
+  declare mediaId?: number;
+  declare folderTitle?: string;
   recoveryKey?: string;
   result?: UploadResult;
   onUploading?: (task: UploadTask) => void;
@@ -572,7 +574,7 @@ export class UploadTask extends Task {
   conflictCandidateAttempted = false;
   conflictCandidateReasonCode?: string;
   conflictCandidateReasonSummary?: string;
-  transferSessionStore?: TransferSessionStore;
+  transferSessionStore?: TransferSessionRepository;
   sessionId?: string;
   sessionGeneration?: number;
   sessionDedupeKey?: string;
@@ -594,12 +596,15 @@ export class UploadTask extends Task {
   strictMediaTarget?: StrictMediaTarget;
   onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
 
+  private readonly upload: typeof uploadWithAList;
+
   constructor(
     bvid: string,
     downloadDir: string,
     remotePath: string,
     config: AppConfig,
     options: {
+      upload?: typeof uploadWithAList;
       cleanupLocal?: boolean;
       files?: string[];
       filenameMetadataByPath?: Record<string, UploadFileMetadata>;
@@ -614,7 +619,7 @@ export class UploadTask extends Task {
       conflictCandidateOnly?: boolean;
       conflictCandidateReasonCode?: string;
       conflictCandidateReasonSummary?: string;
-      transferSessionStore?: TransferSessionStore;
+      transferSessionStore?: TransferSessionRepository;
       sessionId?: string;
       sessionGeneration?: number;
       sessionDedupeKey?: string;
@@ -635,6 +640,7 @@ export class UploadTask extends Task {
     } = {}
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
+    this.upload = options.upload ?? uploadWithAList;
     this.bvid = bvid;
     this.downloadDir = downloadDir;
     this.remotePath = remotePath;
@@ -703,7 +709,7 @@ export class UploadTask extends Task {
     }
     this.onUploading?.(this);
     try {
-      this.result = await uploadWithAList(this.downloadDir, this.remotePath, this.config, {
+      this.result = await this.upload(this.downloadDir, this.remotePath, this.config, {
         cleanupLocal: this.cleanupLocal,
         deferSessionCompletion: Boolean(this.persistentJobId),
         files: this.files,
@@ -738,10 +744,12 @@ export class UploadTask extends Task {
         onConflictArchiveTargetVerified: this.onConflictArchiveTargetVerified,
         onConflictArchived: this.onConflictArchived,
       });
-    } catch (error: any) {
-      const status = Number(error?.uploadFailure?.status || error?.status || 0);
-      const reasonCode = String(error?.uploadFailure?.code || error?.code || "UPLOAD_REMOTE_CONFLICT");
-      const reasonSummary = sanitizeUploadText(error?.uploadFailure?.summary || error?.message || error, 500);
+    } catch (error: unknown) {
+      const detail = isRecord(error) ? error : {};
+      const failure = isRecord(detail.uploadFailure) ? detail.uploadFailure : {};
+      const status = Number(failure.status || detail.status || 0);
+      const reasonCode = String(failure.code || detail.code || "UPLOAD_REMOTE_CONFLICT");
+      const reasonSummary = sanitizeUploadText(failure.summary || detail.message || error, 500);
       const candidateEligible = this.uploadIntent === "normal_backup"
         && status === 409
         && !this.legacyConflictSideEffectsStarted
@@ -766,12 +774,9 @@ export class UploadTask extends Task {
 
   private async uploadConflictCandidate(reasonCode: string, reasonSummary: string): Promise<UploadResult> {
     if (!this.conflictCandidateId || !this.conflictCandidateRemotePath) {
-      const error: any = new Error("冲突候选缺少稳定任务标识或远端路径");
-      error.status = 409;
-      error.code = "UPLOAD_CONFLICT_CANDIDATE_CONTEXT_MISSING";
-      throw error;
+      throw Object.assign(new Error("冲突候选缺少稳定任务标识或远端路径"), {status: 409, code: "UPLOAD_CONFLICT_CANDIDATE_CONTEXT_MISSING"});
     }
-    const candidateResult = await uploadWithAList(
+    const candidateResult = await this.upload(
       this.downloadDir,
       this.conflictCandidateRemotePath,
       this.config,
@@ -786,10 +791,7 @@ export class UploadTask extends Task {
       },
     );
     if (!candidateResult.allVerified) {
-      const pendingError: any = new Error("冲突候选已上传，正在等待远端完整可见");
-      pendingError.status = 503;
-      pendingError.code = "UPLOAD_CONFLICT_CANDIDATE_AWAITING_REMOTE";
-      throw pendingError;
+      throw Object.assign(new Error("冲突候选已上传，正在等待远端完整可见"), {status: 503, code: "UPLOAD_CONFLICT_CANDIDATE_AWAITING_REMOTE"});
     }
     return {
       ...candidateResult,
@@ -809,7 +811,7 @@ export class UploadTask extends Task {
 export class UploadVerificationTask extends Task {
   result?: Awaited<ReturnType<typeof inspectRemoteFileSize>>;
   transferResult?: UploadResult;
-  transferSessionStore?: TransferSessionStore;
+  transferSessionStore?: TransferSessionRepository;
   sessionId?: string;
   sessionGeneration?: number;
   allowReupload = false;
@@ -824,7 +826,7 @@ export class UploadVerificationTask extends Task {
     public readonly remoteFile: string,
     public readonly expectedSize: number,
     public readonly config: AppConfig,
-    options: { transferSessionStore?: TransferSessionStore; sessionId?: string; sessionGeneration?: number; allowReupload?: boolean; sessionVerification?: boolean; filenameMetadataByPath?: Record<string, UploadFileMetadata>; encodingRetry?: EncodingRetryContext } = {}
+    options: { transferSessionStore?: TransferSessionRepository; sessionId?: string; sessionGeneration?: number; allowReupload?: boolean; sessionVerification?: boolean; filenameMetadataByPath?: Record<string, UploadFileMetadata>; encodingRetry?: EncodingRetryContext } = {}
   ) {
     super(`Verify upload ${bvid}`, { maxRetries: 0, retryDelaySeconds: 1 });
     this.transferSessionStore = options.transferSessionStore;

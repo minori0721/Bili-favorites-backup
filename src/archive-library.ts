@@ -10,6 +10,7 @@ import {
 } from "./playback.js";
 import { MANUAL_ARCHIVE_FOLDER_TITLE, MANUAL_ARCHIVE_MEDIA_ID, type BackupStatus, type FavoriteRelation, type SourceAvailability, type VideoArchiveEntry } from "./state.js";
 import type { BiliUser } from "./users.js";
+import { decodeFavoriteRelation, decodeVideoPayload, parsePersistedJsonValue } from './repositories/domain-decoders.js';
 
 export type ArchiveLibraryScope = "global" | "account" | "folder";
 export type ArchiveLibraryFilter = "all" | "playable" | "pending" | "issue" | "deleted";
@@ -92,6 +93,63 @@ interface CandidateKeyRow {
   pending: number;
 }
 
+interface ArchiveSqlRow {
+  row_kind?: string;
+  user_id?: string | null;
+  media_id?: number | null;
+  bvid?: string | null;
+  relation_json?: string | null;
+  video_json?: string | null;
+  id?: string | null;
+  status?: string | null;
+  deletion_id?: string | null;
+  deletion_status?: string | null;
+  deleted_at?: number | null;
+  file_count?: number | null;
+  total_bytes?: number | null;
+  total?: number | null;
+  playable?: number | null;
+  pending?: number | null;
+  issue?: number | null;
+  deleted?: number | null;
+  last_seen_at?: number | null;
+  last_synced_at?: number | null;
+  folder_title?: string | null;
+  cover_local_path?: string | null;
+  cover?: string | null;
+  uid?: number | null;
+  name?: string | null;
+  avatar?: string | null;
+  removed_at?: number | null;
+  updated_at?: number | null;
+  completed_at?: number | null;
+  completed_count?: number | null;
+  retained_count?: number | null;
+  conflict_count?: number | null;
+  failed_count?: number | null;
+  last_error?: string | null;
+  recent_key?: number;
+  title_key?: string;
+  active_key?: number;
+  order_known_key?: number;
+  order_key?: number;
+  count?: number;
+}
+
+interface AccountDeletionSummary {
+  id: string;
+  status: string;
+  fileCount: number;
+  totalBytes: number;
+  completedCount: number;
+  retainedCount: number;
+  conflictCount: number;
+  failedCount: number;
+  lastError?: string;
+  updatedAt?: string;
+  completedAt?: string;
+}
+
 interface HydratedRecord {
   relation: FavoriteRelation;
   video: VideoArchiveEntry;
@@ -147,10 +205,10 @@ const deletionExistsSql = (alias: string) => `EXISTS(
 
 function archiveLibraryUsers(database: StateDatabase, users: BiliUser[]) {
   const liveIds = new Set(users.map((user) => user.id));
-  const removedRows = database.db.prepare(`
+  const removedRows = database.db.prepare<unknown[], { "user_id": string; "uid": number | null; "name": string; "avatar": string | null; "removed_at": number | null }>(`
     SELECT user_id, uid, name, avatar, removed_at FROM archive_accounts
     WHERE removed_at IS NOT NULL ORDER BY removed_at DESC, user_id
-  `).all() as any[];
+  `).all();
   const removedById = new Map(removedRows.map((row) => [String(row.user_id), row]));
   const current = users.map((user) => {
     const removed = removedById.get(user.id);
@@ -164,7 +222,7 @@ function archiveLibraryUsers(database: StateDatabase, users: BiliUser[]) {
       id: String(row.user_id),
       uid: Number(row.uid || 0),
       name: String(row.name || `已移除账号 ${row.user_id}`),
-      avatar: row.avatar || "",
+       avatar: String(row.avatar || ""),
       cookie: { SESSDATA: "", bili_jct: "", DedeUserID: String(row.uid || "") },
       favorites: [],
       enabled: false,
@@ -195,14 +253,6 @@ export class ArchiveLibraryQueryError extends Error {
     super(message);
     this.name = "ArchiveLibraryQueryError";
     this.code = code;
-  }
-}
-
-function parseJson<T>(value: unknown, fallback: T): T {
-  try {
-    return JSON.parse(String(value || "")) as T;
-  } catch {
-    return fallback;
   }
 }
 
@@ -546,7 +596,7 @@ function queryCandidatePage(
   const { cursorSql, orderSql } = orderAndCursorSql(context, cursor, params);
   params.limit = context.pageSize + 1;
   let rows: CandidateKeyRow[];
-  let summary: any = null;
+  let summary: { total: number; playable: number; pending: number; issue: number } | null = null;
   if (includeSummary && !cursor) {
     const combined = database.db.prepare(`
       ${cte}, page_rows AS (
@@ -597,7 +647,7 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
     params[`pageBvid${index}`] = bvid;
     return `(${index},@pageBvid${index})`;
   }).join(",");
-  const rows = database.db.prepare(`
+  const rows = database.db.prepare<unknown[], ArchiveSqlRow>(`
     WITH page(ord,bvid) AS (VALUES ${values}),
     page_sources AS (
       SELECT page.ord, r.user_id, r.media_id, r.bvid,
@@ -658,18 +708,17 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
       source.last_seen_at DESC,
       source.user_id,
       source.media_id
-  `).all(params) as any[];
+  `).all(params);
   const records = new Map<string, HydratedRecord[]>();
   for (const row of rows) {
-    const relation = parseJson<FavoriteRelation>(row.relation_json, undefined as any);
-    const video = parseJson<VideoArchiveEntry>(row.video_json, undefined as any);
-    if (!relation || !video) continue;
+    const relation = decodeFavoriteRelation(parsePersistedJsonValue(row.relation_json, 'archive relation'), 'archive relation');
+    const video = decodeVideoPayload(parsePersistedJsonValue(row.video_json, 'archive video'), 'archive video');
     const group = records.get(relation.bvid) || [];
     group.push({
       relation,
       video,
-      deletionId: row.deletion_id || undefined,
-      deletionStatus: row.deletion_status || undefined,
+       deletionId: row.deletion_id == null ? undefined : String(row.deletion_id),
+       deletionStatus: row.deletion_status == null ? undefined : String(row.deletion_status),
       deletedAt: isoFromMs(row.deleted_at),
       fileCount: Number(row.file_count || 0),
       totalBytes: Number(row.total_bytes || 0),
@@ -929,7 +978,8 @@ function playbackPageFromItems(
   const pageSize = context.pageSize;
   const baseParams: Record<string, unknown> = {};
   const cte = candidateCte(context, baseParams, extraQuery);
-  const total = Number((database.db.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(baseParams) as any)?.count || 0);
+  const totalRow = database.db.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(baseParams) as ArchiveSqlRow | undefined;
+  const total = Number(totalRow?.count || 0);
   if (total === 0) {
     return {
       mode: "library", page: 1, pageSize, total: 0, focusIndex: -1,
@@ -966,7 +1016,7 @@ function playbackPageFromItems(
     const before = orderAndCursorSql(context, focusCursor, countParams, "before");
     focusIndex = Number((database.db.prepare(`
       ${cte} SELECT COUNT(*) AS count FROM filtered WHERE ${before.cursorSql}
-    `).get(countParams) as any)?.count || 0);
+    `).get(countParams) as ArchiveSqlRow | undefined)?.count || 0);
     page = Math.floor(focusIndex / pageSize) + 1;
     const beforeInPage = focusIndex % pageSize;
     const previousRows = beforeInPage > 0
@@ -1067,9 +1117,9 @@ const emptyNavigationSummary = () => ({
 });
 
 function readNavigationRows(database: StateDatabase, userIds: string[]) {
-  if (userIds.length === 0) return [] as any[];
+  if (userIds.length === 0) return [] as ArchiveSqlRow[];
   const placeholders = userIds.map(() => "?").join(",");
-  return database.db.prepare(`
+  return database.db.prepare<unknown[], ArchiveSqlRow>(`
     WITH relation_base AS MATERIALIZED (
       SELECT r.user_id, r.media_id, r.bvid, r.last_seen_at,
         CASE WHEN ${deletionExistsSql("r")} THEN 1 ELSE 0 END AS deleted,
@@ -1135,10 +1185,10 @@ function readNavigationRows(database: StateDatabase, userIds: string[]) {
     UNION ALL
     SELECT 'global', NULL, NULL, NULL, total, playable, pending, issue, deleted,
       NULL, NULL, NULL, NULL FROM global_summary
-  `).all(...userIds) as any[];
+  `).all(...userIds);
 }
 
-function navigationSummaryFromRow(row: any, remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number }) {
+function navigationSummaryFromRow(row: ArchiveSqlRow | undefined, remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number }) {
   return row ? {
     total: Number(row.total || 0),
     playable: Number(row.playable || 0),
@@ -1153,7 +1203,7 @@ function navigationSummaryFromRow(row: any, remoteStats?: { sourceReferenceCount
 
 function decorateNavigationSummary(
   summary: ReturnType<typeof navigationSummaryFromRow>,
-  rows: any[],
+  rows: ArchiveSqlRow[],
   remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number },
 ) {
   const latestSync = Math.max(0, ...rows.map((row) => Number(row.last_synced_at || 0)));
@@ -1186,15 +1236,15 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
     .map((row) => [String(row.user_id), navigationSummaryFromRow(row, remoteReferenceStats.get(`account:${row.user_id}`))]));
   const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"), remoteReferenceStats.get("global"));
   const indexedFolders = new Map(folderRows.map((row) => [`${row.user_id}:${row.media_id}`, row]));
-  const accountDeletionRows = userIds.length ? database.db.prepare(`
+  const accountDeletionRows = userIds.length ? database.db.prepare<unknown[], ArchiveSqlRow>(`
     SELECT id, user_id, status, file_count, total_bytes, completed_count, retained_count,
       conflict_count, failed_count, last_error, updated_at, completed_at
     FROM archive_deletions
     WHERE scope='account' AND user_id IN (${userIds.map(() => "?").join(",")})
       AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
     ORDER BY user_id, COALESCE(started_at, created_at) DESC, created_at DESC
-  `).all(...userIds) as any[] : [];
-  const accountDeletions = new Map<string, any>();
+  `).all(...userIds) : [];
+  const accountDeletions = new Map<string, AccountDeletionSummary>();
   for (const row of accountDeletionRows) {
     if (accountDeletions.has(String(row.user_id))) continue;
     accountDeletions.set(String(row.user_id), {
@@ -1213,8 +1263,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
   }
   const accountData = libraryUsers.map((user) => {
     const accountRows = folderRows.filter((row) => row.user_id === user.id);
-    const activeFolders: any[] = user.favorites.map((folder) => {
-      const row = indexedFolders.get(`${user.id}:${folder.mediaId}`) as any;
+    const activeFolders = user.favorites.map((folder) => {
+      const row = indexedFolders.get(`${user.id}:${folder.mediaId}`);
       return {
         mediaId: folder.mediaId,
         title: folder.title,
@@ -1230,10 +1280,10 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         lastSyncedAt: isoFromMs(row?.last_synced_at),
         coverLocalPath: row?.cover_local_path || undefined,
         cover: row?.cover || undefined,
-        sourceKind: "favorite" as const,
+        sourceKind: "favorite" as "favorite" | "manual",
       };
     });
-    const manualRow = indexedFolders.get(`${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`) as any;
+    const manualRow = indexedFolders.get(`${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`);
     if (manualRow) {
       activeFolders.push({
         mediaId: MANUAL_ARCHIVE_MEDIA_ID,

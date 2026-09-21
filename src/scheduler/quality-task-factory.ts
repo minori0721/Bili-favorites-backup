@@ -1,6 +1,6 @@
 import type { ConfigStore, AppConfig } from '../config.js';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { LocalCleanupPlan, RemoteFileRecord, StateManager } from '../state.js';
 import type { UserStore, BiliUser } from '../users.js';
 import { downloadCredentialsForUser } from '../users.js';
@@ -28,9 +28,10 @@ import {
   serializeQualityUpgrade,
 } from './quality-rules.js';
 import { buildLocalCleanupPlan } from './local-cleanup-plan.js';
+import { runPostCommitReconciliation } from './post-commit-reconciliation.js';
 
 type QualityJobStore = Pick<
-  PersistentJobStore,
+  JobRepository,
   'findById' | 'updatePayload' | 'complete' | 'countQualityJobsForArtifact' | 'countJobsForBvid'
 >;
 
@@ -57,7 +58,10 @@ export interface QualityTaskFactoryDependencies {
   isUserSyncEligible(user: BiliUser | null): user is BiliUser;
   leaseOwner: string;
   now: () => number;
-  qualityArtifactCleanupLocks: Set<string>;
+  qualityArtifactCleanupLocks: {
+    acquire(artifactKey: string): void;
+    release(artifactKey: string): void;
+  };
   refreshLocalCacheState(): void;
   pokeDownloadQueue(): void;
   dispatchPersistentJobs(): void;
@@ -253,11 +257,20 @@ export function buildQualityUpgradeTask(
       return result;
     });
     if (completed) {
-      void deps.reconcileObsoleteVerifiedArchiveRecoveries(1, {
-        bvid: task.bvid,
-        userId: target.userId,
-        mediaId: target.mediaId,
-      }, 1);
+      void runPostCommitReconciliation(() => deps.reconcileObsoleteVerifiedArchiveRecoveries(1, {
+        bvid: task.bvid, userId: target.userId, mediaId: target.mediaId,
+      }, 1)).then((outcome) => {
+        if (outcome.ok) return;
+        const summary = sanitizeUploadText(outcome.error instanceof Error ? outcome.error.message : outcome.error);
+        logManager.push({
+          timestamp: new Date(deps.now()).toISOString(), type: 'system', level: 'warn',
+          summary: `重调画质已完成，旧恢复记录将在稍后重试收敛 ${task.bvid}`,
+          raw: `[QualityUpgrade] post-commit recovery reconciliation deferred ${target.userId}:${target.mediaId}:${task.bvid}: ${summary}`,
+          bvid: task.bvid, simpleVisible: true, debugVisible: true,
+        });
+      }).catch((error) => {
+        console.warn(`[QualityUpgrade] failed to report deferred post-commit reconciliation: ${sanitizeUploadText(error)}`);
+      });
     }
     logManager.push({
       timestamp: new Date(deps.now()).toISOString(), type: 'upload', level: 'info',
@@ -267,7 +280,7 @@ export function buildQualityUpgradeTask(
     });
   };
   task.onFailed = (_task, error) => {
-    const safeError = sanitizeUploadText(error?.message || error);
+    const safeError = sanitizeUploadText(error instanceof Error ? error.message : error);
     logManager.push({
       timestamp: new Date(deps.now()).toISOString(),
       type: task.qualityStage === 'upload' ? 'upload' : 'download', level: 'error',
@@ -280,11 +293,11 @@ export function buildQualityUpgradeTask(
     const canCleanup = task.artifactKey
       ? deps.jobs.countQualityJobsForArtifact(task.artifactKey) <= 1
       : deps.jobs.countJobsForBvid(task.bvid, ['quality_download', 'quality_upload', 'quality_replace', 'quality_cleanup']) <= 1;
-    if (canCleanup && task.artifactKey) deps.qualityArtifactCleanupLocks.add(task.artifactKey);
+    if (canCleanup && task.artifactKey) deps.qualityArtifactCleanupLocks.acquire(task.artifactKey);
     return canCleanup;
   };
   task.onLocalCleanupFinished = () => {
-    if (task.artifactKey) deps.qualityArtifactCleanupLocks.delete(task.artifactKey);
+    if (task.artifactKey) deps.qualityArtifactCleanupLocks.release(task.artifactKey);
     deps.refreshLocalCacheState();
     deps.pokeDownloadQueue();
     deps.dispatchPersistentJobs();

@@ -1,3 +1,4 @@
+import { readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,13 +25,20 @@ function storeGet(store: AdminSessionStore, id: string) {
 }
 
 function storedSession(authFingerprint: string, expiresAt: number, name = "admin") {
+  const cookie = new session.Cookie();
+  cookie.originalMaxAge = null;
+  cookie.expires = null;
+  cookie.httpOnly = true;
+  cookie.path = "/";
+  cookie.sameSite = "lax";
+  cookie.secure = false;
   return {
-    cookie: { originalMaxAge: null, expires: null, httpOnly: true, path: "/", sameSite: "lax", secure: false },
+    cookie,
     user: { name },
     authFingerprint,
     absoluteExpiresAt: expiresAt,
     remember: false,
-  } as unknown as session.SessionData;
+  } satisfies session.SessionData;
 }
 
 test("admin sessions persist without storing raw session ids and enforce a ten-session limit", async () => {
@@ -59,7 +67,7 @@ test("admin sessions persist without storing raw session ids and enforce a ten-s
     assert.equal(rows.some((row) => row.session_key.includes("raw-session")), false);
     assert.equal(rows.some((row) => row.payload_json.includes("raw-session")), false);
     assert.equal(await storeGet(store, "raw-session-0"), null);
-    assert.equal((await storeGet(store, "raw-session-10") as any)?.user?.name, "admin");
+    assert.equal((await storeGet(store, "raw-session-10"))?.user?.name, "admin");
 
     store.close();
     store = new AdminSessionStore({
@@ -70,7 +78,7 @@ test("admin sessions persist without storing raw session ids and enforce a ten-s
       now: () => now,
       cleanupIntervalMs: 0,
     });
-    assert.equal((await storeGet(store, "raw-session-10") as any)?.user?.name, "admin");
+    assert.equal((await storeGet(store, "raw-session-10"))?.user?.name, "admin");
 
     const database = new Database(dbPath, { readonly: true });
     const before = database.prepare("SELECT updated_at FROM admin_sessions WHERE session_key = ?").get(rows.at(-1)!.session_key) as { updated_at: number };
@@ -80,7 +88,7 @@ test("admin sessions persist without storing raw session ids and enforce a ten-s
     const after = afterDatabase.prepare("SELECT updated_at FROM admin_sessions WHERE session_key = ?").get(rows.at(-1)!.session_key) as { updated_at: number };
     afterDatabase.close();
     assert.equal(after.updated_at, before.updated_at);
-    assert.equal((store as any).touch, undefined);
+    assert.equal((store).touch, undefined);
   } finally {
     store.close();
     await removeTestDir(runtime);
@@ -119,7 +127,7 @@ test("admin sessions expire exactly and credential changes revoke existing recor
     });
     assert.equal(await storeGet(store, "credential-change"), null);
     const database = new Database(dbPath, { readonly: true });
-    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM admin_sessions").get() as any).count, 0);
+    assert.equal(readField((database.prepare("SELECT COUNT(*) AS count FROM admin_sessions").get()), 'count'), 0);
     database.close();
 
     store.close();

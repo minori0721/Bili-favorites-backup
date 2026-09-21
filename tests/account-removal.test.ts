@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { executeAccountRemoval } from "../src/account-removal.js";
+import { executeAccountRemoval, type AccountRemovalDependencies } from "../src/account-removal.js";
 import type { BiliUser } from "../src/users.js";
 
 function account(): BiliUser {
@@ -20,11 +20,11 @@ function harness(options: {
   retireError?: Error;
   finalizeError?: Error;
   quiesce?: () => Promise<void>;
-  preview?: any;
+  preview?: ReturnType<AccountRemovalDependencies['archiveDeletion']['get']>;
 } = {}) {
   const user = account();
   let storedUser: BiliUser | null = user;
-  let operation: any = options.preview;
+  let operation = options.preview;
   const calls: string[] = [];
   const archiveDeletion = {
     get: (_id: string) => options.preview,
@@ -34,23 +34,24 @@ function harness(options: {
     restoreAccount: () => { calls.push("restore-snapshot"); return true; },
     beginAccountPreparation: () => {
       calls.push("begin");
-      operation = { id: "preview-1", scope: "account", userId: "1001", status: "preparing" };
+      operation = { id: "preview-1", scope: "account", userId: "1001", status: "preparing" as const };
       return { operation, claimed: true };
     },
     beginAccountConfigRemoval: () => {
       calls.push("config-removing");
+      assert.ok(operation);
       operation.status = "config_removing";
       return operation;
     },
     validateAccountPreparation: () => { calls.push("validate-preparing"); },
     completeAccountPreparation: () => {
       calls.push("complete");
-      operation = { id: "preview-1", scope: "account", userId: "1001", status: "pending" };
+      operation = { id: "preview-1", scope: "account", userId: "1001", status: "pending" as const };
       return operation;
     },
-    abortAccountPreparation: () => { calls.push("abort"); operation.status = "preview"; return true; },
+    abortAccountPreparation: () => { calls.push("abort"); assert.ok(operation); operation.status = "preview"; return true; },
     recordAccountPreparationError: () => { calls.push("record-error"); },
-  };
+  } satisfies AccountRemovalDependencies['archiveDeletion'];
   const scheduler = {
     retireUser: async () => {
       calls.push("retire");
@@ -83,7 +84,7 @@ function harness(options: {
 
 test("account removal keeps the legacy no-body request as account-only", async () => {
   const fixture = harness();
-  const result = await executeAccountRemoval(fixture as any, fixture.user.id);
+  const result = await executeAccountRemoval(fixture, fixture.user.id);
   assert.equal(result.mode, "account_only");
   assert.equal(result.operation, undefined);
   assert.deepEqual(fixture.calls, ["remember", "retire", "mark-removed", "remove"]);
@@ -91,9 +92,9 @@ test("account removal keeps the legacy no-body request as account-only", async (
 });
 
 test("account and remote removal claims preparation before pruning tasks", async () => {
-  const fixture = harness({ preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" } });
-  const result = await executeAccountRemoval(fixture as any, fixture.user.id, {
-    mode: "account_and_remote",
+  const fixture = harness({ preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" as const } });
+  const result = await executeAccountRemoval(fixture, fixture.user.id, {
+    mode: "account_and_remote" as const,
     previewId: "preview-1",
     confirmation: "DELETE REMOTE ARCHIVE",
   });
@@ -103,15 +104,15 @@ test("account and remote removal claims preparation before pruning tasks", async
   ]);
 
   const mismatch = harness({ preview: { id: "preview-2", scope: "source", userId: "1001" } });
-  await assert.rejects(() => executeAccountRemoval(mismatch as any, mismatch.user.id, {
-    mode: "account_and_remote", previewId: "preview-2", confirmation: "DELETE REMOTE ARCHIVE",
+  await assert.rejects(() => executeAccountRemoval(mismatch, mismatch.user.id, {
+    mode: "account_and_remote" as const, previewId: "preview-2", confirmation: "DELETE REMOTE ARCHIVE",
   }), /预览不存在或已失效/);
   assert.deepEqual(mismatch.calls, []);
 });
 
 test("account removal restores the account and scheduler when config persistence fails", async () => {
   const fixture = harness({ removeError: new Error("users.json write failed") });
-  await assert.rejects(() => executeAccountRemoval(fixture as any, fixture.user.id), /write failed/);
+  await assert.rejects(() => executeAccountRemoval(fixture, fixture.user.id), /write failed/);
   assert.equal(fixture.getStoredUser()?.id, fixture.user.id);
   assert.deepEqual(fixture.calls, [
     "remember", "retire", "mark-removed", "remove", "restore-snapshot", "restore-scheduler",
@@ -121,10 +122,10 @@ test("account removal restores the account and scheduler when config persistence
 test("remote account removal releases preparation when users.json cannot be updated", async () => {
   const fixture = harness({
     removeError: new Error("users.json write failed"),
-    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" },
+    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" as const },
   });
-  await assert.rejects(() => executeAccountRemoval(fixture as any, fixture.user.id, {
-    mode: "account_and_remote",
+  await assert.rejects(() => executeAccountRemoval(fixture, fixture.user.id, {
+    mode: "account_and_remote" as const,
     previewId: "preview-1",
     confirmation: "DELETE REMOTE ARCHIVE",
   }), /write failed/);
@@ -137,7 +138,7 @@ test("remote account removal releases preparation when users.json cannot be upda
 
 test("account removal also rolls back a partially failed scheduler retirement", async () => {
   const fixture = harness({ retireError: new Error("retirement failed") });
-  await assert.rejects(() => executeAccountRemoval(fixture as any, fixture.user.id), /retirement failed/);
+  await assert.rejects(() => executeAccountRemoval(fixture, fixture.user.id), /retirement failed/);
   assert.equal(fixture.getStoredUser()?.id, fixture.user.id);
   assert.deepEqual(fixture.calls, ["remember", "retire", "restore-snapshot", "restore-scheduler"]);
 });
@@ -146,17 +147,17 @@ test("concurrent remote removals return one operation without restoring the remo
   let release!: () => void;
   const wait = new Promise<void>((resolve) => { release = resolve; });
   const fixture = harness({
-    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" },
+    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" as const },
     quiesce: () => wait,
   });
   const request = {
-    mode: "account_and_remote",
+    mode: "account_and_remote" as const,
     previewId: "preview-1",
     confirmation: "DELETE REMOTE ARCHIVE",
   };
-  const first = executeAccountRemoval(fixture as any, fixture.user.id, request);
+  const first = executeAccountRemoval(fixture, fixture.user.id, request);
   await new Promise((resolve) => setTimeout(resolve, 5));
-  const second = executeAccountRemoval(fixture as any, fixture.user.id, request);
+  const second = executeAccountRemoval(fixture, fixture.user.id, request);
   release();
   const [firstResult, secondResult] = await Promise.all([first, second]);
 
@@ -171,10 +172,10 @@ test("concurrent remote removals return one operation without restoring the remo
 test("remote removal never restores credentials after config removal succeeds", async () => {
   const fixture = harness({
     finalizeError: new Error("database finalization failed"),
-    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" },
+    preview: { id: "preview-1", scope: "account", userId: "1001", status: "preview" as const },
   });
-  await assert.rejects(() => executeAccountRemoval(fixture as any, fixture.user.id, {
-    mode: "account_and_remote",
+  await assert.rejects(() => executeAccountRemoval(fixture, fixture.user.id, {
+    mode: "account_and_remote" as const,
     previewId: "preview-1",
     confirmation: "DELETE REMOTE ARCHIVE",
   }), /database finalization failed/);

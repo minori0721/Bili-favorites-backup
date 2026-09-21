@@ -1,3 +1,4 @@
+import {HttpFailure} from './fixtures/http-failure.js';
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -12,7 +13,7 @@ import {
 } from "../src/remote-file-resolver.js";
 
 function notFound() {
-  const error: any = new Error("not found");
+  const error = new HttpFailure("not found");
   error.status = 404;
   return error;
 }
@@ -64,7 +65,7 @@ test("unsupported and malformed stat responses stay unknown unless an explicit d
 });
 
 test("transient stat failures preserve Retry-After without becoming missing", async () => {
-  const error: any = new Error("busy");
+  const error = new HttpFailure("busy");
   error.status = 429;
   error.headers = { "retry-after": "7" };
   const resolver = new RemoteFileResolver({ stat: async () => { throw error; } });
@@ -98,9 +99,9 @@ test("production directory preparation rejects a file occupying a parent path", 
   const client = {
     stat: async () => ({ type: "file", size: 17 }),
     createDirectory: async () => { createCalls += 1; },
-  } as any;
+  };
   await assert.rejects(
-    ensureRemoteDirectory(client, "/target", { identity: "test", capabilities: {} } as any),
+    ensureRemoteDirectory(client, "/target", { identity: "test", createdAt: 1, lastUsedAt: 1, capabilities: { copy: "supported", move: "supported", directoryList: "supported", extendedUploadHeaders: "supported" } }),
     /不是目录/,
   );
   assert.equal(createCalls, 0);
@@ -122,10 +123,10 @@ test("safe first-upload names keep the stat fast path and do not list the direct
 
   const result = await resolver.inspect("/target/plain-video.mp4", { fallback: "risk_only" });
   assert.deepEqual(result, {
-    status: "missing",
+    status: "missing" as const,
     path: "/target/plain-video.mp4",
     directory: false,
-    source: "stat",
+    source: "stat" as const,
     name: "plain-video.mp4",
   });
   assert.equal(statCalls, 1);

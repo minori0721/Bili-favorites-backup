@@ -17,12 +17,12 @@ export interface RemoteOperationCapabilities {
 }
 
 export interface RemoteOperationsClient {
-  createDirectory(path: string): Promise<any>;
-  putFileContents(path: string, data: string | Buffer, options?: Record<string, unknown>): Promise<any>;
-  copyFile(source: string, destination: string, options?: Record<string, unknown>): Promise<any>;
-  moveFile(source: string, destination: string, options?: Record<string, unknown>): Promise<any>;
-  stat(path: string): Promise<any>;
-  deleteFile(path: string): Promise<any>;
+  createDirectory(path: string): Promise<unknown>;
+  putFileContents(path: string, data: unknown, options?: Record<string, unknown>): Promise<unknown>;
+  copyFile(source: string, destination: string, options?: Record<string, unknown>): Promise<unknown>;
+  moveFile(source: string, destination: string, options?: Record<string, unknown>): Promise<unknown>;
+  stat(path: string): Promise<unknown>;
+  deleteFile(path: string): Promise<unknown>;
   exists?(path: string): Promise<boolean>;
 }
 
@@ -71,23 +71,30 @@ export class RemoteReplacementError extends Error {
   }
 }
 
-function statusCode(error: any) {
-  return Number(error?.statusCode || error?.response?.status || error?.status || 0) || undefined;
+function remoteRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-function isRemoteNotFound(error: any) {
+function statusCode(error: unknown) {
+  const value = remoteRecord(error);
+  const response = remoteRecord(value.response);
+  return Number(value.statusCode || response.status || value.status || 0) || undefined;
+}
+
+function isRemoteNotFound(error: unknown) {
   return isResolvedRemoteNotFoundError(error);
 }
 
-function isUnsupportedMethod(error: any) {
+function isUnsupportedMethod(error: unknown) {
   const status = statusCode(error);
   if ([405, 501].includes(status || 0)) return true;
   if (status) return false;
-  return /method not allowed|not supported|unsupported/i.test(String(error?.message || error || ""));
+  return /method not allowed|not supported|unsupported/i.test(String(remoteRecord(error).message || error || ""));
 }
 
-function isDirectory(stat: any) {
-  return stat?.type === "directory" || stat?.isDirectory === true || stat?.resourcetype === "collection";
+function isDirectory(stat: unknown) {
+  const value = remoteRecord(stat);
+  return value.type === "directory" || value.isDirectory === true || value.resourcetype === "collection";
 }
 
 async function readRemote(client: RemoteOperationsClient, target: string) {
@@ -96,7 +103,7 @@ async function readRemote(client: RemoteOperationsClient, target: string) {
     return {
       exists: true,
       directory: isDirectory(stat),
-      size: Number.isFinite(Number(stat?.size)) ? Number(stat.size) : undefined,
+      size: Number.isFinite(Number(remoteRecord(stat).size)) ? Number(remoteRecord(stat).size) : undefined,
     };
   } catch (error) {
     if (isRemoteNotFound(error)) return { exists: false, directory: false, size: undefined };
@@ -128,8 +135,8 @@ async function putProbeFile(client: RemoteOperationsClient, target: string, body
 async function cleanupProbePath(client: RemoteOperationsClient, target: string) {
   try {
     await client.deleteFile(target);
-  } catch {
-    // Probe cleanup is best effort. The probe root is random and never reused.
+  } catch (error) {
+    console.warn('[RemoteProbe] temporary capability-probe path could not be removed', error);
   }
 }
 
@@ -214,7 +221,7 @@ async function removeVerifiedSource(
     const observed = await inspectReplacementState(client, source, target, expectedSize);
     if (observed.sourceState.exists) {
       throw replacementError(
-        `已验证目标存在，但清理重复源文件失败: ${String((error as any)?.message || error)}`,
+        `已验证目标存在，但清理重复源文件失败: ${String(remoteRecord(error).message || error)}`,
         source,
         target,
         observed,
@@ -318,7 +325,7 @@ async function replaceWithCapabilities(
         if (profile) profile.capabilities.move = "unsupported";
       } else {
         throw replacementError(
-          `远端MOVE替换失败: ${String((error as any)?.message || error)}`,
+          `远端MOVE替换失败: ${String(remoteRecord(error).message || error)}`,
           source,
           target,
           observed,
@@ -368,7 +375,7 @@ async function replaceWithCapabilities(
       const observed = await inspectReplacementState(client, source, target, expectedSize);
       if (!observed.targetMatches) {
         throw replacementError(
-          `远端COPY失败，未确认目标文件: ${String((error as any)?.message || error)}`,
+          `远端COPY失败，未确认目标文件: ${String(remoteRecord(error).message || error)}`,
           source,
           target,
           observed,
@@ -402,7 +409,7 @@ async function replaceWithCapabilities(
     const observed = await inspectReplacementState(client, source, target, expectedSize);
     if (!observed.sourceState.exists && observed.targetMatches) return;
     throw replacementError(
-      `COPY已校验但删除源文件失败: ${String((error as any)?.message || error)}`,
+      `COPY已校验但删除源文件失败: ${String(remoteRecord(error).message || error)}`,
       source,
       target,
       observed,
@@ -464,7 +471,7 @@ export function remotePathJoinForReplacement(root: string, child: string) {
   return joinRemotePath(root, child);
 }
 
-export function isRemoteReplacementNotFound(error: any) {
+export function isRemoteReplacementNotFound(error: unknown) {
   return isRemoteNotFound(error);
 }
 

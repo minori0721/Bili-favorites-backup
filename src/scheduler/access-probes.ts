@@ -1,7 +1,7 @@
 import type { BiliUser, UserStore } from '../users.js';
 import type { StateManager, FavoriteRelation, SourceAvailabilityReason } from '../state.js';
 import type { PersistentJobRecord } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { BiliRiskOrLoginError, type VideoPageSnapshotResult } from '../bili.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText } from '../upload-health.js';
@@ -12,7 +12,7 @@ import { CHARGING_NO_ACCOUNT_DELAY_MS, AVAILABILITY_UNKNOWN_DELAYS_MS, AVAILABIL
 interface AccessProbeDependencies {
   users: Pick<UserStore, 'list'>;
   state: Pick<StateManager, 'runAtomic' | 'listRelationsForBvid' | 'getVideoMeta' | 'markChargingRestricted' | 'markAvailabilityPending' | 'markAvailabilityUnknown' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityDormant' | 'markAvailabilityRecovered' | 'markLegacyAccessClassification' | 'shouldEnqueueBackup' | 'clearChargingRestriction'>;
-  jobs: Pick<PersistentJobStore, 'updatePayload' | 'defer' | 'findById' | 'complete' | 'hasJobsForBvid' | 'list' | 'wakeByBvid'>;
+  jobs: Pick<JobRepository, 'updatePayload' | 'defer' | 'findById' | 'complete' | 'hasJobsForBvid' | 'list' | 'wakeByBvid'>;
   owner: string;
   now(): number;
   random(): number;

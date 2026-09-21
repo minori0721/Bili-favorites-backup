@@ -1,8 +1,10 @@
 import type { UploadTask } from '../tasks.js';
-import type { EnqueuePersistentJob } from '../job-store.js';
+import type { EnqueuePersistentJob } from '../repositories/jobs.js';
 import { UPLOAD_VERIFY_SCHEDULE_MS } from './retry-policy.js';
 
-export function buildUploadVerificationJobs(task: UploadTask, files: Array<{
+type VerificationSource = Pick<UploadTask, 'automaticRecoveryAttempts' | 'bvid' | 'cover' | 'downloadDir' | 'encodingRetry' | 'filenameMetadataByPath' | 'files' | 'folderTitle' | 'historyOnly' | 'historySnapshotAt' | 'mediaId' | 'partialBackup' | 'remotePath' | 'result' | 'sessionGeneration' | 'sessionId' | 'strictMediaTarget' | 'upperName' | 'userId' | 'videoTitle'>;
+
+export function buildUploadVerificationJobs(task: VerificationSource, files: Array<{
     path: string;
     size?: number;
     verificationStatus?: string;

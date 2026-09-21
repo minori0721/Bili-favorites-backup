@@ -1,3 +1,4 @@
+import { required } from '../contract-values.js';
 import { queueResponse, parseQueueFixture } from './queue-fixture.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -48,7 +49,7 @@ test('cancelled late responses cannot replace the new snapshot or resolve new co
   pending[1]({issues:[{id:'new'}]});
   assert.equal((await current).issues[0].id,'new');
   assert.equal(receive.length,1);
-  assert.equal(resource.current?.issues[0].id,'new');
+  assert.equal(required(required(resource.current?.issues)[0]).id,'new');
   resource.reset();
   assert.equal(resource.current,null);
 });
@@ -80,8 +81,8 @@ test('completed issue actions invalidate older board responses and preserve the 
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(received.length,2);
-  assert.equal(resource.current?.issues[0].id,'after');
-  assert.equal(resource.current?.downloadRunning[0].id,'running');
+  assert.equal(required(required(resource.current?.issues)[0]).id,'after');
+  assert.equal(required(resource.current?.downloadRunning[0]).id,'running');
   assert.throws(() => resource.applyIssueUpdate({issues:[null]}));
   assert.equal(resource.current?.issues[0].id,'after');
 });

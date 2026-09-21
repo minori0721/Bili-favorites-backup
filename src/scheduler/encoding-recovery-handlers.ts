@@ -1,6 +1,6 @@
 import type { ConfigStore, BBDownEncoding } from '../config.js';
 import type { StateManager } from '../state.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { DownloadTask, UploadTask, EncodingRetryContext } from '../tasks.js';
 import { strictEncodingDiagnosticPatch, strictQualityDiagnosticPatch } from '../download-session.js';
 import { computeTaskRetryDelayMs } from '../queue.js';
@@ -12,7 +12,7 @@ import type { RecoveryAssessment } from './recovery-contracts.js';
 interface Dependencies {
   configStore: Pick<ConfigStore, 'get'>;
   stateManager: Pick<StateManager, 'runAtomic' | 'markUploadFailed' | 'markDownloadInterrupted'>;
-  jobStore: Pick<PersistentJobStore, 'findById' | 'finishEncodingRetry' | 'complete' | 'cancelEncodingRetryChildren' | 'defer' | 'retry'>;
+  jobStore: Pick<JobRepository, 'findById' | 'finishEncodingRetry' | 'complete' | 'cancelEncodingRetryChildren' | 'defer' | 'retry'>;
   leaseOwner: string;
   now(): number;
   cleanup(bvid: string, directory: string): unknown;

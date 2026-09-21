@@ -1,3 +1,6 @@
+import { required } from './contract-values.js';
+import { PersistentJobStore } from '../src/job-store.js';
+import { createDownloadTaskFactory } from '../src/scheduler/download-task-factory.js';
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
@@ -20,12 +23,13 @@ test("manual archive creates a schema 11 source without pretending to be a favor
       upperName: "在线UP",
       cover: undefined,
     });
+    assert.ok('relation' in result);
     assert.equal(result.relation?.sourceKind, "manual");
     assert.equal(result.relation?.mediaId, MANUAL_ARCHIVE_MEDIA_ID);
     assert.equal(result.relation?.folderTitle, MANUAL_ARCHIVE_FOLDER_TITLE);
-    const row = manager.getDatabase().db.prepare(
+    const row = manager.getDatabase().db.prepare<unknown[], { "source_kind": string; "media_id": number; "folder_title": string }>(
       "SELECT source_kind, media_id, folder_title FROM favorite_relations WHERE user_id=? AND bvid=?",
-    ).get("u1", "BV1MANUAL0001") as any;
+    ).get("u1", "BV1MANUAL0001");
     assert.deepEqual(row, { source_kind: "manual", media_id: -1, folder_title: MANUAL_ARCHIVE_FOLDER_TITLE });
   } finally {
     manager.close();
@@ -48,17 +52,17 @@ test("manual archive exact quality and encoding use an isolated strict download 
   manager.replaceStateSnapshot({
     schemaVersion: 13,
     processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
-    videos: { BV1MANUALEXACT: { bvid: "BV1MANUALEXACT", title: "Exact", upperName: "UP", firstSeenAt: now, lastSeenAt: now, biliStatus: "available", backupStatus: "discovered" } },
+    videos: { BV1MANUALEXACT: { bvid: "BV1MANUALEXACT", title: "Exact", upperName: "UP", firstSeenAt: now, lastSeenAt: now, biliStatus: "available" as const, backupStatus: "discovered" as const } },
     relations: {},
-  } as any);
+  });
   const config = testConfig({ bbdownQuality: "4K", bbdownEncoding: "HEVC" });
   const scheduler = new SyncScheduler(
-    { get: () => config } as any,
-    { list: () => [user], getById: (id: string) => id === user.id ? user : undefined } as any,
+    { get: () => config },
+    { list: () => [user], getById: (id: string) => id === user.id ? user : null, updatePartial: () => user },
     manager,
-    { legacyTempDir: path.join(runtime, "temp") },
-  ) as any;
-  scheduler.downloadQueue.setStartGate(() => false);
+    { legacyTempDir: path.join(runtime, "temp"), deferAdmissionUntilStart: true },
+  );
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
     const profile = { quality: "1080P", encoding: "AV1", hiRes: false, dolby: false, filenameTemplate: "<videoTitle>-<bvid>" };
     const result = scheduler.enqueueManualArchive("u1", {
@@ -67,16 +71,22 @@ test("manual archive exact quality and encoding use an isolated strict download 
       qualityEncodingOverride: { generation: 1, priority: ["AV1", "HEVC", "AVC"], strict: true },
     });
     assert.equal(result.status, "queued");
-    const job = scheduler.jobStore.findByDedupeKey(`download:BV1MANUALEXACT:manual:${buildQualityArtifactKey("BV1MANUALEXACT", profile)}`)!;
-    assert.equal((job.payload as any).qualityStrict, true);
-    assert.deepEqual((job.payload as any).qualityEncodingOverride.priority, ["AV1", "HEVC", "AVC"]);
-    assert.equal((job.payload as any).qualityProfile.quality, "1080P");
-    const task = scheduler.buildDownloadTask(job);
+    const job = jobs.findByDedupeKey(`download:BV1MANUALEXACT:manual:${buildQualityArtifactKey("BV1MANUALEXACT", profile)}`)!;
+    assert.equal((job.payload).qualityStrict, true);
+    assert.deepEqual(object(job.payload.qualityEncodingOverride).priority, ["AV1", "HEVC", "AVC"]);
+    assert.equal(object(job.payload.qualityProfile).quality, "1080P");
+    const task = createDownloadTaskFactory({
+      configStore: {get: () => config}, userStore: {getById: id => id === user.id ? user : null}, stateManager: manager,
+      generation: () => 0, isArchiveSourceDeletionBlocked: () => false,
+      resolveRelation: relation => ({user, mediaId: relation.mediaId, folderTitle: relation.folderTitle}),
+      resolveRelationRemotePath: () => '/isolated/manual', handleDownloadApiReady: () => undefined,
+    }).build(job);
     assert.ok(task);
     assert.equal(task.config.bbdownQuality, "1080P");
     assert.equal(task.config.bbdownEncoding, "AV1");
     assert.equal(task.qualityStrict, true);
     assert.equal(typeof task.downloadDirOverride, "string");
+    assert.ok(task.downloadDirOverride);
     assert.equal(task.downloadDirOverride.includes("BV1MANUALEXACT"), true);
     const duplicate = scheduler.enqueueManualArchive("u1", {
       bvid: "BV1MANUALEXACT", title: "Exact", upperName: "UP",
@@ -106,23 +116,24 @@ test("strict regular download recovery keeps the candidate isolated when changin
   manager.replaceStateSnapshot({
     schemaVersion: 13,
     processedByUser: {}, failedByUser: {}, folderScans: {}, userCooldowns: {},
-    videos: { BVSTRICTRECOVERY: { bvid: "BVSTRICTRECOVERY", title: "Strict recovery", upperName: "UP", firstSeenAt: now, lastSeenAt: now, biliStatus: "available", backupStatus: "failed" } },
+    videos: { BVSTRICTRECOVERY: { bvid: "BVSTRICTRECOVERY", title: "Strict recovery", upperName: "UP", firstSeenAt: now, lastSeenAt: now, biliStatus: "available" as const, backupStatus: "failed" as const } },
     relations: {
       "u1:1:BVSTRICTRECOVERY": {
         userId: "u1", mediaId: 1, bvid: "BVSTRICTRECOVERY", folderTitle: "Fav", firstSeenAt: now, lastSeenAt: now,
-        activeInFavorite: true, backupStatus: "failed",
+        activeInFavorite: true, backupStatus: "failed" as const,
       },
     },
-  } as any);
+  });
   const scheduler = new SyncScheduler(
-    { get: () => testConfig({ bbdownQuality: "4K", bbdownEncoding: "HEVC" }) } as any,
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null } as any,
+    { get: () => testConfig({ bbdownQuality: "4K", bbdownEncoding: "HEVC" }) },
+    { list: () => [user], getById: (id: string) => id === user.id ? user : null, updatePartial: () => user },
     manager,
-  ) as any;
-  scheduler.downloadQueue.setStartGate(() => false);
+    {deferAdmissionUntilStart: true},
+  );
+  const jobs = new PersistentJobStore(manager.getDatabase());
   try {
-    const failed = scheduler.jobStore.enqueue({
-      kind: "download",
+    const failed = jobs.enqueue({
+      kind: "download" as const,
       dedupeKey: "download:BVSTRICTRECOVERY:manual:old-artifact",
       bvid: "BVSTRICTRECOVERY",
       userId: "u1",
@@ -156,11 +167,11 @@ test("strict regular download recovery keeps the candidate isolated when changin
         },
       },
     });
-    const issue = scheduler.getRecoveryIssues().find((item: any) => item.id === `download.${failed.id}`);
-    assert.deepEqual(issue?.availableActions.map((action: any) => action.id), [
+    const issue = scheduler.getRecoveryIssues().find((item) => item.id === `download.${failed.id}`);
+    assert.deepEqual(required(issue?.availableActions).map((action) => action.id), [
       "redownload_with_encoding", "retry_download", "defer_download", "abandon_attempt",
     ]);
-    assert.deepEqual(issue?.availableActions[0].mediaProfile, { quality: true, encoding: true });
+    assert.deepEqual(required(issue?.availableActions[0]).mediaProfile, { quality: true, encoding: true });
 
     const changed = await scheduler.resolveRecoveryIssue(`download.${failed.id}`, "redownload_with_encoding", {
       quality: "1080P",
@@ -168,19 +179,24 @@ test("strict regular download recovery keeps the candidate isolated when changin
       strict: true,
     });
     assert.equal(changed.ok, true, JSON.stringify(changed));
-    const resumed = scheduler.jobStore.findById(failed.id)!;
+    const resumed = jobs.findById(failed.id)!;
     assert.ok(["pending", "leased"].includes(resumed.status));
-    assert.equal((resumed.payload as any).qualityProfile.quality, "1080P");
-    assert.equal((resumed.payload as any).qualityProfile.encoding, "AV1");
-    assert.deepEqual((resumed.payload as any).qualityEncodingOverride.priority, ["AV1", "HEVC", "AVC"]);
-    assert.equal((resumed.payload as any).qualityStrict, true);
-    assert.equal((resumed.payload as any).awaitingManualRecovery, false);
-    assert.notEqual((resumed.payload as any).qualityArtifactKey, "old-artifact");
-    assert.equal((resumed.payload as any).downloadDir, undefined);
-    assert.equal(scheduler.jobStore.list(["download"]).filter((candidate) => candidate.bvid === "BVSTRICTRECOVERY").length, 1);
+    assert.equal(object(resumed.payload.qualityProfile).quality, "1080P");
+    assert.equal(object(resumed.payload.qualityProfile).encoding, "AV1");
+    assert.deepEqual(object(resumed.payload.qualityEncodingOverride).priority, ["AV1", "HEVC", "AVC"]);
+    assert.equal((resumed.payload).qualityStrict, true);
+    assert.equal((resumed.payload).awaitingManualRecovery, false);
+    assert.notEqual((resumed.payload).qualityArtifactKey, "old-artifact");
+    assert.equal((resumed.payload).downloadDir, undefined);
+    assert.equal(jobs.list(["download"]).filter((candidate) => candidate.bvid === "BVSTRICTRECOVERY").length, 1);
   } finally {
     scheduler.stop();
     manager.close();
     await removeTestDir(runtime);
   }
 });
+
+function object(value: unknown): Record<string, unknown> {
+  assert.ok(value && typeof value === 'object' && !Array.isArray(value));
+  return Object.fromEntries(Object.entries(value));
+}

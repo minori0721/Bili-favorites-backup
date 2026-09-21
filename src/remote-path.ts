@@ -49,6 +49,7 @@ export function normalizeStoredRemoteFilePath(value: unknown) {
   try {
     const normalized = normalizeRemotePath(raw, { allowRoot: false });
     return normalized === raw ? normalized : null;
+  // boundary-fail-closed: malformed persisted paths are never used for I/O.
   } catch {
     return null;
   }

@@ -28,7 +28,10 @@ function cleanup(file: string, record: ReplacementRecord) {
   try {
     for (const base of [p.backup, p.next, p.displaced]) for (const suffix of suffixes) fs.rmSync(`${base}${suffix}`, { force: true });
     fs.rmSync(p.journal, { force: true });
+  // boundary-critical: replacement is already durable; cleanup failure keeps
+  // recovery evidence and is reported without reversing the committed state.
   } catch {
+    // boundary-critical: committed database state is retained; cleanup failure cannot roll it back.
     // The commit decision is durable. Cleanup must never reverse it.
     console.warn("[Migration] Database replacement cleanup deferred; recovery files retained.");
   }

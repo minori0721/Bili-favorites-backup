@@ -121,8 +121,8 @@ export function createRetirementTransfers(deps: Dependencies) {
           candidates.add(path.join(tempDir, entry.name));
         }
       }
-    } catch {
-      // The cache directory may not exist yet.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     for (const downloadDir of candidates) {
       const manifest = readDownloadSession(downloadDir);

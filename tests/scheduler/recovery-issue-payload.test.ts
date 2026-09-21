@@ -20,12 +20,12 @@ test('persisted recovery display rejects malformed fields and never grants retry
 
 test('recovery display preserves raw proof and target identity for dedicated validators', () => {
   const target = { userId: 'u', mediaId: -1, remotePath: '/a', folderTitle: 'manual' };
-  const proof = { status: 'verified', files: ['proof'] };
+  const proof = { status: 'verified' as const, remotePath: '/a', files: [{ name: 'proof.mp4', path: '/a/proof.mp4', size: 1, verificationStatus: 'verified' as const }] };
   const value = parseRecoveryIssuePayload({
     target, existingArchiveProof: proof, totalPages: 2,
     qualityFailure: { qualityEligible: true, requestedQuality: '4K', actualQualities: ['1080P'] },
   });
-  assert.equal(value.existingArchiveProof, proof);
+  assert.deepEqual(value.existingArchiveProof, proof);
   assert.deepEqual(value.target, target);
   assert.equal(value.qualityFailure?.qualityEligible, true);
   assert.equal(uploadRecoverySummary('manual_review', null, null, 'waiting'), 'waiting');

@@ -29,6 +29,15 @@ const LEGACY_BBDOWN_SOURCE_COMMIT = "fd926373dfe03d68bf84a1ad8a4ffbf402b00988";
 const HISTORIC_BBDOWN_SOURCE_COMMIT = "fcb895f357df49c45010cefab773025d5d50cf7c";
 const OLDEST_HISTORIC_BBDOWN_SOURCE_COMMIT = "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed";
 
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function errorCode(error: unknown) {
+  const value = record(error);
+  return typeof value.code === "string" ? value.code : "";
+}
+
 export type DownloadSessionKind = "backup" | "quality_upgrade";
 export type DownloadSessionStatus = "prepared" | "downloading" | "complete" | "partial" | "failed";
 
@@ -322,7 +331,10 @@ export function readDownloadSession(downloadDir: string): DownloadSessionManifes
     parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
     parsed.selectedStreams = normalizeSelectedStreams(parsed.selectedStreams);
     return parsed;
+  // boundary-fail-closed: a malformed manifest is invalid evidence; callers
+  // preserve the directory and may quarantine the file before recovery.
   } catch {
+    // boundary-fail-closed: malformed session evidence cannot authorize recovery.
     return null;
   }
 }
@@ -340,7 +352,7 @@ function normalizeManifestOutputPaths<T extends { relativePath: string }>(value:
   const outputs: T[] = [];
   for (const output of value) {
     if (!output || typeof output !== "object") continue;
-    const relativePath = normalizeManifestRelativePath((output as any).relativePath);
+    const relativePath = normalizeManifestRelativePath(record(output).relativePath);
     if (!relativePath) continue;
     outputs.push({ ...(output as T), relativePath });
   }
@@ -355,11 +367,12 @@ function normalizeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[
   if (!Array.isArray(value)) return undefined;
   const selected = new Map<number, DownloadSelectedStreamRecord>();
   for (const item of value) {
-    const pageIndex = Number((item as any)?.pageIndex);
-    const cid = Number((item as any)?.cid);
-    const bilibiliQuality = normalizeBilibiliQualityLabel((item as any)?.bilibiliQuality);
+    const itemRecord = record(item);
+    const pageIndex = Number(itemRecord.pageIndex);
+    const cid = Number(itemRecord.cid);
+    const bilibiliQuality = normalizeBilibiliQualityLabel(itemRecord.bilibiliQuality);
     if (!Number.isInteger(pageIndex) || pageIndex < 1 || !Number.isInteger(cid) || cid < 1 || !bilibiliQuality) continue;
-    const rawObservedAt = String((item as any)?.observedAt || "");
+    const rawObservedAt = String(itemRecord.observedAt || "");
     const observedAt = Number.isFinite(Date.parse(rawObservedAt)) ? new Date(rawObservedAt).toISOString() : nowIso();
     selected.set(cid, { pageIndex, cid, bilibiliQuality, observedAt });
   }
@@ -650,7 +663,7 @@ async function runFfprobe(filePath: string) {
     "-of", "json",
     filePath,
   ];
-  return new Promise<any>((resolve, reject) => {
+  return new Promise<unknown>((resolve, reject) => {
     const child = spawn(ffprobePath(), args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
@@ -702,12 +715,12 @@ export async function validateMediaOutput(
 ): Promise<Omit<DownloadOutputRecord, "pageIndex" | "cid" | "relativePath" | "verifiedAt">> {
   const stat = await fs.promises.stat(filePath);
   if (!stat.isFile() || stat.size <= 0) throw new Error("media file is empty");
-  const info = await runFfprobe(filePath);
-  const streams = Array.isArray(info?.streams) ? info.streams : [];
-  const video = streams.find((stream: any) => stream?.codec_type === "video" && Number(stream?.disposition?.attached_pic || 0) !== 1);
+  const info = record(await runFfprobe(filePath));
+  const streams = Array.isArray(info.streams) ? info.streams.map(record) : [];
+  const video = streams.find((stream) => stream.codec_type === "video" && Number(record(stream.disposition).attached_pic || 0) !== 1);
   if (!video) throw new Error("media file has no playable video stream");
-  const audio = streams.find((stream: any) => stream?.codec_type === "audio");
-  const duration = Number(info?.format?.duration || video?.duration || 0);
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  const duration = Number(record(info.format).duration || video.duration || 0);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error("media duration is unavailable");
   if (expectedDuration > 0) {
     const tolerance = Math.max(5, expectedDuration * 0.03);
@@ -761,8 +774,8 @@ async function movePreserving(source: string, target: string) {
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   try {
     await fs.promises.rename(source, target);
-  } catch (error: any) {
-    if (!['EXDEV', 'EPERM', 'EACCES'].includes(error?.code)) throw error;
+  } catch (error: unknown) {
+    if (!['EXDEV', 'EPERM', 'EACCES'].includes(errorCode(error))) throw error;
     await fs.promises.copyFile(source, target);
     await fs.promises.unlink(source);
   }
@@ -813,7 +826,9 @@ async function reindexRetainedOutputs(
     await movePreserving(item.tempPath, target);
     item.output.relativePath = targetRelative;
   }
-  await fs.promises.rm(stageRoot, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(stageRoot, { recursive: true, force: true }).catch((error) => {
+    console.warn(`[DownloadSession] staged cleanup deferred: ${String(error)}`);
+  });
 }
 
 function isUnsafeResumeArtifact(relativePath: string) {
@@ -939,7 +954,10 @@ async function scanAndValidateOutputs(downloadDir: string, manifest: DownloadSes
     const pageIndex = existingByPath.get(relativePath)?.pageIndex || inferPageIndex(fileName, manifest.pages.length);
     const page = pagesByIndex.get(pageIndex);
     if (!page) {
-      const details = await validateMediaOutput(path.join(downloadDir, relativePath), 0).catch(() => null);
+      const details = await validateMediaOutput(path.join(downloadDir, relativePath), 0).catch((error) => {
+        console.debug(`[DownloadSession] legacy output validation skipped: ${String(error)}`);
+        return null;
+      });
       if (details) {
         const historyRelative = path.join("_history", safeStamp(manifest.snapshotAt), fileName);
         await movePreserving(path.join(downloadDir, relativePath), path.join(downloadDir, historyRelative));
@@ -1000,7 +1018,9 @@ export async function prepareDownloadSession(options: {
     const existingManifestPath = downloadSessionPath(downloadDir);
     if (!manifest && fs.existsSync(existingManifestPath)) {
       const preservedPath = `${existingManifestPath}.corrupt-${safeStamp()}`;
-      await fs.promises.copyFile(existingManifestPath, preservedPath).catch(() => undefined);
+      await fs.promises.copyFile(existingManifestPath, preservedPath).catch((error) => {
+        console.warn(`[DownloadSession] corrupt manifest backup failed: ${String(error)}`);
+      });
     }
     const at = nowIso();
     manifest = {
@@ -1175,8 +1195,8 @@ async function removeEmptyDirectories(target: string, root: string): Promise<voi
   if (target === root) return;
   try {
     if ((await fs.promises.readdir(target)).length === 0) await fs.promises.rmdir(target);
-  } catch {
-    // Directory changed while cleaning; preserve it.
+  } catch (error) {
+    console.debug('[DownloadSession] directory changed during empty-directory cleanup', error);
   }
 }
 
@@ -1329,7 +1349,7 @@ function listFilesSync(rootDir: string) {
       else if (entry.isFile()) files.push(path.relative(rootDir, fullPath));
     }
   };
-  try { walk(rootDir); } catch { /* files may change while the queue is running */ }
+  try { walk(rootDir); } catch (error) { console.debug('[DownloadSession] file inventory changed while walking the queue directory', error); }
   return files;
 }
 
@@ -1412,8 +1432,8 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
-  } catch (error: any) {
-    if (error?.code === "ENOENT") return result;
+  } catch (error: unknown) {
+    if (errorCode(error) === "ENOENT") return result;
     throw error;
   }
 
@@ -1444,8 +1464,8 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
       let stat: fs.Stats;
       try {
         stat = await fs.promises.lstat(target);
-      } catch (error: any) {
-        if (error?.code === "ENOENT") continue;
+      } catch (error: unknown) {
+        if (errorCode(error) === "ENOENT") continue;
         throw error;
       }
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
@@ -1467,8 +1487,8 @@ async function listFileSizes(rootDir: string) {
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(current, { withFileTypes: true });
-    } catch (error: any) {
-      if (error?.code === "ENOENT") continue;
+    } catch (error: unknown) {
+      if (errorCode(error) === "ENOENT") continue;
       throw error;
     }
     for (const entry of entries) {
@@ -1484,8 +1504,8 @@ async function listFileSizes(rootDir: string) {
         if (stat.isFile() && !stat.isSymbolicLink()) {
           files.set(path.relative(rootDir, fullPath).replace(/\\/g, "/"), stat.size);
         }
-      } catch (error: any) {
-        if (error?.code !== "ENOENT") throw error;
+      } catch (error: unknown) {
+        if (errorCode(error) !== "ENOENT") throw error;
       }
     }
   }
@@ -1500,8 +1520,8 @@ export async function readDownloadSessionAsync(downloadDir: string) {
     parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
     parsed.selectedStreams = normalizeSelectedStreams(parsed.selectedStreams);
     return parsed;
-  } catch (error: any) {
-    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+  } catch (error: unknown) {
+    if (errorCode(error) === "ENOENT" || error instanceof SyntaxError) return null;
     throw error;
   }
 }
@@ -1517,8 +1537,8 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
-  } catch (error: any) {
-    if (error?.code === "ENOENT") return result;
+  } catch (error: unknown) {
+    if (errorCode(error) === "ENOENT") return result;
     throw error;
   }
 
@@ -1532,8 +1552,8 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
       result.fileCount += 1;
       result.exportableBytes += stat.size;
       result.exportableFiles += 1;
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
+    } catch (error: unknown) {
+      if (errorCode(error) !== "ENOENT") throw error;
     }
   }
 

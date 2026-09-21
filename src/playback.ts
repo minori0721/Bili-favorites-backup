@@ -8,7 +8,7 @@ import { pipeline } from "node:stream/promises";
 import type express from "express";
 import type { AppConfig } from "./config.js";
 import type { StateDatabase } from "./database.js";
-import type { FavoriteRelation, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
+import type { FavoriteRelation, RemoteFileQualityProfile, RemoteFileRecord, VideoArchiveEntry } from "./state.js";
 import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-metadata.js";
 import { buildDavClient } from "./uploader.js";
 import { getRemoteBackendProfile } from "./remote-storage.js";
@@ -21,8 +21,36 @@ import {
   RemoteFileResolutionConflictError,
   remoteLookupBasename,
 } from "./remote-file-resolver.js";
+import { decodeFavoriteRelation, decodeQualityProfile, decodeVideoPayload, parsePersistedJsonValue } from './repositories/domain-decoders.js';
 
 export type PlaybackUnavailableReason = "not_verified" | "awaiting_verification" | "no_playable_media";
+
+interface PlaybackSqlRow {
+  id?: number | null;
+  bvid?: string | null;
+  user_id?: string | null;
+  media_id?: number | null;
+  name?: string | null;
+  remote_path?: string | null;
+  expected_size?: number | null;
+  quality_json?: string | null;
+  actual_width?: number | null;
+  actual_height?: number | null;
+  actual_fps?: number | null;
+  actual_duration?: number | null;
+  actual_codec?: string | null;
+  actual_metadata_source?: string | null;
+  put_completed_at?: number | null;
+  relation_json?: string | null;
+  video_json?: string | null;
+  queue_position?: number | null;
+  count?: number | null;
+  position?: number | null;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+}
 
 export interface PlaybackAvailability {
   available: boolean;
@@ -97,7 +125,7 @@ interface PlaybackFileRow {
   name: string;
   remotePath: string;
   expectedSize?: number;
-  qualityProfile?: Record<string, unknown>;
+  qualityProfile?: RemoteFileQualityProfile;
   actualWidth?: number;
   actualHeight?: number;
   actualFps?: number;
@@ -213,14 +241,6 @@ const playableRelationSql = `
   )
 `;
 
-function parseJson<T>(value: unknown, fallback: T): T {
-  try {
-    return JSON.parse(String(value || "")) as T;
-  } catch {
-    return fallback;
-  }
-}
-
 function isVerifiedRemoteFile(file: RemoteFileRecord) {
   return !file.verificationStatus || file.verificationStatus === "verified";
 }
@@ -273,7 +293,7 @@ function fallbackPageIndex(file: RemoteFileRecord, position: number) {
 function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, bvids: string[]) {
   if (bvids.length === 0) return new Map<string, PlaybackFileRow[]>();
   const placeholders = bvids.map(() => "?").join(",");
-  const rows = database.db.prepare(`
+  const rows = database.db.prepare<unknown[], PlaybackSqlRow>(`
     SELECT id, bvid, name, remote_path, expected_size, quality_json,
       actual_width, actual_height, actual_fps, actual_duration, actual_codec,
       actual_metadata_source, put_completed_at
@@ -285,7 +305,7 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
         OR lower(name) LIKE '%.webm'
       )
     ORDER BY bvid ASC, id ASC
-  `).all(userId, mediaId, ...bvids) as any[];
+  `).all(userId, mediaId, ...bvids);
   const result = new Map<string, PlaybackFileRow[]>();
   for (const row of rows) {
     const bvid = String(row.bvid);
@@ -296,12 +316,12 @@ function rowsForBvid(database: StateDatabase, userId: string, mediaId: number, b
       name: String(row.name || ""),
       remotePath: String(row.remote_path || ""),
       expectedSize: row.expected_size == null ? undefined : Number(row.expected_size),
-      qualityProfile: parseJson(row.quality_json, undefined as any),
+      qualityProfile: decodeQualityProfile(parsePersistedJsonValue(row.quality_json, 'playback quality profile', true)),
       actualWidth: row.actual_width == null ? undefined : Number(row.actual_width),
       actualHeight: row.actual_height == null ? undefined : Number(row.actual_height),
       actualFps: row.actual_fps == null ? undefined : Number(row.actual_fps),
       actualDuration: row.actual_duration == null ? undefined : Number(row.actual_duration),
-      actualCodec: row.actual_codec || undefined,
+      actualCodec: row.actual_codec == null ? undefined : String(row.actual_codec),
       actualMetadataSource: row.actual_metadata_source === "ffprobe" || row.actual_metadata_source === "browser"
         ? row.actual_metadata_source
         : undefined,
@@ -334,7 +354,7 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
     source.relation.mediaId,
     source.relation.bvid,
   ]);
-  const rows = database.db.prepare(`
+  const rows = database.db.prepare<unknown[], PlaybackSqlRow>(`
     WITH requested(user_id, media_id, bvid) AS (VALUES ${values})
     SELECT rf.id, rf.bvid, rf.user_id, rf.media_id, rf.name, rf.remote_path, rf.expected_size, rf.quality_json,
       rf.actual_width, rf.actual_height, rf.actual_fps, rf.actual_duration, rf.actual_codec,
@@ -352,7 +372,7 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
         AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','completed')
     )
     ORDER BY rf.user_id, rf.media_id, rf.bvid, rf.id
-  `).all(...params) as any[];
+  `).all(...params);
   const result = new Map<string, PlaybackFileRow[]>();
   for (const row of rows) {
     const key = playbackSourceKey(String(row.user_id), Number(row.media_id), String(row.bvid));
@@ -363,12 +383,12 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
       name: String(row.name || ""),
       remotePath: String(row.remote_path || ""),
       expectedSize: row.expected_size == null ? undefined : Number(row.expected_size),
-      qualityProfile: parseJson(row.quality_json, undefined as any),
+      qualityProfile: decodeQualityProfile(parsePersistedJsonValue(row.quality_json, 'playback quality profile', true)),
       actualWidth: row.actual_width == null ? undefined : Number(row.actual_width),
       actualHeight: row.actual_height == null ? undefined : Number(row.actual_height),
       actualFps: row.actual_fps == null ? undefined : Number(row.actual_fps),
       actualDuration: row.actual_duration == null ? undefined : Number(row.actual_duration),
-      actualCodec: row.actual_codec || undefined,
+      actualCodec: row.actual_codec == null ? undefined : String(row.actual_codec),
       actualMetadataSource: row.actual_metadata_source === "ffprobe" || row.actual_metadata_source === "browser"
         ? row.actual_metadata_source
         : undefined,
@@ -470,7 +490,7 @@ export function buildPlaybackQueueItems(database: StateDatabase, sources: Playba
 }
 
 function exactRelation(database: StateDatabase, userId: string, mediaId: number, bvid: string) {
-  const row = database.db.prepare(`
+  const row = database.db.prepare<unknown[], { "relation_json": string; "video_json": string }>(`
     SELECT r.payload_json AS relation_json, v.payload_json AS video_json
     FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
     WHERE r.user_id=? AND r.media_id=? AND r.bvid=?
@@ -479,11 +499,11 @@ function exactRelation(database: StateDatabase, userId: string, mediaId: number,
         WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid
           AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','completed')
       )
-  `).get(userId, mediaId, bvid) as any;
+  `).get(userId, mediaId, bvid);
   if (!row) return null;
   return {
-    relation: parseJson<FavoriteRelation>(row.relation_json, undefined as any),
-    video: parseJson<VideoArchiveEntry>(row.video_json, undefined as any),
+    relation: decodeFavoriteRelation(parsePersistedJsonValue(row.relation_json, 'playback relation'), 'playback relation'),
+    video: decodeVideoPayload(parsePersistedJsonValue(row.video_json, 'playback video'), 'playback video'),
   };
 }
 
@@ -506,36 +526,37 @@ export function getPlaybackQueue(
     return { mode: "single", page: 1, pageSize: 1, total: 1, focusIndex: 0, hasMore: false, items: [item] };
   }
 
-  const total = Number((database.db.prepare(`
+  const totalRow = database.db.prepare<unknown[], PlaybackSqlRow>(`
     SELECT COUNT(*) AS count FROM favorite_relations r WHERE ${playableRelationSql}
-  `).get(userId, mediaId) as any)?.count || 0);
+  `).get(userId, mediaId);
+  const total = Number(totalRow?.count || 0);
   if (total === 0) return focusBvid ? null : { mode: "favorite", page: 1, pageSize, total: 0, focusIndex: -1, hasMore: false, items: [] };
 
   let focusIndex = -1;
   if (focusBvid) {
-    const position = database.db.prepare(`
+    const position = database.db.prepare<unknown[], PlaybackSqlRow>(`
       WITH playable AS (
         SELECT r.bvid, ROW_NUMBER() OVER (ORDER BY ${queueOrderSql}) - 1 AS position
         FROM favorite_relations r WHERE ${playableRelationSql}
       )
       SELECT position FROM playable WHERE bvid=?
-    `).get(userId, mediaId, focusBvid) as any;
+    `).get(userId, mediaId, focusBvid);
     if (!position) return null;
     focusIndex = Number(position.position);
   }
   const requestedPage = options.page ? Math.max(1, Math.floor(options.page)) : 0;
   const page = requestedPage || (focusIndex >= 0 ? Math.floor(focusIndex / pageSize) + 1 : 1);
   const offset = (page - 1) * pageSize;
-  const rows = database.db.prepare(`
+  const rows = database.db.prepare<unknown[], PlaybackSqlRow>(`
     SELECT r.payload_json AS relation_json, v.payload_json AS video_json
     FROM favorite_relations r JOIN videos v ON v.bvid=r.bvid
     WHERE ${playableRelationSql}
     ORDER BY ${queueOrderSql}
     LIMIT ? OFFSET ?
-  `).all(userId, mediaId, pageSize, offset) as any[];
+  `).all(userId, mediaId, pageSize, offset);
   const records = rows.map((row) => ({
-    relation: parseJson<FavoriteRelation>(row.relation_json, undefined as any),
-    video: parseJson<VideoArchiveEntry>(row.video_json, undefined as any),
+    relation: decodeFavoriteRelation(parsePersistedJsonValue(row.relation_json, 'playback relation'), 'playback relation'),
+    video: decodeVideoPayload(parsePersistedJsonValue(row.video_json, 'playback video'), 'playback video'),
   })).filter((item) => item.relation && item.video);
   const fileRows = rowsForBvid(database, userId, mediaId, records.map((item) => item.relation.bvid));
   const items = records
@@ -597,19 +618,20 @@ export function getPlaybackSearch(
       SELECT * FROM playable p WHERE ${matchSql}
     )
   `;
-  const total = Number((database.db.prepare(`${cteSql} SELECT COUNT(*) AS count FROM matched`)
-    .get(userId, mediaId, ...matchParams) as any)?.count || 0);
+  const totalRow = database.db.prepare<unknown[], PlaybackSqlRow>(`${cteSql} SELECT COUNT(*) AS count FROM matched`)
+    .get(userId, mediaId, ...matchParams);
+  const total = Number(totalRow?.count || 0);
   const offset = (page - 1) * pageSize;
-  const rows = database.db.prepare(`
+  const rows = database.db.prepare<unknown[], PlaybackSqlRow>(`
     ${cteSql}
     SELECT relation_json, video_json, bvid, queue_position
     FROM matched
     ORDER BY queue_position ASC
     LIMIT ? OFFSET ?
-  `).all(userId, mediaId, ...matchParams, pageSize, offset) as any[];
+  `).all(userId, mediaId, ...matchParams, pageSize, offset);
   const records = rows.map((row) => ({
-    relation: parseJson<FavoriteRelation>(row.relation_json, undefined as any),
-    video: parseJson<VideoArchiveEntry>(row.video_json, undefined as any),
+    relation: decodeFavoriteRelation(parsePersistedJsonValue(row.relation_json, 'playback relation'), 'playback relation'),
+    video: decodeVideoPayload(parsePersistedJsonValue(row.video_json, 'playback video'), 'playback video'),
     queuePosition: Number(row.queue_position),
   })).filter((item) => item.relation && item.video && Number.isInteger(item.queuePosition));
   const fileRows = rowsForBvid(database, userId, mediaId, records.map((item) => item.relation.bvid));
@@ -659,7 +681,7 @@ export class PlaybackHttpError extends Error {
 }
 
 export function resolvePlaybackFile(database: StateDatabase, userId: string, mediaId: number, fileId: number) {
-  const row = database.db.prepare(`
+  const row = database.db.prepare<unknown[], { "id": number; "bvid": string; "name": string; "remote_path": string; "expected_size": number | null; "relation_json": string }>(`
     SELECT rf.id, rf.bvid, rf.name, rf.remote_path, rf.expected_size, r.payload_json AS relation_json
     FROM remote_files rf JOIN favorite_relations r
       ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
@@ -670,9 +692,9 @@ export function resolvePlaybackFile(database: StateDatabase, userId: string, med
         WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid
         AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','completed')
       )
-  `).get(fileId, userId, mediaId) as any;
+  `).get(fileId, userId, mediaId);
   if (!row) throw new PlaybackHttpError(404, "PLAYBACK_FILE_NOT_FOUND", "播放文件不存在或尚未完成远端确认");
-  const relation = parseJson<FavoriteRelation>(row.relation_json, undefined as any);
+  const relation = decodeFavoriteRelation(parsePersistedJsonValue(row.relation_json, 'playback relation'), 'playback relation');
   const remotePath = normalizeStoredPath(row.remote_path);
   const exactFile = relation?.remoteFiles?.find((file) => String(file.path || "") === remotePath && isPlayableRemoteFile(file));
   if (!remotePath || !exactFile || !isWithinRoot(remotePath, relation.remotePath)) {
@@ -689,7 +711,7 @@ export function resolvePlaybackFile(database: StateDatabase, userId: string, med
 
 export function playbackFileAlistLocation(
   database: StateDatabase,
-  config: AppConfig,
+  config: Pick<AppConfig, "alistBrowserUrl">,
   userId: string,
   mediaId: number,
   fileId: number
@@ -715,7 +737,24 @@ export function playbackFileAlistLocation(
   return base.toString();
 }
 
-function copyPlaybackHeaders(upstream: Response, res: express.Response, fallbackType: string) {
+export interface PlaybackRequest {
+  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+  readonly method?: string;
+  readonly aborted?: boolean;
+  once(event: "aborted", listener: () => void): unknown;
+  off(event: "aborted", listener: () => void): unknown;
+}
+
+export interface PlaybackResponse extends NodeJS.WritableStream {
+  readonly headersSent: boolean;
+  readonly destroyed: boolean;
+  status(code: number): this;
+  setHeader(name: string, value: string | number): this;
+  end(chunk?: unknown): this;
+  destroy(error?: Error): this;
+}
+
+function copyPlaybackHeaders(upstream: Response, res: PlaybackResponse, fallbackType: string) {
   const allowed = ["accept-ranges", "content-length", "content-range", "etag", "last-modified"];
   for (const name of allowed) {
     const value = upstream.headers.get(name);
@@ -779,12 +818,13 @@ export function safePlaybackRedirectLocation(location: string | null, alistBase:
     if (isPrivatePlaybackHost(target.hostname)) return null;
     target.hash = "";
     return target.toString();
+  // boundary-fail-closed: an untrusted redirect is not a playable location.
   } catch {
     return null;
   }
 }
 
-type PlaybackLookup = typeof dns.promises.lookup;
+type PlaybackLookup = (hostname: string, options: dns.LookupAllOptions) => Promise<dns.LookupAddress[]>;
 type PlaybackFetch = typeof fetch;
 
 interface PinnedPlaybackAddress {
@@ -823,7 +863,7 @@ function fetchPinnedHttps(url: URL, init: RequestInit, address: PinnedPlaybackAd
       }
       const body = response.statusCode === 204 || response.statusCode === 304
         ? null
-        : Readable.toWeb(response as any) as any;
+        : Readable.toWeb(response as unknown as Readable) as unknown as BodyInit;
       resolve(new Response(body, {
         status: response.statusCode || 502,
         statusText: response.statusMessage || undefined,
@@ -831,7 +871,7 @@ function fetchPinnedHttps(url: URL, init: RequestInit, address: PinnedPlaybackAd
       }));
     });
     request.once("error", reject);
-    if (init.body != null) request.end(init.body as any);
+    if (init.body != null) request.end(init.body as string | Buffer | Uint8Array);
     else request.end();
   });
 }
@@ -848,7 +888,8 @@ async function validatedExternalPlaybackLocation(
   if (net.isIP(literalAddress)) return { location: normalized, address: { address: literalAddress, family: net.isIP(literalAddress) as 4 | 6 } };
   let addresses: dns.LookupAddress[];
   try {
-    addresses = await lookup(target.hostname, { all: true, verbatim: true }) as dns.LookupAddress[];
+    addresses = await lookup(target.hostname, { all: true, verbatim: true });
+  // boundary-fail-closed: DNS failures do not authorize a network hop.
   } catch {
     return null;
   }
@@ -942,9 +983,9 @@ export async function fetchPlaybackUpstream(
 
 export async function streamPlaybackFile(
   database: StateDatabase,
-  config: AppConfig,
-  req: express.Request,
-  res: express.Response,
+  config: Pick<AppConfig, "alistUrl" | "alistUsername" | "alistPassword" | "playbackDeliveryMode">,
+  req: PlaybackRequest,
+  res: PlaybackResponse,
   input: {
     userId: string;
     mediaId: number;
@@ -1091,8 +1132,8 @@ export async function streamPlaybackFile(
       res.end();
       return;
     }
-    await pipeline(Readable.fromWeb(upstream.body as any), res);
-  } catch (error: any) {
+    await pipeline(Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]), res);
+  } catch (error: unknown) {
     clearTimeout(timeout);
     markPlaybackDelivery(input, "failed");
     if (error instanceof PlaybackHttpError) throw error;
@@ -1101,7 +1142,7 @@ export async function streamPlaybackFile(
       res.destroy();
       return;
     }
-    const detail = error?.name === "AbortError" ? "播放连接超时或已中断" : "无法连接远端存储播放文件";
+    const detail = record(error).name === "AbortError" ? "播放连接超时或已中断" : "无法连接远端存储播放文件";
     const safeId = crypto.createHash("sha256").update(String(file.id)).digest("hex").slice(0, 8);
     throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_UNAVAILABLE", `${detail}（文件 ${safeId}）`);
   } finally {

@@ -214,8 +214,8 @@ export function buildRenamePreviewInternal(options: {
       const existing = filesByDirectory.get(directory) || [];
       existing.push(file);
       filesByDirectory.set(directory, existing);
-    } catch {
-      // The resolver already fails closed for an unsafe entry.
+    } catch (error) {
+      console.debug('[RenamePreview] ignored an unsafe remote entry while building the preview', error);
     }
   }
   const candidates: RenamePreviewCandidate[] = [];

@@ -22,5 +22,5 @@ test('deletion and partial archive labels keep their existing precedence', () =>
   assert.equal(archiveStatusLabel({memberships:[{deletionStatus:'failed'},{deletionStatus:'completed'}],playback:{available:true}}),'已手动删除');
   assert.equal(archiveStatusLabel({deletionStatus:'retry_wait',playback:{available:true}}),'清理中');
   assert.equal(archiveStatusLabel({playback:{available:true,partial:true}}),'部分可播放');
-  assert.equal(archiveStatusLabel({sourceAvailability:{state:'dormant'}}),'B站源长期不可用');
+  assert.equal(archiveStatusLabel({sourceAvailability:{state:'dormant' as const}}),'B站源长期不可用');
 });

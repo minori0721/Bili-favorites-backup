@@ -31,6 +31,19 @@ import {
   type DownloadSessionManifest,
 } from "./download-session.js";
 
+type DownloadError = Error & Record<string, unknown>;
+
+function errorRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function withDownloadErrorMetadata<T extends Error>(error: T, metadata: Record<string, unknown>): T & DownloadError {
+  Object.assign(error, metadata);
+  return error as T & DownloadError;
+}
+
 export interface DownloadResult {
   downloadDir: string;
   files: string[];
@@ -79,8 +92,8 @@ async function cleanupNewInvalidArtifacts(downloadDir: string, baseline: Set<str
     try {
       await fs.promises.unlink(path.join(downloadDir, relativePath));
       removed += 1;
-    } catch {
-      // A concurrent cleanup or download may already have moved the file.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.debug('[BBDown] failed to remove a newly-created partial file', error);
     }
   }
   return removed;
@@ -386,8 +399,9 @@ export async function probeMediaWithBBDown(
         stdoutBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
         if (stdoutBytes > MAX_BBDOWN_PROBE_OUTPUT_BYTES && !outputLimitExceeded) {
           outputLimitExceeded = true;
-          const error: any = new Error("BBDown媒体探测输出异常，已停止读取");
-          error.code = "BBDOWN_PROBE_OUTPUT_TOO_LARGE";
+          const error = withDownloadErrorMetadata(new Error("BBDown媒体探测输出异常，已停止读取"), {
+            code: "BBDOWN_PROBE_OUTPUT_TOO_LARGE",
+          });
           requestTermination(error, true);
           return;
         }
@@ -441,9 +455,10 @@ export function validateInteractiveInventory(output: string, pages: BBDownProbeP
     || markers[0].slice("BFB_PAGES_COMPLETE:".length).trim() !== interactivePageSetHash(pages)
     || pages.some((page, index) => page.pageIndex !== index + 1
       || !/^[1-9]\d*$/.test(page.cid) || !Number.isSafeInteger(Number(page.cid)))) {
-    const error: any = new Error("互动视频片段清单不完整或工具不支持，已停止下载；请更新 BBDown 后重试");
-    error.code = "BBDOWN_INTERACTIVE_INCOMPLETE";
-    error.downloadFailureCategory = "tool";
+    const error = withDownloadErrorMetadata(new Error("互动视频片段清单不完整或工具不支持，已停止下载；请更新 BBDown 后重试"), {
+      code: "BBDOWN_INTERACTIVE_INCOMPLETE",
+      downloadFailureCategory: "tool",
+    });
     throw error;
   }
 }
@@ -469,17 +484,24 @@ export function parseBBDownSignal(line: string): string | undefined {
   return /^BFB_SIGNAL:([A-Z_]+(?::(?:WEB|APP))?)$/.exec(body)?.[1];
 }
 
+export interface TaskkillProcess {
+  kill(signal?: NodeJS.Signals): boolean;
+  once(event: 'error', listener: (error: Error) => void): unknown;
+  once(event: 'close', listener: (code: number | null) => void): unknown;
+}
+export type TaskkillSpawn = (command: string, args: string[], options: {windowsHide: boolean}) => TaskkillProcess;
+
 export async function runWindowsTaskkill(
   pid: number,
   force: boolean,
-  options: { timeoutMs?: number; spawnImpl?: typeof spawn } = {}
+  options: { timeoutMs?: number; spawnImpl?: TaskkillSpawn } = {}
 ): Promise<WindowsTaskkillResult> {
   const args = ["/PID", String(pid), "/T"];
   if (force) args.push("/F");
   const spawnImpl = options.spawnImpl || spawn;
   const timeoutMs = Math.max(1, options.timeoutMs ?? 3_000);
   return new Promise((resolve) => {
-    let killer: ReturnType<typeof spawn>;
+    let killer: TaskkillProcess;
     let settled = false;
     let timer: NodeJS.Timeout | null = null;
     const finish = (result: WindowsTaskkillResult) => {
@@ -495,7 +517,7 @@ export async function runWindowsTaskkill(
       return;
     }
     timer = setTimeout(() => {
-      try { killer.kill("SIGKILL"); } catch { /* command may have exited concurrently */ }
+      try { killer.kill("SIGKILL"); } catch (error) { console.debug('[BBDown] taskkill helper already exited during timeout cleanup', error); }
       finish({ ok: false, timedOut: true });
     }, timeoutMs);
     killer.once("error", (error) => finish({ ok: false, timedOut: false, error: error.message }));
@@ -510,13 +532,13 @@ async function terminateDownloadProcessTree(child: ReturnType<typeof spawn>, for
       process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
       return;
     } catch {
-      try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch { /* already exited */ }
+      try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch (error) { console.debug('[BBDown] child already exited after group termination failed', error); }
       return;
     }
   }
   const result = await runWindowsTaskkill(child.pid, force);
   if (result.ok) return;
-  try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch { /* target may already be gone */ }
+  try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch (error) { console.debug('[BBDown] child already exited after taskkill fallback', error); }
   const reason = result.timedOut ? "timed out" : result.error ? "failed to start" : `exited with code ${result.code ?? "unknown"}`;
   console.warn(`[BBDown] taskkill ${reason} for process ${child.pid}; used direct-process fallback`);
 }
@@ -569,9 +591,10 @@ export async function downloadWithBBDown(
     }));
   }
   if (effectivePages.length === 0 && snapshotAvailability === "unknown") {
-    const metadataError: any = new Error("Unable to resolve the current video page list; retrying later");
-    metadataError.deferToNextCycle = true;
-    metadataError.downloadFailureCategory = "transient";
+    const metadataError = withDownloadErrorMetadata(new Error("Unable to resolve the current video page list; retrying later"), {
+      deferToNextCycle: true,
+      downloadFailureCategory: "transient",
+    });
     throw metadataError;
   }
   if (effectivePages.length === 0 && snapshotAvailability === "unavailable") {
@@ -661,10 +684,11 @@ export async function downloadWithBBDown(
   const appAccessToken = needsAppToken ? String(cookie.accessToken || "") : "";
   const appBuvid = needsAppToken ? String(cookie.appBuvid || "") : "";
   if (needsAppToken && !appAccessToken) {
-    const error: any = new Error("APP 接口需要 access token。请重新扫码登录后再启用该模式。");
-    error.permanent = true;
-    error.code = "BBDOWN_APP_TOKEN_MISSING";
-    error.downloadFailureCategory = "account";
+    const error = withDownloadErrorMetadata(new Error("APP 接口需要 access token。请重新扫码登录后再启用该模式。"), {
+      permanent: true,
+      code: "BBDOWN_APP_TOKEN_MISSING",
+      downloadFailureCategory: "account",
+    });
     throw error;
   }
 
@@ -738,8 +762,9 @@ export async function downloadWithBBDown(
             strictQuality: options.expectedQuality,
           }
         );
-      } catch (error: any) {
-        if (runMode !== "app" || !error?.appNoVideoInfo) throw error;
+      } catch (error) {
+        const details = errorRecord(error);
+        if (runMode !== "app" || !details.appNoVideoInfo) throw error;
         appFallbackActive = true;
         logManager.push({
           timestamp: new Date().toISOString(),
@@ -775,8 +800,8 @@ export async function downloadWithBBDown(
     markDownloadSessionStatus(downloadDir, "downloading");
     try {
       await runBBDown(args);
-    } catch (error: any) {
-      if (!Boolean(error?.filenameTooLong)) {
+    } catch (error) {
+      if (!Boolean(errorRecord(error).filenameTooLong)) {
         await preserveInterruptedDownload(downloadDir, error);
         throw error;
       }
@@ -802,7 +827,7 @@ export async function downloadWithBBDown(
 
       try {
         await runBBDown(retryArgs);
-      } catch (retryError: any) {
+      } catch (retryError) {
         await preserveInterruptedDownload(downloadDir, retryError);
         throw retryError;
       }
@@ -839,8 +864,10 @@ export async function downloadWithBBDown(
         throw createSourceUnavailableError(latestSnapshot?.availabilityReason);
       }
       const err = new Error(`BBDown did not complete all pages; remaining ${refreshed.missingPages.length}`);
-      (err as any).deferToNextCycle = true;
-      (err as any).downloadFailureCategory = "transient";
+      withDownloadErrorMetadata(err, {
+        deferToNextCycle: true,
+        downloadFailureCategory: "transient",
+      });
       markDownloadSessionStatus(downloadDir, "failed", err.message);
       throw err;
     }
@@ -885,17 +912,18 @@ export async function downloadWithBBDown(
 }
 
 function createSourceUnavailableError(reason?: VideoPageSnapshotResult["availabilityReason"]) {
-  const unavailableError: any = new Error("Video is unavailable and no verified local pages can be recovered");
-  unavailableError.permanent = true;
-  unavailableError.code = "BILI_VIDEO_UNAVAILABLE";
-  unavailableError.downloadFailureCategory = "source_unavailable";
-  unavailableError.availabilityReason = reason || "api_not_found";
-  return unavailableError;
+  return withDownloadErrorMetadata(new Error("Video is unavailable and no verified local pages can be recovered"), {
+    permanent: true,
+    code: "BILI_VIDEO_UNAVAILABLE",
+    downloadFailureCategory: "source_unavailable",
+    availabilityReason: reason || "api_not_found",
+  });
 }
 
-async function preserveInterruptedDownload(downloadDir: string, error: any) {
+async function preserveInterruptedDownload(downloadDir: string, error: unknown) {
   const refreshed = await refreshDownloadSessionOutputs(downloadDir);
-  const issue = error?.aria2RecoveryIssue as Aria2TrackRecoveryIssue | undefined;
+  const details = errorRecord(error);
+  const issue = details.aria2RecoveryIssue as Aria2TrackRecoveryIssue | undefined;
   if (issue && refreshed?.missingPages.some((page) => page.index === issue.pageIndex)) {
     const moved = await quarantineBrokenAria2Track(downloadDir, issue);
     if (moved > 0) {
@@ -910,7 +938,7 @@ async function preserveInterruptedDownload(downloadDir: string, error: any) {
       });
     }
   }
-  markDownloadSessionStatus(downloadDir, "failed", sanitizeDownloadDiagnosticText(error?.message || String(error)).slice(0, 1000));
+  markDownloadSessionStatus(downloadDir, "failed", sanitizeDownloadDiagnosticText(String(details.message || error)).slice(0, 1000));
 }
 
 export function normalizeEncodingPriority(value: string) {
@@ -1059,7 +1087,7 @@ export function detectAria2TrackRecoveryIssue(output: string): Aria2TrackRecover
 
 function attachAria2RecoveryIssue(error: Error, output: string) {
   const issue = detectAria2TrackRecoveryIssue(output);
-  if (issue) (error as any).aria2RecoveryIssue = issue;
+  if (issue) withDownloadErrorMetadata(error, { aria2RecoveryIssue: issue });
   return error;
 }
 
@@ -1123,8 +1151,8 @@ async function fetchSafeVideoTitle(bvid: string, cookieString: string) {
       },
     });
     if (!response.ok) return bvid;
-    const data: any = await response.json();
-    const title = data?.data?.title;
+    const data = errorRecord(await response.json());
+    const title = errorRecord(data.data).title;
     return sanitizeTitleForPattern(typeof title === "string" ? title : bvid);
   } catch {
     return bvid;
@@ -1182,8 +1210,8 @@ async function getDirectoryTotalSize(dir: string): Promise<number> {
     try {
       const stat = await fs.promises.stat(fullPath);
       total += stat.size;
-    } catch {
-      // file may be renamed by BBDown while sampling
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.debug('[BBDown] failed to sample a cache file size', error);
     }
   }
   return total;
@@ -1582,26 +1610,30 @@ function runCommand(
       }
       const combinedOutput = `${stdoutAll}\n${stderr}`;
       if (riskSignalSeen) {
-        const err: any = new Error("B站播放接口触发风控，下载将在冷却后自动恢复");
-        err.biliRiskControl = true;
-        err.deferToNextCycle = true;
-        err.apiMode = options.effectiveApiMode;
-        err.downloadFailureCategory = "transient";
+        const err = withDownloadErrorMetadata(new Error("B站播放接口触发风控，下载将在冷却后自动恢复"), {
+          biliRiskControl: true,
+          deferToNextCycle: true,
+          apiMode: options.effectiveApiMode,
+          downloadFailureCategory: "transient",
+        });
         rejectOnce(err);
         return;
       }
       if (appNoVideoInfoSeen) {
-        const err: any = new Error("APP 播放接口未返回视频信息");
-        err.appNoVideoInfo = true;
-        err.apiMode = options.effectiveApiMode;
-        err.downloadFailureCategory = "transient";
+        const err = withDownloadErrorMetadata(new Error("APP 播放接口未返回视频信息"), {
+          appNoVideoInfo: true,
+          apiMode: options.effectiveApiMode,
+          downloadFailureCategory: "transient",
+        });
         rejectOnce(err);
         return;
       }
       if (isFilenameTooLongError(combinedOutput) || isFilenameTooLongError(stderr)) {
         const err = new Error(`BBDown output filename too long: ${sanitizeDownloadDiagnosticText(combinedOutput || stderr || "unknown error").slice(0, 1000)}`);
-        (err as any).filenameTooLong = true;
-        (err as any).downloadFailureCategory = "tool";
+        withDownloadErrorMetadata(err, {
+          filenameTooLong: true,
+          downloadFailureCategory: "tool",
+        });
         rejectOnce(err);
         return;
       }
@@ -1611,10 +1643,12 @@ function runCommand(
         const finalizeFailure = (finalLine: string) => {
           const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${finalLine}`), combinedOutput);
           const permanent = failure.category === "source_unavailable";
-          (err as any).permanent = permanent;
-          (err as any).deferToNextCycle = failure.deferToNextCycle;
-          (err as any).downloadFailureCategory = failure.category;
-          if (permanent) (err as any).code = "BILI_VIDEO_UNAVAILABLE";
+          withDownloadErrorMetadata(err, {
+            permanent,
+            deferToNextCycle: failure.deferToNextCycle,
+            downloadFailureCategory: failure.category,
+            ...(permanent ? { code: "BILI_VIDEO_UNAVAILABLE" } : {}),
+          });
           logManager.push({
             timestamp: new Date().toISOString(),
             type: "download",
@@ -1649,7 +1683,7 @@ function runCommand(
             finalizeFailure(finalLine);
           })
           .catch((probeError) => {
-            const finalLine = `${failure.line} [debug probe failed: ${probeError?.message || probeError}]`;
+            const finalLine = `${failure.line} [debug probe failed: ${errorRecord(probeError).message || probeError}]`;
             finalizeFailure(finalLine);
           });
         return;
@@ -1664,22 +1698,26 @@ function runCommand(
       const nonZeroFailure = classifyBBDownFailure(combinedOutput);
       if (nonZeroFailure?.category === "source_unavailable") {
         const err = attachAria2RecoveryIssue(new Error(`视频不可用（已删除、下架或不可见）: ${errMsg}`), combinedOutput);
-        (err as any).permanent = true;
-        (err as any).code = "BILI_VIDEO_UNAVAILABLE";
-        (err as any).downloadFailureCategory = "source_unavailable";
+        withDownloadErrorMetadata(err, {
+          permanent: true,
+          code: "BILI_VIDEO_UNAVAILABLE",
+          downloadFailureCategory: "source_unavailable",
+        });
         rejectOnce(err);
         return;
       }
       if (nonZeroFailure?.deferToNextCycle) {
         const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${nonZeroFailure.line}`), combinedOutput);
-        (err as any).deferToNextCycle = true;
-        (err as any).downloadFailureCategory = "transient";
+        withDownloadErrorMetadata(err, {
+          deferToNextCycle: true,
+          downloadFailureCategory: "transient",
+        });
         rejectOnce(err);
         return;
       }
       if (nonZeroFailure?.category === "tool") {
         const err = attachAria2RecoveryIssue(new Error(`BBDown reported failure: ${nonZeroFailure.line}`), combinedOutput);
-        (err as any).downloadFailureCategory = "tool";
+        withDownloadErrorMetadata(err, { downloadFailureCategory: "tool" });
         rejectOnce(err);
         return;
       }

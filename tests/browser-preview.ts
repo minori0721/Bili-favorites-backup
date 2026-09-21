@@ -31,7 +31,7 @@ if (mode === "degraded") {
   await fs.promises.writeFile(path.join(localDir, ".bfb-download.json"), JSON.stringify({
     schemaVersion: 1,
     sessionId: "preview-upload-session",
-    kind: "backup",
+    kind: "backup" as const,
     bvid,
     accountUid: 1,
     bbdownCommit: "259a5558cee0a349a7ebb60bd31e40c88e5bc1ed",
@@ -40,7 +40,7 @@ if (mode === "degraded") {
     createdAt: now,
     updatedAt: now,
     snapshotAt: now,
-    status: "complete",
+    status: "complete" as const,
     pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
     outputs: [{ pageIndex: 1, cid: 1, relativePath: "preview.mp4", size: 22, duration: 1, videoCodec: "preview", quickHash: "preview", verifiedAt: now }],
     history: [],
@@ -73,8 +73,8 @@ if (mode === "degraded") {
         upperName: "预览 UP",
         firstSeenAt: now,
         lastSeenAt: now,
-        biliStatus: "available",
-        backupStatus: "upload_failed",
+        biliStatus: "available" as const,
+        backupStatus: "upload_failed" as const,
         localDir,
         remotePath: "/backup/preview",
       },
@@ -88,7 +88,7 @@ if (mode === "degraded") {
         firstSeenAt: now,
         lastSeenAt: now,
         activeInFavorite: true,
-        backupStatus: "upload_failed",
+        backupStatus: "upload_failed" as const,
         remotePath: "/backup/preview",
       },
     },
@@ -144,7 +144,7 @@ if (mode === "confirm") {
     lastSeenAt: now,
     biliStatus: unavailable ? "unavailable" : "available",
     favoriteUnavailable: unavailable || undefined,
-    backupStatus: "uploaded",
+    backupStatus: "uploaded" as const,
   });
   const makeRelation = (bvid: string, unavailable: boolean) => ({
     userId: "preview-user",
@@ -155,9 +155,9 @@ if (mode === "confirm") {
     lastSeenAt: now,
     activeInFavorite: true,
     favoriteUnavailable: unavailable || undefined,
-    backupStatus: "uploaded",
+    backupStatus: "uploaded" as const,
     remotePath: "/backup/preview",
-    remoteFiles: [{ name: `${bvid}.mp4`, path: `/backup/preview/${bvid}.mp4`, size: 1024, verificationStatus: "awaiting_verification", putCompletedAt: now, nextVerifyAt: new Date(Date.now() + 10 * 60_000).toISOString() }],
+    remoteFiles: [{ name: `${bvid}.mp4`, path: `/backup/preview/${bvid}.mp4`, size: 1024, verificationStatus: "awaiting_verification" as const, putCompletedAt: now, nextVerifyAt: new Date(Date.now() + 10 * 60_000).toISOString() }],
   });
   const state = {
     schemaVersion: 11,
@@ -189,7 +189,7 @@ if (mode === "charging") {
   await fs.promises.writeFile(path.join(localDir, ".bfb-download.json"), JSON.stringify({
     schemaVersion: 1,
     sessionId: "charging-preview-session",
-    kind: "backup",
+    kind: "backup" as const,
     bvid,
     accountUid: 1,
     bbdownCommit: "test",
@@ -198,7 +198,7 @@ if (mode === "charging") {
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
     snapshotAt: now.toISOString(),
-    status: "failed",
+    status: "failed" as const,
     pages: [{ index: 1, cid: 1, title: "P1", duration: 60 }],
     outputs: [],
     history: [],
@@ -222,8 +222,8 @@ if (mode === "charging") {
         upperName: "雾奈哟",
         firstSeenAt: now.toISOString(),
         lastSeenAt: now.toISOString(),
-        biliStatus: "available",
-        backupStatus: "charging_restricted",
+        biliStatus: "available" as const,
+        backupStatus: "charging_restricted" as const,
         localDir,
         accessRestriction: restriction,
       },
@@ -237,7 +237,7 @@ if (mode === "charging") {
         firstSeenAt: now.toISOString(),
         lastSeenAt: now.toISOString(),
         activeInFavorite: true,
-        backupStatus: "charging_restricted",
+        backupStatus: "charging_restricted" as const,
       },
     },
     folderScans: { "preview-user:1": { userId: "preview-user", mediaId: 1, folderTitle: "充电视频预览", initStatus: "complete", nextHistoryPage: 1, catchupPage: 1, total: 1 } },
@@ -273,7 +273,7 @@ if (mode === "quality") {
     name: `${bvid}-${index}.mp4`,
     path: `/backup/quality-${index}/${bvid}-${index}.mp4`,
     size: 1024,
-    verificationStatus: "verified",
+    verificationStatus: "verified" as const,
     qualityProfile: { quality: "1080P", encoding: "AVC", hiRes: false, dolby: false },
   });
   const state = {
@@ -287,8 +287,8 @@ if (mode === "quality") {
         upperName: "预览 UP",
         firstSeenAt: now.toISOString(),
         lastSeenAt: now.toISOString(),
-        biliStatus: "available",
-        backupStatus: "verified",
+        biliStatus: "available" as const,
+        backupStatus: "verified" as const,
       },
     },
     relations: Object.fromEntries(users.map((item, offset) => {
@@ -301,7 +301,7 @@ if (mode === "quality") {
         firstSeenAt: now.toISOString(),
         lastSeenAt: now.toISOString(),
         activeInFavorite: true,
-        backupStatus: "verified",
+        backupStatus: "verified" as const,
         remotePath: `/backup/quality-${index}`,
         remoteFiles: [remoteFile(index)],
       }];
@@ -388,7 +388,7 @@ if (mode === "detail" || mode === "playback" || mode === "archive") {
         : index === 87
           ? "可搜索定位的深页视频 · SQLite 媒体库队列"
         : `长队列测试视频 ${String(index + 1).padStart(2, "0")}`,
-      status: "verified",
+      status: "verified" as const,
       unavailable: false,
       active: true,
       order: index + 6,
@@ -396,13 +396,13 @@ if (mode === "detail" || mode === "playback" || mode === "archive") {
     }))
     : [];
   const definitions: PreviewDefinition[] = [
-    { bvid: "BVDETAILLOST", title: "已上传后失效但仍应显示归档前完整标题与本地封面", status: "verified", unavailable: true, active: true, order: 1, parts: ["horizontal"] },
-    { bvid: "BVDETAILCONFIRM", title: "上传完成，正在等待远端最终确认", status: "uploaded", unavailable: false, active: true, order: 2, parts: [] },
-    { bvid: "BVDETAILPARTIAL", title: "多分P视频当前只完成了部分备份", status: "partial_verified", unavailable: false, active: true, order: 3, parts: ["horizontal", "vertical"] },
-    { bvid: "BVDETAILCHARGE", title: "充电专属视频等待七日权限复查", status: "charging_restricted", unavailable: false, active: true, order: 4, parts: [] },
-    { bvid: "BVDETAILFAILED", title: "下载失败后保留诊断状态的视频", status: "failed", unavailable: false, active: true, order: 5, parts: [] },
+    { bvid: "BVDETAILLOST", title: "已上传后失效但仍应显示归档前完整标题与本地封面", status: "verified" as const, unavailable: true, active: true, order: 1, parts: ["horizontal"] },
+    { bvid: "BVDETAILCONFIRM", title: "上传完成，正在等待远端最终确认", status: "uploaded" as const, unavailable: false, active: true, order: 2, parts: [] },
+    { bvid: "BVDETAILPARTIAL", title: "多分P视频当前只完成了部分备份", status: "partial_verified" as const, unavailable: false, active: true, order: 3, parts: ["horizontal", "vertical"] },
+    { bvid: "BVDETAILCHARGE", title: "充电专属视频等待七日权限复查", status: "charging_restricted" as const, unavailable: false, active: true, order: 4, parts: [] },
+    { bvid: "BVDETAILFAILED", title: "下载失败后保留诊断状态的视频", status: "failed" as const, unavailable: false, active: true, order: 5, parts: [] },
     ...extendedPlaybackQueue,
-    { bvid: "BVDETAILHISTORY", title: "已经移出收藏夹但备份证据仍然保留的历史记录", status: "verified", unavailable: false, active: false, order: 0, parts: ["vertical"] },
+    { bvid: "BVDETAILHISTORY", title: "已经移出收藏夹但备份证据仍然保留的历史记录", status: "verified" as const, unavailable: false, active: false, order: 0, parts: ["vertical"] },
   ];
   const remoteFilesFor = (item: PreviewDefinition) => item.parts.map((orientation, index) => {
     const name = `${item.bvid}_P${index + 1}.mp4`;
@@ -424,7 +424,7 @@ if (mode === "detail" || mode === "playback" || mode === "archive") {
       name,
       path: remotePath,
       size: content.length,
-      verificationStatus: "verified",
+      verificationStatus: "verified" as const,
       qualityProfile: { quality: "4K", encoding: "HEVC", hiRes: false, dolby: false },
       mediaMetadata,
       filenameMetadata: {
@@ -469,7 +469,7 @@ if (mode === "detail" || mode === "playback" || mode === "archive") {
       result: "other_restricted",
     } : undefined,
   }]));
-  const relations: Record<string, any> = Object.fromEntries(definitions.map((item) => [`preview-user:1:${item.bvid}`, {
+  const relations: Record<string, Record<string, unknown>> = Object.fromEntries(definitions.map((item) => [`preview-user:1:${item.bvid}`, {
     userId: "preview-user",
     mediaId: 1,
     bvid: item.bvid,

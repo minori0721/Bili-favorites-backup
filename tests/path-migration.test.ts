@@ -1,16 +1,19 @@
+import { required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { StateDatabase } from "../src/database.js";
 import { PathMigrationService, probePathMigrationDavCapabilities, validateArchiveMigrationRoots, type PathMigrationDavClient } from "../src/path-migration.js";
+import { testConfig } from './helpers.js';
+import type { AppConfig } from '../src/config.js';
 
-function fakeConfig(overrides: Record<string, unknown> = {}) {
-  return {
+function fakeConfig(overrides: Partial<AppConfig> = {}) {
+  return testConfig({
     alistUrl: "http://alist:5244",
     alistUsername: "admin",
     alistPassword: "secret",
     alistDest: "/drive/old",
     ...overrides,
-  } as any;
+  });
 }
 
 class FakeDav implements PathMigrationDavClient {
@@ -77,14 +80,14 @@ class FakeDav implements PathMigrationDavClient {
   }
 }
 
-function fakeStore(config: any) {
+function fakeStore(config: AppConfig) {
   return {
     get: () => ({ ...config }),
-    update: (patch: any) => Object.assign(config, patch),
-  } as any;
+    update: (patch: Partial<AppConfig>) => Object.assign(config, patch),
+  };
 }
 
-async function waitFor(service: PathMigrationService, predicate: (state: any) => boolean) {
+async function waitFor(service: PathMigrationService, predicate: (state: unknown) => boolean) {
   for (let i = 0; i < 100; i += 1) {
     const state = service.getState();
     if (state && predicate(state)) return state;
@@ -94,7 +97,7 @@ async function waitFor(service: PathMigrationService, predicate: (state: any) =>
 }
 
 test("path migration validates mount boundaries and nesting", () => {
-  assert.deepEqual(validateArchiveMigrationRoots("/drive/old", "/drive/new"), { source: "/drive/old", destination: "/drive/new" });
+  assert.deepEqual(validateArchiveMigrationRoots("/drive/old", "/drive/new"), { source: "/drive/old" as const, destination: "/drive/new" });
   assert.throws(() => validateArchiveMigrationRoots("/drive/old", "/drive/old/sub"), /嵌套/);
   assert.throws(() => validateArchiveMigrationRoots("/drive/old", "/other/new"), /同一 .*挂载/);
   assert.throws(() => validateArchiveMigrationRoots("relative", "/drive/new"), /绝对路径/);
@@ -107,7 +110,7 @@ test("restarting a scanning path migration clears stale preview items before res
     sourceRoot: "/drive/old",
     destinationRoot: "/drive/new",
     alistIdentityHash: "hash",
-    status: "scanning",
+    status: "scanning" as const,
     sourceManifestHash: "stale-hash",
     entryCount: 8,
     fileCount: 5,
@@ -127,7 +130,7 @@ test("restarting a scanning path migration clears stale preview items before res
     expectedSize: 10,
     sourcePath: "/drive/old/old.mp4",
     destinationPath: "/drive/new/old.mp4",
-    status: "conflict",
+    status: "conflict" as const,
     attempts: 2,
     nextAttemptAt: 100,
     createdAt: 1,
@@ -140,7 +143,7 @@ test("restarting a scanning path migration clears stale preview items before res
     assert.equal(record.entryCount, 0);
     assert.equal(record.totalBytes, 0);
     assert.equal(record.lastError, undefined);
-    assert.equal(db.db.prepare("SELECT COUNT(*) AS count FROM path_migration_items WHERE migration_id=?").get("migration-stale-scan")!.count, 0);
+    assert.equal(db.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM path_migration_items WHERE migration_id=?").get("migration-stale-scan")!.count, 0);
     assert.equal(db.resetPathMigrationPreview("migration-stale-scan"), true);
   } finally {
     db.close();
@@ -174,9 +177,9 @@ test("path migration fails closed on the first real COPY when COPY is unavailabl
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "paused");
+  await waitFor(service, (state) => readField(state, 'status') === "paused");
   assert.equal(dav.copies.length, 0);
   assert.equal(config.alistDest, "/drive/old");
   await service.stop();
@@ -193,12 +196,12 @@ test("path migration copies the complete tree, switches state, and keeps the old
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   assert.equal(preview.sourceRoot, "/drive/old");
   assert.equal(service.getState()?.entryCount, 4);
   assert.equal(service.getState()?.extraCount, 0);
   await service.start(preview.id);
-  const switched = await waitFor(service, (state) => state.status === "cleanup_pending");
+  const switched = await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   assert.equal(switched.conflictCount, 0);
   assert.equal(config.alistDest, "/drive/new");
   assert.equal(dav.copies.length, 2);
@@ -220,9 +223,9 @@ test("path migration cleanup deletes the old tree only after target verification
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
 
   const result = await service.cleanupOld(preview.id, false);
   assert.equal(result?.status, "completed");
@@ -241,9 +244,9 @@ test("path migration cleanup atomically excludes concurrent keep and delete requ
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
 
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -260,11 +263,11 @@ test("path migration cleanup atomically excludes concurrent keep and delete requ
   while (!blocked) await new Promise((resolve) => setTimeout(resolve, 1));
   await assert.rejects(
     () => service.cleanupOld(preview.id, true),
-    (error: any) => error?.statusCode === 409
+    (error: unknown) => readField(error, 'statusCode') === 409
   );
   await assert.rejects(
     () => service.cleanupOld(preview.id, false),
-    (error: any) => error?.statusCode === 409
+    (error: unknown) => readField(error, 'statusCode') === 409
   );
   release();
   await deleting;
@@ -282,9 +285,9 @@ test("path migration cleanup failures return to manual confirmation", async () =
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   dav.deleteFile = async () => { throw Object.assign(new Error("remote denied"), { status: 403 }); };
 
   await assert.rejects(() => service.cleanupOld(preview.id, false), /remote denied/);
@@ -303,7 +306,7 @@ test("interrupted path cleanup never resumes deletion automatically", async () =
     sourceRoot: "/drive/old",
     destinationRoot: "/drive/new",
     alistIdentityHash: "hash",
-    status: "cleanup_running",
+    status: "cleanup_running" as const,
     sourceManifestHash: "hash",
     entryCount: 0,
     fileCount: 0,
@@ -334,9 +337,9 @@ test("path migration creates a missing nested destination root", async () => {
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/fresh/nested");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   assert.equal(dav.files.get("/drive/fresh")?.type, "directory");
   assert.equal(dav.files.get("/drive/fresh/nested")?.type, "directory");
   assert.ok(dav.files.has("/drive/fresh/nested/视频.mp4"));
@@ -360,7 +363,7 @@ test("cancelling a slow preview cannot be overwritten by its late completion", a
   };
   const service = new PathMigrationService(db, fakeStore(config), { clientFactory: () => dav });
   const preview = await service.preview("/drive/new");
-  assert.equal(service.cancel(preview.id).status, "cancelled");
+  assert.equal(required(service.cancel(preview.id)).status, "cancelled");
   release();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(service.getState()?.status, "cancelled");
@@ -395,14 +398,49 @@ test("stopping a slow path preview prevents late SQLite writes", async () => {
   db.close();
 });
 
-test("waitForIdle waits for a preview that is still starting", async () => {
+test("waitForIdle waits for start preflight through its public operation", async () => {
   const db = new StateDatabase(":memory:");
-  const service = new PathMigrationService(db, fakeStore(fakeConfig()), { clientFactory: () => new FakeDav() });
-  (service as any).starting = true;
-  const waiting = service.waitForIdle(250);
-  setTimeout(() => { (service as any).starting = false; }, 30);
-  assert.equal(await waiting, true);
-  db.close();
+  const dav = new FakeDav();
+  const service = new PathMigrationService(db, fakeStore(fakeConfig()), { clientFactory: () => dav });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const preview = await service.preview("/drive/new");
+    await waitFor(service, state => readField(state, 'status') === 'ready');
+    const original = dav.getDirectoryContents.bind(dav);
+    let entered!: () => void;
+    const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+    dav.getDirectoryContents = async directory => { entered(); await gate; return original(directory); };
+    const starting = service.start(preview.id);
+    await enteredGate;
+    assert.equal(await service.waitForIdle(10), false);
+    release();
+    await starting;
+    assert.equal(await service.waitForIdle(1000), true);
+  } finally {
+    release();
+    await service.stop(1000);
+    db.close();
+  }
+});
+
+test("stop keeps the lifecycle barrier until the persistent lease is released", async () => {
+  const db = new StateDatabase(":memory:");
+  let releaseAttempts = 0;
+  const service = new PathMigrationService(db, fakeStore(fakeConfig()), {
+    releaseOwner: () => {
+      releaseAttempts += 1;
+      if (releaseAttempts === 1) throw new Error("lease store unavailable");
+      return 0;
+    },
+  });
+  try {
+    assert.equal(await service.stop(100), false);
+    assert.equal(await service.stop(100), true);
+    assert.equal(releaseAttempts, 2);
+  } finally {
+    db.close();
+  }
 });
 
 test("path migration active index permits only one unfinished migration", () => {
@@ -422,9 +460,9 @@ test("path migration active index permits only one unfinished migration", () => 
     conflictCount: 0,
     extraCount: 0,
   };
-  db.createPathMigration({ id: "active-one", status: "scanning", ...record });
+  db.createPathMigration({ id: "active-one", status: "scanning" as const, ...record });
   assert.throws(
-    () => db.createPathMigration({ id: "active-two", status: "ready", ...record }),
+    () => db.createPathMigration({ id: "active-two", status: "ready" as const, ...record }),
     /UNIQUE constraint failed/
   );
   db.close();
@@ -441,10 +479,10 @@ test("reusable targets are revalidated before switching and missing files are co
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   dav.files.delete("/drive/new/视频.mp4");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   assert.ok(dav.copies.some(([source, destination]) => source === "/drive/old/视频.mp4" && destination === "/drive/new/视频.mp4"));
   assert.equal(config.alistDest, "/drive/new");
   db.close();
@@ -461,10 +499,10 @@ test("a reusable target that changes size pauses instead of switching", async ()
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   dav.files.set("/drive/new/视频.mp4", { type: "file", size: 99 });
   await service.start(preview.id);
-  const paused = await waitFor(service, (state) => state.status === "paused");
+  const paused = await waitFor(service, (state) => readField(state, 'status') === "paused");
   assert.equal(paused.conflictCount, 1);
   assert.equal(config.alistDest, "/drive/old");
   db.close();
@@ -475,12 +513,12 @@ test("remote entries with traversal segments fail the preview", async () => {
   const config = fakeConfig();
   const dav = new FakeDav();
   dav.getDirectoryContents = async (directory: string) => {
-    if (directory === "/drive/old") return [{ filename: "/drive/old/../outside.mp4", type: "file", size: 1 }];
+    if (directory === "/drive/old") return [{ filename: "/drive/old/../outside.mp4", basename: "outside.mp4", type: "file", size: 1 }];
     return [];
   };
   const service = new PathMigrationService(db, fakeStore(config), { clientFactory: () => dav });
   const preview = await service.preview("/drive/new");
-  const failed = await waitFor(service, (state) => state.status === "failed");
+  const failed = await waitFor(service, (state) => readField(state, 'status') === "failed");
   assert.match(failed.lastError || "", /非法相对路径/);
   assert.equal(preview.sourceRoot, "/drive/old");
   db.close();
@@ -494,7 +532,7 @@ test("path migration reuses same-size files and blocks size conflicts", async ()
   dav.files.set("/drive/new/_history/旧文件.mp4", { type: "file", size: 99 });
   const service = new PathMigrationService(db, fakeStore(config), { clientFactory: () => dav, sleep: async () => undefined });
   await service.preview("/drive/new");
-  const state = await waitFor(service, (current) => current.status === "failed");
+  const state = await waitFor(service, (current) => readField(current, 'status') === "failed");
   assert.equal(state.reusableCount, 1);
   assert.equal(state.conflictCount, 1);
   await assert.rejects(() => service.start(), /就绪预览/);
@@ -523,9 +561,9 @@ test("path migration verifies delayed COPY visibility without copying twice", as
     sleep: async (delay) => { now += delay; },
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   await service.start(preview.id);
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   assert.equal(dav.copies.filter(([, destination]) => destination === "/drive/new/视频.mp4").length, 1);
   assert.equal(hiddenChecks, 0);
   db.close();
@@ -541,7 +579,7 @@ test("path migration rechecks a persisted copying item before resuming", async (
     sourceRoot: "/drive/old",
     destinationRoot: "/drive/new",
     alistIdentityHash: "hash",
-    status: "copying",
+    status: "copying" as const,
     sourceManifestHash: "hash",
     entryCount: 1,
     fileCount: 1,
@@ -560,7 +598,7 @@ test("path migration rechecks a persisted copying item before resuming", async (
     expectedSize: 11,
     sourcePath: "/drive/old/视频.mp4",
     destinationPath: "/drive/new/视频.mp4",
-    status: "copying",
+    status: "copying" as const,
     attempts: 1,
     nextAttemptAt: 0,
     verificationStartedAt: Date.now(),
@@ -572,7 +610,7 @@ test("path migration rechecks a persisted copying item before resuming", async (
     sleep: async () => undefined,
   });
   await service.resumePersisted();
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   assert.equal(dav.copies.length, 0);
   db.close();
 });
@@ -589,7 +627,7 @@ test("path migration locks scheduling during its source recheck", async () => {
     sleep: async () => undefined,
   });
   const preview = await service.preview("/drive/new");
-  await waitFor(service, (state) => state.status === "ready");
+  await waitFor(service, (state) => readField(state, 'status') === "ready");
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const originalList = dav.getDirectoryContents.bind(dav);
@@ -607,7 +645,7 @@ test("path migration locks scheduling during its source recheck", async () => {
   await assert.rejects(() => service.start(preview.id), /开始前复核/);
   release();
   await starting;
-  await waitFor(service, (state) => state.status === "cleanup_pending");
+  await waitFor(service, (state) => readField(state, 'status') === "cleanup_pending");
   assert.equal(maintenance.at(-1), false);
   db.close();
 });
@@ -632,15 +670,17 @@ test("path migration rewrites only known archive path fields and task keys", () 
   db.db.prepare("INSERT INTO jobs(id,kind,dedupe_key,bvid,user_id,media_id,status,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
     .run("job1", "verify_upload", "verify:u1:1:BVPATH:main:/drive/old/video/video.mp4", "BVPATH", "u1", 1, "pending", JSON.stringify({ remoteFile: "/drive/old/video/video.mp4", remotePath: "/drive/old/video" }), Date.now(), Date.now());
   db.rewriteArchiveRoot("migration", "/drive/old", "/drive/new");
-  const video = JSON.parse(String((db.db.prepare("SELECT payload_json FROM videos WHERE bvid='BVPATH'").get() as any).payload_json));
+  const video = JSON.parse(String(required((db.db.prepare<unknown[], { "payload_json": string }>("SELECT payload_json FROM videos WHERE bvid='BVPATH'").get())).payload_json));
   assert.equal(video.remotePath, "/drive/new/video");
   assert.equal(video.title, "keep /drive/old/text");
-  const relation = JSON.parse(String((db.db.prepare("SELECT payload_json FROM favorite_relations WHERE bvid='BVPATH'").get() as any).payload_json));
+  const relation = JSON.parse(String(required((db.db.prepare<unknown[], { "payload_json": string }>("SELECT payload_json FROM favorite_relations WHERE bvid='BVPATH'").get())).payload_json));
   assert.equal(relation.remoteConflictArchives[0].archivePath, "/drive/new/video/_history/old");
   assert.equal(relation.remoteConflictArchives[0].files[0].archivedPath, "/drive/new/video/_history/old/video.mp4");
-  assert.equal((db.db.prepare("SELECT remote_path FROM remote_files").get() as any).remote_path, "/drive/new/video/video.mp4");
-  const job = db.db.prepare("SELECT dedupe_key,payload_json FROM jobs WHERE id='job1'").get() as any;
+  assert.equal(required((db.db.prepare<unknown[], { "remote_path": string }>("SELECT remote_path FROM remote_files").get())).remote_path, "/drive/new/video/video.mp4");
+  const job = db.db.prepare<unknown[], { "dedupe_key": string; "payload_json": string }>("SELECT dedupe_key,payload_json FROM jobs WHERE id='job1'").get();
+  assert.ok(job);
   assert.equal(job.dedupe_key, "verify:u1:1:BVPATH:main:/drive/new/video/video.mp4");
+  assert.ok(job);
   assert.equal(JSON.parse(job.payload_json).remotePath, "/drive/new/video");
   db.close();
 });
@@ -656,8 +696,8 @@ test("path migration SQL path matching treats wildcard characters literally", ()
   db.db.prepare("INSERT INTO remote_files(bvid,user_id,media_id,name,remote_path,status,updated_at) VALUES(?,?,?,?,?,?,?)")
     .run("BVOTHER", "u1", 2, "other.mp4", "/drive/oldXroot/other.mp4", "verified", Date.now());
   db.rewriteArchiveRoot("migration", "/drive/old_root", "/drive/new_root");
-  const paths = db.db.prepare("SELECT bvid,remote_path FROM remote_files ORDER BY bvid").all() as any[];
-  assert.deepEqual(paths.map((row) => [row.bvid, row.remote_path]), [
+  const paths = db.db.prepare<unknown[], { "bvid": string; "remote_path": string }>("SELECT bvid,remote_path FROM remote_files ORDER BY bvid").all() as unknown[];
+  assert.deepEqual(paths.map((row) => [readField(row, 'bvid'), readField(row, 'remote_path')]), [
     ["BVMATCH", "/drive/new_root/match.mp4"],
     ["BVOTHER", "/drive/oldXroot/other.mp4"],
   ]);
@@ -671,7 +711,7 @@ test("path migration retry scheduling returns the earliest persisted retry time"
     sourceRoot: "/drive/old",
     destinationRoot: "/drive/new",
     alistIdentityHash: "hash",
-    status: "copying",
+    status: "copying" as const,
     entryCount: 1,
     fileCount: 1,
     directoryCount: 0,
@@ -689,7 +729,7 @@ test("path migration retry scheduling returns the earliest persisted retry time"
     expectedSize: 1,
     sourcePath: "/drive/old/video.mp4",
     destinationPath: "/drive/new/video.mp4",
-    status: "failed",
+    status: "failed" as const,
     attempts: 1,
     nextAttemptAt: 5_000,
     createdAt: 0,

@@ -17,13 +17,13 @@ for (const failure of ['proof', 'completion', 'none'] as const) {
       const sessions = new TransferSessionStore(state.getDatabase());
       const jobs = new PersistentJobStore(state.getDatabase());
       const session = sessions.ensure({ dedupeKey: 'recover', bvid, localDir: directory, remotePath: '/backup' });
-      const job = jobs.enqueue({ kind: 'upload', dedupeKey: 'recover', bvid, userId: 'u', mediaId: 1,
+      const job = jobs.enqueue({ kind: 'upload' as const, dedupeKey: 'recover', bvid, userId: 'u', mediaId: 1,
         initialStatus: 'manual_wait', payload: { awaitingManualRecovery: true, sessionId: session.id, sessionGeneration: session.generation } });
       const before = state.getStateSnapshot();
       const result = commitRetainedRecovery({ state, sessions, jobs: {
         findById: id => jobs.findById(id), complete: id => failure === 'completion' ? false : jobs.complete(id),
-      } }, job.id, { status: 'verified', remotePath: '/backup', verifiedAt: new Date().toISOString(),
-        files: failure === 'proof' ? [] : [{ name: 'v.mp4', path: '/backup/v.mp4', size: 12, verificationStatus: 'verified' }] });
+      } }, job.id, { status: 'verified' as const, remotePath: '/backup', verifiedAt: new Date().toISOString(),
+        files: failure === 'proof' ? [] : [{ name: 'v.mp4', path: '/backup/v.mp4', size: 12, verificationStatus: 'verified' as const }] });
       if (failure === 'none') {
         assert.ok(result);
         assert.equal(sessions.get(session.id)?.phase, 'superseded');
@@ -51,7 +51,7 @@ test('verified recovery rejects changed persisted evidence and rolls back a fail
     sessions.ensureFile(session.id, { relativePath: 'v.mp4', name: 'v.mp4', expectedSize: 12 }, session.generation);
     sessions.updateFile(session.id, 'v.mp4', { putAcceptedAt: 100 }, session.generation);
     const files = sessions.listFiles(session.id, session.generation);
-    const job = jobs.enqueue({ kind: 'upload', dedupeKey: 'recover', bvid, userId: 'u', mediaId: 1,
+    const job = jobs.enqueue({ kind: 'upload' as const, dedupeKey: 'recover', bvid, userId: 'u', mediaId: 1,
       initialStatus: 'manual_wait', payload: { awaitingManualRecovery: true, sessionId: session.id, sessionGeneration: session.generation } });
     const command = { job, session, files, expectedGeneration: session.generation, now: 200, cleanupPlan: null,
       verifiedFiles: [{ name: 'v.mp4', path: files[0].finalPath, size: 12, verificationStatus: 'verified' as const }] };

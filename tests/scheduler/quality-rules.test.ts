@@ -15,8 +15,8 @@ test('quality target projection deduplicates by account and archive source', () 
     ],
   });
   assert.deepEqual(targets.map(target => target.remotePath), ['/new', '/b']);
-  assert.equal(resolveQualityUpgradeTarget({ kind: 'quality_replace', userId: 'u1', mediaId: 1 }, {}, targets)?.remotePath, '/new');
-  assert.equal(resolveQualityUpgradeTarget({ kind: 'quality_download', userId: undefined, mediaId: undefined }, { target: { userId: 'u2', mediaId: 2 } }, targets)?.remotePath, '/b');
+  assert.equal(resolveQualityUpgradeTarget({ kind: 'quality_replace' as const, userId: 'u1', mediaId: 1 }, {}, targets)?.remotePath, '/new');
+  assert.equal(resolveQualityUpgradeTarget({ kind: 'quality_download' as const, userId: undefined, mediaId: undefined }, { target: { userId: 'u2', mediaId: 2 } }, targets)?.remotePath, '/b');
 });
 
 test('quality proof files prefer the persisted relation and otherwise merge payload files', () => {

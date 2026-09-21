@@ -1,5 +1,5 @@
 import { UploadTask, QualityUpgradeUploadReplaceTask, QualityUpgradeReplaceTask, QualityUpgradeCleanupTask, type QualityUpgradeTask } from '../tasks.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText, REMOTE_SINGLE_FILE_SIZE_LIMIT_CODE, type UploadFailureInfo, type UploadCircuitBreaker } from '../upload-health.js';
 import { strictEncodingDiagnosticPatch, strictQualityDiagnosticPatch } from '../download-session.js';
@@ -12,7 +12,7 @@ function isQualityUploadPhaseTask(task: unknown): task is QualityUploadPhaseTask
   return task instanceof QualityUpgradeUploadReplaceTask || task instanceof QualityUpgradeReplaceTask || task instanceof QualityUpgradeCleanupTask;
 }
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'complete' | 'findById' | 'updatePayload' | 'parkManualRecovery' | 'retryIndefinitely' | 'retry'>;
+  jobStore: Pick<JobRepository, 'complete' | 'findById' | 'updatePayload' | 'parkManualRecovery' | 'retryIndefinitely' | 'retry'>;
   uploadCircuit: Pick<UploadCircuitBreaker, 'getRetryAt' | 'getSnapshot'>;
   downloadQueue: { poke(): void };
   leaseOwner: string;
@@ -110,16 +110,16 @@ export function createUploadFailureHandler(dependencies: Dependencies) {
           if (task instanceof QualityUpgradeCleanupTask) {
             const attempts = Number(task.persistentJob?.attempts || 0);
             const circuitRetryAt = deps.uploadCircuit.getRetryAt();
-            const retryAt = circuitRetryAt && circuitRetryAt > Date.now()
+            const retryAt = circuitRetryAt && circuitRetryAt > deps.now()
               ? circuitRetryAt
-              : Date.now() + computeQualityCleanupRetryDelayMs(attempts, deps.random);
+              : deps.now() + computeQualityCleanupRetryDelayMs(attempts, deps.random);
             deps.jobStore.retryIndefinitely(task.persistentJobId, deps.leaseOwner, failure.summary, retryAt);
             task.control.qualityStageLabel = "旧文件清理重试中";
             deps.syncQualityUpgradeControl(task, "retry_wait");
             deps.dispatchPersistentJobs();
             return;
           }
-           const retryAt = deps.uploadCircuit.getRetryAt() || Date.now() + Math.max(60_000, failure.retryAfterMs || 0);
+           const retryAt = deps.uploadCircuit.getRetryAt() || deps.now() + Math.max(60_000, failure.retryAfterMs || 0);
            const result = deps.jobStore.retry(task.persistentJobId, deps.leaseOwner, failure.summary, retryAt);
            const automaticRecovery = result.exhausted
              ? deps.queueAutomaticQualityRecovery(task.persistentJobId, failure)
@@ -141,7 +141,7 @@ export function createUploadFailureHandler(dependencies: Dependencies) {
           const assessment = remoteSizeLimit
             ? {
               kind: "remote_size_limit" as const,
-              checkedAt: Date.now(),
+              checkedAt: deps.now(),
               localStatus: "available" as const,
               remoteStatus: "size_limit" as const,
               remoteErrorCode: failure.remoteErrorCode,
@@ -152,7 +152,7 @@ export function createUploadFailureHandler(dependencies: Dependencies) {
             : remoteWriteRejected
               ? {
                 kind: "remote_write_rejected" as const,
-                checkedAt: Date.now(),
+                checkedAt: deps.now(),
                 localStatus: "available" as const,
                 remoteStatus: "missing" as const,
                 writeStatus: failure.remoteWriteStatus || failure.status,
@@ -165,7 +165,7 @@ export function createUploadFailureHandler(dependencies: Dependencies) {
             : manualConflict
               ? {
                 kind: "remote_size_conflict" as const,
-                checkedAt: Date.now(),
+                checkedAt: deps.now(),
                 localStatus: "available" as const,
                 remoteStatus: "mismatch" as const,
                 summary: "正式远端路径存在冲突文件；系统会把当前完整候选放入隔离目录，不覆盖原文件。",
@@ -212,7 +212,7 @@ export function createUploadFailureHandler(dependencies: Dependencies) {
         const retryDelayMs = error?.uploadSessionTransient
           ? computeUploadSessionRetryDelayMs(Number(task.persistentJob?.attempts || 0))
           : (isolatedDeterministicFailure ? ISOLATED_DETERMINISTIC_UPLOAD_RETRY_MS : Math.max(60_000, failure.retryAfterMs || 0));
-        const retryAt = uploadHealth.retryAt || Date.now() + retryDelayMs;
+        const retryAt = uploadHealth.retryAt || deps.now() + retryDelayMs;
         if (!task.historyOnly) {
           deps.markUploadTaskFailed(task, failure.summary);
         }

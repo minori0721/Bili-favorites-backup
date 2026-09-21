@@ -145,7 +145,7 @@ export function createMigration(dependencies: {
                     if (isRecord(body) && typeof body.message === 'string')
                         text = body.message;
                 }
-                catch { }
+                catch (parseError) { console.debug('[Migration] failed to parse structured error details', parseError); }
                 throw new Error(text);
             }
             const blob = await response.blob();
@@ -157,7 +157,7 @@ export function createMigration(dependencies: {
                 try {
                     filename = decodeURIComponent(match[1]);
                 }
-                catch { }
+                catch (decodeError) { console.debug('[Migration] download filename header was not URI encoded', decodeError); }
             }
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');

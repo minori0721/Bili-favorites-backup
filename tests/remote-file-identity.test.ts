@@ -17,11 +17,11 @@ function fixture(count = 1): StateFile {
   for (let n = 0; n < count; n++) {
     const bvid = `BVFIXTURE${String(n).padStart(5, '0')}`;
     const file: RemoteFileRecord = { name: 'part.mp4', path: `/archive/${bvid}/part.mp4`, size: 42,
-      verificationStatus: 'verified', putCompletedAt: at };
+      verificationStatus: 'verified' as const, putCompletedAt: at };
     state.videos![bvid] = { bvid, title: 'Fixture', upperName: 'Fixture', firstSeenAt: at, lastSeenAt: at,
-      backupStatus: 'verified', biliStatus: 'available', remotePath: `/archive/${bvid}`, remoteFiles: [file] };
+      backupStatus: 'verified' as const, biliStatus: 'available' as const, remotePath: `/archive/${bvid}`, remoteFiles: [file] };
     state.relations![`u:1:${bvid}`] = { userId: 'u', mediaId: 1, bvid, folderTitle: 'Fixture',
-      firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: 'verified',
+      firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: 'verified' as const,
       remotePath: `/archive/${bvid}`, remoteFiles: [structuredClone(file)] };
   }
   return state;
@@ -140,10 +140,10 @@ test('source removal preserves shared references; duplicate input rolls back the
     const source = state.relations![`u:1:${bvid}`];
     state.relations![`u:2:${bvid}`] = { ...structuredClone(source), mediaId: 2 };
     db.replaceState(state);
-    const originalRows = db.db.prepare('SELECT * FROM remote_files ORDER BY id').all();
+    const originalRows = db.db.prepare<unknown[], { "id": number; "bvid": string; "user_id": string; "media_id": number; "kind": string; "local_relative_path": string | null; "name": string; "remote_path": string; "expected_size": number | null; "status": string; "quality_json": string | null; "actual_width": number | null; "actual_height": number | null; "actual_fps": number | null; "actual_duration": number | null; "actual_codec": string | null; "actual_metadata_source": string | null; "actual_metadata_at": number | null; "put_completed_at": number | null; "verify_attempts": number; "next_verify_at": number | null; "last_error": string | null; "updated_at": number }>('SELECT * FROM remote_files ORDER BY id').all();
     source.remoteFiles!.push(structuredClone(source.remoteFiles![0]));
     assert.throws(() => db.flushState(state, dirty(bvid)), /Duplicate remote file/);
-    assert.deepEqual(db.db.prepare('SELECT * FROM remote_files ORDER BY id').all(), originalRows);
+    assert.deepEqual(db.db.prepare<unknown[], { "id": number; "bvid": string; "user_id": string; "media_id": number; "kind": string; "local_relative_path": string | null; "name": string; "remote_path": string; "expected_size": number | null; "status": string; "quality_json": string | null; "actual_width": number | null; "actual_height": number | null; "actual_fps": number | null; "actual_duration": number | null; "actual_codec": string | null; "actual_metadata_source": string | null; "actual_metadata_at": number | null; "put_completed_at": number | null; "verify_attempts": number; "next_verify_at": number | null; "last_error": string | null; "updated_at": number }>('SELECT * FROM remote_files ORDER BY id').all(), originalRows);
     const shared = queue(db, 2).items[0].parts[0];
     source.remoteFiles = [];
     db.flushState(state, dirty(bvid));
@@ -210,6 +210,6 @@ test('startup recovery traverses all verification pages and preserves delayed ex
     assert.deepEqual(manager.getDatabase().db.prepare("SELECT count(*) count,min(not_before) earliest,max(not_before) latest FROM jobs WHERE kind='verify_upload'").get(),
       { count: 10_001, earliest: Date.parse(future), latest: Date.parse(future) });
     recovery.resumePersistedWork();
-    assert.deepEqual(manager.getDatabase().db.prepare('SELECT count(*) count FROM jobs').get(), { count: 10_001 });
+    assert.deepEqual(manager.getDatabase().db.prepare<unknown[], { "count": number }>('SELECT count(*) count FROM jobs').get(), { count: 10_001 });
   } finally { manager.close(); await removeTestDir(directory); }
 });

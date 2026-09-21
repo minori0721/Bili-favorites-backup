@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { BBDownEncoding } from '../config.js';
 import type { PersistentJobRecord } from '../database.js';
 import type { StateManager, RemoteFileRecord, RemoteFileMediaMetadata, RemoteFileFilenameMetadata } from '../state.js';
-import type { TransferSessionStore } from '../transfer-session.js';
+import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import { normalizeRemotePath, remoteDirname } from '../remote-path.js';
 import { sanitizeUploadText, type RemoteWriteEvidence } from '../upload-health.js';
@@ -94,7 +94,7 @@ export function parseExistingArchiveProof(payload: unknown): ExistingArchiveProo
   };
 }
 
-export function verifiedFilesFromRecovery(payload: unknown, files: ReturnType<TransferSessionStore['listFiles']>): RemoteFileRecord[] {
+export function verifiedFilesFromRecovery(payload: unknown, files: ReturnType<TransferSessionRepository['listFiles']>): RemoteFileRecord[] {
   const metadata = record(record(payload).filenameMetadataByPath);
   return files.map(file => {
     const fileMetadata = record(metadata[file.relativePath.replace(/\\/g, '/')]);
@@ -124,15 +124,25 @@ export function isVerifiedArchiveProofForRecovery(payload: unknown, proof: Exist
     const requestedFiles = Array.isArray(item.files) ? Array.from(new Set(item.files.map(value => String(value || '').replace(/\\/g, '/')).filter(Boolean))) : [];
     if (proofNames.some(name => !name) || new Set(proofNames).size !== proofNames.length || requestedFiles.length === 0
       || requestedFiles.length !== proofNames.length || requestedFiles.some(name => !proofNames.includes(name))) return false;
+    const pathMatches = (filePath: string) => {
+      try {
+        return remoteDirname(normalizeRemotePath(filePath, { allowRoot: false })) === proofDirectory;
+      // boundary-critical: malformed persisted paths cannot authorize a recovery.
+      } catch {
+        return false;
+      }
+    };
     return proof.files.every(file => file.verificationStatus === 'verified' && Number.isFinite(Number(file.size)) && Number(file.size) > 0
-      && (() => { try { return remoteDirname(normalizeRemotePath(String(file.path || ''), { allowRoot: false })) === proofDirectory; } catch { return false; } })());
-  } catch { return false; }
+      && pathMatches(String(file.path || '')));
+  // boundary-critical: invalid persisted proof data is rejected and never
+  // projected as an actionable recovery item.
+  } catch { /* boundary-critical: invalid proof is not actionable. */ return false; }
 }
 
 export function observedSameSizeProof(
   payload: unknown,
   assessment: RecoveryAssessment | null,
-  sessions: Pick<TransferSessionStore, 'get' | 'listFiles'>,
+  sessions: Pick<TransferSessionRepository, 'get' | 'listFiles'>,
   now: () => number,
 ): ExistingArchiveProof | undefined {
   const item = record(payload);

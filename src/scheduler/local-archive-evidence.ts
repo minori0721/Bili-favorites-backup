@@ -2,16 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readDownloadSession } from '../download-session.js';
 
-export function inspectLocalArchiveDirectory(localDirValue: string) {
+export function inspectLocalArchiveDirectory(localDirValue: string, inspect: (target: string) => fs.Stats = fs.lstatSync) {
     const localDir = String(localDirValue || "");
     if (!localDir) return { status: "missing" as const, retainedBytes: 0, expectedBytes: 0, verifiedFiles: 0, totalFiles: 0 };
     try {
-      const rootStat = fs.lstatSync(localDir);
+      const rootStat = inspect(localDir);
       if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
         return { status: "changed" as const, retainedBytes: 0, expectedBytes: 0, verifiedFiles: 0, totalFiles: 0 };
       }
-    } catch {
-      return { status: "missing" as const, retainedBytes: 0, expectedBytes: 0, verifiedFiles: 0, totalFiles: 0 };
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        return { status: "missing" as const, retainedBytes: 0, expectedBytes: 0, verifiedFiles: 0, totalFiles: 0 };
+      }
+      throw error;
     }
     const manifest = readDownloadSession(localDir);
     const files = manifest?.outputs || [];
@@ -34,18 +37,18 @@ export function inspectLocalArchiveDirectory(localDirValue: string) {
         return { status: "changed" as const, retainedBytes, expectedBytes, verifiedFiles, totalFiles: files.length };
       }
       try {
-        const stat = fs.lstatSync(target);
+        const stat = inspect(target);
         if (stat.isSymbolicLink() || !stat.isFile() || stat.size !== expectedSize) {
           return { status: "changed" as const, retainedBytes, expectedBytes, verifiedFiles, totalFiles: files.length };
         }
         retainedBytes += stat.size;
         verifiedFiles += 1;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if (error instanceof Error && 'code' in error && error.code === "ENOENT") {
           missingFiles += 1;
           continue;
         }
-        return { status: "unknown" as const, retainedBytes, expectedBytes, verifiedFiles, totalFiles: files.length };
+        throw error;
       }
     }
     if (verifiedFiles === files.length) return { status: "available" as const, retainedBytes, expectedBytes, verifiedFiles, totalFiles: files.length };

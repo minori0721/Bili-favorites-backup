@@ -1,3 +1,4 @@
+import { readField } from '../contract-values.js';
 import { expect, test, type Page } from "@playwright/test";
 
 async function showVideo(page: Page, item: Record<string, unknown>) {
@@ -27,8 +28,8 @@ test("archived unavailable cards do not claim background work and nested control
     return route.fulfill({json:{success:false,message:'隔离播放请求'}});
   });
   await showVideo(page, { bvid: "BV1TEST00001", title: "已归档的失效视频", processed: true, unavailable: true,
-    backupStatus: "verified", playback: { available: true, partCount: 1 },
-    sourceAvailability: { state: "pending_confirmation", reason: "favorite_flag" } });
+    backupStatus: "verified" as const, playback: { available: true, partCount: 1 },
+    sourceAvailability: { state: "pending_confirmation" as const, reason: "favorite_flag" } });
   await expect(page.locator(".video-source-availability")).not.toContainText("正在后台复核");
   await expect(page.locator("#videoGrid .video-badge")).toHaveText("已归档 · 收藏夹显示失效");
   const button = page.locator(".video-source-availability button");
@@ -56,7 +57,7 @@ test("source diagnostics name only explicit evidence and preserve archive playba
     ["api_not_found", "B站未找到该视频", "confirmed_unavailable"],
   ]) {
     await showVideo(page, { bvid: "BV1TEST00001", title: "源站状态测试", processed: true,
-      backupStatus: "verified", playback: { available: true, partCount: 1 }, sourceAvailability: { state, reason } });
+      backupStatus: "verified" as const, playback: { available: true, partCount: 1 }, sourceAvailability: { state, reason } });
     await expect(page.locator(".video-source-availability")).toContainText(label);
     await expect(page.locator(".video-source-availability")).toContainText("已有归档和封面不受影响");
     await expect(page.locator(".video-source-availability")).not.toContainText("已删除");
@@ -70,9 +71,9 @@ test("source diagnostics name only explicit evidence and preserve archive playba
 
 test('archived favorite-only evidence is visible without changing unavailable or promising probes', async ({ page }) => {
   await showVideo(page, { bvid: 'BV1TEST00001', title: '已留档', processed: true, unavailable: false,
-    archivedSourceUnavailable: true, favoriteUnavailable: true, backupStatus: 'verified',
+    archivedSourceUnavailable: true, favoriteUnavailable: true, backupStatus: 'verified' as const,
     playback: { available: true, partCount: 1 },
-    sourceAvailability: { state: 'pending_confirmation', reason: 'favorite_flag' } });
+    sourceAvailability: { state: 'pending_confirmation' as const, reason: 'favorite_flag' } });
   await expect(page.locator('#videoGrid .video-badge')).toHaveText('已归档 · 收藏夹显示失效');
   await expect(page.locator('.video-source-availability')).toContainText('尚未确认B站源状态');
   await expect(page.locator('.video-source-availability')).not.toContainText('会稍后复核');
@@ -86,7 +87,7 @@ test("settings folds preserve unified save and reveal invalid hidden controls", 
   await expect(page.locator('.settings-fold')).toHaveCount(6);
   await expect(page.locator('#storageSettings')).not.toHaveAttribute('open');
   let writes = 0;
-  let saved: any;
+  let saved: unknown;
   await page.route('**/api/config', async (route) => {
     if (route.request().method() !== 'PUT') return route.continue();
     writes += 1;
@@ -102,9 +103,9 @@ test("settings folds preserve unified save and reveal invalid hidden controls", 
   await page.locator('#queueSettings > summary').click();
   await page.locator('#saveConfigBtn').click();
   await expect.poll(() => writes).toBe(1);
-  expect(saved.concurrentDownloads).toBe(2);
-  expect(saved.alistUrl).toBe('http://alist:5244');
-  expect(saved.bbdownEncodingPriority).toHaveLength(3);
+  expect(readField(saved, 'concurrentDownloads')).toBe(2);
+  expect(readField(saved, 'alistUrl')).toBe('http://alist:5244');
+  expect(readField(saved, 'bbdownEncodingPriority')).toHaveLength(3);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 });
 
@@ -115,7 +116,7 @@ test("a late migration response cannot restart polling after close", async ({ pa
   await page.route('**/api/path-migration/state', async route => {
     requests += 1;
     await pending;
-    await route.fulfill({json:{success:true,data:{id:'migration',status:'copying',entryCount:2}}}).catch(() => {});
+    await route.fulfill({json:{success:true,data:{id:'migration',status:'copying' as const,entryCount:2}}}).catch(() => {});
   });
   await page.locator('#storageSettings > summary').click();
   await page.locator('#pathMigrationBtn').click();
@@ -167,11 +168,11 @@ test("migration conflict details are paginated and recover from a failed page", 
     }
     await route.fulfill({ json: { success: true, data: Array.from({ length: offset ? 1 : 21 }, (_, index) => ({
       migrationId: "migration", relativePath: "深层目录/" + "中文".repeat(30) + (offset + index) + ".mp4",
-      itemType: "file", expectedSize: 1024, status: "conflict", lastError: "目标大小不一致",
+      itemType: "file", expectedSize: 1024, status: "conflict" as const, lastError: "目标大小不一致",
     })) } });
   });
   await page.route('**/api/path-migration/state', route => route.fulfill({json:{success:true,data:{
-    id:'migration',status:'ready',conflictCount:21,sourceRoot:'/old',destinationRoot:'/new',
+    id:'migration',status:'ready' as const,conflictCount:21,sourceRoot:'/old',destinationRoot:'/new',
   }}}));
   await page.locator('#storageSettings > summary').click();
   await page.locator('#pathMigrationBtn').click();

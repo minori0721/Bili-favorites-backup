@@ -1,141 +1,140 @@
 {
   "control": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "scheduling control",
+    "currentOwner": "SchedulerRuntime",
     "lifetime": "Stop admission first; drain active work; release leases only when idle; clear heartbeat after draining.",
     "fields": [
-      "acceptingJobs",
-      "shutdownPromise",
-      "shutdownStarted",
-      "shutdownCompleted",
       "downloadQueue",
       "uploadQueue",
       "verificationQueue",
       "jobStore",
       "leaseOwner",
-      "jobDispatchTimer",
-      "leaseHeartbeatTimer",
-      "nextDownloadStartAt",
-      "downloadStartTimer",
       "persistentJobWakeMinMs",
-      "runtimeInitialized",
-      "runtimeGeneration",
       "queueEvents",
-      "projectionRefreshTimer",
-      "projectionRefreshIntervalMs"
+      "projectionRefreshIntervalMs",
+      "timers",
+      "persistentJobDispatcher"
     ]
   },
   "scan": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "sync scanning",
+    "currentOwner": "SchedulerRuntime",
     "lifetime": "Cancel scan timers on stop; wait for active scans; invalidate scan caches when rebinding storage.",
     "fields": [
       "polling",
-      "running",
-      "activeSyncUsers",
-      "staleActiveBackupMs",
-      "pendingTickOptions",
-      "schedulerProgress",
-      "lastSchedulerError",
-      "cycleContext"
+      "syncWorkflow",
+      "retryPendingRecovery",
+      "cycleLogger",
+      "staleActiveBackupMs"
     ]
   },
   "availability": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "availability probes",
+    "currentOwner": "SchedulerRuntime",
     "lifetime": "Keep the active promise and job lease together; ignore old-generation results; clear per-account caches when context changes.",
     "fields": [
-      "accessProbePromise",
-      "accessProbeJobId",
-      "downloadApiHealth"
+      "accessProbeWorkflow",
+      "accessProbeWakeup",
+      "downloadAdmission",
+      "accessAdmissionWorkflow",
+      "accessFailureWorkflow"
     ]
   },
   "verification": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "upload verification",
+    "currentOwner": "SchedulerRuntime",
     "lifetime": "Verification timers cannot bypass admission; transfer proof and completion remain in one atomic commit; rebind stores under maintenance.",
     "fields": [
       "transferSessions",
-      "uploadProbeTimer",
-      "uploadCircuit"
+      "transferRuntime"
     ]
   },
   "cleanup": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "local cleanup and capacity",
+    "currentOwner": "SchedulerRuntime",
     "lifetime": "Stop retry timers; wait for sweep, inspection and per-directory operations; retain durable cleanup authorization on failure.",
     "fields": []
   },
   "legacyCacheRecovery": {
     "currentOwner": "legacy-cache-recovery",
-    "targetOwner": "legacy-cache-recovery",
     "lifetime": "Owns the pending scan promise; start is idempotent, admission and shutdown wait for busy to settle; old-generation scans cannot write.",
-    "fields": ["legacyCacheRecovery"]
+    "fields": [
+      "legacyCacheRecovery"
+    ]
   },
   "transferRecoveryProjection": {
     "currentOwner": "transfer-recovery-projection",
-    "targetOwner": "transfer-recovery-projection",
     "lifetime": "Owns reconciliation throttle; explicit runtime refresh only, reset after storage rebind; reads never schedule work.",
-    "fields": ["transferRecoveryProjection"]
+    "fields": [
+      "transferRecoveryProjection"
+    ]
   },
   "accountRetirement": {
     "currentOwner": "account-retirement",
-    "targetOwner": "account-retirement",
     "lifetime": "Owns per-account pending operations and aborted download job identities. Duplicate retirement shares one promise; shutdown and maintenance drain busy; late cancellation cannot write across generations.",
-    "fields": ["accountRetirement"]
+    "fields": [
+      "accountRetirement"
+    ]
   },
-  "recoveryWork": {
-    "currentOwner": "recovery-work",
-    "targetOwner": "recovery-work",
-    "lifetime": "Owns assessment promises and shared action locks; all pending work and held locks participate in shutdown draining.",
-    "fields": ["recoveryWork"]
+  "retirementTransferWorkflow": {
+    "currentOwner": "retirement-transfers",
+    "lifetime": "Assembled once with narrow storage and queue ports; reuse the same workflow for retirement snapshots and completion jobs so no request loses workflow context.",
+    "fields": [
+      "retirementTransferWorkflow"
+    ]
+  },
+  "sourceDeletionWorkflow": {
+    "currentOwner": "source-deletion",
+    "lifetime": "Assembled once after queues and account retirement exist; source deletion calls reuse the same coordination boundary and never rebuild dependencies per request.",
+    "fields": [
+      "sourceDeletionWorkflow"
+    ]
+  },
+  "legacyImportRecoveryWorkflow": {
+    "currentOwner": "legacy-import-recovery",
+    "lifetime": "Uses the current database adapter after a guarded rebind; capture and resume share one workflow handle and never retain a replaced connection.",
+    "fields": [
+      "legacyImportRecoveryWorkflow"
+    ]
   },
   "recoveryAutomation": {
     "currentOwner": "recovery-automation",
-    "targetOwner": "recovery-automation",
     "lifetime": "Owns startup and interval timers and the active batch; stop invalidates pending work, drain busy before storage replacement.",
-    "fields": ["recoveryAutomation"]
+    "fields": [
+      "recoveryAutomation"
+    ]
   },
   "maintenance": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "scheduling maintenance admission",
-    "lifetime": "The owning maintenance operation releases its lock in its completion or recovery path; failed rebind must retain the write barrier.",
+    "currentOwner": "maintenance-coordinator",
+    "lifetime": "Identity-bound leases, summaries and cleanup admission share one owner; stale releases cannot unlock a newer operation, synchronous failures release their lease, and failed rebind retains the write barrier.",
     "fields": [
-      "cleanupLocked",
-      "pathMigrationLocked",
-      "pathMigrationMaintenance",
-      "archiveDeletionLocked",
-      "archiveDeletionMaintenance",
-      "storageRebindResumeAdmission"
+      "maintenance"
     ]
   },
   "quality": {
-    "currentOwner": "SyncScheduler",
-    "targetOwner": "quality upgrade",
+    "currentOwner": "SchedulerRuntime",
     "lifetime": "Release artifact locks only after the associated operation has settled; recheck generation before replacement or cleanup.",
     "fields": [
-      "qualityArtifactCleanupLocks"
+      "qualityWorkflow",
+      "qualityUpgradeProjection"
     ]
   },
   "dependencies": {
-    "currentOwner": "SyncScheduler assembly",
-    "targetOwner": "explicit per-service dependencies",
+    "currentOwner": "SchedulerRuntime assembly",
     "lifetime": "Pass narrow capabilities; do not retain bare database connections across a maintenance replacement.",
     "fields": [
       "configStore",
       "userStore",
       "stateManager",
+      "biliContent",
       "videoAccessProbe",
       "cacheInspector",
       "remoteFileInspector",
       "legacyTempDir",
       "now",
-      "random"
+      "random",
+      "archiveTargets",
+      "sleep",
+      "deadlineNow"
     ]
   },
   "remoteVerificationIO": {
     "currentOwner": "remote-verification-io",
-    "targetOwner": "remote-verification-io",
     "lifetime": "Owns directory cache and rate reservations; reset under storage rebind; old reads cannot refill cleared cache.",
     "fields": [
       "remoteVerificationIO"
@@ -143,7 +142,6 @@
   },
   "localCleanup": {
     "currentOwner": "local-cleanup",
-    "targetOwner": "local-cleanup",
     "lifetime": "Owns sweep, per-video work and retry timers; stop admission and drain before reset or database rebind.",
     "fields": [
       "localCleanup"
@@ -151,7 +149,6 @@
   },
   "favoriteScan": {
     "currentOwner": "favorite-scan",
-    "targetOwner": "favorite-scan",
     "lifetime": "Owns scan policy and self-visible observations; admission tracks its returned work; reset invalidates observations on rebind.",
     "fields": [
       "favoriteScan"
@@ -159,7 +156,6 @@
   },
   "localCapacity": {
     "currentOwner": "local-capacity",
-    "targetOwner": "local-capacity",
     "lifetime": "Owns inspection promise, snapshot, recovery summary and queued refresh. Stop queued work before shutdown; reset rejects stale observations across rebind.",
     "fields": [
       "localCapacity"
@@ -167,7 +163,6 @@
   },
   "accessProbes": {
     "currentOwner": "access-probes",
-    "targetOwner": "access-probes",
     "lifetime": "Probe policy uses narrow adapters; scheduling control owns the claimed job and active promise. Results must pass generation and admission checks.",
     "fields": [
       "accessProbes"
@@ -175,10 +170,95 @@
   },
   "remoteScan": {
     "currentOwner": "remote-scan",
-    "targetOwner": "remote-scan",
     "lifetime": "Remote scan policy returns counters to its parent cycle; all workers drain before completion; late observations cannot write after generation change.",
     "fields": [
       "remoteScan"
+    ]
+  },
+  "recoveryWorkflow": {
+    "currentOwner": "recovery-workflow",
+    "lifetime": "Owns assessment promises and shared action locks; all pending work and held locks participate in shutdown draining.",
+    "fields": [
+      "recoveryWorkflow"
+    ]
+  },
+  "runtime": {
+    "currentOwner": "scheduling-runtime",
+    "lifetime": "Owns admission, generation, initialization, rebind and shutdown promises. Failed drain retains database and leases; failed rebind retains closed admission.",
+    "fields": [
+      "runtime"
+    ]
+  },
+  "remoteStorage": {
+    "currentOwner": "application adapter",
+    "lifetime": "Configured once at composition; requests remain outside transactions and are discarded on runtime generation changes.",
+    "fields": [
+      "remoteStorage"
+    ]
+  },
+  "transferWorkflow": {
+    "currentOwner": "transfer-workflow",
+    "lifetime": "Owns upload construction and durable admission policy; supplied ports resolve current storage, runtime generation guards task callbacks.",
+    "fields": [
+      "transferWorkflow"
+    ]
+  },
+  "downloadAdmissionPolicy": {
+    "currentOwner": "download-admission-policy",
+    "lifetime": "Combines runtime admission, maintenance, capacity and queue constraints without owning health or cooldown state.",
+    "fields": [
+      "downloadAdmissionPolicy"
+    ]
+  },
+  "workState": {
+    "currentOwner": "work-state-projection",
+    "lifetime": "Read-only projection of public workflow and queue state; it owns no timer, lock, promise or cache and is rebuilt with the runtime assembly.",
+    "fields": [
+      "workState"
+    ]
+  },
+  "runtimeConfig": {
+    "currentOwner": "runtime-config",
+    "lifetime": "Applies configuration changes through queue, admission, capacity and wake ports; it owns no task or scheduling state.",
+    "fields": [
+      "runtimeConfig"
+    ]
+  },
+  "statusProjection": {
+    "currentOwner": "scheduler-status-projection",
+    "lifetime": "Read-only scheduler and queue projection assembled once from narrow state ports; it owns no request, timer, lock or cache.",
+    "fields": [
+      "statusProjection",
+      "triggerLabel"
+    ]
+  },
+  "startupWorkflow": {
+    "currentOwner": "startup-resume-workflow",
+    "lifetime": "Owns the fixed startup recovery order and delegates individual recovery operations to stable workflow instances; shutdown prevents a new recovery pass.",
+    "fields": [
+      "startupWorkflow"
+    ]
+  },
+  "verifiedTransferCommit": {
+    "currentOwner": "verified-transfer-commit",
+    "lifetime": "Stateless command assembled once from transaction repositories; every verified upload group uses the same proof and cleanup authorization boundary.",
+    "fields": [
+      "verifiedTransferCommit"
+    ]
+  },
+  "backupEnqueueWorkflow": {
+    "currentOwner": "backup-enqueue",
+    "lifetime": "Assembled once with current state and job ports; every sync and recovery request shares the same admission boundary.",
+    "fields": [
+      "backupEnqueueWorkflow",
+      "manualArchiveWorkflow"
+    ]
+  },
+  "encodingRecoveryWorkflow": {
+    "currentOwner": "encoding-recovery-handlers",
+    "lifetime": "Assembled once after cleanup and transfer ports exist; recovery callbacks use the current generation and persistent job lease.",
+    "fields": [
+      "encodingRecoveryWorkflow"
     ]
   }
 }

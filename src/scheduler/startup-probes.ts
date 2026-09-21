@@ -1,13 +1,13 @@
 import type { StateManager, SourceAvailabilityReason } from '../state.js';
 import type { StateDatabase } from '../database.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import { normalizeAccessProbeIntents } from './access-rules.js';
 import { availabilityJitter, computeAvailabilityUnavailableDelayMs, computeAvailabilityUnknownDelayMs } from './retry-policy.js';
 import { logManager } from '../logger.js';
 interface Dependencies {
   stateManager: Pick<StateManager, 'listLegacyFailureClassificationCandidates' | 'listChargingRestrictedVideos' | 'listAvailabilityCheckVideos' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityUnknown' | 'listRelationsForBvid'>;
   database(): Pick<StateDatabase, 'getMeta' | 'setMeta'>;
-  jobStore: Pick<PersistentJobStore, 'findByDedupeKey' | 'rescheduleByBvid'>;
+  jobStore: Pick<JobRepository, 'findByDedupeKey' | 'rescheduleByBvid'>;
   now(): number;
   enqueueChargingAccessProbe(bvid: string, input: { preferredUserId?: string; checkedAccountUids?: string[]; previewAvailable?: boolean; notBefore?: number; purpose?: 'legacy_failure_classification' }): unknown;
   enqueueAvailabilityProbe(bvid: string, input: { preferredUserId?: string; notBefore?: number; availabilityRound?: number; availabilityUnknownRound?: number; availabilityReason?: SourceAvailabilityReason }): unknown;

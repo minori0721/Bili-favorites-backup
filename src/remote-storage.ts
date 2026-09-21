@@ -22,7 +22,11 @@ const PROFILE_TTL_MS = 30 * 60_000;
 const MAX_PROFILES = 32;
 const profiles = new Map<string, RemoteBackendProfile>();
 
-function normalizedConfigIdentity(config: AppConfig) {
+export type RemoteStorageConfig = Pick<AppConfig, "alistUrl" | "alistUsername" | "alistPassword"> & {
+  readonly alistDest?: AppConfig["alistDest"];
+};
+
+function normalizedConfigIdentity(config: RemoteStorageConfig) {
   return JSON.stringify({
     alistUrl: String(config.alistUrl || "").trim(),
     alistUsername: String(config.alistUsername || ""),
@@ -31,7 +35,7 @@ function normalizedConfigIdentity(config: AppConfig) {
   });
 }
 
-export function remoteStorageIdentity(config: AppConfig) {
+export function remoteStorageIdentity(config: RemoteStorageConfig) {
   return crypto.createHash("sha256").update(normalizedConfigIdentity(config)).digest("hex");
 }
 
@@ -49,7 +53,7 @@ function newProfile(identity: string, now: number): RemoteBackendProfile {
   };
 }
 
-export function getRemoteBackendProfile(config: AppConfig, now = Date.now()) {
+export function getRemoteBackendProfile(config: RemoteStorageConfig, now = Date.now()) {
   const identity = remoteStorageIdentity(config);
   let profile = profiles.get(identity);
   if (!profile || now - profile.lastUsedAt >= PROFILE_TTL_MS) {
@@ -66,7 +70,7 @@ export function getRemoteBackendProfile(config: AppConfig, now = Date.now()) {
 }
 
 export function updateRemoteCapability(
-  config: AppConfig,
+  config: RemoteStorageConfig,
   key: RemoteCapabilityKey,
   value: RemoteCapability,
   now = Date.now(),
@@ -81,7 +85,7 @@ export function clearRemoteBackendProfiles() {
   profiles.clear();
 }
 
-export function buildDavClient(config: AppConfig): WebDAVClient {
+export function buildDavClient(config: Pick<AppConfig, "alistUrl" | "alistUsername" | "alistPassword">): WebDAVClient {
   return createClient(buildStorageDavUrl(config.alistUrl), {
     username: config.alistUsername,
     password: config.alistPassword,

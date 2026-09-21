@@ -1,3 +1,5 @@
+import { heldQueues } from './fixtures/held-queues.js';
+import { PersistentJobStore } from '../src/job-store.js';
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigStore } from "../src/config.js";
@@ -5,27 +7,30 @@ import { SyncScheduler } from "../src/scheduler.js";
 import { StateManager } from "../src/state.js";
 import { UserStore } from "../src/users.js";
 
-(globalThis as any).gc?.();
+if ('gc' in globalThis && typeof globalThis.gc === 'function') globalThis.gc();
 const baselineMemory = process.memoryUsage();
 const stateManager = new StateManager();
-const scheduler = new SyncScheduler(new ConfigStore(), new UserStore(), stateManager) as any;
-scheduler.downloadQueue.setStartGate(() => false);
-scheduler.uploadQueue.setStartGate(() => false);
-scheduler.resumePersistedWorkOnStartup();
+const queues = heldQueues();
+const jobs = new PersistentJobStore(stateManager.getDatabase(), {normalizeRecovery: false});
+const scheduler = new SyncScheduler(new ConfigStore(), new UserStore(), stateManager, {createQueue: queues.create});
+await scheduler.resumePersistedWorkOnStartup();
 
 const first = scheduler.getQueueSnapshot();
-const removed = scheduler.downloadQueue.queue.splice(0, 20);
+const downloadQueue = queues.get('download');
+const removed = downloadQueue.getTasks().slice(0, 20);
+const removedIds = new Set(removed.map(task => task.id));
+downloadQueue.removePendingTasks(task => removedIds.has(task.id));
 for (const task of removed) {
-  if (task.persistentJobId) scheduler.jobStore.complete(task.persistentJobId);
+  if (task.persistentJobId) jobs.complete(task.persistentJobId);
 }
-scheduler.dispatchPersistentJobs();
+scheduler.wake();
 const second = scheduler.getQueueSnapshot();
-scheduler.resumePersistedWorkOnStartup();
+await scheduler.resumePersistedWorkOnStartup();
 const third = scheduler.getQueueSnapshot();
 const databaseFiles = ["bfb.sqlite", "bfb.sqlite-wal", "bfb.sqlite-shm"]
   .map((name) => path.join(process.cwd(), "data", name))
   .filter((file) => fs.existsSync(file));
-(globalThis as any).gc?.();
+if ('gc' in globalThis && typeof globalThis.gc === 'function') globalThis.gc();
 const finalMemory = process.memoryUsage();
 
 console.log("RECOVERY_RESULT=" + JSON.stringify({

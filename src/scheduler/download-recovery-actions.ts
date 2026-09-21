@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { isValidBBDownEncodingPriority, normalizeBBDownEncodingPriority, type ConfigStore } from '../config.js';
 import { downloadCredentialsForUser, type BiliUser, type UserStore } from '../users.js';
 import type { getVideoPageSnapshot } from '../bili.js';
-import type { PersistentJobStore } from '../job-store.js';
+import type { JobRepository } from '../repositories/jobs.js';
 import type { PersistentJobRecord } from '../database.js';
 import { normalizeQualityArtifactProfile, qualityArtifactProfileFromConfig, buildQualityArtifactKey } from '../quality-artifact.js';
 import { isSelectableBilibiliQuality } from '../media-metadata.js';
@@ -14,7 +14,7 @@ import type { RecoveryActionOptions, RecoveryActionResult } from './recovery-act
 import type { RecoveryLockAccess } from './recovery-work.js';
 import { readTaskFailure } from './task-failure.js';
 interface Dependencies {
-  jobStore: Pick<PersistentJobStore, 'findById' | 'wakeManualJob' | 'complete'>;
+  jobStore: Pick<JobRepository, 'findById' | 'wakeManualJob' | 'complete'>;
   configStore: Pick<ConfigStore, 'get'>;
   userStore: Pick<UserStore, 'getById'>;
   recoveryWork: { locks: RecoveryLockAccess };
@@ -177,6 +177,7 @@ export function createDownloadRecoveryActions(deps: Dependencies) {
             return { ok: false as const, status: 409, message: "所选账号当前无法访问这个视频，请换一个账号或稍后再试" };
           }
         } catch (error) {
+          // boundary-critical: account validation failure is returned as an explicit client result.
           return {
             ok: false as const,
             status: 409,

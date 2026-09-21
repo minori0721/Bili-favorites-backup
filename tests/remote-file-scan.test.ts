@@ -16,7 +16,7 @@ test("recursive scan accepts literal #/? names from structured directory fields"
           { filename: "/target/readme.txt", basename: "readme.txt", type: "file", size: 1 },
         ];
       },
-    } as any,
+    },
   );
 
   assert.equal(result.complete, true);
@@ -42,7 +42,7 @@ test("recursive scan keeps OpenList escaped spelling separate from strict paths"
         type: "file",
         size: 99,
       }],
-    } as any,
+    },
   );
 
   assert.equal(result.complete, true);
@@ -64,7 +64,7 @@ test("recursive scan reports incomplete when an entry cannot be safely parsed", 
         { filename: "/target/unrelated\0.mp4", basename: "unrelated.mp4", type: "file", size: 1 },
         { filename: "/target/clip#one?.mp4", basename: "clip#one?.mp4", type: "file", size: 42 },
       ],
-    } as any,
+    },
   );
 
   assert.equal(result.complete, false);
@@ -81,7 +81,7 @@ test("recursive scan reports incomplete when a directory cannot be read", async 
     { maxDepth: 1, maxFiles: 10 },
     {
       getDirectoryContents: async () => { throw new Error("temporary listing failure"); },
-    } as any,
+    },
   );
 
   assert.equal(result.complete, false);

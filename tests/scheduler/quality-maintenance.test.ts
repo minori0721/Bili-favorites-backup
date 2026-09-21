@@ -19,7 +19,7 @@ test('quality rules prefer explicit profiles and do not infer premium audio from
 test('quality maintenance rechecks candidates, requires unknown confirmation and retains scheduler admission', () => {
   const config=testConfig({alistDest:'/archive',bbdownQuality:'1080P'});
   const user:BiliUser={id:'user',uid:1,name:'fixture',enabled:true,favorites:[],lastLoginAt:'',cookie:{SESSDATA:'',bili_jct:'',DedeUserID:''}};
-  const records:RemoteFilePreviewVideoRecord[]=[{bvid:'BVfixture',title:'fixture',upperName:'fixture',remoteFiles:[],relations:[{userId:'user',mediaId:1,folderTitle:'fixture',backupStatus:'verified',hasInterruptedQualityUpgrade:false,remotePath:'/archive/video',remoteFiles:[{name:'video.mp4',path:'/archive/video/video.mp4',size:10}]}]}];
+  const records:RemoteFilePreviewVideoRecord[]=[{bvid:'BVfixture',title:'fixture',upperName:'fixture',remoteFiles:[],relations:[{userId:'user',mediaId:1,folderTitle:'fixture',backupStatus:'verified' as const,hasInterruptedQualityUpgrade:false,remotePath:'/archive/video',remoteFiles:[{name:'video.mp4',path:'/archive/video/video.mp4',size:10}]}]}];
   let admit=true;const submitted:QualityUpgradeTask[]=[];
   const service=createQualityMaintenance({config:()=>config,records:()=>records,targetKeys:()=>new Set(),users:{getById:()=>user},enqueue:task=>{submitted.push(task);return admit;}});
   const preview=service.preview();assert.equal(preview.candidates.length,0);assert.equal(preview.uncertain.length,1);

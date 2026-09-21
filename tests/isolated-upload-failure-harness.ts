@@ -1,3 +1,7 @@
+import assert from 'node:assert/strict';
+import { heldQueues } from './fixtures/held-queues.js';
+import { recoveryFixture } from './fixtures/recovery.js';
+import { DownloadTask } from '../src/tasks.js';
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigStore } from "../src/config.js";
@@ -11,9 +15,11 @@ const localDir = path.join(process.cwd(), "temp", bvid);
 const remotePath = "/backup/isolated";
 const stateManager = new StateManager();
 const configStore = new ConfigStore();
-const scheduler = new SyncScheduler(configStore, new UserStore(), stateManager) as any;
-scheduler.uploadQueue.setStartGate(() => false);
-scheduler.queueUploadWork({
+const users = new UserStore();
+const queues = heldQueues();
+const {jobs, transfers} = recoveryFixture(stateManager, users.list(), undefined, {config: configStore.get()});
+const scheduler = new SyncScheduler(configStore, users, stateManager, {createQueue: queues.create});
+transfers.enqueue({
   bvid,
   localDir,
   remotePath,
@@ -25,7 +31,9 @@ scheduler.queueUploadWork({
   files: ["isolated.mp4"],
   priority: true,
 });
-const task = scheduler.uploadQueue.getTasks()[0];
+scheduler.wake();
+const task = queues.get('upload').getTasks()[0];
+assert.ok(task?.persistentJobId, 'Durable upload must be admitted into the queue');
 const failure = classifyUploadError(
   process.env.BFB_TEST_UPLOAD_SIZE_LIMIT === "1"
     ? { status: 405, responseBody: JSON.stringify({ code: "SingleFileSizeOverLimit", message: "single file too large" }) }
@@ -41,20 +49,20 @@ if (process.env.BFB_TEST_UPLOAD_SESSION_TRANSIENT === "1") {
   uploadError.uploadSessionTransient = true;
   uploadError.completedFilesBeforeFailure = 1;
 }
-scheduler.uploadQueue.emit("taskError", task, uploadError);
-scheduler.uploadQueue.queue.splice(0);
+queues.get('upload').emit("taskError", task, uploadError);
+queues.get('upload').removePendingTasks(() => true);
 
-await new Promise((resolve) => setTimeout(resolve, 25));
-const retry = scheduler.jobStore.findById(task.persistentJobId);
+await scheduler.getLocalCacheCapacity();
+const retry = jobs.findById(task.persistentJobId);
 const state = stateManager.getStateSnapshot();
 console.log("ISOLATED_UPLOAD_FAILURE_RESULT=" + JSON.stringify({
   retryStatus: retry?.status,
   retryDelayMs: Number(retry?.notBefore || 0) - Date.now(),
-  uploadHealthState: scheduler.uploadCircuit.getSnapshot().state,
-  canStartDownload: scheduler.canStartDownloadTask(),
+  uploadHealthState: scheduler.getQueueSnapshot().uploadHealth.state,
+  canStartDownload: queues.get('download').admitted(new DownloadTask('BVUNRELATED', {SESSDATA: 'test', bili_jct: 'test', DedeUserID: '1'}, configStore.get())),
   localFileExists: fs.existsSync(path.join(localDir, "isolated.mp4")),
   awaitingManualRecovery: retry?.payload?.awaitingManualRecovery === true,
-  recoveryIssueKind: scheduler.getRecoveryIssues().find((item: any) => item.id === `upload.${task.persistentJobId}`)?.kind,
+  recoveryIssueKind: scheduler.getRecoveryIssues().find((item) => item.id === `upload.${task.persistentJobId}`)?.kind,
   videoStatus: state.videos?.[bvid]?.backupStatus,
   relationStatus: state.relations?.[`u1:1:${bvid}`]?.backupStatus,
 }));

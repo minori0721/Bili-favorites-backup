@@ -4,7 +4,7 @@ import { createRecoveryAutomation } from '../../src/scheduler/recovery-automatio
 import type { PersistentJobRecord } from '../../src/database.js';
 
 function job(id: string): PersistentJobRecord {
-  return { id, kind: 'upload', dedupeKey: id, status: 'manual_wait', priority: 0, payload: {},
+  return { id, kind: 'upload' as const, dedupeKey: id, status: 'manual_wait' as const, priority: 0, payload: {},
     attempts: 0, maxAttempts: 3, notBefore: 0, createdAt: 1, updatedAt: 1 };
 }
 

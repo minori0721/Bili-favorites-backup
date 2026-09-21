@@ -1,77 +1,9 @@
 import crypto from "node:crypto";
 import type { StateDatabase } from "./database.js";
+import { fileFromRow,sessionFromRow } from './repositories/transfer-session-codec.js';
+import type { EnsureTransferSessionInput,TransferSessionFilePatch,TransferSessionFileRecord,TransferSessionPatch,TransferSessionRecord,TransferSessionRepository } from './repositories/transfer-sessions.js';
 import { joinRemotePath } from "./utils.js";
-
-export type TransferSessionPhase =
-  | "uploading"
-  | "awaiting_remote"
-  | "completed"
-  | "failed"
-  | "superseded";
-
-export type TransferSessionFileStatus =
-  | "pending"
-  | "uploading"
-  | "awaiting_remote"
-  | "verified"
-  | "failed";
-
-export interface TransferSessionRecord {
-  id: string;
-  dedupeKey: string;
-  kind: "upload";
-  bvid: string;
-  userId?: string;
-  mediaId?: number;
-  localDir: string;
-  remotePath: string;
-  stagingPath: string;
-  phase: TransferSessionPhase;
-  generation: number;
-  historyOnly: boolean;
-  historySnapshotAt?: string;
-  allowReupload: boolean;
-  lastError?: string;
-  createdAt: number;
-  updatedAt: number;
-  completedAt?: number;
-}
-
-export interface TransferSessionFileRecord {
-  sessionId: string;
-  generation: number;
-  relativePath: string;
-  name: string;
-  stagingPath: string;
-  finalPath: string;
-  expectedSize: number;
-  status: TransferSessionFileStatus;
-  putAcceptedAt?: number;
-  stageVerifiedAt?: number;
-  movedAt?: number;
-  verifiedAt?: number;
-  attempts: number;
-  nextCheckAt?: number;
-  lastError?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-type TransferSessionPatch = Partial<Pick<TransferSessionRecord, "phase" | "allowReupload">> & {
-  lastError?: string | null;
-  completedAt?: number | null;
-};
-
-type TransferSessionFilePatch = Partial<Pick<TransferSessionFileRecord,
-  "name" | "stagingPath" | "finalPath" | "status" | "attempts"
->> & {
-  putAcceptedAt?: number | null;
-  stageVerifiedAt?: number | null;
-  movedAt?: number | null;
-  verifiedAt?: number | null;
-  nextCheckAt?: number | null;
-  lastError?: string | null;
-};
+export type { EnsureTransferSessionInput,TransferSessionFilePatch,TransferSessionFileRecord,TransferSessionFileStatus,TransferSessionPatch,TransferSessionPhase,TransferSessionRecord } from './repositories/transfer-sessions.js';
 
 export class TransferSessionGenerationError extends Error {
   readonly code = "UPLOAD_SESSION_STALE";
@@ -84,80 +16,7 @@ export class TransferSessionGenerationError extends Error {
   }
 }
 
-function sessionFromRow(row: any): TransferSessionRecord {
-  const rawPhase = String(row.phase || "failed");
-  const phase = rawPhase === "staging" || rawPhase === "promoting"
-    ? "uploading"
-    : rawPhase === "awaiting_stage" || rawPhase === "awaiting_final"
-      ? "awaiting_remote"
-      : rawPhase;
-  const remotePath = String(row.remote_path);
-  return {
-    id: String(row.id),
-    dedupeKey: String(row.dedupe_key),
-    kind: "upload",
-    bvid: String(row.bvid),
-    userId: row.user_id ? String(row.user_id) : undefined,
-    mediaId: row.media_id === null || row.media_id === undefined ? undefined : Number(row.media_id),
-    localDir: String(row.local_dir),
-    remotePath,
-    // Never expose the legacy temporary path to the direct-upload runtime.
-    stagingPath: remotePath,
-    phase: phase as TransferSessionPhase,
-    generation: Math.max(1, Number(row.generation || 1)),
-    historyOnly: Number(row.history_only || 0) === 1,
-    historySnapshotAt: row.history_snapshot_at ? String(row.history_snapshot_at) : undefined,
-    allowReupload: Number(row.allow_reupload || 0) === 1,
-    lastError: row.last_error ? String(row.last_error) : undefined,
-    createdAt: Number(row.created_at || 0),
-    updatedAt: Number(row.updated_at || 0),
-    completedAt: row.completed_at === null || row.completed_at === undefined ? undefined : Number(row.completed_at),
-  };
-}
-
-function fileFromRow(row: any): TransferSessionFileRecord {
-  const rawStatus = String(row.status || "failed");
-  const status = rawStatus === "awaiting_stage" || rawStatus === "stage_verified" || rawStatus === "moving" || rawStatus === "awaiting_final"
-    ? "awaiting_remote"
-    : rawStatus;
-  const finalPath = String(row.final_path);
-  return {
-    sessionId: String(row.session_id),
-    generation: Math.max(1, Number(row.generation || 1)),
-    relativePath: String(row.relative_path),
-    name: String(row.name),
-    // The column remains for schema compatibility; the runtime target is
-    // always the persisted final path.
-    stagingPath: finalPath,
-    finalPath,
-    expectedSize: Number(row.expected_size || 0),
-    status: status as TransferSessionFileStatus,
-    putAcceptedAt: row.put_accepted_at === null || row.put_accepted_at === undefined ? undefined : Number(row.put_accepted_at),
-    stageVerifiedAt: row.stage_verified_at === null || row.stage_verified_at === undefined ? undefined : Number(row.stage_verified_at),
-    movedAt: row.moved_at === null || row.moved_at === undefined ? undefined : Number(row.moved_at),
-    verifiedAt: row.verified_at === null || row.verified_at === undefined ? undefined : Number(row.verified_at),
-    attempts: Number(row.attempts || 0),
-    nextCheckAt: row.next_check_at === null || row.next_check_at === undefined ? undefined : Number(row.next_check_at),
-    lastError: row.last_error ? String(row.last_error) : undefined,
-    createdAt: Number(row.created_at || 0),
-    updatedAt: Number(row.updated_at || 0),
-  };
-}
-
-export interface EnsureTransferSessionInput {
-  sessionId?: string;
-  dedupeKey: string;
-  bvid: string;
-  userId?: string;
-  mediaId?: number;
-  localDir: string;
-  remotePath: string;
-  historyOnly?: boolean;
-  historySnapshotAt?: string;
-  expectedGeneration?: number;
-}
-
-export class TransferSessionStore {
+export class TransferSessionStore implements TransferSessionRepository {
   constructor(private stateDatabase: StateDatabase) {}
 
   rebind(stateDatabase: StateDatabase) {
@@ -214,7 +73,7 @@ export class TransferSessionStore {
       SELECT * FROM transfer_session_files
       WHERE session_id=? AND generation=?
       ORDER BY relative_path ASC
-    `).all(String(sessionId || ""), targetGeneration) as any[]).map(fileFromRow);
+    `).all(String(sessionId || ""), targetGeneration)).map(fileFromRow);
   }
 
   getFile(sessionId: string, relativePath: string, generation?: number) {
@@ -354,7 +213,8 @@ export class TransferSessionStore {
     const file = this.getFile(id, relativePath, session.generation);
     if (!file) return null;
     const now = Date.now();
-    const value = (key: keyof TransferSessionFileRecord, fallback: any) => (patch as any)[key] === undefined ? fallback : (patch as any)[key];
+    const value = <K extends keyof TransferSessionFilePatch>(key: K, fallback: unknown) =>
+      patch[key] === undefined ? fallback : patch[key];
     this.stateDatabase.db.prepare(`
       UPDATE transfer_session_files SET
         name=?, staging_path=?, final_path=?, status=?, put_accepted_at=?, stage_verified_at=?,
@@ -409,14 +269,14 @@ export class TransferSessionStore {
     `).all(
       Math.max(1, Math.min(100, Math.floor(limit))),
       Math.max(0, Math.floor(offset)),
-    ) as any[]).map(sessionFromRow);
+    )).map(sessionFromRow);
   }
 
   summary() {
-    const rows = this.stateDatabase.db.prepare(`
+    const rows = this.stateDatabase.db.prepare<[], {phase: string; count: number}>(`
       SELECT phase, COUNT(*) AS count FROM transfer_sessions
       WHERE phase NOT IN ('completed','superseded') GROUP BY phase
-    `).all() as any[];
+    `).all();
     const phases: Record<string, number> = {};
     for (const row of rows) phases[String(row.phase)] = Number(row.count || 0);
     return { count: Object.values(phases).reduce((sum, value) => sum + value, 0), phases };

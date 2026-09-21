@@ -1,122 +1,120 @@
-import assert from "node:assert/strict";
-import test from "node:test";
-import fs from "node:fs";
-import path from "node:path";
-import { createTestDir, removeTestDir } from "./helpers.js";
-import { OnlineCoverCache } from "../src/online-cover-cache.js";
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {createTestDir, removeTestDir} from './helpers.js';
+import {OnlineCoverCache, type OnlineCoverAdapters} from '../src/online-cover-cache.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => { resolve = next; });
-  return { promise, resolve };
+  const promise = new Promise<T>(next => { resolve = next; });
+  return {promise, resolve};
 }
 
-function isolatedCache() {
-  const cache = new OnlineCoverCache(64) as any;
-  cache.initialized = true;
-  cache.initialize = async () => undefined;
-  cache.get = async () => null;
-  return cache as OnlineCoverCache & Record<string, any>;
+async function fixture(adapters: OnlineCoverAdapters = {}) {
+  const root = await createTestDir('cover-contract');
+  const directory = path.join(root, 'covers');
+  const cache = new OnlineCoverCache(64, {
+    directory, temporaryDirectory: path.join(root, 'temp'),
+    download: async (_url, output) => { await fs.writeFile(output, 'image'); },
+    transcode: async (_source, output) => { await fs.writeFile(output, 'webp'); },
+    ...adapters,
+  });
+  return {cache, root, directory, close: () => removeTestDir(root)};
 }
 
-test("清理临时目录失败后仍释放所有封面并发名额", async () => {
-  const root = await createTestDir("cover-cleanup-denied");
-  const cache = isolatedCache();
-  const mkdtemp = fs.promises.mkdtemp, rm = fs.promises.rm;
-  fs.promises.mkdtemp = ((prefix: any, options: any) => mkdtemp(path.basename(String(prefix)).startsWith("online-cover-") ? path.join(root, "online-cover-") : prefix, options)) as typeof mkdtemp;
-  fs.promises.rm = (async (target: any, options: any) => {
-    if (String(target).startsWith(root)) throw Object.assign(new Error("fixture EACCES"), { code: "EACCES" });
-    return rm(target, options);
-  }) as typeof rm;
+test('cleanup failure releases cover download slots', async () => {
+  let downloads = 0;
+  const f = await fixture({
+    download: async () => { downloads++; throw new Error('download failed'); },
+    removeTemporary: async () => { throw Object.assign(new Error('cleanup denied'), {code: 'EACCES'}); },
+  });
   try {
-    assert.deepEqual(await Promise.all(Array.from({ length: 8 }, (_, i) => cache.getOrFetch(`failure-${i}`, "invalid-url"))), Array(8).fill(null));
-    assert.equal(cache.runningFetches, 0);
-    assert.equal(cache.fetchWaiters.length, 0);
-    await cache.clear();
-  } finally { fs.promises.mkdtemp = mkdtemp; fs.promises.rm = rm; await removeTestDir(root); }
+    for (let batch = 0; batch < 2; batch++) {
+      const results = await Promise.all(Array.from({length: 8}, (_, i) => f.cache.getOrFetch(`${batch}-${i}`, 'fixture')));
+      assert.deepEqual(results, Array(8).fill(null));
+    }
+    assert.equal(downloads, 16);
+    await f.cache.clear();
+    assert.equal((await f.cache.inspect()).files, 0);
+  } finally { await f.close(); }
 });
 
-test("封面删除失败时清空与淘汰保留占用，重试成功才清账", async () => {
-  const cache = isolatedCache();
-  const entry = { fileName: "fixture-denied.webp", bytes: 100, accessedAt: 1, lastAccessPersistAt: 1 };
-  cache.entries.set("fixture", entry);
-  cache.totalBytes = 100;
-  cache.limitBytes = 1;
-  const unlink = fs.promises.unlink;
-  fs.promises.unlink = (async (file: any) => {
-    if (path.basename(String(file)) === entry.fileName) throw Object.assign(new Error("fixture denied"), { code: "EACCES" });
-    return unlink(file);
-  }) as typeof unlink;
+test('failed eviction and clearing retain accounting until deletion succeeds', async () => {
+  let denied = true;
+  let unlinks = 0;
+  const f = await fixture({unlink: async file => {
+    unlinks++;
+    if (denied) throw Object.assign(new Error('denied'), {code: 'EACCES'});
+    await fs.unlink(file);
+  }});
   try {
-    await cache.evictIfNeeded();
-    assert.equal((await cache.inspect()).bytes, 100);
-    await assert.rejects(cache.clear(), /未能删除/);
-    assert.equal((await cache.inspect()).files, 1);
-    fs.promises.unlink = (async (file: any) => {
-      if (path.basename(String(file)) === entry.fileName) throw Object.assign(new Error("gone"), { code: "ENOENT" });
-      return unlink(file);
-    }) as typeof unlink;
-    await cache.clear();
-    assert.equal((await cache.inspect()).bytes, 0);
-  } finally { fs.promises.unlink = unlink; }
+    await fs.mkdir(f.directory, {recursive: true});
+    const file = await fs.open(path.join(f.directory, 'fixture.webp'), 'w');
+    await file.truncate(65 * 1024 * 1024);
+    await file.close();
+    const snapshot = await f.cache.inspect();
+    assert.ok(unlinks > 0, 'initial eviction must try deleting an over-limit entry');
+    assert.equal(snapshot.bytes, 65 * 1024 * 1024);
+    await assert.rejects(f.cache.clear());
+    assert.equal((await f.cache.inspect()).files, 1);
+    denied = false;
+    await f.cache.clear();
+    assert.equal((await f.cache.inspect()).bytes, 0);
+  } finally { await f.close(); }
 });
 
-test("在线缩略图清理等待正在写入的文件且不会互相死锁", async () => {
-  const cache = isolatedCache();
-  const gate = deferred<string | null>();
-  cache.fetchAndStore = async () => {
-    const result = await gate.promise;
-    // 清理期间跳过非必要的淘汰，不等待自己的 clear promise。
-    await cache.evictIfNeeded();
-    return result;
-  };
-
-  const fetchPromise = cache.getOrFetch("race-write", "https://example.invalid/cover.jpg");
-  let clearFinished = false;
-  const clearPromise = cache.clear().then(() => { clearFinished = true; });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(clearFinished, false);
-
-  gate.resolve(null);
-  await Promise.all([fetchPromise, clearPromise]);
-  assert.equal(clearFinished, true);
+test('clearing waits for a write and invalidates its generation without deadlock', async () => {
+  const entered = deferred<void>(), release = deferred<void>();
+  const f = await fixture({transcode: async (_source, output) => {
+    entered.resolve(); await release.promise; await fs.writeFile(output, 'webp');
+  }});
+  try {
+    const fetch = f.cache.getOrFetch('race-write', 'fixture');
+    await entered.promise;
+    let finished = false;
+    const clear = f.cache.clear().then(() => { finished = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(finished, false);
+    release.resolve();
+    assert.equal(await fetch, null, 'old generation cannot publish after clear');
+    await clear;
+    assert.equal((await f.cache.inspect()).files, 0);
+  } finally { release.resolve(); await f.close(); }
 });
 
-test("在线缩略图清理等待正在提升为归档封面的操作", async () => {
-  const cache = isolatedCache();
-  const gate = deferred<string | null>();
-  cache.promoteBvidNow = async () => gate.promise;
-
-  const promotion = cache.promoteBvid("BV1PROMOTION", "bvid:BV1PROMOTION");
-  let clearFinished = false;
-  const clearPromise = cache.clear().then(() => { clearFinished = true; });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(clearFinished, false);
-
-  gate.resolve("covers/BV1PROMOTION.webp");
-  await Promise.all([promotion, clearPromise]);
-  assert.equal(clearFinished, true);
+test('clearing waits for an active archive cover promotion', async () => {
+  const entered = deferred<void>(), release = deferred<void>();
+  const f = await fixture({promote: async () => { entered.resolve(); await release.promise; return 'covers/BV1.webp'; }});
+  try {
+    assert.ok(await f.cache.getOrFetch('bvid:BV1', 'fixture'));
+    const promotion = f.cache.promoteBvid('BV1', 'bvid:BV1');
+    await entered.promise;
+    let finished = false;
+    const clear = f.cache.clear().then(() => { finished = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(finished, false);
+    release.resolve();
+    assert.equal(await promotion, 'covers/BV1.webp');
+    await clear;
+    assert.equal((await f.cache.inspect()).files, 0);
+  } finally { release.resolve(); await f.close(); }
 });
 
-test("在线缩略图并发槽位在等待任务之间交接后会完整释放", async () => {
-  const cache = isolatedCache();
-  let active = 0;
-  let maximum = 0;
-  const run = async () => {
-    await cache.acquireFetchSlot();
-    active += 1;
-    maximum = Math.max(maximum, active);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    active -= 1;
-    cache.releaseFetchSlot();
-  };
-
-  await Promise.all(Array.from({ length: 12 }, run));
-  assert.equal(maximum, 4);
-  assert.equal(cache.runningFetches, 0);
-  assert.equal(cache.fetchWaiters.length, 0);
-
-  await Promise.all(Array.from({ length: 4 }, run));
-  assert.equal(cache.runningFetches, 0);
-  assert.equal(cache.fetchWaiters.length, 0);
+test('queued downloads hand off all four slots to subsequent batches', async () => {
+  let active = 0, maximum = 0, calls = 0;
+  const f = await fixture({download: async (_url, output) => {
+    active++; calls++; maximum = Math.max(maximum, active);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await fs.writeFile(output, 'image'); active--;
+  }});
+  try {
+    for (let batch = 0; batch < 2; batch++) {
+      const results = await Promise.all(Array.from({length: 12}, (_, i) => f.cache.getOrFetch(`${batch}-${i}`, 'fixture')));
+      assert.ok(results.every(Boolean));
+    }
+    assert.equal(calls, 24);
+    assert.equal(maximum, 4);
+    assert.equal(active, 0);
+  } finally { await f.close(); }
 });

@@ -37,14 +37,14 @@ const item = {
 test('archive and playback reject missing evidence and duplicate rows while preserving explicit partial playback', () => {
   assert.throws(() => parseArchiveLibraryPage({items: [{...item, playback: undefined}], hasMore: false}));
   assert.throws(() => parseArchiveLibraryPage({items: [item, item], hasMore: false}));
-  const base = {mode: 'favorite', page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false};
+  const base = {mode: 'favorite' as const, page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false};
   assert.throws(() => parsePlaybackQueuePage({...base, items: [item, item]}));
   assert.throws(() => parsePlaybackQueuePage({...base, items: [{...item, parts: [part, part]}]}));
   assert.equal(parsePlaybackQueuePage({...base, items: [{...item, partial: true}]}).items[0].partial, true);
 });
 
 test('manual archives and an unfocused empty queue preserve server sentinel values', () => {
-  const empty = { mode: 'library', page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [] };
+  const empty = { mode: 'library' as const, page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [] };
   assert.equal(parsePlaybackQueuePage(empty).focusIndex, -1);
   const manual = { ...item, source: { userId: 'user', mediaId: -1 } };
   assert.equal(parsePlaybackQueuePage({ ...empty, total: 1, items: [manual] }).items[0].source.mediaId, -1);
@@ -69,10 +69,10 @@ test('archive library boundaries validate pagination and navigation before state
 });
 
 test('playback boundaries reject malformed parts and preserve queue/search contracts', () => {
-  const queue = parsePlaybackQueuePage({ mode: 'favorite', page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false, items: [item] });
+  const queue = parsePlaybackQueuePage({ mode: 'favorite' as const, page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false, items: [item] });
   assert.equal(queue.items[0]?.parts[0]?.streamUrl, '/media/1');
   assert.equal(parsePlaybackSearchPage({ query: '标题', page: 1, pageSize: 50, total: 1, hasMore: false, items: [item] }).total, 1);
-  assert.throws(() => parsePlaybackQueuePage({ mode: 'favorite', page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false, items: [{ ...item, parts: [{ ...part, fileId: '1' }] }] }));
+  assert.throws(() => parsePlaybackQueuePage({ mode: 'favorite' as const, page: 1, pageSize: 50, total: 1, focusIndex: 0, hasMore: false, items: [{ ...item, parts: [{ ...part, fileId: '1' }] }] }));
   assert.throws(() => parsePlaybackSearchPage({ query: '标题', page: 1, pageSize: 50, total: 1, hasMore: false, items: [{ ...item, source: null }] }));
 });
 

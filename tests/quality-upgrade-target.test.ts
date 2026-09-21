@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveQualityUpgradeRemoteTarget } from "../src/quality-upgrade-target.js";
 
+function failureReason(value: ReturnType<typeof resolveQualityUpgradeRemoteTarget>) {
+  assert.equal(value.ok, false);
+  if (value.ok) throw new Error("expected a rejected target");
+  return value.reason;
+}
+
 test("quality upgrade target rejects missing proofs without parsing an empty path", () => {
   assert.deepEqual(resolveQualityUpgradeRemoteTarget("/archive", { remoteFiles: [] }), {
     ok: false,
@@ -26,20 +32,20 @@ test("quality upgrade target derives one strict directory from all file proofs",
 });
 
 test("quality upgrade target fails closed for inconsistent or unsafe legacy proofs", () => {
-  assert.match(resolveQualityUpgradeRemoteTarget("/archive", {
+  assert.match(failureReason(resolveQualityUpgradeRemoteTarget("/archive", {
     remoteFiles: [
       { name: "p1.mp4", path: "/archive/a/p1.mp4" },
       { name: "p2.mp4", path: "/archive/b/p2.mp4" },
     ],
-  }).reason, /多个远端目录/);
-  assert.match(resolveQualityUpgradeRemoteTarget("/archive", {
+  })), /多个远端目录/);
+  assert.match(failureReason(resolveQualityUpgradeRemoteTarget("/archive", {
     remoteFiles: [{ name: "p1.mp4", path: "/outside/p1.mp4" }],
-  }).reason, /无效或越界/);
-  assert.match(resolveQualityUpgradeRemoteTarget("/archive", {
+  })), /无效或越界/);
+  assert.match(failureReason(resolveQualityUpgradeRemoteTarget("/archive", {
     remotePath: "/archive/other",
     remoteFiles: [{ name: "p1.mp4", path: "/archive/BV1TEST/p1.mp4" }],
-  }).reason, /不一致/);
-  assert.match(resolveQualityUpgradeRemoteTarget("/archive", {
+  })), /不一致/);
+  assert.match(failureReason(resolveQualityUpgradeRemoteTarget("/archive", {
     remoteFiles: [{ name: "p1.mp4", path: "/archive/BV1TEST/bad\\name.mp4" }],
-  }).reason, /无效或越界/);
+  })), /无效或越界/);
 });

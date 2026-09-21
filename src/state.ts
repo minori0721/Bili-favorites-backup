@@ -1,3 +1,6 @@
+import { projectFolderDetailItem } from './state/folder-projection.js';
+import { BACKED_UP_STATUSES, isPlaceholderTitle, isPlaceholderUpperName, hasUsableFavoriteMeta, displayTitle, displayUpperName, displayCover, displayCoverLocalPath, displayDescription, isSourceAvailabilityError, sourceIsConfirmedUnavailable, sourceBlocksBackup, relationTreatsUnavailable, archivedSourceUnavailable } from './state/archive-rules.js';
+import { projectRemoteFilePreviews } from './remote-file-preview-projection.js';
 import { prepareDatabaseReplacement, recoverDatabaseReplacement } from "./database-replacement.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -5,6 +8,7 @@ import crypto from "node:crypto";
 import { dataDir } from "./paths.js";
 import { historySessionGroups, readDownloadSession } from "./download-session.js";
 import type { PersistedDownloadApiCooldown } from "./download-api-health.js";
+import type { PersistedUploadCooldown } from "./upload-health.js";
 import { databasePath } from "./paths.js";
 import {
   archiveLegacyStateFile,
@@ -17,6 +21,13 @@ import {
 } from "./database.js";
 import { playbackAvailability, type PlaybackAvailability } from "./playback.js";
 import type { ExistingArchiveProof } from "./upload-preflight.js";
+import { decodeDownloadApiCooldown, decodeUploadCooldown, decodeUserCooldown } from "./repositories/domain-decoders.js";
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const then = Reflect.get(value, 'then');
+  return typeof then === 'function';
+}
 
 // Legacy type kept only for backward-compatible state.json parsing.
 export interface ProcessedEntry {
@@ -404,7 +415,7 @@ const defaultState: StateFile = {
   userCooldowns: {},
 };
 
-const BACKED_UP_STATUSES = new Set<BackupStatus>(["uploaded", "verified", "partial_verified"]);
+
 const ACTIVE_BACKUP_STATUSES = new Set<BackupStatus>([
   "queued",
   "downloading",
@@ -429,97 +440,6 @@ const RELATION_BACKUP_PRIORITY: BackupStatus[] = [
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function isPlaceholderTitle(value: string | undefined) {
-  const text = String(value || "").trim();
-  if (!text) return true;
-  return /^(Untitled|Unknown|已失效视频|已删除视频|视频已失效|视频不存在)$/i.test(text);
-}
-
-function isPlaceholderUpperName(value: string | undefined) {
-  const text = String(value || "").trim();
-  if (!text) return true;
-  return /^(Unknown|未知UP|未知)$/i.test(text);
-}
-
-function hasUsableFavoriteMeta(item: ObservedFavoriteItem) {
-  if (item.unavailable && !item.selfVisible) return false;
-  return !isPlaceholderTitle(item.title) || !isPlaceholderUpperName(item.upperName) || Boolean(item.cover);
-}
-
-function displayTitle(entry: VideoArchiveEntry) {
-  return entry.originalMeta?.title || entry.title || entry.bvid;
-}
-
-function displayUpperName(entry: VideoArchiveEntry) {
-  return entry.originalMeta?.upperName || entry.upperName || "Unknown";
-}
-
-function displayCover(entry: VideoArchiveEntry) {
-  return entry.originalMeta?.cover || entry.cover;
-}
-
-function displayCoverLocalPath(entry: VideoArchiveEntry) {
-  return entry.originalMeta?.coverLocalPath;
-}
-
-function displayDescription(entry: VideoArchiveEntry) {
-  return entry.originalMeta?.description || entry.description;
-}
-
-const CONFIRMED_SOURCE_AVAILABILITY_STATES = new Set<SourceAvailabilityState>([
-  "confirmed_unavailable",
-  "dormant",
-]);
-const TRACKED_SOURCE_AVAILABILITY_STATES = new Set<SourceAvailabilityState>([
-  "pending_confirmation",
-  "unknown",
-  "confirmed_unavailable",
-  "dormant",
-]);
-
-const SOURCE_AVAILABILITY_ERROR_MESSAGES = new Set([
-  "Video became unavailable before a verified backup was found.",
-  "Video is currently unavailable on Bilibili.",
-  "Video unavailable while resuming backup.",
-]);
-
-function isSourceAvailabilityError(value: unknown) {
-  const message = String(value || "").trim();
-  if (SOURCE_AVAILABILITY_ERROR_MESSAGES.has(message)) return true;
-  if (message.startsWith("视频不可用（已删除、下架或不可见）:")) return true;
-  return message.startsWith("BBDown reported failure:")
-    && /(视频不存在|稿件不可见|已失效|资源不可用)/.test(message);
-}
-
-function sourceIsConfirmedUnavailable(entry: VideoArchiveEntry) {
-  if (entry.selfVisible) return false;
-  const state = entry.sourceAvailability?.state;
-  if (state) return CONFIRMED_SOURCE_AVAILABILITY_STATES.has(state);
-  // Legacy state files predate sourceAvailability. Only retain their old
-  // unavailable meaning when the favorite endpoint explicitly said so.
-  return entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable);
-}
-
-function sourceBlocksBackup(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
-  if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
-  if (entry.sourceAvailability) return TRACKED_SOURCE_AVAILABILITY_STATES.has(entry.sourceAvailability.state);
-  return entry.biliStatus === "unavailable"
-    && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable);
-}
-
-function relationTreatsUnavailable(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
-  if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
-  return sourceIsConfirmedUnavailable(entry)
-    || (entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable));
-}
-
-// Display-only evidence: never use a favorite flag to authorize download/recovery decisions.
-function archivedSourceUnavailable(relation: FavoriteRelation, video: VideoArchiveEntry) {
-  return BACKED_UP_STATUSES.has(relation.backupStatus || video.backupStatus)
-    && relation.sourceKind !== "manual" && !relation.selfVisible
-    && (Boolean(relation.favoriteUnavailable) || video.biliStatus === "unavailable");
 }
 
 export function relationKey(userId: string, mediaId: number, bvid: string) {
@@ -602,11 +522,11 @@ export class StateManager {
     return input;
   }
 
-  private trackValue<T extends object>(value: T, mark: () => void, cache = new WeakMap<object, any>()): T {
+  private trackValue<T extends object>(value: T, mark: () => void, cache = new WeakMap<object, object>()): T {
     if (!value || typeof value !== "object") return value;
     const cached = cache.get(value);
-    if (cached) return cached;
-    const proxy = new Proxy(value as any, {
+    if (cached) return cached as T;
+    const proxy = new Proxy(value, {
       get: (target, property, receiver) => {
         const child = Reflect.get(target, property, receiver);
         return child && typeof child === "object" ? this.trackValue(child, mark, cache) : child;
@@ -625,7 +545,7 @@ export class StateManager {
       },
     });
     cache.set(value, proxy);
-    return proxy;
+    return proxy as T;
   }
 
   private trackRecordMap<T extends object>(
@@ -889,11 +809,9 @@ export class StateManager {
       this.suppressFlush = false;
       const migrated = this.snapshotState();
       database.replaceState(migrated);
-      const dbCounts = database.db.prepare(`
-        SELECT (SELECT COUNT(*) FROM videos) AS videos, (SELECT COUNT(*) FROM favorite_relations) AS relations
-      `).get() as any;
-      if (Number(dbCounts.videos) !== Object.keys(migrated.videos || {}).length
-        || Number(dbCounts.relations) !== Object.keys(migrated.relations || {}).length) {
+      const dbCounts = database.countCoreRecords();
+      if (dbCounts.videos !== Object.keys(migrated.videos || {}).length
+        || dbCounts.relations !== Object.keys(migrated.relations || {}).length) {
         throw new Error("SQLite migration count verification failed");
       }
       database.close();
@@ -1565,7 +1483,11 @@ export class StateManager {
   runAtomic<T>(fn: () => T): T {
     this.flush();
     try {
-      return this.database.db.transaction(() => this.runBatch(fn))();
+      return this.database.db.transaction(() => {
+        const result = this.runBatch(fn);
+        if (isPromiseLike(result)) throw new Error('runAtomic callback must be synchronous; perform I/O before or after the transaction');
+        return result;
+      })();
     } catch (error) {
       this.reload();
       throw error;
@@ -1880,114 +1802,17 @@ export class StateManager {
   }
 
   getLocalCleanupPlans(bvid: string, localDir?: string) {
-    const rows = this.database.db.prepare("SELECT payload_json FROM jobs WHERE bvid=? AND json_type(payload_json, '$.localCleanupPlans')='array'").all(bvid) as Array<{ payload_json: string }>;
-    const plans: LocalCleanupPlan[] = rows.flatMap((row) => JSON.parse(row.payload_json).localCleanupPlans || []);
-    const wantedDir = localDir ? String(localDir) : undefined;
-    return plans
-      .filter((plan) => !wantedDir || plan.localDir === wantedDir)
-      .map((plan) => ({
-        ...plan,
-        files: plan.files.map((file) => ({ ...file, remotePaths: [...file.remotePaths] })),
-      }));
+    return this.database.getLocalCleanupPlans(bvid, localDir);
   }
 
   recordLocalCleanupPlan(bvid: string, plan: LocalCleanupPlan, jobId?: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry || !plan || !plan.localDir || !plan.manifestSessionId || !jobId) return false;
-    const row = this.database.db.prepare("SELECT payload_json FROM jobs WHERE id=? AND bvid=?").get(jobId, bvid) as { payload_json: string } | undefined;
-    if (!row) return false;
-    const payload = JSON.parse(row.payload_json);
-    const normalizeRelative = (value: unknown) => {
-      if (typeof value !== "string" || !value || value.includes("\0") || path.isAbsolute(value)) return null;
-      const normalized = path.normalize(value.replace(/[\\/]+/g, path.sep));
-      return normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`)
-        ? null
-        : normalized.replace(/\\/g, "/");
-    };
-    const filesByPath = new Map<string, LocalCleanupPlanFile>();
-    for (const file of Array.isArray(plan.files) ? plan.files : []) {
-      const relativePath = normalizeRelative(file?.relativePath);
-      const expectedSize = Number(file?.expectedSize);
-      const identity = file?.expectedIdentity;
-      const remotePaths = [...new Set((Array.isArray(file?.remotePaths) ? file.remotePaths : [])
-        .map((value) => String(value || "").trim()).filter(Boolean))];
-      if (!relativePath || !Number.isFinite(expectedSize) || expectedSize < 0 || remotePaths.length === 0
-        || !identity || ![identity.dev, identity.ino, identity.mtimeMs, identity.ctimeMs].every(Number.isFinite)) return false;
-      const existing = filesByPath.get(relativePath);
-      if (existing && existing.expectedSize !== expectedSize) return false;
-      filesByPath.set(relativePath, {
-        relativePath,
-        expectedSize,
-        expectedIdentity: { ...identity },
-        remotePaths: [...new Set([...(existing?.remotePaths || []), ...remotePaths])],
-      });
-    }
-    if (filesByPath.size === 0 || !String(plan.id || "")) return false;
-    const normalized: LocalCleanupPlan = {
-      id: String(plan.id),
-      localDir: String(plan.localDir),
-      manifestSessionId: String(plan.manifestSessionId),
-      transferSessionId: plan.transferSessionId ? String(plan.transferSessionId) : undefined,
-      transferGeneration: plan.transferGeneration === undefined ? undefined : Number(plan.transferGeneration),
-      reason: plan.reason === "quality_upgrade" ? "quality_upgrade" : "upload_verified",
-      files: [...filesByPath.values()],
-      createdAt: String(plan.createdAt || nowIso()),
-    };
-    const existingPlans: LocalCleanupPlan[] = payload.localCleanupPlans || [];
-    const current = existingPlans.find((item) => item.id === normalized.id);
-    if (current && (current.localDir !== normalized.localDir || current.manifestSessionId !== normalized.manifestSessionId)) return false;
-    const mergedFiles = new Map<string, LocalCleanupPlanFile>();
-    for (const file of current?.files || []) mergedFiles.set(file.relativePath, { ...file, remotePaths: [...file.remotePaths] });
-    for (const file of normalized.files) {
-      const previous = mergedFiles.get(file.relativePath);
-      if (previous && (previous.expectedSize !== file.expectedSize || JSON.stringify(previous.expectedIdentity) !== JSON.stringify(file.expectedIdentity))) return false;
-      mergedFiles.set(file.relativePath, {
-        relativePath: file.relativePath,
-        expectedSize: file.expectedSize,
-        expectedIdentity: { ...file.expectedIdentity },
-        remotePaths: [...new Set([...(previous?.remotePaths || []), ...file.remotePaths])],
-      });
-    }
-    const nextPlan: LocalCleanupPlan = {
-      ...normalized,
-      createdAt: current?.createdAt || normalized.createdAt,
-      files: [...mergedFiles.values()],
-    };
-    const nextPlans = current
-      ? existingPlans.map((item) => item.id === nextPlan.id ? nextPlan : item)
-      : [...existingPlans, nextPlan];
-    if (JSON.stringify(existingPlans) === JSON.stringify(nextPlans)) return false;
-    this.database.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=? AND bvid=?")
-      .run(JSON.stringify({ ...payload, localCleanupPlans: nextPlans }), Date.now(), jobId, bvid);
-    return true;
+    return this.database.recordLocalCleanupPlan(bvid, plan, jobId, Date.now());
   }
 
   reconcileLocalCleanupPlans(bvid: string, localDir: string, remainingRelativePaths: Iterable<string>, removedDirectory = false) {
-    const normalizeRelative = (value: unknown) => String(value || "").replace(/\\/g, "/");
-    const remaining = new Set([...remainingRelativePaths].map(normalizeRelative).filter(Boolean));
-    return this.database.db.transaction(() => {
-      const rows = this.database.db.prepare("SELECT id, status, payload_json FROM jobs WHERE bvid=? AND json_type(payload_json, '$.localCleanupPlans')='array'")
-        .all(bvid) as Array<{ id: string; status: string; payload_json: string }>;
-      let changed = false;
-      for (const row of rows) {
-        const payload = JSON.parse(row.payload_json);
-        const plans: LocalCleanupPlan[] = payload.localCleanupPlans;
-        const next = plans.flatMap((plan) => {
-          if (plan.localDir !== localDir) return [plan];
-          const files = removedDirectory ? [] : plan.files.filter((file) => remaining.has(normalizeRelative(file.relativePath)));
-          return files.length ? [{ ...plan, files }] : [];
-        });
-        if (JSON.stringify(plans) === JSON.stringify(next)) continue;
-        changed = true;
-        if (next.length === 0 && row.status === "completed") {
-          this.database.db.prepare("DELETE FROM jobs WHERE id=? AND status='completed'").run(row.id);
-        } else {
-          this.database.db.prepare("UPDATE jobs SET payload_json=?, updated_at=? WHERE id=?")
-            .run(JSON.stringify({ ...payload, localCleanupPlans: next }), Date.now(), row.id);
-        }
-      }
-      return changed;
-    })();
+    return this.database.reconcileLocalCleanupPlans(bvid, localDir, remainingRelativePaths, removedDirectory, Date.now());
   }
 
   recordManualArchiveItem(
@@ -2552,7 +2377,12 @@ export class StateManager {
       setAt: nowIso(),
     };
     if (this.lazyState) {
-      this.database.setCooldown("user", userId, cooldown.until, reason, cooldown as unknown as Record<string, unknown>);
+      this.database.setCooldown("user", userId, cooldown.until, reason, {
+        userId: cooldown.userId,
+        until: cooldown.until,
+        reason: cooldown.reason,
+        setAt: cooldown.setAt,
+      });
       return;
     }
     this.state.userCooldowns![userId] = cooldown;
@@ -2561,7 +2391,10 @@ export class StateManager {
 
   getUserCooldown(userId: string) {
     const cooldown = this.lazyState
-      ? this.database.getCooldown("user", userId) as unknown as UserCooldown | null
+      ? (() => {
+          const payload = this.database.getCooldown("user", userId);
+          return payload ? decodeUserCooldown({ ...payload, userId }, `user cooldown ${userId}`) : null;
+        })()
       : this.state.userCooldowns?.[userId];
     if (!cooldown) return null;
     if (cooldown.until <= Date.now()) {
@@ -2579,7 +2412,7 @@ export class StateManager {
     if (this.lazyState) {
       const active: Record<string, UserCooldown> = {};
       for (const row of this.database.listCooldowns("user", Date.now())) {
-        active[row.scopeId] = { ...(row.payload as unknown as UserCooldown), userId: row.scopeId };
+        active[row.scopeId] = decodeUserCooldown({ ...row.payload, userId: row.scopeId }, `user cooldown ${row.scopeId}`);
       }
       return active;
     }
@@ -2599,7 +2432,14 @@ export class StateManager {
         "global",
         Number(value.until || 0),
         value.reason || "",
-        value as unknown as Record<string, unknown>
+        {
+          until: value.until,
+          reason: value.reason,
+          probeBvid: value.probeBvid,
+          probeUserId: value.probeUserId,
+          probeMode: value.probeMode,
+          setAt: value.setAt,
+        }
       );
       return;
     }
@@ -2609,7 +2449,8 @@ export class StateManager {
 
   getDownloadApiCooldown() {
     if (this.lazyState) {
-      return this.database.getCooldown("download_api", "global") as unknown as PersistedDownloadApiCooldown | null;
+      const payload = this.database.getCooldown("download_api", "global");
+      return payload ? decodeDownloadApiCooldown(payload) : null;
     }
     return this.state.downloadApiCooldown ? { ...this.state.downloadApiCooldown } : null;
   }
@@ -2624,17 +2465,28 @@ export class StateManager {
     this.save();
   }
 
-  getUploadCooldown() {
-    return this.database.getCooldown("upload", "global");
+  getUploadCooldown(): PersistedUploadCooldown | null {
+    const payload = this.database.getCooldown("upload", "global");
+    return payload ? decodeUploadCooldown(payload) : null;
   }
 
-  setUploadCooldown(value: Record<string, unknown>) {
+  setUploadCooldown(value: PersistedUploadCooldown) {
+    const payload: Record<string, unknown> = {
+      state: value.state,
+      reason: value.reason,
+      category: value.category,
+      consecutiveFailures: value.consecutiveFailures,
+      openedAt: value.openedAt,
+      retryAt: value.retryAt,
+      probeInFlight: value.probeInFlight,
+      pausedDownloads: value.pausedDownloads,
+    };
     this.database.setCooldown(
       "upload",
       "global",
       Number(value.retryAt || 0),
       String(value.reason || ""),
-      value
+      payload
     );
   }
 
@@ -2898,41 +2750,7 @@ export class StateManager {
 
   getRemoteFilePreviewRecords() {
     if (this.lazyState) return this.database.listRemoteFilePreviewRecords();
-    const records = new Map<string, RemoteFilePreviewVideoRecord>();
-    for (const entry of Object.values(this.state.videos || {})) {
-      records.set(entry.bvid, {
-        bvid: entry.bvid,
-        title: entry.title,
-        upperName: entry.upperName,
-        remotePath: entry.remotePath,
-        remoteFiles: [...(entry.remoteFiles || [])],
-        relations: [],
-      });
-    }
-    for (const relation of Object.values(this.state.relations || {})) {
-      if (!relation.activeInFavorite) continue;
-      const video = this.state.videos?.[relation.bvid];
-      if (!video) continue;
-      const record = records.get(relation.bvid) || {
-        bvid: relation.bvid,
-        title: video.title,
-        upperName: video.upperName,
-        remotePath: video.remotePath,
-        remoteFiles: [...(video.remoteFiles || [])],
-        relations: [],
-      };
-      record.relations.push({
-        userId: relation.userId,
-        mediaId: relation.mediaId,
-        folderTitle: relation.folderTitle,
-        backupStatus: relation.backupStatus,
-        hasInterruptedQualityUpgrade: Boolean(relation.qualityUpgrade),
-        remotePath: relation.remotePath,
-        remoteFiles: [...(relation.remoteFiles || [])],
-      });
-      records.set(relation.bvid, record);
-    }
-    return Array.from(records.values());
+    return projectRemoteFilePreviews(Object.values(this.state.videos || {}), Object.values(this.state.relations || {}));
   }
 
   markQualityUpgradeReplacing(
@@ -3127,6 +2945,13 @@ export class StateManager {
       .map((item) => ({ ...item }));
   }
 
+  listRelationsForUser(userId: string) {
+    const relations = this.lazyState ? this.database.listRelationsForUser(userId) : Object.values(this.state.relations || {});
+    return relations
+      .filter((item) => item.userId === userId)
+      .map((item) => ({ ...item }));
+  }
+
   listRelationsForBvids(bvids: string[]) {
     const unique = [...new Set(bvids.map((bvid) => String(bvid || "").trim()).filter(Boolean))];
     if (unique.length === 0) return [];
@@ -3260,32 +3085,7 @@ export class StateManager {
   }
 
   private buildFolderDetailItem(userId: string, relation: FavoriteRelation, video: VideoArchiveEntry): FolderDetailItem {
-    const backupStatus = relation.backupStatus || video.backupStatus;
-    return {
-      archivedSourceUnavailable: archivedSourceUnavailable(relation, video),
-      bvid: video.bvid,
-      title: displayTitle(video),
-      upperName: displayUpperName(video),
-      cover: displayCover(video),
-      coverLocalPath: displayCoverLocalPath(video),
-      description: displayDescription(video),
-      favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
-      selfVisible: relation.selfVisible || video.selfVisible,
-      sourceAvailability: video.sourceAvailability,
-      favOrder: relation.favOrder,
-      favPage: relation.favPage,
-      favIndexInPage: relation.favIndexInPage,
-      unavailable: relationTreatsUnavailable(relation, video),
-      processed: BACKED_UP_STATUSES.has(backupStatus),
-      failed: this.isFailed(userId, video.bvid, relation.mediaId),
-      backupStatus,
-      mediaId: relation.mediaId,
-      folderTitle: relation.folderTitle,
-      lastSeenAt: relation.lastSeenAt,
-      activeInFavorite: relation.activeInFavorite,
-      accessRestriction: video.accessRestriction,
-      playback: playbackAvailability(backupStatus, relation.remoteFiles || video.remoteFiles),
-    };
+    return projectFolderDetailItem(relation, video, this.isFailed(userId, video.bvid, relation.mediaId));
   }
 
   listUnavailableForUser(
@@ -3458,6 +3258,22 @@ export class StateManager {
       accessRestriction: entry.accessRestriction,
       sourceAvailability: entry.sourceAvailability,
     };
+  }
+
+  getVideoForLocalCleanup(bvid: string) {
+    return this.database.getVideo(bvid);
+  }
+
+  getLocalCleanupSessionStamp(bvid: string) {
+    return this.database.getTransferSessionStamp(bvid);
+  }
+
+  getLocalCleanupTrackedDirectories(bvid: string) {
+    return this.database.getTrackedDirectories(bvid);
+  }
+
+  listUnavailableVideoPayloads() {
+    return this.database.listUnavailableVideoPayloads();
   }
 
   getVideoMetaBatch(bvids: string[]) {
@@ -3805,11 +3621,7 @@ export class StateManager {
   }
 
   getMigrationPendingUploadCount() {
-    const row = this.database.db.prepare(`
-      SELECT COUNT(DISTINCT bvid) AS count FROM favorite_relations
-      WHERE backup_status IN ('downloaded','uploading','upload_failed')
-    `).get() as any;
-    return Number(row?.count || 0);
+    return this.database.getMigrationPendingUploadCount();
   }
 
   async backupDatabase(destination: string) {

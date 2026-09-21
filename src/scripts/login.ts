@@ -15,7 +15,7 @@ async function run() {
 
   const store = new UserStore();
 
-  login.emitter.on("completed", async (result: any) => {
+  login.emitter.on("completed", async (result: unknown) => {
     const authData = normalizeTvAuthResult(result);
     const info = await getUserInfo(authData.cookie);
     store.upsert({
@@ -43,7 +43,7 @@ async function run() {
     process.exit(0);
   });
 
-  login.emitter.on("error", (error: any) => {
+  login.emitter.on("error", (error: unknown) => {
     console.error(`Login failed: ${safeErrorSummary(error)}`);
     process.exit(1);
   });

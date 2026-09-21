@@ -10,14 +10,15 @@ import { buildDavClient, isRemoteNotFoundError } from "./uploader.js";
 import { classifyRemoteFailure, createRemoteFileResolver } from "./remote-file-resolver.js";
 import { getRemoteBackendProfile } from "./remote-storage.js";
 import { normalizeLegacyRemotePath, remoteBasename } from "./remote-path.js";
+import { parsePersistedJsonValue } from './repositories/domain-decoders.js';
 
 export type ArchiveDeletionScope = "account" | "source";
 export type ArchiveDeletionStatus = "preview" | "preparing" | "config_removing" | "pending" | "running" | "retry_wait" | "failed" | "completed" | "expired" | "superseded";
 
 export interface ArchiveDeletionDavClient {
-  stat(remotePath: string): Promise<any>;
-  deleteFile(remotePath: string): Promise<any>;
-  getDirectoryContents(remotePath: string): Promise<any>;
+  stat(remotePath: string): Promise<unknown>;
+  deleteFile(remotePath: string): Promise<unknown>;
+  getDirectoryContents(remotePath: string): Promise<unknown>;
 }
 
 export interface ArchiveDeletionOptions {
@@ -27,8 +28,8 @@ export interface ArchiveDeletionOptions {
   previewCleanupIntervalMs?: number;
   setMaintenance?: (locked: boolean, summary?: {
     id: string;
-    status: string;
-    scope: string;
+    status?: string;
+    scope?: string;
     userId?: string;
     mediaId?: number;
     bvid?: string;
@@ -45,6 +46,15 @@ const PREVIEW_CLEANUP_INTERVAL_MS = 30 * 60_000;
 const RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000];
 const TERMINAL_ITEM_STATUSES = new Set(["deleted", "missing", "retained"]);
 
+type ArchiveDeletionRow = Record<string, unknown>;
+interface ArchiveDeletionItemSqlRow { remote_path: string; expected_size: number | null; }
+interface ArchiveDeletionVideoSqlRow { bvid: string; payload_json: string; }
+interface ArchiveDeletionRelationSqlRow { bvid: string; backup_status: string; payload_json: string; }
+
+function record(value: unknown): ArchiveDeletionRow {
+  return value !== null && typeof value === "object" ? value as ArchiveDeletionRow : {};
+}
+
 function normalizeRemotePath(value: string) {
   try {
     return normalizeLegacyRemotePath(value);
@@ -57,17 +67,19 @@ function isWithin(root: string, target: string) {
   return root === "/" || target === root || target.startsWith(`${root}/`);
 }
 
-function statusCode(error: any) {
-  return Number(error?.statusCode || error?.response?.status || error?.status || 0);
+function statusCode(error: unknown) {
+  const value = record(error);
+  const response = record(value.response);
+  return Number(value.statusCode || response.status || value.status || 0);
 }
 
-function isTransientError(error: any) {
+function isTransientError(error: unknown) {
   return classifyRemoteFailure(error).category === "transient";
 }
 
-function retryDelayMs(error: any, attempt: number) {
+function retryDelayMs(error: unknown, attempt: number) {
   const base = RETRY_DELAYS_MS[Math.min(Math.max(0, attempt), RETRY_DELAYS_MS.length - 1)];
-  const hint = Number(error?.retryAfterMs || error?.cause?.retryAfterMs || 0);
+  const hint = Number(record(error).retryAfterMs || record(record(error).cause).retryAfterMs || 0);
   if (!Number.isFinite(hint) || hint <= 0) return base;
   return Math.min(RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1], Math.max(base, hint));
 }
@@ -92,12 +104,12 @@ function alistIdentityHash(config: AppConfig) {
   })).digest("hex");
 }
 
-function parseJson<T>(value: unknown, fallback: T): T {
-  try {
-    return JSON.parse(String(value || "")) as T;
-  } catch {
-    return fallback;
+function parsePersistedRecord(value: unknown, context: string): ArchiveDeletionRow {
+  const parsed = parsePersistedJsonValue(value, context);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Invalid persisted ${context}: expected an object`);
   }
+  return parsed as ArchiveDeletionRow;
 }
 
 function finiteSize(value: unknown) {
@@ -108,8 +120,8 @@ function finiteSize(value: unknown) {
 export class ArchiveDeletionService {
   private db: StateDatabase;
   private readonly stateManager: StateManager;
-  private readonly configStore: ConfigStore;
-  private readonly userStore: UserStore;
+  private readonly configStore: Pick<ConfigStore, 'get'>;
+  private readonly userStore: Pick<UserStore, 'list' | 'getById'>;
   private readonly jobStore: PersistentJobStore;
   private readonly clientFactory: (config: AppConfig) => ArchiveDeletionDavClient;
   private readonly now: () => number;
@@ -121,6 +133,7 @@ export class ArchiveDeletionService {
   private readonly onAccountDeletionCompleted: NonNullable<ArchiveDeletionOptions["onAccountDeletionCompleted"]>;
   private readonly onAccountPreparationRecovery: NonNullable<ArchiveDeletionOptions["onAccountPreparationRecovery"]>;
   private readonly leaseOwner = `archive-delete:${crypto.randomUUID()}`;
+  private maintenanceId: string | null = null;
   private worker: Promise<void> | null = null;
   private wakeTimer: NodeJS.Timeout | null = null;
   private leaseTimer: NodeJS.Timeout | null = null;
@@ -129,8 +142,8 @@ export class ArchiveDeletionService {
 
   constructor(
     stateManager: StateManager,
-    configStore: ConfigStore,
-    userStore: UserStore,
+    configStore: Pick<ConfigStore, 'get'>,
+    userStore: Pick<UserStore, 'list' | 'getById'>,
     options: ArchiveDeletionOptions = {}
   ) {
     this.stateManager = stateManager;
@@ -155,6 +168,17 @@ export class ArchiveDeletionService {
     this.recoverAccountPreparations();
     this.syncMaintenanceState();
     this.schedule();
+  }
+
+  private enterMaintenance(summary: { id: string; status: string; scope: string; userId?: string; mediaId?: number; bvid?: string }) {
+    this.maintenanceId = summary.id;
+    this.setMaintenance(true, summary);
+  }
+
+  private leaveMaintenance() {
+    const id = this.maintenanceId;
+    this.maintenanceId = null;
+    this.setMaintenance(false, id ? { id } : undefined);
   }
 
   rebind(database: StateDatabase) {
@@ -204,7 +228,7 @@ export class ArchiveDeletionService {
     `);
     for (const user of this.userStore.list()) {
       if (!user.enabled || this.db.hasUnfinishedArchiveAccountDeletion(user.id)) continue;
-      if (!Boolean((hasEvidence.get({ userId: user.id }) as any)?.present)) continue;
+      if (!Boolean((hasEvidence.get({ userId: user.id }) as ArchiveDeletionRow | undefined)?.present)) continue;
       if (!this.restoreAccount(user.id)) continue;
       this.onAccountPreparationRecovery(user.id, false);
       restored.push(user.id);
@@ -242,7 +266,7 @@ export class ArchiveDeletionService {
         now
       );
     }
-    const rows = this.db.db.prepare("SELECT user_id FROM archive_accounts WHERE removed_at IS NULL").all() as any[];
+    const rows = this.db.db.prepare<unknown[], { "user_id": string }>("SELECT user_id FROM archive_accounts WHERE removed_at IS NULL").all();
     const mark = this.db.db.prepare("UPDATE archive_accounts SET removed_at=?, updated_at=? WHERE user_id=? AND removed_at IS NULL");
     for (const row of rows) {
       if (!liveIds.has(String(row.user_id))) mark.run(now, now, row.user_id);
@@ -262,13 +286,13 @@ export class ArchiveDeletionService {
   }
 
   private syncMaintenanceState() {
-    const row = this.db.db.prepare(`
+    const row = this.db.db.prepare<unknown[], { "id": string; "status": string; "scope": string; "user_id": string; "media_id": number | null; "bvid": string | null }>(`
       SELECT id, status, scope, user_id, media_id, bvid FROM archive_deletions
       WHERE status IN ('preparing','config_removing','pending','running','retry_wait')
       ORDER BY updated_at DESC LIMIT 1
-    `).get() as any;
+    `).get();
     if (row) {
-      this.setMaintenance(true, {
+      this.enterMaintenance({
         id: String(row.id),
         status: String(row.status),
         scope: String(row.scope),
@@ -277,7 +301,7 @@ export class ArchiveDeletionService {
         bvid: row.bvid ? String(row.bvid) : undefined,
       });
     } else {
-      this.setMaintenance(false);
+      this.leaveMaintenance();
     }
   }
 
@@ -309,8 +333,8 @@ export class ArchiveDeletionService {
       if (this.stopped) return;
       try {
         this.pruneExpiredPreviews();
-      } catch {
-        // The next interval or an explicit preview request will retry cleanup.
+      } catch (error) {
+        console.warn("[ArchiveDeletion] preview cleanup deferred", { error: safeDeletionError(error) });
       }
     }, this.previewCleanupIntervalMs);
     this.previewCleanupTimer.unref?.();
@@ -358,23 +382,23 @@ export class ArchiveDeletionService {
     const now = this.now();
     const expiresAt = now + PREVIEW_TTL_MS;
     const relationRows = scope === "account"
-      ? this.db.db.prepare(`
-          SELECT DISTINCT r.user_id, r.media_id, r.bvid
+      ? this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "active_in_favorite": number; "source_kind": string }>(`
+          SELECT DISTINCT r.user_id, r.media_id, r.bvid, r.active_in_favorite, r.source_kind
           FROM favorite_relations r
           WHERE r.user_id=? AND EXISTS(
             SELECT 1 FROM remote_files rf
             WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified'
           )
           ORDER BY r.media_id, r.bvid
-        `).all(userId) as any[]
-      : this.db.db.prepare(`
+        `).all(userId)
+      : this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "active_in_favorite": number; "source_kind": string }>(`
            SELECT r.user_id, r.media_id, r.bvid, r.active_in_favorite, r.source_kind
           FROM favorite_relations r
           WHERE r.user_id=? AND r.media_id=? AND r.bvid=? AND EXISTS(
             SELECT 1 FROM remote_files rf
             WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified'
           )
-        `).all(userId, mediaId, bvid) as any[];
+        `).all(userId, mediaId, bvid);
     if (scope === "source" && relationRows.length === 0) throw archiveDeletionError("该来源没有可删除的已验证归档", 409);
     if (scope === "source") {
       const live = this.userStore.getById(userId);
@@ -384,22 +408,22 @@ export class ArchiveDeletionService {
       }
     }
     const relationCount = scope === "account"
-      ? Number((this.db.db.prepare("SELECT COUNT(*) AS count FROM favorite_relations WHERE user_id=?").get(userId) as any)?.count || 0)
+      ? Number((this.db.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM favorite_relations WHERE user_id=?").get(userId))?.count || 0)
       : 1;
     const resolvedId = this.db.db.transaction(() => {
       const candidates = scope === "account"
-        ? this.db.db.prepare(`
+        ? this.db.db.prepare<unknown[], { "id": string; "scope": string; "user_id": string; "media_id": number | null; "bvid": string | null; "status": string; "alist_identity_hash": string; "archive_root": string; "relation_count": number; "source_count": number; "file_count": number; "total_bytes": number; "shared_count": number; "completed_count": number; "retained_count": number; "conflict_count": number; "failed_count": number; "last_error": string | null; "expires_at": number | null; "created_at": number; "updated_at": number; "started_at": number | null; "completed_at": number | null }>(`
             SELECT * FROM archive_deletions
             WHERE scope='account' AND user_id=? AND media_id IS NULL AND bvid IS NULL
               AND status='preview'
             ORDER BY created_at DESC, id DESC
-          `).all(userId) as any[]
-        : this.db.db.prepare(`
+          `).all(userId)
+        : this.db.db.prepare<unknown[], { "id": string; "scope": string; "user_id": string; "media_id": number | null; "bvid": string | null; "status": string; "alist_identity_hash": string; "archive_root": string; "relation_count": number; "source_count": number; "file_count": number; "total_bytes": number; "shared_count": number; "completed_count": number; "retained_count": number; "conflict_count": number; "failed_count": number; "last_error": string | null; "expires_at": number | null; "created_at": number; "updated_at": number; "started_at": number | null; "completed_at": number | null }>(`
             SELECT * FROM archive_deletions
             WHERE scope='source' AND user_id=? AND media_id=? AND bvid=?
               AND status='preview'
             ORDER BY created_at DESC, id DESC
-          `).all(userId, mediaId, bvid) as any[];
+          `).all(userId, mediaId, bvid);
       const identityHash = alistIdentityHash(config);
       let reusableId: string | undefined;
       for (const candidate of candidates) {
@@ -486,8 +510,8 @@ export class ArchiveDeletionService {
       const totals = this.db.db.prepare(`
         SELECT COUNT(*) AS files, COALESCE(SUM(expected_size),0) AS bytes
         FROM archive_deletion_items WHERE deletion_id=?
-      `).get(id) as any;
-      const shared = this.db.db.prepare(`
+      `).get(id) as ArchiveDeletionRow | undefined;
+      const shared = this.db.db.prepare<unknown[], { "count": number }>(`
         SELECT COUNT(*) AS count FROM archive_deletion_items i
         WHERE i.deletion_id=? AND EXISTS(
           SELECT 1 FROM remote_files rf
@@ -496,10 +520,10 @@ export class ArchiveDeletionService {
             WHERE s.deletion_id=? AND s.user_id=rf.user_id AND s.media_id=rf.media_id AND s.bvid=rf.bvid
           )
         )
-      `).get(id, id) as any;
-      const conflicts = Number((this.db.db.prepare(`
+      `).get(id, id);
+      const conflicts = Number((this.db.db.prepare<unknown[], { "count": number }>(`
         SELECT COUNT(*) AS count FROM archive_deletion_items WHERE deletion_id=? AND status='conflict'
-      `).get(id) as any)?.count || 0);
+      `).get(id))?.count || 0);
       this.db.db.prepare(`
         UPDATE archive_deletions SET file_count=?, total_bytes=?, shared_count=?, conflict_count=?, updated_at=? WHERE id=?
       `).run(Number(totals?.files || 0), Number(totals?.bytes || 0), Number(shared?.count || 0), conflicts, now, id);
@@ -509,15 +533,15 @@ export class ArchiveDeletionService {
   }
 
   private previewMatchesCurrent(
-    candidate: any,
+    candidate: ArchiveDeletionRow,
     identityHash: string,
     archiveRoot: string,
     relationCount: number,
-    relationRows: any[]
+    relationRows: ArchiveDeletionRow[]
   ) {
     let candidateRoot: string;
     try {
-      candidateRoot = normalizeRemotePath(candidate.archive_root);
+      candidateRoot = normalizeRemotePath(String(candidate.archive_root));
     } catch {
       return false;
     }
@@ -528,10 +552,10 @@ export class ArchiveDeletionService {
       return false;
     }
     const expectedSources = new Set(relationRows.map((row) => `${row.user_id}\0${row.media_id}\0${row.bvid}`));
-    const storedSources = this.db.db.prepare(`
+    const storedSources = this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string }>(`
       SELECT user_id, media_id, bvid FROM archive_deleted_sources
       WHERE deletion_id=? ORDER BY user_id, media_id, bvid
-    `).all(candidate.id) as any[];
+    `).all(candidate.id);
     if (storedSources.length !== expectedSources.size
       || storedSources.some((row) => !expectedSources.has(`${row.user_id}\0${row.media_id}\0${row.bvid}`))) {
       return false;
@@ -539,20 +563,20 @@ export class ArchiveDeletionService {
     try {
       return this.previewProofsMatch(String(candidate.id));
     } catch (error) {
-      if (Number((error as any)?.statusCode || 0) === 409) return false;
+      if (Number(record(error).statusCode || 0) === 409) return false;
       throw error;
     }
   }
 
   get(id: string) {
-    const row = this.db.db.prepare("SELECT * FROM archive_deletions WHERE id=?").get(id) as any;
+    const row = this.db.db.prepare<unknown[], { "id": string; "scope": string; "user_id": string; "media_id": number | null; "bvid": string | null; "status": string; "alist_identity_hash": string; "archive_root": string; "relation_count": number; "source_count": number; "file_count": number; "total_bytes": number; "shared_count": number; "completed_count": number; "retained_count": number; "conflict_count": number; "failed_count": number; "last_error": string | null; "expires_at": number | null; "created_at": number; "updated_at": number; "started_at": number | null; "completed_at": number | null }>("SELECT * FROM archive_deletions WHERE id=?").get(id);
     if (!row) return undefined;
-    const conflicts = (this.db.db.prepare(`
+    const conflicts = (this.db.db.prepare<unknown[], { "remote_path": string; "status": string; "last_error": string | null }>(`
       SELECT remote_path, status, last_error FROM archive_deletion_items
       WHERE deletion_id=? AND status IN ('conflict','failed')
       ORDER BY remote_path LIMIT 50
-    `).all(id) as any[]).map((item) => ({
-      name: remoteBasename(item.remote_path),
+    `).all(id)).map((item) => ({
+      name: remoteBasename(String(item.remote_path)),
       status: String(item.status),
       error: item.last_error ? safeDeletionError(item.last_error) : undefined,
     }));
@@ -582,12 +606,12 @@ export class ArchiveDeletionService {
           row.media_id,
           row.user_id,
           row.media_id,
-        ) as any)?.count || 0);
+        ) as ArchiveDeletionRow | undefined)?.count || 0);
       } else {
         activeTasks = Number((this.db.db.prepare(`
           SELECT COUNT(*) AS count FROM jobs j
           WHERE j.kind<>'archive_delete' AND j.status IN (${statuses}) AND j.user_id=?
-        `).get(...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, row.user_id) as any)?.count || 0);
+        `).get(...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, row.user_id) as ArchiveDeletionRow | undefined)?.count || 0);
       }
     }
     return {
@@ -596,7 +620,7 @@ export class ArchiveDeletionService {
       scope: String(row.scope) as ArchiveDeletionScope,
       userId: String(row.user_id),
       mediaId: row.media_id == null ? undefined : Number(row.media_id),
-      bvid: row.bvid || undefined,
+      bvid: row.bvid == null ? undefined : String(row.bvid),
       status: String(row.status) as ArchiveDeletionStatus,
       relationCount: Number(row.relation_count || 0),
       sourceCount: Number(row.source_count || 0),
@@ -618,8 +642,13 @@ export class ArchiveDeletionService {
     };
   }
 
+  /** Run the same bounded preview cleanup used by the lifecycle timer. */
+  cleanupExpiredPreviews() {
+    this.pruneExpiredPreviews();
+  }
+
   getAccountOperation(userId: string) {
-    const row = this.db.db.prepare(`
+    const row = this.db.db.prepare<unknown[], { "id": string }>(`
       SELECT id FROM archive_deletions
       WHERE scope='account' AND user_id=?
         AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
@@ -628,7 +657,7 @@ export class ArchiveDeletionService {
         WHEN 'retry_wait' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END,
         updated_at DESC, id DESC
       LIMIT 1
-    `).get(userId) as any;
+    `).get(userId);
     return row ? this.get(String(row.id)) : undefined;
   }
 
@@ -647,7 +676,7 @@ export class ArchiveDeletionService {
     if (operation.scope !== "account") throw archiveDeletionError("该预览不是账号归档清理", 409);
     const now = this.now();
     const claimed = this.db.db.transaction(() => {
-      const failedPredecessors = this.db.db.prepare(`
+      const failedPredecessors = this.db.db.prepare<unknown[], { "id": string }>(`
         SELECT id FROM archive_deletions
         WHERE id<>? AND scope='account' AND user_id=? AND status='failed'
       `).all(id, operation.userId) as Array<{ id: string }>;
@@ -721,9 +750,9 @@ export class ArchiveDeletionService {
       throw archiveDeletionError("账号归档清理准备状态已变化", 409);
     }
     const config = this.configStore.get();
-    const row = this.db.db.prepare("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id) as any;
-    if (row.alist_identity_hash !== alistIdentityHash(config)
-      || normalizeRemotePath(row.archive_root) !== normalizeRemotePath(config.alistDest)) {
+    const row = this.db.db.prepare<unknown[], { "alist_identity_hash": string; "archive_root": string }>("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id);
+    if (!row || row.alist_identity_hash !== alistIdentityHash(config)
+      || normalizeRemotePath(String(row.archive_root)) !== normalizeRemotePath(config.alistDest)) {
       throw archiveDeletionError("AList连接或归档路径已变化，请重新预览", 409);
     }
     if (operation.conflictCount > 0) throw archiveDeletionError("本地归档证明存在冲突，请重新同步或修复证明后再预览", 409);
@@ -779,7 +808,7 @@ export class ArchiveDeletionService {
   }
 
   private recoverAccountPreparations() {
-    const rows = this.db.db.prepare(`
+    const rows = this.db.db.prepare<unknown[], { "id": string; "user_id": string }>(`
       SELECT id, user_id FROM archive_deletions
       WHERE scope='account' AND status IN ('preparing','config_removing')
       ORDER BY created_at, id
@@ -814,11 +843,11 @@ export class ArchiveDeletionService {
     const now = this.now();
     this.db.db.transaction(() => {
       const failedPredecessors = operation.scope === "account"
-        ? this.db.db.prepare(`
+        ? this.db.db.prepare<unknown[], { "id": string }>(`
             SELECT id FROM archive_deletions
             WHERE id<>? AND scope='account' AND user_id=? AND status='failed'
           `).all(id, operation.userId) as Array<{ id: string }>
-        : this.db.db.prepare(`
+        : this.db.db.prepare<unknown[], { "id": string }>(`
             SELECT id FROM archive_deletions
             WHERE id<>? AND scope='source' AND user_id=? AND media_id=? AND bvid=? AND status='failed'
           `).all(id, operation.userId, operation.mediaId, operation.bvid) as Array<{ id: string }>;
@@ -864,9 +893,9 @@ export class ArchiveDeletionService {
     if (confirmation !== required) throw archiveDeletionError(`请输入 ${required} 确认删除`, 400);
     if (this.db.getActivePathMigration()) throw archiveDeletionError("归档路径迁移期间不能开始删除", 409);
     const config = this.configStore.get();
-    const row = this.db.db.prepare("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id) as any;
-    if (row.alist_identity_hash !== alistIdentityHash(config)
-      || normalizeRemotePath(row.archive_root) !== normalizeRemotePath(config.alistDest)) {
+    const row = this.db.db.prepare<unknown[], { "alist_identity_hash": string; "archive_root": string }>("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id);
+    if (!row || row.alist_identity_hash !== alistIdentityHash(config)
+      || normalizeRemotePath(String(row.archive_root)) !== normalizeRemotePath(config.alistDest)) {
       throw archiveDeletionError("AList连接或归档路径已变化，请重新预览", 409);
     }
     if (this.db.hasActiveArchiveDeletion()) throw archiveDeletionError("已有归档清理任务正在执行", 409);
@@ -887,9 +916,9 @@ export class ArchiveDeletionService {
     }
     this.assertRemainingProofsStillCurrent(id);
     const config = this.configStore.get();
-    const row = this.db.db.prepare("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id) as any;
-    if (row.alist_identity_hash !== alistIdentityHash(config)
-      || normalizeRemotePath(row.archive_root) !== normalizeRemotePath(config.alistDest)) {
+    const row = this.db.db.prepare<unknown[], { "alist_identity_hash": string; "archive_root": string }>("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id);
+    if (!row || row.alist_identity_hash !== alistIdentityHash(config)
+      || normalizeRemotePath(String(row.archive_root)) !== normalizeRemotePath(config.alistDest)) {
       throw archiveDeletionError("AList连接或归档路径已变化，请重新预览", 409);
     }
     if (operation.scope === "source") {
@@ -912,7 +941,7 @@ export class ArchiveDeletionService {
   }
 
   private assertSourceStillDeletable(userId: string, mediaId: number, bvid: string) {
-    const row = this.db.db.prepare("SELECT active_in_favorite FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?").get(userId, mediaId, bvid) as any;
+    const row = this.db.db.prepare<unknown[], { "active_in_favorite": number }>("SELECT active_in_favorite FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?").get(userId, mediaId, bvid);
     if (!row) throw archiveDeletionError("归档来源已不存在", 409);
     const live = this.userStore.getById(userId);
     const selected = Boolean(live?.favorites.some((folder) => folder.mediaId === mediaId));
@@ -920,7 +949,7 @@ export class ArchiveDeletionService {
   }
 
   private currentProofs(id: string) {
-    const rows = this.db.db.prepare(`
+    const rows = this.db.db.prepare<unknown[], { "remote_path": string; "bvid": string; "expected_size": number | null }>(`
       WITH selected AS (
         SELECT rf.remote_path, rf.bvid, rf.expected_size
         FROM remote_files rf
@@ -937,10 +966,10 @@ export class ArchiveDeletionService {
           SELECT 1 FROM selected s WHERE s.remote_path=rf.remote_path AND s.bvid=rf.bvid
         )
       ORDER BY remote_path, bvid, expected_size
-    `).all(id) as any[];
+    `).all(id);
     const grouped = new Map<string, { bvids: Set<string>; sizes: Set<number>; invalidSize: boolean }>();
     for (const row of rows) {
-      const remotePath = normalizeRemotePath(row.remote_path);
+      const remotePath = normalizeRemotePath(String(row.remote_path));
       const group = grouped.get(remotePath) || { bvids: new Set<string>(), sizes: new Set<number>(), invalidSize: false };
       group.bvids.add(String(row.bvid));
       const size = finiteSize(row.expected_size);
@@ -967,11 +996,11 @@ export class ArchiveDeletionService {
   }
 
   private previewProofsMatch(id: string, remainingOnly = false) {
-    const expected = new Map((this.db.db.prepare(`
+    const expected = new Map((this.db.db.prepare<unknown[], ArchiveDeletionItemSqlRow>(`
       SELECT remote_path, expected_size FROM archive_deletion_items
       WHERE deletion_id=? ${remainingOnly ? "AND status NOT IN ('deleted','missing','retained')" : ""}
       ORDER BY remote_path
-    `).all(id) as any[]).map((row) => [normalizeRemotePath(row.remote_path), finiteSize(row.expected_size)]));
+    `).all(id)).map((row) => [normalizeRemotePath(row.remote_path), finiteSize(row.expected_size)]));
     const current = this.currentProofs(id);
     if (expected.size !== current.size) return false;
     for (const [remotePath, expectedSize] of expected) {
@@ -983,17 +1012,17 @@ export class ArchiveDeletionService {
   }
 
   private markSourcesDeleting(deletionId: string, now: number) {
-    const rows = this.db.db.prepare(`
+    const rows = this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "payload_json": string }>(`
       SELECT r.user_id, r.media_id, r.bvid, r.payload_json
       FROM favorite_relations r JOIN archive_deleted_sources s
         ON s.deletion_id=? AND s.user_id=r.user_id AND s.media_id=r.media_id AND s.bvid=r.bvid
-    `).all(deletionId) as any[];
+    `).all(deletionId);
     const update = this.db.db.prepare(`
       UPDATE favorite_relations SET backup_status='lost', next_remote_check_at=NULL,
         payload_json=?, updated_at=? WHERE user_id=? AND media_id=? AND bvid=?
     `);
     for (const row of rows) {
-      const relation = parseJson<any>(row.payload_json, {});
+      const relation = parsePersistedRecord(row.payload_json, `archive relation ${row.bvid}`);
       relation.backupStatus = "lost";
       relation.statusUpdatedAt = new Date(now).toISOString();
       relation.nextRemoteCheckAt = undefined;
@@ -1019,7 +1048,7 @@ export class ArchiveDeletionService {
     const due = this.db.db.prepare(`
       SELECT MIN(not_before) AS due FROM jobs
       WHERE kind='archive_delete' AND status IN ('pending','retry_wait')
-    `).get() as any;
+    `).get() as ArchiveDeletionRow | undefined;
     if (due?.due == null) return;
     const delay = Math.max(0, Number(due.due) - this.now());
     if (delay > 0) {
@@ -1048,7 +1077,7 @@ export class ArchiveDeletionService {
       this.jobStore.complete(job.id, this.leaseOwner);
       return;
     }
-    this.setMaintenance(true, {
+    this.enterMaintenance({
       id: deletionId,
       status: "running",
       scope: operation.scope,
@@ -1061,13 +1090,13 @@ export class ArchiveDeletionService {
     try {
       await this.processOperation(deletionId);
       this.jobStore.complete(job.id, this.leaseOwner);
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (this.isOperationSuperseded(deletionId)) {
         this.jobStore.complete(job.id, this.leaseOwner);
         return;
       }
       const summary = safeDeletionError(error, "归档清理失败");
-      const transient = Boolean(error?.transient || isTransientError(error));
+      const transient = Boolean(record(error).transient || isTransientError(error));
       const attempt = Number(job.attempts || 0);
       if (transient && attempt < RETRY_DELAYS_MS.length) {
         const nextAt = this.now() + retryDelayMs(error, attempt);
@@ -1086,7 +1115,7 @@ export class ArchiveDeletionService {
   private setOperationFailure(id: string, status: "retry_wait" | "failed", error: string) {
     const now = this.now();
     const counts = this.itemCounts(id);
-    const bvids = (this.db.db.prepare("SELECT DISTINCT bvid FROM archive_deleted_sources WHERE deletion_id=?").all(id) as Array<{ bvid: string }>)
+    const bvids = (this.db.db.prepare<unknown[], { "bvid": string }>("SELECT DISTINCT bvid FROM archive_deleted_sources WHERE deletion_id=?").all(id) as Array<{ bvid: string }>)
       .map((row) => String(row.bvid));
     this.db.db.transaction(() => {
       this.db.db.prepare(`
@@ -1099,7 +1128,7 @@ export class ArchiveDeletionService {
   }
 
   private itemCounts(id: string) {
-    const rows = this.db.db.prepare("SELECT status, COUNT(*) AS count FROM archive_deletion_items WHERE deletion_id=? GROUP BY status").all(id) as any[];
+    const rows = this.db.db.prepare<unknown[], { "status": string; "count": number }>("SELECT status, COUNT(*) AS count FROM archive_deletion_items WHERE deletion_id=? GROUP BY status").all(id);
     const counts = Object.fromEntries(rows.map((row) => [String(row.status), Number(row.count || 0)]));
     return {
       completed: Number(counts.deleted || 0) + Number(counts.missing || 0) + Number(counts.retained || 0),
@@ -1110,12 +1139,12 @@ export class ArchiveDeletionService {
   }
 
   private isOperationRunnable(id: string) {
-    const row = this.db.db.prepare("SELECT status FROM archive_deletions WHERE id=?").get(id) as any;
+    const row = this.db.db.prepare<unknown[], { "status": string }>("SELECT status FROM archive_deletions WHERE id=?").get(id);
     return ["pending", "running", "retry_wait"].includes(String(row?.status || ""));
   }
 
   private isOperationSuperseded(id: string) {
-    const row = this.db.db.prepare("SELECT status FROM archive_deletions WHERE id=?").get(id) as any;
+    const row = this.db.db.prepare<unknown[], { "status": string }>("SELECT status FROM archive_deletions WHERE id=?").get(id);
     return String(row?.status || "") === "superseded";
   }
 
@@ -1133,8 +1162,9 @@ export class ArchiveDeletionService {
     if (!this.isOperationRunnable(id)) return;
     this.assertRemainingProofsStillCurrent(id);
     const config = this.configStore.get();
-    const row = this.db.db.prepare("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id) as any;
-    const root = normalizeRemotePath(row.archive_root);
+    const row = this.db.db.prepare<unknown[], { "alist_identity_hash": string; "archive_root": string }>("SELECT alist_identity_hash, archive_root FROM archive_deletions WHERE id=?").get(id);
+    if (!row) throw archiveDeletionError("归档清理任务不存在", 404);
+    const root = normalizeRemotePath(String(row.archive_root));
     if (row.alist_identity_hash !== alistIdentityHash(config) || root !== normalizeRemotePath(config.alistDest)) {
       throw archiveDeletionError("AList连接或归档路径与预览不一致", 409, false);
     }
@@ -1156,16 +1186,16 @@ export class ArchiveDeletionService {
     // an escaped spelling that must be used for the subsequent DELETE.
     let cursor = "";
     while (true) {
-      const items = this.db.db.prepare(`
+      const items = this.db.db.prepare<unknown[], { "deletion_id": string; "remote_path": string; "expected_size": number | null; "status": string; "attempts": number; "next_attempt_at": number; "last_error": string | null; "created_at": number; "updated_at": number }>(`
         SELECT * FROM archive_deletion_items
         WHERE deletion_id=? AND remote_path>?
         ORDER BY remote_path LIMIT 250
-      `).all(id, cursor) as any[];
+      `).all(id, cursor);
       if (items.length === 0) break;
       for (const item of items) {
         if (!this.isOperationRunnable(id)) return;
         if (TERMINAL_ITEM_STATUSES.has(String(item.status))) continue;
-        const remotePath = normalizeRemotePath(item.remote_path);
+         const remotePath = normalizeRemotePath(String(item.remote_path));
         if (!isWithin(root, remotePath) || remotePath === root) {
           this.updateItem(id, remotePath, "conflict", "归档文件超出允许的远端路径边界");
           preflightConflict = true;
@@ -1200,7 +1230,7 @@ export class ArchiveDeletionService {
             resolvedRemotePaths.set(remotePath, observed.path);
             this.updateItem(id, remotePath, shared ? "shared_verified" : "verified", undefined);
           }
-        } catch (error: any) {
+        } catch (error: unknown) {
           if (isRemoteNotFoundError(error)) {
             this.updateItem(id, remotePath, "missing", undefined);
           } else if (isTransientError(error)) {
@@ -1218,7 +1248,7 @@ export class ArchiveDeletionService {
     if (!this.isOperationRunnable(id)) return;
     const terminalize = (status: "observed_missing" | "shared_verified", terminal: "missing" | "retained") => {
       while (true) {
-        const rows = this.db.db.prepare(`
+        const rows = this.db.db.prepare<unknown[], { "remote_path": string }>(`
           SELECT remote_path FROM archive_deletion_items
           WHERE deletion_id=? AND status=? ORDER BY remote_path LIMIT 250
         `).all(id, status) as Array<{ remote_path: string }>;
@@ -1232,22 +1262,22 @@ export class ArchiveDeletionService {
     terminalize("shared_verified", "retained");
     this.syncOperationCounts(id);
     while (true) {
-      const verified = this.db.db.prepare(`
+      const verified = this.db.db.prepare<unknown[], { "deletion_id": string; "remote_path": string; "expected_size": number | null; "status": string; "attempts": number; "next_attempt_at": number; "last_error": string | null; "created_at": number; "updated_at": number }>(`
         SELECT * FROM archive_deletion_items
         WHERE deletion_id=? AND status='verified' ORDER BY remote_path LIMIT 250
-      `).all(id) as any[];
+      `).all(id);
       if (verified.length === 0) break;
       for (const item of verified) {
         if (!this.isOperationRunnable(id)) {
           if (affectedBvids.size > 0) this.recomputeVideoAggregates([...affectedBvids], this.now());
           return;
         }
-        const remotePath = normalizeRemotePath(item.remote_path);
+         const remotePath = normalizeRemotePath(String(item.remote_path));
         const accessPath = resolvedRemotePaths.get(remotePath) || remotePath;
         this.updateItem(id, remotePath, "deleting", undefined, true);
         try {
           await client.deleteFile(accessPath);
-        } catch (error: any) {
+        } catch (error: unknown) {
           if (!isRemoteNotFoundError(error)) {
             this.updateItem(id, remotePath, "failed", safeDeletionError(error), true);
             throw archiveDeletionError("远端文件删除暂时失败", statusCode(error) || 503, isTransientError(error));
@@ -1281,7 +1311,7 @@ export class ArchiveDeletionService {
   }
 
   private externalReferencePaths(deletionId: string) {
-    const rows = this.db.db.prepare(`
+    const rows = this.db.db.prepare<unknown[], { "remote_path": string }>(`
       SELECT DISTINCT rf.remote_path
       FROM archive_deletion_items i
       JOIN remote_files rf ON rf.remote_path=i.remote_path AND rf.user_id<>''
@@ -1301,7 +1331,7 @@ export class ArchiveDeletionService {
   }
 
   private reconcileSourceProofsForPath(id: string, remotePath: string, now: number) {
-    const sourceRows = this.db.db.prepare(`
+    const sourceRows = this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "relation_json": string; "active_in_favorite": number }>(`
       SELECT s.user_id, s.media_id, s.bvid, r.payload_json AS relation_json,
         r.active_in_favorite
       FROM archive_deleted_sources s
@@ -1313,7 +1343,7 @@ export class ArchiveDeletionService {
           WHERE rf.user_id=s.user_id AND rf.media_id=s.media_id AND rf.bvid=s.bvid
             AND rf.remote_path=?
         )
-    `).all(id, remotePath) as any[];
+    `).all(id, remotePath);
     const deleteSourceProof = this.db.db.prepare(`
       DELETE FROM remote_files
       WHERE user_id=? AND media_id=? AND bvid=? AND remote_path=?
@@ -1329,13 +1359,14 @@ export class ArchiveDeletionService {
       bvids.add(String(source.bvid));
       deleteSourceProof.run(source.user_id, source.media_id, source.bvid, remotePath);
       if (!source.relation_json) continue;
-      const relation = parseJson<any>(source.relation_json, {});
+      const relation = parsePersistedRecord(source.relation_json, `archive relation ${source.bvid}`);
       const originalFiles = Array.isArray(relation.remoteFiles) ? relation.remoteFiles : [];
-      const remainingFiles = originalFiles.filter((file: any) => {
+      const remainingFiles = originalFiles.filter((file) => {
+        const fileRecord = record(file);
         try {
-          return normalizeRemotePath(String(file?.path || "")) !== remotePath;
+          return normalizeRemotePath(String(fileRecord.path || "")) !== remotePath;
         } catch {
-          return String(file?.path || "") !== remotePath;
+          return String(fileRecord.path || "") !== remotePath;
         }
       });
       const restoredDuringDeletion = Number(source.active_in_favorite) === 1;
@@ -1467,14 +1498,14 @@ export class ArchiveDeletionService {
     const iso = new Date(now).toISOString();
     let restoredLiveAccount: string | undefined;
     this.db.db.transaction(() => {
-      const sourceRows = this.db.db.prepare(`
+      const sourceRows = this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "deletion_id": string; "status": string; "deleted_at": number | null; "restored_at": number | null; "file_count": number; "total_bytes": number; "retained_count": number; "relation_json": string }>(`
         SELECT s.*, r.payload_json AS relation_json
         FROM archive_deleted_sources s
         LEFT JOIN favorite_relations r
           ON r.user_id=s.user_id AND r.media_id=s.media_id AND r.bvid=s.bvid
         WHERE s.deletion_id=?
         ORDER BY s.user_id, s.media_id, s.bvid
-      `).all(id) as any[];
+      `).all(id);
       const updateRelation = this.db.db.prepare(`
         UPDATE favorite_relations SET backup_status='lost', active_in_favorite=0,
           last_remote_check_at=NULL, next_remote_check_at=NULL, payload_json=?, updated_at=?
@@ -1488,7 +1519,7 @@ export class ArchiveDeletionService {
       const bvids = new Set<string>();
       for (const source of sourceRows) {
         if (source.relation_json) {
-          const relation = parseJson<any>(source.relation_json, {});
+          const relation = parsePersistedRecord(source.relation_json, `archive relation ${source.bvid}`);
           delete relation.remotePath;
           delete relation.remoteFiles;
           delete relation.uploadedAt;
@@ -1536,7 +1567,7 @@ export class ArchiveDeletionService {
           conflict_count=0, failed_count=0, last_error=NULL, updated_at=?, completed_at=? WHERE id=?
       `).run(counts.completed, counts.retained, now, now, id);
       this.db.refreshArchiveLibraryProjection(bvids);
-      const operation = this.db.db.prepare("SELECT scope, user_id FROM archive_deletions WHERE id=?").get(id) as any;
+      const operation = this.db.db.prepare<unknown[], { "scope": string; "user_id": string }>("SELECT scope, user_id FROM archive_deletions WHERE id=?").get(id);
       if (operation?.scope === "account" && this.userStore.getById(String(operation.user_id))) {
         this.db.db.prepare("DELETE FROM archive_accounts WHERE user_id=?").run(operation.user_id);
         restoredLiveAccount = String(operation.user_id);
@@ -1551,21 +1582,21 @@ export class ArchiveDeletionService {
     for (let offset = 0; offset < bvids.length; offset += 300) {
       const chunk = bvids.slice(offset, offset + 300);
       const placeholders = chunk.map(() => "?").join(",");
-      const videos = this.db.db.prepare(`SELECT bvid, payload_json FROM videos WHERE bvid IN (${placeholders})`).all(...chunk) as any[];
-      const relationRows = this.db.db.prepare(`
+      const videos = this.db.db.prepare<unknown[], ArchiveDeletionVideoSqlRow>(`SELECT bvid, payload_json FROM videos WHERE bvid IN (${placeholders})`).all(...chunk);
+      const relationRows = this.db.db.prepare<unknown[], ArchiveDeletionRelationSqlRow>(`
         SELECT bvid, backup_status, payload_json FROM favorite_relations
         WHERE bvid IN (${placeholders}) ORDER BY bvid, updated_at DESC
-      `).all(...chunk) as any[];
-      const relationsByBvid = new Map<string, Array<{ status: string; relation: any }>>();
+      `).all(...chunk);
+      const relationsByBvid = new Map<string, Array<{ status: string; relation: ArchiveDeletionRow }>>();
       for (const row of relationRows) {
         const key = String(row.bvid);
         const group = relationsByBvid.get(key) || [];
-        group.push({ status: String(row.backup_status), relation: parseJson<any>(row.payload_json, {}) });
+        group.push({ status: String(row.backup_status), relation: parsePersistedRecord(row.payload_json, `archive relation ${row.bvid}`) });
         relationsByBvid.set(key, group);
       }
       for (const row of videos) {
         const bvid = String(row.bvid);
-        const video = parseJson<any>(row.payload_json, {});
+        const video = parsePersistedRecord(row.payload_json, `archive video ${row.bvid}`);
         const relations = relationsByBvid.get(bvid) || [];
         const verified = relations.find((item) => ["verified", "partial_verified"].includes(item.status)
           && Array.isArray(item.relation.remoteFiles) && item.relation.remoteFiles.length > 0);
