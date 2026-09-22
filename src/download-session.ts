@@ -33,6 +33,14 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item): item is string => typeof item === 'string');
+}
+
 function errorCode(error: unknown) {
   const value = record(error);
   return typeof value.code === "string" ? value.code : "";
@@ -226,6 +234,190 @@ export interface DownloadSessionManifest {
   lastError?: string;
 }
 
+type DownloadQualityUpgrade = NonNullable<DownloadSessionManifest["qualityUpgrade"]>;
+type DownloadQualityUpgradeFile = DownloadQualityUpgrade["oldFiles"][number];
+
+function sessionRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function decodeUpgradeFile(value: unknown): DownloadQualityUpgradeFile | null {
+  const file = sessionRecord(value);
+  if (!file || typeof file.name !== "string" || typeof file.path !== "string"
+    || (file.size !== undefined && (typeof file.size !== "number" || !Number.isFinite(file.size) || file.size < 0))) return null;
+  let qualityProfile: DownloadQualityUpgradeFile["qualityProfile"];
+  if (file.qualityProfile !== undefined) {
+    const profile = sessionRecord(file.qualityProfile);
+    if (!profile || typeof profile.quality !== "string" || typeof profile.encoding !== "string"
+      || typeof profile.hiRes !== "boolean" || typeof profile.dolby !== "boolean") return null;
+    qualityProfile = {
+      quality: profile.quality,
+      encoding: profile.encoding,
+      hiRes: profile.hiRes,
+      dolby: profile.dolby,
+    };
+  }
+  return {
+    name: file.name,
+    path: file.path,
+    ...(typeof file.size === "number" ? { size: file.size } : {}),
+    ...(qualityProfile ? { qualityProfile } : {}),
+  };
+}
+
+function decodeUpgradeFiles(value: unknown): DownloadQualityUpgradeFile[] | null {
+  if (!Array.isArray(value)) return null;
+  const files: DownloadQualityUpgradeFile[] = [];
+  for (const item of value) {
+    const file = decodeUpgradeFile(item);
+    if (!file) return null;
+    files.push(file);
+  }
+  return files;
+}
+
+function decodeQualityArtifactProfile(value: unknown): QualityArtifactProfile | null {
+  const profile = sessionRecord(value);
+  if (!profile || typeof profile.quality !== "string" || typeof profile.encoding !== "string"
+    || typeof profile.hiRes !== "boolean" || typeof profile.dolby !== "boolean"
+    || typeof profile.filenameTemplate !== "string") return null;
+  return {
+    quality: profile.quality,
+    encoding: profile.encoding,
+    hiRes: profile.hiRes,
+    dolby: profile.dolby,
+    filenameTemplate: profile.filenameTemplate,
+  };
+}
+
+function decodeUpgradeTarget(value: unknown): NonNullable<DownloadQualityUpgrade["targets"]>[number] | null {
+  const target = sessionRecord(value);
+  if (!target || typeof target.userId !== "string" || !Number.isSafeInteger(target.mediaId)
+    || typeof target.folderTitle !== "string" || typeof target.remotePath !== "string") return null;
+  const oldFiles = decodeUpgradeFiles(target.oldFiles);
+  if (!oldFiles) return null;
+  return {
+    userId: target.userId,
+    mediaId: Number(target.mediaId),
+    folderTitle: target.folderTitle,
+    remotePath: target.remotePath,
+    oldFiles,
+  };
+}
+
+function decodeQualityUpgrade(value: unknown): DownloadQualityUpgrade | null {
+  const upgrade = sessionRecord(value);
+  if (!upgrade || typeof upgrade.userId !== "string" || !Number.isSafeInteger(upgrade.mediaId)
+    || typeof upgrade.folderTitle !== "string" || typeof upgrade.remotePath !== "string"
+    || (upgrade.artifactKey !== undefined && typeof upgrade.artifactKey !== "string")
+    || (upgrade.downloadUserId !== undefined && typeof upgrade.downloadUserId !== "string")) return null;
+  const oldFiles = decodeUpgradeFiles(upgrade.oldFiles);
+  if (!oldFiles) return null;
+  let qualityProfile: QualityArtifactProfile | undefined;
+  if (upgrade.qualityProfile !== undefined) {
+    qualityProfile = decodeQualityArtifactProfile(upgrade.qualityProfile) || undefined;
+    if (!qualityProfile) return null;
+  }
+  let targets: NonNullable<DownloadQualityUpgrade["targets"]> | undefined;
+  if (upgrade.targets !== undefined) {
+    if (!Array.isArray(upgrade.targets)) return null;
+    targets = [];
+    for (const value of upgrade.targets) {
+      const target = decodeUpgradeTarget(value);
+      if (!target) return null;
+      targets.push(target);
+    }
+  }
+  return {
+    userId: upgrade.userId,
+    mediaId: Number(upgrade.mediaId),
+    folderTitle: upgrade.folderTitle,
+    remotePath: upgrade.remotePath,
+    oldFiles,
+    ...(typeof upgrade.artifactKey === "string" ? { artifactKey: upgrade.artifactKey } : {}),
+    ...(qualityProfile ? { qualityProfile } : {}),
+    ...(typeof upgrade.downloadUserId === "string" ? { downloadUserId: upgrade.downloadUserId } : {}),
+    ...(targets ? { targets } : {}),
+  };
+}
+
+function decodeDownloadSessionManifest(value: unknown): DownloadSessionManifest | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = record(value);
+  if (candidate.schemaVersion !== 1 || typeof candidate.sessionId !== "string" || !candidate.sessionId
+    || (candidate.kind !== "backup" && candidate.kind !== "quality_upgrade")
+    || typeof candidate.bvid !== "string" || !candidate.bvid
+    || !isSafeInteger(candidate.accountUid) || candidate.accountUid < 0
+    || typeof candidate.bbdownCommit !== "string"
+    || typeof candidate.configFingerprint !== "string"
+    || !sessionRecord(candidate.configSnapshot)
+    || typeof candidate.createdAt !== "string" || !Number.isFinite(Date.parse(candidate.createdAt))
+    || typeof candidate.updatedAt !== "string" || !Number.isFinite(Date.parse(candidate.updatedAt))
+    || typeof candidate.snapshotAt !== "string" || !Number.isFinite(Date.parse(candidate.snapshotAt))
+    || !["prepared", "downloading", "complete", "partial", "failed"].includes(String(candidate.status))
+    || !Array.isArray(candidate.pages) || !Array.isArray(candidate.outputs) || !Array.isArray(candidate.history)) return null;
+  const pages: DownloadPageSnapshot[] = [];
+  for (const page of candidate.pages) {
+    const item = record(page);
+    if (!isSafeInteger(item.index) || !isSafeInteger(item.cid)
+      || item.index < 1 || item.cid < 1 || typeof item.title !== "string"
+      || typeof item.duration !== "number" || !Number.isFinite(item.duration) || item.duration < 0
+      || (item.publishedAt !== undefined && (typeof item.publishedAt !== "number" || !Number.isFinite(item.publishedAt)))) return null;
+    pages.push({ index: item.index, cid: item.cid, title: item.title, duration: item.duration,
+      ...(typeof item.publishedAt === "number" ? { publishedAt: item.publishedAt } : {}) });
+  }
+  const snapshot = record(candidate.configSnapshot);
+  if (typeof snapshot.quality !== "string" || typeof snapshot.encoding !== "string"
+    || typeof snapshot.hiRes !== "boolean" || typeof snapshot.dolby !== "boolean"
+    || typeof snapshot.filenameTemplate !== "string"
+    || (snapshot.encodingPriority !== undefined
+      && (!Array.isArray(snapshot.encodingPriority) || !snapshot.encodingPriority.every(item => typeof item === "string")))
+    || (snapshot.apiMode !== undefined && snapshot.apiMode !== "app" && snapshot.apiMode !== "web")) return null;
+  const status = candidate.status as DownloadSessionStatus;
+  const selectedStreams = decodeSelectedStreams(candidate.selectedStreams);
+  if (selectedStreams === null) return null;
+  const outputs = decodeManifestOutputList(candidate.outputs, false);
+  const history = decodeManifestOutputList(candidate.history, true);
+  if (!outputs || !history) return null;
+  let qualityUpgrade: DownloadQualityUpgrade | undefined;
+  if (candidate.qualityUpgrade !== undefined) {
+    qualityUpgrade = decodeQualityUpgrade(candidate.qualityUpgrade) || undefined;
+    if (!qualityUpgrade) return null;
+  }
+  return {
+    schemaVersion: 1,
+    sessionId: candidate.sessionId,
+    kind: candidate.kind,
+    bvid: candidate.bvid,
+    accountUid: candidate.accountUid,
+    bbdownCommit: candidate.bbdownCommit,
+    configFingerprint: candidate.configFingerprint,
+    configSnapshot: {
+      quality: snapshot.quality,
+      encoding: snapshot.encoding,
+      ...(Array.isArray(snapshot.encodingPriority) ? { encodingPriority: normalizeBBDownEncodingPriority(snapshot.encodingPriority) } : {}),
+      ...(snapshot.apiMode === "app" || snapshot.apiMode === "web" ? { apiMode: snapshot.apiMode } : {}),
+      hiRes: snapshot.hiRes,
+      dolby: snapshot.dolby,
+      filenameTemplate: snapshot.filenameTemplate,
+    },
+    createdAt: candidate.createdAt,
+    updatedAt: candidate.updatedAt,
+    snapshotAt: candidate.snapshotAt,
+    ...(typeof candidate.publishedAt === "number" && Number.isFinite(candidate.publishedAt) ? { publishedAt: candidate.publishedAt } : {}),
+    status,
+    pages,
+    ...(selectedStreams ? { selectedStreams } : {}),
+    outputs,
+    history,
+    ...(qualityUpgrade ? { qualityUpgrade } : {}),
+    ...(candidate.legacyAdopted === true ? { legacyAdopted: true } : {}),
+    ...(typeof candidate.lastError === "string" ? { lastError: candidate.lastError } : {}),
+  };
+}
+
 export interface PreparedDownloadSession {
   manifest: DownloadSessionManifest;
   missingPages: DownloadPageSnapshot[];
@@ -325,11 +517,8 @@ export function readDownloadSession(downloadDir: string): DownloadSessionManifes
   const filePath = downloadSessionPath(downloadDir);
   if (!fs.existsSync(filePath)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as DownloadSessionManifest;
-    if (parsed?.schemaVersion !== 1 || !parsed.bvid || !Array.isArray(parsed.pages)) return null;
-    parsed.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(parsed.outputs);
-    parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
-    parsed.selectedStreams = normalizeSelectedStreams(parsed.selectedStreams);
+    const parsed = decodeDownloadSessionManifest(JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown);
+    if (!parsed) return null;
     return parsed;
   // boundary-fail-closed: a malformed manifest is invalid evidence; callers
   // preserve the directory and may quarantine the file before recovery.
@@ -347,46 +536,116 @@ function normalizeManifestRelativePath(value: unknown) {
   return normalized !== ".." && !normalized.startsWith(`..${path.sep}`) ? normalized : null;
 }
 
-function normalizeManifestOutputPaths<T extends { relativePath: string }>(value: unknown): T[] {
-  if (!Array.isArray(value)) return [];
-  const outputs: T[] = [];
-  for (const output of value) {
-    if (!output || typeof output !== "object") continue;
-    const relativePath = normalizeManifestRelativePath(record(output).relativePath);
-    if (!relativePath) continue;
-    outputs.push({ ...(output as T), relativePath });
+function decodeManifestOutput(value: unknown, historical: false): DownloadOutputRecord | null;
+function decodeManifestOutput(value: unknown, historical: true): HistoricalOutputRecord | null;
+function decodeManifestOutput(value: unknown, historical: boolean): DownloadOutputRecord | HistoricalOutputRecord | null {
+  const output = sessionRecord(value);
+  const relativePath = output && typeof output.relativePath === 'string'
+    ? normalizeManifestRelativePath(output.relativePath) : null;
+  if (!output || !isSafeInteger(output.pageIndex) || output.pageIndex < 1
+    || !isSafeInteger(output.cid) || output.cid < 1
+    || typeof output.relativePath !== 'string'
+    || !relativePath
+    || typeof output.size !== 'number' || !Number.isFinite(output.size) || output.size < 0
+    || typeof output.duration !== 'number' || !Number.isFinite(output.duration) || output.duration < 0
+    || typeof output.videoCodec !== 'string'
+    || typeof output.quickHash !== 'string'
+    || typeof output.verifiedAt !== 'string' || !Number.isFinite(Date.parse(output.verifiedAt))) return null;
+  if (output.audioCodec !== undefined && typeof output.audioCodec !== 'string') return null;
+  if (output.width !== undefined && (!isSafeInteger(output.width) || output.width <= 0)) return null;
+  if (output.height !== undefined && (!isSafeInteger(output.height) || output.height <= 0)) return null;
+  if (output.frameRate !== undefined && (typeof output.frameRate !== 'number' || !Number.isFinite(output.frameRate) || output.frameRate <= 0)) return null;
+  const base: DownloadOutputRecord = {
+    pageIndex: output.pageIndex,
+    cid: output.cid,
+    relativePath,
+    size: output.size,
+    duration: output.duration,
+    videoCodec: output.videoCodec,
+    ...(typeof output.audioCodec === 'string' ? { audioCodec: output.audioCodec } : {}),
+    ...(typeof output.width === 'number' ? { width: output.width } : {}),
+    ...(typeof output.height === 'number' ? { height: output.height } : {}),
+    ...(typeof output.frameRate === 'number' ? { frameRate: output.frameRate } : {}),
+    quickHash: output.quickHash,
+    verifiedAt: output.verifiedAt,
+  };
+  if (!historical) return base;
+  const reason = output.reason;
+  if (typeof output.snapshotAt !== 'string' || !Number.isFinite(Date.parse(output.snapshotAt))
+    || (reason !== 'removed' && reason !== 'replaced' && reason !== 'legacy_unmatched')) return null;
+  if (output.uploadedTargets !== undefined && !isStringArray(output.uploadedTargets)) return null;
+  return {
+    ...base,
+    snapshotAt: output.snapshotAt,
+    reason,
+    ...(isStringArray(output.uploadedTargets) ? { uploadedTargets: [...output.uploadedTargets] } : {}),
+  };
+}
+
+function decodeManifestOutputList(value: unknown, historical: false): DownloadOutputRecord[] | null;
+function decodeManifestOutputList(value: unknown, historical: true): HistoricalOutputRecord[] | null;
+function decodeManifestOutputList(value: unknown, historical: boolean): DownloadOutputRecord[] | HistoricalOutputRecord[] | null {
+  if (!Array.isArray(value)) return null;
+  const identities = new Set<string>();
+  if (historical) {
+    const outputs: HistoricalOutputRecord[] = [];
+    for (const item of value) {
+      const decoded = decodeManifestOutput(item, true);
+      if (!decoded) return null;
+      const identity = `${decoded.pageIndex}:${decoded.cid}:${decoded.relativePath}`;
+      if (identities.has(identity)) return null;
+      identities.add(identity);
+      outputs.push(decoded);
+    }
+    return outputs;
+  }
+  const outputs: DownloadOutputRecord[] = [];
+  for (const item of value) {
+    const decoded = decodeManifestOutput(item, false);
+    if (!decoded) return null;
+    const identity = `${decoded.pageIndex}:${decoded.cid}:${decoded.relativePath}`;
+    if (identities.has(identity)) return null;
+    identities.add(identity);
+    outputs.push(decoded);
   }
   return outputs;
+}
+
+function normalizeManifestOutputPaths<T extends DownloadOutputRecord | HistoricalOutputRecord>(value: readonly T[]): T[] {
+  return value.map((output) => {
+    const relativePath = normalizeManifestRelativePath(output.relativePath);
+    if (!relativePath) throw new Error('Invalid download session output path');
+    return { ...output, relativePath };
+  });
 }
 
 function sessionEncodingPriority(snapshot: DownloadSessionManifest["configSnapshot"]) {
   return normalizeBBDownEncodingPriority(snapshot.encodingPriority, snapshot.encoding);
 }
 
-function normalizeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[] | undefined {
-  if (!Array.isArray(value)) return undefined;
+function decodeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
   const selected = new Map<number, DownloadSelectedStreamRecord>();
   for (const item of value) {
     const itemRecord = record(item);
-    const pageIndex = Number(itemRecord.pageIndex);
-    const cid = Number(itemRecord.cid);
+    const pageIndex = itemRecord.pageIndex;
+    const cid = itemRecord.cid;
     const bilibiliQuality = normalizeBilibiliQualityLabel(itemRecord.bilibiliQuality);
-    if (!Number.isInteger(pageIndex) || pageIndex < 1 || !Number.isInteger(cid) || cid < 1 || !bilibiliQuality) continue;
-    const rawObservedAt = String(itemRecord.observedAt || "");
-    const observedAt = Number.isFinite(Date.parse(rawObservedAt)) ? new Date(rawObservedAt).toISOString() : nowIso();
-    selected.set(cid, { pageIndex, cid, bilibiliQuality, observedAt });
+    if (!isSafeInteger(pageIndex) || pageIndex < 1 || !isSafeInteger(cid) || cid < 1
+      || !bilibiliQuality || typeof itemRecord.observedAt !== 'string'
+      || !Number.isFinite(Date.parse(itemRecord.observedAt)) || selected.has(cid)) return null;
+    selected.set(cid, { pageIndex, cid, bilibiliQuality, observedAt: new Date(itemRecord.observedAt).toISOString() });
   }
-  return selected.size > 0
-    ? [...selected.values()].sort((left, right) => left.pageIndex - right.pageIndex)
-    : undefined;
+  return [...selected.values()].sort((left, right) => left.pageIndex - right.pageIndex);
 }
 
 export function writeDownloadSession(downloadDir: string, manifest: DownloadSessionManifest) {
   manifest.updatedAt = nowIso();
   // Persist paths in the same normalized form that readers and cleanup use.
   // This keeps manifests portable between Windows and Linux runtimes.
-  manifest.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(manifest.outputs);
-  manifest.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(manifest.history);
+  manifest.outputs = normalizeManifestOutputPaths(manifest.outputs);
+  manifest.history = normalizeManifestOutputPaths(manifest.history);
   writeJsonFile(downloadSessionPath(downloadDir), manifest);
 }
 
@@ -1514,11 +1773,8 @@ async function listFileSizes(rootDir: string) {
 
 export async function readDownloadSessionAsync(downloadDir: string) {
   try {
-    const parsed = JSON.parse(await fs.promises.readFile(downloadSessionPath(downloadDir), "utf8")) as DownloadSessionManifest;
-    if (parsed?.schemaVersion !== 1 || !parsed.bvid || !Array.isArray(parsed.pages)) return null;
-    parsed.outputs = normalizeManifestOutputPaths<DownloadOutputRecord>(parsed.outputs);
-    parsed.history = normalizeManifestOutputPaths<HistoricalOutputRecord>(parsed.history);
-    parsed.selectedStreams = normalizeSelectedStreams(parsed.selectedStreams);
+    const parsed = decodeDownloadSessionManifest(JSON.parse(await fs.promises.readFile(downloadSessionPath(downloadDir), "utf8")) as unknown);
+    if (!parsed) return null;
     return parsed;
   } catch (error: unknown) {
     if (errorCode(error) === "ENOENT" || error instanceof SyntaxError) return null;

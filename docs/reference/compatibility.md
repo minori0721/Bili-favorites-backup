@@ -54,4 +54,4 @@ BFB依赖标准 WebDAV 行为，但不同网盘驱动在 PUT、MOVE、DELETE、�
 
 ## 已知依赖风险
 
-当前根依赖生产审计报告11项风险（2项低危、3项中危、6项高危），涉及`axios`、`body-parser`、`brace-expansion`、`fast-xml-parser`和`ip-address`等传递依赖，其中部分问题暂无修复。项目不使用会破坏性降级主依赖的`npm audit fix --force`；部署仍应限制公网暴露并跟踪后续上游更新。文档站生产依赖当前为0项。
+当前根依赖生产审计报告11项风险（2项低危、3项中危、6项高危），涉及`axios`、`body-parser`、`brace-expansion`、`fast-xml-parser`和`ip-address`等传递依赖，其中部分问题暂无修复。项目不使用会破坏性降级主依赖的`npm audit fix --force`；部署仍应限制公网暴露并跟踪后续上游更新。文档站使用独立锁文件和构建期依赖覆盖，当前完整 `npm --prefix docs audit` 为0项；后续升级 VitePress 后必须重新执行文档构建和审计。

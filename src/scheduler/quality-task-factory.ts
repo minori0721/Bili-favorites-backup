@@ -37,7 +37,6 @@ type QualityJobStore = Pick<
 
 type QualityState = Pick<
   StateManager,
-  | 'getDatabase'
   | 'getQualityUpgradeOperation'
   | 'markQualityUpgradeReplacing'
   | 'recordQualityUpgradeBackupFile'
@@ -55,6 +54,7 @@ export interface QualityTaskFactoryDependencies {
   users: Pick<UserStore, 'getById'>;
   state: QualityState;
   jobs: QualityJobStore;
+  isArchiveSourceDeletionBlocked(userId: string, mediaId: number, bvid: string): boolean;
   isUserSyncEligible(user: BiliUser | null): user is BiliUser;
   leaseOwner: string;
   now: () => number;
@@ -70,6 +70,14 @@ export interface QualityTaskFactoryDependencies {
     filter?: { bvid?: string; userId?: string; mediaId?: number },
     concurrency?: number,
   ): Promise<unknown>;
+}
+
+export interface QualityTaskFactoryPort {
+  build(job: PersistentJobRecord): QualityUpgradeTask | null;
+}
+
+export function createQualityTaskFactory(dependencies: QualityTaskFactoryDependencies): QualityTaskFactoryPort {
+  return { build: job => buildQualityUpgradeTask(job, dependencies) };
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -113,7 +121,7 @@ export function buildQualityUpgradeTask(
     oldFiles: fallbackProof.oldFiles,
   }] : [];
   const rawTargets = qualityTargetsFromPayload(payload, fallbackTarget);
-  const targets = filterArchiveDeletionTargets(deps.state, bvid, rawTargets).map((candidate) => {
+  const targets = filterArchiveDeletionTargets(deps.isArchiveSourceDeletionBlocked, bvid, rawTargets).map((candidate) => {
     const proof = qualityUpgradeProof(
       (userId, mediaId, videoId) => deps.state.getQualityUpgradeOperation(userId, mediaId, videoId),
       bvid,

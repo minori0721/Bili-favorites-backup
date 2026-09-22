@@ -1,5 +1,6 @@
 import type { RemoteStoragePort } from '../../src/ports/external.js';
 import type { SchedulerControl } from '../../src/ports/scheduler-control.js';
+import type { SyncWorkflowCommands, SyncWorkflowQueries } from '../../src/ports/scheduler-workflows.js';
 import { parseRecoveryUploadItem, type RecoveryUploadItem } from '../../src/scheduler/upload-work.js';
 
 const schedulerControl = {
@@ -27,6 +28,21 @@ const unknownPayload = {
 };
 const decoded: RecoveryUploadItem = parseRecoveryUploadItem(unknownPayload);
 
+const syncCommands = {
+  run: async () => true,
+  triggerOrQueue: () => ({started: true, queued: false}),
+} satisfies SyncWorkflowCommands;
+const syncQueries = {
+  hasPending: () => false,
+  isSyncing: (_userId: string) => false,
+  getProgress: () => null,
+  getCycle: () => null,
+  getPending: () => null,
+  getLastError: () => '',
+} satisfies SyncWorkflowQueries;
+
 void schedulerControl;
 void remoteStorage;
 void decoded;
+void syncCommands;
+void syncQueries;

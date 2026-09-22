@@ -11,6 +11,12 @@
     "docs:build": "vitepress build .",
     "docs:preview": "vitepress preview ."
   },
+  "overrides": {
+    "vite": "6.4.3",
+    "esbuild": "0.25.0",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.23"
+  },
   "devDependencies": {
     "vitepress": "1.6.4"
   }

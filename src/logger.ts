@@ -2,9 +2,10 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.js";
-import { readJsonFile, writeJsonFile } from "./storage.js";
+import { readJsonFileDecoded, writeJsonFile } from "./storage.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { normalizeBilibiliQualityLabel } from "./media-metadata.js";
+import { isRecord } from "./shared/api/value.js";
 
 export interface LogEntry {
   timestamp: string;
@@ -23,6 +24,55 @@ export interface LogEntry {
 
 const MAX_LOG_ENTRIES = 500;
 export const logsPath = path.join(dataDir, "logs.json");
+const logTypes = ["download", "upload", "system"] as const;
+const logLevels = ["info", "warn", "error"] as const;
+
+function isLogType(value: unknown): value is LogEntry["type"] {
+  return typeof value === "string" && logTypes.some(type => type === value);
+}
+
+function isLogLevel(value: unknown): value is LogEntry["level"] {
+  return typeof value === "string" && logLevels.some(level => level === value);
+}
+
+export function decodeStoredLogEntries(value: unknown): LogEntry[] {
+  if (!Array.isArray(value)) throw new Error("Stored logs must be an array");
+  return value.map((item, index) => {
+    if (!isRecord(item) || typeof item.timestamp !== "string"
+      || !isLogType(item.type) || !isLogLevel(item.level)
+      || typeof item.summary !== "string" || typeof item.raw !== "string"
+      || (item.bvid !== undefined && typeof item.bvid !== "string")
+      || (item.simpleVisible !== undefined && typeof item.simpleVisible !== "boolean")
+      || (item.debugVisible !== undefined && typeof item.debugVisible !== "boolean")) {
+      throw new Error(`Invalid stored log entry at index ${index}`);
+    }
+    return {
+      timestamp: item.timestamp,
+      type: item.type,
+      level: item.level,
+      summary: item.summary,
+      raw: item.raw,
+      ...(typeof item.bvid === "string" ? { bvid: item.bvid } : {}),
+      ...(typeof item.simpleVisible === "boolean" ? { simpleVisible: item.simpleVisible } : {}),
+      ...(typeof item.debugVisible === "boolean" ? { debugVisible: item.debugVisible } : {}),
+    };
+  });
+}
+
+interface StoredLogReadResult {
+  entries: LogEntry[];
+  degraded: boolean;
+}
+
+function readStoredLogEntries(filePath: string): StoredLogReadResult {
+  try {
+    return { entries: readJsonFileDecoded(filePath, [], decodeStoredLogEntries), degraded: false };
+  } catch (error) {
+    const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 500);
+    console.warn(`[Logger] persisted log history is unavailable; continuing with an empty in-memory log: ${message}`);
+    return { entries: [], degraded: true };
+  }
+}
 
 export class LogManager extends EventEmitter {
   private entries: LogEntry[];
@@ -32,7 +82,7 @@ export class LogManager extends EventEmitter {
   constructor(filePath = logsPath) {
     super();
     this.filePath = filePath;
-    this.entries = this.sanitizeEntries(readJsonFile<LogEntry[]>(this.filePath, []));
+    this.entries = this.sanitizeEntries(readStoredLogEntries(this.filePath).entries);
   }
 
   push(entry: LogEntry) {
@@ -50,7 +100,7 @@ export class LogManager extends EventEmitter {
   }
 
   reload() {
-    this.entries = this.sanitizeEntries(readJsonFile<LogEntry[]>(this.filePath, []));
+    this.entries = this.sanitizeEntries(readStoredLogEntries(this.filePath).entries);
     return this.getAll();
   }
 

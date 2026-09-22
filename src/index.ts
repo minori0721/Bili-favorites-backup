@@ -89,6 +89,8 @@ import { previewDetailLimit } from './preview-options.js';
 import { createRemoteReplacementRunner } from "./remote-operations.js";
 import { createRenameService } from './rename-service.js';
 import { SyncScheduler } from "./scheduler.js";
+import type { SchedulerControl } from './ports/scheduler-control.js';
+import type { RecoveryPort, SyncControlPort } from './ports/task-control.js';
 import { recoverInterruptedQualityDownloads } from './scheduler/quality-download-recovery.js';
 import { createQualityMaintenance } from './scheduler/quality-maintenance.js';
 import { createQualityStartupRecovery } from './scheduler/quality-startup-recovery.js';
@@ -120,6 +122,18 @@ const userStore = new UserStore();
 const stateManager = new StateManager();
 const archiveLibrary = createArchiveLibraryService({database: () => stateManager.getDatabase(), users: () => userStore.list()});
 const scheduler = new SyncScheduler(configStore, userStore, stateManager, {deferAdmissionUntilStart: true});
+// Keep the composition root as the only place that knows the compatibility
+// facade.  HTTP modules receive narrow capabilities instead of the scheduler.
+const schedulerControl: SchedulerControl = scheduler;
+const syncControl: SyncControlPort = {
+  sync: () => scheduler.runNow(),
+  reconcile: () => scheduler.runReconcileNow(),
+  remote: () => scheduler.runRemoteReconcileNow(),
+};
+const recoveryPort: RecoveryPort = {
+  recoverUploadJob: scheduler.recoverUploadJob.bind(scheduler),
+  resolveRecoveryIssue: scheduler.resolveRecoveryIssue.bind(scheduler),
+};
 const unavailableCoverBackfill = new UnavailableCoverBackfill(stateManager);
 const onlineCoverCache = new OnlineCoverCache(configStore.get().onlineCoverCacheLimitMB);
 const onlineContent = new OnlineContentService(onlineCoverCache);
@@ -199,14 +213,14 @@ const startupLifecycle = createStartupLifecycle([
   { name: 'quality-downloads', run: () => recoverInterruptedQualityDownloads({state: stateManager, config: configStore, users: userStore, directory: tempDir, enqueue: task => scheduler.enqueueQualityUpgrade(task)}) },
   { name: 'archive-accounts', run: () => archiveDeletion.restoreLiveAccountsAfterStartup() },
   { name: 'persistent-jobs', run: () => scheduler.resumePersistedWorkOnStartup() },
-  { name: 'scheduling', run: () => { scheduler.start(); } },
+  { name: 'scheduling', run: () => { schedulerControl.start(); } },
 ]);
 
 if (process.env.NODE_ENV !== "test") {
   void startupLifecycle.start().then(() => {
     unavailableCoverBackfill.startBackground();
   }).catch(error => {
-    scheduler.beginShutdown();
+    schedulerControl.beginShutdown();
     console.error(`[Startup] Recovery failed; scheduling remains stopped: ${safeErrorSummary(error)}`);
   });
 }
@@ -326,9 +340,7 @@ app.use(createAccountRemovalRouter({
   }, id, body),
 }));
 
-app.use(createSyncControlRouter({
-  sync:() => scheduler.runNow(),reconcile:() => scheduler.runReconcileNow(),remote:() => scheduler.runRemoteReconcileNow(),boundary:asyncHandler,
-}));
+app.use(createSyncControlRouter({...syncControl, boundary:asyncHandler}));
 
 app.use(createLogRouter({
   getAll: () => logManager.getAll(),
@@ -341,8 +353,7 @@ app.use(createLogRouter({
 app.use(createQueueStateRouter({ snapshot: () => scheduler.getQueueSnapshot() }));
 
 app.use(createRecoveryRouter({ boundary: asyncHandler,
-  recoverUploadJob: scheduler.recoverUploadJob.bind(scheduler),
-  resolveRecoveryIssue: scheduler.resolveRecoveryIssue.bind(scheduler),
+  ...recoveryPort,
 }));
 
 app.use(createStorageCleanupRouter({ boundary: asyncHandler, service: createStorageCleanup({
@@ -419,13 +430,13 @@ export async function closeAppResources() {
   startupLifecycle.stop();
   const accountRefreshStopped = accountRefresh.stop(5_000);
   const accountLoginStopped = accountLogin.stop(5_000);
-  scheduler.beginShutdown();
+  schedulerControl.beginShutdown();
   const startupStopped = await startupLifecycle.waitForIdle(5_000);
   const pathMigrationStopped = pathMigration.stop(5_000);
   const archiveDeletionStopped = archiveDeletion.stop(5_000);
   const renamePreviewStopped = renameService.stop(5_000);
   await shutdownActiveDownloads(5_000);
-  await scheduler.shutdown(5_000, {closeDatabase:false});
+  await schedulerControl.shutdown(5_000, {closeDatabase:false});
   if (!await accountLoginStopped) throw new Error("Account login did not stop before closing resources");
   if (!await accountRefreshStopped) throw new Error("Account refresh did not stop before closing resources");
   if (!startupStopped) throw new Error("Startup recovery did not stop before closing the state database");
@@ -467,7 +478,7 @@ if (process.env.NODE_ENV !== "test") {
     startupLifecycle.stop();
     const accountRefreshStopped = accountRefresh.stop(20_000);
     const accountLoginStopped = accountLogin.stop(20_000);
-    scheduler.beginShutdown();
+    schedulerControl.beginShutdown();
     const startupStopped = await startupLifecycle.waitForIdle(20_000);
     if (!startupStopped) console.warn("[Shutdown] Startup recovery did not stop before the shutdown deadline");
     const pathMigrationStopped = pathMigration.stop(20_000);
@@ -480,7 +491,7 @@ if (process.env.NODE_ENV !== "test") {
       console.warn(`[Shutdown] Failed to stop active downloads cleanly: ${safeErrorSummary(error)}`);
     });
     let schedulerStopped = true;
-    await scheduler.shutdown(20_000, {closeDatabase:false}).catch((error) => {
+    await schedulerControl.shutdown(20_000, {closeDatabase:false}).catch((error) => {
       schedulerStopped = false;
       console.warn(`[Shutdown] Failed to checkpoint state database cleanly: ${safeErrorSummary(error)}`);
     });

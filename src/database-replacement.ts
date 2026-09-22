@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
+import { isRecord } from "./shared/api/value.js";
 
 interface ReplacementRecord { version: 1; id: string; committed: boolean }
 const suffixes = ["", "-wal", "-shm"];
@@ -23,6 +24,14 @@ function paths(file: string, id: string) {
   return { journal: `${file}.replacement.json`, backup: `${file}.before-import-${id}`, next: `${file}.importing-${id}`, displaced: `${file}.displaced-${id}` };
 }
 
+function decodeReplacementRecord(value: unknown): ReplacementRecord {
+  if (!isRecord(value) || value.version !== 1 || typeof value.id !== "string"
+    || !/^[a-f0-9]{32}$/.test(value.id) || typeof value.committed !== "boolean") {
+    throw new Error("Invalid database replacement record; refusing to create or replace database");
+  }
+  return { version: 1, id: value.id, committed: value.committed };
+}
+
 function cleanup(file: string, record: ReplacementRecord) {
   const p = paths(file, record.id);
   try {
@@ -39,10 +48,7 @@ function cleanup(file: string, record: ReplacementRecord) {
 
 export function recoverDatabaseReplacement(file: string, commitPending = false) {
   if (file === ":memory:" || !fs.existsSync(`${file}.replacement.json`)) return;
-  const record = JSON.parse(fs.readFileSync(`${file}.replacement.json`, "utf8")) as ReplacementRecord;
-  if (record.version !== 1 || !/^[a-f0-9]{32}$/.test(record.id) || typeof record.committed !== "boolean") {
-    throw new Error("Invalid database replacement record; refusing to create or replace database");
-  }
+  const record = decodeReplacementRecord(JSON.parse(fs.readFileSync(`${file}.replacement.json`, "utf8")) as unknown);
   const p = paths(file, record.id);
   if (commitPending && !record.committed) {
     validateExistingDatabase(file);

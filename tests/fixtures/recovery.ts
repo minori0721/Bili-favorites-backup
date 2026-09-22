@@ -75,6 +75,7 @@ export function recoveryFixture(state: StateManager, users: BiliUser[], videoAcc
   const qualityLocks = new Set<string>();
   const quality = (job: PersistentJobRecord) => buildQualityUpgradeTask(job, {
     config, users: {getById: id => users.find(user => user.id === id) ?? null}, state, jobs,
+    isArchiveSourceDeletionBlocked: (u, m, b) => state.getDatabase().isArchiveSourceDeletionBlocked(u, m, b),
     isUserSyncEligible: eligible, leaseOwner: 'test-owner', now: Date.now,
     qualityArtifactCleanupLocks: { acquire: key => qualityLocks.add(key), release: key => qualityLocks.delete(key) },
     refreshLocalCacheState: () => {}, pokeDownloadQueue: () => {}, dispatchPersistentJobs: () => {},

@@ -54,7 +54,18 @@ test("schema 3 migration rejects allowed files missing from its checksum manifes
     }));
     await fs.promises.writeFile(path.join(source, "manifest.json"), JSON.stringify({
       schema: 3, app: "Bili-favorites-backup", version: "2.4.0", exportedAt: new Date().toISOString(),
-      mode: "lightweight" as const, includes: {}, counts: {}, warning: "test",
+      mode: "lightweight" as const,
+      includes: {
+        mode: "lightweight" as const,
+        includeConfig: true,
+        includeUsers: true,
+        includeState: false,
+        includeLogs: false,
+        includeDebug: false,
+        includeCovers: false,
+      },
+      counts: { users: 0, videos: 0, relations: 0, unavailableVideos: 0 },
+      warning: "test",
     }));
     const archive = path.join(runtime, "migration.zip");
     await createZipFromSources([{ root: source, prefix: false }], archive);

@@ -2,13 +2,13 @@ import { BiliRiskOrLoginError } from '../bili.js';
 import { safeErrorSummary } from '../diagnostics.js';
 import type { StateManager } from '../state.js';
 import type { BiliUser } from '../users.js';
-import type { createFavoriteScan } from './favorite-scan.js';
+import type { FavoriteScanPort } from './favorite-scan.js';
 
 export interface SyncWorkflowDependencies {
   users(): BiliUser[];
   eligible(user: BiliUser): boolean;
   state: Pick<StateManager, 'getUserCooldown' | 'setUserCooldown'>;
-  scan: Pick<ReturnType<typeof createFavoriteScan>, 'all' | 'hot' | 'history'>;
+  scan: FavoriteScanPort;
   progress(patch: { detail: string; userName?: string; folderTitle?: string; mediaId?: number }): void;
   enterUser(id: string): void;
   leaveUser(id: string): void;

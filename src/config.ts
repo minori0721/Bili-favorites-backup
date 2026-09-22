@@ -1,7 +1,8 @@
 import path from "node:path";
 import { dataDir } from "./paths.js";
-import { readJsonFile, writeJsonFile } from "./storage.js";
+import { readJsonFileDecoded, writeJsonFile } from "./storage.js";
 import { parseStorageBaseUrl } from "./storage-url.js";
+import { isRecord } from "./shared/api/value.js";
 
 export type UploadLayout = "user-folder-video" | "folder-video" | "video-only";
 export type BBDownApiMode = "web" | "app";
@@ -14,6 +15,18 @@ const supportedBBDownEncodings = new Set<BBDownEncoding>(DEFAULT_BBDOWN_ENCODING
 
 function cloneEncodingPriority(value: readonly BBDownEncoding[]) {
   return [...value] as BBDownEncoding[];
+}
+
+function isUploadLayout(value: unknown): value is UploadLayout {
+  return value === 'user-folder-video' || value === 'folder-video' || value === 'video-only';
+}
+
+function isPlaybackDeliveryMode(value: unknown): value is PlaybackDeliveryMode {
+  return value === 'auto' || value === 'proxy';
+}
+
+function isBBDownApiMode(value: unknown): value is BBDownApiMode {
+  return value === 'web' || value === 'app';
 }
 
 export function normalizeBBDownEncodingPriority(value: unknown, legacyEncoding = "") {
@@ -106,6 +119,53 @@ const defaultConfig: AppConfig = {
 
 const configKeys = Object.keys(defaultConfig) as (keyof AppConfig)[];
 
+export function decodeStoredConfig(value: unknown): Partial<AppConfig> & { startupRecoveryBatchSize?: number } {
+  if (!isRecord(value)) throw new Error("Stored configuration must be an object");
+  const decoded: Partial<AppConfig> & { startupRecoveryBatchSize?: number } = {};
+  const invalid = (key: string): never => { throw new Error(`Invalid stored configuration field: ${key}`); };
+  for (const [key, raw] of Object.entries(value)) {
+    switch (key) {
+      case 'pollIntervalMinutes': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.pollIntervalMinutes = raw; else invalid(key); break;
+      case 'perVideoDelaySeconds': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.perVideoDelaySeconds = raw; else invalid(key); break;
+      case 'uploadLayout': if (isUploadLayout(raw)) decoded.uploadLayout = raw; else invalid(key); break;
+      case 'alistUrl': if (typeof raw === 'string') decoded.alistUrl = raw; else invalid(key); break;
+      case 'alistBrowserUrl': if (typeof raw === 'string') decoded.alistBrowserUrl = raw; else invalid(key); break;
+      case 'alistUsername': if (typeof raw === 'string') decoded.alistUsername = raw; else invalid(key); break;
+      case 'alistPassword': if (typeof raw === 'string') decoded.alistPassword = raw; else invalid(key); break;
+      case 'alistDest': if (typeof raw === 'string') decoded.alistDest = raw; else invalid(key); break;
+      case 'playbackDeliveryMode': if (isPlaybackDeliveryMode(raw)) decoded.playbackDeliveryMode = raw; else invalid(key); break;
+      case 'maxRetries': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.maxRetries = raw; else invalid(key); break;
+      case 'retryDelaySeconds': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.retryDelaySeconds = raw; else invalid(key); break;
+      case 'concurrentDownloads': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.concurrentDownloads = raw; else invalid(key); break;
+      case 'concurrentUploads': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.concurrentUploads = raw; else invalid(key); break;
+      case 'uploadFileIntervalSeconds': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.uploadFileIntervalSeconds = raw; else invalid(key); break;
+      case 'localCacheLimitGB': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.localCacheLimitGB = raw; else invalid(key); break;
+      case 'onlineCoverCacheLimitMB': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.onlineCoverCacheLimitMB = raw; else invalid(key); break;
+      case 'queuePrefetchLimit': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.queuePrefetchLimit = raw; else invalid(key); break;
+      case 'bbdownEncoding': if (typeof raw === 'string') decoded.bbdownEncoding = raw; else invalid(key); break;
+      case 'bbdownEncodingPriority': {
+        const priority = Array.isArray(raw) ? raw : invalid(key);
+        const normalized = priority.map(item => typeof item === 'string' ? item.trim().toUpperCase() : invalid(key));
+        if (!isValidBBDownEncodingPriority(normalized)) throw new Error(`Invalid stored configuration field: ${key}`);
+        decoded.bbdownEncodingPriority = [...normalized];
+        break;
+      }
+      case 'bbdownQuality': if (typeof raw === 'string') decoded.bbdownQuality = raw; else invalid(key); break;
+      case 'bbdownApiMode': if (isBBDownApiMode(raw)) decoded.bbdownApiMode = raw; else invalid(key); break;
+      case 'bbdownHiRes': if (typeof raw === 'boolean') decoded.bbdownHiRes = raw; else invalid(key); break;
+      case 'bbdownDolby': if (typeof raw === 'boolean') decoded.bbdownDolby = raw; else invalid(key); break;
+      case 'filenameTemplate': if (typeof raw === 'string') decoded.filenameTemplate = raw; else invalid(key); break;
+      case 'renameScanMaxFiles': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.renameScanMaxFiles = raw; else invalid(key); break;
+      case 'remoteVerifyConcurrency': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.remoteVerifyConcurrency = raw; else invalid(key); break;
+      case 'remoteVerifyRateLimitPerSecond': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.remoteVerifyRateLimitPerSecond = raw; else invalid(key); break;
+      case 'remoteRequeueLimitPerCycle': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.remoteRequeueLimitPerCycle = raw; else invalid(key); break;
+      case 'startupRecoveryBatchSize': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.startupRecoveryBatchSize = raw; else invalid(key); break;
+      default: break;
+    }
+  }
+  return decoded;
+}
+
 function normalizeFilenameTemplate(value: unknown) {
   if (typeof value !== "string" || value.trim().length === 0) {
     return defaultConfig.filenameTemplate;
@@ -116,12 +176,34 @@ function normalizeFilenameTemplate(value: unknown) {
 
 export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecoveryBatchSize?: number }) {
   const merged: AppConfig = { ...defaultConfig };
-  for (const key of configKeys) {
-    const value = input[key];
-    if (value !== undefined) {
-      (merged as unknown as Record<keyof AppConfig, unknown>)[key] = value;
-    }
-  }
+  if (input.pollIntervalMinutes !== undefined) merged.pollIntervalMinutes = input.pollIntervalMinutes;
+  if (input.perVideoDelaySeconds !== undefined) merged.perVideoDelaySeconds = input.perVideoDelaySeconds;
+  if (input.uploadLayout !== undefined) merged.uploadLayout = input.uploadLayout;
+  if (input.alistUrl !== undefined) merged.alistUrl = input.alistUrl;
+  if (input.alistBrowserUrl !== undefined) merged.alistBrowserUrl = input.alistBrowserUrl;
+  if (input.alistUsername !== undefined) merged.alistUsername = input.alistUsername;
+  if (input.alistPassword !== undefined) merged.alistPassword = input.alistPassword;
+  if (input.alistDest !== undefined) merged.alistDest = input.alistDest;
+  if (input.playbackDeliveryMode !== undefined) merged.playbackDeliveryMode = input.playbackDeliveryMode;
+  if (input.maxRetries !== undefined) merged.maxRetries = input.maxRetries;
+  if (input.retryDelaySeconds !== undefined) merged.retryDelaySeconds = input.retryDelaySeconds;
+  if (input.concurrentDownloads !== undefined) merged.concurrentDownloads = input.concurrentDownloads;
+  if (input.concurrentUploads !== undefined) merged.concurrentUploads = input.concurrentUploads;
+  if (input.uploadFileIntervalSeconds !== undefined) merged.uploadFileIntervalSeconds = input.uploadFileIntervalSeconds;
+  if (input.localCacheLimitGB !== undefined) merged.localCacheLimitGB = input.localCacheLimitGB;
+  if (input.onlineCoverCacheLimitMB !== undefined) merged.onlineCoverCacheLimitMB = input.onlineCoverCacheLimitMB;
+  if (input.queuePrefetchLimit !== undefined) merged.queuePrefetchLimit = input.queuePrefetchLimit;
+  if (input.bbdownEncoding !== undefined) merged.bbdownEncoding = input.bbdownEncoding;
+  if (input.bbdownEncodingPriority !== undefined) merged.bbdownEncodingPriority = input.bbdownEncodingPriority;
+  if (input.bbdownQuality !== undefined) merged.bbdownQuality = input.bbdownQuality;
+  if (input.bbdownApiMode !== undefined) merged.bbdownApiMode = input.bbdownApiMode;
+  if (input.bbdownHiRes !== undefined) merged.bbdownHiRes = input.bbdownHiRes;
+  if (input.bbdownDolby !== undefined) merged.bbdownDolby = input.bbdownDolby;
+  if (input.filenameTemplate !== undefined) merged.filenameTemplate = input.filenameTemplate;
+  if (input.renameScanMaxFiles !== undefined) merged.renameScanMaxFiles = input.renameScanMaxFiles;
+  if (input.remoteVerifyConcurrency !== undefined) merged.remoteVerifyConcurrency = input.remoteVerifyConcurrency;
+  if (input.remoteVerifyRateLimitPerSecond !== undefined) merged.remoteVerifyRateLimitPerSecond = input.remoteVerifyRateLimitPerSecond;
+  if (input.remoteRequeueLimitPerCycle !== undefined) merged.remoteRequeueLimitPerCycle = input.remoteRequeueLimitPerCycle;
   const legacyPrefetch = Number(input.startupRecoveryBatchSize);
   if (input.queuePrefetchLimit === undefined && Number.isInteger(legacyPrefetch)) {
     merged.queuePrefetchLimit = legacyPrefetch;
@@ -157,7 +239,7 @@ export class ConfigStore {
   private config: AppConfig;
 
   constructor() {
-    const stored = readJsonFile<Partial<AppConfig>>(configPath, defaultConfig);
+    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(configPath, defaultConfig, decodeStoredConfig);
     this.config = normalizeLoadedConfig(stored);
     if (needsConfigMigration(stored, this.config)) {
       writeJsonFile(configPath, this.config);
@@ -169,7 +251,7 @@ export class ConfigStore {
   }
 
   reload() {
-    const stored = readJsonFile<Partial<AppConfig>>(configPath, defaultConfig);
+    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(configPath, defaultConfig, decodeStoredConfig);
     this.config = normalizeLoadedConfig(stored);
     return this.get();
   }

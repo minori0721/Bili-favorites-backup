@@ -24,6 +24,11 @@
     "state:export-json": "tsx src/scripts/sqlite-to-json.ts",
     "benchmark:state": "tsx src/scripts/benchmark-state.ts",
     "test": "node scripts/test.mjs",
+    "test:quick": "node scripts/test.mjs --scope quick",
+    "test:decoder": "node scripts/test.mjs --scope decoder",
+    "test:upload": "node scripts/test.mjs --scope upload",
+    "test:scheduler": "node scripts/test.mjs --scope scheduler",
+    "test:files": "node scripts/test.mjs --files",
     "test:ui": "playwright test",
     "start": "node dist/index.js",
     "login": "tsx src/scripts/login.ts"

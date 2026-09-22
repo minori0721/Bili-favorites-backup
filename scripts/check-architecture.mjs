@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { inspectFailureBoundaries } from './check-failure-boundaries.mjs';
+import { findRawDatabaseProviderAccesses, findWorkflowCapabilityViolations } from './check-capability-boundaries.mjs';
 import { findRuntimeResponsibilityViolations } from './check-runtime-responsibilities.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -164,6 +165,11 @@ function containsAny(node) {
 for (const file of paths) {
   const text = fs.readFileSync(file,'utf8');
   const tree = ts.createSourceFile(file,text,ts.ScriptTarget.Latest,true);
+  if (relative(file).startsWith('scheduler/') && relative(file) !== 'scheduler/scheduler-runtime.ts') {
+    for (const finding of findRawDatabaseProviderAccesses(tree)) {
+      errors.push(`${relative(file)}:${finding.line}: scheduler workflows must receive narrow storage capabilities instead of a raw database provider`);
+    }
+  }
   if (!relative(file).startsWith('web/client/') && !relative(file).startsWith('web/shared/')) {
     function findExplicitAny(node) {
       if (node.kind === ts.SyntaxKind.AnyKeyword) fail(file, 'production code must not introduce explicit any');
@@ -273,6 +279,28 @@ for (const finding of findRuntimeResponsibilityViolations({
   forbiddenSourceFiles: runtimeAssemblyOnlyModules,
 })) {
   errors.push(`${relative(runtimePath)}:${finding.line}: SchedulerRuntime may assemble ${finding.symbol} only in its constructor; public methods must delegate to the assembled workflow`);
+}
+// Capability ports must remain real restrictions even through aliases,
+// re-exports, namespace imports or intersections.
+for (const file of paths) {
+  const sourceFile = program.getSourceFile(file);
+  if (!sourceFile) continue;
+  for (const finding of findWorkflowCapabilityViolations(sourceFile, checker)) {
+    errors.push(`${relative(file)}:${finding.line}: workflow consumers must use declared capability ports, not ReturnType<typeof ${finding.symbol}>`);
+  }
+}
+const jobStorePath = path.join(sourceRoot, 'job-store.ts');
+const jobStoreSource = fs.readFileSync(jobStorePath, 'utf8');
+if (/Number\([^\n]*(?:count|next_at)[^\n]*\|\|\s*0/.test(jobStoreSource)
+  || /decodeSqlRows?\s*\(/.test(jobStoreSource)
+  || /decodeSqlRow\([^\n]*count/.test(jobStoreSource)) {
+  fail(jobStorePath, 'SQL aggregate projections must use a typed count decoder');
+}
+const downloadSessionPath = path.join(sourceRoot, 'download-session.ts');
+const downloadSessionSource = fs.readFileSync(downloadSessionPath, 'utf8');
+if (/output\s+as\s+T/.test(downloadSessionSource)
+  || /observedAt\s*=\s*[^;]*\?\s*[^:]+:\s*nowIso\(\)/.test(downloadSessionSource)) {
+  fail(downloadSessionPath, 'download evidence decoders must reject invalid fields instead of asserting or timestamping them');
 }
 const facadePrivateMembers = schedulerClass
   ? schedulerClass.members

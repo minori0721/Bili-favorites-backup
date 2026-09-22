@@ -39,11 +39,11 @@ export function qualityTargetsFromPayload(payload: unknown, fallback: QualityUpg
 }
 
 export function filterArchiveDeletionTargets<T extends { userId?: unknown; mediaId?: unknown }>(
-  state: Pick<StateManager, 'getDatabase'>,
+  isArchiveSourceDeletionBlocked: (userId: string, mediaId: number, bvid: string) => boolean,
   bvid: string,
   targets: T[],
 ) {
-  return targets.filter(target => !state.getDatabase().isArchiveSourceDeletionBlocked(
+  return targets.filter(target => !isArchiveSourceDeletionBlocked(
     String(target.userId || ''), Number(target.mediaId || 0), bvid,
   ));
 }

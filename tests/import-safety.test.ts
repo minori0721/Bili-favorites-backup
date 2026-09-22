@@ -72,6 +72,23 @@ test("missing rollback snapshot fails closed instead of opening an empty databas
   } finally { await removeTestDir(f.root); }
 });
 
+test("malformed replacement and import journals fail closed before startup", async () => {
+  const root = await createTestDir("malformed-recovery-journals");
+  const transactionUrl = pathToFileURL(path.resolve("src/import-transaction.ts")).href;
+  try {
+    const code = `process.env.NODE_ENV='test';process.env.BFB_TEST_APP_ROOT=${JSON.stringify(root)};
+      const {default:fs}=await import('node:fs');const {default:path}=await import('node:path');
+      const data=path.join(${JSON.stringify(root)},'data');fs.mkdirSync(data,{recursive:true});
+      fs.writeFileSync(path.join(data,'import-transaction.json'),JSON.stringify({version:1,id:'d'.repeat(32),committed:false,files:[null]}));
+      const {recoverImportTransaction}=await import(${JSON.stringify(transactionUrl)});
+      try{recoverImportTransaction();process.exit(8);}catch(error){if(!String(error).includes('Invalid import recovery record'))throw error;}`;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 15_000 });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    await removeTestDir(root);
+  }
+});
+
 for (const committed of [false, true]) {
   test(`restart restores a consistent config/database pair (commit=${committed})`, async () => {
     const root = await createTestDir("import-pair");

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { inspectRawDatabaseProviderFixture, inspectWorkflowCapabilityFixture } from '../scripts/check-capability-boundaries.mjs';
 import { inspectFailureBoundaries } from '../scripts/check-failure-boundaries.mjs';
 import { inspectRuntimeResponsibilityFixture } from '../scripts/check-runtime-responsibilities.mjs';
 
@@ -92,4 +93,26 @@ test('runtime responsibility rule follows renamed and indexed imports', () => {
     `import type { createWork } from './business.js'; type Work = ReturnType<typeof createWork>; class SchedulerRuntime { run(value: Work) { return value; } }`,
     forbidden,
   ), []);
+});
+
+test('workflow capability rule rejects aliases, namespaces, re-exports and intersections', () => {
+  for (const source of [
+    `import { createSyncRuntime as makeSync } from './scheduler/sync-runtime.js'; type All = ReturnType<typeof makeSync>;`,
+    `import * as sync from './scheduler/sync-runtime.js'; type All = ReturnType<typeof sync.createSyncRuntime>;`,
+    `import * as sync from './scheduler/sync-runtime.js'; type All = ReturnType<typeof sync['createSyncRuntime']>;`,
+    `import { createSyncRuntime } from './scheduler/sync-runtime.js'; type Port = SyncWorkflowPort & ReturnType<typeof createSyncRuntime>;`,
+  ]) assert.equal(inspectWorkflowCapabilityFixture(source).length, 1);
+  assert.equal(inspectWorkflowCapabilityFixture(
+    `import { createSyncRuntime as makeSync } from './bridge.js'; type All = ReturnType<typeof makeSync>;`,
+    {'./bridge.js': './scheduler/sync-runtime.js'},
+  ).length, 1);
+  assert.deepEqual(inspectWorkflowCapabilityFixture(
+    `import type { SyncWorkflowPort } from './ports/scheduler-workflows.js'; type Commands = Pick<SyncWorkflowPort, 'runSync'>;`,
+  ), []);
+});
+
+test('scheduler storage boundary fixture distinguishes a narrow callback from a raw provider', () => {
+  assert.equal(inspectRawDatabaseProviderFixture(`state.getDatabase().query()`).length, 1);
+  assert.equal(inspectRawDatabaseProviderFixture(`state['getDatabase']().query()`).length, 1);
+  assert.deepEqual(inspectRawDatabaseProviderFixture(`isArchiveSourceDeletionBlocked(userId, mediaId, bvid)`), []);
 });

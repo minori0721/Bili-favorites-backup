@@ -79,6 +79,13 @@ export class BiliFavoriteFolderResponseError extends Error {
   }
 }
 
+export class BiliResponseFormatError extends Error {
+  constructor(field: string) {
+    super(`Bili response field is invalid: ${field}`);
+    this.name = "BiliResponseFormatError";
+  }
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -578,19 +585,54 @@ export function classifyVideoPageAvailability(
   return { availability: "unknown", reason: "temporary_error", apiCodes };
 }
 
-function optionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
+interface VideoAccessFields {
+  is_upower_exclusive?: boolean;
+  is_upower_play?: boolean;
+  is_ugc_pay_preview?: boolean;
+  is_upower_preview?: boolean;
+  is_upower_exclusive_with_qa?: boolean;
+}
+
+function decodeVideoAccessFields(value: unknown): VideoAccessFields | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new BiliResponseFormatError("video_access");
+  }
+  const input = record(value);
+  const keys = [
+    "is_upower_exclusive", "is_upower_play", "is_ugc_pay_preview",
+    "is_upower_preview", "is_upower_exclusive_with_qa",
+  ] as const;
+  for (const key of keys) {
+    if (input[key] !== undefined && typeof input[key] !== "boolean") {
+      throw new BiliResponseFormatError(key);
+    }
+  }
+  return {
+    ...(typeof input.is_upower_exclusive === "boolean" ? { is_upower_exclusive: input.is_upower_exclusive } : {}),
+    ...(typeof input.is_upower_play === "boolean" ? { is_upower_play: input.is_upower_play } : {}),
+    ...(typeof input.is_ugc_pay_preview === "boolean" ? { is_ugc_pay_preview: input.is_ugc_pay_preview } : {}),
+    ...(typeof input.is_upower_preview === "boolean" ? { is_upower_preview: input.is_upower_preview } : {}),
+    ...(typeof input.is_upower_exclusive_with_qa === "boolean" ? { is_upower_exclusive_with_qa: input.is_upower_exclusive_with_qa } : {}),
+  };
+}
+
+function decodePlayerInfoResponse(value: unknown): VideoAccessFields {
+  const decoded = decodeVideoAccessFields(value);
+  if (!decoded) throw new BiliResponseFormatError("player_info");
+  return decoded;
 }
 
 export function classifyVideoAccess(
-  value: Record<string, unknown> | undefined,
+  value: unknown,
   source: VideoAccessSnapshot["source"] = "unknown"
 ): VideoAccessSnapshot {
-  const isUPowerExclusive = optionalBoolean(value?.is_upower_exclusive);
-  const isUPowerPlay = optionalBoolean(value?.is_upower_play);
-  const previewAvailable = optionalBoolean(value?.is_upower_preview);
-  const isUgcPayPreview = optionalBoolean(value?.is_ugc_pay_preview);
-  const exclusiveWithQa = optionalBoolean(value?.is_upower_exclusive_with_qa);
+  const decoded = decodeVideoAccessFields(value);
+  const isUPowerExclusive = decoded?.is_upower_exclusive;
+  const isUPowerPlay = decoded?.is_upower_play;
+  const previewAvailable = decoded?.is_upower_preview;
+  const isUgcPayPreview = decoded?.is_ugc_pay_preview;
+  const exclusiveWithQa = decoded?.is_upower_exclusive_with_qa;
   let classification: VideoAccessClassification = "unknown";
   if (isUPowerExclusive === false) classification = "normal";
   else if (isUPowerExclusive === true && isUPowerPlay === true) classification = "charging_allowed";
@@ -614,10 +656,11 @@ async function resolveVideoAccessFallback(
 ) {
   if (current.classification !== "unknown" || cid <= 0) return current;
   try {
-    const player = await client.video.playerInfo({ bvid, cid }) as unknown as Record<string, unknown>;
+    const player = decodePlayerInfoResponse(await client.video.playerInfo({ bvid, cid }) as unknown);
     const fallback = classifyVideoAccess(player, "player");
     return fallback.classification === "unknown" ? current : fallback;
   } catch (error: unknown) {
+    if (error instanceof BiliResponseFormatError) throw error;
     const value = record(error);
     const response = record(value.response);
     const responseData = record(response.data);

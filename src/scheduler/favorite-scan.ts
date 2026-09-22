@@ -43,8 +43,14 @@ interface ScanDependencies {
     }): unknown;
     enqueue(user: BiliUser, mediaId: number, folderTitle: string, bvid: string): boolean;
 }
+
+export interface FavoriteScanPort {
+  all(user: BiliUser, mediaId: number, folderTitle: string): Promise<void>;
+  hot(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean): Promise<number>;
+  history(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean, startAfterPage?: number): Promise<void>;
+}
 /** Owns scan policy and observations; admission, persistent enqueue and progress belong to scheduling control. */
-export function createFavoriteScan(deps: ScanDependencies) {
+export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & { reset(): void } {
     let epoch = 0;
     function checkpoint() {
         const currentEpoch = epoch;

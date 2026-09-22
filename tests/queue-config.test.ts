@@ -12,6 +12,7 @@ import test from "node:test";
 import path from "node:path";
 import {
   applyBBDownEncodingPreference,
+  decodeStoredConfig,
   isValidBBDownEncodingPriority,
   normalizeBBDownEncodingPriority,
   normalizeLoadedConfig,
@@ -146,6 +147,17 @@ test("queue prefetch setting validates its range and migrates the legacy name", 
   assert.match(String(validateConfig({ queuePrefetchLimit: 4 })), /between 5 and 100/);
   assert.match(String(validateConfig({ queuePrefetchLimit: 101 })), /between 5 and 100/);
   assert.equal(normalizeLoadedConfig({ startupRecoveryBatchSize: 37 }).queuePrefetchLimit, 37);
+});
+
+test('stored configuration decoding rejects malformed fields before normalization', () => {
+  assert.deepEqual(decodeStoredConfig({ queuePrefetchLimit: 37 }).queuePrefetchLimit, 37);
+  assert.deepEqual(decodeStoredConfig({ bbdownEncodingPriority: ['av1', 'hevc', 'avc'] }).bbdownEncodingPriority, ['AV1', 'HEVC', 'AVC']);
+  assert.throws(() => decodeStoredConfig({ queuePrefetchLimit: '37' }));
+  assert.throws(() => decodeStoredConfig({ bbdownHiRes: 'true' }));
+  assert.throws(() => decodeStoredConfig({ bbdownEncodingPriority: ['AV1', 1] }));
+  assert.throws(() => decodeStoredConfig({ bbdownEncodingPriority: ['AV1'] }));
+  assert.throws(() => decodeStoredConfig({ bbdownEncodingPriority: ['AV1', 'AV1', 'HEVC'] }));
+  assert.throws(() => decodeStoredConfig({ bbdownEncodingPriority: ['AV1', 'HEVC', 'VP9'] }));
 });
 
 test("playback delivery defaults to safe redirect preference and validates proxy mode", () => {

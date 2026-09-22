@@ -6,12 +6,14 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { appRoot, backupsDir, coversDir, dataDir, databasePath, exportsDir, tempDir } from "./paths.js";
 import { logsPath } from "./logger.js";
-import { readJsonFile } from "./storage.js";
+import { readJsonFileDecoded } from "./storage.js";
 import { createZipFromSources, extractZipFile } from "./zip.js";
 import { StateDatabase } from "./database.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import { isBBDownCredentialArchivePath, isBBDownCredentialDirectoryName } from "./credential-temp.js";
-import { normalizeLoadedConfig, validateConfig } from "./config.js";
+import { decodeStoredConfig, normalizeLoadedConfig, validateConfig } from "./config.js";
+import { decodeStoredUsers } from "./users.js";
+import { decodeStoredLogEntries } from "./logger.js";
 
 const exportSchema = 3;
 const appName = "Bili-favorites-backup";
@@ -32,6 +34,95 @@ type MigrationStateSnapshot = JsonRecord & {
 
 function record(value: unknown): JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+}
+
+function strictRecord(value: unknown, context: string): JsonRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${context}必须是对象`);
+  return value as JsonRecord;
+}
+
+function decodeUnknownArray(value: unknown, context: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${context}必须是数组`);
+  return value;
+}
+
+function decodeNonNegativeInteger(value: unknown, context: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${context}必须是非负整数`);
+  }
+  return value;
+}
+
+function decodeMigrationManifest(value: unknown): MigrationManifest {
+  const manifest = strictRecord(value, "迁移清单");
+  const schema = decodeNonNegativeInteger(manifest.schema, "迁移清单 schema");
+  const mode = manifest.mode === "lightweight" || manifest.mode === "complete"
+    ? manifest.mode
+    : schema < 3 && manifest.mode === undefined
+      ? "lightweight"
+      : null;
+  if (typeof manifest.app !== "string" || typeof manifest.version !== "string"
+    || typeof manifest.exportedAt !== "string" || !mode || typeof manifest.warning !== "string") {
+    throw new Error("迁移清单结构错误");
+  }
+  const includes = strictRecord(manifest.includes, "迁移清单 includes");
+  const counts = strictRecord(manifest.counts, "迁移清单 counts");
+  const includesMode = includes.mode === "lightweight" || includes.mode === "complete"
+    ? includes.mode
+    : schema < 3 && includes.mode === undefined
+      ? mode
+      : null;
+  if (!includesMode || typeof includes.includeConfig !== "boolean" || typeof includes.includeUsers !== "boolean"
+    || typeof includes.includeState !== "boolean" || typeof includes.includeLogs !== "boolean"
+    || typeof includes.includeDebug !== "boolean" || typeof includes.includeCovers !== "boolean") {
+    throw new Error("迁移清单 includes 结构错误");
+  }
+  let archive: MigrationManifest["archive"];
+  if (manifest.archive !== undefined) {
+    const archiveRecord = strictRecord(manifest.archive, "迁移清单 archive");
+    archive = {
+      files: decodeNonNegativeInteger(archiveRecord.files, "迁移清单 archive.files"),
+      expandedBytes: decodeNonNegativeInteger(archiveRecord.expandedBytes, "迁移清单 archive.expandedBytes"),
+    };
+  }
+  return {
+    schema,
+    app: manifest.app,
+    version: manifest.version,
+    exportedAt: manifest.exportedAt,
+    mode,
+    includes: {
+      mode: includesMode,
+      includeConfig: includes.includeConfig,
+      includeUsers: includes.includeUsers,
+      includeState: includes.includeState,
+      includeLogs: includes.includeLogs,
+      includeDebug: includes.includeDebug,
+      includeCovers: includes.includeCovers,
+    },
+    counts: {
+      users: decodeNonNegativeInteger(counts.users, "迁移清单 counts.users"),
+      videos: decodeNonNegativeInteger(counts.videos, "迁移清单 counts.videos"),
+      relations: decodeNonNegativeInteger(counts.relations, "迁移清单 counts.relations"),
+      unavailableVideos: decodeNonNegativeInteger(counts.unavailableVideos, "迁移清单 counts.unavailableVideos"),
+    },
+    warning: manifest.warning,
+    ...(archive ? { archive } : {}),
+  };
+}
+
+function decodeChecksums(value: unknown) {
+  const source = strictRecord(value, "迁移校验清单");
+  const checksums: Record<string, { size: number; sha256: string }> = {};
+  for (const [name, entry] of Object.entries(source)) {
+    const checksum = strictRecord(entry, `迁移校验项 ${name}`);
+    if (typeof checksum.size !== "number" || !Number.isSafeInteger(checksum.size) || checksum.size < 0
+      || typeof checksum.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(checksum.sha256)) {
+      throw new Error(`迁移校验项 ${name} 结构错误`);
+    }
+    checksums[name] = { size: checksum.size, sha256: checksum.sha256 };
+  }
+  return checksums;
 }
 
 function recordMap(value: unknown): Record<string, JsonRecord> {
@@ -227,7 +318,7 @@ function normalizeExportOptions(options: MigrationExportOptions = {}): Required<
 
 function packageVersion() {
   try {
-    const pkg = readJsonFile<{ version?: string }>(path.join(appRoot, "package.json"), {});
+    const pkg = readJsonFileDecoded(path.join(appRoot, "package.json"), {}, value => strictRecord(value, "package.json"));
     return String(pkg.version || "");
   } catch {
     return "";
@@ -391,7 +482,7 @@ export async function createMigrationExport(options: MigrationExportOptions = {}
     const usersPath = path.join(dataDir, "users.json");
     const state = stateAccess?.getStateSnapshot() || { videos: {}, relations: {} };
     let stateForExport = includes.mode === "lightweight" ? sanitizeLightweightStateSnapshot(state) : state;
-    const users = readJsonFile<unknown[]>(usersPath, []);
+    const users = readJsonFileDecoded(usersPath, [], value => decodeUnknownArray(value, "账号数据"));
 
     if (includes.includeConfig) await copyIfExists(path.join(dataDir, "config.json"), path.join(staging, "data", "config.json"));
     if (includes.includeUsers) await copyIfExists(usersPath, path.join(staging, "data", "users.json"));
@@ -536,7 +627,7 @@ async function validateExtractedMigration(root: string, extractedFiles?: string[
   if (files.some((file) => file.includes("..") || path.isAbsolute(file))) throw new Error("导入包包含不安全路径");
   const manifestPath = path.join(root, "manifest.json");
   if (!(await pathExists(manifestPath))) throw new Error("导入包缺少 manifest.json");
-  const manifest = readJsonFile<MigrationManifest>(manifestPath, {} as MigrationManifest);
+  const manifest = decodeMigrationManifest(await readStrictJson(manifestPath));
   if (manifest.app !== appName || ![1, 2, exportSchema].includes(Number(manifest.schema))) {
     throw new Error("导入包不是当前项目支持的数据包");
   }
@@ -544,7 +635,9 @@ async function validateExtractedMigration(root: string, extractedFiles?: string[
   const unsafe = files.filter((file) => file !== "manifest.json" && file !== "checksums.json" && !file.startsWith("indexes/") && !safeImportFile(file));
   if (unsafe.length > 0) throw new Error(`导入包包含不支持的文件：${unsafe.slice(0, 3).join(", ")}`);
   if (Number(manifest.schema) >= 3) {
-    const checksums = readJsonFile<Record<string, { size: number; sha256: string }>>(path.join(root, "checksums.json"), {});
+    const checksumsPath = path.join(root, "checksums.json");
+    if (!(await pathExists(checksumsPath))) throw new Error("schema 3迁移包缺少文件校验清单");
+    const checksums = decodeChecksums(await readStrictJson(checksumsPath));
     if (Object.keys(checksums).length === 0) throw new Error("schema 3迁移包缺少文件校验清单");
     const businessFiles = files.filter((name) => name !== "manifest.json" && name !== "checksums.json").sort();
     const listedFiles = Object.keys(checksums).sort();
@@ -568,9 +661,9 @@ async function validateExtractedMigration(root: string, extractedFiles?: string[
   return { files, manifest };
 }
 
-async function readStrictJson(filePath: string) {
+async function readStrictJson(filePath: string): Promise<unknown> {
   const raw = await fs.promises.readFile(filePath, "utf8");
-  return JSON.parse(raw);
+  return JSON.parse(raw) as unknown;
 }
 
 function validateUsersSnapshot(value: unknown) {
@@ -583,36 +676,25 @@ function validateUsersSnapshot(value: unknown) {
     if (!id) throw new Error(`账号数据第 ${index + 1} 项缺少账号ID`);
     if (ids.has(id)) throw new Error(`账号数据包含重复ID：${id}`);
     ids.add(id);
-    if (!record.cookie || typeof record.cookie !== "object" || Array.isArray(record.cookie)) {
-      throw new Error(`账号 ${id} 的Cookie结构错误`);
-    }
-    for (const [key, cookieValue] of Object.entries(record.cookie as Record<string, unknown>)) {
-      if (!key || !["string", "number"].includes(typeof cookieValue)) throw new Error(`账号 ${id} 的Cookie字段结构错误`);
-    }
-    if (!Array.isArray(record.favorites)) throw new Error(`账号 ${id} 的收藏夹数据必须是数组`);
-    for (const favorite of record.favorites) {
-      if (!favorite || typeof favorite !== "object" || Array.isArray(favorite)) throw new Error(`账号 ${id} 的收藏夹结构错误`);
-      const folder = favorite as Record<string, unknown>;
-      if (!Number.isInteger(Number(folder.mediaId)) || Number(folder.mediaId) < 1 || typeof folder.title !== "string") {
-        throw new Error(`账号 ${id} 的收藏夹字段结构错误`);
-      }
-    }
   }
-  return value;
+  try {
+    return decodeStoredUsers(value);
+  } catch (error) {
+    throw new Error(`账号数据字段结构错误：${safeErrorSummary(error)}`);
+  }
 }
 
 function validateLogsSnapshot(value: unknown) {
-  if (!Array.isArray(value)) throw new Error("日志数据必须是数组");
-  for (const [index, entry] of value.entries()) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`日志第 ${index + 1} 项格式错误`);
-    const record = entry as Record<string, unknown>;
-    if (typeof record.timestamp !== "string"
-      || !["download", "upload", "system"].includes(String(record.type))
-      || !["info", "warn", "error"].includes(String(record.level))
-      || typeof record.summary !== "string"
-      || typeof record.raw !== "string") {
-      throw new Error(`日志第 ${index + 1} 项字段结构错误`);
-    }
+  try {
+    return decodeStoredLogEntries(value);
+  } catch (error) {
+    const index = Array.isArray(value)
+      ? value.findIndex(entry => {
+        try { decodeStoredLogEntries([entry]); return false; } catch { return true; }
+      })
+      : -1;
+    if (index >= 0) throw new Error(`日志第 ${index + 1} 项字段结构错误`);
+    throw new Error(`日志数据字段结构错误：${safeErrorSummary(error)}`);
   }
 }
 
@@ -622,19 +704,37 @@ function assertManifestCount(name: keyof MigrationManifest["counts"], expected: 
   }
 }
 
+function decodeMigrationDatabaseCounts(value: unknown) {
+  const row = strictRecord(value, "迁移数据库统计");
+  const result: MigrationManifest["counts"] = {
+    users: 0,
+    videos: 0,
+    relations: 0,
+    unavailableVideos: 0,
+  };
+  for (const key of ["videos", "relations", "unavailableVideos"] as const) {
+    const count = row[key];
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`迁移数据库统计字段无效：${key}`);
+    }
+    result[key] = count;
+  }
+  return result;
+}
+
 async function validateMigrationPayload(root: string, manifest: MigrationManifest) {
   const configPath = path.join(root, "data", "config.json");
   if (await pathExists(configPath)) {
     const raw = await readStrictJson(configPath);
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("配置数据必须是JSON对象");
-    const normalized = normalizeLoadedConfig(raw);
+    const normalized = normalizeLoadedConfig(decodeStoredConfig(raw));
     const error = validateConfig(normalized);
     if (error) throw new Error(`配置校验失败：${error}`);
   }
 
   const usersPath = path.join(root, "data", "users.json");
   let users: unknown[] | undefined;
-  if (await pathExists(usersPath)) users = validateUsersSnapshot(await readStrictJson(usersPath)) as unknown[];
+  if (await pathExists(usersPath)) users = validateUsersSnapshot(await readStrictJson(usersPath));
 
   const logsFile = path.join(root, "data", "logs.json");
   if (await pathExists(logsFile)) validateLogsSnapshot(await readStrictJson(logsFile));
@@ -645,16 +745,15 @@ async function validateMigrationPayload(root: string, manifest: MigrationManifes
     try {
       database.integrityCheck();
       if (Number(manifest.schema) >= 3) {
-        const counts = database.db.prepare(`
+        const counts = decodeMigrationDatabaseCounts(database.db.prepare<[], unknown>(`
           SELECT
             (SELECT COUNT(*) FROM videos) AS videos,
             (SELECT COUNT(*) FROM favorite_relations) AS relations,
             (SELECT COUNT(*) FROM videos WHERE bili_status='unavailable') AS unavailableVideos
-        `).get() as { videos?: unknown; relations?: unknown; unavailableVideos?: unknown } | undefined;
-        const countRow = counts || {};
-        assertManifestCount("videos", manifest.counts?.videos, Number(countRow.videos || 0));
-        assertManifestCount("relations", manifest.counts?.relations, Number(countRow.relations || 0));
-        assertManifestCount("unavailableVideos", manifest.counts?.unavailableVideos, Number(countRow.unavailableVideos || 0));
+        `).get());
+        assertManifestCount("videos", manifest.counts?.videos, counts.videos);
+        assertManifestCount("relations", manifest.counts?.relations, counts.relations);
+        assertManifestCount("unavailableVideos", manifest.counts?.unavailableVideos, counts.unavailableVideos);
       }
     } finally {
       database.close();
@@ -773,7 +872,7 @@ export async function backupCurrentData(stateAccess?: MigrationStateAccess) {
       },
       counts: buildCounts(
         stateForBackup,
-        readJsonFile<unknown[]>(path.join(dataDir, "users.json"), [])
+        readJsonFileDecoded(path.join(dataDir, "users.json"), [], value => decodeUnknownArray(value, "账号数据"))
       ),
       warning: "Automatic backup created before importing a migration package.",
     });

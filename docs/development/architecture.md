@@ -88,6 +88,18 @@ npm audit
 
 `npm test` 递归发现 `tests` 内所有 `.test.ts`，浏览器行为测试由 Playwright 独立运行。新增模块测试应测试公开接口和可观察行为，不通过 `window` 或源文件文本访问实现。
 
+日常开发可以使用测试入口的快速范围，减少等待时间，但这些范围不能代替推送前的全量测试：
+
+```sh
+npm run test:quick
+npm run test:decoder
+npm run test:upload
+npm run test:scheduler
+npm run test:files -- tests/domain-decoders.test.ts tests/playback.test.ts
+```
+
+不带范围的 `npm test` 始终递归执行所有测试文件，是 dev 推送和发布前的完整门槛。指定范围只改变本次本地执行的文件，不会改变 CI 的测试范围；修改调度、存储、事务或跨模块边界后仍须执行完整测试。
+
 ### dev → main 验收复用
 
 先推 dev 并等待 `Docker Publish` 成功，再将该提交快进合并到 main。main 的 push 流水线通过 GitHub Actions API 查询同一仓库、同一工作流、同一完整提交 SHA 的成功 dev push，同时要求工作流 SHA 一致，且对应 run attempt 的 `Test application` 步骤实际执行成功，才跳过重复的 `npm test` 和测试媒体工具准备。提交 SHA 包括版本、依赖锁文件、测试与工作流配置；任何新提交都必须有对应的成功记录，不能只凭业务文件看起来没变而跳过。
@@ -141,7 +153,7 @@ npm audit
 
 ## 当前组合根边界
 
-`src/index.ts` 是组合根，只负责基础设施、服务工厂、路由顺序和启动/关闭装配；账号、配置、收藏、登录、播放、迁移、清理、媒体探测、更新检查、可用性复核和队列状态均通过服务与窄 HTTP 路由接入。`SyncScheduler` 仍保留兼容门面，运行时准入、恢复、扫描和传输策略由现有工作流工厂委派；新增业务不得再直接写入门面。远端重命名由 `rename-service.ts` 持有扫描缓存与预览会话，播放请求的参数由 HTTP 边界校验，`playback-service.ts` 在每次操作时取得当前数据库。
+`src/index.ts` 是组合根，只负责基础设施、服务工厂、路由顺序和启动/关闭装配；账号、配置、收藏、登录、播放、迁移、清理、媒体探测、更新检查、可用性复核和队列状态均通过服务与窄 HTTP 路由接入。组合根把兼容门面收窄成 `SchedulerControl`、`SyncControlPort` 与 `RecoveryPort` 后再交给生命周期和 HTTP 路由，路由看不到完整调度器。`SyncScheduler` 仍保留兼容门面，运行时准入、恢复、扫描和传输策略由现有工作流工厂委派；新增业务不得再直接写入门面。远端重命名由 `rename-service.ts` 持有扫描缓存与预览会话，播放请求的参数由 HTTP 边界校验，`playback-service.ts` 在每次操作时取得当前数据库。
 
 调度运行时的准入、关闭和数据库重绑定由 `scheduling-runtime.ts` 持有；同步状态和扫描流程分别由 `sync-runtime.ts`、`sync-workflow.ts` 协调，恢复流程由 `recovery-workflow.ts` 协调。仓储接口位于 `repositories/`，只暴露领域读写，连接替换仍由 `StateDatabase` 统一完成。持久 JSON 在 `repositories/domain-decoders.ts` 的边界解码，清理授权由 `repositories/cleanup-plans.ts` 读写。
 
@@ -160,6 +172,7 @@ npm audit
 - 浏览器 API 数据以 `unknown` 进入解析器。归档、播放、队列和媒体探测的非法响应抛出 `ResponseFormatError`，`code` 为 `INVALID_RESPONSE`；控制器保留上次有效数据并展示错误，不发布伪造的空列表。
 - `parseBBDownProbeOutput` 返回 `empty / invalid / partial / ok`。非法记录附带原因与结构化记录序号；部分结果携带此前有效记录，仅供诊断，不能用来完成探测或授权清理。互动视频仍必须通过完整页集合证明检查。
 - `empty` 是没有结构化输出；`ok` 是通过验证的完整输出。JSON 损坏、字段非法、重复页码和重复 CID 不能变为 `[]`。
+- SQLite 查询结果在仓储边界按查询分别进入任务、计数、调度时间、重试、会话身份、BVID 与画质目标解码器；完整任务再由 `rowToJob` 校验。业务代码不接收通用行对象，也不通过 `Number(value || 0)` 或字符串强转制造合法值。数据库替换日志、导入事务日志和下载会话清单分别使用领域解码器，结构不完整时拒绝恢复或把证据判为无效。配置、账号与日志文件同样从 `unknown` 逐字段解码。
 - 完整看板需要调度、恢复和四个队列字段。待处理操作响应只提供问题列表，由 `parseQueueIssueUpdate` 解析，不能补造调度状态或覆盖看板列。
 - 媒体探测的 `running / failed / complete` 分别处理：失败保留原因并允许用户既有的手动画质选择流程；只有完成态要求完整结果。播放的 `partial` 字段继续描述已知的部分归档。
 - 同一归档页中的重复视频、同一播放项目中的重复文件是契约错误。分页控制器继续处理不同页重叠与迟到响应，不因一次非法页清空已有内容。
@@ -168,7 +181,7 @@ npm audit
 
 | 场景 | 处理 |
 | --- | --- |
-| 封面、日志、进度采样、临时文件清理失败 | 使用带组件和操作上下文的脱敏日志；不宣称该操作完成 |
+| 封面、历史日志读取、进度采样、临时文件清理失败 | 使用带组件和操作上下文的脱敏日志；损坏日志保留副本并降级为空的内存历史，不宣称原记录有效 |
 | 外部探测暂时失败 | 保留错误与现有重试状态，不推断视频不存在 |
 | 持久 JSON 损坏、恢复任务提交、迁移失败 | 向上抛出；不得变成空状态、零修复项或成功 |
 | 数据库替换后的旧连接关闭失败 | 保留恢复文件，报告 `recoveryRequired`，不继续移动数据库 |
@@ -191,7 +204,11 @@ SQL NULL 表示可选字段缺失，损坏的 JSON 不是缺失。数据库查�
 
 ## 架构门槛
 
-`npm run check:architecture` 使用现有 TypeScript AST 检查空 catch、显式 any、静默恢复、解析器空集合兜底、测试访问调度器私有成员、别名和索引访问绕过，以及模块循环依赖。`tests/failure-boundaries.test.ts` 为各规则提供通过和失败示例。
+同步工作流的能力按命令、生命周期、查询和扫描回报分成窄接口；查询返回只读快照，扫描统计通过回报方法写回唯一状态所有者。调度运行时只组装并委派账号准入、手动同步命令、恢复投影和画质任务恢复，账号准入由 `user-sync-eligibility` 持有，画质恢复失败由 `quality-recovery-admission` 统一暂停并记录。
+
+任务仓储的聚合计数、会话身份、BVID 与画质目标投影在 SQL 边界使用具体解码器；非法数量、代次或身份直接报错，只有普通查询缺行才表示不存在。旧传输任务仅在 SQL 明确标记“历史缺少代次”时映射为第一代，当前记录缺少或伪造代次会失败。下载会话必须包含完整元数据、输出和历史数组，损坏输出、重复身份、无效选择时间或路径会使证据失效；配置、账号和 B 站权限字段均从 `unknown` 逐字段收窄。
+
+`npm run check:architecture` 使用现有 TypeScript AST 检查空 catch、显式 any、静默恢复、解析器空集合兜底、测试访问调度器私有成员、别名和索引访问绕过，以及模块循环依赖。同步消费者不能借 `ReturnType<typeof createSyncRuntime>`、交叉类型、重命名导入、命名空间或重新导出拿回完整实现能力；工作流不能调用 `getDatabase()`，只能接收所需查询或提交能力。`tests/failure-boundaries.test.ts` 为各规则提供通过、失败和绕过示例。
 
 测试访问调度器私有成员不接受历史基线豁免。业务工厂测试直接注入仓储和外部适配器；集成测试通过队列事件、公开生命周期与持久结果验证协作，不把另一个仓储实例上的方法替换误当作调度器故障注入。
 

@@ -209,7 +209,9 @@ function buildTask(fixture: Awaited<ReturnType<typeof createScheduler>>, input: 
   const job = fixture.jobs.enqueue({...input, dedupeKey: input.dedupeKey || `quality:${fixture.jobs.list(['quality_download'], 100).length}`});
   return buildQualityUpgradeTask(job, {
     config: {get: () => testConfig()}, users: {getById: id => fixture.users.find(user => user.id === id) || null},
-    state: fixture.manager, jobs: fixture.jobs, isUserSyncEligible: (user): user is BiliUser => Boolean(user?.enabled),
+    state: fixture.manager, jobs: fixture.jobs,
+    isArchiveSourceDeletionBlocked: (u, m, b) => fixture.manager.getDatabase().isArchiveSourceDeletionBlocked(u, m, b),
+    isUserSyncEligible: (user): user is BiliUser => Boolean(user?.enabled),
     leaseOwner: 'test', now: Date.now, qualityArtifactCleanupLocks: { acquire: () => undefined, release: () => undefined },
     refreshLocalCacheState() {}, pokeDownloadQueue() {}, dispatchPersistentJobs() {},
     reconcileObsoleteVerifiedArchiveRecoveries: async () => undefined,

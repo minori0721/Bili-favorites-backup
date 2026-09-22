@@ -18,7 +18,8 @@ import {
   extractMigrationPackageFile,
   previewMigrationPackageFile,
 } from "../src/migration.js";
-import { LogManager } from "../src/logger.js";
+import { decodeStoredLogEntries, LogManager } from "../src/logger.js";
+import { decodeStoredUsers } from "../src/users.js";
 import {
   collectSecurityConfigurationWarnings,
   createLoginRateLimiter,
@@ -38,7 +39,8 @@ async function buildMigrationArchive(
   runtime: string,
   name: string,
   files: Record<string, string | Buffer>,
-  counts: { users?: number; videos?: number; relations?: number; unavailableVideos?: number } = {}
+  counts: { users?: number; videos?: number; relations?: number; unavailableVideos?: number } = {},
+  includeChecksums = true,
 ) {
   const root = path.join(runtime, `${name}-source`);
   await fs.promises.mkdir(root, { recursive: true });
@@ -52,14 +54,22 @@ async function buildMigrationArchive(
       sha256: await sha256(target),
     };
   }
-  await fs.promises.writeFile(path.join(root, "checksums.json"), JSON.stringify(checksums));
+  if (includeChecksums) await fs.promises.writeFile(path.join(root, "checksums.json"), JSON.stringify(checksums));
   await fs.promises.writeFile(path.join(root, "manifest.json"), JSON.stringify({
     schema: 3,
     app: "Bili-favorites-backup",
     version: "2.4.0",
     exportedAt: new Date().toISOString(),
     mode: files["temp/sample.bin"] ? "complete" : "lightweight",
-    includes: {},
+    includes: {
+      mode: files["temp/sample.bin"] ? "complete" : "lightweight",
+      includeConfig: "data/config.json" in files,
+      includeUsers: "data/users.json" in files,
+      includeState: "data/state.json" in files || "data/bfb.sqlite" in files,
+      includeLogs: "data/logs.json" in files,
+      includeDebug: Object.keys(files).some(file => file.startsWith("data/debug/")),
+      includeCovers: Object.keys(files).some(file => file.startsWith("data/covers/")),
+    },
     counts: {
       users: counts.users ?? 0,
       videos: counts.videos ?? 0,
@@ -68,7 +78,7 @@ async function buildMigrationArchive(
     },
     warning: "test",
     archive: {
-      files: Object.keys(files).length + 2,
+      files: Object.keys(files).length + (includeChecksums ? 2 : 1),
       expandedBytes: Object.values(checksums).reduce((total, item) => total + item.size, 0),
     },
   }));
@@ -124,6 +134,19 @@ test("schema 3 import verifies then discards historical credential payloads", as
     } finally {
       await fs.promises.rm(extracted.root, { recursive: true, force: true });
     }
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("schema 3 import requires its checksum evidence and does not create it", async () => {
+  const runtime = await createTestDir("migration-missing-checksums");
+  try {
+    const archive = await buildMigrationArchive(runtime, "missing-checksums", {
+      "data/config.json": JSON.stringify({ queuePrefetchLimit: 25 }),
+    }, {}, false);
+    await assert.rejects(previewMigrationPackageFile(archive), /缺少文件校验清单/);
+    assert.equal(fs.existsSync(path.join(runtime, "missing-checksums-source", "checksums.json")), false);
   } finally {
     await removeTestDir(runtime);
   }
@@ -358,6 +381,40 @@ test("LogManager persists and emits the same sanitized object", async () => {
     assert.match(stored[0].raw, /visible/);
   } finally {
     manager.close();
+    await removeTestDir(runtime);
+  }
+});
+
+test("stored users reject duplicate identities and invalid nested metadata", () => {
+  const user = {
+    id: "u1", uid: 10001, name: "test",
+    cookie: { SESSDATA: "session", bili_jct: "csrf", DedeUserID: "10001" },
+    favorites: [{ mediaId: 1, title: "folder" }], enabled: true, lastLoginAt: "2026-01-01T00:00:00.000Z",
+  };
+  assert.equal(decodeStoredUsers([user])[0].uid, 10001);
+  assert.throws(() => decodeStoredUsers([user, { ...user }]), /Duplicate stored user id/);
+  assert.throws(() => decodeStoredUsers([user, { ...user, id: "u2" }]), /Duplicate stored user uid/);
+  assert.throws(() => decodeStoredUsers([{ ...user, expires: Number.NaN }]), /metadata/);
+  assert.throws(() => decodeStoredUsers([{ ...user, favorites: [{ mediaId: 0, title: "folder" }] }]), /favorite/);
+  assert.throws(() => decodeStoredUsers([{ ...user, cookie: { SESSDATA: "session", bili_jct: "csrf" } }]), /cookie/);
+  assert.throws(() => decodeStoredUsers([{ ...user, cookie: { ...user.cookie, extra: {} } }]), /cookie/);
+});
+
+test("corrupt persisted logs are preserved and degrade to an empty history", async () => {
+  const runtime = await createTestDir("log-corrupt-degrade");
+  const filePath = path.join(runtime, "logs.json");
+  try {
+    assert.throws(() => decodeStoredLogEntries([{ timestamp: "now", type: "system", level: "info", summary: "missing raw" }]));
+    await fs.promises.writeFile(filePath, "{broken");
+    const manager = new LogManager(filePath);
+    try {
+      assert.deepEqual(manager.getAll(), []);
+      assert.equal(fs.existsSync(filePath), true);
+      assert.ok((await fs.promises.readdir(runtime)).some(name => name.startsWith("logs.json.corrupt-")));
+    } finally {
+      manager.close();
+    }
+  } finally {
     await removeTestDir(runtime);
   }
 });

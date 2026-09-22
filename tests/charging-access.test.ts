@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { classifyVideoAccess, type VideoPageSnapshotResult } from "../src/bili.js";
+import { BiliResponseFormatError, classifyVideoAccess, type VideoPageSnapshotResult } from "../src/bili.js";
 import { downloadWithBBDown } from "../src/downloader.js";
 import {
   computeAvailabilityUnavailableDelayMs,
@@ -81,6 +81,9 @@ test("charging access fields distinguish normal, restricted, allowed, and unknow
   assert.equal(classifyVideoAccess({ is_upower_exclusive: true, is_upower_play: true }).classification, "charging_allowed");
   assert.equal(classifyVideoAccess({ is_upower_exclusive: true }).classification, "unknown");
   assert.equal(classifyVideoAccess({ is_ugc_pay_preview: true }).classification, "unknown");
+  assert.equal(classifyVideoAccess(undefined).classification, "unknown");
+  assert.throws(() => classifyVideoAccess({ is_upower_exclusive: "false" }), BiliResponseFormatError);
+  assert.throws(() => classifyVideoAccess([]), BiliResponseFormatError);
 });
 
 test("charging restriction is raised before a download directory or BBDown process is created", async () => {

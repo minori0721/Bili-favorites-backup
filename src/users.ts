@@ -1,7 +1,8 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { dataDir } from "./paths.js";
-import { readJsonFile, writeJsonFile } from "./storage.js";
+import { readJsonFileDecoded, writeJsonFile } from "./storage.js";
+import { isRecord } from "./shared/api/value.js";
 
 export interface BiliCookie {
   SESSDATA: string;
@@ -52,6 +53,68 @@ const defaultUsers: BiliUser[] = [];
 const appBuvidPattern = /^XY[0-9a-fA-F]{35}$/;
 const nonCookieCredentialKeys = new Set(["accessToken", "refreshToken", "appBuvid"]);
 
+export function decodeStoredUsers(value: unknown): BiliUser[] {
+  if (!Array.isArray(value)) throw new Error("Stored users must be an array");
+  const ids = new Set<string>();
+  const uids = new Set<number>();
+  return value.map((item, index) => {
+    if (!isRecord(item) || typeof item.id !== "string" || item.id.trim().length === 0
+      || typeof item.uid !== "number" || !Number.isSafeInteger(item.uid) || item.uid <= 0
+      || typeof item.name !== "string" || !isRecord(item.cookie)
+      || !Array.isArray(item.favorites) || typeof item.enabled !== "boolean" || typeof item.lastLoginAt !== "string") {
+      throw new Error(`Invalid stored user at index ${index}`);
+    }
+    if (ids.has(item.id)) throw new Error(`Duplicate stored user id at index ${index}`);
+    if (uids.has(item.uid)) throw new Error(`Duplicate stored user uid at index ${index}`);
+    ids.add(item.id);
+    uids.add(item.uid);
+    if (typeof item.cookie.SESSDATA !== "string" || typeof item.cookie.bili_jct !== "string"
+      || typeof item.cookie.DedeUserID !== "string") {
+      throw new Error(`Invalid stored user cookie at index ${index}`);
+    }
+    const cookie: BiliCookie = { SESSDATA: "", bili_jct: "", DedeUserID: "" };
+    for (const [key, credential] of Object.entries(item.cookie)) {
+      if (typeof credential !== "string" && typeof credential !== "number" && credential !== undefined) {
+        throw new Error(`Invalid stored user cookie at index ${index}`);
+      }
+      cookie[key] = credential;
+    }
+    const favorites = item.favorites.map((favorite, favoriteIndex) => {
+      if (!isRecord(favorite) || typeof favorite.mediaId !== "number" || !Number.isSafeInteger(favorite.mediaId)
+        || favorite.mediaId <= 0
+        || typeof favorite.title !== "string") throw new Error(`Invalid stored favorite at ${index}:${favoriteIndex}`);
+      return { mediaId: favorite.mediaId, title: favorite.title };
+    });
+    const optionalTextKeys = ["rawAuth", "accessToken", "refreshToken", "avatar", "lastAuthRefreshAt", "lastAuthRefreshError", "appBuvid"] as const;
+    const optionalText = (key: typeof optionalTextKeys[number]) => item[key] === undefined || typeof item[key] === "string";
+    if (!optionalTextKeys.every(optionalText)
+      || (item.expires !== undefined && (typeof item.expires !== "number" || !Number.isFinite(item.expires) || item.expires < 0))
+      || (item.authRefreshFailureAttempts !== undefined
+        && (typeof item.authRefreshFailureAttempts !== "number"
+          || !Number.isSafeInteger(item.authRefreshFailureAttempts) || item.authRefreshFailureAttempts < 0))
+      || (item.authRefreshRetryAt !== undefined && typeof item.authRefreshRetryAt !== "string")
+      || (item.authRefreshFailureCategory !== undefined && !["transient", "permanent", "unknown"].includes(String(item.authRefreshFailureCategory)))) {
+      throw new Error(`Invalid stored user metadata at index ${index}`);
+    }
+    return {
+      id: item.id, uid: item.uid, name: item.name, cookie, favorites,
+      enabled: item.enabled, lastLoginAt: item.lastLoginAt,
+      ...(typeof item.rawAuth === "string" ? { rawAuth: item.rawAuth } : {}),
+      ...(typeof item.accessToken === "string" ? { accessToken: item.accessToken } : {}),
+      ...(typeof item.refreshToken === "string" ? { refreshToken: item.refreshToken } : {}),
+      ...(typeof item.expires === "number" ? { expires: item.expires } : {}),
+      ...(typeof item.avatar === "string" ? { avatar: item.avatar } : {}),
+      ...(typeof item.lastAuthRefreshAt === "string" ? { lastAuthRefreshAt: item.lastAuthRefreshAt } : {}),
+      ...(typeof item.lastAuthRefreshError === "string" ? { lastAuthRefreshError: item.lastAuthRefreshError } : {}),
+      ...(item.authRefreshFailureCategory === "transient" || item.authRefreshFailureCategory === "permanent" || item.authRefreshFailureCategory === "unknown"
+        ? { authRefreshFailureCategory: item.authRefreshFailureCategory } : {}),
+      ...(typeof item.authRefreshFailureAttempts === "number" ? { authRefreshFailureAttempts: item.authRefreshFailureAttempts } : {}),
+      ...(typeof item.authRefreshRetryAt === "string" ? { authRefreshRetryAt: item.authRefreshRetryAt } : {}),
+      ...(typeof item.appBuvid === "string" ? { appBuvid: item.appBuvid } : {}),
+    };
+  });
+}
+
 export function generateAppBuvid(randomBytes: (size: number) => Buffer = crypto.randomBytes) {
   const digest = crypto.createHash("md5").update(randomBytes(16)).digest("hex");
   return `XY${digest[1]}${digest[11]}${digest[21]}${digest}`;
@@ -94,7 +157,7 @@ export class UserStore {
   private users: BiliUser[];
 
   constructor() {
-    this.users = readJsonFile<BiliUser[]>(usersPath, defaultUsers);
+    this.users = readJsonFileDecoded(usersPath, defaultUsers, decodeStoredUsers);
     if (ensureUserAppBuvids(this.users)) this.save();
   }
 
@@ -103,7 +166,7 @@ export class UserStore {
   }
 
   reload() {
-    this.users = readJsonFile<BiliUser[]>(usersPath, defaultUsers);
+    this.users = readJsonFileDecoded(usersPath, defaultUsers, decodeStoredUsers);
     if (ensureUserAppBuvids(this.users)) this.save();
     return this.list();
   }

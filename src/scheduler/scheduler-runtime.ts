@@ -64,7 +64,7 @@ import { createQualityUpgradeProjection } from './quality-projection.js';
 import {
 filterArchiveDeletionTargets as filterQualityArchiveDeletionTargets,
 } from './quality-rules.js';
-import { buildQualityUpgradeTask as buildQualityUpgradeTaskFactory } from './quality-task-factory.js';
+import { createQualityTaskFactory, type QualityTaskFactoryPort } from './quality-task-factory.js';
 import { createQueueEventBindings } from "./queue-events.js";
 import { createRecoveryAutomation } from './recovery-automation.js';
 import type { RecoveryAssessment } from './recovery-contracts.js';
@@ -81,6 +81,10 @@ import { createSourceDeletion } from './source-deletion.js';
 import { createStartupProbes } from './startup-probes.js';
 import { createStartupRecovery } from './startup-recovery.js';
 import { createSyncRuntime, type SchedulerSnapshot, type SyncCycleStats, type SyncTrigger, type TickOptions } from './sync-runtime.js';
+import { createUserSyncEligibility } from './user-sync-eligibility.js';
+import { createSyncCommands, type SyncCommandPort } from './sync-commands.js';
+import { createQualityRecoveryAdmission } from './quality-recovery-admission.js';
+import { createRecoveryProjectionRefresh } from './recovery-projection-refresh.js';
 import { createDownloadAdmission } from './download-admission.js';
 import { createDownloadAdmissionPolicy, type DownloadAdmissionPolicyDependencies } from './download-admission-policy.js';
 import { createTransferRuntime } from './transfer-runtime.js';
@@ -121,6 +125,7 @@ type QualityUpgradeTarget
 import { TransferSessionStore } from "../transfer-session.js";
 import { sanitizeUploadText,type UploadFailureInfo } from "../upload-health.js";
 import type { BiliContentPort, ClockPort, RemoteStoragePort } from '../ports/external.js';
+import type { SyncWorkflowPort } from '../ports/scheduler-workflows.js';
 import { inspectRemoteFileSize,listRemoteDir,resolveRemotePath,verifyRemoteFiles } from "../uploader.js";
 import { BiliUser,UserStore } from "../users.js";
 export type { AccessProbeIntent } from './access-rules.js';
@@ -175,7 +180,7 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly timers: ReturnType<typeof createRuntimeTimers>;
   private readonly queueEvents = createQueueEventBindings();
   private readonly polling: ReturnType<typeof createPollingSchedule>;
-  private readonly syncWorkflow!: ReturnType<typeof createSyncRuntime>;
+  private readonly syncWorkflow!: SyncWorkflowPort;
   private configStore: Pick<ConfigStore, 'get'>;
   private userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial'>;
   private stateManager: StateManager;
@@ -225,8 +230,11 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly sourceDeletionWorkflow!: ReturnType<typeof createSourceDeletion>;
   private readonly legacyImportRecoveryWorkflow!: ReturnType<typeof createLegacyImportRecovery>;
   private readonly qualityWorkflow = createQualityWorkflow();
+  private readonly qualityTaskFactory!: QualityTaskFactoryPort;
+  private readonly qualityRecoveryAdmission!: ReturnType<typeof createQualityRecoveryAdmission<QualityUpgradeTask>>;
   private readonly recoveryAutomation: ReturnType<typeof createRecoveryAutomation>;
   private readonly transferRecoveryProjection: ReturnType<typeof createTransferRecoveryProjection>;
+  private readonly recoveryProjectionRefresh!: ReturnType<typeof createRecoveryProjectionRefresh>;
   private readonly runtime: ReturnType<typeof createSchedulingRuntime>;
   private readonly archiveTargets: ReturnType<typeof createArchiveTargets>;
   private readonly transferWorkflow: ReturnType<typeof createTransferWorkflow>;
@@ -253,16 +261,22 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly statusProjection!: SchedulerStatusProjection;
   private readonly startupWorkflow!: ReturnType<typeof createStartupResumeWorkflow>;
   private readonly verifiedTransferCommit!: ReturnType<typeof createVerifiedTransferCommit>;
+  private readonly verificationHandlerSet!: ReturnType<typeof createVerificationHandlers>;
   private readonly triggerLabel = schedulerTriggerLabel;
+  private readonly userSyncEligibility!: ReturnType<typeof createUserSyncEligibility>;
+  private readonly syncCommands!: SyncCommandPort;
 
   constructor(configStore: Pick<ConfigStore, 'get'>, userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial'>, stateManager: StateManager, dependencies: SchedulerDependencies = {}) {
 
     this.configStore = configStore;
     this.userStore = userStore;
     this.stateManager = stateManager;
+    this.userSyncEligibility = createUserSyncEligibility({
+      hasUnfinishedArchiveAccountDeletion: userId => this.stateManager.getDatabase().hasUnfinishedArchiveAccountDeletion(userId),
+    });
     this.archiveTargets = createArchiveTargets({
       config: configStore, state: stateManager, users: userStore,
-      eligible: (user): user is BiliUser => this.isUserSyncEligible(user),
+      eligible: this.userSyncEligibility,
       sourceBlocked: (userId, mediaId, bvid) => this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(userId, mediaId, bvid),
     });
     this.videoAccessProbe = dependencies.videoAccessProbe || getVideoPageSnapshot;
@@ -347,7 +361,7 @@ export class SchedulerRuntime implements SchedulerControl {
       generation: () => this.runtime.generation, now: this.now,
       cleanup: (bvid, dir) => this.localCleanup.request(bvid, dir),
       resolveRelation: relation => this.resolveRelation(relation),
-      isUserSyncEligible: (user): user is BiliUser => this.isUserSyncEligible(user),
+      isUserSyncEligible: this.userSyncEligibility,
       prepareDownload: (...args) => this.backupEnqueueWorkflow.prepareRecoveryDownload(...args),
       buildLocalCleanupPlan: (...args) => this.buildLocalCleanupPlan(...args),
       isSafeEncodingRetryDirectory: dir => isSafeEncodingRetryDirectory(this.legacyTempDir, dir),
@@ -376,6 +390,11 @@ export class SchedulerRuntime implements SchedulerControl {
       configStore: this.configStore, now: () => this.now(),
       captureExistingArchiveProof: (userId, mediaId, bvid) => this.recoveryWorkflow.captureExistingArchiveProof(userId, mediaId, bvid),
     });
+    this.recoveryProjectionRefresh = createRecoveryProjectionRefresh({
+      canRefresh: () => this.runtime.accepting && !this.maintenance.isAnyLocked(),
+      reconcileLegacy: () => this.recoveryWorkflow.reconcileLegacyDownloadRecoveryJobs(),
+      reconcileTransfers: force => this.transferRecoveryProjection.reconcile(force),
+    });
 
     this.remoteScan = createRemoteScan({
       config: this.configStore, state: this.stateManager, io: this.remoteVerificationIO,
@@ -391,7 +410,7 @@ export class SchedulerRuntime implements SchedulerControl {
       users: this.userStore, state: this.stateManager, jobs: this.jobStore, owner: this.leaseOwner,
       now: this.now, random: this.random, generation: () => this.runtime.generation,
       canContinue: () => !this.runtime.shuttingDown && !this.maintenance.isAnyLocked(),
-      eligible: user => this.isUserSyncEligible(user), inspect: this.videoAccessProbe,
+      eligible: this.userSyncEligibility, inspect: this.videoAccessProbe,
       resolve: relation => this.resolveRelation(relation),
       enqueue: (user, mediaId, title, bvid, options) => this.enqueueIfNeeded(user, mediaId, title, bvid, options),
       prepareCharging: (user, mediaId, title, bvid, options) => this.backupEnqueueWorkflow.prepareAfterAccessCheck(user, mediaId, title, bvid, options),
@@ -425,16 +444,13 @@ export class SchedulerRuntime implements SchedulerControl {
       resolveSelfVisible: this.biliContent?.selfVisible || resolveSelfVisibleFavoriteItem,
       cacheCover: queueCoverCache,
       progress: patch => this.updateSchedulerProgress(patch),
-      recordCount: (fresh, queued) => {
-        const cycle = this.syncWorkflow?.getCycle();
-        if (cycle) { cycle.newItems += fresh; cycle.queuedItems += queued; }
-      },
+      recordCount: (fresh, queued) => this.syncWorkflow?.recordScanCounts(fresh, queued),
       probe: (bvid, options) => this.enqueueAvailabilityProbe(bvid, options),
       enqueue: (user, mediaId, title, bvid) => this.enqueueIfNeeded(user, mediaId, title, bvid),
     });
     this.syncWorkflow = createSyncRuntime({
       users: () => this.userStore.list(),
-      eligible: user => this.isUserSyncEligible(user),
+      eligible: this.userSyncEligibility,
       state: this.stateManager,
       scan: this.favoriteScan,
       accepting: () => this.runtime.accepting,
@@ -454,6 +470,11 @@ export class SchedulerRuntime implements SchedulerControl {
           void this.syncWorkflow.run((options.trigger || 'auto') !== 'auto', options);
         }, 0);
       },
+    });
+    this.syncCommands = createSyncCommands({
+      canRun: () => this.runtime.accepting && !this.maintenance.isAnyLocked(),
+      triggerOrQueue: options => this.syncWorkflow.triggerOrQueue(options),
+      log: message => console.log(message),
     });
     this.localCleanup = createLocalCleanup({
       storage: createLocalCleanupStorage(this.stateManager),
@@ -500,6 +521,34 @@ export class SchedulerRuntime implements SchedulerControl {
       now: () => this.now(),
       sleep: ms => this.sleep(ms),
     });
+    this.qualityTaskFactory = createQualityTaskFactory({
+      config: this.configStore,
+      users: this.userStore,
+      state: this.stateManager,
+      jobs: this.jobStore,
+      isArchiveSourceDeletionBlocked: (userId, mediaId, bvid) =>
+        this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(userId, mediaId, bvid),
+      isUserSyncEligible: this.userSyncEligibility,
+      leaseOwner: this.leaseOwner,
+      now: this.now,
+      qualityArtifactCleanupLocks: {
+        acquire: artifactKey => this.qualityWorkflow.acquireCleanupLock(artifactKey),
+        release: artifactKey => this.qualityWorkflow.releaseCleanupLock(artifactKey),
+      },
+      refreshLocalCacheState: () => this.refreshLocalCacheState(),
+      pokeDownloadQueue: () => this.downloadQueue.poke(),
+      dispatchPersistentJobs: () => this.dispatchPersistentJobs(),
+      reconcileObsoleteVerifiedArchiveRecoveries: (limit, filter, concurrency) =>
+        this.recoveryWorkflow.reconcileObsoleteVerifiedArchiveRecoveries(limit, filter, concurrency),
+    });
+    this.qualityRecoveryAdmission = createQualityRecoveryAdmission<QualityUpgradeTask>({
+      build: job => this.qualityTaskFactory.build(job),
+      park: (jobId, summary) => this.jobStore.parkManualRecovery(jobId, this.leaseOwner, summary, {
+        awaitingManualRecovery: true,
+        qualityTargetResolution: 'ambiguous',
+      }),
+      now: this.now,
+    });
     this.accessFailureWorkflow = createAccessFailureHandlers({
       stateManager: this.stateManager, jobStore: this.jobStore, leaseOwner: this.leaseOwner,
       now: () => this.now(), random: this.random, syncQualityUpgradeControl: this.syncQualityUpgradeControl.bind(this),
@@ -525,6 +574,18 @@ export class SchedulerRuntime implements SchedulerControl {
       buildCleanupPlan: (bvid, localDir, remoteFiles, reason, options) =>
         this.buildLocalCleanupPlan(bvid, localDir, remoteFiles, reason, options),
     });
+    this.verificationHandlerSet = createVerificationHandlers({
+      jobStore: this.jobStore, stateManager: this.stateManager, transferSessions: this.transferSessions,
+      uploadCircuit: this.transferRuntime.circuit, localCleanup: this.localCleanup, leaseOwner: this.leaseOwner, now: this.now,
+      isEncodingRetryParentActive: this.isEncodingRetryParentActive.bind(this),
+      dispatchPersistentJobs: this.dispatchPersistentJobs.bind(this),
+      commitVerifiedTransfer: this.commitVerifiedTransfer.bind(this),
+      afterEncodingRetryCommitted: this.afterEncodingRetryCommitted.bind(this),
+      finishEncodingRetryFailure: this.finishEncodingRetryFailure.bind(this),
+      schedulePersistentJobWake: this.schedulePersistentJobWake.bind(this),
+      scheduleUploadProbe: this.transferWorkflow.scheduleUploadProbe,
+      queueUploadWork: this.queueUploadWork.bind(this),
+    });
     this.downloadAdmission.configure(config.bbdownApiMode || "web");
     this.downloadAdmission.restore(persistedApiCooldown);
     this.downloadAdmissionPolicy = createDownloadAdmissionPolicy({
@@ -548,7 +609,7 @@ export class SchedulerRuntime implements SchedulerControl {
       snapshotRetirementTargets: this.snapshotRetirementTargets.bind(this),
       queueCompletedRetirementUpload: this.queueCompletedRetirementUpload.bind(this),
       findCompletedQualitySession: this.findCompletedQualitySession.bind(this),
-      isUserSyncEligible: this.isUserSyncEligible.bind(this), enqueueIfNeeded: this.enqueueIfNeeded.bind(this),
+      isUserSyncEligible: this.userSyncEligibility, enqueueIfNeeded: this.enqueueIfNeeded.bind(this),
       wakeChargingAccessProbes: this.wakeChargingAccessProbes.bind(this),
       dispatchPersistentJobs: () => this.dispatchPersistentJobs(), generation: () => this.runtime.generation, now: () => this.now(),
     });
@@ -572,7 +633,7 @@ export class SchedulerRuntime implements SchedulerControl {
       dispatchChargingAccessProbe: () => this.dispatchChargingAccessProbe(),
       buildDownloadTask: job => this.buildDownloadTask(job),
       buildUploadTask: item => this.buildUploadTask(item),
-      buildQualityUpgradeTask: job => this.buildQualityUpgradeTaskSafely(job),
+      buildQualityUpgradeTask: job => this.qualityRecoveryAdmission.build(job),
       scheduleWake: () => this.schedulePersistentJobWake(),
     });
     const progress = this.bindTaskLifecycleEvents();
@@ -667,7 +728,7 @@ export class SchedulerRuntime implements SchedulerControl {
       archiveDeletionTargetMatches: this.maintenance.archiveTargetMatches,
       snapshotRetirementTargets: this.snapshotRetirementTargets.bind(this),
       persistCompletedRetirementUploadJobs: this.persistCompletedRetirementUploadJobs.bind(this),
-      isUserSyncEligible: this.isUserSyncEligible.bind(this),
+      isUserSyncEligible: this.userSyncEligibility,
       dispatchPersistentJobs: () => this.dispatchPersistentJobs(),
       sleep: this.sleep,
       now: () => this.now(),
@@ -686,7 +747,7 @@ export class SchedulerRuntime implements SchedulerControl {
     });
     this.backupEnqueueWorkflow = createBackupEnqueue({
       config: this.configStore, state: this.stateManager, jobs: this.jobStore,
-      eligible: this.isUserSyncEligible.bind(this),
+      eligible: this.userSyncEligibility,
       blocked: (userId, mediaId, bvid) => this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(userId, mediaId, bvid),
       remotePath: this.resolveRelationRemotePath.bind(this), proof: this.recoveryWorkflow.captureExistingArchiveProof.bind(this),
       uploadJob: this.buildPersistentUploadJob.bind(this), historySegment: this.historySnapshotSegment.bind(this),
@@ -697,12 +758,12 @@ export class SchedulerRuntime implements SchedulerControl {
       users: this.userStore,
       state: this.stateManager,
       jobs: this.jobStore,
-      isEligible: user => this.isUserSyncEligible(user),
+      isEligible: this.userSyncEligibility,
       enqueue: (user, mediaId, title, bvid, options) => this.enqueueIfNeeded(user, mediaId, title, bvid, options),
     });
     this.retryPendingRecovery = createRetryPendingRecovery({
       users: () => this.userStore.list(),
-      eligible: user => this.isUserSyncEligible(user),
+      eligible: this.userSyncEligibility,
       limit: () => this.configStore.get().remoteRequeueLimitPerCycle,
       state: this.stateManager,
       enqueue: this.enqueueIfNeeded.bind(this),
@@ -712,7 +773,7 @@ export class SchedulerRuntime implements SchedulerControl {
       userStore: this.userStore,
       jobStore: this.jobStore,
       stateManager: this.stateManager,
-      isUserSyncEligible: user => this.isUserSyncEligible(user),
+      isUserSyncEligible: this.userSyncEligibility,
       enqueueAvailabilityProbe: (bvid, options) => this.enqueueAvailabilityProbe(bvid, options),
       dispatchPersistentJobs: () => this.dispatchPersistentJobs(),
     });
@@ -927,7 +988,11 @@ export class SchedulerRuntime implements SchedulerControl {
     bvid: string,
     targets: T[],
   ) {
-    return filterQualityArchiveDeletionTargets(this.stateManager, bvid, targets);
+    return filterQualityArchiveDeletionTargets(
+      (userId, mediaId, videoId) => this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(userId, mediaId, videoId),
+      bvid,
+      targets,
+    );
   }
 
   private qualityDownloadStageLabel(task: QualityUpgradeTask, label: string) {
@@ -943,23 +1008,7 @@ export class SchedulerRuntime implements SchedulerControl {
   }
 
   buildQualityUpgradeTask(job: import('../database.js').PersistentJobRecord) {
-    return buildQualityUpgradeTaskFactory(job, {
-      config: this.configStore,
-      users: this.userStore,
-      state: this.stateManager,
-      jobs: this.jobStore,
-      isUserSyncEligible: user => this.isUserSyncEligible(user),
-      leaseOwner: this.leaseOwner,
-      now: this.now,
-      qualityArtifactCleanupLocks: {
-        acquire: artifactKey => this.qualityWorkflow.acquireCleanupLock(artifactKey),
-        release: artifactKey => this.qualityWorkflow.releaseCleanupLock(artifactKey),
-      },
-      refreshLocalCacheState: () => this.refreshLocalCacheState(),
-      pokeDownloadQueue: () => this.downloadQueue.poke(),
-      dispatchPersistentJobs: () => this.dispatchPersistentJobs(),
-      reconcileObsoleteVerifiedArchiveRecoveries: (limit, filter, concurrency) => this.recoveryWorkflow.reconcileObsoleteVerifiedArchiveRecoveries(limit, filter, concurrency),
-    });
+    return this.qualityTaskFactory.build(job);
   }
 
   /** Read-only admission state used by quality maintenance and contract tests. */
@@ -986,29 +1035,6 @@ export class SchedulerRuntime implements SchedulerControl {
 
   private dispatchChargingAccessProbe() {
     this.accessProbeWorkflow.dispatch();
-  }
-
-  private buildQualityUpgradeTaskSafely(job: import('../database.js').PersistentJobRecord) {
-    try {
-      return this.buildQualityUpgradeTask(job);
-    } catch (error) {
-      const summary = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error || "画质升级任务无法恢复"), 500);
-      this.jobStore.parkManualRecovery(job.id, this.leaseOwner, summary, {
-        awaitingManualRecovery: true,
-        qualityTargetResolution: "ambiguous",
-      });
-      logManager.push({
-        timestamp: new Date(this.now()).toISOString(),
-        type: "upload",
-        level: "error",
-        summary: `画质升级任务已暂停：${summary}`,
-        raw: `[QualityUpgrade] paused job=${job.id} bvid=${job.bvid || ""} reason=${summary}`,
-        bvid: job.bvid,
-        simpleVisible: true,
-        debugVisible: true,
-      });
-      return null;
-    }
   }
 
   private dispatchPersistentJobs() { this.persistentJobDispatcher.dispatch(); }
@@ -1047,18 +1073,7 @@ export class SchedulerRuntime implements SchedulerControl {
   }
 
   private verificationHandlers() {
-    return createVerificationHandlers({
-      jobStore: this.jobStore, stateManager: this.stateManager, transferSessions: this.transferSessions,
-      uploadCircuit: this.transferRuntime.circuit, localCleanup: this.localCleanup, leaseOwner: this.leaseOwner, now: this.now,
-      isEncodingRetryParentActive: this.isEncodingRetryParentActive.bind(this),
-      dispatchPersistentJobs: this.dispatchPersistentJobs.bind(this),
-      commitVerifiedTransfer: this.commitVerifiedTransfer.bind(this),
-      afterEncodingRetryCommitted: this.afterEncodingRetryCommitted.bind(this),
-      finishEncodingRetryFailure: this.finishEncodingRetryFailure.bind(this),
-      schedulePersistentJobWake: this.schedulePersistentJobWake.bind(this),
-      scheduleUploadProbe: this.transferWorkflow.scheduleUploadProbe,
-      queueUploadWork: this.queueUploadWork.bind(this),
-    });
+    return this.verificationHandlerSet;
   }
 
   private handleUploadVerificationCompleted(task: UploadVerificationTask) {
@@ -1125,9 +1140,7 @@ export class SchedulerRuntime implements SchedulerControl {
   }
 
   refreshRecoveryProjection(force = false) {
-    if (!this.runtime.accepting || this.maintenance.isAnyLocked()) return;
-    this.recoveryWorkflow.reconcileLegacyDownloadRecoveryJobs();
-    this.reconcileTransferSessionRecoveryJobs(force);
+    this.recoveryProjectionRefresh.refresh(force);
   }
 
   private reconcileTransferSessionRecoveryJobs(force = false) {
@@ -1219,10 +1232,6 @@ export class SchedulerRuntime implements SchedulerControl {
     return this.maintenance.archiveLocked();
   }
 
-  private isUserSyncEligible(user: BiliUser | null | undefined): user is BiliUser {
-    return Boolean(user?.enabled && !this.stateManager.getDatabase().hasUnfinishedArchiveAccountDeletion(user.id));
-  }
-
   applyConfigUpdate(previous: AppConfig, next: AppConfig) {
     this.runtimeConfig.applyConfigUpdate(previous, next);
   }
@@ -1265,27 +1274,15 @@ export class SchedulerRuntime implements SchedulerControl {
   }
 
   runNow() {
-    console.log("[Scheduler] Manual sync triggered");
-    return this.triggerOrQueueTick({ trigger: "manual", skipFavoriteScan: false });
+    return this.syncCommands.runNow();
   }
 
   runReconcileNow() {
-    console.log("[Scheduler] Manual reconcile triggered");
-    return this.triggerOrQueueTick({
-      trigger: "reconcile",
-      forceFullRemoteVerify: true,
-      forceFullFavoriteScan: true,
-      skipFavoriteScan: false,
-    });
+    return this.syncCommands.runReconcileNow();
   }
 
   runRemoteReconcileNow() {
-    console.log("[Scheduler] Manual remote-only reconcile triggered");
-    return this.triggerOrQueueTick({
-      trigger: "remote_reconcile",
-      forceFullRemoteVerify: true,
-      skipFavoriteScan: true,
-    });
+    return this.syncCommands.runRemoteReconcileNow();
   }
 
   hasRunningTransferTasks() {
@@ -1394,13 +1391,6 @@ export class SchedulerRuntime implements SchedulerControl {
 
   private enqueueIfNeeded(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: BackupEnqueueOptions = {}) {
     return this.backupEnqueueWorkflow.enqueue(user, mediaId, folderTitle, bvid, options);
-  }
-
-  private triggerOrQueueTick(options: TickOptions) {
-    if (!this.runtime.accepting || this.maintenance.isAnyLocked()) {
-      return { started: false, queued: false };
-    }
-    return this.syncWorkflow.triggerOrQueue(options);
   }
 
   private async verifyRemoteSamples(manual: boolean, force: boolean, cycle: SyncCycleStats) {

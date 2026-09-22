@@ -201,6 +201,47 @@ function uploadMetadataManifest(overrides: Partial<DownloadSessionManifest> = {}
   };
 }
 
+test("download session decoding rejects structurally incomplete evidence", async () => {
+  const runtime = await createTestDir("download-session-invalid-structure");
+  const downloadDir = path.join(runtime, "BVINVALID");
+  try {
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), JSON.stringify({
+      schemaVersion: 1,
+      bvid: "BVINVALID",
+      pages: [{ index: "1", cid: 1, title: "P1", duration: 1 }],
+    }));
+    assert.equal(readDownloadSession(downloadDir), null);
+
+    await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), JSON.stringify({
+      ...uploadMetadataManifest(),
+      kind: "quality_upgrade",
+      qualityUpgrade: {
+        userId: "user",
+        mediaId: "not-a-number",
+        folderTitle: "Favorites",
+        remotePath: "/archive",
+        oldFiles: [],
+      },
+    }));
+    assert.equal(readDownloadSession(downloadDir), null);
+
+    await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), JSON.stringify({
+      ...uploadMetadataManifest(),
+      outputs: [{ ...uploadMetadataManifest().outputs[0], size: "1024" }],
+    }));
+    assert.equal(readDownloadSession(downloadDir), null);
+
+    await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), JSON.stringify({
+      ...uploadMetadataManifest(),
+      selectedStreams: [{ ...uploadMetadataManifest().selectedStreams![0], observedAt: undefined }],
+    }));
+    assert.equal(readDownloadSession(downloadDir), null);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("upload metadata is rebuilt from the persistent download session", async () => {
   const runtime = await createTestDir("upload-metadata-builder");
   try {
@@ -270,9 +311,10 @@ test("strict upload metadata preflight rejects incomplete quality-upgrade artifa
     writeDownloadSession(runtime, uploadMetadataManifest({
       outputs: [{ ...uploadMetadataManifest().outputs[0], verifiedAt: "invalid" }],
     }));
+    assert.equal(readDownloadSession(runtime), null);
     assert.throws(
       () => buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], { requireVerifiedMediaMetadata: true }),
-      /lack verified ffprobe dimensions/
+      /download session manifest is missing/
     );
   } finally {
     await removeTestDir(runtime);

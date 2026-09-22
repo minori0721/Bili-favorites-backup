@@ -1,7 +1,8 @@
 import { sanitizeDiagnosticText } from '../diagnostics.js';
 import type { StateManager } from '../state.js';
 import type { BiliUser } from '../users.js';
-import type { createFavoriteScan } from './favorite-scan.js';
+import type { FavoriteScanPort } from './favorite-scan.js';
+import type { SyncWorkflowPort } from '../ports/scheduler-workflows.js';
 import { createSyncWorkflow } from './sync-workflow.js';
 
 export type SyncTrigger = 'auto' | 'manual' | 'reconcile' | 'remote_reconcile';
@@ -53,7 +54,7 @@ export interface SyncRuntimeDependencies {
   users(): BiliUser[];
   eligible(user: BiliUser): boolean;
   state: Pick<StateManager, 'getUserCooldown' | 'setUserCooldown'>;
-  scan: Pick<ReturnType<typeof createFavoriteScan>, 'all' | 'hot' | 'history'>;
+  scan: FavoriteScanPort;
   accepting(): boolean;
   blocked(): boolean;
   now(): number;
@@ -72,7 +73,7 @@ export interface SyncRuntimeDependencies {
  * Owns all mutable state for a synchronization cycle. The scheduler runtime
  * only supplies admission, projections and side effects through this port.
  */
-export function createSyncRuntime(dependencies: SyncRuntimeDependencies) {
+export function createSyncRuntime(dependencies: SyncRuntimeDependencies): SyncWorkflowPort {
   let running = false;
   let pending: TickOptions | null = null;
   let progress: SchedulerSnapshot | null = null;
@@ -209,10 +210,16 @@ export function createSyncRuntime(dependencies: SyncRuntimeDependencies) {
     },
     hasPending: () => pending !== null,
     isSyncing: (userId: string) => activeUsers.has(userId),
-    getProgress: () => progress,
-    getCycle: () => cycle,
-    getPending: () => pending,
+    getProgress: () => progress ? { ...progress, queuedActions: [...progress.queuedActions] } : null,
+    getCycle: () => cycle ? { ...cycle } : null,
+    getPending: () => pending ? { ...pending } : null,
     getLastError: () => lastError,
+    recordScanCounts: (fresh: number, queued: number) => {
+      if (cycle) {
+        cycle.newItems += fresh;
+        cycle.queuedItems += queued;
+      }
+    },
     addQueuedItems: (count: number) => { if (cycle) cycle.queuedItems += count; },
     clearPending: () => { pending = null; },
   };
