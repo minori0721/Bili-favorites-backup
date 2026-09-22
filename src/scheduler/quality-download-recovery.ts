@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ConfigStore } from '../config.js';
-import { readDownloadSession } from '../download-session.js';
+import { invalidDownloadSessionMessage, readDownloadSession } from '../download-session.js';
 import { applyQualityArtifactProfile, buildQualityArtifactKey, normalizeQualityArtifactProfile, qualityArtifactProfileFromConfig } from '../quality-artifact.js';
 import { StateManager, relationKey } from '../state.js';
 import { QualityUpgradeTask } from '../tasks.js';
@@ -29,7 +29,11 @@ export async function recoverInterruptedQualityDownloads(dependencies: QualityDo
     if (!entry.isDirectory() || !entry.name.startsWith("quality-upgrade-")) continue;
     const downloadDir = path.join(tempDir, entry.name);
     const session = readDownloadSession(downloadDir);
-    if (session.kind !== 'valid') continue;
+    if (session.kind === 'invalid') {
+      console.warn(`[Recovery] retained local evidence ${path.basename(downloadDir)}: ${invalidDownloadSessionMessage(session)}; manual inspection required`);
+      continue;
+    }
+    if (session.kind === 'missing') continue;
     const manifest = session.manifest;
     const target = manifest.qualityUpgrade;
     if (manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;

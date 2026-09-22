@@ -7,7 +7,7 @@ import type { PersistentJobRecord } from '../database.js';
 import type { UploadTarget } from '../tasks.js';
 import type { RecoveryUploadItem } from './upload-work.js';
 import { tempDir } from '../paths.js';
-import { readDownloadSession, historySessionGroups, buildUploadFileMetadataFromSession } from '../download-session.js';
+import { invalidDownloadSessionMessage, readDownloadSession, historySessionGroups, buildUploadFileMetadataFromSession } from '../download-session.js';
 import { joinRemotePath } from '../utils.js';
 import { normalizeQualityArtifactProfile, qualityArtifactProfileFromConfig, buildQualityArtifactKey } from '../quality-artifact.js';
 interface Dependencies {
@@ -126,7 +126,11 @@ export function createRetirementTransfers(deps: Dependencies) {
     }
     for (const downloadDir of candidates) {
       const session = readDownloadSession(downloadDir);
-      if (session.kind !== 'valid') continue;
+      if (session.kind === 'invalid') {
+        console.warn(`[Recovery] retained local evidence ${path.basename(downloadDir)}: ${invalidDownloadSessionMessage(session)}; manual inspection required`);
+        continue;
+      }
+      if (session.kind === 'missing') continue;
       const manifest = session.manifest;
       if (manifest.kind !== "quality_upgrade" || manifest.status !== "complete" || manifest.outputs.length === 0) continue;
       const manifestProfile = normalizeQualityArtifactProfile(

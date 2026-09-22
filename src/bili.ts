@@ -181,39 +181,56 @@ async function requestBiliJson(cookie: BiliCookie, url: string, referer = "https
 function onlineItemFromRaw(raw: unknown, kind: OnlineContentKind, index: number): OnlineContentItem {
   if (!isRecordValue(raw)) throw new BiliResponseFormatError(`${kind}.list[${index}]`);
   const source = record(raw);
-  for (const field of ["arc", "archive", "history", "video", "season", "ogv_info", "owner", "upper"] as const) {
+  const consumedObjects = kind === "history"
+    ? ["history", "season", "ogv_info", "owner", "upper"] as const
+    : ["season", "ogv_info", "owner", "upper"] as const;
+  for (const field of consumedObjects) {
     if (source[field] !== undefined && !isRecordValue(source[field])) throw new BiliResponseFormatError(`${kind}.list[${index}].${field}`);
   }
-  const archive = record(source.arc || source.archive || source.history || source.video || source);
+  const archive = kind === 'history' && source.history !== undefined ? record(source.history) : source;
   const season = record(source.season);
   const ogv = record(source.ogv_info);
   const upper = record(source.owner || archive.owner || source.upper);
   const rawBvid = source.bvid ?? archive.bvid;
   if (rawBvid !== undefined && typeof rawBvid !== "string") throw new BiliResponseFormatError(`${kind}.list[${index}].bvid`);
   const bvid = typeof rawBvid === "string" ? rawBvid.trim() || undefined : undefined;
-  const stableId = source.season_id ?? source.seasonId ?? source.ep_id ?? source.epid ?? source.id ?? source.aid ?? source.oid;
-  if (stableId !== undefined && typeof stableId !== "string" && typeof stableId !== "number") {
-    throw new BiliResponseFormatError(`${kind}.list[${index}].id`);
+  const itemPath = `${kind}.list[${index}]`;
+  const positiveIdentity = (value: unknown, field: string): string => {
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value);
+    if (typeof value === 'string' && /^[1-9][0-9]*$/.test(value)) return value;
+    throw new BiliResponseFormatError(`${itemPath}.${field}`);
+  };
+  let stableId: string | undefined;
+  if (kind === 'watch_later') {
+    // A legacy/unavailable video can retain AV identity without a playable BV.
+    if (!bvid) stableId = positiveIdentity(archive.aid, 'aid');
+  } else if (kind === 'collected') {
+    stableId = positiveIdentity(source.id, 'id');
+  } else if (kind === 'bangumi' || kind === 'drama') {
+    stableId = positiveIdentity(source.season_id, 'season_id');
+  } else if (kind === 'history') {
+    const history = source.history === undefined ? source : record(source.history);
+    if (!bvid) stableId = positiveIdentity(history.oid, 'history.oid');
+    if (history.business !== undefined && typeof history.business !== 'string') throw new BiliResponseFormatError(`${itemPath}.history.business`);
   }
   const rawUrl = source.uri ?? source.url ?? source.link;
   if (rawUrl !== undefined && typeof rawUrl !== "string") throw new BiliResponseFormatError(`${kind}.list[${index}].url`);
-  const identity = bvid || (stableId !== undefined ? String(stableId).trim() : "") || (typeof rawUrl === "string" ? rawUrl.trim() : "");
+  const identity = bvid || stableId;
   if (!identity) throw new BiliResponseFormatError(`${kind}.list[${index}].identity`);
   const id = bvid || `${kind}-${identity}`;
-  const rawTitle = source.title ?? archive.title ?? source.show_name ?? source.season_title ?? source.name;
-  if (rawTitle !== undefined && typeof rawTitle !== "string") throw new BiliResponseFormatError(`${kind}.list[${index}].title`);
-  const title = typeof rawTitle === "string" ? rawTitle.trim() || id : id;
-  const itemPath = `${kind}.list[${index}]`;
+  const rawTitle = source.title ?? archive.title;
+  if (typeof rawTitle !== "string") throw new BiliResponseFormatError(`${kind}.list[${index}].title`);
+  const title = rawTitle.trim() || id;
   const cover = firstOptionalText([
     [source.pic, `${itemPath}.pic`], [source.cover, `${itemPath}.cover`],
     [archive.pic, `${itemPath}.archive.pic`], [archive.cover, `${itemPath}.archive.cover`],
     [season.cover, `${itemPath}.season.cover`], [ogv.cover, `${itemPath}.ogv_info.cover`],
   ]);
   const upperName = firstOptionalText([
-    [upper.name, `${itemPath}.owner.name`], [source.author, `${itemPath}.author`], [source.up_name, `${itemPath}.up_name`],
+    [upper.name, `${itemPath}.owner.name`], [source.author, `${itemPath}.author`], [source.up_name, `${itemPath}.up_name`], [source.author_name, `${itemPath}.author_name`],
   ]);
   const upperMid = firstOptionalNumber([
-    [upper.mid, `${itemPath}.owner.mid`], [source.mid, `${itemPath}.mid`], [source.up_mid, `${itemPath}.up_mid`],
+    [upper.mid, `${itemPath}.owner.mid`], [source.mid, `${itemPath}.mid`], [source.up_mid, `${itemPath}.up_mid`], [source.author_mid, `${itemPath}.author_mid`],
   ], { integer: true, minimum: 0 });
   const duration = firstOptionalNumber([
     [source.duration, `${itemPath}.duration`], [archive.duration, `${itemPath}.archive.duration`],
@@ -222,19 +239,21 @@ function onlineItemFromRaw(raw: unknown, kind: OnlineContentKind, index: number)
     [source.pubdate, `${itemPath}.pubdate`], [archive.pubdate, `${itemPath}.archive.pubdate`], [source.ctime, `${itemPath}.ctime`],
   ], { minimum: 0 });
   const publishedAt = publishedSeconds && publishedSeconds > 0 ? publishedSeconds * 1000 : undefined;
-  const seasonId = Number(source.season_id || source.seasonId || season.season_id || 0);
-  const episodeId = Number(source.ep_id || source.epid || source.episode_id || 0);
-  const collectionId = Number(source.id || source.season_id || 0);
-  const collectionMid = Number(source.mid || record(source.upper).mid || record(source.owner).mid || 0);
+  const seasonId = kind === 'bangumi' || kind === 'drama' ? stableId : undefined;
+  const episodeId = kind === 'bangumi' || kind === 'drama' ? firstOptionalNumber([
+    [source.ep_id, `${itemPath}.ep_id`], [source.epid, `${itemPath}.epid`], [source.episode_id, `${itemPath}.episode_id`],
+  ], {integer: true, minimum: 0}) : undefined;
+  const collectionId = kind === 'collected' ? stableId : undefined;
+  const collectionMid = kind === 'collected' ? upperMid : undefined;
   const safeRawUrl = typeof rawUrl === "string" ? rawUrl.trim() : "";
   let openUrl: string | undefined;
   if (bvid) {
     openUrl = `https://www.bilibili.com/video/${encodeURIComponent(bvid)}`;
-  } else if ((kind === "bangumi" || kind === "drama") && episodeId > 0) {
+  } else if (episodeId) {
     openUrl = `https://www.bilibili.com/bangumi/play/ep${episodeId}`;
-  } else if ((kind === "bangumi" || kind === "drama") && seasonId > 0) {
+  } else if (seasonId) {
     openUrl = `https://www.bilibili.com/bangumi/play/ss${seasonId}`;
-  } else if (kind === "collected" && collectionId > 0 && collectionMid > 0) {
+  } else if (kind === "collected" && collectionId && collectionMid) {
     openUrl = `https://space.bilibili.com/${collectionMid}/lists/${collectionId}?type=season`;
   } else {
     try {
@@ -260,7 +279,7 @@ function onlineItemFromRaw(raw: unknown, kind: OnlineContentKind, index: number)
     publishedAt,
     playable: Boolean(bvid),
     openUrl,
-    rawType: String(source.business || source.type || kind),
+    rawType: typeof archive.business === 'string' ? archive.business : kind,
   };
 }
 
@@ -321,44 +340,41 @@ export function decodeOnlineContentPage(
   pageSize: number,
 ): OnlineContentPage {
   if (!isRecordValue(data)) throw new BiliResponseFormatError(`${kind}.data`);
-  if (!Array.isArray(data.list)) throw new BiliResponseFormatError(`${kind}.list`);
-  const items = data.list.map((raw, index) => onlineItemFromRaw(raw, kind, index));
-  const info = data.info === undefined ? {} : record(data.info);
-  const pageInfo = data.page === undefined ? {} : record(data.page);
-  if (data.info !== undefined && !isRecordValue(data.info)) throw new BiliResponseFormatError(`${kind}.info`);
-  if (data.page !== undefined && !isRecordValue(data.page)) throw new BiliResponseFormatError(`${kind}.page`);
-  const totalCandidates = [
-    [data.total, `${kind}.total`],
-    [data.count, `${kind}.count`],
-    [info.media_count, `${kind}.info.media_count`],
-    [pageInfo.count, `${kind}.page.count`],
-  ] as const;
-  let total: number | undefined;
-  for (const [value, field] of totalCandidates) {
-    if (value !== undefined && value !== null) {
-      total = optionalNonNegativeInteger(value, field);
-      break;
-    }
+  // The collected-folder endpoint documents null specifically for zero folders.
+  const list = kind === 'collected' && data.list === null && data.count === 0 ? [] : data.list;
+  if (!Array.isArray(list)) throw new BiliResponseFormatError(`${kind}.list`);
+  const items = list.map((raw, index) => onlineItemFromRaw(raw, kind, index));
+  const totalField = kind === 'collected' || kind === 'watch_later' ? 'count' : 'total';
+  let total = optionalNonNegativeInteger(data[totalField], `${kind}.${totalField}`);
+  if (kind === 'history' && data.page !== undefined) {
+    if (!isRecordValue(data.page)) throw new BiliResponseFormatError('history.page');
+    total = optionalNonNegativeInteger(data.page.count, 'history.page.count');
+    if (total === undefined) throw new BiliResponseFormatError('history.page.count');
   }
-  const rawHasMore = data.has_more ?? data.hasMore;
+  const rawHasMore = data.has_more !== undefined ? data.has_more : data.hasMore;
   if (rawHasMore !== undefined && rawHasMore !== true && rawHasMore !== false && rawHasMore !== 0 && rawHasMore !== 1) {
     throw new BiliResponseFormatError(`${kind}.has_more`);
   }
   let nextCursor: string | undefined;
-  if (data.cursor !== undefined && data.cursor !== null) {
+  if (kind === 'history' && data.cursor !== undefined) {
     if (!isRecordValue(data.cursor)) throw new BiliResponseFormatError(`${kind}.cursor`);
     const cursor = data.cursor;
-    optionalNonNegativeInteger(cursor.max, `${kind}.cursor.max`);
-    optionalNonNegativeInteger(cursor.view_at ?? cursor.viewAt, `${kind}.cursor.view_at`);
+    if (optionalNonNegativeInteger(cursor.max, `${kind}.cursor.max`) === undefined) throw new BiliResponseFormatError(`${kind}.cursor.max`);
+    if (optionalNonNegativeInteger(cursor.view_at, `${kind}.cursor.view_at`) === undefined) throw new BiliResponseFormatError(`${kind}.cursor.view_at`);
     if (cursor.business !== undefined && typeof cursor.business !== "string") throw new BiliResponseFormatError(`${kind}.cursor.business`);
-    nextCursor = encodeHistoryCursor(cursor);
+    nextCursor = items.length > 0 ? encodeHistoryCursor(cursor) : undefined;
   } else if (data.next_cursor !== undefined && data.next_cursor !== null) {
     if (typeof data.next_cursor !== "string" && typeof data.next_cursor !== "number") throw new BiliResponseFormatError(`${kind}.next_cursor`);
     nextCursor = String(data.next_cursor).trim() || undefined;
   }
+  if (rawHasMore === undefined && nextCursor === undefined && total === undefined) {
+    // An empty history cursor page is the terminal page. Other endpoints need
+    // their documented count or explicit continuation flag, not a guessed end.
+    if (!(kind === 'history' && data.cursor !== undefined && items.length === 0)) throw new BiliResponseFormatError(`${kind}.pagination`);
+  }
   const hasMore = rawHasMore !== undefined
     ? Boolean(rawHasMore)
-    : Boolean(nextCursor) || (total !== undefined ? page * pageSize < total : items.length >= pageSize);
+    : nextCursor !== undefined || (total !== undefined && page * pageSize < total);
   return { items, kind, page, pageSize, nextCursor, hasMore, total };
 }
 
@@ -543,6 +559,7 @@ export function decodeFavoriteItemsPage(data: unknown, page: number, pageSize: n
   if (rawHasMore !== undefined && rawHasMore !== true && rawHasMore !== false && rawHasMore !== 0 && rawHasMore !== 1) {
     throw new BiliResponseFormatError("favorite.has_more");
   }
+  if (rawHasMore === undefined && total === undefined) throw new BiliResponseFormatError('favorite.pagination');
   const hasMore = rawHasMore === 1 || rawHasMore === true
     ? true
     : rawHasMore === 0 || rawHasMore === false

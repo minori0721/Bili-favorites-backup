@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import {relationFor} from './fixtures/state-observation.js';
 import { required, readField, readArray } from './contract-values.js';
 import { createHeldScheduler } from './fixtures/held-scheduler.js';
@@ -900,4 +901,50 @@ test("strict quality download passes the first requested encoding to the downloa
   } finally {
     await removeTestDir(runtime);
   }
+});
+
+
+test('corrupt legacy quality evidence parks its video group while independent migration proceeds', async () => {
+  const runtime = await createTestDir('quality-corrupt-isolation');
+  const state = new StateManager({dbPath: path.join(runtime, 'db.sqlite'), statePath: path.join(runtime, 'state.json')});
+  const jobs = new PersistentJobStore(state.getDatabase());
+  try {
+    const directory = path.join(runtime, 'broken');
+    await fs.promises.mkdir(directory);
+    await fs.promises.writeFile(path.join(directory, '.bfb-download.json'), '{broken');
+    const bad = jobs.enqueue({kind: 'quality_download', dedupeKey: 'old-bad', bvid: 'BVBAD', payload: {downloadDir: directory, target: target('u1', 1)}});
+    const sibling = jobs.enqueue({kind: 'quality_download', dedupeKey: 'old-sibling', bvid: 'BVBAD', payload: {target: target('u2', 2)}});
+    jobs.enqueue({kind: 'quality_download', dedupeKey: 'old-good', bvid: 'BVGOOD', payload: {target: target('u1', 1)}});
+    const completed = jobs.enqueue({kind: 'quality_download', dedupeKey: 'old-completed', bvid: 'BVCOMPLETED', payload: {downloadDir: directory}});
+    // Historical databases may retain completed rows; normal completion deletes this job kind.
+    state.getDatabase().db.prepare("UPDATE jobs SET status='completed' WHERE id=?").run(completed.id);
+    const migration = createLegacyQualityMigration({configStore: {get: () => testConfig()}, userStore: {getById: () => null}, jobStore: jobs, database: () => state.getDatabase()});
+    assert.equal(migration.migrate(), 1);
+    assert.equal(jobs.findById(completed.id)?.status, 'completed');
+    assert.equal(jobs.findById(bad.id)?.status, 'manual_wait');
+    assert.equal(jobs.findById(sibling.id)?.status, 'manual_wait');
+    assert.notEqual(state.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), 'complete');
+    assert.equal(migration.migrate(), 0);
+    assert.deepEqual(jobs.claimDue(['quality_download'], 10, 'test').map(job => job.bvid), ['BVGOOD']);
+    assert.equal(await fs.promises.readFile(path.join(directory, '.bfb-download.json'), 'utf8'), '{broken');
+  } finally { state.close(); await removeTestDir(runtime); }
+});
+
+
+test('failure to park corrupt evidence rolls back healthy migration in the same transaction', async () => {
+  const runtime = await createTestDir('quality-park-rollback');
+  const state = new StateManager({dbPath: path.join(runtime, 'db.sqlite'), statePath: path.join(runtime, 'state.json')});
+  const jobs = new PersistentJobStore(state.getDatabase());
+  try {
+    const bad = jobs.enqueue({kind: 'quality_download', dedupeKey: 'old-bad', bvid: 'BVBAD'});
+    const good = jobs.enqueue({kind: 'quality_download', dedupeKey: 'old-good', bvid: 'BVGOOD'});
+    state.getDatabase().db.exec("CREATE TRIGGER fail_parking BEFORE UPDATE OF status ON jobs WHEN NEW.status='manual_wait' BEGIN SELECT RAISE(ABORT, 'parking failed'); END");
+    assert.throws(() => jobs.applyQualityDownloadMigration([{jobs: [good], replacement: {
+      kind: 'quality_download', dedupeKey: 'quality-download:BVGOOD:new', bvid: 'BVGOOD',
+    }}], LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, [{job: bad, reason: 'broken evidence'}]), /parking failed/);
+    assert.equal(jobs.findById(good.id)?.status, 'pending');
+    assert.equal(jobs.findById(bad.id)?.status, 'pending');
+    assert.equal(jobs.findByDedupeKey('quality-download:BVGOOD:new'), null);
+    assert.equal(state.getDatabase().getMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER), null);
+  } finally { state.close(); await removeTestDir(runtime); }
 });

@@ -243,15 +243,17 @@ function sessionRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function decodeUpgradeFile(value: unknown): DownloadQualityUpgradeFile | null {
+function decodeUpgradeFile(value: unknown, field: string): DownloadQualityUpgradeFile | null {
   const file = sessionRecord(value);
-  if (!file || typeof file.name !== "string" || typeof file.path !== "string"
-    || (file.size !== undefined && (typeof file.size !== "number" || !Number.isFinite(file.size) || file.size < 0))) return null;
+  if (!file) return invalidSessionField(field);
+  if (typeof file.name !== 'string') return invalidSessionField(`${field}.name`);
+  if (typeof file.path !== 'string') return invalidSessionField(`${field}.path`);
+  if (file.size !== undefined && (typeof file.size !== 'number' || !Number.isFinite(file.size) || file.size < 0)) return invalidSessionField(`${field}.size`);
   let qualityProfile: DownloadQualityUpgradeFile["qualityProfile"];
   if (file.qualityProfile !== undefined) {
     const profile = sessionRecord(file.qualityProfile);
     if (!profile || typeof profile.quality !== "string" || typeof profile.encoding !== "string"
-      || typeof profile.hiRes !== "boolean" || typeof profile.dolby !== "boolean") return null;
+      || typeof profile.hiRes !== "boolean" || typeof profile.dolby !== "boolean") return invalidSessionField(`${field}.qualityProfile`);
     qualityProfile = {
       quality: profile.quality,
       encoding: profile.encoding,
@@ -267,11 +269,11 @@ function decodeUpgradeFile(value: unknown): DownloadQualityUpgradeFile | null {
   };
 }
 
-function decodeUpgradeFiles(value: unknown): DownloadQualityUpgradeFile[] | null {
-  if (!Array.isArray(value)) return null;
+function decodeUpgradeFiles(value: unknown, field: string): DownloadQualityUpgradeFile[] | null {
+  if (!Array.isArray(value)) return invalidSessionField(field);
   const files: DownloadQualityUpgradeFile[] = [];
   for (const item of value) {
-    const file = decodeUpgradeFile(item);
+    const file = decodeUpgradeFile(item, `${field}[${files.length}]`);
     if (!file) return null;
     files.push(file);
   }
@@ -292,15 +294,18 @@ function decodeQualityArtifactProfile(value: unknown): QualityArtifactProfile | 
   };
 }
 
-function decodeUpgradeTarget(value: unknown): NonNullable<DownloadQualityUpgrade["targets"]>[number] | null {
+function decodeUpgradeTarget(value: unknown, field: string): NonNullable<DownloadQualityUpgrade["targets"]>[number] | null {
   const target = sessionRecord(value);
-  if (!target || typeof target.userId !== "string" || !Number.isSafeInteger(target.mediaId)
-    || typeof target.folderTitle !== "string" || typeof target.remotePath !== "string") return null;
-  const oldFiles = decodeUpgradeFiles(target.oldFiles);
+  if (!target) return invalidSessionField(field);
+  if (typeof target.userId !== 'string') return invalidSessionField(`${field}.userId`);
+  if (!isSafeInteger(target.mediaId)) return invalidSessionField(`${field}.mediaId`);
+  if (typeof target.folderTitle !== 'string') return invalidSessionField(`${field}.folderTitle`);
+  if (typeof target.remotePath !== 'string') return invalidSessionField(`${field}.remotePath`);
+  const oldFiles = decodeUpgradeFiles(target.oldFiles, `${field}.oldFiles`);
   if (!oldFiles) return null;
   return {
     userId: target.userId,
-    mediaId: Number(target.mediaId),
+    mediaId: target.mediaId,
     folderTitle: target.folderTitle,
     remotePath: target.remotePath,
     oldFiles,
@@ -309,30 +314,33 @@ function decodeUpgradeTarget(value: unknown): NonNullable<DownloadQualityUpgrade
 
 function decodeQualityUpgrade(value: unknown): DownloadQualityUpgrade | null {
   const upgrade = sessionRecord(value);
-  if (!upgrade || typeof upgrade.userId !== "string" || !Number.isSafeInteger(upgrade.mediaId)
-    || typeof upgrade.folderTitle !== "string" || typeof upgrade.remotePath !== "string"
-    || (upgrade.artifactKey !== undefined && typeof upgrade.artifactKey !== "string")
-    || (upgrade.downloadUserId !== undefined && typeof upgrade.downloadUserId !== "string")) return null;
-  const oldFiles = decodeUpgradeFiles(upgrade.oldFiles);
+  if (!upgrade) return invalidSessionField('qualityUpgrade');
+  if (typeof upgrade.userId !== 'string') return invalidSessionField('qualityUpgrade.userId');
+  if (!isSafeInteger(upgrade.mediaId)) return invalidSessionField('qualityUpgrade.mediaId');
+  if (typeof upgrade.folderTitle !== 'string') return invalidSessionField('qualityUpgrade.folderTitle');
+  if (typeof upgrade.remotePath !== 'string') return invalidSessionField('qualityUpgrade.remotePath');
+  if (upgrade.artifactKey !== undefined && typeof upgrade.artifactKey !== 'string') return invalidSessionField('qualityUpgrade.artifactKey');
+  if (upgrade.downloadUserId !== undefined && typeof upgrade.downloadUserId !== 'string') return invalidSessionField('qualityUpgrade.downloadUserId');
+  const oldFiles = decodeUpgradeFiles(upgrade.oldFiles, 'qualityUpgrade.oldFiles');
   if (!oldFiles) return null;
   let qualityProfile: QualityArtifactProfile | undefined;
   if (upgrade.qualityProfile !== undefined) {
     qualityProfile = decodeQualityArtifactProfile(upgrade.qualityProfile) || undefined;
-    if (!qualityProfile) return null;
+    if (!qualityProfile) return invalidSessionField('qualityUpgrade.qualityProfile');
   }
   let targets: NonNullable<DownloadQualityUpgrade["targets"]> | undefined;
   if (upgrade.targets !== undefined) {
-    if (!Array.isArray(upgrade.targets)) return null;
+    if (!Array.isArray(upgrade.targets)) return invalidSessionField('qualityUpgrade.targets');
     targets = [];
     for (const value of upgrade.targets) {
-      const target = decodeUpgradeTarget(value);
+      const target = decodeUpgradeTarget(value, `qualityUpgrade.targets[${targets.length}]`);
       if (!target) return null;
       targets.push(target);
     }
   }
   return {
     userId: upgrade.userId,
-    mediaId: Number(upgrade.mediaId),
+    mediaId: upgrade.mediaId,
     folderTitle: upgrade.folderTitle,
     remotePath: upgrade.remotePath,
     oldFiles,
@@ -343,48 +351,63 @@ function decodeQualityUpgrade(value: unknown): DownloadQualityUpgrade | null {
   };
 }
 
+class DownloadSessionFieldError extends Error {
+  constructor(readonly field: string) { super(`Invalid download manifest field: ${field}`); }
+}
+function invalidSessionField(field: string): never { throw new DownloadSessionFieldError(field); }
+
 function decodeDownloadSessionManifest(value: unknown): DownloadSessionManifest | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = record(value);
-  if (candidate.schemaVersion !== 1 || typeof candidate.sessionId !== "string" || !candidate.sessionId
-    || (candidate.kind !== "backup" && candidate.kind !== "quality_upgrade")
-    || typeof candidate.bvid !== "string" || !candidate.bvid
-    || !isSafeInteger(candidate.accountUid) || candidate.accountUid < 0
-    || typeof candidate.bbdownCommit !== "string"
-    || typeof candidate.configFingerprint !== "string"
-    || !sessionRecord(candidate.configSnapshot)
-    || typeof candidate.createdAt !== "string" || !Number.isFinite(Date.parse(candidate.createdAt))
-    || typeof candidate.updatedAt !== "string" || !Number.isFinite(Date.parse(candidate.updatedAt))
-    || typeof candidate.snapshotAt !== "string" || !Number.isFinite(Date.parse(candidate.snapshotAt))
-    || !["prepared", "downloading", "complete", "partial", "failed"].includes(String(candidate.status))
-    || !Array.isArray(candidate.pages) || !Array.isArray(candidate.outputs) || !Array.isArray(candidate.history)) return null;
+  if (candidate.schemaVersion !== 1) return invalidSessionField('schemaVersion');
+  if (typeof candidate.sessionId !== 'string' || !candidate.sessionId) return invalidSessionField('sessionId');
+  if (candidate.kind !== 'backup' && candidate.kind !== 'quality_upgrade') return invalidSessionField('kind');
+  if (typeof candidate.bvid !== 'string' || !candidate.bvid) return invalidSessionField('bvid');
+  if (!isSafeInteger(candidate.accountUid) || candidate.accountUid < 0) return invalidSessionField('accountUid');
+  if (typeof candidate.bbdownCommit !== 'string') return invalidSessionField('bbdownCommit');
+  if (typeof candidate.configFingerprint !== 'string') return invalidSessionField('configFingerprint');
+  if (!sessionRecord(candidate.configSnapshot)) return invalidSessionField('configSnapshot');
+  if (typeof candidate.createdAt !== 'string' || !Number.isFinite(Date.parse(candidate.createdAt))) return invalidSessionField('createdAt');
+  if (typeof candidate.updatedAt !== 'string' || !Number.isFinite(Date.parse(candidate.updatedAt))) return invalidSessionField('updatedAt');
+  if (typeof candidate.snapshotAt !== 'string' || !Number.isFinite(Date.parse(candidate.snapshotAt))) return invalidSessionField('snapshotAt');
+  if (!['prepared','downloading','complete','partial','failed'].includes(String(candidate.status))) return invalidSessionField('status');
+  if (!Array.isArray(candidate.pages)) return invalidSessionField('pages');
+  if (!Array.isArray(candidate.outputs)) return invalidSessionField('outputs');
+  if (!Array.isArray(candidate.history)) return invalidSessionField('history');
   const pages: DownloadPageSnapshot[] = [];
-  for (const page of candidate.pages) {
+  for (const [index, page] of candidate.pages.entries()) {
     const item = record(page);
-    if (!isSafeInteger(item.index) || !isSafeInteger(item.cid)
-      || item.index < 1 || item.cid < 1 || typeof item.title !== "string"
-      || typeof item.duration !== "number" || !Number.isFinite(item.duration) || item.duration < 0
-      || (item.publishedAt !== undefined && (typeof item.publishedAt !== "number" || !Number.isFinite(item.publishedAt)))) return null;
+    if (!isSafeInteger(item.index) || item.index < 1) return invalidSessionField(`pages[${index}].index`);
+    if (!isSafeInteger(item.cid) || item.cid < 1) return invalidSessionField(`pages[${index}].cid`);
+    if (typeof item.title !== 'string') return invalidSessionField(`pages[${index}].title`);
+    if (typeof item.duration !== 'number' || !Number.isFinite(item.duration) || item.duration < 0) return invalidSessionField(`pages[${index}].duration`);
+    if (item.publishedAt !== undefined && (typeof item.publishedAt !== 'number' || !Number.isFinite(item.publishedAt))) return invalidSessionField(`pages[${index}].publishedAt`);
     pages.push({ index: item.index, cid: item.cid, title: item.title, duration: item.duration,
       ...(typeof item.publishedAt === "number" ? { publishedAt: item.publishedAt } : {}) });
   }
+  if (new Set(pages.map(page => page.cid)).size !== pages.length
+    || new Set(pages.map(page => page.index)).size !== pages.length) return invalidSessionField('pages.identity');
+  if (candidate.publishedAt !== undefined && (typeof candidate.publishedAt !== 'number' || !Number.isFinite(candidate.publishedAt))) return invalidSessionField('publishedAt');
+  if (candidate.legacyAdopted !== undefined && typeof candidate.legacyAdopted !== 'boolean') return invalidSessionField('legacyAdopted');
+  if (candidate.lastError !== undefined && typeof candidate.lastError !== 'string') return invalidSessionField('lastError');
   const snapshot = record(candidate.configSnapshot);
-  if (typeof snapshot.quality !== "string" || typeof snapshot.encoding !== "string"
-    || typeof snapshot.hiRes !== "boolean" || typeof snapshot.dolby !== "boolean"
-    || typeof snapshot.filenameTemplate !== "string"
-    || (snapshot.encodingPriority !== undefined
-      && (!Array.isArray(snapshot.encodingPriority) || !snapshot.encodingPriority.every(item => typeof item === "string")))
-    || (snapshot.apiMode !== undefined && snapshot.apiMode !== "app" && snapshot.apiMode !== "web")) return null;
+  if (typeof snapshot.quality !== 'string') return invalidSessionField('configSnapshot.quality');
+  if (typeof snapshot.encoding !== 'string') return invalidSessionField('configSnapshot.encoding');
+  if (typeof snapshot.hiRes !== 'boolean') return invalidSessionField('configSnapshot.hiRes');
+  if (typeof snapshot.dolby !== 'boolean') return invalidSessionField('configSnapshot.dolby');
+  if (typeof snapshot.filenameTemplate !== 'string') return invalidSessionField('configSnapshot.filenameTemplate');
+  if (snapshot.encodingPriority !== undefined && (!Array.isArray(snapshot.encodingPriority) || !snapshot.encodingPriority.every(item => typeof item === 'string'))) return invalidSessionField('configSnapshot.encodingPriority');
+  if (snapshot.apiMode !== undefined && snapshot.apiMode !== 'app' && snapshot.apiMode !== 'web') return invalidSessionField('configSnapshot.apiMode');
   const status = candidate.status as DownloadSessionStatus;
   const selectedStreams = decodeSelectedStreams(candidate.selectedStreams);
-  if (selectedStreams === null) return null;
+  if (selectedStreams === null) return invalidSessionField('selectedStreams');
   const outputs = decodeManifestOutputList(candidate.outputs, false);
   const history = decodeManifestOutputList(candidate.history, true);
   if (!outputs || !history) return null;
   let qualityUpgrade: DownloadQualityUpgrade | undefined;
   if (candidate.qualityUpgrade !== undefined) {
     qualityUpgrade = decodeQualityUpgrade(candidate.qualityUpgrade) || undefined;
-    if (!qualityUpgrade) return null;
+    if (!qualityUpgrade) return invalidSessionField('qualityUpgrade');
   }
   return {
     schemaVersion: 1,
@@ -431,13 +454,16 @@ function decodeDownloadSession(value: unknown): DownloadSessionReadResult {
   if (candidate.schemaVersion !== 1) {
     return { kind: "invalid", reason: "schema", field: "schemaVersion" };
   }
-  const manifest = decodeDownloadSessionManifest(value);
-  return manifest
-    ? { kind: "valid", manifest }
-    : { kind: "invalid", reason: "field", field: "manifest" };
+  try {
+    const manifest = decodeDownloadSessionManifest(value);
+    return manifest ? { kind: 'valid', manifest } : { kind: 'invalid', reason: 'field', field: 'manifest' };
+  } catch (error) {
+    if (error instanceof DownloadSessionFieldError) return { kind: 'invalid', reason: 'field', field: error.field };
+    throw error;
+  }
 }
 
-function invalidDownloadSessionMessage(result: Extract<DownloadSessionReadResult, { kind: "invalid" }>) {
+export function invalidDownloadSessionMessage(result: Extract<DownloadSessionReadResult, { kind: "invalid" }>) {
   const field = result.field ? ` (${result.field})` : "";
   return `download session manifest is invalid: ${result.reason}${field}`;
 }
@@ -556,25 +582,25 @@ function normalizeManifestRelativePath(value: unknown) {
   return normalized !== ".." && !normalized.startsWith(`..${path.sep}`) ? normalized : null;
 }
 
-function decodeManifestOutput(value: unknown, historical: false): DownloadOutputRecord | null;
-function decodeManifestOutput(value: unknown, historical: true): HistoricalOutputRecord | null;
-function decodeManifestOutput(value: unknown, historical: boolean): DownloadOutputRecord | HistoricalOutputRecord | null {
+function decodeManifestOutput(value: unknown, historical: false, field?: string): DownloadOutputRecord | null;
+function decodeManifestOutput(value: unknown, historical: true, field?: string): HistoricalOutputRecord | null;
+function decodeManifestOutput(value: unknown, historical: boolean, field = "outputs"): DownloadOutputRecord | HistoricalOutputRecord | null {
   const output = sessionRecord(value);
   const relativePath = output && typeof output.relativePath === 'string'
     ? normalizeManifestRelativePath(output.relativePath) : null;
-  if (!output || !isSafeInteger(output.pageIndex) || output.pageIndex < 1
-    || !isSafeInteger(output.cid) || output.cid < 1
-    || typeof output.relativePath !== 'string'
-    || !relativePath
-    || typeof output.size !== 'number' || !Number.isFinite(output.size) || output.size < 0
-    || typeof output.duration !== 'number' || !Number.isFinite(output.duration) || output.duration < 0
-    || typeof output.videoCodec !== 'string'
-    || typeof output.quickHash !== 'string'
-    || typeof output.verifiedAt !== 'string' || !Number.isFinite(Date.parse(output.verifiedAt))) return null;
-  if (output.audioCodec !== undefined && typeof output.audioCodec !== 'string') return null;
-  if (output.width !== undefined && (!isSafeInteger(output.width) || output.width <= 0)) return null;
-  if (output.height !== undefined && (!isSafeInteger(output.height) || output.height <= 0)) return null;
-  if (output.frameRate !== undefined && (typeof output.frameRate !== 'number' || !Number.isFinite(output.frameRate) || output.frameRate <= 0)) return null;
+  if (!output) return invalidSessionField(field);
+  if (!isSafeInteger(output.pageIndex) || output.pageIndex < 1) return invalidSessionField(`${field}.pageIndex`);
+  if (!isSafeInteger(output.cid) || output.cid < 1) return invalidSessionField(`${field}.cid`);
+  if (!relativePath) return invalidSessionField(`${field}.relativePath`);
+  if (typeof output.size !== 'number' || !Number.isFinite(output.size) || output.size < 0) return invalidSessionField(`${field}.size`);
+  if (typeof output.duration !== 'number' || !Number.isFinite(output.duration) || output.duration < 0) return invalidSessionField(`${field}.duration`);
+  if (typeof output.videoCodec !== 'string') return invalidSessionField(`${field}.videoCodec`);
+  if (typeof output.quickHash !== 'string') return invalidSessionField(`${field}.quickHash`);
+  if (typeof output.verifiedAt !== 'string' || !Number.isFinite(Date.parse(output.verifiedAt))) return invalidSessionField(`${field}.verifiedAt`);
+  if (output.audioCodec !== undefined && typeof output.audioCodec !== 'string') return invalidSessionField(`${field}.audioCodec`);
+  if (output.width !== undefined && (!isSafeInteger(output.width) || output.width <= 0)) return invalidSessionField(`${field}.width`);
+  if (output.height !== undefined && (!isSafeInteger(output.height) || output.height <= 0)) return invalidSessionField(`${field}.height`);
+  if (output.frameRate !== undefined && (typeof output.frameRate !== 'number' || !Number.isFinite(output.frameRate) || output.frameRate <= 0)) return invalidSessionField(`${field}.frameRate`);
   const base: DownloadOutputRecord = {
     pageIndex: output.pageIndex,
     cid: output.cid,
@@ -592,8 +618,8 @@ function decodeManifestOutput(value: unknown, historical: boolean): DownloadOutp
   if (!historical) return base;
   const reason = output.reason;
   if (typeof output.snapshotAt !== 'string' || !Number.isFinite(Date.parse(output.snapshotAt))
-    || (reason !== 'removed' && reason !== 'replaced' && reason !== 'legacy_unmatched')) return null;
-  if (output.uploadedTargets !== undefined && !isStringArray(output.uploadedTargets)) return null;
+    || (reason !== 'removed' && reason !== 'replaced' && reason !== 'legacy_unmatched')) return invalidSessionField(`${field}.history`);
+  if (output.uploadedTargets !== undefined && !isStringArray(output.uploadedTargets)) return invalidSessionField(`${field}.uploadedTargets`);
   return {
     ...base,
     snapshotAt: output.snapshotAt,
@@ -610,10 +636,10 @@ function decodeManifestOutputList(value: unknown, historical: boolean): Download
   if (historical) {
     const outputs: HistoricalOutputRecord[] = [];
     for (const item of value) {
-      const decoded = decodeManifestOutput(item, true);
+      const decoded = decodeManifestOutput(item, true, `history[${outputs.length}]`);
       if (!decoded) return null;
       const identity = `${decoded.pageIndex}:${decoded.cid}:${decoded.relativePath}`;
-      if (identities.has(identity)) return null;
+      if (identities.has(identity)) return invalidSessionField(`${historical ? "history" : "outputs"}[${outputs.length}].identity`);
       identities.add(identity);
       outputs.push(decoded);
     }
@@ -621,10 +647,10 @@ function decodeManifestOutputList(value: unknown, historical: boolean): Download
   }
   const outputs: DownloadOutputRecord[] = [];
   for (const item of value) {
-    const decoded = decodeManifestOutput(item, false);
+    const decoded = decodeManifestOutput(item, false, `outputs[${outputs.length}]`);
     if (!decoded) return null;
     const identity = `${decoded.pageIndex}:${decoded.cid}:${decoded.relativePath}`;
-    if (identities.has(identity)) return null;
+    if (identities.has(identity)) return invalidSessionField(`${historical ? "history" : "outputs"}[${outputs.length}].identity`);
     identities.add(identity);
     outputs.push(decoded);
   }
@@ -647,14 +673,15 @@ function decodeSelectedStreams(value: unknown): DownloadSelectedStreamRecord[] |
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) return null;
   const selected = new Map<number, DownloadSelectedStreamRecord>();
-  for (const item of value) {
+  for (const [index, item] of value.entries()) {
     const itemRecord = record(item);
     const pageIndex = itemRecord.pageIndex;
     const cid = itemRecord.cid;
     const bilibiliQuality = normalizeBilibiliQualityLabel(itemRecord.bilibiliQuality);
-    if (!isSafeInteger(pageIndex) || pageIndex < 1 || !isSafeInteger(cid) || cid < 1
-      || !bilibiliQuality || typeof itemRecord.observedAt !== 'string'
-      || !Number.isFinite(Date.parse(itemRecord.observedAt)) || selected.has(cid)) return null;
+    if (!isSafeInteger(pageIndex) || pageIndex < 1) return invalidSessionField(`selectedStreams[${index}].pageIndex`);
+    if (!isSafeInteger(cid) || cid < 1 || selected.has(cid)) return invalidSessionField(`selectedStreams[${index}].cid`);
+    if (!bilibiliQuality) return invalidSessionField(`selectedStreams[${index}].bilibiliQuality`);
+    if (typeof itemRecord.observedAt !== 'string' || !Number.isFinite(Date.parse(itemRecord.observedAt))) return invalidSessionField(`selectedStreams[${index}].observedAt`);
     selected.set(cid, { pageIndex, cid, bilibiliQuality, observedAt: new Date(itemRecord.observedAt).toISOString() });
   }
   return [...selected.values()].sort((left, right) => left.pageIndex - right.pageIndex);
@@ -877,7 +904,7 @@ export function assessStrictQuality(
     const relativePath = normalizedSessionPath(output.relativePath);
     const selected = selectedStreams.get(output.cid);
     const actual = normalizeBilibiliQualityLabel(selected?.bilibiliQuality);
-    if (!selected || !actual || !Number.isFinite(Date.parse(String(selected.observedAt || "")))) {
+    if (!selected || !actual) {
       unknownFiles.push(relativePath);
       continue;
     }
@@ -1534,8 +1561,8 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       const relativePath = normalizeManifestRelativePath(value);
       if (!relativePath || !manifestPaths.has(relativePath) || authorized.has(relativePath)) continue;
       const expected = [...manifest.outputs, ...manifest.history].find((output) => output.relativePath === relativePath);
-      if (expected && Number.isFinite(Number(expected.size))) {
-        authorized.set(relativePath, { relativePath, expectedSize: Number(expected.size) });
+      if (expected) {
+        authorized.set(relativePath, { relativePath, expectedSize: expected.size });
       }
     }
   }

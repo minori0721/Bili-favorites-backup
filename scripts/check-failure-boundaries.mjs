@@ -139,6 +139,9 @@ export function inspectFailureBoundaries(text, {test = false, critical = false, 
   const optionalDefault = node => {
     if (!ts.isBinaryExpression(node)) return false;
     const operator = node.operatorToken.kind;
+    // A conjunction may further restrict a documented absence case (e.g.
+    // list === null AND count === 0); disjunction cannot establish absence.
+    if (operator === ts.SyntaxKind.AmpersandAmpersandToken) return optionalDefault(node.left) || optionalDefault(node.right);
     if (operator !== ts.SyntaxKind.EqualsEqualsToken && operator !== ts.SyntaxKind.EqualsEqualsEqualsToken) return false;
     return (ts.isIdentifier(node.right) && node.right.text === 'undefined') || node.right.kind === ts.SyntaxKind.NullKeyword;
   };

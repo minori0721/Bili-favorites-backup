@@ -60,7 +60,7 @@ export interface JobRepository {
   };
   countLegacyQualityDownloadJobs(): number;
   listLegacyQualityDownloadJobs(limit?: number): PersistentJobRecord[];
-  applyQualityDownloadMigration(plans: QualityDownloadMigrationPlan[], markerKey: string): number;
+  applyQualityDownloadMigration(plans: QualityDownloadMigrationPlan[], markerKey: string, blocked?: Array<{ job: PersistentJobRecord; reason: string }>): number;
   findByDedupeKey(dedupeKey: string): PersistentJobRecord | null;
   claimByDedupeKey(dedupeKey: string, leaseOwner: string, leaseMs?: number, now?: number): PersistentJobRecord | null;
   findById(id: string): PersistentJobRecord | null;

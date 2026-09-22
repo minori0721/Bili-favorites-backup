@@ -58,8 +58,8 @@ test("download session reads distinguish missing, invalid JSON, invalid fields, 
     assert.deepEqual(await readDownloadSessionAsync(invalidDir), { kind: "invalid", reason: "schema", field: "schemaVersion" });
 
     await fs.promises.writeFile(path.join(invalidDir, ".bfb-download.json"), JSON.stringify({ schemaVersion: 1 }), "utf8");
-    assert.deepEqual(readDownloadSessionResult(invalidDir), { kind: "invalid", reason: "field", field: "manifest" });
-    assert.deepEqual(await readDownloadSessionAsync(invalidDir), { kind: "invalid", reason: "field", field: "manifest" });
+    assert.deepEqual(readDownloadSessionResult(invalidDir), { kind: "invalid", reason: "field", field: "sessionId" });
+    assert.deepEqual(await readDownloadSessionAsync(invalidDir), { kind: "invalid", reason: "field", field: "sessionId" });
 
     await fs.promises.mkdir(path.join(ioDir, ".bfb-download.json"), { recursive: true });
     assert.throws(() => readDownloadSessionResult(ioDir));
@@ -266,7 +266,8 @@ test("download session decoding rejects structurally incomplete evidence", async
       ...uploadMetadataManifest(),
       outputs: [{ ...uploadMetadataManifest().outputs[0], size: "1024" }],
     }));
-    assert.equal(readDownloadSession(downloadDir), null);
+    assert.deepEqual(readDownloadSessionResult(downloadDir), {kind: 'invalid', reason: 'field', field: 'outputs[0].size'});
+    assert.deepEqual(await readDownloadSessionAsync(downloadDir), {kind: 'invalid', reason: 'field', field: 'outputs[0].size'});
 
     await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), JSON.stringify({
       ...uploadMetadataManifest(),

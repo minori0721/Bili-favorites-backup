@@ -116,3 +116,9 @@ test('scheduler storage boundary fixture distinguishes a narrow callback from a 
   assert.equal(inspectRawDatabaseProviderFixture(`state['getDatabase']().query()`).length, 1);
   assert.deepEqual(inspectRawDatabaseProviderFixture(`isArchiveSourceDeletionBlocked(userId, mediaId, bvid)`), []);
 });
+
+
+test('parser optional defaults may restrict absence with a conjunction but not broaden it', () => {
+  assert.equal(inspectFailureBoundaries('function decode(v) { return v.list === null && v.count === 0 ? [] : v.list; }').filter(item => item.rule === 'parser-empty-fallback').length, 0);
+  assert.ok(inspectFailureBoundaries('function decode(v) { return v.list === null || v.count === 0 ? [] : v.list; }').some(item => item.rule === 'parser-empty-fallback'));
+});

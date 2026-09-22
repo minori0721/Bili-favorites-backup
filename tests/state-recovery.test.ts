@@ -1,3 +1,8 @@
+import {createStartupRecovery} from '../src/scheduler/startup-recovery.js';
+import {PersistentJobStore} from '../src/job-store.js';
+import {TransferSessionStore} from '../src/transfer-session.js';
+import {testConfig} from './helpers.js';
+import {logManager} from '../src/logger.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -165,6 +170,20 @@ test("one corrupt verified manifest remains visible to startup recovery without 
     try {
       const resumable = manager.listBackupsToResume();
       assert.deepEqual(new Set(resumable.map((item) => item.video.bvid)), new Set([corruptBvid, queuedBvid]));
+      manager.markPersistentJobBootstrapComplete();
+      const unexpected = () => assert.fail('verified corrupt evidence must not enqueue downloads or uploads');
+      const recovery = createStartupRecovery({stateManager: manager, jobStore: new PersistentJobStore(manager.getDatabase()),
+        transferSessions: new TransferSessionStore(manager.getDatabase()), configStore: {get: () => testConfig()},
+        staleActiveBackupMs: 1000, resolveRelation: () => null, findBestRelationForBvid: () => null,
+        resolveRelationRemotePath: unexpected, enqueueIfNeeded: unexpected, queueUploadWork: unexpected,
+        buildPersistentUploadJob: unexpected, historySnapshotSegment: unexpected,
+        ensurePersistedAvailabilityProbes() {}, ensurePersistedChargingAccessProbes() {},
+        dispatchPersistentJobs: unexpected, recordQueued: unexpected});
+      recovery.resumePersistedWork();
+      recovery.resumePersistedWork();
+      assert.equal(manager.getStateSnapshot().videos?.[corruptBvid].backupStatus, 'verified');
+      assert.ok(logManager.getAll().some(entry => entry.summary.includes('历史文件身份无法确认')));
+      assert.equal(await fs.promises.readFile(path.join(corruptDir, '.bfb-download.json'), 'utf8'), '{broken');
     } finally {
       manager.close();
     }

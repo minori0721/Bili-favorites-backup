@@ -17,13 +17,15 @@ type VerificationCandidate = {
   historySegment: string; historyOnly?: boolean;
 } & Record<string, unknown>;
 
-function readRecoveryManifest(localDir: string) {
+function readRecoveryManifest(localDir: string, verified = false) {
   const session = readDownloadSession(localDir);
   if (session.kind === 'invalid') {
     const identity = path.basename(localDir);
     logManager.push({
       timestamp: new Date().toISOString(), type: 'system', level: 'warn',
-      summary: `下载清单损坏，已保留并等待重新探测：${identity}`,
+      summary: verified
+        ? `本地清单损坏，远端归档状态已保留；历史文件身份无法确认，请人工处理：${identity}`
+        : `下载清单损坏，已保留并等待重新探测：${identity}`,
       raw: `[Recovery] corrupt download manifest retained id=${identity} reason=${session.reason}${session.field ? ` field=${session.field}` : ''}`,
       simpleVisible: true, debugVisible: true,
     });
@@ -114,6 +116,14 @@ export function createStartupRecovery(deps: Dependencies) {
   function resumePersistedWork() {
     deps.ensurePersistedAvailabilityProbes();
     deps.ensurePersistedChargingAccessProbes();
+    // Verified local evidence must be inspected on every startup, independently
+    // of the one-time persistent queue bootstrap and legacy cache migration.
+    for (const item of deps.stateManager.listBackupsToResume()) {
+      const status = item.relation?.backupStatus || item.video.backupStatus;
+      if (['verified', 'partial_verified'].includes(status) && item.video.localDir) {
+        readRecoveryManifest(item.video.localDir, true);
+      }
+    }
     if (deps.stateManager.hasPersistentJobBootstrap()) {
       recoverOrphanedUploadFailures();
       return;
@@ -143,8 +153,9 @@ export function createStartupRecovery(deps: Dependencies) {
       const config = deps.configStore.get();
       const remotePath = relation?.remotePath || entry.remotePath || deps.resolveRelationRemotePath(resolved.user, relation?.mediaId || 0, resolved.folderTitle, config);
       if (["verified", "partial_verified"].includes(status) && hasLocalDir && localDir && relation) {
-        const manifest = readRecoveryManifest(localDir);
-        if (!manifest) continue;
+        const session = readDownloadSession(localDir);
+        if (session.kind !== 'valid') continue;
+        const manifest = session.manifest;
         const targetKey = `${relation.userId}:${relation.mediaId}`;
         const pendingHistory = groupDownloadSessionHistory(manifest)
           .map((group) => ({

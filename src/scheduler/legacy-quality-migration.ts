@@ -43,10 +43,22 @@ export function createLegacyQualityMigration(deps: Dependencies) {
     }
     const currentProfile = qualityArtifactProfileFromConfig(deps.configStore.get());
     const groups = new Map<string, { artifactKey: string; profile: QualityArtifactProfile; jobs: typeof jobs }>();
+    const blockedVideos = new Map<string, string>();
+    const sessions = new Map(jobs.map(job => {
+      const session = typeof job.payload.downloadDir === 'string' ? readDownloadSession(job.payload.downloadDir) : null;
+      if (session?.kind === 'invalid') {
+        const bvid = String(job.bvid || job.payload.bvid || '');
+        if (!bvid) throw new Error(`Legacy quality download ${job.id} is missing its BVID`);
+        const artifactKey = typeof job.payload.artifactKey === 'string' ? job.payload.artifactKey
+          : job.payload.qualityProfile ? buildQualityArtifactKey(bvid, normalizeQualityArtifactProfile(record(job.payload.qualityProfile))) : '*';
+        blockedVideos.set(`${bvid}:${artifactKey}`, `下载清单损坏，保留原任务待人工处理：${session.reason} ${session.field || ''}`);
+      }
+      return [job.id, session] as const;
+    }));
+    const blocked: Array<{ job: (typeof jobs)[number]; reason: string }> = [];
     for (const job of jobs) {
       const payload = job.payload;
-      const session = typeof payload.downloadDir === "string" ? readDownloadSession(payload.downloadDir) : null;
-      if (session?.kind === 'invalid') throw new Error(`Legacy quality download ${job.id} has an invalid download manifest`);
+      const session = sessions.get(job.id);
       const manifest = session?.kind === 'valid' ? session.manifest : null;
       const profile = normalizeQualityArtifactProfile(
         (payload.qualityProfile ? record(payload.qualityProfile) : null)
@@ -58,6 +70,8 @@ export function createLegacyQualityMigration(deps: Dependencies) {
       if (!bvid) throw new Error(`Legacy quality download ${job.id} is missing its BVID`);
       const artifactKey = String(payload.artifactKey || manifest?.qualityUpgrade?.artifactKey || buildQualityArtifactKey(bvid, profile));
       const groupKey = `${bvid}:${artifactKey}`;
+      const reason = blockedVideos.get(groupKey) || blockedVideos.get(`${bvid}:*`);
+      if (reason) { blocked.push({ job, reason }); continue; }
       const group = groups.get(groupKey) || { artifactKey, profile, jobs: [] };
       group.jobs.push(job);
       groups.set(groupKey, group);
@@ -71,6 +85,15 @@ export function createLegacyQualityMigration(deps: Dependencies) {
       const existingShared = deps.jobStore.findByDedupeKey(dedupeKey);
       if (existingShared && !group.jobs.some((job) => job.id === existingShared.id)) {
         group.jobs.push(existingShared);
+        if (typeof existingShared.payload.downloadDir === 'string') {
+          const evidence = readDownloadSession(existingShared.payload.downloadDir);
+          if (evidence.kind === 'invalid') {
+            const reason = `下载清单损坏，保留原任务待人工处理：${evidence.reason} ${evidence.field || ''}`;
+            blockedVideos.set(`${bvid}:${group.artifactKey}`, reason);
+            blocked.push(...group.jobs.map(job => ({job, reason})));
+            continue;
+          }
+        }
       }
       const targets = new Map<string, QualityUpgradeTarget>();
       for (const job of group.jobs) {
@@ -92,6 +115,7 @@ export function createLegacyQualityMigration(deps: Dependencies) {
         .find((id) => Boolean(deps.userStore.getById(id)?.enabled));
       const payload = {
         ...(base.payload),
+        awaitingManualRecovery: false,
         bvid,
         userId: mergedTargets[0].userId,
         mediaId: mergedTargets[0].mediaId,
@@ -119,19 +143,25 @@ export function createLegacyQualityMigration(deps: Dependencies) {
         },
       });
     }
-    deps.jobStore.applyQualityDownloadMigration(plans, LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
-    if (candidateCount > 0) {
+    const migrated = deps.jobStore.applyQualityDownloadMigration(plans, LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER, blocked);
+    for (const [groupKey, reason] of blockedVideos) {
+      const bvid = groupKey.split(":", 1)[0];
+      logManager.push({ timestamp: new Date().toISOString(), type: 'system', level: 'warn', bvid,
+        summary: reason, raw: `[QualityUpgrade] retained legacy group bvid=${bvid}: ${reason}`,
+        simpleVisible: true, debugVisible: true });
+    }
+    if (migrated > 0) {
       logManager.push({
         timestamp: new Date().toISOString(),
         type: "system",
         level: "info",
-        summary: `已合并 ${candidateCount} 个旧画质下载任务`,
-        raw: `[QualityUpgrade] consolidated legacy download jobs=${candidateCount}`,
+        summary: `已合并 ${migrated} 个旧画质下载任务`,
+        raw: `[QualityUpgrade] consolidated legacy download jobs=${migrated}`,
         simpleVisible: true,
         debugVisible: true,
       });
     }
-    return candidateCount;
+    return migrated;
   }
 
   return { migrate };

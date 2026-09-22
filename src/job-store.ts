@@ -272,7 +272,7 @@ export class PersistentJobStore implements JobRepository {
   countLegacyQualityDownloadJobs() {
     const row = this.stateDatabase.db.prepare<[], { count: number }>(`
       SELECT COUNT(*) AS count FROM jobs
-      WHERE kind='quality_download' AND (
+      WHERE kind='quality_download' AND status<>'completed' AND (
         json_type(payload_json, '$.artifactKey') IS NULL
         OR COALESCE(json_type(payload_json, '$.targets'), '') != 'array'
         OR bvid IS NULL
@@ -285,7 +285,7 @@ export class PersistentJobStore implements JobRepository {
   listLegacyQualityDownloadJobs(limit = 100_001) {
     return decodeJobRows(this.stateDatabase.db.prepare(`
       SELECT * FROM jobs
-      WHERE kind='quality_download' AND (
+      WHERE kind='quality_download' AND status<>'completed' AND (
         json_type(payload_json, '$.artifactKey') IS NULL
         OR COALESCE(json_type(payload_json, '$.targets'), '') != 'array'
         OR bvid IS NULL
@@ -296,13 +296,21 @@ export class PersistentJobStore implements JobRepository {
     `).all(Math.max(1, Math.floor(limit))), "legacy quality jobs");
   }
 
-  applyQualityDownloadMigration(plans: QualityDownloadMigrationPlan[], markerKey: string) {
+  applyQualityDownloadMigration(plans: QualityDownloadMigrationPlan[], markerKey: string, blocked: Array<{ job: PersistentJobRecord; reason: string }> = []) {
     return this.stateDatabase.db.transaction(() => {
       const migrated = plans.reduce((total, plan) => {
         this.replaceQualityDownloadJobsUnsafe(plan.jobs, plan.replacement);
         return total + plan.jobs.length;
       }, 0);
-      this.stateDatabase.setMeta(markerKey, "complete");
+      for (const { job, reason } of blocked) {
+        const result = this.stateDatabase.db.prepare(`
+          UPDATE jobs SET status='manual_wait', last_error=?, updated_at=?,
+            payload_json=json_set(payload_json, '$.awaitingManualRecovery', json('true'))
+          WHERE id=? AND updated_at=? AND status IN ('pending','retry_wait','manual_wait','failed')
+        `).run(reason, this.now(), job.id, job.updatedAt);
+        if (result.changes !== 1) throw new Error(`Quality migration job ownership changed: ${job.id}`);
+      }
+      if (blocked.length === 0) this.stateDatabase.setMeta(markerKey, "complete");
       return migrated;
     })();
   }

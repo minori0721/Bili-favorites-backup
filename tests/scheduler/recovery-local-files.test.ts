@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {createTestDir, removeTestDir} from '../helpers.js';
 import { inspectLocalArchiveDirectory } from '../../src/scheduler/local-archive-evidence.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -36,4 +39,19 @@ test('archive root inspection does not classify storage errors as absent proof',
     const failure = Object.assign(Error('unreadable'), {code});
     assert.throws(() => inspectLocalArchiveDirectory('/isolated', () => { throw failure; }), error => error === failure);
   }
+});
+
+
+test('corrupt evidence retains actual bytes and distinguishes absent manifests', async () => {
+  const directory = await createTestDir('local-corrupt-bytes');
+  try {
+    await fs.promises.writeFile(path.join(directory, 'video.mp4'), Buffer.alloc(123));
+    const missing = inspectLocalArchiveDirectory(directory);
+    assert.equal(missing.evidence, 'missing');
+    assert.equal(missing.retainedBytes, 123);
+    await fs.promises.writeFile(path.join(directory, '.bfb-download.json'), '{bad');
+    const invalid = inspectLocalArchiveDirectory(directory);
+    assert.equal(invalid.evidence, 'invalid');
+    assert.equal(invalid.retainedBytes, 127);
+  } finally { await removeTestDir(directory); }
 });
