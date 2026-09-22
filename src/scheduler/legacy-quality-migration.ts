@@ -45,7 +45,9 @@ export function createLegacyQualityMigration(deps: Dependencies) {
     const groups = new Map<string, { artifactKey: string; profile: QualityArtifactProfile; jobs: typeof jobs }>();
     for (const job of jobs) {
       const payload = job.payload;
-      const manifest = typeof payload.downloadDir === "string" ? readDownloadSession(payload.downloadDir) : null;
+      const session = typeof payload.downloadDir === "string" ? readDownloadSession(payload.downloadDir) : null;
+      if (session?.kind === 'invalid') throw new Error(`Legacy quality download ${job.id} has an invalid download manifest`);
+      const manifest = session?.kind === 'valid' ? session.manifest : null;
       const profile = normalizeQualityArtifactProfile(
         (payload.qualityProfile ? record(payload.qualityProfile) : null)
         || manifest?.qualityUpgrade?.qualityProfile

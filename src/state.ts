@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { dataDir } from "./paths.js";
-import { historySessionGroups, readDownloadSession } from "./download-session.js";
+import { groupDownloadSessionHistory, readDownloadSession } from "./download-session.js";
 import type { PersistedDownloadApiCooldown } from "./download-api-health.js";
 import type { PersistedUploadCooldown } from "./upload-health.js";
 import { databasePath } from "./paths.js";
@@ -1289,8 +1289,9 @@ export class StateManager {
     this.setVideoStatus(entry, "queued", at);
     entry.localDir = localDir;
     entry.lastError = reason;
-    const manifest = readDownloadSession(localDir);
-    if (manifest) {
+    const session = readDownloadSession(localDir);
+    if (session.kind === 'valid') {
+      const manifest = session.manifest;
       entry.downloadSession = {
         id: manifest.sessionId,
         localDir,
@@ -1314,8 +1315,9 @@ export class StateManager {
     const at = nowIso();
     this.setVideoStatus(entry, "downloaded", at);
     entry.localDir = localDir;
-    const manifest = readDownloadSession(localDir);
-    if (manifest) {
+    const session = readDownloadSession(localDir);
+    if (session.kind === 'valid') {
+      const manifest = session.manifest;
       entry.downloadSession = {
         id: manifest.sessionId,
         localDir,
@@ -2521,7 +2523,8 @@ export class StateManager {
         const hasLocalDir = Boolean(entry.localDir && fs.existsSync(entry.localDir));
         const relations = relationsByBvid.get(entry.bvid) || [];
         if (hasLocalDir && entry.localDir) {
-          const manifest = readDownloadSession(entry.localDir);
+          const session = readDownloadSession(entry.localDir);
+          const manifest = session.kind === 'valid' ? session.manifest : null;
           const sessionComplete = manifest?.status === "complete" || manifest?.status === "partial";
           const uploadReady = sessionComplete;
           const entryTarget: BackupStatus = uploadReady
@@ -2631,8 +2634,11 @@ export class StateManager {
         if (!item.video) return false;
         if (["queued", "downloading", "downloaded", "uploading", "upload_failed", "missing"].includes(item.relation.backupStatus || "")) return true;
         if (!["verified", "partial_verified"].includes(item.relation.backupStatus || "") || !item.video.localDir) return false;
+        const session = readDownloadSession(item.video.localDir);
+        if (session.kind === "invalid") return true;
+        if (session.kind === "missing") return false;
         const targetKey = `${item.relation.userId}:${item.relation.mediaId}`;
-        return historySessionGroups(item.video.localDir).some((group) =>
+        return groupDownloadSessionHistory(session.manifest).some((group) =>
           group.files.some((file) => !(file.uploadedTargets || []).includes(targetKey))
         );
       });
@@ -3303,8 +3309,10 @@ export class StateManager {
   getCompletedLocalDownload(bvid: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry?.localDir || !fs.existsSync(entry.localDir)) return null;
-    const manifest = readDownloadSession(entry.localDir);
-    if (!manifest || !["complete", "partial"].includes(manifest.status)) return null;
+    const session = readDownloadSession(entry.localDir);
+    if (session.kind !== 'valid') return null;
+    const manifest = session.manifest;
+    if (!["complete", "partial"].includes(manifest.status)) return null;
     return {
       localDir: entry.localDir,
       files: manifest.outputs.map((output) => output.relativePath),
@@ -3538,8 +3546,9 @@ export class StateManager {
     if ((this.state.schemaVersion || 1) < 10) {
       for (const entry of Object.values(this.state.videos || {})) {
         if (!entry.localDir || !fs.existsSync(entry.localDir)) continue;
-        const manifest = readDownloadSession(entry.localDir);
-        if (!manifest) continue;
+        const session = readDownloadSession(entry.localDir);
+        if (session.kind !== 'valid') continue;
+        const manifest = session.manifest;
         entry.downloadSession = {
           id: manifest.sessionId,
           localDir: entry.localDir,

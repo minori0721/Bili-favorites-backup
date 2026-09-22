@@ -121,3 +121,14 @@ test("closing online content cancels its debounced search", async ({ page, brows
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.onlineItemQueries).not.toContain("late");
 });
+
+test("online content distinguishes request failure from an empty result", async ({ page, browserProblems }) => {
+  void browserProblems;
+  await openOnlineContent(page);
+  await page.locator("#onlineContentSearchInput").fill("broken");
+  await expect(page.locator("#onlineContentFooter")).toContainText("在线内容读取失败");
+  await expect(page.locator(".online-content-card")).toHaveCount(1);
+  await page.locator("#onlineContentSearchInput").fill("empty");
+  await expect(page.locator(".online-content-card")).toHaveCount(0);
+  await expect(page.locator("#onlineContentFooter")).toContainText("当前分类没有内容");
+});

@@ -125,8 +125,10 @@ export function createRetirementTransfers(deps: Dependencies) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     for (const downloadDir of candidates) {
-      const manifest = readDownloadSession(downloadDir);
-      if (!manifest || manifest.kind !== "quality_upgrade" || manifest.status !== "complete" || manifest.outputs.length === 0) continue;
+      const session = readDownloadSession(downloadDir);
+      if (session.kind !== 'valid') continue;
+      const manifest = session.manifest;
+      if (manifest.kind !== "quality_upgrade" || manifest.status !== "complete" || manifest.outputs.length === 0) continue;
       const manifestProfile = normalizeQualityArtifactProfile(
         manifest.qualityUpgrade?.qualityProfile || manifest.configSnapshot || qualityArtifactProfileFromConfig(deps.configStore.get())
       );

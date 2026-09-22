@@ -17,7 +17,8 @@ import {
   inspectDownloadCache,
   prepareDownloadSession,
   quarantineBrokenAria2Track,
-  readDownloadSession,
+  readDownloadSession as readDownloadSessionResult,
+  readDownloadSessionAsync,
   refreshDownloadSessionOutputs,
   writeDownloadSession,
   type DownloadSessionManifest,
@@ -32,6 +33,41 @@ import {
 } from "../src/downloader.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 import { writeJsonFile } from "../src/storage.js";
+
+function readDownloadSession(downloadDir: string) {
+  const result = readDownloadSessionResult(downloadDir);
+  return result.kind === "valid" ? result.manifest : null;
+}
+
+test("download session reads distinguish missing, invalid JSON, invalid fields, and I/O failures", async () => {
+  const runtime = await createTestDir("download-session-read-result");
+  const missingDir = path.join(runtime, "missing");
+  const invalidDir = path.join(runtime, "invalid");
+  const ioDir = path.join(runtime, "io");
+  try {
+    assert.deepEqual(readDownloadSessionResult(missingDir), { kind: "missing" });
+    assert.deepEqual(await readDownloadSessionAsync(missingDir), { kind: "missing" });
+
+    await fs.promises.mkdir(invalidDir, { recursive: true });
+    await fs.promises.writeFile(path.join(invalidDir, ".bfb-download.json"), "{broken", "utf8");
+    assert.deepEqual(readDownloadSessionResult(invalidDir), { kind: "invalid", reason: "json" });
+    assert.deepEqual(await readDownloadSessionAsync(invalidDir), { kind: "invalid", reason: "json" });
+
+    await fs.promises.writeFile(path.join(invalidDir, ".bfb-download.json"), JSON.stringify({ schemaVersion: 2 }), "utf8");
+    assert.deepEqual(readDownloadSessionResult(invalidDir), { kind: "invalid", reason: "schema", field: "schemaVersion" });
+    assert.deepEqual(await readDownloadSessionAsync(invalidDir), { kind: "invalid", reason: "schema", field: "schemaVersion" });
+
+    await fs.promises.writeFile(path.join(invalidDir, ".bfb-download.json"), JSON.stringify({ schemaVersion: 1 }), "utf8");
+    assert.deepEqual(readDownloadSessionResult(invalidDir), { kind: "invalid", reason: "field", field: "manifest" });
+    assert.deepEqual(await readDownloadSessionAsync(invalidDir), { kind: "invalid", reason: "field", field: "manifest" });
+
+    await fs.promises.mkdir(path.join(ioDir, ".bfb-download.json"), { recursive: true });
+    assert.throws(() => readDownloadSessionResult(ioDir));
+    await assert.rejects(readDownloadSessionAsync(ioDir));
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
 
 function localFfmpeg() {
   const configured = process.env.FFMPEG_PATH;
@@ -242,6 +278,33 @@ test("download session decoding rejects structurally incomplete evidence", async
   }
 });
 
+test("download session rebuild stops when a corrupt manifest cannot be preserved", async () => {
+  const runtime = await createTestDir("download-session-preserve-failure");
+  const downloadDir = path.join(runtime, "BVPRESERVE");
+  const manifestPath = path.join(downloadDir, ".bfb-download.json");
+  const originalCopyFile = fs.promises.copyFile;
+  try {
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    await fs.promises.writeFile(manifestPath, "{broken", "utf8");
+    fs.promises.copyFile = async () => { throw Object.assign(new Error("copy blocked"), { code: "EACCES" }); };
+    await assert.rejects(
+      prepareDownloadSession({
+        downloadDir,
+        bvid: "BVPRESERVE",
+        accountUid: 1,
+        config: testConfig(),
+        pages: [{ index: 1, cid: 1, title: "P1", duration: 1 }],
+      }),
+      /copy blocked/,
+    );
+    assert.equal(await fs.promises.readFile(manifestPath, "utf8"), "{broken");
+    assert.deepEqual(readDownloadSessionResult(downloadDir), { kind: "invalid", reason: "json" });
+  } finally {
+    fs.promises.copyFile = originalCopyFile;
+    await removeTestDir(runtime);
+  }
+});
+
 test("upload metadata is rebuilt from the persistent download session", async () => {
   const runtime = await createTestDir("upload-metadata-builder");
   try {
@@ -314,7 +377,7 @@ test("strict upload metadata preflight rejects incomplete quality-upgrade artifa
     assert.equal(readDownloadSession(runtime), null);
     assert.throws(
       () => buildUploadFileMetadataFromSession(runtime, ["parts/sample.mp4"], { requireVerifiedMediaMetadata: true }),
-      /download session manifest is missing/
+      /download session manifest is invalid: field/
     );
   } finally {
     await removeTestDir(runtime);
@@ -467,6 +530,26 @@ test("invalid quarantined files are cleanup bytes instead of resumable retained 
     assert.equal(fs.existsSync(path.join(downloadDir, "_invalid", "old", "preview.mp4")), false);
     assert.equal(fs.existsSync(path.join(downloadDir, ".bfb-download.json")), true);
     assert.equal((await inspectRecovery(runtime)).cleanupEligibleBytes, 0);
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
+test("a corrupt manifest retains the whole directory and authorizes no automatic cleanup", async () => {
+  const runtime = await createTestDir("download-recovery-corrupt-manifest");
+  const downloadDir = path.join(runtime, "BVCORRUPT");
+  const fragment = path.join(downloadDir, "track.part");
+  try {
+    await fs.promises.mkdir(downloadDir, { recursive: true });
+    await fs.promises.writeFile(path.join(downloadDir, ".bfb-download.json"), "{broken", "utf8");
+    await fs.promises.writeFile(fragment, Buffer.alloc(64));
+    const summary = await inspectRecovery(runtime);
+    assert.equal(summary.legacyDirectories, 0);
+    assert.equal(summary.cleanupEligibleBytes, 0);
+    assert.ok(summary.retainedBytes >= 64);
+    const cleanup = await cleanupDownloadRecoveryArtifacts(runtime);
+    assert.equal(cleanup.removedFiles, 0);
+    assert.equal(fs.existsSync(fragment), true);
   } finally {
     await removeTestDir(runtime);
   }

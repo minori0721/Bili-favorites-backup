@@ -13,8 +13,10 @@ export function buildLocalCleanupPlan(
   options: { id?: string; transferSessionId?: string; transferGeneration?: number } = {},
 ): LocalCleanupPlan | null {
   if (!localDir || !Array.isArray(remoteFiles) || remoteFiles.length === 0) return null;
-  const manifest = readDownloadSession(localDir);
-  if (!manifest || manifest.bvid !== bvid || !manifest.sessionId) return null;
+  const session = readDownloadSession(localDir);
+  if (session.kind !== 'valid') return null;
+  const manifest = session.manifest;
+  if (manifest.bvid !== bvid || !manifest.sessionId) return null;
   const manifestFiles = [...manifest.outputs, ...(manifest.history || [])];
   const files: LocalCleanupPlan['files'] = [];
   for (const remoteFile of remoteFiles) {

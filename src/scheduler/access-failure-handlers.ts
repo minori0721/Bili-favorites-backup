@@ -75,8 +75,8 @@ export function createAccessFailureHandlers(deps: Dependencies) {
     }
 
     if (task.downloadDir) {
-      const manifest = readDownloadSession(task.downloadDir);
-      if (manifest && manifest.outputs.length === 0) {
+      const session = readDownloadSession(task.downloadDir);
+      if (session.kind === "valid" && session.manifest.outputs.length === 0) {
         markDownloadSessionStatus(task.downloadDir, "failed", "B站源当前不可用，已停止重复下载。");
       }
     }

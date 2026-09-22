@@ -54,7 +54,21 @@ export function createLegacyCacheRecovery(deps: Dependencies) {
         // boundary-critical: A missing retention marker permits inspection; all non-ENOENT failures propagate.
         if (errorCode(error) !== "ENOENT") throw error;
       }
-      if (await readDownloadSessionAsync(localDir)) continue;
+      const session = await readDownloadSessionAsync(localDir);
+      if (session.kind === 'valid') continue;
+      const corruptManifest = session.kind === 'invalid';
+      if (session.kind === 'invalid') {
+        logManager.push({
+          timestamp: new Date().toISOString(),
+          type: 'system',
+          level: 'warn',
+          summary: `旧缓存下载清单损坏，已保留待重新探测：${entry.name}`,
+          raw: `[Recovery] corrupt legacy download manifest retained bvid=${entry.name} reason=${session.reason}${session.field ? ` field=${session.field}` : ''}`,
+          bvid: entry.name,
+          simpleVisible: true,
+          debugVisible: true,
+        });
+      }
       if (!canContinue()) return;
       const resolved = deps.findBestRelationForBvid(entry.name);
       if (!resolved) {
@@ -64,7 +78,9 @@ export function createLegacyCacheRecovery(deps: Dependencies) {
       deps.stateManager.markDownloadInterrupted(
         entry.name,
         localDir,
-        "Legacy local cache queued for safe recovery.",
+        corruptManifest
+          ? "Corrupt download manifest queued for safe re-probe."
+          : "Legacy local cache queued for safe recovery.",
         [{ userId: resolved.user.id, mediaId: resolved.mediaId }]
       );
       deps.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.name, { persisted: true });

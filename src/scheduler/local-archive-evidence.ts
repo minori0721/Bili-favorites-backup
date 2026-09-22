@@ -16,7 +16,8 @@ export function inspectLocalArchiveDirectory(localDirValue: string, inspect: (ta
       }
       throw error;
     }
-    const manifest = readDownloadSession(localDir);
+    const session = readDownloadSession(localDir);
+    const manifest = session.kind === 'valid' ? session.manifest : null;
     const files = manifest?.outputs || [];
     if (!manifest || manifest.bvid.length === 0 || files.length === 0) {
       return { status: "unknown" as const, retainedBytes: 0, expectedBytes: 0, verifiedFiles: 0, totalFiles: files.length };

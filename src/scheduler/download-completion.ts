@@ -119,8 +119,10 @@ export function createDownloadCompletionHandler(dependencies: Dependencies) {
         );
         task.control.setTargets(targets);
         if (task.control.downloadDir) {
-          const manifest = readDownloadSession(task.control.downloadDir);
-          if (manifest?.qualityUpgrade && manifest.bvid === task.bvid) {
+          const session = readDownloadSession(task.control.downloadDir);
+          if (session.kind === 'invalid') throw new Error('Quality download session manifest is invalid');
+          if (session.kind === 'valid' && session.manifest.qualityUpgrade && session.manifest.bvid === task.bvid) {
+            const manifest = session.manifest;
             manifest.qualityUpgrade = {
               ...manifest.qualityUpgrade,
               ...targets[0],

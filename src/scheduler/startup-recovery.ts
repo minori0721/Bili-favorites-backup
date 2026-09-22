@@ -1,11 +1,12 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import type { ConfigStore, AppConfig } from '../config.js';
 import type { BiliUser } from '../users.js';
 import type { StateManager, FavoriteRelation } from '../state.js';
 import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { PersistentJobKind } from '../repositories/jobs.js';
 import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
-import { readDownloadSession, historySessionGroups, buildUploadFileMetadataFromSession } from '../download-session.js';
+import { readDownloadSession, groupDownloadSessionHistory, buildUploadFileMetadataFromSession } from '../download-session.js';
 import { joinRemotePath } from '../utils.js';
 import { logManager } from '../logger.js';
 import { UPLOAD_VERIFY_SCHEDULE_MS } from './retry-policy.js';
@@ -15,6 +16,22 @@ type VerificationCandidate = {
   notBefore: number; sessionId: string; sessionGeneration: number; bvid: string; userId: string; mediaId: number;
   historySegment: string; historyOnly?: boolean;
 } & Record<string, unknown>;
+
+function readRecoveryManifest(localDir: string) {
+  const session = readDownloadSession(localDir);
+  if (session.kind === 'invalid') {
+    const identity = path.basename(localDir);
+    logManager.push({
+      timestamp: new Date().toISOString(), type: 'system', level: 'warn',
+      summary: `下载清单损坏，已保留并等待重新探测：${identity}`,
+      raw: `[Recovery] corrupt download manifest retained id=${identity} reason=${session.reason}${session.field ? ` field=${session.field}` : ''}`,
+      simpleVisible: true, debugVisible: true,
+    });
+    return null;
+  }
+  return session.kind === 'valid' ? session.manifest : null;
+}
+
 interface Dependencies {
   stateManager: Pick<StateManager, 'listStaleActiveBackups' | 'runBatch' | 'markDownloadInterrupted' | 'markUploadFailed' | 'resetRelationForRetry' | 'hasPersistentJobBootstrap' | 'normalizePersistedWorkForRecovery' | 'listBackupsToResume' | 'listPendingUploadVerifications' | 'getRelationStatus' | 'getVideoMeta' | 'markPersistentJobBootstrapComplete' | 'listUploadFailuresForRecoveryPage'>;
   jobStore: Pick<JobRepository, 'hasJobsForBvid' | 'enqueue' | 'counts' | 'enqueueBatch'>;
@@ -45,9 +62,8 @@ export function createStartupRecovery(deps: Dependencies) {
 
         const localDir = item.video.localDir;
         if (localDir && fs.existsSync(localDir)) {
-          const manifest = readDownloadSession(localDir);
-          const uploadReady = Boolean(manifest && (manifest.status === "complete" || manifest.status === "partial"));
-          if (!uploadReady) {
+          const manifest = readRecoveryManifest(localDir);
+          if (!manifest || (manifest.status !== "complete" && manifest.status !== "partial")) {
             deps.stateManager.markDownloadInterrupted(relation.bvid, localDir, "Stale download session queued for resume.", [{ userId: relation.userId, mediaId: relation.mediaId }]);
             deps.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, relation.bvid, { persisted: true });
             continue;
@@ -55,7 +71,7 @@ export function createStartupRecovery(deps: Dependencies) {
           const remotePath = relation.remotePath || item.video.remotePath || deps.resolveRelationRemotePath(resolved.user, relation.mediaId, resolved.folderTitle);
           deps.stateManager.markUploadFailed(relation.bvid, localDir, relation.userId, relation.mediaId, "Stale upload retained locally and queued for upload retry.");
           const historyTargetKey = `${relation.userId}:${relation.mediaId}`;
-          const historyGroups = historySessionGroups(localDir)
+          const historyGroups = groupDownloadSessionHistory(manifest)
             .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
             .filter((group) => group.files.length > 0);
           const baseUpload: RecoveryUploadItem = {
@@ -127,8 +143,10 @@ export function createStartupRecovery(deps: Dependencies) {
       const config = deps.configStore.get();
       const remotePath = relation?.remotePath || entry.remotePath || deps.resolveRelationRemotePath(resolved.user, relation?.mediaId || 0, resolved.folderTitle, config);
       if (["verified", "partial_verified"].includes(status) && hasLocalDir && localDir && relation) {
+        const manifest = readRecoveryManifest(localDir);
+        if (!manifest) continue;
         const targetKey = `${relation.userId}:${relation.mediaId}`;
-        const pendingHistory = historySessionGroups(localDir)
+        const pendingHistory = groupDownloadSessionHistory(manifest)
           .map((group) => ({
             ...group,
             files: group.files.filter((file) => !(file.uploadedTargets || []).includes(targetKey)),
@@ -156,7 +174,7 @@ export function createStartupRecovery(deps: Dependencies) {
         continue;
       }
       if (["downloaded", "uploading", "upload_failed"].includes(status) && hasLocalDir && localDir) {
-        const manifest = readDownloadSession(localDir);
+        const manifest = readRecoveryManifest(localDir);
         if (!manifest || !["complete", "partial"].includes(manifest.status)) {
           deps.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid, { persisted: true });
           continue;
@@ -178,7 +196,7 @@ export function createStartupRecovery(deps: Dependencies) {
         };
         deps.queueUploadWork(uploadItem);
         const historyTargetKey = `${resolved.user.id}:${resolved.mediaId}`;
-        const historyGroups = historySessionGroups(localDir)
+        const historyGroups = groupDownloadSessionHistory(manifest)
           .map((group) => ({ ...group, files: group.files.filter((file) => !(file.uploadedTargets || []).includes(historyTargetKey)) }))
           .filter((group) => group.files.length > 0);
         for (const history of historyGroups) {
@@ -211,7 +229,7 @@ export function createStartupRecovery(deps: Dependencies) {
     for (const pending of pendingVerifications()) {
       const relation = deps.stateManager.getRelationStatus(pending.userId, pending.mediaId, pending.bvid);
       const resolved = relation ? deps.resolveRelation(relation) : null;
-      const manifest = pending.localDir ? readDownloadSession(pending.localDir) : null;
+      const manifest = pending.localDir ? readRecoveryManifest(pending.localDir) : null;
       for (const file of pending.files) {
         if (typeof file.size !== "number") continue;
         const transferSession = deps.transferSessions.findForTarget(pending.userId, pending.mediaId, pending.bvid, file.path);
@@ -333,7 +351,7 @@ export function createStartupRecovery(deps: Dependencies) {
           skipped.local += 1;
           continue;
         }
-        const manifest = readDownloadSession(localDir);
+        const manifest = readRecoveryManifest(localDir);
         if (!manifest || !["complete", "partial"].includes(manifest.status) || manifest.outputs.length === 0) {
           skipped.manifest += 1;
           continue;

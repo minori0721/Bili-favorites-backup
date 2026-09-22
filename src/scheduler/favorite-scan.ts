@@ -1,6 +1,6 @@
 import type { BiliUser, UserStore } from '../users.js';
 import type { StateManager, SourceAvailabilityReason } from '../state.js';
-import { BiliRiskOrLoginError, type listFavoriteItemsPage, type refreshUserAuth, type resolveSelfVisibleFavoriteItem } from '../bili.js';
+import { BiliResponseFormatError, BiliRiskOrLoginError, type listFavoriteItemsPage, type refreshUserAuth, type resolveSelfVisibleFavoriteItem } from '../bili.js';
 import type { queueCoverCache } from '../cover-cache.js';
 import { isAuthRefreshAttemptBlocked, nextAuthRefreshFailureState } from '../auth-refresh.js';
 import { safeErrorSummary } from '../diagnostics.js';
@@ -135,6 +135,8 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 // let the normal Bilibili risk/login cooldown handle that without
                 // falsely recording a token-refresh failure.
                 if (retryError instanceof BiliRiskOrLoginError)
+                    throw retryError;
+                if (retryError instanceof BiliResponseFormatError)
                     throw retryError;
                 throw error;
             }

@@ -6,7 +6,7 @@ import { computeTaskRetryDelayMs } from '../queue.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText, type UploadFailureInfo } from '../upload-health.js';
 import { classifyDownloadRecoveryFailure } from '../download-recovery.js';
-import { readDownloadSession, strictEncodingDiagnosticPatch, strictQualityDiagnosticPatch } from '../download-session.js';
+import { strictEncodingDiagnosticPatch, strictQualityDiagnosticPatch } from '../download-session.js';
 import { isSourceUnavailableFailure } from './access-rules.js';
 import { serializeQualityUpgrade } from './quality-rules.js';
 import { readTaskFailure, taskUploadFailure } from './task-failure.js';
@@ -126,8 +126,7 @@ export function createDownloadFailureHandler(dependencies: Dependencies) {
       });
       const downloadFailure = classifyDownloadRecoveryFailure(rawError);
       const targets = deps.collectUploadTargets(task.bvid, task.targets || deps.makeSingleTarget(task));
-      const session = task.downloadDir ? readDownloadSession(task.downloadDir) : null;
-      if (task.downloadDir && session && (!error?.permanent || downloadFailure.recoverable)) {
+      if (task.downloadDir && (!error?.permanent || downloadFailure.recoverable)) {
         deps.stateManager.markDownloadInterrupted(task.bvid, task.downloadDir, safeTaskError || "Download failure", targets);
       } else {
         for (const target of targets) {

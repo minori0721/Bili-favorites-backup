@@ -654,6 +654,10 @@ app.get("/api/online-content/items", async (request, response) => {
     response.json({ success:false, message:"隔离在线内容读取失败" });
     return;
   }
+  if (query === "empty") {
+    response.json(ok({ items: [], page: { page: 1, pageSize: 50, total: 0, hasMore: false, nextCursor: null } }));
+    return;
+  }
   const suffix = mediaId === 202 ? "SECOND" : "001";
   const title = mediaId === 202 ? "第二在线来源" : query ? `在线搜索 ${query}` : "在线待归档视频";
   const item = {

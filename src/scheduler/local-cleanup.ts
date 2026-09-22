@@ -13,6 +13,16 @@ import { safeErrorSummary } from '../diagnostics.js';
 import { computeLocalCleanupRetryDelayMs } from './retry-policy.js';
 import { isRecord } from '../shared/api/value.js';
 import type { ScheduleTimer } from '../ports/timer.js';
+
+function readCleanupManifest(localDir: string) {
+    const session = readDownloadSession(localDir);
+    if (session.kind === 'invalid') {
+        console.warn(`[Cleanup] corrupt download manifest retained dir=${localDir} reason=${session.reason}${session.field ? ` field=${session.field}` : ''}`);
+        return null;
+    }
+    return session.kind === 'valid' ? session.manifest : null;
+}
+
 interface LocalCleanupDependencies {
     schedule?: ScheduleTimer;
     canRun(): boolean;
@@ -176,7 +186,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         catch {
             return;
         }
-        const manifest = readDownloadSession(localDir);
+        const manifest = readCleanupManifest(localDir);
         if (!manifest || manifest.bvid !== bvid || !["complete", "partial"].includes(manifest.status))
             return;
         const normalizeRelative = (value: string) => value.replace(/\\/g, "/");
@@ -269,7 +279,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             return;
         if (!deps.safeCandidate(localDir))
             return;
-        const manifest = readDownloadSession(localDir);
+        const manifest = readCleanupManifest(localDir);
         if (!manifest || manifest.bvid !== bvid || !["complete", "partial"].includes(manifest.status))
             return;
         const manifestFiles = [...manifest.outputs, ...(manifest.history || [])];
@@ -365,7 +375,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             if (plans.length === 0 || !plans.every((plan) => cleanupGenerationIsCurrent(plan)))
                 continue;
             const localDir = plans[0].localDir;
-            const manifest = readDownloadSession(localDir);
+            const manifest = readCleanupManifest(localDir);
             if (!manifest || manifest.bvid !== bvid || manifest.sessionId !== plans[0].manifestSessionId)
                 continue;
             const manifestFiles = new Map([...manifest.outputs, ...(manifest.history || [])]
@@ -450,7 +460,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                 const realDir = fs.realpathSync(localDir);
                 if (!realDir.startsWith(`${root}${path.sep}`) || fs.lstatSync(localDir).isSymbolicLink())
                     continue;
-                const manifest = readDownloadSession(localDir);
+                const manifest = readCleanupManifest(localDir);
                 if (!manifest || manifest.bvid !== bvid)
                     continue;
                 const files = new Map<string, DownloadCleanupAuthorization>();
@@ -577,7 +587,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             });
             if (!current())
                 return;
-            const remainingManifest = readDownloadSession(downloadDir);
+            const remainingManifest = readCleanupManifest(downloadDir);
             const remainingPaths = remainingManifest
                 ? [...remainingManifest.outputs, ...(remainingManifest.history || [])].map((file) => file.relativePath)
                 : [];

@@ -59,14 +59,16 @@ if (scopeIndex >= 0) {
   excludedArgIndexes.add(scopeIndex);
   excludedArgIndexes.add(scopeIndex + 1);
 }
-if (filesIndex >= 0) excludedArgIndexes.add(filesIndex);
+if (filesIndex >= 0) {
+  for (let index = filesIndex; index < args.length; index += 1) excludedArgIndexes.add(index);
+}
 const runnerArgs = args.filter((arg, index) => !excludedArgIndexes.has(index));
 const requestedFiles = filesIndex >= 0 ? args.slice(filesIndex + 1) : undefined;
 if (filesIndex >= 0 && !requestedFiles?.length) throw new Error('--files requires at least one test file');
 if (scope && requestedFiles) throw new Error('--scope and --files cannot be used together');
 
 const files = requestedFiles
-  ? requestedFiles.map(resolveTestFile)
+  ? [...new Set(requestedFiles.map(resolveTestFile))]
   : scope
     ? scopeFiles[scope].map(resolveTestFile)
     : await collect(path.join(root, 'tests'));

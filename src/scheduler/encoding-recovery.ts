@@ -82,8 +82,9 @@ export function createEncodingRecovery(deps: Dependencies) {
       ? local.files.map((file) => file.relativePath)
       : (Array.isArray(payload.files) ? payload.files.map(String).filter(Boolean) : []);
     if (originalFiles.length === 0) {
-      const manifest = readDownloadSession(originalLocalDir);
-      if (manifest) originalFiles.push(...manifest.outputs.map((output) => output.relativePath));
+      const session = readDownloadSession(originalLocalDir);
+      if (session.kind === "invalid") return { ok: false as const, status: 409, message: "原始下载清单损坏，不能建立安全替换任务" };
+      if (session.kind === "valid") originalFiles.push(...session.manifest.outputs.map((output) => output.relativePath));
     }
     if (originalFiles.length === 0) return { ok: false as const, status: 409, message: "原始下载清单缺少文件列表" };
     const folderTitle = String(payload.folderTitle || relation.folderTitle || "favorites");

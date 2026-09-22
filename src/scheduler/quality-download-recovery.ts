@@ -28,9 +28,11 @@ export async function recoverInterruptedQualityDownloads(dependencies: QualityDo
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith("quality-upgrade-")) continue;
     const downloadDir = path.join(tempDir, entry.name);
-    const manifest = readDownloadSession(downloadDir);
-    const target = manifest?.qualityUpgrade;
-    if (!manifest || manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;
+    const session = readDownloadSession(downloadDir);
+    if (session.kind !== 'valid') continue;
+    const manifest = session.manifest;
+    const target = manifest.qualityUpgrade;
+    if (manifest.kind !== "quality_upgrade" || !target || manifest.status === "partial") continue;
     const targets = (Array.isArray(target.targets) && target.targets.length > 0 ? target.targets : [target])
       .filter((candidate) => !remoteRecoveryBlocked.has(relationKey(candidate.userId, candidate.mediaId, manifest.bvid)));
     if (targets.length === 0) continue;

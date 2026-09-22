@@ -150,6 +150,29 @@ test("legacy local cache without a manifest is adopted before any upload is atte
   }
 });
 
+test("one corrupt verified manifest remains visible to startup recovery without blocking other work", async () => {
+  const runtime = await createTestDir("state-corrupt-verified-session");
+  try {
+    const corruptDir = path.join(runtime, "corrupt");
+    await fs.promises.mkdir(corruptDir, { recursive: true });
+    await fs.promises.writeFile(path.join(corruptDir, ".bfb-download.json"), "{broken", "utf8");
+    const state = baseState();
+    const corruptBvid = addVideo(state, 79, "verified", corruptDir);
+    const queuedBvid = addVideo(state, 80, "queued");
+    const statePath = path.join(runtime, "state.json");
+    writeJsonFile(statePath, state);
+    const manager = new StateManager({ statePath, dbPath: path.join(runtime, "bfb.sqlite") });
+    try {
+      const resumable = manager.listBackupsToResume();
+      assert.deepEqual(new Set(resumable.map((item) => item.video.bvid)), new Set([corruptBvid, queuedBvid]));
+    } finally {
+      manager.close();
+    }
+  } finally {
+    await removeTestDir(runtime);
+  }
+});
+
 test("schema 8 migrates a failed relation even when another target kept the video verified", async () => {
   const runtime = await createTestDir("state-relation-migration");
   try {

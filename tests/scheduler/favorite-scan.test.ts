@@ -4,12 +4,85 @@ import path from 'node:path';
 import { createFavoriteScan } from '../../src/scheduler/favorite-scan.js';
 import { StateManager } from '../../src/state.js';
 import type { BiliUser } from '../../src/users.js';
-import type { FavoriteItemsPage } from '../../src/bili.js';
+import { BiliResponseFormatError, BiliRiskOrLoginError, type FavoriteItemsPage } from '../../src/bili.js';
 import { createTestDir, removeTestDir } from '../helpers.js';
 
 const user: BiliUser = { id: 'scan-account', uid: 1, name: 'Fixture', enabled: true, favorites: [], lastLoginAt: '',
   cookie: { SESSDATA: '', bili_jct: '', DedeUserID: '1' } };
 const item = { bvid: 'BVSCAN', title: 'Fixture', upperName: 'Fixture', cover: 'https://example.test/cover.jpg' };
+
+test('full scan keeps completed pages but does not complete after a malformed later page', async () => {
+  const runtime = await createTestDir('scan-malformed-page');
+  const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite') });
+  const scan = createFavoriteScan({
+    deletions: { folder: () => false, source: () => false },
+    state, users: { getById: () => user, updatePartial: () => user }, now: () => 1_000, random: () => 0, sleep: async () => {},
+    generation: () => 0, canRun: () => true,
+    listPage: async (_cookie, _mediaId, page = 1) => {
+      if (page === 1) return { items: [item], page, pageSize: 20, hasMore: true, total: 2 };
+      throw new BiliResponseFormatError('favorite.medias');
+    },
+    refreshAuth: async () => { throw new Error('unexpected refresh'); },
+    resolveSelfVisible: async (_cookie, _uid, value) => value, cacheCover() {}, progress() {}, recordCount() {}, probe() {},
+    enqueue: () => false,
+  });
+  try {
+    await assert.rejects(scan.all(user, 1, 'Favorites'), BiliResponseFormatError);
+    assert.ok(state.getVideoMeta(item.bvid));
+    assert.equal(state.getFolderScan(user.id, 1, 'Favorites').initStatus, 'initializing');
+  } finally { state.close(); await removeTestDir(runtime); }
+});
+
+test('auth refresh retry reports the new response format error', async () => {
+  const runtime = await createTestDir('scan-auth-format-retry');
+  const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite') });
+  const authUser: BiliUser = {
+    ...user,
+    id: 'scan-auth-format',
+    cookie: { ...user.cookie },
+    accessToken: 'old-access',
+    refreshToken: 'old-refresh',
+    expires: 1,
+  };
+  let pageCalls = 0;
+  const scan = createFavoriteScan({
+    deletions: { folder: () => false, source: () => false },
+    state,
+    users: {
+      getById: () => authUser,
+      updatePartial: (_id, patch) => Object.assign(authUser, patch),
+    },
+    now: () => 1_000,
+    random: () => 0,
+    sleep: async () => {},
+    generation: () => 0,
+    canRun: () => true,
+    listPage: async () => {
+      pageCalls += 1;
+      if (pageCalls === 1) throw new BiliRiskOrLoginError('expired login');
+      throw new BiliResponseFormatError('favorite.medias');
+    },
+    refreshAuth: async () => ({
+      rawAuth: '{}',
+      cookie: { SESSDATA: 'fresh', bili_jct: 'fresh', DedeUserID: '1' },
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      expires: 2_000,
+      uid: 1,
+    }),
+    resolveSelfVisible: async (_cookie, _uid, value) => value,
+    cacheCover() {},
+    progress() {},
+    recordCount() {},
+    probe() {},
+    enqueue: () => false,
+  });
+  try {
+    await assert.rejects(scan.hot(authUser, 1, 'Favorites', false), BiliResponseFormatError);
+    assert.equal(pageCalls, 2);
+    assert.equal(authUser.accessToken, 'new-access');
+  } finally { state.close(); await removeTestDir(runtime); }
+});
 
 for (const interruption of ['generation', 'maintenance', 'reset'] as const) {
   test(`late scan page cannot commit after ${interruption}`, async () => {

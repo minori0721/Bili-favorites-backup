@@ -418,6 +418,30 @@ function decodeDownloadSessionManifest(value: unknown): DownloadSessionManifest 
   };
 }
 
+export type DownloadSessionReadResult =
+  | { kind: "missing" }
+  | { kind: "invalid"; reason: "json" | "schema" | "field"; field?: string }
+  | { kind: "valid"; manifest: DownloadSessionManifest };
+
+function decodeDownloadSession(value: unknown): DownloadSessionReadResult {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { kind: "invalid", reason: "schema" };
+  }
+  const candidate = record(value);
+  if (candidate.schemaVersion !== 1) {
+    return { kind: "invalid", reason: "schema", field: "schemaVersion" };
+  }
+  const manifest = decodeDownloadSessionManifest(value);
+  return manifest
+    ? { kind: "valid", manifest }
+    : { kind: "invalid", reason: "field", field: "manifest" };
+}
+
+function invalidDownloadSessionMessage(result: Extract<DownloadSessionReadResult, { kind: "invalid" }>) {
+  const field = result.field ? ` (${result.field})` : "";
+  return `download session manifest is invalid: ${result.reason}${field}`;
+}
+
 export interface PreparedDownloadSession {
   manifest: DownloadSessionManifest;
   missingPages: DownloadPageSnapshot[];
@@ -513,18 +537,14 @@ export function buildDownloadConfigFingerprint(config: AppConfig, accountUid: nu
     .digest("hex");
 }
 
-export function readDownloadSession(downloadDir: string): DownloadSessionManifest | null {
+export function readDownloadSession(downloadDir: string): DownloadSessionReadResult {
   const filePath = downloadSessionPath(downloadDir);
-  if (!fs.existsSync(filePath)) return null;
   try {
-    const parsed = decodeDownloadSessionManifest(JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown);
-    if (!parsed) return null;
-    return parsed;
-  // boundary-fail-closed: a malformed manifest is invalid evidence; callers
-  // preserve the directory and may quarantine the file before recovery.
-  } catch {
-    // boundary-fail-closed: malformed session evidence cannot authorize recovery.
-    return null;
+    return decodeDownloadSession(JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown);
+  } catch (error: unknown) {
+    if (errorCode(error) === "ENOENT") return { kind: "missing" };
+    if (error instanceof SyntaxError) return { kind: "invalid", reason: "json" };
+    throw error;
   }
 }
 
@@ -655,11 +675,13 @@ export function buildUploadFileMetadataFromSession(
   options: { requireVerifiedMediaMetadata?: boolean } = {}
 ) {
   const requireVerifiedMediaMetadata = Boolean(options.requireVerifiedMediaMetadata);
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) {
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "invalid") throw new Error(`Upload metadata preflight failed: ${invalidDownloadSessionMessage(session)}`);
+  if (session.kind === "missing") {
     if (requireVerifiedMediaMetadata) throw new Error("Upload metadata preflight failed: download session manifest is missing");
     return undefined;
   }
+  const manifest = session.manifest;
 
   const selectedPaths = [...new Set(files.map((file) => file.replace(/\\/g, "/")).filter(Boolean))];
   if (requireVerifiedMediaMetadata && selectedPaths.length === 0) {
@@ -676,14 +698,7 @@ export function buildUploadFileMetadataFromSession(
     const relativePath = output.relativePath.replace(/\\/g, "/");
     if (!requested.has(relativePath)) continue;
     matched.add(relativePath);
-    const width = Number(output.width);
-    const height = Number(output.height);
-    const observedAt = String(output.verifiedAt || "");
-    const hasVerifiedMediaMetadata = Number.isInteger(width)
-      && width > 0
-      && Number.isInteger(height)
-      && height > 0
-      && Number.isFinite(Date.parse(observedAt));
+    const hasVerifiedMediaMetadata = output.width !== undefined && output.height !== undefined;
     if (!hasVerifiedMediaMetadata) missingMediaMetadata += 1;
 
     const page = pages.get(output.cid);
@@ -733,9 +748,9 @@ export function assessStrictEncoding(
   requestedEncoding: BBDownEncoding,
   files?: string[],
 ): StrictEncodingAssessment {
-  const manifest = readDownloadSession(downloadDir);
+  const session = readDownloadSession(downloadDir);
   const requested = requestedEncoding;
-  if (!manifest) {
+  if (session.kind !== "valid") {
     return {
       status: "unknown",
       requestedEncoding: requested,
@@ -745,9 +760,10 @@ export function assessStrictEncoding(
       totalPages: 0,
       mismatchedFiles: [],
       unknownFiles: [],
-      summary: `请求 ${requested}，下载清单缺失，无法取得已验证编码；未上传候选，也未执行归档替换。`,
+      summary: `请求 ${requested}，下载清单${session.kind === "invalid" ? "损坏" : "缺失"}，无法取得已验证编码；未上传候选，也未执行归档替换。`,
     };
   }
+  const manifest = session.manifest;
 
   const outputs = [...manifest.outputs];
   const outputPaths = outputs.map((output) => normalizedSessionPath(output.relativePath));
@@ -770,8 +786,7 @@ export function assessStrictEncoding(
   for (const output of outputs) {
     const relativePath = normalizedSessionPath(output.relativePath);
     const codec = normalizeActualCodec(output.videoCodec);
-    const verifiedAt = String(output.verifiedAt || "");
-    if (!codec || !Number.isFinite(Date.parse(verifiedAt))) {
+    if (!codec) {
       unknownFiles.push(relativePath);
       continue;
     }
@@ -822,21 +837,22 @@ export function assessStrictQuality(
   requestedQuality: string,
   files?: string[],
 ): StrictQualityAssessment {
-  const manifest = readDownloadSession(downloadDir);
+  const session = readDownloadSession(downloadDir);
   const requested = normalizeBilibiliQualityLabel(requestedQuality) || String(requestedQuality || "").trim().toUpperCase();
-  if (!manifest || !requested) {
+  if (session.kind !== "valid" || !requested) {
     return {
       status: "unknown",
       requestedQuality: requested || String(requestedQuality || "").trim(),
       actualQualities: ["UNKNOWN"],
       qualityMismatch: true,
       verifiedPages: 0,
-      totalPages: manifest?.pages.length || 0,
+      totalPages: session.kind === "valid" ? session.manifest.pages.length : 0,
       mismatchedFiles: [],
       unknownFiles: [],
-      summary: `请求 ${requested || "未知画质"}，下载清单或画质证明缺失；未上传候选，也未执行归档替换。`,
+      summary: `请求 ${requested || "未知画质"}，${session.kind === "invalid" ? "下载清单损坏" : "下载清单或画质证明缺失"}；未上传候选，也未执行归档替换。`,
     };
   }
+  const manifest = session.manifest;
 
   const outputs = [...manifest.outputs];
   const outputPaths = outputs.map((output) => normalizedSessionPath(output.relativePath));
@@ -1271,15 +1287,14 @@ export async function prepareDownloadSession(options: {
   const { downloadDir, bvid, accountUid, config } = options;
   await fs.promises.mkdir(downloadDir, { recursive: true });
   const fingerprint = buildDownloadConfigFingerprint(config, accountUid);
-  let manifest = readDownloadSession(downloadDir);
+  const session = readDownloadSession(downloadDir);
+  let manifest = session.kind === "valid" ? session.manifest : null;
   let incompatibleFragmentsMoved = 0;
   if (!manifest || manifest.bvid !== bvid) {
     const existingManifestPath = downloadSessionPath(downloadDir);
-    if (!manifest && fs.existsSync(existingManifestPath)) {
-      const preservedPath = `${existingManifestPath}.corrupt-${safeStamp()}`;
-      await fs.promises.copyFile(existingManifestPath, preservedPath).catch((error) => {
-        console.warn(`[DownloadSession] corrupt manifest backup failed: ${String(error)}`);
-      });
+    if (session.kind === "invalid") {
+      const preservedPath = `${existingManifestPath}.corrupt-${safeStamp()}-${crypto.randomUUID()}`;
+      await fs.promises.copyFile(existingManifestPath, preservedPath);
     }
     const at = nowIso();
     manifest = {
@@ -1381,8 +1396,10 @@ export async function refreshDownloadSessionOutputs(
   downloadDir: string,
   options: { deferCompleteStatus?: boolean } = {},
 ) {
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) throw new Error(`Download session manifest is missing: ${downloadDir}`);
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "missing") throw new Error(`Download session manifest is missing: ${downloadDir}`);
+  if (session.kind === "invalid") throw new Error(`${invalidDownloadSessionMessage(session)}: ${downloadDir}`);
+  const manifest = session.manifest;
   await scanAndValidateOutputs(downloadDir, manifest);
   const completedCids = new Set(manifest.outputs.map((output) => output.cid));
   const missingPages = manifest.pages.filter((page) => !completedCids.has(page.cid));
@@ -1394,8 +1411,10 @@ export async function refreshDownloadSessionOutputs(
 }
 
 export function markDownloadSessionStatus(downloadDir: string, status: DownloadSessionStatus, error?: string) {
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) return;
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "missing") return;
+  if (session.kind === "invalid") throw new Error(invalidDownloadSessionMessage(session));
+  const manifest = session.manifest;
   manifest.status = status;
   manifest.lastError = error;
   writeDownloadSession(downloadDir, manifest);
@@ -1414,13 +1433,19 @@ export function buildSelectPageArgument(pages: DownloadPageSnapshot[]) {
 }
 
 export function currentSessionFiles(downloadDir: string) {
-  const manifest = readDownloadSession(downloadDir);
-  return manifest?.outputs.map((output) => output.relativePath) || [];
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "invalid") throw new Error(invalidDownloadSessionMessage(session));
+  return session.kind === "valid" ? session.manifest.outputs.map((output) => output.relativePath) : [];
 }
 
 export function historySessionGroups(downloadDir: string) {
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) return [];
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "invalid") throw new Error(invalidDownloadSessionMessage(session));
+  if (session.kind === "missing") return [];
+  return groupDownloadSessionHistory(session.manifest);
+}
+
+export function groupDownloadSessionHistory(manifest: DownloadSessionManifest) {
   const groups = new Map<string, HistoricalOutputRecord[]>();
   for (const output of manifest.history) {
     const list = groups.get(output.snapshotAt) || [];
@@ -1431,8 +1456,10 @@ export function historySessionGroups(downloadDir: string) {
 }
 
 export function markHistoryGroupUploaded(downloadDir: string, snapshotAt: string, targetKey: string) {
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) return;
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "invalid") throw new Error(invalidDownloadSessionMessage(session));
+  if (session.kind === "missing") return;
+  const manifest = session.manifest;
   let changed = false;
   for (const output of manifest.history) {
     if (output.snapshotAt !== snapshotAt) continue;
@@ -1463,8 +1490,12 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
   if (options.confirmedRelativePaths === undefined && options.authorizedFiles === undefined) {
     return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
   }
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) {
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "invalid") {
+    return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0,
+      removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
+  }
+  if (session.kind === "missing") {
     let remaining: string[] = [];
     try { remaining = await fs.promises.readdir(downloadDir); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -1483,6 +1514,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
     });
     return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes };
   }
+  const manifest = session.manifest;
   const manifestPaths = new Set([
     ...manifest.outputs.map((output) => output.relativePath),
     ...manifest.history.map((output) => output.relativePath),
@@ -1522,8 +1554,8 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       const expected = [...manifest.outputs, ...manifest.history].find((output) => output.relativePath === relativePath);
       if (!expected || stat.size !== expected.size || stat.size !== authorization.expectedSize) continue;
       // Keep the final application-state check and unlink in one event-loop turn.
-      const currentManifest = readDownloadSession(downloadDir);
-      if (!currentManifest || JSON.stringify(currentManifest) !== JSON.stringify(manifest)) break;
+      const currentSession = readDownloadSession(downloadDir);
+      if (currentSession.kind !== "valid" || JSON.stringify(currentSession.manifest) !== JSON.stringify(manifest)) break;
       if (options.canDelete && !options.canDelete()) break;
       const currentStat = fs.lstatSync(target);
       const identity = authorization.expectedIdentity || stat;
@@ -1540,8 +1572,8 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
   }
   // An asynchronous file inspection may have yielded to a new download. Never
   // reconcile an old snapshot over its manifest, even when some files were removed.
-  const latestManifest = readDownloadSession(downloadDir);
-  if (!latestManifest || JSON.stringify(latestManifest) !== JSON.stringify(manifest)) {
+  const latestSession = readDownloadSession(downloadDir);
+  if (latestSession.kind !== "valid" || JSON.stringify(latestSession.manifest) !== JSON.stringify(manifest)) {
     return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0,
       removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
   }
@@ -1616,8 +1648,10 @@ export function recordDownloadSelectedStream(
   downloadDir: string,
   input: { pageIndex: number; bilibiliQuality: string }
 ) {
-  const manifest = readDownloadSession(downloadDir);
-  if (!manifest) return false;
+  const session = readDownloadSession(downloadDir);
+  if (session.kind === "invalid") throw new Error(invalidDownloadSessionMessage(session));
+  if (session.kind === "missing") return false;
+  const manifest = session.manifest;
   const page = manifest.pages.find((candidate) => candidate.index === Number(input.pageIndex));
   const bilibiliQuality = normalizeBilibiliQualityLabel(input.bilibiliQuality);
   if (!page || !bilibiliQuality) return false;
@@ -1712,9 +1746,13 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
     }
     if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
 
-    const manifest = readDownloadSession(downloadDir);
-    const candidates = manifest
-      ? [...classifyManifestRecovery(downloadDir, manifest).cleanup]
+    const session = readDownloadSession(downloadDir);
+    if (session.kind === "invalid") {
+      result.retainedBytes += directorySizeSync(downloadDir);
+      continue;
+    }
+    const candidates = session.kind === "valid"
+      ? [...classifyManifestRecovery(downloadDir, session.manifest).cleanup]
       : listFilesSync(downloadDir).filter((relativeFile) => /\.(aria2|tmp|vclip|aclip|part|download)$/i.test(relativeFile));
     const root = path.resolve(downloadDir);
     for (const relativeFile of candidates) {
@@ -1771,13 +1809,12 @@ async function listFileSizes(rootDir: string) {
   return files;
 }
 
-export async function readDownloadSessionAsync(downloadDir: string) {
+export async function readDownloadSessionAsync(downloadDir: string): Promise<DownloadSessionReadResult> {
   try {
-    const parsed = decodeDownloadSessionManifest(JSON.parse(await fs.promises.readFile(downloadSessionPath(downloadDir), "utf8")) as unknown);
-    if (!parsed) return null;
-    return parsed;
+    return decodeDownloadSession(JSON.parse(await fs.promises.readFile(downloadSessionPath(downloadDir), "utf8")) as unknown);
   } catch (error: unknown) {
-    if (errorCode(error) === "ENOENT" || error instanceof SyntaxError) return null;
+    if (errorCode(error) === "ENOENT") return { kind: "missing" };
+    if (error instanceof SyntaxError) return { kind: "invalid", reason: "json" };
     throw error;
   }
 }
@@ -1831,8 +1868,13 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
         result.recovery.retainedBytes += bytes;
         continue;
       }
-      const manifest = await readDownloadSessionAsync(downloadDir);
-      if (!manifest) {
+      const session = await readDownloadSessionAsync(downloadDir);
+      if (session.kind === "invalid") {
+        result.recovery.retainedBytes += bytes;
+        console.warn(`[DownloadSession] retained corrupt manifest directory ${entry.name}: ${invalidDownloadSessionMessage(session)}`);
+        continue;
+      }
+      if (session.kind === "missing") {
         if (!/^BV[0-9A-Za-z]+$/i.test(entry.name)) continue;
         result.recovery.legacyDirectories += 1;
         result.recovery.legacyBytes += bytes;
@@ -1843,6 +1885,7 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
         }
         continue;
       }
+      const manifest = session.manifest;
       const classified = classifyManifestRecoverySet(manifest, fileSizes.keys());
       const sizeOf = (items: Set<string>) => [...items].reduce((total, relativeFile) => total + (fileSizes.get(relativeFile) || 0), 0);
       if (["prepared", "downloading", "failed"].includes(manifest.status)

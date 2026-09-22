@@ -573,7 +573,9 @@ export async function downloadWithBBDown(
     throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), snapshot.access);
   }
   const previousSession = readDownloadSession(downloadDir);
-  let effectivePages = snapshot.pages.length > 0 ? snapshot.pages : previousSession?.pages || [];
+  let effectivePages = snapshot.pages.length > 0
+    ? snapshot.pages
+    : previousSession.kind === "valid" ? previousSession.manifest.pages : [];
   let interactiveDigest: string | undefined;
   if (snapshot.interactive && snapshotAvailability === "available") {
     const inventory = await probeMediaWithBBDown(bvid, cookie, config, {

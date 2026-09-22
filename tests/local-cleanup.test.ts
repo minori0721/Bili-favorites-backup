@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { writeJsonFile } from "../src/storage.js";
-import { cleanupUploadedSessionFiles, readDownloadSession, writeDownloadSession } from "../src/download-session.js";
+import { cleanupUploadedSessionFiles, readDownloadSession as readDownloadSessionResult, writeDownloadSession } from "../src/download-session.js";
 import { SyncScheduler } from "../src/scheduler.js";
 import { createLocalCleanup } from '../src/scheduler/local-cleanup.js';
 import type { inspectRemoteFileSize } from '../src/uploader.js';
@@ -14,6 +14,11 @@ import { StateManager, type RemoteFileRecord } from "../src/state.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+
+function readDownloadSession(downloadDir: string) {
+  const result = readDownloadSessionResult(downloadDir);
+  return result.kind === 'valid' ? result.manifest : null;
+}
 
 async function waitForCondition(check: () => boolean, timeoutMs = 1_000) {
   const deadline = Date.now() + timeoutMs;
