@@ -9,7 +9,7 @@ interface Dependencies {
   jobs: Pick<JobRepository,'listForBoard' | 'counts' | 'countRecoverable' | 'accessProbeScheduleSummary'>;
   chargingRestrictions: {lastCheckedAt?: string};
   mapTask(task: Task, stage: QueueBoardItem['stage']): QueueBoardItem;
-  mapJob(job: ReturnType<JobRepository['listForBoard']>[number]): QueueBoardItem | null;
+  mapJob(job: ReturnType<JobRepository['listForBoard']>[number]): QueueBoardItem;
   enrich(items: QueueBoardItem[]): void;
 }
 
@@ -61,12 +61,9 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
       "upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup", "verify_upload",
     ];
     const boardLimit = Math.max(1, Number(dependencies.config.queuePrefetchLimit || 25));
-    const persistentJobs = dependencies.jobs.listForBoard(boardKinds, boardLimit);
+    const persistentJobs = dependencies.jobs.listForBoard(boardKinds, boardLimit, undefined, [...seenPersistentJobIds]);
     for (const job of persistentJobs) {
-      if (seenPersistentJobIds.has(String(job.id))) continue;
       const item = dependencies.mapJob(job);
-      if (!item) continue;
-      seenPersistentJobIds.add(String(job.id));
       if (item.stage === "download_running" || item.stage === "download_pending") {
         (item.stage === "download_running" ? downloadRunning : downloadPending).push(item);
       } else {
@@ -99,8 +96,8 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
     return {
       ...extra, downloadPending,downloadRunning,uploadPending,uploadRunning,
       chargingAccess:{pending:chargingSchedule.count,nextCheckAt:chargingSchedule.nextAt,lastCheckedAt:Number.isFinite(lastChargingCheckAt)?lastChargingCheckAt:undefined},
-      recovery:{pendingUploads:countRecoverable(['upload','history_upload']),pendingDownloads:countRecoverable(['download','quality_download']),
-        pendingVerifications:countRecoverable(['verify_upload']),chargingRestricted:chargingSchedule.count,availabilityChecks:availabilitySchedule.count,
+      recovery:{pendingUploads:countRecoverable(['upload','history_upload','quality_upload']),pendingDownloads:countRecoverable(['download','quality_download']),
+        pendingVerifications:countRecoverable(['verify_upload']),pendingQualityMaintenance:countRecoverable(['quality_replace','quality_cleanup']),chargingRestricted:chargingSchedule.count,availabilityChecks:availabilitySchedule.count,
         leasedJobs,retryJobs,prefetchLimit:dependencies.config.queuePrefetchLimit || 25},
     };
 }

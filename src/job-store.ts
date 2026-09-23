@@ -34,6 +34,15 @@ function retryRecord(value: unknown): Record<string, unknown> | undefined {
 const RECOVERY_NOT_STOPPED_SQL = `
   COALESCE(json_extract(payload_json, '$.userDisposition'), '')<>'abandoned'
   AND COALESCE(json_extract(payload_json, '$.lifecycleState'), '')<>'abandoned'`;
+const RECOVERABLE_STATUS_SQL = `(
+  status IN ('pending','retry_wait','leased','running','manual_wait')
+  OR (status='failed' AND json_extract(payload_json, '$.awaitingManualRecovery')=1)
+)`;
+const BOARD_NOT_REPLACED_BY_RETRY_SQL = `NOT (
+  COALESCE(json_extract(payload_json, '$.awaitingManualRecovery'), 0)=0
+  AND COALESCE(json_extract(payload_json, '$.encodingRetry.state'), '') IN ('running','uploading','verifying')
+  AND COALESCE(json_extract(payload_json, '$.encodingRetry.parentJobId'), '')=id
+)`;
 
 export const PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES = [
   "pending",
@@ -945,10 +954,7 @@ export class PersistentJobStore implements JobRepository {
       SELECT COUNT(*) AS count FROM jobs
       WHERE kind IN (${placeholders})
         AND ${RECOVERY_NOT_STOPPED_SQL}
-        AND (
-          status IN ('pending','retry_wait','leased','running','manual_wait')
-          OR (status='failed' AND json_extract(payload_json, '$.awaitingManualRecovery')=1)
-        )
+        AND ${RECOVERABLE_STATUS_SQL}
     `).get(...kinds);
     return decodeCountRow(row, "recoverable job count").count;
   }
@@ -956,17 +962,22 @@ export class PersistentJobStore implements JobRepository {
   listForBoard(
     kinds: PersistentJobKind[],
     limit = 100,
-    statuses: PersistentJobRecord["status"][] = ["pending", "retry_wait", "leased", "running", "manual_wait", "failed"]
+    statuses: PersistentJobRecord["status"][] = ["pending", "retry_wait", "leased", "running", "manual_wait", "failed"],
+    excludeIds: readonly string[] = [],
   ) {
     if (kinds.length === 0) return [];
     if (statuses.length === 0) return [];
     const placeholders = kinds.map(() => "?").join(",");
     const statusPlaceholders = statuses.map(() => "?").join(",");
+    const excludedPlaceholders = excludeIds.map(() => "?").join(",");
     return decodeJobRows(this.stateDatabase.db.prepare(`
       SELECT * FROM jobs WHERE kind IN (${placeholders}) AND status IN (${statusPlaceholders})
         AND ${RECOVERY_NOT_STOPPED_SQL}
-      ORDER BY priority ASC, not_before ASC, created_at ASC LIMIT ?
-    `).all(...kinds, ...statuses, Math.max(1, limit)), "board jobs");
+        AND ${RECOVERABLE_STATUS_SQL}
+        AND ${BOARD_NOT_REPLACED_BY_RETRY_SQL}
+        ${excludeIds.length ? `AND id NOT IN (${excludedPlaceholders})` : ""}
+      ORDER BY priority ASC, not_before ASC, created_at ASC, id ASC LIMIT ?
+    `).all(...kinds, ...statuses, ...excludeIds, Math.max(1, limit)), "board jobs");
   }
 
   list(kinds: PersistentJobKind[], limit = 1000) {

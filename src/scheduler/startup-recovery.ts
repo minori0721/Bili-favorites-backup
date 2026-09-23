@@ -4,7 +4,6 @@ import type { ConfigStore, AppConfig } from '../config.js';
 import type { BiliUser } from '../users.js';
 import type { StateManager, FavoriteRelation } from '../state.js';
 import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
-import type { PersistentJobKind } from '../repositories/jobs.js';
 import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import { readDownloadSession, groupDownloadSessionHistory, buildUploadFileMetadataFromSession } from '../download-session.js';
 import { joinRemotePath } from '../utils.js';
@@ -36,7 +35,7 @@ function readRecoveryManifest(localDir: string, verified = false) {
 
 interface Dependencies {
   stateManager: Pick<StateManager, 'listStaleActiveBackups' | 'runBatch' | 'markDownloadInterrupted' | 'markUploadFailed' | 'resetRelationForRetry' | 'hasPersistentJobBootstrap' | 'normalizePersistedWorkForRecovery' | 'listBackupsToResume' | 'listPendingUploadVerifications' | 'getRelationStatus' | 'getVideoMeta' | 'markPersistentJobBootstrapComplete' | 'listUploadFailuresForRecoveryPage'>;
-  jobStore: Pick<JobRepository, 'hasJobsForBvid' | 'enqueue' | 'counts' | 'enqueueBatch'>;
+  jobStore: Pick<JobRepository, 'hasJobsForBvid' | 'enqueue' | 'countRecoverable' | 'enqueueBatch'>;
   transferSessions: Pick<TransferSessionRepository, 'listFiles' | 'findForTarget'>;
   configStore: Pick<ConfigStore, 'get'>;
   staleActiveBackupMs: number;
@@ -333,14 +332,15 @@ export function createStartupRecovery(deps: Dependencies) {
       });
     }
     deps.stateManager.markPersistentJobBootstrapComplete();
-    const counts = deps.jobStore.counts();
-    const totalKind = (kind: PersistentJobKind) => Object.values(counts[kind] || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+    const pendingUploads = deps.jobStore.countRecoverable(['upload', 'history_upload', 'quality_upload']);
+    const pendingDownloads = deps.jobStore.countRecoverable(['download', 'quality_download']);
+    const pendingVerificationCount = deps.jobStore.countRecoverable(['verify_upload']);
     logManager.push({
       timestamp: new Date().toISOString(),
       type: "system",
       level: "info",
-      summary: `启动恢复已写入持久化队列：待补传 ${totalKind("upload") + totalKind("history_upload")}，待下载 ${totalKind("download")}，待确认 ${totalKind("verify_upload")}`,
-      raw: `[Recovery] sqlite jobs uploads=${totalKind("upload") + totalKind("history_upload")} downloads=${totalKind("download")} verify=${totalKind("verify_upload")}`,
+      summary: `启动恢复初始化完成，当前待处理：待补传 ${pendingUploads}，待下载 ${pendingDownloads}，待确认 ${pendingVerificationCount}`,
+      raw: `[Recovery] current recoverable sqlite jobs uploads=${pendingUploads} downloads=${pendingDownloads} verify=${pendingVerificationCount}`,
       simpleVisible: true,
       debugVisible: true,
     });

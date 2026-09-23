@@ -137,7 +137,9 @@
         "cancelStartup",
         "activeInterval",
         "generation",
-        "nextRunAt"
+        "nextRunAt",
+        "nextIntervalAt",
+        "nextStartupAt"
       ],
       "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
       "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",

@@ -133,7 +133,32 @@ test("defaults to the board and keeps remote verification data separate from ret
   await expect(card.locator("[data-queue-time=\"1\"]")).toContainText("后自动复核");
   await expect(card.locator(".queue-extra")).not.toContainText("重试");
   await expect(page.locator("#schedulerStatusBox")).toContainText("后台队列待处理");
+  await expect(page.locator('[data-queue-column="uploadPending"] .queue-col-title span').first()).toHaveText('待上传/收尾');
+  await expect(page.locator('[data-queue-column="uploadRunning"] .queue-col-title span').first()).toHaveText('上传/收尾中');
+  const headingsFit = await page.locator('#queueBoard .queue-col-title').evaluateAll(headings =>
+    headings.every(heading => heading.scrollWidth <= heading.clientWidth + 1));
+  expect(headingsFit).toBe(true);
   await expect(page.locator("#logConsole")).toBeHidden();
+});
+
+test('scheduler shows polling time and account cooldown as separate values', async ({page,browserProblems}) => {
+  void browserProblems;
+  await page.route('**/api/queue/state',async route => {
+    const response = await route.fetch();
+    const json = await response.json();
+    json.data.scheduler = {status:'cooldown',title:'账号冷却中',detail:'账号稍后恢复',queuedActions:[],
+      nextRunAt:Date.parse('2030-01-01T10:00:00Z'),accountCooldown:{count:2,earliestUntil:Date.parse('2030-01-01T11:00:00Z')}};
+    json.data.recovery.pendingQualityMaintenance = 1;
+    await route.fulfill({json});
+  });
+  await openBoard(page);
+  const box = page.locator('#schedulerStatusBox');
+  await expect(box.locator('summary')).toContainText('下次自动同步');
+  await box.locator('summary').click();
+  await expect(box).toContainText('账号冷却：2 个账号');
+  await expect(box).toContainText('画质收尾 1');
+  const times = await box.locator('.scheduler-status-grid > div').allTextContents();
+  expect(times.find(row => row.startsWith('下次自动同步：'))).not.toEqual(times.find(row => row.startsWith('账号冷却：')));
 });
 
 test("codec preference editor supports a stable three-item reorder", async ({ page, browserProblems }) => {

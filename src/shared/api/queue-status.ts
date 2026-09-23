@@ -34,12 +34,18 @@ export function parseQueueStatus(value: unknown) {
   const upload=data.uploadHealth == null ? null : object(data.uploadHealth);
   const api=data.downloadApiHealth == null ? null : object(data.downloadApiHealth);
   const maintenance=data.maintenance == null ? null : object(data.maintenance);
+  const accountCooldown=scheduler.accountCooldown == null ? null : object(scheduler.accountCooldown);
   const actions=scheduler.queuedActions ?? [];
   if (!Array.isArray(actions) || !actions.every((item):item is string=>typeof item==='string')) throw new ResponseFormatError('调度操作列表格式错误');
+  if (accountCooldown && (typeof accountCooldown.count !== 'number' || !Number.isSafeInteger(accountCooldown.count) || accountCooldown.count < 1
+    || typeof accountCooldown.earliestUntil !== 'number' || !Number.isFinite(accountCooldown.earliestUntil))) {
+    throw new ResponseFormatError('账号冷却摘要格式错误');
+  }
   return {
     scheduler:{status:text(scheduler.status),title:text(scheduler.title),detail:text(scheduler.detail),userName:text(scheduler.userName),folderTitle:text(scheduler.folderTitle),
       lastError:text(scheduler.lastError),nextRunAt:time(scheduler.nextRunAt),startedAt:time(scheduler.startedAt),page:count(scheduler.page),total:count(scheduler.total),checked:count(scheduler.checked),biliTotal:count(scheduler.biliTotal),indexed:count(scheduler.indexed),queuedActions:actions,
-      recovery:{pendingUploads:count(recovery.pendingUploads),pendingDownloads:count(recovery.pendingDownloads),pendingVerifications:count(recovery.pendingVerifications),chargingRestricted:count(recovery.chargingRestricted),leasedJobs:count(recovery.leasedJobs),retryJobs:count(recovery.retryJobs)},
+      recovery:{pendingUploads:count(recovery.pendingUploads),pendingDownloads:count(recovery.pendingDownloads),pendingVerifications:count(recovery.pendingVerifications),pendingQualityMaintenance:count(recovery.pendingQualityMaintenance),chargingRestricted:count(recovery.chargingRestricted),leasedJobs:count(recovery.leasedJobs),retryJobs:count(recovery.retryJobs)},
+      accountCooldown:accountCooldown ? {count:accountCooldown.count as number,earliestUntil:accountCooldown.earliestUntil as number,userName:text(accountCooldown.userName)} : null,
       maintenance:maintenance ? {kind:text(maintenance.kind),status:text(maintenance.status)} : null},
     localCache:cache ? {limitBytes:count(cache.limitBytes),usedBytes:count(cache.usedBytes),reserveBytes:count(cache.reserveBytes),paused:flag(cache.paused)} : null,
     downloadRecovery:downloads ? {resumableSessions:count(downloads.resumableSessions),legacyDirectories:count(downloads.legacyDirectories),cleanupEligibleBytes:count(downloads.cleanupEligibleBytes),retainedBytes:count(downloads.retainedBytes)} : null,

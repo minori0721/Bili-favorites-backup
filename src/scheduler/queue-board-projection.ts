@@ -3,7 +3,6 @@ import { UploadVerificationTask } from '../tasks.js';
 import type { StateManager } from '../state.js';
 import type { PersistentJobRecord } from '../database.js';
 import { recoveryIssueDisposition } from '../recovery-policy.js';
-import { isRecoveryStopped } from '../job-store.js';
 import { parseEncodingRetryContext } from './recovery-context.js';
 import { parseRecoveryAssessment } from './recovery-projection.js';
 import { uploadRecoverySummary } from './recovery-issue-projection.js';
@@ -43,20 +42,16 @@ export function createQueueBoardProjection(deps: { metadata: StateManager['getVi
     return item;
   }
 
-  function mapPersistentJobForBoard(job: PersistentJobRecord): QueueBoardItem | null {
-    if (isRecoveryStopped(job.payload)) return null;
+  function mapPersistentJobForBoard(job: PersistentJobRecord): QueueBoardItem {
     const payload = job.payload;
     const encodingRetry = record(payload.encodingRetry);
     const kind = String(job.kind || "");
     const isDownload = ["download", "quality_download"].includes(kind);
     const isUpload = ["upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup", "verify_upload"].includes(kind);
-    if (!isDownload && !isUpload) return null;
-    if (job.status === "failed" && !payload.awaitingManualRecovery) return null;
+    if (!isDownload && !isUpload) throw new Error(`Unexpected board job kind: ${kind}`);
 
     const assessment = payload.awaitingManualRecovery ? parseRecoveryAssessment(payload) : null;
     const retryBusy = Boolean(payload.encodingRetry && ["running", "uploading", "verifying"].includes(String(encodingRetry.state || "")));
-    const retryParentId = encodingRetry.parentJobId ? String(encodingRetry.parentJobId) : "";
-    if (retryBusy && !payload.awaitingManualRecovery && retryParentId === String(job.id)) return null;
     const disposition = assessment ? recoveryIssueDisposition(assessment.kind) : undefined;
     const isVerification = kind === "verify_upload";
     const stage: QueueBoardItem["stage"] = isDownload

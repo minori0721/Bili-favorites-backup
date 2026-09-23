@@ -2,7 +2,7 @@ import { sanitizeDiagnosticText } from '../diagnostics.js';
 import type { PersistentJobStore } from '../job-store.js';
 import type { TaskQueue } from '../queue.js';
 import type { StateManager } from '../state.js';
-import type { UserStore } from '../users.js';
+import type { BiliUser } from '../users.js';
 import { createQueueBoardProjection } from './queue-board-projection.js';
 import { projectQueueSnapshot } from './queue-projection.js';
 import type { SchedulerSnapshot, SyncTrigger } from './sync-runtime.js';
@@ -24,7 +24,7 @@ interface SchedulerStatusDependencies<
   sync: SyncProjectionPort;
   nextRunAt(): number | undefined;
   state: Pick<StateManager, 'getAllCooldowns' | 'getVideoMetaBatch' | 'getChargingRestrictionSummary'>;
-  users: Pick<UserStore, 'getById'>;
+  eligibleUsers(): Array<Pick<BiliUser, 'id' | 'name'>>;
   queues: {
     download: Pick<TaskQueue, 'getTasks'>;
     upload: Pick<TaskQueue, 'getTasks'>;
@@ -73,28 +73,38 @@ export function createSchedulerStatusProjection<
     const pending = deps.sync.getPending();
     const queuedActions = pending ? [schedulerTriggerLabel(pending.trigger || 'auto')] : [];
     const progress = deps.sync.getProgress();
+    const cooldowns = deps.state.getAllCooldowns();
+    const eligibleUsers = Object.keys(cooldowns).length ? deps.eligibleUsers() : [];
+    const coolingUsers = eligibleUsers.filter(user => cooldowns[user.id]);
+    const accountCooldown = coolingUsers.length ? {
+      count: coolingUsers.length,
+      earliestUntil: coolingUsers.reduce((earliest, user) => Math.min(earliest, cooldowns[user.id].until), Number.POSITIVE_INFINITY),
+      ...(coolingUsers.length === 1 ? { userName: coolingUsers[0].name } : {}),
+    } : undefined;
+    const nextRunAt = deps.nextRunAt();
     if (progress) {
       return {
         ...progress,
         queuedActions,
         lastError: sanitizeDiagnosticText(deps.sync.getLastError(), 500),
-        nextRunAt: deps.nextRunAt(),
+        nextRunAt,
+        accountCooldown,
       };
     }
 
-    const cooldown = Object.values(deps.state.getAllCooldowns())[0];
-    if (cooldown) {
-      const user = deps.users.getById(cooldown.userId);
+    if (!queuedActions.length && eligibleUsers.length > 0 && coolingUsers.length === eligibleUsers.length) {
+      const onlyCooldown = coolingUsers.length === 1 ? cooldowns[coolingUsers[0].id] : undefined;
       return {
         status: 'cooldown',
         mode: 'cooldown',
         title: '账号冷却中',
-        detail: sanitizeDiagnosticText(cooldown.reason, 500),
-        userName: user?.name || cooldown.userId,
+        detail: onlyCooldown ? sanitizeDiagnosticText(onlyCooldown.reason, 500) : `${coolingUsers.length} 个账号处于冷却中`,
+        userName: accountCooldown?.userName,
         queuedActions,
-        lastError: sanitizeDiagnosticText(cooldown.reason, 500),
+        lastError: sanitizeDiagnosticText(deps.sync.getLastError(), 500),
         updatedAt: deps.now(),
-        nextRunAt: cooldown.until,
+        nextRunAt,
+        accountCooldown,
       };
     }
 
@@ -106,7 +116,8 @@ export function createSchedulerStatusProjection<
       queuedActions,
       lastError: sanitizeDiagnosticText(deps.sync.getLastError(), 500),
       updatedAt: deps.now(),
-      nextRunAt: deps.nextRunAt(),
+      nextRunAt,
+      accountCooldown,
     };
   }
 

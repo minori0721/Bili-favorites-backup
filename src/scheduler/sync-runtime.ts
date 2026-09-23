@@ -33,6 +33,7 @@ export interface SchedulerSnapshot {
   startedAt?: number;
   updatedAt?: number;
   nextRunAt?: number;
+  accountCooldown?: { count: number; earliestUntil: number; userName?: string };
 }
 
 export interface SyncCycleStats {

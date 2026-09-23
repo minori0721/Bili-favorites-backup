@@ -7,9 +7,14 @@
     .log-toggle button { flex:0 0 auto; min-height:34px; padding:6px 16px; border-radius:999px; border:1px solid rgba(214,240,237,0.95); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:background .2s,border-color .2s,color .2s,box-shadow .2s; }
     .log-toggle button:hover,.log-toggle button:focus-visible { background:rgba(57,197,187,0.1); color:var(--ink); outline:none; }
     .log-toggle button.active { background:var(--accent); color:white; border-color:var(--accent); box-shadow:none; }
-    .scheduler-status { border:1px solid var(--border); border-radius:14px; background:var(--surface); padding:11px 12px; margin-bottom:12px; font-size:13px; }
-    .scheduler-status-main { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
-    .scheduler-status-title { font-weight:800; color:var(--accent); }
+    .log-toggle button.active:hover,.log-toggle button.active:focus-visible { background:var(--accent-hover); border-color:var(--accent-hover); box-shadow:0 0 0 3px rgba(57,197,187,0.16),0 6px 16px rgba(57,197,187,0.2); }
+    .scheduler-status { border:1px solid var(--border); border-radius:14px; background:var(--surface); padding:11px 12px; margin-bottom:12px; font-size:13px; transition:border-color .2s,box-shadow .2s,background .2s; }
+    .scheduler-status-main { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; cursor:pointer; }
+    .scheduler-status:has(> .scheduler-status-main:hover),.scheduler-status:has(> .scheduler-status-main:focus-visible) { box-shadow:0 0 0 3px rgba(57,197,187,0.16),0 6px 16px rgba(57,197,187,0.16); }
+    .scheduler-status.idle:has(> .scheduler-status-main:hover),.scheduler-status.idle:has(> .scheduler-status-main:focus-visible) { border-color:var(--accent); background:rgba(57,197,187,0.06); }
+    .scheduler-status-main:focus-visible { outline:2px solid var(--accent); outline-offset:5px; border-radius:4px; }
+    .scheduler-status-title { font-weight:800; color:var(--accent); transition:color .2s; }
+    .scheduler-status-main:hover .scheduler-status-title,.scheduler-status-main:focus-visible .scheduler-status-title { color:var(--accent-hover); }
     .scheduler-status-detail { color:var(--muted); margin-top:4px; }
     .scheduler-status.running { border-color:var(--accent); background:rgba(57,197,187,0.08); }
     .scheduler-status.queued,.scheduler-status.cooldown { border-color:#FFB74D; background:#FFF8E1; }

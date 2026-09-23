@@ -111,7 +111,7 @@ export interface JobRepository {
   counts(): Record<string, Record<string, number>>;
   /** Counts jobs that can still appear in the recovery summary. */
   countRecoverable(kinds: PersistentJobKind[]): number;
-  listForBoard(kinds: PersistentJobKind[], limit?: number, statuses?: PersistentJobRecord["status"][]): PersistentJobRecord[];
+  listForBoard(kinds: PersistentJobKind[], limit?: number, statuses?: PersistentJobRecord["status"][], excludeIds?: readonly string[]): PersistentJobRecord[];
   list(kinds: PersistentJobKind[], limit?: number): PersistentJobRecord[];
   listLegacyDownloadRecovery(limit?: number): PersistentJobRecord[];
   findLegacyDownloadRecovery(issueKey: string): PersistentJobRecord | null;

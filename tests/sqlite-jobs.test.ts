@@ -17,6 +17,31 @@ import { TransferSessionStore } from "../src/transfer-session.js";
 import { createTestDir, removeTestDir } from "./helpers.js";
 import { isRecord } from "../src/shared/api/value.js";
 
+test("board limit applies after recovery and duplicate-task exclusions", () => {
+  const database = new StateDatabase(":memory:");
+  const jobs = new PersistentJobStore(database);
+  try {
+    for (let index = 0; index < 25; index += 1) {
+      const historical = jobs.enqueue({kind:"upload",dedupeKey:`old-failure-${index}`,priority:1,initialStatus:"manual_wait"});
+      database.db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(historical.id);
+    }
+    const stopped = jobs.enqueue({kind:"upload",dedupeKey:"stopped-board",priority:1,payload:{userDisposition:"abandoned"}});
+    const parent = jobs.enqueue({kind:"upload",dedupeKey:"retry-parent-board",priority:1});
+    jobs.updatePayload(parent.id, {encodingRetry:{parentJobId:parent.id,state:"uploading"}});
+    const represented = Array.from({length:25}, (_, index) =>
+      jobs.enqueue({kind:"upload",dedupeKey:`represented-${index}`,priority:2}));
+    const waiting = jobs.enqueue({kind:"upload",dedupeKey:"visible-pending",priority:3});
+    const manual = jobs.enqueue({kind:"upload",dedupeKey:"visible-manual",priority:4,initialStatus:"manual_wait",payload:{awaitingManualRecovery:true}});
+    const failedManual = jobs.enqueue({kind:"upload",dedupeKey:"visible-failed-manual",priority:5,initialStatus:"manual_wait",payload:{awaitingManualRecovery:true}});
+    database.db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(failedManual.id);
+    const visible = jobs.listForBoard(["upload"], 3, undefined, represented.map(job => job.id));
+    assert.deepEqual(visible.map(job => job.id), [waiting.id, manual.id, failedManual.id]);
+    assert.equal(jobs.listForBoard(["upload"], 1, undefined, represented.map(job => job.id))[0]?.id, waiting.id);
+    assert.equal(jobs.findById(stopped.id)?.status, "pending");
+    assert.equal(jobs.findById(parent.id)?.status, "pending");
+  } finally { database.close(); }
+});
+
 test("stopped recovery cannot reappear, be claimed, or overwrite a newer attempt", () => {
   const database = new StateDatabase(":memory:");
   const jobs = new PersistentJobStore(database);

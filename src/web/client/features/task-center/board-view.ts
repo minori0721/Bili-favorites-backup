@@ -283,8 +283,8 @@ export function createQueueBoardView({ root, renderStatus, renderActions }: Opti
         const seenKeys = new Set<string>();
         renderQueueColumn(grid, 'downloadPending', '待下载', snapshot.downloadPending || [], nowMs, seenKeys);
         renderQueueColumn(grid, 'downloadRunning', '下载中', snapshot.downloadRunning || [], nowMs, seenKeys);
-        renderQueueColumn(grid, 'uploadPending', '待上传', snapshot.uploadPending || [], nowMs, seenKeys);
-        renderQueueColumn(grid, 'uploadRunning', '上传中', snapshot.uploadRunning || [], nowMs, seenKeys);
+        renderQueueColumn(grid, 'uploadPending', '待上传/收尾', snapshot.uploadPending || [], nowMs, seenKeys);
+        renderQueueColumn(grid, 'uploadRunning', '上传/收尾中', snapshot.uploadRunning || [], nowMs, seenKeys);
         for (const [key, card] of Array.from(queueBoardState.cards.entries())) {
           if (seenKeys.has(key)) continue;
           queueBoardState.cards.delete(key);

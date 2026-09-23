@@ -31,11 +31,27 @@ test('polling preserves startup jitter and interval while repeated start is idem
   setNow(76_000);
   timers[1].callback();
   assert.equal(runs(), 1);
-  assert.equal(polling.getNextRunAt(), 376_000);
+  assert.equal(polling.getNextRunAt(), 301_000);
   setNow(301_000);
   timers[0].callback();
   assert.equal(runs(), 2);
   assert.equal(polling.getNextRunAt(), 601_000);
+  polling.stop();
+  assert.equal(polling.getNextRunAt(), undefined);
+});
+
+test('polling reports whichever scheduled attempt comes first when the interval precedes startup jitter', () => {
+  const { polling, timers, runs, setNow } = fixture();
+  polling.start(40_000);
+  assert.equal(polling.getNextRunAt(), 41_000);
+  setNow(41_000);
+  timers[0].callback();
+  assert.equal(runs(), 1);
+  assert.equal(polling.getNextRunAt(), 76_000);
+  setNow(76_000);
+  timers[1].callback();
+  assert.equal(runs(), 2);
+  assert.equal(polling.getNextRunAt(), 81_000);
   polling.stop();
 });
 

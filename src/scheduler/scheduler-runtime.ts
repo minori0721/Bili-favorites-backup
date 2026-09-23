@@ -862,7 +862,7 @@ export class SchedulerRuntime implements SchedulerControl {
       sync: this.syncWorkflow,
       nextRunAt: () => this.polling.getNextRunAt(),
       state: this.stateManager,
-      users: this.userStore,
+      eligibleUsers: () => this.userStore.list().filter(this.userSyncEligibility),
       queues: {
         download: this.downloadQueue,
         upload: this.uploadQueue,

@@ -22,6 +22,14 @@ export function createPollingSchedule(dependencies: PollingDependencies) {
   let activeInterval: number | undefined;
   let generation = 0;
   let nextRunAt: number | undefined;
+  let nextIntervalAt: number | undefined;
+  let nextStartupAt: number | undefined;
+
+  function updateNextRunAt() {
+    nextRunAt = nextIntervalAt === undefined ? nextStartupAt
+      : nextStartupAt === undefined ? nextIntervalAt
+      : Math.min(nextIntervalAt, nextStartupAt);
+  }
 
   function stop() {
     generation += 1;
@@ -29,6 +37,8 @@ export function createPollingSchedule(dependencies: PollingDependencies) {
     cancelStartup?.();
     cancelInterval = cancelStartup = undefined;
     activeInterval = undefined;
+    nextIntervalAt = nextStartupAt = undefined;
+    nextRunAt = undefined;
   }
 
   function start(intervalMs: number) {
@@ -37,17 +47,22 @@ export function createPollingSchedule(dependencies: PollingDependencies) {
     activeInterval = intervalMs;
     const current = generation;
     const startupJitter = 30_000 + Math.floor(dependencies.random() * 90_000);
-    nextRunAt = dependencies.now() + startupJitter;
-    const run = () => {
+    const startedAt = dependencies.now();
+    nextStartupAt = startedAt + startupJitter;
+    nextIntervalAt = startedAt + intervalMs;
+    updateNextRunAt();
+    cancelInterval = register(() => {
       if (generation !== current) return;
-      nextRunAt = dependencies.now() + intervalMs;
+      nextIntervalAt = dependencies.now() + intervalMs;
+      updateNextRunAt();
       dependencies.run();
-    };
-    cancelInterval = register(run, intervalMs, true);
+    }, intervalMs, true);
     cancelStartup = register(() => {
       if (generation !== current) return;
       cancelStartup = undefined;
-      run();
+      nextStartupAt = undefined;
+      updateNextRunAt();
+      dependencies.run();
     }, startupJitter, false);
     return true;
   }

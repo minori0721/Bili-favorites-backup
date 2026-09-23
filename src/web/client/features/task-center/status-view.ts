@@ -15,18 +15,23 @@ export function createQueueStatusView(dependencies:{root:Document;formatDateTime
       const started = status.startedAt ? formatDateTime(status.startedAt) : '未运行';
       const progress = status.total ? String(status.checked || 0) + '/' + String(status.total) : (status.biliTotal ? String(status.indexed || 0) + '/' + String(status.biliTotal) : '无');
       const recovery = status.recovery;
-      const statusLabels: Record<string,string> = { idle:'空闲', running:'运行中', queued:'排队中', paused:'已暂停', error:'异常' };
+      const statusLabels: Record<string,string> = { idle:'空闲', running:'运行中', queued:'排队中', cooldown:'账号冷却中', paused:'已暂停', error:'异常' };
       const statusLabel = statusLabels[status.status] || status.status || '空闲';
-      const hasPendingBackgroundWork = Number(recovery.pendingUploads || 0) > 0 || Number(recovery.pendingDownloads || 0) > 0 || Number(recovery.pendingVerifications || 0) > 0;
+      const hasPendingBackgroundWork = Number(recovery.pendingUploads || 0) > 0 || Number(recovery.pendingDownloads || 0) > 0 || Number(recovery.pendingVerifications || 0) > 0 || Number(recovery.pendingQualityMaintenance || 0) > 0;
       const titleText = status.status === 'idle' && hasPendingBackgroundWork
         ? '同步空闲，后台队列待处理'
         : (status.title || '同步调度空闲');
       const recoveryText = '下载 ' + Number(recovery.pendingDownloads || 0) +
         ' / 上传 ' + Number(recovery.pendingUploads || 0) +
         ' / 确认 ' + Number(recovery.pendingVerifications || 0) +
+        ' / 画质收尾 ' + Number(recovery.pendingQualityMaintenance || 0) +
         ' / 充电待检查 ' + Number(recovery.chargingRestricted || 0) +
         '；租约中 ' + Number(recovery.leasedJobs || 0) +
         '，到期重试 ' + Number(recovery.retryJobs || 0);
+      const accountCooldown = status.accountCooldown;
+      const cooldownText = accountCooldown
+        ? `${accountCooldown.count} 个账号${accountCooldown.userName ? `（${accountCooldown.userName}）` : ''}，最早于 ${formatDateTime(accountCooldown.earliestUntil)} 结束`
+        : '无';
       box.innerHTML = '';
       const summary = document.createElement('summary');
       summary.className = 'scheduler-status-main';
@@ -41,7 +46,7 @@ export function createQueueStatusView(dependencies:{root:Document;formatDateTime
       left.appendChild(detail);
       const right = document.createElement('div');
       right.className = 'scheduler-status-detail';
-      right.textContent = status.status === 'idle' ? '下次自动同步：' + nextRun : '排队：' + queued;
+      right.textContent = status.status === 'running' || status.status === 'queued' ? '排队：' + queued : '下次自动同步：' + nextRun;
       summary.appendChild(left);
       summary.appendChild(right);
       box.appendChild(summary);
@@ -54,7 +59,8 @@ export function createQueueStatusView(dependencies:{root:Document;formatDateTime
         ['收藏夹', status.folderTitle || '无'],
         ['页码', status.page ? String(status.page) : '无'],
         ['进度', progress],
-        ['待恢复任务', recoveryText],
+        ['后台待处理任务', recoveryText],
+        ['账号冷却', cooldownText],
         ['已排队操作', queued],
         ['开始时间', started],
         ['下次自动同步', nextRun],
