@@ -54,22 +54,27 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
       }
     }
 
-    // Download jobs remain represented by the bounded in-memory prefetch queue.
-    // Upload/verification jobs also need a persisted view so manual waits and
-    // confirmation work remain visible after a restart or before prefetch.
-    const boardKinds: PersistentJobKind[] = [
-      "upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup", "verify_upload",
-    ];
+    // Persisted jobs fill the board when they are waiting for manual action,
+    // after a restart, or before the bounded in-memory prefetch queue sees
+    // them. In-memory jobs are still excluded by their persistent ids.
     const boardLimit = Math.max(1, Number(dependencies.config.queuePrefetchLimit || 25));
-    const persistentJobs = dependencies.jobs.listForBoard(boardKinds, boardLimit, undefined, [...seenPersistentJobIds]);
-    for (const job of persistentJobs) {
-      const item = dependencies.mapJob(job);
-      if (item.stage === "download_running" || item.stage === "download_pending") {
-        (item.stage === "download_running" ? downloadRunning : downloadPending).push(item);
-      } else {
-        uploadPending.push(item);
+    const appendPersistedJobs = (kinds: PersistentJobKind[], capacity: number) => {
+      if (capacity <= 0) return;
+      const persistentJobs = dependencies.jobs.listForBoard(kinds, capacity, undefined, [...seenPersistentJobIds]);
+      for (const job of persistentJobs) {
+        const item = dependencies.mapJob(job);
+        if (item.stage === "download_running" || item.stage === "download_pending") {
+          (item.stage === "download_running" ? downloadRunning : downloadPending).push(item);
+        } else {
+          uploadPending.push(item);
+        }
       }
-    }
+    };
+    // The board limit applies to each pending column after in-memory tasks and
+    // persisted jobs are combined. Query each side separately so upload jobs
+    // cannot consume the download column's remaining display slots.
+    appendPersistedJobs(["download", "quality_download"], boardLimit - downloadPending.length);
+    appendPersistedJobs(["upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup", "verify_upload"], boardLimit - uploadPending.length);
 
     dependencies.enrich([...downloadPending, ...downloadRunning, ...uploadPending, ...uploadRunning]);
 

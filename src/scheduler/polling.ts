@@ -53,12 +53,20 @@ export function createPollingSchedule(dependencies: PollingDependencies) {
     updateNextRunAt();
     cancelInterval = register(() => {
       if (generation !== current) return;
+      // If the regular interval wins the race with the startup jitter, the
+      // jitter callback must become a no-op. Otherwise one start can produce
+      // two automatic syncs close together.
+      if (nextStartupAt !== undefined) {
+        cancelStartup?.();
+        cancelStartup = undefined;
+        nextStartupAt = undefined;
+      }
       nextIntervalAt = dependencies.now() + intervalMs;
       updateNextRunAt();
       dependencies.run();
     }, intervalMs, true);
     cancelStartup = register(() => {
-      if (generation !== current) return;
+      if (generation !== current || nextStartupAt === undefined) return;
       cancelStartup = undefined;
       nextStartupAt = undefined;
       updateNextRunAt();

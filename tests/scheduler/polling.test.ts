@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createPollingSchedule } from '../../src/scheduler/polling.js';
 
-function fixture() {
+function fixture(random = 0.5) {
   let now = 1000;
   let runs = 0;
   const timers: Array<{ callback: () => void; delay: number; recurring: boolean; cancelled: boolean }> = [];
   const polling = createPollingSchedule({
     now: () => now,
-    random: () => 0.5,
+    random: () => random,
     run: () => { runs += 1; },
     schedule: (callback, delay, recurring) => {
       const timer = { callback, delay, recurring, cancelled: false };
@@ -47,11 +47,26 @@ test('polling reports whichever scheduled attempt comes first when the interval 
   setNow(41_000);
   timers[0].callback();
   assert.equal(runs(), 1);
-  assert.equal(polling.getNextRunAt(), 76_000);
+  assert.equal(timers[1].cancelled, true);
+  assert.equal(polling.getNextRunAt(), 81_000);
   setNow(76_000);
   timers[1].callback();
-  assert.equal(runs(), 2);
+  assert.equal(runs(), 1);
   assert.equal(polling.getNextRunAt(), 81_000);
+  polling.stop();
+});
+
+test('polling cancels a late startup jitter after the interval has already run', () => {
+  const { polling, timers, runs, setNow } = fixture(0.99);
+  polling.start(60_000);
+  assert.equal(polling.getNextRunAt(), 61_000);
+  setNow(61_000);
+  timers[0].callback();
+  assert.equal(runs(), 1);
+  assert.equal(timers[1].cancelled, true);
+  setNow(120_000);
+  timers[1].callback();
+  assert.equal(runs(), 1);
   polling.stop();
 });
 

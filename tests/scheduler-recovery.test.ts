@@ -195,7 +195,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
     const data = JSON.parse(line.slice("RECOVERY_PRIORITY_RESULT=".length));
     assert.deepEqual(data.uploadOrder, ["BVFAILED", "BVDOWNLOADED"]);
     assert.equal(data.blocked, false);
-    assert.equal(data.initialDownloadTasks, 0);
+    assert.equal(data.initialDownloadTasks, 1);
     assert.equal(data.initialDownloadJobs, 1);
     assert.equal(data.releasedDownloadTasks, 1);
   } finally {

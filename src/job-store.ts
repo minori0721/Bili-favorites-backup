@@ -955,6 +955,7 @@ export class PersistentJobStore implements JobRepository {
       WHERE kind IN (${placeholders})
         AND ${RECOVERY_NOT_STOPPED_SQL}
         AND ${RECOVERABLE_STATUS_SQL}
+        AND ${BOARD_NOT_REPLACED_BY_RETRY_SQL}
     `).get(...kinds);
     return decodeCountRow(row, "recoverable job count").count;
   }

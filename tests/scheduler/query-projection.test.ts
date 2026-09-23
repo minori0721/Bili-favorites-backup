@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
+import { StateDatabase } from '../../src/database.js';
 import { PersistentJobStore } from '../../src/job-store.js';
 import { SyncScheduler } from '../../src/scheduler.js';
 import { StateManager } from '../../src/state.js';
@@ -78,7 +79,7 @@ test('queue projection fills the bounded board after excluding in-memory duplica
     const emptyQueue = {getTasks: () => []};
     const snapshot = projectQueueSnapshot({
       downloadQueue:emptyQueue,uploadQueue:{getTasks:() => [task]},verificationQueue:emptyQueue,
-      config:{queuePrefetchLimit:1},jobs,chargingRestrictions:{},
+      config:{queuePrefetchLimit:2},jobs,chargingRestrictions:{},
       mapTask:(queued,stage) => mapQueueBoardTask(queued,stage),
       mapJob:job => mapQueueBoardTask({id:job.id,bvid:job.bvid,persistentJobId:job.id,status:job.status},'upload_pending'),
       enrich:() => {},
@@ -86,6 +87,44 @@ test('queue projection fills the bounded board after excluding in-memory duplica
     assert.deepEqual(snapshot.uploadPending.map(item => item.persistentJobId),[represented.id,waiting.id]);
     assert.equal(snapshot.recovery.pendingUploads,2);
   } finally { state.close(); await removeTestDir(directory); }
+});
+
+test('recoverable summary excludes an encoding-retry parent already replaced by its child', () => {
+  const database = new StateDatabase(':memory:');
+  const jobs = new PersistentJobStore(database);
+  try {
+    const parent = jobs.enqueue({
+      kind:'upload', dedupeKey:'retry-parent-summary', bvid:'BVRETRYSUMMARY',
+      payload:{encodingRetry:{parentJobId:'pending', state:'uploading'}},
+    });
+    jobs.updatePayload(parent.id, {encodingRetry:{parentJobId:parent.id, state:'uploading'}});
+    const child = jobs.enqueue({
+      kind:'upload', dedupeKey:'retry-child-summary', bvid:'BVRETRYSUMMARY',
+      payload:{encodingRetry:{parentJobId:parent.id, state:'uploading'}},
+    });
+    assert.equal(jobs.countRecoverable(['upload']), 1);
+    assert.deepEqual(jobs.listForBoard(['upload']).map(job => job.id), [child.id]);
+  } finally { database.close(); }
+});
+
+test('persisted download jobs remain visible after the in-memory queue is empty', () => {
+  const database = new StateDatabase(':memory:');
+  const jobs = new PersistentJobStore(database);
+  const emptyQueue = {getTasks:() => []};
+  try {
+    const download = jobs.enqueue({kind:'download', dedupeKey:'persisted-download-board', bvid:'BVDOWNLOADBOARD', initialStatus:'manual_wait'});
+    const qualityDownload = jobs.enqueue({kind:'quality_download', dedupeKey:'persisted-quality-download-board', bvid:'BVQUALITYBOARD', initialStatus:'manual_wait'});
+    const snapshot = projectQueueSnapshot({
+      downloadQueue:emptyQueue, uploadQueue:emptyQueue, verificationQueue:emptyQueue,
+      config:{queuePrefetchLimit:25}, jobs, chargingRestrictions:{},
+      mapTask:(task,stage) => mapQueueBoardTask(task,stage),
+      mapJob:job => mapQueueBoardTask({id:job.id,bvid:job.bvid,persistentJobId:job.id,status:job.status},
+        job.kind === 'download' || job.kind === 'quality_download' ? 'download_pending' : 'upload_pending'),
+      enrich:() => {},
+    },{});
+    assert.deepEqual(snapshot.downloadPending.map(item => item.persistentJobId).sort(), [download.id, qualityDownload.id].sort());
+    assert.equal(snapshot.recovery.pendingDownloads, 2);
+  } finally { database.close(); }
 });
 
 test('queue summary counts upload, confirmation, and quality finalization separately', async () => {
