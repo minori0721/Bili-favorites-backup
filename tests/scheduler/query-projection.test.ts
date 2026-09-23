@@ -28,3 +28,30 @@ test('construction and repeated snapshots do not normalize jobs or start filesys
     assert.equal(jobs.findByDedupeKey('stopped-fixture')?.status,'failed');
   } finally {await scheduler.shutdown(1000,{closeDatabase:false});state.close();await removeTestDir(directory);}
 });
+
+test('recovery summary counts active and explicit manual recoveries, not terminal history', async () => {
+  const directory = await createTestDir('query-projection-counts');
+  const state = new StateManager({statePath:path.join(directory,'state.json'),dbPath:path.join(directory,'state.sqlite')});
+  const jobs = new PersistentJobStore(state.getDatabase());
+  const active = jobs.enqueue({kind:'upload',dedupeKey:'active-upload',initialStatus:'pending'});
+  const manualWait = jobs.enqueue({kind:'upload',dedupeKey:'manual-wait-upload',initialStatus:'manual_wait',payload:{awaitingManualRecovery:true}});
+  const failedManual = jobs.enqueue({kind:'upload',dedupeKey:'failed-manual-upload',initialStatus:'manual_wait',payload:{awaitingManualRecovery:true}});
+  const failedAbandoned = jobs.enqueue({kind:'upload',dedupeKey:'failed-abandoned-upload',initialStatus:'manual_wait',payload:{awaitingManualRecovery:true,userDisposition:'abandoned'}});
+  const completed = jobs.enqueue({kind:'upload',dedupeKey:'completed-upload',initialStatus:'pending'});
+  state.getDatabase().db.prepare("UPDATE jobs SET status='completed' WHERE id=?").run(completed.id);
+  state.getDatabase().db.prepare("UPDATE jobs SET status='failed', lease_owner=NULL, lease_expires_at=NULL WHERE id=?").run(failedManual.id);
+  state.getDatabase().db.prepare("UPDATE jobs SET status='failed', lease_owner=NULL, lease_expires_at=NULL WHERE id=?").run(failedAbandoned.id);
+  try {
+    assert.equal(jobs.countRecoverable(['upload']),3);
+    const scheduler = new SyncScheduler({get: () => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state,
+      {cacheInspector:async () => inspectDownloadCache(directory)});
+    try {
+      assert.equal(scheduler.getQueueSnapshot().recovery.pendingUploads,3);
+    } finally {
+      await scheduler.shutdown(1000,{closeDatabase:false});
+    }
+  } finally {
+    state.close();
+    await removeTestDir(directory);
+  }
+});

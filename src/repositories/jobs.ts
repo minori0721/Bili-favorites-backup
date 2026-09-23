@@ -109,6 +109,8 @@ export interface JobRepository {
   wakeManualJob(id: string, payloadPatch?: Record<string, unknown>, notBefore?: number): PersistentJobRecord | null;
   abandonRecovery(id: string, reason?: string, payloadPatch?: Record<string, unknown>): boolean;
   counts(): Record<string, Record<string, number>>;
+  /** Counts jobs that can still appear in the recovery summary. */
+  countRecoverable(kinds: PersistentJobKind[]): number;
   listForBoard(kinds: PersistentJobKind[], limit?: number, statuses?: PersistentJobRecord["status"][]): PersistentJobRecord[];
   list(kinds: PersistentJobKind[], limit?: number): PersistentJobRecord[];
   listLegacyDownloadRecovery(limit?: number): PersistentJobRecord[];

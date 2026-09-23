@@ -6,7 +6,7 @@ interface Dependencies {
   uploadQueue: Pick<TaskQueue,'getTasks'>;
   verificationQueue: Pick<TaskQueue,'getTasks'>;
   config: {queuePrefetchLimit?: number};
-  jobs: Pick<JobRepository,'listForBoard' | 'counts' | 'accessProbeScheduleSummary'>;
+  jobs: Pick<JobRepository,'listForBoard' | 'counts' | 'countRecoverable' | 'accessProbeScheduleSummary'>;
   chargingRestrictions: {lastCheckedAt?: string};
   mapTask(task: Task, stage: QueueBoardItem['stage']): QueueBoardItem;
   mapJob(job: ReturnType<JobRepository['listForBoard']>[number]): QueueBoardItem | null;
@@ -87,8 +87,7 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
     uploadRunning.sort(byStartedAt);
 
     const persistentCounts = dependencies.jobs.counts();
-    const sumKinds = (kinds: PersistentJobKind[]) => kinds.reduce((total, kind) =>
-      total + Object.values(persistentCounts[kind] || {}).reduce((sum, count) => sum + Number(count || 0), 0), 0);
+    const countRecoverable = (kinds: PersistentJobKind[]) => dependencies.jobs.countRecoverable(kinds);
     const leasedJobs = Object.values(persistentCounts).reduce((total, statuses) =>
       total + Number(statuses.leased || 0) + Number(statuses.running || 0), 0);
     const retryJobs = Object.entries(persistentCounts).reduce((total, [kind, statuses]) =>
@@ -100,8 +99,8 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
     return {
       ...extra, downloadPending,downloadRunning,uploadPending,uploadRunning,
       chargingAccess:{pending:chargingSchedule.count,nextCheckAt:chargingSchedule.nextAt,lastCheckedAt:Number.isFinite(lastChargingCheckAt)?lastChargingCheckAt:undefined},
-      recovery:{pendingUploads:sumKinds(['upload','history_upload']),pendingDownloads:sumKinds(['download','quality_download']),
-        pendingVerifications:sumKinds(['verify_upload']),chargingRestricted:chargingSchedule.count,availabilityChecks:availabilitySchedule.count,
+      recovery:{pendingUploads:countRecoverable(['upload','history_upload']),pendingDownloads:countRecoverable(['download','quality_download']),
+        pendingVerifications:countRecoverable(['verify_upload']),chargingRestricted:chargingSchedule.count,availabilityChecks:availabilitySchedule.count,
         leasedJobs,retryJobs,prefetchLimit:dependencies.config.queuePrefetchLimit || 25},
     };
 }
