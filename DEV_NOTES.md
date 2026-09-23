@@ -1,5 +1,12 @@
 # Dev 测试说明
 
+## 2026-09-24 v2.6.3 版本整理
+
+- 当前 dev 相对 main v2.6.2 的候选改动来自队列展示筛选、任务分类、调度冷却摘要、启动日志口径和 BBDown 构建元数据五部分；对应提交为 `b335104`、`61b2253`、`6fcee9e`、`00031ac` 和 `773d0fa`。
+- 这些改动保持 HTTP 地址、响应语义、SQLite schema 11、JSON 状态 schema 13、迁移包 schema 3、存储键、任务状态机和用户流程不变。本地 package 版本已更新为 `2.6.3`；标签、Release 和服务器更新仍需单独执行。
+- dev 的 BBDown 固定版本为 `bfb-2.0.7`；构建阶段生成版本、源码提交和 SHA256 元数据，`bfb-2.0.6` 清单在下载配置不变时保持兼容。稳定 main 仍使用 `bfb-2.0.5`。
+- 本轮完成版本号和发布文档整理，不代表标签、Release 或服务器已更新；这些步骤需在完整验收和 GitHub Actions 通过后执行。
+
 ## 2026-09-24 dev 固定 BBDown bfb-2.0.7
 
 - Dockerfile 固定 BBDown Release `bfb-2.0.7`、源码提交 `35a26fab051528532e126af7271dc1ca1be1746c` 和 Linux x64 ZIP SHA256 `e6ed60f4056ba6f11ee495318dee6697681143a6848cd71bcbf28e4d8813de10`；构建阶段将这三个值生成到 `src/generated/bbdown-build-info.ts`，正式 Release 资产、来源提交和 Native AOT 启动已核对。

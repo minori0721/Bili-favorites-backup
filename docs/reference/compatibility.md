@@ -2,10 +2,10 @@
 
 | 组件 | 当前范围 | 说明 |
 | --- | --- | --- |
-| 应用版本 | v2.5.5 | 文档只维护当前main稳定版 |
+| 应用版本 | v2.6.2 | 文档按当前 main 稳定版维护；dev 的下一次补丁候选仍见下文 |
 | Node.js | 24 | 源码运行要求`>=24 <25` |
 | Docker平台 | `linux/amd64` | 当前工作流不发布ARM64 |
-| BBDown | fork Release `bfb-2.0.5` | 固定源码提交，不跟随master；支持BFB结构化媒体探测 |
+| BBDown | fork Release `bfb-2.0.5`（main） | 稳定版固定源码提交，不跟随 master；支持 BFB 结构化媒体探测。dev 当前候选为 `bfb-2.0.7` |
 | FFmpeg | 固定Linux x64静态构建 | 镜像内同时提供ffprobe |
 | aria2 | 镜像内安装 | 断点续传始终启用 |
 | AList | Compose固定`v3.61.0` | 内置服务仍是 AList；外接实例不会自动升级，路径迁移依赖 WebDAV COPY |
@@ -37,6 +37,8 @@ BFB依赖标准 WebDAV 行为，但不同网盘驱动在 PUT、MOVE、DELETE、�
 截至 2026-08-15 的隔离探测：AList `v3.63.0` 天翼驱动 PUT 返回405但文件实际存在，COPY返回500；OpenList beta普通PUT、MOVE可用，但同一驱动COPY返回500。普通新归档只走正式路径PUT和大小确认，因此不要求MOVE；有完整旧证明的冲突归档会优先使用MOVE，COPY不可用或探测未知时保留冲突并等待人工处理。两者都应以你的版本、挂载和权限重新验证，BFB不会把未知COPY结果降级为本地下载再上传。
 
 ## B站接口
+
+当前 main v2.6.2 使用 BBDown `bfb-2.0.5`；dev 候选固定 `bfb-2.0.7`，两者均使用 BFB 结构化媒体探测。2.0.7 的精确大小探测与实际下载请求沿用同一 Referer 规则，APP 与安卓 TV 媒体地址不发送会被部分 CDN 拒绝的 Referer。该候选尚未成为正式稳定版，旧 `bfb-2.0.6` 清单在账号、API 模式和下载配置不变时继续兼容。
 
 `v2.5.5`使用BBDown `bfb-2.0.5`，固定提交`fa7209d63bd73a4ab07913ce1478a0e13056ad09`。它增加互动剧情完整清单协议，旧自定义工具不支持时停止互动下载；普通下载不增加剧情请求。本次保持SQLite schema 11、JSON状态schema 13和迁移包schema 3。
 
