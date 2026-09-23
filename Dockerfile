@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
 ARG NODE_IMAGE=node:24-bookworm-slim
-ARG BBDOWN_RELEASE=bfb-2.0.6
-ARG BBDOWN_COMMIT=b4d4ba36a7934d8490c5a43274941022eac5c483
-ARG BBDOWN_SHA256=4a75d7e66df7aeb8761a6116faa6aea33fb1858ffb280613cee6ac2575595aab
+ARG BBDOWN_RELEASE=bfb-2.0.7
+ARG BBDOWN_COMMIT=35a26fab051528532e126af7271dc1ca1be1746c
+ARG BBDOWN_SHA256=e6ed60f4056ba6f11ee495318dee6697681143a6848cd71bcbf28e4d8813de10
 ARG FFMPEG_RELEASE=ffmpeg-bfb-8.1.2-20260711.1
 ARG FFMPEG_VERSION=n8.1.2-22-g94138f6973-20260711
 ARG FFMPEG_ARCHIVE=ffmpeg-n8.1.2-22-g94138f6973-linux64-lgpl-8.1.tar.xz
@@ -18,8 +18,15 @@ RUN npm ci
 
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
+ARG BBDOWN_RELEASE
+ARG BBDOWN_COMMIT
+ARG BBDOWN_SHA256
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN node scripts/generate-bbdown-build-info.mjs \
+  --release "$BBDOWN_RELEASE" \
+  --commit "$BBDOWN_COMMIT" \
+  --sha256 "$BBDOWN_SHA256"
 RUN npm run build
 RUN npm prune --omit=dev
 

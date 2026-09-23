@@ -186,7 +186,7 @@ npm test
 npm run build
 ```
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.6.2`稳定版内置 [BBDown bfb-2.0.5](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.5)；当前 dev 镜像固定 [bfb-2.0.6](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.6)。两版均支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.6.2`稳定版内置 [BBDown bfb-2.0.5](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.5)；当前 dev 镜像固定 [bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)。两版均支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
 
 ## 鸣谢
 

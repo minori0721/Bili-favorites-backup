@@ -11,6 +11,7 @@ import {
 } from "./config.js";
 import type { QualityArtifactProfile } from "./quality-artifact.js";
 import type { UploadFileMetadata } from "./state.js";
+import { BBDOWN_BUILD_INFO } from "./generated/bbdown-build-info.js";
 import { writeJsonFile } from "./storage.js";
 import {
   actualQualityLabel,
@@ -21,7 +22,8 @@ import {
 
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
-export const BBDOWN_SOURCE_COMMIT = "b4d4ba36a7934d8490c5a43274941022eac5c483";
+export const BBDOWN_SOURCE_COMMIT = BBDOWN_BUILD_INFO.commit;
+const PREVIOUS_BBDOWN_2_0_6_COMMIT = "b4d4ba36a7934d8490c5a43274941022eac5c483";
 const PREVIOUS_BBDOWN_PATCH_COMMIT = "fa7209d63bd73a4ab07913ce1478a0e13056ad09";
 const PREVIOUS_BBDOWN_INTERACTIVE_COMMIT = "0ea9463202e8a57e0d673f29166e54f4ed770255";
 const PREVIOUS_BBDOWN_SOURCE_COMMIT = "76c1a802825efd9761699d42955fd0553a9dfa9d";
@@ -1357,7 +1359,7 @@ export async function prepareDownloadSession(options: {
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
-      const compatibleSameApiBbdownUpgrade = [PREVIOUS_BBDOWN_PATCH_COMMIT, PREVIOUS_BBDOWN_INTERACTIVE_COMMIT, PREVIOUS_BBDOWN_SOURCE_COMMIT].includes(manifest.bbdownCommit)
+      const compatibleSameApiBbdownUpgrade = [PREVIOUS_BBDOWN_2_0_6_COMMIT, PREVIOUS_BBDOWN_PATCH_COMMIT, PREVIOUS_BBDOWN_INTERACTIVE_COMMIT, PREVIOUS_BBDOWN_SOURCE_COMMIT].includes(manifest.bbdownCommit)
         && previousSnapshot.apiMode === nextSnapshot.apiMode
         && sameRuntimeConfig;
       const compatibleBbdownUpgrade = compatibleSameApiBbdownUpgrade || (
@@ -1375,6 +1377,7 @@ export async function prepareDownloadSession(options: {
         && sameRuntimeConfig
         && (
           manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === PREVIOUS_BBDOWN_2_0_6_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_PATCH_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_INTERACTIVE_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_SOURCE_COMMIT

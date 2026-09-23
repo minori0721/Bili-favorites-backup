@@ -1,5 +1,11 @@
 # Dev 测试说明
 
+## 2026-09-24 dev 固定 BBDown bfb-2.0.7
+
+- Dockerfile 固定 BBDown Release `bfb-2.0.7`、源码提交 `35a26fab051528532e126af7271dc1ca1be1746c` 和 Linux x64 ZIP SHA256 `e6ed60f4056ba6f11ee495318dee6697681143a6848cd71bcbf28e4d8813de10`；构建阶段将这三个值生成到 `src/generated/bbdown-build-info.ts`，正式 Release 资产、来源提交和 Native AOT 启动已核对。
+- `src/download-session.ts` 使用构建元数据记录当前提交，并将 `bfb-2.0.6` 登记为同 API 的兼容上一版本；账号、API 模式和下载配置不变时保留已有清单及 aria2 断点，其他不兼容条件仍按原规则隔离。
+- BBDown fork 的 WSL 测试 66/66 通过，Linux x64 Native AOT 产物显示版本 `2.0.7`；本次只更新 dev 固定版本，稳定版和服务器未改。
+
 ## 2026-09-24 dev 固定 BBDown bfb-2.0.6
 
 - Dockerfile 固定 BBDown Release `bfb-2.0.6`、源码提交 `b4d4ba36a7934d8490c5a43274941022eac5c483` 和 Linux x64 ZIP SHA256 `4a75d7e66df7aeb8761a6116faa6aea33fb1858ffb280613cee6ac2575595aab`；下载清单使用同一源码提交标识。正式 Release 资产元数据和来源提交已核对。
