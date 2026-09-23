@@ -906,30 +906,35 @@ test("configuration changes preserve completed data but isolate unsafe fragments
   }
 });
 
-for (const mode of ["web", "app"] as const) {
-  test(`BBDown 2.0.5 retains 2.0.4 ${mode} tracks but still isolates changed runtime settings`, async () => {
-    const runtime = await createTestDir(`bbdown-205-${mode}`);
-    try {
-      const downloadDir = path.join(runtime, "BV1pT4y157sf");
-      const pages = [{ index: 1, cid: 101, title: "Root", duration: 2 }];
-      const config = testConfig({ bbdownApiMode: mode });
-      await prepareDownloadSession({ downloadDir, bvid: "BV1pT4y157sf", accountUid: 1, config, pages });
-      const old = readDownloadSession(downloadDir)!;
-      old.bbdownCommit = "0ea9463202e8a57e0d673f29166e54f4ed770255";
-      old.configFingerprint = "old-runtime";
-      writeJsonFile(path.join(downloadDir, ".bfb-download.json"), old);
-      const track = path.join(downloadDir, "video.mp4.aria2");
-      await fs.promises.writeFile(track, "resume");
-      const upgraded = await prepareDownloadSession({ downloadDir, bvid: old.bvid, accountUid: 1, config, pages });
-      assert.equal(upgraded.incompatibleFragmentsMoved, 0);
-      assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
-      assert.equal(fs.existsSync(track), true);
-      writeJsonFile(path.join(downloadDir, ".bfb-download.json"), old);
-      const changed = await prepareDownloadSession({ downloadDir, bvid: old.bvid, accountUid: 2, config, pages });
-      assert.equal(changed.incompatibleFragmentsMoved, 1);
-      assert.equal(fs.existsSync(track), false);
-    } finally { await removeTestDir(runtime); }
-  });
+for (const previousRelease of [
+  { version: "2.0.5", commit: "fa7209d63bd73a4ab07913ce1478a0e13056ad09" },
+  { version: "2.0.4", commit: "0ea9463202e8a57e0d673f29166e54f4ed770255" },
+] as const) {
+  for (const mode of ["web", "app"] as const) {
+    test(`BBDown 2.0.6 retains ${previousRelease.version} ${mode} tracks but still isolates changed runtime settings`, async () => {
+      const runtime = await createTestDir(`bbdown-206-from-${previousRelease.version.replaceAll(".", "")}-${mode}`);
+      try {
+        const downloadDir = path.join(runtime, "BV1pT4y157sf");
+        const pages = [{ index: 1, cid: 101, title: "Root", duration: 2 }];
+        const config = testConfig({ bbdownApiMode: mode });
+        await prepareDownloadSession({ downloadDir, bvid: "BV1pT4y157sf", accountUid: 1, config, pages });
+        const old = readDownloadSession(downloadDir)!;
+        old.bbdownCommit = previousRelease.commit;
+        old.configFingerprint = "old-runtime";
+        writeJsonFile(path.join(downloadDir, ".bfb-download.json"), old);
+        const track = path.join(downloadDir, "video.mp4.aria2");
+        await fs.promises.writeFile(track, "resume");
+        const upgraded = await prepareDownloadSession({ downloadDir, bvid: old.bvid, accountUid: 1, config, pages });
+        assert.equal(upgraded.incompatibleFragmentsMoved, 0);
+        assert.equal(upgraded.manifest.bbdownCommit, BBDOWN_SOURCE_COMMIT);
+        assert.equal(fs.existsSync(track), true);
+        writeJsonFile(path.join(downloadDir, ".bfb-download.json"), old);
+        const changed = await prepareDownloadSession({ downloadDir, bvid: old.bvid, accountUid: 2, config, pages });
+        assert.equal(changed.incompatibleFragmentsMoved, 1);
+        assert.equal(fs.existsSync(track), false);
+      } finally { await removeTestDir(runtime); }
+    });
+  }
 }
 
 test("BBDown current release keeps 2.0.3 Web resume tracks when runtime settings are unchanged", async () => {
