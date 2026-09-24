@@ -117,6 +117,12 @@ jobs:
             --tmpfs /app/data --tmpfs /app/temp \
             -e EXPECTED_REVISION="$GITHUB_SHA" \
             "docker.io/$IMAGE_NAME@$IMAGE_DIGEST"
+          docker exec bfb-release-smoke sh -ec '
+            test -x /usr/bin/aria2c
+            test -x /usr/local/bin/ffmpeg
+            test -x /usr/local/bin/ffprobe
+            test -x /usr/local/bin/BBDown
+          '
           docker exec bfb-release-smoke node --input-type=module -e '
             import assert from "node:assert/strict";
             import { setTimeout } from "node:timers/promises";

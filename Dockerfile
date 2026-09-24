@@ -16,6 +16,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+# Keep runtime dependencies independent of source-only rebuilds.
+FROM deps AS prod-deps
+RUN npm prune --omit=dev
+
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
 ARG BBDOWN_RELEASE
@@ -28,20 +32,6 @@ RUN node scripts/generate-bbdown-build-info.mjs \
   --commit "$BBDOWN_COMMIT" \
   --sha256 "$BBDOWN_SHA256"
 RUN npm run build
-RUN npm prune --omit=dev
-
-FROM debian:bookworm-slim AS bbdown
-ARG BBDOWN_RELEASE
-ARG BBDOWN_SHA256
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl --http1.1 --retry 6 --retry-all-errors --retry-delay 2 -fsSL \
-    "https://github.com/minori0721/BBDown/releases/download/${BBDOWN_RELEASE}/BBDown_linux-x64.zip" \
-    -o /tmp/BBDown_linux-x64.zip \
-  && echo "${BBDOWN_SHA256}  /tmp/BBDown_linux-x64.zip" | sha256sum -c - \
-  && unzip -q /tmp/BBDown_linux-x64.zip -d /out \
-  && chmod +x /out/BBDown
 
 FROM debian:bookworm-slim AS ffmpeg
 ARG FFMPEG_RELEASE
@@ -56,27 +46,24 @@ RUN apt-get update \
     -o "/tmp/${FFMPEG_ARCHIVE}" \
   && echo "${FFMPEG_SHA256}  /tmp/${FFMPEG_ARCHIVE}" | sha256sum -c - \
   && tar -xJf "/tmp/${FFMPEG_ARCHIVE}" -C /tmp/ffmpeg \
-  && install -m 0755 "$(find /tmp/ffmpeg -type f -name ffmpeg -print -quit)" /out/ffmpeg \
-  && install -m 0755 "$(find /tmp/ffmpeg -type f -name ffprobe -print -quit)" /out/ffprobe
+  && install -p -m 0755 "$(find /tmp/ffmpeg -type f -name ffmpeg -print -quit)" /out/ffmpeg \
+  && install -p -m 0755 "$(find /tmp/ffmpeg -type f -name ffprobe -print -quit)" /out/ffprobe
+
+FROM debian:bookworm-slim AS bbdown
+ARG BBDOWN_RELEASE
+ARG BBDOWN_SHA256
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl --http1.1 --retry 6 --retry-all-errors --retry-delay 2 -fsSL \
+    "https://github.com/minori0721/BBDown/releases/download/${BBDOWN_RELEASE}/BBDown_linux-x64.zip" \
+    -o /tmp/BBDown_linux-x64.zip \
+  && echo "${BBDOWN_SHA256}  /tmp/BBDown_linux-x64.zip" | sha256sum -c - \
+  && unzip -q /tmp/BBDown_linux-x64.zip -d /out \
+  && chmod +x /out/BBDown
 
 FROM ${NODE_IMAGE} AS runner
-ARG BBDOWN_RELEASE
-ARG BBDOWN_COMMIT
-ARG FFMPEG_RELEASE
-ARG FFMPEG_VERSION
-ARG BFB_BUILD_REF
-ARG BFB_BUILD_REVISION
 WORKDIR /app
-ENV BBDOWN_RELEASE=${BBDOWN_RELEASE}
-ENV BBDOWN_COMMIT=${BBDOWN_COMMIT}
-ENV FFMPEG_RELEASE=${FFMPEG_RELEASE}
-ENV FFMPEG_VERSION=${FFMPEG_VERSION}
-ENV BFB_BUILD_REF=${BFB_BUILD_REF}
-ENV BFB_BUILD_REVISION=${BFB_BUILD_REVISION}
-LABEL org.opencontainers.image.bbdown.release=${BBDOWN_RELEASE}
-LABEL org.opencontainers.image.bbdown.revision=${BBDOWN_COMMIT}
-LABEL org.opencontainers.image.ffmpeg.release=${FFMPEG_RELEASE}
-LABEL org.opencontainers.image.ffmpeg.version=${FFMPEG_VERSION}
 ARG APT_MIRROR=official
 RUN if [ "$APT_MIRROR" = "tuna" ]; then \
       if [ -f /etc/apt/sources.list ]; then \
@@ -89,15 +76,32 @@ RUN if [ "$APT_MIRROR" = "tuna" ]; then \
   && apt-get update \
   && apt-get install -y --no-install-recommends aria2 ca-certificates tini \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=bbdown /out/BBDown /usr/local/bin/BBDown
-COPY --from=ffmpeg /out/ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg /out/ffprobe /usr/local/bin/ffprobe
+COPY --link --from=ffmpeg /out/ffmpeg /usr/local/bin/ffmpeg
+COPY --link --from=ffmpeg /out/ffprobe /usr/local/bin/ffprobe
 RUN ffmpeg -hide_banner -version | head -n 1 \
   && ffprobe -hide_banner -version | head -n 1 \
   && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libwebp'
+COPY --link --from=bbdown /out/BBDown /usr/local/bin/BBDown
+COPY --link --from=prod-deps /app/node_modules ./node_modules
 COPY package*.json ./
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
+COPY --link --from=builder /app/dist ./dist
+# Per-build metadata must follow the reusable filesystem layers.
+ARG BBDOWN_RELEASE
+ARG BBDOWN_COMMIT
+ARG FFMPEG_RELEASE
+ARG FFMPEG_VERSION
+ARG BFB_BUILD_REF
+ARG BFB_BUILD_REVISION
+ENV BBDOWN_RELEASE=${BBDOWN_RELEASE}
+ENV BBDOWN_COMMIT=${BBDOWN_COMMIT}
+ENV FFMPEG_RELEASE=${FFMPEG_RELEASE}
+ENV FFMPEG_VERSION=${FFMPEG_VERSION}
+ENV BFB_BUILD_REF=${BFB_BUILD_REF}
+ENV BFB_BUILD_REVISION=${BFB_BUILD_REVISION}
+LABEL org.opencontainers.image.bbdown.release=${BBDOWN_RELEASE}
+LABEL org.opencontainers.image.bbdown.revision=${BBDOWN_COMMIT}
+LABEL org.opencontainers.image.ffmpeg.release=${FFMPEG_RELEASE}
+LABEL org.opencontainers.image.ffmpeg.version=${FFMPEG_VERSION}
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]
