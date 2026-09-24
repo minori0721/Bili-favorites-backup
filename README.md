@@ -146,7 +146,7 @@ docker compose logs --tail=100 app
 
 顶部版本入口可查看正式版更新说明，**不会自动拉镜像或重启**。拉取失败时旧容器可能仍在运行，请以启动日志中的版本与提交确认更新结果。
 
-`v2.6.2`保持SQLite schema 11、JSON状态schema 13和迁移包schema 3；当前 dev 的 `v2.6.3` 候选同样不新增配置或数据迁移。从 `2.6.1` 升级无需新增配置或数据迁移；更早版本迁移和回滚前请先备份并阅读[升级说明](https://minori0721.github.io/Bili-favorites-backup/operations/update)与[数据迁移](https://minori0721.github.io/Bili-favorites-backup/operations/migration)。
+`v2.6.2`至`v2.6.4`保持SQLite schema 11、JSON状态schema 13和迁移包schema 3，不新增配置或数据迁移。从 `2.6.1` 升级无需新增配置或数据迁移；更早版本迁移和回滚前请先备份并阅读[升级说明](https://minori0721.github.io/Bili-favorites-backup/operations/update)与[数据迁移](https://minori0721.github.io/Bili-favorites-backup/operations/migration)。
 
 ## 常见问题
 
@@ -175,8 +175,8 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 | 镜像标签 | 用途 |
 | --- | --- |
 | `latest` | `main`稳定版 |
-| `v2.6.3` | dev 候选版本，完成验收后再创建正式标签 |
-| `v2.6.2` | 固定版本，便于可控升级 |
+| `v2.6.4` | 当前固定稳定版本，便于可控升级 |
+| `v2.6.3` | 上一固定稳定版本 |
 | `dev` | 开发测试版，不保证与稳定版一致 |
 
 镜像仓库为 `minori0721/bili-favorites-backup`，当前仅发布 `linux/amd64`。源码使用Node.js 24：
@@ -187,7 +187,7 @@ npm test
 npm run build
 ```
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.6.2`稳定版内置 [BBDown bfb-2.0.5](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.5)；当前 dev 应用版本为 `v2.6.3`，镜像固定 [bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)。两版均支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.6.4` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
 
 ## 鸣谢
 
