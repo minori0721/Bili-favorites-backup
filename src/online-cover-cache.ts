@@ -4,6 +4,7 @@ import path from "node:path";
 import { onlineCoversDir, tempDir } from "./paths.js";
 import { promoteOnlineCoverToArchive, runCoverFfmpeg, validateBilibiliCoverUrl } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
+import { cancelUnreadCoverResponse, readCoverImageResponse } from "./cover-response.js";
 
 const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
@@ -49,29 +50,17 @@ async function downloadImage(urlValue: string, outputPath: string) {
       });
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get("location");
-      await response.body?.cancel();
+      await cancelUnreadCoverResponse(response);
+      response = null;
       if (!location || hop === 5) throw new Error("online cover redirect limit exceeded");
       current = await validateBilibiliCoverUrl(new URL(location, current).toString());
     }
-    if (!response?.ok || !response.body) throw new Error(`online cover request failed: ${response?.status || 0}`);
-    const contentType = String(response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
-    if (!contentType.startsWith("image/")) throw new Error("online cover response is not an image");
-    const declared = Number(response.headers.get("content-length") || 0);
-    if (declared > MAX_SOURCE_BYTES) throw new Error("online cover exceeds size limit");
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    while (true) {
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total > MAX_SOURCE_BYTES) {
-        await reader.cancel();
-        throw new Error("online cover exceeds size limit");
-      }
-      chunks.push(Buffer.from(part.value));
-    }
-    await fs.promises.writeFile(outputPath, Buffer.concat(chunks, total), { flag: "wx" });
+    const bytes = await readCoverImageResponse(response, MAX_SOURCE_BYTES, {
+      http: status => new Error(`online cover request failed: ${status}`),
+      contentType: () => new Error("online cover response is not an image"),
+      tooLarge: () => new Error("online cover exceeds size limit"),
+    });
+    await fs.promises.writeFile(outputPath, bytes, { flag: "wx" });
   } finally {
     clearTimeout(timeout);
   }

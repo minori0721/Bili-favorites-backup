@@ -5,6 +5,7 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { coversDir, tempDir } from "./paths.js";
 import { safeErrorSummary } from "./diagnostics.js";
+import { cancelUnreadCoverResponse, readCoverImageResponse } from "./cover-response.js";
 import type { StateManager, VideoArchiveEntry } from "./state.js";
 import { decodeVideoPayload, parsePersistedJsonValue } from "./repositories/domain-decoders.js";
 import {
@@ -237,32 +238,17 @@ async function downloadCover(value: string, outputPath: string) {
       }
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get("location");
-      await response.body?.cancel();
+      await cancelUnreadCoverResponse(response);
+      response = null;
       if (!location || redirects === 5) throw new CoverDownloadError("cover redirect is invalid");
       current = await validateBilibiliCoverUrl(new URL(location, current).toString());
     }
-    if (!response || !response.ok || !response.body) {
-      const status = response?.status || 0;
-      throw new CoverDownloadError(`cover download failed: HTTP ${status}`, status === 429 || status >= 500);
-    }
-    const type = String(response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
-    const declaredLength = Number(response.headers.get("content-length") || 0);
-    if (!type.startsWith("image/")) throw new CoverDownloadError("cover response is not an image");
-    if (declaredLength > maxCoverBytes) throw new CoverDownloadError("cover response exceeds 8 MB");
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxCoverBytes) {
-        await reader.cancel();
-        throw new CoverDownloadError("cover response exceeds 8 MB");
-      }
-      chunks.push(Buffer.from(value));
-    }
-    await fs.promises.writeFile(outputPath, Buffer.concat(chunks, total), { flag: "wx" });
+    const bytes = await readCoverImageResponse(response, maxCoverBytes, {
+      http: status => new CoverDownloadError(`cover download failed: HTTP ${status}`, status === 429 || status >= 500),
+      contentType: () => new CoverDownloadError("cover response is not an image"),
+      tooLarge: () => new CoverDownloadError("cover response exceeds 8 MB"),
+    });
+    await fs.promises.writeFile(outputPath, bytes, { flag: "wx" });
   } finally {
     clearTimeout(timeout);
   }
