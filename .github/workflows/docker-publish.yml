@@ -24,6 +24,9 @@ env:
 jobs:
   docker:
     runs-on: ubuntu-24.04
+    concurrency:
+      group: bfb-image-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -90,11 +93,19 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=sha,prefix=sha-
+            type=sha,format=long,prefix=revision-
             type=ref,event=tag
+
+      - name: Capture previous image layers and select caches
+        id: layer_cache
+        timeout-minutes: 3
+        run: node scripts/image-layer-report.mjs prepare "$RUNNER_TEMP/bfb-layer-baseline.json"
 
       - name: Build and Push
         id: image
         uses: docker/build-push-action@v7
+        env:
+          SOURCE_DATE_EPOCH: "0"
         with:
           context: .
           push: true
@@ -104,8 +115,11 @@ jobs:
           build-args: |
             BFB_BUILD_REF=${{ github.ref_name }}
             BFB_BUILD_REVISION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha
+            type=registry,ref=docker.io/${{ env.IMAGE_NAME }}:buildcache-dev
+            type=registry,ref=docker.io/${{ env.IMAGE_NAME }}:buildcache-main
+          cache-to: ${{ steps.layer_cache.outputs.cache_to }}
 
       - name: Smoke test the published image in isolation
         timeout-minutes: 3
@@ -140,6 +154,11 @@ jobs:
             assert.equal(response.status, 401);
             console.log("Image revision, startup, SQLite initialization and authentication smoke check passed");
           '
+
+      - name: Report and verify image layer reuse
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: node scripts/image-layer-report.mjs report "$RUNNER_TEMP/bfb-layer-baseline.json"
 
   release:
     needs: docker
