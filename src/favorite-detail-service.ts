@@ -107,7 +107,7 @@ async function loadFavoriteDetailData(
   if (source === "state") {
     const offset = (page - 1) * pageSize;
     const result = deps.state.listFolderItemsForUser(user.id, mediaId, offset, pageSize, filter);
-    const indexSummary = deps.state.getFolderIndexSummary(user.id, mediaId, scan?.total);
+    const indexSummary = deps.state.getFolderIndexSummary(user.id, mediaId, scan?.total, result.summary);
     return {
       items: result.items,
       summary: result.summary,
@@ -132,7 +132,7 @@ async function loadFavoriteDetailData(
     { mediaId, folderTitle: resolvedFolderTitle }
   ));
   const indexed = deps.state.listFolderItemsForUser(user.id, mediaId, 0, 1, "all");
-  const indexSummary = deps.state.getFolderIndexSummary(user.id, mediaId, pageResult.total);
+  const indexSummary = deps.state.getFolderIndexSummary(user.id, mediaId, pageResult.total, indexed.summary);
   return {
     items,
     summary: {

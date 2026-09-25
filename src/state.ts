@@ -3189,9 +3189,9 @@ export class StateManager {
     return relation ? { ...relation, remoteFiles: [...(relation.remoteFiles || [])] } : null;
   }
 
-  getFolderIndexSummary(userId: string, mediaId: number, biliTotal?: number): FolderIndexSummary {
+  getFolderIndexSummary(userId: string, mediaId: number, biliTotal?: number, pageSummary?: FolderDetailSummary): FolderIndexSummary {
     if (this.lazyState) {
-      const summary = this.database.queryFolderPage(userId, mediaId, "all", 0, 1).summary;
+      const summary = pageSummary ?? this.database.queryFolderPage(userId, mediaId, "all", 0, 1).summary;
       const scan = this.state.folderScans?.[folderKey(userId, mediaId)];
       const effectiveBiliTotal = typeof biliTotal === "number" ? biliTotal : scan?.total;
       const scanComplete = scan?.initStatus === "complete";

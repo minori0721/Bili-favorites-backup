@@ -59,3 +59,21 @@ test('late favorite visibility checks cannot write metadata after invalidation',
     assert.equal(state.getFolderItemForUser(user.id, 1, 'BVCACHE'), null);
   } finally {state.close(); await removeTestDir(root);}
 });
+
+test('favorite detail reuses its page summary for index progress', async context => {
+  const root = await createTestDir('favorite-detail-summary');
+  const state = new StateManager({dbPath: path.join(root, 'state.sqlite'), statePath: path.join(root, 'state.json')});
+  const queryPage = context.mock.method(state.getDatabase(), 'queryFolderPage');
+  const service = createFavoriteDetailService({state, now: () => 0, listPage: async () => page,
+    resolveVisible: async (_cookie, _uid, item) => item,
+  });
+  try {
+    const stored = await service.detail(user, 1, 'favorite', 1, 20, 'pending');
+    assert.equal(queryPage.mock.callCount(), 1);
+    assert.deepEqual(stored.indexSummary, state.getFolderIndexSummary(user.id, 1));
+
+    const live = await service.detail(user, 1, 'favorite', 1, 20, 'all');
+    assert.equal(queryPage.mock.callCount(), 3);
+    assert.deepEqual(live.indexSummary, state.getFolderIndexSummary(user.id, 1, page.total));
+  } finally {state.close(); await removeTestDir(root);}
+});
