@@ -66,8 +66,8 @@ export function createMaintenanceCoordinator(deps: MaintenanceCoordinatorDepende
       mediaId: summary.mediaId,
       bvid: summary.bvid,
     };
-    state.setArchive(locked, normalized);
-    if (!locked) deps.wakeBlockedWork();
+    const shouldWake = state.setArchive(locked, normalized);
+    if (shouldWake) deps.wakeBlockedWork();
   }
 
   function archiveTargetMatches(userId: unknown, mediaId: unknown, bvid: unknown) {

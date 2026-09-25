@@ -321,6 +321,7 @@ test("source deletion keeps the source identity while the worker is running", as
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   const users = fakeUserStore([user("u1", [])]);
   const dav = new FakeDav();
+  const maintenance: boolean[] = [];
   const maintenanceSummaries: Array<Record<string, unknown>> = [];
   const preparationCalls: Array<[string, number, string]> = [];
   let service: ArchiveDeletionService | undefined;
@@ -332,6 +333,7 @@ test("source deletion keeps the source identity while the worker is running", as
     });
     dav.files.set(remotePath, { type: "file", size: 21 });
     service = createService(manager, users, dav, {
+      maintenance,
       maintenanceSummaries,
       prepareSourceDeletion: async (userId, mediaId, bvid) => {
         preparationCalls.push([userId, mediaId, bvid]);
@@ -349,6 +351,9 @@ test("source deletion keeps the source identity while the worker is running", as
       && summary.mediaId === 10
       && summary.bvid === "BVSOURCEMAINTENANCE"
     ));
+    await service.stop();
+    assert.equal(maintenance.at(-1), false);
+    assert.deepEqual(maintenanceSummaries.at(-1), { id: preview.id });
   } finally {
     if (service) await service.stop();
     manager.close();

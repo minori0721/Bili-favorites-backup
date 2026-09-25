@@ -1,10 +1,15 @@
     .settings-grid { display:grid; gap:14px 16px; grid-template-columns:1fr 1fr; }
     .settings-fold { border-top:1px solid var(--glass-border); }
-    .settings-fold > summary { display:flex; align-items:center; gap:12px; min-height:52px; padding:12px 2px; font-size:14px; font-weight:600; color:var(--ink); cursor:pointer; list-style:none; }
+    .settings-fold > summary { display:flex; align-items:center; gap:12px; min-height:52px; padding:12px 2px; border-radius:var(--radius-home-control); font-size:14px; font-weight:600; color:var(--ink); cursor:pointer; list-style:none; transition:background-color .16s ease,box-shadow .16s ease,color .16s ease; }
     .settings-fold > summary::-webkit-details-marker { display:none; }
-    .settings-fold > summary::after { content:'+'; margin-left:auto; color:var(--archive-muted); font-size:20px; font-weight:400; }
+    .settings-fold > summary::after { content:'+'; margin-left:auto; color:var(--archive-muted); font-size:20px; font-weight:400; transition:color .16s ease; }
     .settings-fold[open] > summary::after { content:'−'; }
-    .settings-fold > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:var(--radius-control); }
+    @media (hover:hover) and (pointer:fine) {
+      .settings-fold > summary:hover { background:var(--accent-soft); box-shadow:inset 0 0 0 1px rgba(57,197,187,0.18); color:#24766F; }
+      .settings-fold > summary:hover::after { color:var(--accent-hover); }
+    }
+    .settings-fold > summary:focus-visible { background:var(--accent-soft); box-shadow:inset 0 0 0 1px rgba(57,197,187,0.18); color:#24766F; outline:2px solid var(--accent); outline-offset:2px; }
+    .settings-fold > summary:focus-visible::after { color:var(--accent-hover); }
     .settings-fold > .settings-grid { padding:4px 0 22px; }
     .settings-group { grid-column:1/-1; padding-top:14px; border-top:1px solid rgba(214,240,237,0.78); margin-top:8px; }
     .settings-group-title { font-weight:700; color:var(--ink); margin-bottom:12px; }
