@@ -10,7 +10,7 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
   const modalAnimationState = new Map<HTMLElement,{timer:number | null}>();
   const modalBackgroundState = new Map<HTMLElement,{inert:boolean; ariaHidden:string | null}>();
   let modalScrollState:{rootHadClass:boolean; bodyHadClass:boolean; bodyPaddingRight:string} | null = null;
-  const MODAL_ENTER_FOCUS_DELAY_MS = 190;
+  const MODAL_ENTER_FOCUS_DELAY_MS = 260;
   const timers = new Set<number>();
   let disposed = false;
   let initialized = false;
@@ -177,7 +177,7 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
       const [entry] = modalStack.splice(index, 1);
       const closingZIndex = modal.style.zIndex || String(100 + index * 20);
       const motionReduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-      const closeDuration = motionReduced ? 0 : 170;
+      const closeDuration = motionReduced ? 0 : 190;
       const closingState: {timer:number | null} = {timer:null};
       modalAnimationState.set(modal, closingState);
       modal.classList.add('is-closing');

@@ -491,6 +491,7 @@ function getModals() {
           <button type="button" data-archive-filter="playable">可播放</button>
           <button type="button" data-archive-filter="pending">待处理</button>
           <button type="button" data-archive-filter="issue">异常</button>
+          <button type="button" data-archive-filter="retained" title="B站来源经复核不可用，但归档仍可播放；可能是下架、审核或权限变化">「留存」</button>
           <button type="button" data-archive-filter="deleted">已删除</button>
         </div>
         <div class="archive-library-results" id="archiveLibraryResults" tabindex="-1">

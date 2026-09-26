@@ -124,7 +124,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           scope:typeof parsed.scope === 'string' && ['global','account','folder'].includes(parsed.scope) ? parsed.scope : 'global',
           userId:typeof parsed.userId === 'string' ? parsed.userId : null,
           mediaId:Number(parsed.mediaId || 0) || null,
-          filter:typeof parsed.filter === 'string' && ['all','playable','pending','issue','deleted'].includes(parsed.filter) ? parsed.filter : 'all',
+          filter:typeof parsed.filter === 'string' && ['all','playable','pending','issue','retained','deleted'].includes(parsed.filter) ? parsed.filter : 'all',
           sort:typeof parsed.sort === 'string' && ['context','title_asc','title_desc'].includes(parsed.sort) ? parsed.sort : 'context',
           scrollPositions:isRecord(parsed.scrollPositions) ? Object.fromEntries(Object.entries(parsed.scrollPositions).filter((entry): entry is [string,number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]) && entry[1] >= 0)) : {}
         };
@@ -295,6 +295,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     function archiveSummaryText(summary: Summary | null) {
       if (!summary) return '正在读取本地归档';
       if (archiveLibraryState.filter === 'deleted') return Number(summary.total || 0) + ' 个删除记录';
+      if (archiveLibraryState.filter === 'retained') return Number(summary.total || 0) + ' 个「留存」归档';
       return Number(summary.total || 0) + ' 个视频 · 可播放 ' + Number(summary.playable || 0) +
         ' · 待处理 ' + Number(summary.pending || 0) + ' · 异常 ' + Number(summary.issue || 0);
     }

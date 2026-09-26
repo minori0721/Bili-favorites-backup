@@ -1,0 +1,191 @@
+/* One motion language for the working surface: response, disclosure, continuity. */
+:root {
+  --motion-press: 110ms;
+  --motion-hover: 180ms;
+  --motion-reveal: 260ms;
+  --motion-exit: 190ms;
+  --motion-ease: cubic-bezier(.22, .8, .24, 1);
+  --motion-ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --motion-ease-exit: cubic-bezier(.4, 0, 1, 1);
+  --motion-outline: 0 0 0 3px rgba(57, 197, 187, .14);
+  --motion-lift-shadow: 0 9px 24px rgba(29, 101, 94, .14);
+}
+
+/* Buttons feel responsive without floating away from the pointer. */
+.row button:not(.help-icon-btn),
+header button,
+.log-toggle button,
+.archive-library-segment button,
+.archive-library-filterbar button {
+  transition: background-color var(--motion-hover) var(--motion-ease),
+    border-color var(--motion-hover) var(--motion-ease),
+    color var(--motion-hover) var(--motion-ease),
+    box-shadow var(--motion-hover) var(--motion-ease),
+    transform var(--motion-press) var(--motion-ease);
+}
+.row button:not(.help-icon-btn):hover,
+.row button:not(.help-icon-btn):focus-visible { transform: none; }
+.row button:not(.help-icon-btn):not(:disabled):active,
+header button:not(:disabled):active,
+.log-toggle button:not(:disabled):active,
+.archive-library-segment button:not(:disabled):active,
+.archive-library-filterbar button:not(:disabled):active {
+  transform: scale(.975);
+  transition-duration: var(--motion-press);
+}
+.row button:disabled,
+.row button:disabled:hover { transform: none; }
+
+/* Disclosure has one visual grammar: a growing edge and a turning chevron. */
+.settings-fold > summary,
+.scheduler-status {
+  position: relative;
+  transition: background-color var(--motion-hover) var(--motion-ease),
+    border-color var(--motion-hover) var(--motion-ease),
+    box-shadow var(--motion-hover) var(--motion-ease),
+    color var(--motion-hover) var(--motion-ease);
+}
+.settings-fold > summary { padding-inline: 14px 12px; }
+.settings-fold > summary::before,
+.scheduler-status::before {
+  content: '';
+  position: absolute;
+  inset: 11px auto 11px 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform var(--motion-reveal) var(--motion-ease-enter);
+  pointer-events: none;
+}
+.settings-fold > summary:hover::before,
+.settings-fold > summary:focus-visible::before,
+.settings-fold[open] > summary::before,
+.scheduler-status:has(> .scheduler-status-main:hover)::before,
+.scheduler-status:has(> .scheduler-status-main:focus-visible)::before,
+.scheduler-status[open]::before { transform: scaleY(1); }
+.settings-fold > summary::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  margin: -4px 6px 0 auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  color: var(--archive-muted);
+  transform: rotate(45deg);
+  transition: transform var(--motion-reveal) var(--motion-ease-enter),
+    color var(--motion-hover) var(--motion-ease);
+}
+.settings-fold[open] > summary::after { content: ''; transform: translateY(4px) rotate(225deg); }
+.settings-fold > summary:hover::after,
+.settings-fold > summary:focus-visible::after { color: var(--accent-hover); }
+@supports (interpolate-size: allow-keywords) {
+  .settings-fold,
+  .scheduler-status { interpolate-size: allow-keywords; }
+  .settings-fold::details-content,
+  .scheduler-status::details-content {
+    block-size: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: block-size var(--motion-reveal) var(--motion-ease-enter),
+      opacity var(--motion-hover) var(--motion-ease);
+  }
+  .settings-fold[open]::details-content,
+  .scheduler-status[open]::details-content { block-size: auto; opacity: 1; }
+}
+.scheduler-status:has(> .scheduler-status-main:hover),
+.scheduler-status:has(> .scheduler-status-main:focus-visible) {
+  box-shadow: var(--motion-outline), 0 8px 22px rgba(29, 101, 94, .10);
+}
+.scheduler-status.running .scheduler-status-title::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  vertical-align: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: schedulerPulse 2.4s ease-in-out infinite;
+}
+@keyframes schedulerPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(57, 197, 187, .28); }
+  55% { box-shadow: 0 0 0 6px rgba(57, 197, 187, 0); }
+}
+
+/* Queue and archive items show continuity in place; no hover translation. */
+.queue-card {
+  position: relative;
+  transition: background-color var(--motion-hover) var(--motion-ease),
+    border-color var(--motion-hover) var(--motion-ease),
+    box-shadow var(--motion-hover) var(--motion-ease),
+    opacity var(--motion-reveal) var(--motion-ease);
+}
+.queue-card::before {
+  content: '';
+  position: absolute;
+  inset: 8px auto 8px 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  transform: scaleY(0);
+  transition: transform var(--motion-reveal) var(--motion-ease-enter);
+  pointer-events: none;
+}
+.queue-card:hover::before,
+.queue-card:focus-within::before { transform: scaleY(1); }
+.queue-card:hover,
+.queue-card:focus-within {
+  background: rgba(255, 255, 255, .92);
+  box-shadow: var(--motion-lift-shadow);
+}
+.queue-card.entering { animation-duration: var(--motion-reveal); }
+.archive-library-card,
+.video-item.playable {
+  transition: background-color var(--motion-hover) var(--motion-ease),
+    border-color var(--motion-hover) var(--motion-ease),
+    box-shadow var(--motion-hover) var(--motion-ease);
+}
+.archive-library-cover img,
+.video-item.playable .video-cover { transition: transform var(--motion-reveal) var(--motion-ease-enter); }
+.archive-library-card:hover .archive-library-cover img,
+.archive-library-card:focus-within .archive-library-cover img,
+.video-item.playable:hover .video-cover,
+.video-item.playable:focus-visible .video-cover { transform: scale(1.035); }
+.video-item.playable:hover { transform: none; }
+
+/* Overlay and content enter together; close completes before the DOM is hidden. */
+.modal { transition: opacity var(--motion-reveal) var(--motion-ease); }
+.modal.is-closing { transition-duration: var(--motion-exit); }
+.modal > .panel,
+.modal > .archive-library-shell,
+.modal > .online-content-shell,
+.modal > .playback-shell,
+.modal > .recovery-issues-shell {
+  transform: translateY(12px) scale(.985);
+  transition: opacity var(--motion-reveal) var(--motion-ease-enter),
+    transform var(--motion-reveal) var(--motion-ease-enter);
+}
+.modal > .playback-shell { animation: none; }
+.modal.active.is-closing > .panel,
+.modal.active.is-closing > .archive-library-shell,
+.modal.active.is-closing > .online-content-shell,
+.modal.active.is-closing > .playback-shell,
+.modal.active.is-closing > .recovery-issues-shell {
+  transform: translateY(5px) scale(.992);
+  transition-duration: var(--motion-exit);
+  transition-timing-function: var(--motion-ease-exit);
+}
+.toast { animation-duration: var(--motion-reveal); }
+.toast.fade-out { animation-duration: var(--motion-exit); }
+
+/* Bottom sheets remain inside the viewport throughout their entrance and exit. */
+@media (max-width: 760px), (max-height: 480px) and (pointer: coarse) {
+  .modal > .panel { transform: scale(.985); transform-origin: center bottom; }
+  .modal.active.is-closing > .panel { transform: scale(.992); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scheduler-status.running .scheduler-status-title::before { animation: none; }
+}

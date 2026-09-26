@@ -18,7 +18,7 @@ const test = base.extend<{ browserProblems: string[] }>({
 async function resetFixture(
   page: Page,
   sourceCompletionMode: "pending" | "complete" = "pending",
-  delays: { accountDeleteDelayMs?: number; sourceStartDelayMs?: number } = {}
+  delays: { accountDeleteDelayMs?: number; sourceStartDelayMs?: number; retainedArchivePreview?: boolean } = {}
 ) {
   await page.request.post("/__test/reset", { data: { sourceCompletionMode, ...delays } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({
@@ -31,10 +31,10 @@ async function resetFixture(
   await expect(page.locator(".user-item")).toHaveCount(1);
 }
 
-async function openLibrary(page: Page, testInfo: TestInfo) {
+async function openLibrary(page: Page, testInfo: TestInfo, expectedCount = 2) {
   await page.locator("#archiveLibraryBtn").click();
   await expect(page.locator("#archiveLibraryModal")).toHaveClass(/active/);
-  await expect(page.locator(".archive-library-card")).toHaveCount(2);
+  await expect(page.locator(".archive-library-card")).toHaveCount(expectedCount);
   if (testInfo.project.name !== "desktop") {
     await page.locator('.archive-nav-item[data-archive-scope="global"]').tap();
     await expect(page.locator(".archive-library-shell")).toHaveClass(/show-content/);
@@ -81,6 +81,22 @@ test("source availability uses a background status without creating a recovery b
   await openLibrary(page, testInfo);
   await expect(page.locator('[data-archive-bvid="BV1BETA0002"] .archive-library-status')).toHaveText("B站源长期不可用");
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
+});
+
+test("「留存」只显示B站来源不可用但归档可播放的视频", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  await resetFixture(page, "pending", { retainedArchivePreview: true });
+  await openLibrary(page, testInfo, 3);
+  const sourceFilter = page.locator('[data-archive-filter="retained"]');
+  await expect(sourceFilter).toHaveText('「留存」');
+  await sourceFilter.click();
+  await expect(sourceFilter).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.archive-library-card')).toHaveCount(1);
+  await expect(page.locator('[data-archive-bvid="BV1GAMMA003"]')).toBeVisible();
+  await expect(page.locator('[data-archive-bvid="BV1BETA0002"]')).toHaveCount(0);
+  await expect(page.locator('#archiveLibrarySummary')).toContainText('1 个「留存」归档');
+  await page.locator('[data-archive-filter="all"]').click();
+  await expect(page.locator('.archive-library-card')).toHaveCount(3);
 });
 
 test("desktop modal stack traps focus and restores each interaction layer", async ({ page, browserProblems }, testInfo) => {

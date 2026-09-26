@@ -13,7 +13,7 @@ import type { BiliUser } from "./users.js";
 import { decodeFavoriteRelation, decodeVideoPayload, parsePersistedJsonValue } from './repositories/domain-decoders.js';
 
 export type ArchiveLibraryScope = "global" | "account" | "folder";
-export type ArchiveLibraryFilter = "all" | "playable" | "pending" | "issue" | "deleted";
+export type ArchiveLibraryFilter = "all" | "playable" | "pending" | "issue" | "retained" | "deleted";
 export type ArchiveLibrarySort = "context" | "title_asc" | "title_desc";
 export type ArchiveLibrarySearchScope = "current" | "global";
 
@@ -58,7 +58,7 @@ export interface ArchiveLibraryItem {
   cover?: string;
   coverLocalPath?: string;
   backupStatus: BackupStatus;
-  statusGroup: Exclude<ArchiveLibraryFilter, "all">;
+  statusGroup: "playable" | "pending" | "issue" | "deleted";
   unavailable: boolean;
   sourceAvailability?: SourceAvailability;
   activeInFavorite: boolean;
@@ -326,7 +326,7 @@ function normalizeQuery(users: BiliUser[], input: Partial<ArchiveLibraryQuery>):
   }
   const searchScope = rawSearchScope as ArchiveLibrarySearchScope;
   const rawFilter = String(input.filter || "all");
-  if (!(["all", "playable", "pending", "issue", "deleted"] as string[]).includes(rawFilter)) {
+  if (!(["all", "playable", "pending", "issue", "retained", "deleted"] as string[]).includes(rawFilter)) {
     throw new ArchiveLibraryQueryError("Invalid archive filter");
   }
   const filter = rawFilter as ArchiveLibraryFilter;
@@ -406,8 +406,19 @@ function filterSql(filter: ArchiveLibraryFilter) {
   if (filter === "playable") return "playable=1";
   if (filter === "pending") return "playable=0 AND pending=1";
   if (filter === "issue") return "playable=0 AND pending=0";
+  if (filter === "retained") return "playable=1 AND source_unavailable=1";
   return "1=1";
 }
+
+const confirmedSourceUnavailableSql = (videoAlias: string) =>
+  `(COALESCE(json_extract(${videoAlias}.payload_json, '$.selfVisible'), 0)=0 AND (
+    json_extract(${videoAlias}.payload_json, '$.sourceAvailability.state') IN ('confirmed_unavailable','dormant')
+    OR (
+      json_extract(${videoAlias}.payload_json, '$.sourceAvailability.state') IS NULL
+      AND json_extract(${videoAlias}.payload_json, '$.biliStatus')='unavailable'
+      AND COALESCE(json_extract(${videoAlias}.payload_json, '$.favoriteUnavailable'), 0)=1
+    )
+  ))`;
 
 function contextHash(context: NormalizedContext, extraQuery = "") {
   return crypto.createHash("sha256").update(JSON.stringify({
@@ -540,6 +551,7 @@ function orderAndCursorSql(
 }
 
 function candidateCte(context: NormalizedContext, params: Record<string, unknown>, extraQuery = "") {
+  const checkSource = context.filter === "retained";
   if (context.effectiveScope === "folder") {
     const scope = addScopeSql(context, "r", params);
     const search = searchSql(context, params, extraQuery);
@@ -555,7 +567,8 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
           CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer'
             AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN r.fav_order ELSE 0 END AS order_key,
           CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END AS playable,
-          CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS pending
+          CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS pending,
+          ${checkSource ? `CASE WHEN ${confirmedSourceUnavailableSql("v")} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
         FROM favorite_relations r
         JOIN videos v ON v.bvid=r.bvid
         WHERE ${scope} AND ${search} AND ${deletion}
@@ -573,8 +586,10 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
       SELECT p.bvid, p.recent_key, p.title_key,
         0 AS active_key, 0 AS order_known_key, 0 AS order_key,
         CASE WHEN p.status_group='playable' THEN 1 ELSE 0 END AS playable,
-        CASE WHEN p.status_group='pending' THEN 1 ELSE 0 END AS pending
+        CASE WHEN p.status_group='pending' THEN 1 ELSE 0 END AS pending,
+        ${checkSource ? `CASE WHEN ${confirmedSourceUnavailableSql("v")} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
       FROM archive_library_projection p
+      ${checkSource ? "JOIN videos v ON v.bvid=p.bvid" : ""}
       WHERE p.scope_type=@projectionScopeType AND p.scope_id=@projectionScopeId
         AND p.visibility=@projectionVisibility AND ${projectionSearch}
     ), filtered AS (

@@ -17,6 +17,7 @@ type TestState = {
   sourceStatusPolls: number;
   sourceCompletionMode: "pending" | "complete";
   sourceDeleted: boolean;
+  retainedArchivePreview: boolean;
   itemQueries: string[];
   detailQueries: string[];
   recoveryActionCount: number;
@@ -66,6 +67,7 @@ function initialState(): TestState {
     sourceStatusPolls: 0,
     sourceCompletionMode: "pending",
     sourceDeleted: false,
+    retainedArchivePreview: false,
     itemQueries: [],
     detailQueries: [],
     recoveryActionCount: 0,
@@ -142,6 +144,20 @@ const baseItems = [
   },
 ];
 
+const retainedItem = {
+  ...baseItems[0],
+  bvid: "BV1GAMMA003",
+  title: "Gamma 留存归档",
+  unavailable: true,
+  sourceAvailability: {
+    state: "dormant" as const,
+    reason: "api_not_found",
+    firstSeenAt: "2026-07-01T08:00:00.000Z",
+    lastCheckedAt: "2026-08-01T08:00:00.000Z",
+    checkRound: 3,
+  },
+};
+
 function archiveItems(query: string) {
   const normalized = query.trim().toLowerCase();
   if (normalized === "fast") {
@@ -150,7 +166,8 @@ function archiveItems(query: string) {
   if (normalized === "slow") {
     return [{ ...baseItems[0], bvid: "BV1SLOW0004", title: "Slow 慢速结果" }];
   }
-  const visible = baseItems.filter((item) => !state.sourceDeleted || item.bvid !== "BV1ALPHA001");
+  const visible = (state.retainedArchivePreview ? [...baseItems, retainedItem] : baseItems)
+    .filter((item) => !state.sourceDeleted || item.bvid !== "BV1ALPHA001");
   if (!normalized) return visible;
   return visible.filter((item) => `${item.title} ${item.upperName} ${item.bvid}`.toLowerCase().includes(normalized));
 }
@@ -174,7 +191,8 @@ function navigation() {
 }
 
 function detailItem(bvid: string) {
-  const item = baseItems.find((candidate) => candidate.bvid === bvid) || baseItems[0];
+  const item = (state.retainedArchivePreview ? [...baseItems, retainedItem] : baseItems)
+    .find((candidate) => candidate.bvid === bvid) || baseItems[0];
   return {
     ...item,
     memberships: [{
@@ -201,6 +219,7 @@ app.get("/__test/ready", (_request, response) => response.json({ ready: true }))
 app.post("/__test/reset", (request, response) => {
   state = initialState();
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
+  state.retainedArchivePreview = request.body?.retainedArchivePreview === true;
   state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
   state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
   const recoveryIssueKind = String(request.body?.recoveryIssueKind || "");
@@ -605,9 +624,13 @@ app.get("/api/archive-library/items", async (request, response) => {
     response.json({ success:false, message:"隔离归档读取失败" });
     return;
   }
-  const items = query === "duplicates"
+  const candidates = query === "duplicates"
     ? [{ ...baseItems[0] }, { ...baseItems[0] }]
     : archiveItems(query);
+  const filter = String(request.query.filter || "all");
+  const items = filter === "retained"
+    ? candidates.filter((item) => item.playback.available && ['confirmed_unavailable', 'dormant'].includes(item.sourceAvailability?.state || ''))
+    : candidates;
   response.json(ok({
     items,
     pageSize: 50,
