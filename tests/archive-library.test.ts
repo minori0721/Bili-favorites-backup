@@ -57,6 +57,7 @@ function insertArchive(
     order?: number;
     seenOffset?: number;
     unavailable?: boolean;
+    biliStatus?: VideoArchiveEntry['biliStatus'];
     selfVisible?: boolean;
     availability?: SourceAvailability;
     playable?: { width?: number; height?: number; fps?: number; parts?: number; quality?: string };
@@ -79,7 +80,7 @@ function insertArchive(
     },
     firstSeenAt: new Date(seen).toISOString(),
     lastSeenAt: new Date(seen).toISOString(),
-    biliStatus: options.unavailable || ['confirmed_unavailable', 'dormant'].includes(options.availability?.state || '') ? "unavailable" : "available",
+    biliStatus: options.biliStatus || (options.unavailable || ['confirmed_unavailable', 'dormant'].includes(options.availability?.state || '') ? "unavailable" : "available"),
     backupStatus: options.status,
     favoriteUnavailable: options.unavailable,
     sourceAvailability: options.availability,
@@ -205,10 +206,11 @@ function fixture() {
   return database;
 }
 
-test("「留存」只包含来源经复核不可用且归档可播放的视频", () => {
+test("「留存」按归档可播放和收藏夹失效证据筛选，保留账号与来源边界", () => {
   const database = new StateDatabase(":memory:");
   const availability = (state: SourceAvailability['state']): SourceAvailability => ({
-    state, reason: 'api_not_found', firstSeenAt: new Date(now).toISOString(), checkRound: 3,
+    state, reason: state === 'pending_confirmation' ? 'favorite_flag' : 'api_not_found',
+    firstSeenAt: new Date(now).toISOString(), checkRound: 3,
   });
   try {
     insertArchive(database, {
@@ -236,12 +238,30 @@ test("「留存」只包含来源经复核不可用且归档可播放的视频",
       status: 'verified', unavailable: true, playable: {parts: 1},
     });
     insertArchive(database, {
+      userId: 'u1', mediaId: 10, folderTitle: '正在同步', bvid: 'BVPENDINGPLAY', title: '收藏夹失效待复核但归档可播',
+      status: 'verified', unavailable: true, biliStatus: 'unknown',
+      availability: availability('pending_confirmation'), playable: {parts: 1},
+    });
+    insertArchive(database, {
+      userId: 'u1', mediaId: 10, folderTitle: '正在同步', bvid: 'BVPENDINGNOFLAG', title: '无失效标记的待复核记录',
+      status: 'verified', biliStatus: 'unknown',
+      availability: availability('pending_confirmation'), playable: {parts: 1},
+    });
+    insertArchive(database, {
+      userId: 'u1', mediaId: 10, folderTitle: '正在同步', bvid: 'BVSCOPED', title: '账号一仍可用的共享视频',
+      status: 'verified', playable: {parts: 1},
+    });
+    insertArchive(database, {
+      userId: 'u2', mediaId: 20, folderTitle: '另一个收藏夹', bvid: 'BVSCOPED', title: '账号二收藏夹显示失效',
+      status: 'verified', unavailable: true, playable: {parts: 1},
+    });
+    insertArchive(database, {
       userId: 'u1', mediaId: 10, folderTitle: '正在同步', bvid: 'BVSELFINVIEW', title: '本人仍可查看',
       status: 'verified', playable: {parts: 1}, selfVisible: true, availability: availability('dormant'),
     });
     insertArchive(database, {
       userId: 'u1', mediaId: 10, folderTitle: '正在同步', bvid: 'BVREMOVED', title: '已删除的不可用来源',
-      status: 'lost', availability: availability('dormant'),
+      status: 'verified', availability: availability('dormant'), playable: {parts: 1},
     });
     database.db.prepare(`INSERT INTO archive_deletions
       (id,scope,user_id,media_id,bvid,status,alist_identity_hash,archive_root,
@@ -254,42 +274,49 @@ test("「留存」只包含来源经复核不可用且归档可播放的视频",
     database.rebuildArchiveLibraryProjection();
 
     const result = queryArchiveLibraryItems(database, users(), {scope: 'global', filter: 'retained'});
-    assert.deepEqual(new Set(result.items.map(item => item.bvid)), new Set(['BVUNAVAILABLEPLAY', 'BVUNAVAILABLEPLAY2', 'BVLEGACYPLAY']));
-    assert.equal(result.summary?.total, 3);
-    assert.equal(result.summary?.playable, 3);
+    const expected = new Set(['BVUNAVAILABLEPLAY', 'BVUNAVAILABLEPLAY2', 'BVLEGACYPLAY', 'BVPENDINGPLAY', 'BVSCOPED']);
+    assert.deepEqual(new Set(result.items.map(item => item.bvid)), expected);
+    assert.equal(result.summary?.total, expected.size);
+    assert.equal(result.summary?.playable, expected.size);
     assert.equal(result.summary?.issue, 0);
     assert.deepEqual(new Set(queryArchiveLibraryItems(database, users(), {
       scope: 'folder', userId: 'u1', mediaId: 10, filter: 'retained',
-    }).items.map(item => item.bvid)), new Set(['BVUNAVAILABLEPLAY', 'BVLEGACYPLAY']));
+    }).items.map(item => item.bvid)), new Set(['BVUNAVAILABLEPLAY', 'BVLEGACYPLAY', 'BVPENDINGPLAY']));
     assert.deepEqual(queryArchiveLibraryItems(database, users(), {
       scope: 'folder', userId: 'u1', mediaId: 12, filter: 'retained',
     }).items.map(item => item.bvid), ['BVUNAVAILABLEPLAY2']);
+    assert.deepEqual(queryArchiveLibraryItems(database, users(), {
+      scope: 'account', userId: 'u2', filter: 'retained',
+    }).items.map(item => item.bvid), ['BVSCOPED']);
+    assert.equal(getArchiveLibraryItemDetail(database, users(), {
+      scope: 'account', userId: 'u1', filter: 'retained',
+    }, 'BVSCOPED'), null);
     assert.equal(getArchiveLibraryItemDetail(database, users(), {
       scope: 'global', filter: 'retained',
     }, 'BVUNCONFIRMED'), null);
+    assert.equal(getArchiveLibraryItemDetail(database, users(), {
+      scope: 'global', filter: 'retained',
+    }, 'BVPENDINGNOFLAG'), null);
     assert.equal(getArchiveLibraryItemDetail(database, users(), {
       scope: 'global', filter: 'retained',
     }, 'BVUNAVAILABLEISSUE'), null);
     assert.equal(getArchiveLibraryItemDetail(database, users(), {
       scope: 'global', filter: 'retained',
     }, 'BVSELFINVIEW'), null);
-    const first = queryArchiveLibraryItems(database, users(), {
-      scope: 'global', filter: 'retained', pageSize: 1,
-    });
-    const second = queryArchiveLibraryItems(database, users(), {
-      scope: 'global', filter: 'retained', pageSize: 1, cursor: first.nextCursor || undefined,
-    });
-    assert.equal(first.items.length, 1);
-    assert.equal(second.items.length, 1);
-    assert.notEqual(first.items[0].bvid, second.items[0].bvid);
-    assert.ok(second.nextCursor);
-    const third = queryArchiveLibraryItems(database, users(), {
-      scope: 'global', filter: 'retained', pageSize: 1, cursor: second.nextCursor || undefined,
-    });
-    assert.equal(third.items.length, 1);
-    assert.equal(third.nextCursor, null);
-    assert.deepEqual(new Set([...first.items, ...second.items, ...third.items].map(item => item.bvid)),
-      new Set(['BVUNAVAILABLEPLAY', 'BVUNAVAILABLEPLAY2', 'BVLEGACYPLAY']));
+    const paged: string[] = [];
+    let cursor: string | undefined;
+    for (let index = 0; index < expected.size; index += 1) {
+      const page = queryArchiveLibraryItems(database, users(), {
+        scope: 'global', filter: 'retained', pageSize: 1, cursor,
+      });
+      assert.equal(page.items.length, 1);
+      paged.push(page.items[0].bvid);
+      cursor = page.nextCursor || undefined;
+      if (index < expected.size - 1) assert.ok(cursor);
+      else assert.equal(page.nextCursor, null);
+    }
+    assert.equal(paged.length, expected.size);
+    assert.deepEqual(new Set(paged), expected);
   } finally {
     database.close();
   }

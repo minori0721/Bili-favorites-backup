@@ -83,12 +83,13 @@ test("source availability uses a background status without creating a recovery b
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
 });
 
-test("「留存」只显示B站来源不可用但归档可播放的视频", async ({ page, browserProblems }, testInfo) => {
+test("「留存」显示收藏夹失效但归档仍可播放的视频", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   await resetFixture(page, "pending", { retainedArchivePreview: true });
   await openLibrary(page, testInfo, 3);
   const sourceFilter = page.locator('[data-archive-filter="retained"]');
   await expect(sourceFilter).toHaveText('「留存」');
+  await expect(sourceFilter).not.toHaveAttribute('title');
   await sourceFilter.click();
   await expect(sourceFilter).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.archive-library-card')).toHaveCount(1);

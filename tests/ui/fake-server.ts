@@ -150,8 +150,8 @@ const retainedItem = {
   title: "Gamma 留存归档",
   unavailable: true,
   sourceAvailability: {
-    state: "dormant" as const,
-    reason: "api_not_found",
+    state: "pending_confirmation" as const,
+    reason: "favorite_flag",
     firstSeenAt: "2026-07-01T08:00:00.000Z",
     lastCheckedAt: "2026-08-01T08:00:00.000Z",
     checkRound: 3,
@@ -629,7 +629,7 @@ app.get("/api/archive-library/items", async (request, response) => {
     : archiveItems(query);
   const filter = String(request.query.filter || "all");
   const items = filter === "retained"
-    ? candidates.filter((item) => item.playback.available && ['confirmed_unavailable', 'dormant'].includes(item.sourceAvailability?.state || ''))
+    ? candidates.filter((item) => item.playback.available && item.unavailable)
     : candidates;
   response.json(ok({
     items,

@@ -410,15 +410,11 @@ function filterSql(filter: ArchiveLibraryFilter) {
   return "1=1";
 }
 
-const confirmedSourceUnavailableSql = (videoAlias: string) =>
-  `(COALESCE(json_extract(${videoAlias}.payload_json, '$.selfVisible'), 0)=0 AND (
-    json_extract(${videoAlias}.payload_json, '$.sourceAvailability.state') IN ('confirmed_unavailable','dormant')
-    OR (
-      json_extract(${videoAlias}.payload_json, '$.sourceAvailability.state') IS NULL
-      AND json_extract(${videoAlias}.payload_json, '$.biliStatus')='unavailable'
-      AND COALESCE(json_extract(${videoAlias}.payload_json, '$.favoriteUnavailable'), 0)=1
-    )
-  ))`;
+const archivedSourceUnavailableSql = (relationAlias: string, videoAlias: string) => `(
+  ${relationAlias}.backup_status IN ('uploaded','verified','partial_verified')
+  AND ${relationAlias}.source_kind!='manual' AND ${relationAlias}.self_visible=0
+  AND (${relationAlias}.favorite_unavailable=1 OR ${videoAlias}.bili_status='unavailable')
+)`;
 
 function contextHash(context: NormalizedContext, extraQuery = "") {
   return crypto.createHash("sha256").update(JSON.stringify({
@@ -568,7 +564,7 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
             AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN r.fav_order ELSE 0 END AS order_key,
           CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END AS playable,
           CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS pending,
-          ${checkSource ? `CASE WHEN ${confirmedSourceUnavailableSql("v")} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
+          ${checkSource ? `CASE WHEN ${archivedSourceUnavailableSql("r", "v")} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
         FROM favorite_relations r
         JOIN videos v ON v.bvid=r.bvid
         WHERE ${scope} AND ${search} AND ${deletion}
@@ -581,13 +577,20 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
   params.projectionScopeType = context.effectiveScope === "account" ? "account" : "global";
   params.projectionScopeId = context.effectiveScope === "account" ? context.effectiveUserId : "";
   params.projectionVisibility = context.filter === "deleted" ? "deleted" : "normal";
+  const archivedSource = `EXISTS(
+    SELECT 1 FROM favorite_relations r
+    WHERE r.bvid=p.bvid
+      ${context.effectiveScope === "account" ? "AND r.user_id=p.scope_id" : ""}
+      AND NOT (${deletionExistsSql("r")})
+      AND ${archivedSourceUnavailableSql("r", "v")}
+  )`;
   return `
     WITH candidates AS (
       SELECT p.bvid, p.recent_key, p.title_key,
         0 AS active_key, 0 AS order_known_key, 0 AS order_key,
         CASE WHEN p.status_group='playable' THEN 1 ELSE 0 END AS playable,
         CASE WHEN p.status_group='pending' THEN 1 ELSE 0 END AS pending,
-        ${checkSource ? `CASE WHEN ${confirmedSourceUnavailableSql("v")} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
+        ${checkSource ? `CASE WHEN ${archivedSource} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
       FROM archive_library_projection p
       ${checkSource ? "JOIN videos v ON v.bvid=p.bvid" : ""}
       WHERE p.scope_type=@projectionScopeType AND p.scope_id=@projectionScopeId
