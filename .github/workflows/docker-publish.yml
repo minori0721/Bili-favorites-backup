@@ -89,6 +89,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: docker.io/${{ env.IMAGE_NAME }}
+          flavor: latest=false
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
@@ -101,16 +102,15 @@ jobs:
         timeout-minutes: 3
         run: node scripts/image-layer-report.mjs prepare "$RUNNER_TEMP/bfb-layer-baseline.json"
 
-      - name: Build and Push
+      - name: Build and push candidate by digest
         id: image
         uses: docker/build-push-action@v7
         env:
           SOURCE_DATE_EPOCH: "0"
         with:
           context: .
-          push: true
           platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=docker.io/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BFB_BUILD_REF=${{ github.ref_name }}
@@ -121,7 +121,7 @@ jobs:
             type=registry,ref=docker.io/${{ env.IMAGE_NAME }}:buildcache-main
           cache-to: ${{ steps.layer_cache.outputs.cache_to }}
 
-      - name: Smoke test the published image in isolation
+      - name: Smoke test the candidate image in isolation
         timeout-minutes: 3
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
@@ -159,6 +159,12 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: node scripts/image-layer-report.mjs report "$RUNNER_TEMP/bfb-layer-baseline.json"
+
+      - name: Promote verified image tags
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: node scripts/promote-image.mjs
 
   release:
     needs: docker

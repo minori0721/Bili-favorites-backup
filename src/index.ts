@@ -190,7 +190,10 @@ const accountLogin = createAccountLogin({
     if (archiveDeletion.restoreAccount(id)) {scheduler.restoreUserAfterLogin(id); scheduler.wakeChargingAccessProbes(id);}
   },
 });
-const favoriteDetail = createFavoriteDetailService({state: stateManager, listPage: listFavoriteItemsPage, resolveVisible: resolveSelfVisibleFavoriteItem, now: Date.now});
+const favoriteDetail = createFavoriteDetailService({
+  state: stateManager, listPage: listFavoriteItemsPage, resolveVisible: resolveSelfVisibleFavoriteItem,
+  currentUser: id => userStore.getById(id), now: Date.now,
+});
 const artplayerAssetPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/artplayer/dist/artplayer.js");
 const renameService = createRenameService({ config: () => configStore.get(), state: stateManager, hasUnfinishedDeletion: () => archiveDeletion.hasUnfinishedOperation(), scan: listRemoteFilesRecursive, rename: batchRenameRemotePaths });
 
