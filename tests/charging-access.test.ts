@@ -317,7 +317,8 @@ function accessFixture(state: StateManager, jobs: PersistentJobStore, users: Bil
   const backup = backupFixture(state, jobs);
   return createAccessProbes({state, jobs, users: {list: () => users}, owner: 'charging-test',
     now: () => now, random: () => 0.5, generation: () => 0, canContinue: () => true,
-    eligible: user => user.enabled, inspect, enqueue: backup.enqueue, prepareCharging: backup.prepareAfterAccessCheck,
+    eligible: user => user.enabled, inspect, sleep: async () => {}, accountIntervalMs: 0,
+    prepareAfterAccessCheck: backup.prepareAfterAccessCheck,
     resolve: relation => {
       const user = users.find(user => user.id === relation.userId);
       return user ? {user, mediaId: relation.mediaId, folderTitle: relation.folderTitle || 'Favorites'} : null;

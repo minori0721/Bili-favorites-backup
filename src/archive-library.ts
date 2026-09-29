@@ -278,8 +278,8 @@ function displayCoverLocalPath(video: VideoArchiveEntry) {
 }
 
 function relationUnavailable(relation: FavoriteRelation, video: VideoArchiveEntry) {
-  const favoriteUnavailable = Boolean(relation.favoriteUnavailable || video.favoriteUnavailable);
-  const selfVisible = Boolean(relation.selfVisible || video.selfVisible);
+  const favoriteUnavailable = Boolean(relation.favoriteUnavailable);
+  const selfVisible = Boolean(relation.selfVisible);
   if (selfVisible) return false;
   const sourceState = video.sourceAvailability?.state;
   if (sourceState) return sourceState === "confirmed_unavailable" || sourceState === "dormant";

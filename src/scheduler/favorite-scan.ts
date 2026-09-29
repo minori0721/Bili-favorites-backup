@@ -386,6 +386,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             if (deps.deletions.source(user.id, mediaId, item.bvid))
                 continue;
             seenBvids?.add(item.bvid);
+            const previousRelation = deps.state.getRelationStatus(user.id, mediaId, item.bvid);
             const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
             const result = deps.state.recordFavoriteItem(user.id, mediaId, folderTitle, item, {
                 favOrder,
@@ -398,13 +399,13 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                         deps.state.recordCoverCache(item.bvid, coverLocalPath);
                 });
             }
-            if (item.unavailable && !item.selfVisible) {
-                const availability = deps.state.getSourceAvailability(item.bvid);
-                const shouldAutoProbe = deps.state.listRelationsForBvid(item.bvid).some((relation) => relation.activeInFavorite
-                    && relation.sourceKind !== "manual"
-                    && !relation.selfVisible
-                    && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
-                if (shouldAutoProbe && availability && !["confirmed_unavailable", "dormant"].includes(availability.state)) {
+            const availability = deps.state.getSourceAvailability(item.bvid);
+            const shouldAutoProbe = availability && deps.state.listRelationsForBvid(item.bvid).some((relation) => relation.activeInFavorite
+                && relation.sourceKind !== "manual"
+                && !relation.selfVisible
+                && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
+            if (shouldAutoProbe && availability) {
+                if (item.unavailable && !item.selfVisible && !["confirmed_unavailable", "dormant"].includes(availability.state)) {
                     const persistedNextAt = Date.parse(availability.nextCheckAt || "");
                     const nextAt = Number.isFinite(persistedNextAt) && persistedNextAt > deps.now()
                         ? persistedNextAt
@@ -415,6 +416,16 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                     deps.probe(item.bvid, {
                         preferredUserId: user.id,
                         notBefore: nextAt,
+                        availabilityRound: availability.checkRound,
+                        availabilityReason: availability.reason,
+                    });
+                } else if (!item.unavailable && !item.selfVisible
+                    && (!previousRelation || previousRelation.favoriteUnavailable)) {
+                    // A newly visible favorite is a signal to check the actual
+                    // video with this account, not proof that all accounts can download it.
+                    deps.probe(item.bvid, {
+                        preferredUserId: user.id,
+                        notBefore: deps.now() + availabilityJitter(item.bvid),
                         availabilityRound: availability.checkRound,
                         availabilityReason: availability.reason,
                     });

@@ -20,9 +20,10 @@ interface AccessProbeDependencies {
   canContinue(): boolean;
   eligible(user: BiliUser): boolean;
   inspect(cookie: BiliUser['cookie'], bvid: string): Promise<VideoPageSnapshotResult>;
+  sleep(ms: number): Promise<void>;
+  accountIntervalMs: number;
   resolve(relation: FavoriteRelation): {user: BiliUser; mediaId: number; folderTitle: string} | null;
-  enqueue(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: {persisted: boolean; downloadUserId: string}): unknown;
-  prepareCharging(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: {persisted: boolean; downloadUserId: string}): {commit(): boolean} | null;
+  prepareAfterAccessCheck(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: {persisted: boolean; downloadUserId: string}): {commit(): boolean} | null;
 }
 
 /** A claimed probe runs inside scheduling control's tracked promise and lease. */
@@ -101,35 +102,30 @@ function deferAvailabilityProbe(
   ) {
     const checkedAt = new Date(deps.now()).toISOString();
     const nextCheckAt = new Date(value.nextAt).toISOString();
-    if (value.state === "pending_confirmation") {
-      deps.state.markAvailabilityPending(String(job.bvid || ""), value.reason, checkedAt, nextCheckAt);
-    } else if (value.state === "unknown") {
-      deps.state.markAvailabilityUnknown(
-        String(job.bvid || ""),
-        value.reason,
-        checkedAt,
-        nextCheckAt,
-        value.unknownRound,
-      );
-    } else {
-      deps.state.markAvailabilityConfirmedUnavailable(
-        String(job.bvid || ""),
-        value.reason,
-        checkedAt,
-        nextCheckAt,
-        value.checkRound,
-      );
-    }
-    const current = deps.jobs.findById(job.id);
-    deps.jobs.updatePayload(job.id, {
-      ...((current?.payload || job.payload || {})),
-      intents: normalizeAccessProbeIntents((current?.payload || job.payload || {})),
-      manual: false,
-      availabilityRound: value.checkRound ?? Number((current?.payload)?.availabilityRound || 0),
-      availabilityUnknownRound: value.unknownRound ?? Number((current?.payload)?.availabilityUnknownRound || 0),
-      availabilityReason: value.reason,
+    deps.state.runAtomic(() => {
+      const current = deps.jobs.findById(job.id);
+      if (!current || current.leaseOwner !== deps.owner || current.attempts !== job.attempts) {
+        throw new Error('Access probe reschedule lost its lease');
+      }
+      if (value.state === "pending_confirmation") {
+        deps.state.markAvailabilityPending(String(job.bvid || ""), value.reason, checkedAt, nextCheckAt);
+      } else if (value.state === "unknown") {
+        deps.state.markAvailabilityUnknown(String(job.bvid || ""), value.reason, checkedAt, nextCheckAt, value.unknownRound);
+      } else {
+        deps.state.markAvailabilityConfirmedUnavailable(String(job.bvid || ""), value.reason, checkedAt, nextCheckAt, value.checkRound);
+      }
+      deps.jobs.updatePayload(job.id, {
+        ...(current.payload || job.payload || {}),
+        intents: normalizeAccessProbeIntents(current.payload || job.payload || {}),
+        manual: false,
+        availabilityRound: value.checkRound ?? Number(current.payload?.availabilityRound || 0),
+        availabilityUnknownRound: value.unknownRound ?? Number(current.payload?.availabilityUnknownRound || 0),
+        availabilityReason: value.reason,
+      });
+      if (!deps.jobs.defer(job.id, deps.owner, value.message, value.nextAt)) {
+        throw new Error('Access probe reschedule lost its lease');
+      }
     });
-    deps.jobs.defer(job.id, deps.owner, value.message, value.nextAt);
   }
 
 async function runAvailabilityProbe(job: PersistentJobRecord) {
@@ -247,7 +243,13 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
       return;
     }
 
+    let inspectedThisRun = 0;
     for (const user of users) {
+      if (inspectedThisRun > 0 && deps.accountIntervalMs > 0) {
+        await deps.sleep(deps.accountIntervalMs);
+        assertCurrent();
+      }
+      inspectedThisRun += 1;
       checkedUids.add(String(user.uid || user.cookie.DedeUserID || user.id));
       try {
         const snapshot = await deps.inspect({
@@ -294,22 +296,32 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
 
     const checkedAt = new Date(deps.now()).toISOString();
     if (recoveredUser) {
-      const recovered = deps.state.markAvailabilityRecovered(bvid, checkedAt);
-      if (wantsLegacyClassification) {
-        deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
-      }
       if (!wantsCharging || chargingUser) {
-        deps.jobs.complete(job.id, deps.owner);
-        for (const relation of relations.filter((item) => item.activeInFavorite
+        const downloadUserId = chargingUser?.id || recoveredUser.id;
+        // Preparing may inspect local files. The status, probe completion and
+        // replacement jobs are committed together only after that I/O succeeds.
+        const replacements = relations.filter((item) => item.activeInFavorite
           && item.sourceKind !== "manual"
-          && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""))) {
+          && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""))
+          .map((relation) => {
           const resolved = deps.resolve(relation);
-          if (!resolved || !deps.state.shouldEnqueueBackup(bvid, relation.userId, relation.mediaId, undefined)) continue;
-          deps.enqueue(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
-            persisted: true,
-            downloadUserId: chargingUser?.id || recoveredUser.id,
+          return { relation, replacement: resolved && deps.prepareAfterAccessCheck(
+            resolved.user, relation.mediaId, resolved.folderTitle, bvid,
+            { persisted: true, downloadUserId },
+          ) };
           });
-        }
+        assertCurrent();
+        const recovered = deps.state.runAtomic(() => {
+          assertCurrent();
+          const changed = deps.state.markAvailabilityRecovered(bvid, checkedAt);
+          if (wantsLegacyClassification) deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
+          if (!deps.jobs.complete(job.id, deps.owner)) throw new Error('Access probe completion lost its lease');
+          for (const { relation, replacement } of replacements) {
+            if (!deps.state.shouldEnqueueBackup(bvid, relation.userId, relation.mediaId, undefined, true)) continue;
+            if (replacement && !replacement.commit()) throw new Error('Access recovered but the replacement task was not accepted');
+          }
+          return changed;
+        });
         if (recovered || previousAvailability) logManager.push({
           timestamp: checkedAt,
           type: "download",
@@ -322,6 +334,8 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
         });
         return;
       }
+      deps.state.markAvailabilityRecovered(bvid, checkedAt);
+      if (wantsLegacyClassification) deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
       deps.state.markChargingRestricted(bvid, {
         checkedAt,
         nextCheckAt: new Date(deps.now() + computeChargingRecheckDelayMs(deps.random)).toISOString(),
@@ -357,27 +371,12 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
     if (unknownCount > 0) {
       if (preserveManualSchedule("手动复核暂时无法确认，保留原复核计划")) return;
       const unknownRound = Number(payload.availabilityUnknownRound || 0);
-      if (unknownRound >= AVAILABILITY_UNKNOWN_DELAYS_MS.length) {
-        deps.state.markAvailabilityDormant(bvid, availabilityReason, checkedAt, unknownRound);
-        deps.jobs.complete(job.id, deps.owner);
-        logManager.push({
-          timestamp: checkedAt,
-          type: "download",
-          level: "info",
-          summary: `B站视频状态长期无法确认，已转入休眠 ${bvid}`,
-          raw: `[Availability] dormant_unknown bvid=${bvid} round=${unknownRound}`,
-          bvid,
-          simpleVisible: true,
-          debugVisible: true,
-        });
-        return;
-      }
       const nextAt = deps.now() + computeAvailabilityUnknownDelayMs(unknownRound, bvid);
       deferAvailabilityProbe(job, {
         nextAt,
         state: "unknown",
         reason: availabilityReason,
-        unknownRound: unknownRound + 1,
+        unknownRound: Math.min(unknownRound + 1, AVAILABILITY_UNKNOWN_DELAYS_MS.length),
         message: transientReason || "B站视频状态暂时无法确认，稍后复核",
       });
       return;
@@ -386,28 +385,13 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
     if (unavailableCount > 0) {
       if (preserveManualSchedule("手动复核仍不可用，保留原复核计划")) return;
       const unavailableRound = Number(payload.availabilityRound || 0);
-      if (unavailableRound >= AVAILABILITY_UNAVAILABLE_DELAYS_MS.length) {
-        deps.state.markAvailabilityDormant(bvid, availabilityReason, checkedAt, unavailableRound);
-        deps.jobs.complete(job.id, deps.owner);
-        logManager.push({
-          timestamp: checkedAt,
-          type: "download",
-          level: "info",
-          summary: `B站视频长期不可用，已转入休眠 ${bvid}`,
-          raw: `[Availability] dormant bvid=${bvid} round=${unavailableRound}`,
-          bvid,
-          simpleVisible: true,
-          debugVisible: true,
-        });
-        return;
-      }
       const nextAt = deps.now() + computeAvailabilityUnavailableDelayMs(unavailableRound, bvid);
       const previous = deps.state.getSourceAvailability(bvid);
       deferAvailabilityProbe(job, {
         nextAt,
         state: "confirmed_unavailable",
         reason: availabilityReason,
-        checkRound: unavailableRound + 1,
+        checkRound: Math.min(unavailableRound + 1, AVAILABILITY_UNAVAILABLE_DELAYS_MS.length),
         message: "B站视频当前不可用，系统将在低频复核，不再重复下载",
       });
       if (previous?.state !== "confirmed_unavailable") {
@@ -536,7 +520,7 @@ async function runChargingAccessProbe(job: PersistentJobRecord) {
       const relation = relations.find(item => item.activeInFavorite && !['uploaded', 'verified', 'partial_verified'].includes(item.backupStatus || ''));
       const resolved = relation ? deps.resolve(relation) : null;
       // Preparation may inspect local files; keep it outside the SQLite transaction.
-      const replacement = relation && resolved ? deps.prepareCharging(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
+      const replacement = relation && resolved ? deps.prepareAfterAccessCheck(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
         persisted: true, downloadUserId: downloadUser.id,
       }) : null;
       if (relation && resolved && !replacement) throw new Error('Access recovered but the replacement task could not be prepared');

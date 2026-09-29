@@ -4,14 +4,17 @@ test('unavailable filters ignore late pages and retain each filter cache',async(
   await page.request.post('/__test/reset',{data:{}});
   await page.route('https://fonts.googleapis.com/**',route=>route.fulfill({body:''}));
   let missing=0;let uploaded=0;
+  let releaseFirstMissing!:()=>void;
+  const firstMissingGate=new Promise<void>(resolve=>{releaseFirstMissing=resolve;});
   await page.route('**/api/users/*/unavailable?**',async route=>{
     const filter=new URL(route.request().url()).searchParams.get('filter');
-    if(filter==='missing') {missing++;if(missing===1)await new Promise(resolve=>setTimeout(resolve,500));}
+    if(filter==='missing') {missing++;if(missing===1)await firstMissingGate;}
     else uploaded++;
     return route.fulfill({json:{success:true,data:{items:[{bvid:'BV'+filter,title:filter+' fixture',mediaId:1}],hasMore:false,nextCursor:null}}});
   });
   await page.goto('/');await page.locator('[data-action="unavailable"]').click();await expect.poll(()=>missing).toBe(1);
   await page.locator('#filterUploadedBtn').click();await expect(page.locator('#unavailableGrid')).toContainText('uploaded fixture');
+  releaseFirstMissing();
   await page.waitForTimeout(600);await expect(page.locator('#unavailableGrid')).not.toContainText('missing fixture');
   await page.locator('#filterMissingBtn').click();await expect(page.locator('#unavailableGrid')).toContainText('missing fixture');
   await page.locator('#filterUploadedBtn').click();await expect(page.locator('#unavailableGrid')).toContainText('uploaded fixture');

@@ -12,6 +12,7 @@ export interface AccessProbeWorkflowDependencies {
   failed(job: PersistentJobRecord, error: unknown): void;
   wake(): void;
   sleep(ms: number): Promise<void>;
+  minIntervalMs?: number;
 }
 
 /** Owns the claimed access-probe job and its promise for the full lifecycle. */
@@ -19,11 +20,23 @@ export function createAccessProbeWorkflow(dependencies: AccessProbeWorkflowDepen
   let active: Promise<void> | null = null;
   let jobId: string | null = null;
   let stopped = false;
+  let nextAllowedAt = 0;
+  let pendingWake: ReturnType<typeof setTimeout> | null = null;
 
   function dispatch() {
-    if (stopped || active || !dependencies.accepting()) return;
+    if (stopped || active || pendingWake || !dependencies.accepting()) return;
+    const waitMs = nextAllowedAt - dependencies.now();
+    if (waitMs > 0) {
+      pendingWake = setTimeout(() => {
+        pendingWake = null;
+        dispatch();
+      }, waitMs);
+      pendingWake.unref?.();
+      return;
+    }
     const [job] = dependencies.jobs.claimDue(['access_probe'], 1, dependencies.owner, 5 * 60_000, dependencies.now());
     if (!job || !dependencies.jobs.markRunning(job.id, dependencies.owner, 5 * 60_000)) return;
+    nextAllowedAt = dependencies.now() + (dependencies.minIntervalMs ?? 0);
     jobId = job.id;
     const generation = dependencies.generation();
     active = dependencies.run(job).catch((error: unknown) => {
@@ -40,7 +53,7 @@ export function createAccessProbeWorkflow(dependencies: AccessProbeWorkflowDepen
 
   return {
     start: () => { stopped = false; },
-    stop: () => { stopped = true; },
+    stop: () => { stopped = true; if (pendingWake) clearTimeout(pendingWake); pendingWake = null; },
     dispatch,
     renewLease: () => {
       if (jobId) dependencies.jobs.extendLease(jobId, dependencies.owner, 5 * 60_000);

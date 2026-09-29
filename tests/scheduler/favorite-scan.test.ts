@@ -6,10 +6,38 @@ import { StateManager } from '../../src/state.js';
 import type { BiliUser } from '../../src/users.js';
 import { BiliResponseFormatError, BiliRiskOrLoginError, type FavoriteItemsPage } from '../../src/bili.js';
 import { createTestDir, removeTestDir } from '../helpers.js';
+import { availabilityJitter } from '../../src/scheduler/retry-policy.js';
 
 const user: BiliUser = { id: 'scan-account', uid: 1, name: 'Fixture', enabled: true, favorites: [], lastLoginAt: '',
   cookie: { SESSDATA: '', bili_jct: '', DedeUserID: '1' } };
 const item = { bvid: 'BVSCAN', title: 'Fixture', upperName: 'Fixture', cover: 'https://example.test/cover.jpg' };
+
+test('a newly visible favorite advances one probe without clearing its persisted backoff', async () => {
+  const runtime = await createTestDir('scan-availability-signal');
+  const state = new StateManager({statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite')});
+  const now = Date.parse('2026-09-01T00:00:00.000Z');
+  const due = new Date(now + 30 * 24 * 60 * 60_000).toISOString();
+  state.recordFavoriteItem(user.id, 1, 'Favorites', {...item, unavailable: true});
+  state.markAvailabilityConfirmedUnavailable(item.bvid, 'api_not_found', new Date(now).toISOString(), due, 3);
+  const probes: {notBefore: number; preferredUserId: string}[] = [];
+  const scan = createFavoriteScan({
+    deletions: {folder: () => false, source: () => false},
+    state, users: {getById: () => user, updatePartial: () => user},
+    now: () => now, random: () => 0, sleep: async () => {}, generation: () => 0, canRun: () => true,
+    listPage: async () => ({items: [item], page: 1, pageSize: 20, hasMore: false, total: 1}),
+    refreshAuth: async () => { throw new Error('unexpected refresh'); },
+    resolveSelfVisible: async (_cookie, _uid, value) => value,
+    cacheCover() {}, progress() {}, recordCount() {},
+    probe: (_bvid, options) => { probes.push(options); }, enqueue: () => false,
+  });
+  try {
+    await scan.hot(user, 1, 'Favorites', false);
+    await scan.hot(user, 1, 'Favorites', false);
+    assert.deepEqual(probes, [{preferredUserId: user.id, notBefore: now + availabilityJitter(item.bvid), availabilityRound: 3, availabilityReason: 'api_not_found'}]);
+    assert.equal(state.getSourceAvailability(item.bvid)?.state, 'confirmed_unavailable');
+    assert.equal(state.getSourceAvailability(item.bvid)?.nextCheckAt, due);
+  } finally { state.close(); await removeTestDir(runtime); }
+});
 
 test('full scan keeps completed pages but does not complete after a malformed later page', async () => {
   const runtime = await createTestDir('scan-malformed-page');

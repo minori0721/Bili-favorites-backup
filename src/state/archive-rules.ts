@@ -62,7 +62,6 @@ export function isSourceAvailabilityError(value: unknown) {
 }
 
 export function sourceIsConfirmedUnavailable(entry: VideoArchiveEntry) {
-  if (entry.selfVisible) return false;
   const state = entry.sourceAvailability?.state;
   if (state) return CONFIRMED_SOURCE_AVAILABILITY_STATES.has(state);
   // Legacy state files predate sourceAvailability. Only retain their old
@@ -70,17 +69,19 @@ export function sourceIsConfirmedUnavailable(entry: VideoArchiveEntry) {
   return entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable);
 }
 
-export function sourceBlocksBackup(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
-  if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
+export function sourceBlocksBackup(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry, accessConfirmed = false) {
+  if (relation?.sourceKind === "manual" || relation?.selfVisible || (!relation && entry.selfVisible)) return false;
+  if (accessConfirmed) return false;
   if (entry.sourceAvailability) return TRACKED_SOURCE_AVAILABILITY_STATES.has(entry.sourceAvailability.state);
+  if (relation?.favoriteUnavailable) return true;
   return entry.biliStatus === "unavailable"
-    && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable);
+    && Boolean(relation ? relation.favoriteUnavailable : entry.favoriteUnavailable);
 }
 
 export function relationTreatsUnavailable(relation: FavoriteRelation | undefined | null, entry: VideoArchiveEntry) {
-  if (relation?.sourceKind === "manual" || relation?.selfVisible || entry.selfVisible) return false;
+  if (relation?.sourceKind === "manual" || relation?.selfVisible || (!relation && entry.selfVisible)) return false;
   return sourceIsConfirmedUnavailable(entry)
-    || (entry.biliStatus === "unavailable" && Boolean(entry.favoriteUnavailable || relation?.favoriteUnavailable));
+    || (entry.biliStatus === "unavailable" && Boolean(relation ? relation.favoriteUnavailable : entry.favoriteUnavailable));
 }
 
 // Display-only evidence: never use a favorite flag to authorize download/recovery decisions.

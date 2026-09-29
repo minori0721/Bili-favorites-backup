@@ -77,6 +77,13 @@ export function availabilityJitter(bvid: string) {
   return bvid ? hash % (15 * 60_000) : 0;
 }
 
+/** Spread legacy dormant probes across a month instead of waking them all on upgrade. */
+export function availabilityLongTermSpreadMs(bvid: string) {
+  let hash = 0;
+  for (const char of bvid) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return 60_000 + hash % (30 * 24 * 60 * 60_000);
+}
+
 export function computeUploadSessionRetryDelayMs(attempts: number) {
   const index = Math.max(0, Math.min(UPLOAD_SESSION_RETRY_DELAYS_MS.length - 1, Math.floor(attempts || 0)));
   return UPLOAD_SESSION_RETRY_DELAYS_MS[index];

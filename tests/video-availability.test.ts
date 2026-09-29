@@ -18,6 +18,7 @@ import {
   computeAvailabilityUnknownDelayMs,
   SyncScheduler,
 } from "../src/scheduler.js";
+import { availabilityLongTermSpreadMs } from "../src/scheduler/retry-policy.js";
 import { StateManager } from "../src/state.js";
 import { DownloadTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
@@ -299,6 +300,51 @@ test("a favorite unavailable flag pauses download until an explicit probe confir
   }
 });
 
+for (const order of [["u1", "u2"], ["u2", "u1"]] as const) {
+test(`different favorite accounts cannot overwrite one video's probe (${order.join(" then ")})`, async () => {
+  const runtime = await createTestDir("availability-shared-observations");
+  const manager = new StateManager({statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite")});
+  try {
+    manager.replaceStateSnapshot(availabilityState());
+    const nextAt = new Date(Date.parse(checkedAt) + 30 * 24 * 60 * 60_000).toISOString();
+    manager.markAvailabilityConfirmedUnavailable("BVAVAIL", "api_not_found", checkedAt, nextAt, 3);
+    for (const userId of order) manager.recordFavoriteItem(userId, 1, "Favorites", {
+      bvid: "BVAVAIL", title: "Availability", upperName: "UP", unavailable: userId === "u1",
+    });
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt, nextAt);
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, 3);
+    assert.equal(manager.getFolderItemForUser("u1", 1, "BVAVAIL")?.favoriteUnavailable, true);
+    assert.equal(Boolean(manager.getFolderItemForUser("u2", 1, "BVAVAIL")?.favoriteUnavailable), false);
+    assert.equal(manager.shouldEnqueueBackup("BVAVAIL", "u2", 1), false);
+
+    manager.markAvailabilityRecovered("BVAVAIL", checkedAt);
+    assert.equal(manager.getFolderItemForUser("u1", 1, "BVAVAIL")?.favoriteUnavailable, true);
+    assert.equal(Boolean(manager.getFolderItemForUser("u2", 1, "BVAVAIL")?.favoriteUnavailable), false);
+    assert.equal(manager.shouldEnqueueBackup("BVAVAIL", "u1", 1), false);
+    assert.equal(manager.shouldEnqueueBackup("BVAVAIL", "u1", 1, undefined, true), true);
+    assert.equal(manager.shouldEnqueueBackup("BVAVAIL", "u2", 1), true);
+  } finally { manager.close(); await removeTestDir(runtime); }
+});
+}
+
+test("an uploader's self-visible flag cannot unblock another account", async () => {
+  const runtime = await createTestDir("availability-owner-isolation");
+  const manager = new StateManager({statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite")});
+  try {
+    manager.replaceStateSnapshot(availabilityState());
+    manager.recordFavoriteItem("u2", 1, "Owner", {
+      bvid: "BVAVAIL", title: "Availability", upperName: "UP", unavailable: true, selfVisible: true,
+    });
+    manager.recordFavoriteItem("u1", 1, "Favorites", {
+      bvid: "BVAVAIL", title: "Availability", upperName: "UP", unavailable: true,
+    });
+    assert.equal(manager.getFolderItemForUser("u2", 1, "BVAVAIL")?.selfVisible, true);
+    assert.equal(Boolean(manager.getFolderItemForUser("u1", 1, "BVAVAIL")?.selfVisible), false);
+    assert.equal(manager.shouldEnqueueBackup("BVAVAIL", "u1", 1), false);
+  } finally { manager.close(); await removeTestDir(runtime); }
+});
+
 test("source recovery preserves unrelated failures and manual archive relations", async () => {
   const runtime = await createTestDir("availability-precise-recovery");
   const state = availabilityState("failed");
@@ -445,7 +491,7 @@ test("a source-unavailable download becomes a low-frequency probe without an upl
   }
 });
 
-test("unavailable probes prefer the uploader account and become dormant after 1d, 7d, and 30d", async () => {
+test("unavailable probes prefer the uploader and keep a monthly recovery opportunity", async () => {
   const runtime = await createTestDir("availability-lifecycle");
   let nowMs = Math.max(Date.parse(checkedAt), Date.now());
   const checkedUsers: string[] = [];
@@ -473,22 +519,20 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
     scheduler.stop();
     resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
     const expectedDelays = [0, 1, 2].map((round) => computeAvailabilityUnavailableDelayMs(round, "BVAVAIL"));
-    for (let round = 0; round < 4; round += 1) {
+    for (let round = 0; round < 5; round += 1) {
       const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
       assert.ok(job, `round ${round} should have a due probe`);
       store.markRunning(job.id, resources(scheduler).owner, 300_000);
       await resources(scheduler).probes.availability(job);
-      if (round < expectedDelays.length) {
-        const next = store.findByDedupeKey("access_probe:BVAVAIL");
-        assert.equal(next?.notBefore, nowMs + expectedDelays[round]);
-        assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, round + 1);
-        nowMs = Number(next?.notBefore);
-      }
+      const next = store.findByDedupeKey("access_probe:BVAVAIL");
+      assert.equal(next?.notBefore, nowMs + expectedDelays[Math.min(round, expectedDelays.length - 1)]);
+      assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, Math.min(round + 1, 3));
+      nowMs = Number(next?.notBefore);
     }
 
     assert.deepEqual(checkedUsers.slice(0, 2), ["2", "1"]);
-    assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
-    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "dormant");
+    assert.ok(store.findByDedupeKey("access_probe:BVAVAIL"));
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, 3);
   } finally {
     await scheduler.shutdown(100);
@@ -497,7 +541,7 @@ test("unavailable probes prefer the uploader account and become dormant after 1d
 });
 
 for (const diagnosticReason of ["temporary_error", "under_review", "uploader_only"] as const) {
-test(`unknown availability (${diagnosticReason}) preserves the full backoff and dormancy`, async () => {
+test(`unknown availability (${diagnosticReason}) preserves the backoff and keeps checking`, async () => {
   const runtime = await createTestDir("availability-unknown-lifecycle");
   let nowMs = Date.now();
   const manager = new StateManager({
@@ -527,21 +571,19 @@ test(`unknown availability (${diagnosticReason}) preserves the full backoff and 
     scheduler.stop();
     resources(scheduler).admission.enqueueAvailability("BVAVAIL", { preferredUserId: "u1", notBefore: nowMs });
     const delays = [0, 1, 2, 3, 4].map((round) => computeAvailabilityUnknownDelayMs(round, "BVAVAIL"));
-    for (let round = 0; round <= delays.length; round += 1) {
+    for (let round = 0; round < delays.length + 2; round += 1) {
       const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
       assert.ok(job, `unknown round ${round} should have a due probe`);
       store.markRunning(job.id, resources(scheduler).owner, 300_000);
       await resources(scheduler).probes.availability(job);
-      if (round < delays.length) {
-        const next = store.findByDedupeKey("access_probe:BVAVAIL");
-        assert.equal(next?.notBefore, nowMs + delays[round]);
-        assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, round + 1);
-        assert.equal(manager.getSourceAvailability("BVAVAIL")?.reason, diagnosticReason);
-        nowMs = Number(next?.notBefore);
-      }
+      const next = store.findByDedupeKey("access_probe:BVAVAIL");
+      assert.equal(next?.notBefore, nowMs + delays[Math.min(round, delays.length - 1)]);
+      assert.equal(manager.getSourceAvailability("BVAVAIL")?.checkRound, Math.min(round + 1, delays.length));
+      assert.equal(manager.getSourceAvailability("BVAVAIL")?.reason, diagnosticReason);
+      nowMs = Number(next?.notBefore);
     }
-    assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
-    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "dormant");
+    assert.ok(store.findByDedupeKey("access_probe:BVAVAIL"));
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "unknown");
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.reason, diagnosticReason);
   } finally {
     await scheduler.shutdown(100);
@@ -631,6 +673,74 @@ test("one available account revives the relation and queues exactly one download
     await scheduler.shutdown(100);
     await removeTestDir(runtime);
   }
+});
+
+test("a related available account can download once for both favorite relations", async () => {
+  const runtime = await createTestDir("availability-cross-account-recovery");
+  const nowMs = Date.parse(checkedAt);
+  const manager = new StateManager({statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite")});
+  manager.replaceStateSnapshot(availabilityState());
+  manager.recordFavoriteItem("u1", 1, "Favorites", {bvid: "BVAVAIL", title: "Availability", upperName: "UP", unavailable: true});
+  manager.recordFavoriteItem("u2", 2, "Owner", {bvid: "BVAVAIL", title: "Availability", upperName: "UP", unavailable: false});
+  manager.markAvailabilityConfirmedUnavailable("BVAVAIL", "api_not_found", checkedAt, checkedAt, 1);
+  const users = testUsers().map((user) => user.id === "u2" ? {...user, favorites: [{mediaId: 2, title: "Owner"}]} : user);
+  const scheduler = makeScheduler(
+    {get: () => testConfig()},
+    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    manager,
+    {now: () => nowMs, videoAccessProbe: async (cookie) => cookie.DedeUserID === "2" ? availableSnapshot() : unavailableSnapshot()},
+  );
+  try {
+    scheduler.stop();
+    const store = resources(scheduler).jobs;
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", {notBefore: nowMs, availabilityRound: 1});
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
+    assert.ok(job);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    await resources(scheduler).probes.availability(job);
+    assert.equal(manager.getSourceAvailability("BVAVAIL"), undefined);
+    assert.equal(manager.getFolderItemForUser("u1", 1, "BVAVAIL")?.favoriteUnavailable, true);
+    assert.equal(Boolean(manager.getFolderItemForUser("u2", 2, "BVAVAIL")?.favoriteUnavailable), false);
+    const downloads = store.list(["download"], 10).filter((item) => item.bvid === "BVAVAIL");
+    assert.equal(downloads.length, 1);
+    assert.equal(downloads[0].payload.downloadUserId, "u2");
+  } finally { await scheduler.shutdown(100); await removeTestDir(runtime); }
+});
+
+test("a failed replacement insert rolls back recovery and keeps the probe for retry", async () => {
+  const runtime = await createTestDir("availability-recovery-rollback");
+  const nowMs = Date.parse(checkedAt);
+  const manager = new StateManager({statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite")});
+  manager.replaceStateSnapshot(availabilityState());
+  manager.markAvailabilityConfirmedUnavailable("BVAVAIL", "api_not_found", checkedAt, checkedAt, 1);
+  const users = testUsers();
+  const scheduler = makeScheduler(
+    {get: () => testConfig()},
+    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    manager,
+    {now: () => nowMs, videoAccessProbe: async () => availableSnapshot()},
+  );
+  const store = resources(scheduler).jobs;
+  try {
+    scheduler.stop();
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", {notBefore: nowMs, availabilityRound: 1});
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
+    assert.ok(job);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    manager.getDatabase().db.exec(`CREATE TRIGGER reject_recovered_download BEFORE INSERT ON jobs
+      WHEN NEW.kind='download' BEGIN SELECT RAISE(ABORT, 'injected download insert failure'); END`);
+    await assert.rejects(resources(scheduler).probes.availability(job), /injected download insert failure/);
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
+    assert.equal(manager.getRelationStatus("u1", 1, "BVAVAIL")?.backupStatus, "lost");
+    assert.equal(store.findById(job.id)?.status, "running");
+    assert.equal(store.list(["download"], 10).length, 0);
+
+    manager.getDatabase().db.exec("DROP TRIGGER reject_recovered_download");
+    await resources(scheduler).probes.availability(job);
+    assert.equal(manager.getSourceAvailability("BVAVAIL"), undefined);
+    assert.equal(store.findByDedupeKey("access_probe:BVAVAIL"), null);
+    assert.equal(store.list(["download"], 10).length, 1);
+  } finally { await scheduler.shutdown(100); await removeTestDir(runtime); }
 });
 
 test("ordinary availability probes do not download through an unrelated enabled account", async () => {
@@ -899,6 +1009,62 @@ test("startup migrates a legacy fixed availability schedule once and keeps one s
     await scheduler.shutdown(100);
     await removeTestDir(runtime);
   }
+});
+
+test("startup reopens an old dormant video over a month without duplicating its probe", async () => {
+  const runtime = await createTestDir("availability-dormant-startup");
+  const nowMs = Date.parse(checkedAt);
+  const manager = new StateManager({statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite")});
+  manager.replaceStateSnapshot(availabilityState("lost"));
+  manager.markAvailabilityDormant("BVAVAIL", "api_not_found", checkedAt, 3);
+  const users = testUsers();
+  const scheduler = makeScheduler(
+    {get: () => testConfig()},
+    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    manager, {now: () => nowMs},
+  );
+  try {
+    scheduler.stop();
+    resources(scheduler).startup.ensureProbes();
+    const nextAt = nowMs + availabilityLongTermSpreadMs("BVAVAIL");
+    const first = resources(scheduler).jobs.findByDedupeKey("access_probe:BVAVAIL");
+    assert.equal(first?.notBefore, nextAt);
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt, new Date(nextAt).toISOString());
+    resources(scheduler).startup.ensureProbes();
+    assert.equal(resources(scheduler).jobs.findByDedupeKey("access_probe:BVAVAIL")?.id, first?.id);
+    assert.equal(resources(scheduler).jobs.findByDedupeKey("access_probe:BVAVAIL")?.notBefore, nextAt);
+  } finally { await scheduler.shutdown(100); await removeTestDir(runtime); }
+});
+
+test("startup leaves an existing low-frequency retry's due date and round untouched", async () => {
+  const runtime = await createTestDir("availability-existing-retry");
+  const nowMs = Date.parse(checkedAt);
+  const due = nowMs + 5 * 24 * 60 * 60_000;
+  const manager = new StateManager({statePath: path.join(runtime, "state.json"), dbPath: path.join(runtime, "state.sqlite")});
+  manager.replaceStateSnapshot(availabilityState());
+  manager.markAvailabilityConfirmedUnavailable("BVAVAIL", "api_not_found", checkedAt, new Date(due).toISOString(), 2);
+  const users = testUsers();
+  const scheduler = makeScheduler(
+    {get: () => testConfig()},
+    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    manager, {now: () => nowMs},
+  );
+  try {
+    scheduler.stop();
+    const store = resources(scheduler).jobs;
+    resources(scheduler).admission.enqueueAvailability("BVAVAIL", {notBefore: nowMs, availabilityRound: 2});
+    const [job] = store.claimDue(["access_probe"], 1, resources(scheduler).owner, 300_000, nowMs);
+    assert.ok(job);
+    store.markRunning(job.id, resources(scheduler).owner, 300_000);
+    assert.equal(store.defer(job.id, resources(scheduler).owner, "waiting", due), true);
+    resources(scheduler).startup.ensureProbes();
+    const persisted = store.findById(job.id);
+    assert.equal(persisted?.status, "retry_wait");
+    assert.equal(persisted.notBefore, due);
+    assert.equal(persisted.payload.availabilityRound, 2);
+    assert.equal(manager.getSourceAvailability("BVAVAIL")?.nextCheckAt, new Date(due).toISOString());
+  } finally { await scheduler.shutdown(100); await removeTestDir(runtime); }
 });
 
 test("overdue legacy availability schedules migrate into a short stable catch-up spread", async () => {

@@ -2,10 +2,10 @@ import type { StateManager, SourceAvailabilityReason } from '../state.js';
 import type { StateDatabase } from '../database.js';
 import type { JobRepository } from '../repositories/jobs.js';
 import { normalizeAccessProbeIntents } from './access-rules.js';
-import { availabilityJitter, computeAvailabilityUnavailableDelayMs, computeAvailabilityUnknownDelayMs } from './retry-policy.js';
+import { availabilityJitter, availabilityLongTermSpreadMs, computeAvailabilityUnavailableDelayMs, computeAvailabilityUnknownDelayMs } from './retry-policy.js';
 import { logManager } from '../logger.js';
 interface Dependencies {
-  stateManager: Pick<StateManager, 'listLegacyFailureClassificationCandidates' | 'listChargingRestrictedVideos' | 'listAvailabilityCheckVideos' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityUnknown' | 'listRelationsForBvid'>;
+  stateManager: Pick<StateManager, 'runAtomic' | 'listLegacyFailureClassificationCandidates' | 'listChargingRestrictedVideos' | 'listAvailabilityCheckVideos' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityUnknown' | 'listRelationsForBvid'>;
   database(): Pick<StateDatabase, 'getMeta' | 'setMeta'>;
   jobStore: Pick<JobRepository, 'findByDedupeKey' | 'rescheduleByBvid'>;
   now(): number;
@@ -65,10 +65,34 @@ export function createStartupProbes(deps: Dependencies) {
         );
         source = deps.stateManager.getSourceAvailability(video.bvid);
       }
-      if (!source || source.state === "dormant") continue;
+      if (!source) continue;
+
+      const existingJob = deps.jobStore.findByDedupeKey(`access_probe:${video.bvid}`);
+      if (source.state === "dormant") {
+        const dormantSource = source;
+        const relation = deps.stateManager.listRelationsForBvid(video.bvid)
+          .find((item) => item.activeInFavorite && item.sourceKind !== "manual"
+            && !item.selfVisible && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""));
+        if (!relation) continue;
+        const preservedAt = existingJob && ["pending", "retry_wait"].includes(existingJob.status)
+          ? existingJob.notBefore : NaN;
+        const nextAt = Number.isFinite(preservedAt) && preservedAt > 0
+          ? preservedAt : deps.now() + availabilityLongTermSpreadMs(video.bvid);
+        const unknown = !["api_not_found", "submission_invisible"].includes(dormantSource.reason);
+        deps.stateManager.runAtomic(() => {
+          if (unknown) deps.stateManager.markAvailabilityUnknown(video.bvid, dormantSource.reason, dormantSource.lastCheckedAt, new Date(nextAt).toISOString(), dormantSource.checkRound);
+          else deps.stateManager.markAvailabilityConfirmedUnavailable(video.bvid, dormantSource.reason, dormantSource.lastCheckedAt, new Date(nextAt).toISOString(), dormantSource.checkRound);
+          deps.enqueueAvailabilityProbe(video.bvid, {
+            preferredUserId: relation.userId, notBefore: nextAt,
+            availabilityRound: unknown ? 0 : dormantSource.checkRound,
+            availabilityUnknownRound: unknown ? dormantSource.checkRound : 0,
+            availabilityReason: dormantSource.reason,
+          });
+        });
+        continue;
+      }
 
       let nextAt = Date.parse(source.nextCheckAt || "");
-      const existingJob = deps.jobStore.findByDedupeKey(`access_probe:${video.bvid}`);
       const existingPayload = (existingJob?.payload || {}) as Record<string, unknown>;
       const existingIntents = existingJob ? normalizeAccessProbeIntents(existingPayload) : ["availability"];
       const existingScheduleLooksFixed = !existingJob || Math.abs(existingJob.notBefore - nextAt) <= 1_000;

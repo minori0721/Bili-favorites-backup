@@ -1,4 +1,6 @@
+import { performance } from 'node:perf_hooks';
 import type { DownloadCacheInspection, DownloadRecoverySummary } from '../download-session.js';
+import { createDurationObservation } from '../performance-observation.js';
 
 export interface LocalCapacitySnapshot {
   limitBytes: number;
@@ -18,6 +20,7 @@ export function createLocalCapacity(deps: {
   failed(error: unknown): void;
 }) {
   const ttlMs = 10_000;
+  const inspectionDuration = createDurationObservation('cache_inspection', { slowMs: 1_000 });
   let epoch = 0;
   let snapshot: LocalCapacitySnapshot | null = null;
   let pending: Promise<LocalCapacitySnapshot> | null = null;
@@ -54,7 +57,15 @@ export function createLocalCapacity(deps: {
     const generation = deps.generation();
     const currentEpoch = epoch;
     const work = (async () => {
-      const inspection = await deps.inspect();
+      const startedAt = performance.now();
+      let inspection: DownloadCacheInspection;
+      try {
+        inspection = await deps.inspect();
+      } catch (error) {
+        inspectionDuration.record(performance.now() - startedAt, 'error');
+        throw error;
+      }
+      inspectionDuration.record(performance.now() - startedAt, 'ok', { files: inspection.fileCount, bytes: inspection.usedBytes });
       const reserve = reserveBytes(limit);
       const result = { limitBytes: limit, usedBytes: inspection.usedBytes, reserveBytes: reserve,
         paused: limit > 0 && inspection.usedBytes >= Math.max(0, limit - reserve), checkedAt: deps.now() };

@@ -24,8 +24,8 @@ export function createAccessFixture(state: StateManager, jobs: PersistentJobStor
     cycleStartedAt: () => undefined, generation: () => 0, now, dispatch: () => {},
   });
   const probes = createAccessProbes({state, jobs, users, owner, now, random, generation: () => 0,
-    canContinue: () => true, eligible, inspect, resolve: targets.resolveRelation,
-    enqueue: backup.enqueue, prepareCharging: backup.prepareAfterAccessCheck,
+    canContinue: () => true, eligible, inspect, sleep: async () => {}, accountIntervalMs: 0, resolve: targets.resolveRelation,
+    prepareAfterAccessCheck: backup.prepareAfterAccessCheck,
   });
   const admission = createAccessAdmission({state, jobs, now, users: (bvid, charging) => probes.users(bvid, '', new Set(), charging), wake: () => {}});
   const startup = createStartupProbes({stateManager: state, jobStore: jobs, database: () => state.getDatabase(), now,

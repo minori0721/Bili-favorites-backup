@@ -96,7 +96,7 @@ export class SqliteVideoRepository implements VideoRepository {
       FROM videos v
       LEFT JOIN video_backup_summary summary ON summary.bvid=v.bvid
       WHERE (
-          json_extract(v.payload_json, '$.sourceAvailability.state') IN ('pending_confirmation','unknown','confirmed_unavailable')
+          json_extract(v.payload_json, '$.sourceAvailability.state') IN ('pending_confirmation','unknown','confirmed_unavailable','dormant')
           OR (
             json_extract(v.payload_json, '$.sourceAvailability.state') IS NULL
             AND json_extract(v.payload_json, '$.biliStatus')='unavailable'
@@ -108,6 +108,7 @@ export class SqliteVideoRepository implements VideoRepository {
           WHERE r.bvid=v.bvid
             AND r.active_in_favorite=1
             AND COALESCE(r.source_kind, 'favorite')='favorite'
+             AND COALESCE(r.self_visible, 0)=0
             AND COALESCE(r.backup_status, 'discovered') NOT IN ('uploaded','verified','partial_verified')
         )
       ORDER BY COALESCE(json_extract(v.payload_json, '$.sourceAvailability.nextCheckAt'), '') ASC, v.bvid ASC

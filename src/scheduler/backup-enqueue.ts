@@ -46,7 +46,8 @@ export function createBackupEnqueue(deps: Dependencies) {
         return true;
       } };
     }
-    if (!options.persisted && !(restriction && local) && !deps.state.shouldEnqueueBackup(bvid, user.id, mediaId, deps.cycleStartedAt())) return null;
+    if (!options.persisted && !(restriction && local)
+      && !deps.state.shouldEnqueueBackup(bvid, user.id, mediaId, deps.cycleStartedAt(), Boolean(local))) return null;
     const config = deps.config.get();
     const remotePath = deps.state.getRelationStatus(user.id, mediaId, bvid)?.remotePath || deps.remotePath(user, mediaId, folderTitle, config);
     const existingArchiveProof = deps.proof(user.id, mediaId, bvid);

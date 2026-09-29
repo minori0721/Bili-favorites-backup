@@ -6,11 +6,13 @@
       "resourceSymbols": [
         "active",
         "jobId",
+        "nextAllowedAt",
+        "pendingWake",
         "stopped"
       ],
-      "stop": "stop rejects new claims while the active probe remains busy until its promise settles",
-      "lateCallback": "generation and lease checks reject old probe results",
-      "rebind": "resetAfterRebind rejects an active promise or claimed job"
+      "stop": "stop cancels the pending pacing timer and rejects new claims while the active probe remains busy until its promise settles",
+      "lateCallback": "stopped state, generation and lease checks reject old timer and probe results",
+      "rebind": "resetAfterRebind rejects an active promise or claimed job; the timer is cleared before storage rebind"
     },
     {
       "module": "scheduler/account-retirement.ts",

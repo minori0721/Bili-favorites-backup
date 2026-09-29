@@ -32,7 +32,7 @@
   },
   "availability": {
     "currentOwner": "SchedulerRuntime",
-    "lifetime": "Keep the active promise and job lease together; ignore old-generation results; clear per-account caches when context changes.",
+    "lifetime": "Keep the active promise and job lease together; clear the probe pacing timer on stop; ignore old-generation results; clear per-account caches when context changes.",
     "fields": [
       "accessProbeWorkflow",
       "accessProbeWakeup",

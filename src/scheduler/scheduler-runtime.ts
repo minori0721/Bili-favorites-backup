@@ -411,9 +411,9 @@ export class SchedulerRuntime implements SchedulerControl {
       now: this.now, random: this.random, generation: () => this.runtime.generation,
       canContinue: () => !this.runtime.shuttingDown && !this.maintenance.isAnyLocked(),
       eligible: this.userSyncEligibility, inspect: this.videoAccessProbe,
+      sleep: this.sleep, accountIntervalMs: 10_000,
       resolve: relation => this.resolveRelation(relation),
-      enqueue: (user, mediaId, title, bvid, options) => this.enqueueIfNeeded(user, mediaId, title, bvid, options),
-      prepareCharging: (user, mediaId, title, bvid, options) => this.backupEnqueueWorkflow.prepareAfterAccessCheck(user, mediaId, title, bvid, options),
+      prepareAfterAccessCheck: (user, mediaId, title, bvid, options) => this.backupEnqueueWorkflow.prepareAfterAccessCheck(user, mediaId, title, bvid, options),
     });
     this.accessProbeWorkflow = createAccessProbeWorkflow({
       jobs: this.jobStore,
@@ -426,6 +426,7 @@ export class SchedulerRuntime implements SchedulerControl {
       failed: (job, error) => this.accessProbes.failed(job, error),
       wake: () => this.dispatchPersistentJobs(),
       sleep: this.sleep,
+      minIntervalMs: 10_000,
     });
     this.localCapacity = createLocalCapacity({
       limitGB: () => this.configStore.get().localCacheLimitGB,

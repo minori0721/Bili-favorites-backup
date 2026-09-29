@@ -990,7 +990,9 @@ export class StateManager {
     },
     seenAt = nowIso()
   ) {
-    this.database.restoreCompletedArchiveSource(userId, mediaId, item.bvid, Date.parse(seenAt) || Date.now());
+    const restoredArchiveSource = this.database.restoreCompletedArchiveSource(
+      userId, mediaId, item.bvid, Date.parse(seenAt) || Date.now(),
+    ) > 0;
     // A source deletion owns the relation until its worker finishes. Do not
     // let a concurrently finishing favorite scan recreate or overwrite that
     // source after the deletion worker has claimed it.
@@ -1002,22 +1004,21 @@ export class StateManager {
     const wasKnown = Boolean(existing);
     const favoriteUnavailable = Boolean(item.favoriteUnavailable || item.unavailable);
     const sourceUnavailable = favoriteUnavailable && !item.selfVisible;
-    const previousAvailability = existing?.sourceAvailability;
-    const confirmedUnavailable = sourceUnavailable && Boolean(previousAvailability
-      && ["confirmed_unavailable", "dormant"].includes(previousAvailability.state));
-    const biliStatus: BiliStatus = sourceUnavailable
-      ? (confirmedUnavailable ? "unavailable" : "unknown")
+    // A favorite-list flag belongs to this relation. It may open a new probe,
+    // but it must not erase a video-detail result or its persisted retry date.
+    const sourceAvailability: SourceAvailability | undefined = existing?.sourceAvailability
+      || (sourceUnavailable ? {
+        state: "pending_confirmation",
+        reason: "favorite_flag",
+        firstSeenAt: seenAt,
+        checkRound: 0,
+      } : undefined);
+    const globallyConfirmedUnavailable = Boolean(sourceAvailability
+      && ["confirmed_unavailable", "dormant"].includes(sourceAvailability.state));
+    const confirmedUnavailable = !item.selfVisible && globallyConfirmedUnavailable;
+    const biliStatus: BiliStatus = sourceAvailability
+      ? (globallyConfirmedUnavailable ? "unavailable" : "unknown")
       : "available";
-    const sourceAvailability: SourceAvailability | undefined = sourceUnavailable
-      ? {
-          state: confirmedUnavailable ? previousAvailability!.state : (previousAvailability?.state || "pending_confirmation"),
-          reason: confirmedUnavailable ? previousAvailability!.reason : (previousAvailability?.reason || "favorite_flag"),
-          firstSeenAt: previousAvailability?.firstSeenAt || seenAt,
-          lastCheckedAt: previousAvailability?.lastCheckedAt,
-          nextCheckAt: previousAvailability?.nextCheckAt,
-          checkRound: Math.max(0, Number(previousAvailability?.checkRound || 0)),
-        }
-      : undefined;
     const relationStatus: BackupStatus = confirmedUnavailable ? "lost" : "discovered";
 
     if (!existing) {
@@ -1076,20 +1077,16 @@ export class StateManager {
       existing.lastSeenAt = seenAt;
       existing.biliStatus = biliStatus;
       existing.sourceAvailability = sourceAvailability;
-      existing.favoriteUnavailable = favoriteUnavailable || undefined;
+      // Keep the legacy video flag for old readers; relation flags below are
+      // authoritative for each folder and never inherit another folder's flag.
+      existing.favoriteUnavailable ||= favoriteUnavailable || undefined;
       existing.selfVisible = item.selfVisible || existing.selfVisible || undefined;
       if (confirmedUnavailable && !BACKED_UP_STATUSES.has(existing.backupStatus)
         && !ACTIVE_BACKUP_STATUSES.has(existing.backupStatus)) {
         this.setVideoStatus(existing, "lost", seenAt);
         existing.lastError = "Video became unavailable before a verified backup was found.";
-      } else if (sourceUnavailable && !confirmedUnavailable && existing.backupStatus === "lost"
+      } else if (!sourceAvailability && !favoriteUnavailable && existing.backupStatus === "lost"
         && isSourceAvailabilityError(existing.lastError)) {
-        this.setVideoStatus(existing, "discovered", seenAt);
-        existing.lastError = undefined;
-      } else if (!favoriteUnavailable && existing.backupStatus === "lost") {
-        this.setVideoStatus(existing, "discovered", seenAt);
-        existing.lastError = undefined;
-      } else if (item.selfVisible && existing.backupStatus === "lost") {
         this.setVideoStatus(existing, "discovered", seenAt);
         existing.lastError = undefined;
       }
@@ -1120,11 +1117,10 @@ export class StateManager {
         && !ACTIVE_BACKUP_STATUSES.has(relation.backupStatus)) {
         this.setRelationStatus(relation, "lost", seenAt);
         relation.lastError = "Video became unavailable before a verified backup was found.";
-      } else if (sourceUnavailable && !confirmedUnavailable && relation.backupStatus === "lost"
-        && isSourceAvailabilityError(relation.lastError)) {
-        this.setRelationStatus(relation, "discovered", seenAt);
-        relation.lastError = undefined;
-      } else if ((!favoriteUnavailable || item.selfVisible) && relation.backupStatus === "lost") {
+      } else if (!sourceAvailability && (!favoriteUnavailable || item.selfVisible)
+        && relation.backupStatus === "lost"
+        && (isSourceAvailabilityError(relation.lastError)
+          || (restoredArchiveSource && relation.lastError === "归档已由用户手动删除。"))) {
         this.setRelationStatus(relation, "discovered", seenAt);
         relation.lastError = undefined;
       }
@@ -1144,6 +1140,7 @@ export class StateManager {
         favOrderUpdatedAt: Number.isInteger(orderInfo?.favOrder) && Number(orderInfo!.favOrder) > 0 ? seenAt : undefined,
         activeInFavorite: true,
         backupStatus: relationStatus,
+        lastError: confirmedUnavailable ? "Video became unavailable before a verified backup was found." : undefined,
         statusUpdatedAt: seenAt,
         favoriteUnavailable: favoriteUnavailable || undefined,
         selfVisible: item.selfVisible || undefined,
@@ -1202,10 +1199,10 @@ export class StateManager {
     return false;
   }
 
-  shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string) {
+  shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string, accessConfirmed = false) {
     const entry = this.state.videos?.[bvid];
     const relation = userId && mediaId ? this.state.relations?.[relationKey(userId, mediaId, bvid)] : undefined;
-    if (!entry || sourceBlocksBackup(relation, entry)) {
+    if (!entry || sourceBlocksBackup(relation, entry, accessConfirmed)) {
       return false;
     }
     const failed = userId ? this.getFailedEntry(userId, bvid, mediaId) : undefined;
@@ -1349,7 +1346,7 @@ export class StateManager {
   markRetryPending(bvid: string) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
-    if (sourceIsConfirmedUnavailable(entry) && !entry.selfVisible) {
+    if (sourceIsConfirmedUnavailable(entry)) {
       this.setVideoStatus(entry, "lost");
       entry.lastError ||= "Video unavailable while resuming backup.";
       this.save();
@@ -1528,7 +1525,6 @@ export class StateManager {
     entry.sourceAvailability = next;
     const unavailable = value.state === "confirmed_unavailable" || value.state === "dormant";
     entry.biliStatus = unavailable ? "unavailable" : "unknown";
-    entry.favoriteUnavailable = true;
     if (unavailable) {
       entry.lastError = "Video is currently unavailable on Bilibili.";
     } else if (isSourceAvailabilityError(entry.lastError)) {
@@ -1540,9 +1536,7 @@ export class StateManager {
         || relation.selfVisible
         || BACKED_UP_STATUSES.has(relation.backupStatus || "discovered")) continue;
       const beforeStatus = relation.backupStatus;
-      const beforeFavoriteUnavailable = relation.favoriteUnavailable;
       const beforeLastError = relation.lastError;
-      relation.favoriteUnavailable = true;
       if (unavailable) {
         this.setRelationStatus(relation, "lost", checkedAt);
         relation.lastError = entry.lastError;
@@ -1553,9 +1547,7 @@ export class StateManager {
         relation.lastError = undefined;
       }
       this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
-      changed ||= beforeStatus !== relation.backupStatus
-        || Boolean(beforeFavoriteUnavailable) !== Boolean(relation.favoriteUnavailable)
-        || beforeLastError !== relation.lastError;
+      changed ||= beforeStatus !== relation.backupStatus || beforeLastError !== relation.lastError;
     }
     this.refreshVideoAggregateStatus(bvid);
     if (changed || unavailable) this.save();
@@ -1585,8 +1577,6 @@ export class StateManager {
     nextCheckAt?: string,
     checkRound?: number,
   ) {
-    const state = this.state.videos?.[bvid]?.sourceAvailability?.state;
-    if (state === "dormant") return false;
     return this.updateSourceAvailability(bvid, {
       state: "unknown",
       reason,
@@ -1633,23 +1623,18 @@ export class StateManager {
     if (!entry) return false;
     const previousAvailability = entry.sourceAvailability;
     const previousStatus = entry.biliStatus;
-    const previousFavoriteUnavailable = entry.favoriteUnavailable;
     const previousLastError = entry.lastError;
     let changed = Boolean(previousAvailability)
       || previousStatus !== "available"
-      || Boolean(previousFavoriteUnavailable)
       || isSourceAvailabilityError(previousLastError);
     delete entry.sourceAvailability;
     entry.biliStatus = "available";
-    entry.favoriteUnavailable = undefined;
     if (isSourceAvailabilityError(entry.lastError)) entry.lastError = undefined;
     for (const relation of this.listRelationsForBvid(bvid)) {
       const sourceFailure = isSourceAvailabilityError(relation.lastError);
       if (relation.selfVisible && !sourceFailure) continue;
       const beforeStatus = relation.backupStatus;
-      const beforeFavoriteUnavailable = relation.favoriteUnavailable;
       const beforeLastError = relation.lastError;
-      relation.favoriteUnavailable = undefined;
       if (relation.activeInFavorite && relation.backupStatus === "lost" && sourceFailure) {
         this.setRelationStatus(relation, "discovered", recoveredAt);
         relation.lastError = undefined;
@@ -1658,9 +1643,7 @@ export class StateManager {
         relation.lastError = undefined;
       }
       this.state.relations![relationKey(relation.userId, relation.mediaId, bvid)] = relation;
-      changed ||= beforeStatus !== relation.backupStatus
-        || Boolean(beforeFavoriteUnavailable) !== Boolean(relation.favoriteUnavailable)
-        || beforeLastError !== relation.lastError;
+      changed ||= beforeStatus !== relation.backupStatus || beforeLastError !== relation.lastError;
     }
     this.refreshVideoAggregateStatus(bvid);
     if (changed) this.save();
@@ -1681,7 +1664,7 @@ export class StateManager {
     const videos = this.lazyState
       ? this.database.listAvailabilityCheckVideos(limit)
       : Object.values(this.state.videos || {}).filter((video) => [
-        "pending_confirmation", "unknown", "confirmed_unavailable",
+        "pending_confirmation", "unknown", "confirmed_unavailable", "dormant",
       ].includes(video.sourceAvailability?.state || "")
         || (!video.sourceAvailability && video.biliStatus === "unavailable" && video.favoriteUnavailable));
     return videos
@@ -2578,7 +2561,7 @@ export class StateManager {
           changed = true;
         }
         if (resumableStatuses.has(entry.backupStatus)) {
-          const target = sourceIsConfirmedUnavailable(entry) && !entry.selfVisible ? "lost" : "queued";
+          const target = sourceIsConfirmedUnavailable(entry) ? "lost" : "queued";
           if (entry.backupStatus !== target) {
             this.setVideoStatus(entry, target, at);
             videoChanged = true;
@@ -3108,8 +3091,8 @@ export class StateManager {
         cover: displayCover(video),
         coverLocalPath: displayCoverLocalPath(video),
         description: displayDescription(video),
-        favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
-        selfVisible: relation.selfVisible || video.selfVisible,
+        favoriteUnavailable: relation.favoriteUnavailable,
+        selfVisible: relation.selfVisible,
         sourceAvailability: video.sourceAvailability,
         unavailable: true,
         processed,
@@ -3159,8 +3142,8 @@ export class StateManager {
       cover: displayCover(video),
       coverLocalPath: displayCoverLocalPath(video),
       description: displayDescription(video),
-      favoriteUnavailable: relation.favoriteUnavailable || video.favoriteUnavailable,
-      selfVisible: relation.selfVisible || video.selfVisible,
+        favoriteUnavailable: relation.favoriteUnavailable,
+        selfVisible: relation.selfVisible,
       unavailable: true,
       processed: this.isProcessed(userId, video.bvid, relation.mediaId),
       failed: this.isFailed(userId, video.bvid, relation.mediaId),
