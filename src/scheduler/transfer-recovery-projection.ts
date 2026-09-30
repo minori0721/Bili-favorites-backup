@@ -1,6 +1,6 @@
 import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
-import type { StateManager, RemoteFileRecord } from '../state.js';
+import type { StateManager, UploadFileMetadata } from '../state.js';
 import type { ConfigStore } from '../config.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import type { RecoveryIssueKind } from '../recovery-policy.js';
@@ -79,7 +79,7 @@ export function createTransferRecoveryProjection(deps: Dependencies) {
             : `上传候选已恢复到${verifiedPages}/${files.length}个分P；本地文件将在实际恢复前检查。`,
           ...(waitingRemote || emptyAttempt || verifiedPages === files.length ? { nextCheckAt: now + 2_000 } : {}),
         };
-        let filenameMetadataByPath: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>> | undefined;
+        let filenameMetadataByPath: Record<string, UploadFileMetadata> | undefined;
         // A malformed session is recovery evidence failure, not an empty
         // metadata set. Abort projection so the persisted session remains
         // visible for manual repair instead of creating a partial job.

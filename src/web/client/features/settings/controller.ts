@@ -48,6 +48,7 @@ export function createSettings(dependencies: {
         priority = normalizeClientEncodingPriority(value);
         if (initialized)
             renderEncodingPriorityEditor(editor, priority, setPriority);
+        saver.changed();
     }
     function premiumChanged() {
         if (hiRes.checked || dolby.checked)
@@ -59,9 +60,9 @@ export function createSettings(dependencies: {
             dependencies.status('Hi-Res / Dolby 需要 APP 接口。', 'error');
         }
     }
-    const template = createTemplateEditor(root);
-    const loader = createSettingsLoader({ ...dependencies, encoding: setPriority, apiMode: setMode, templateChanged: template.refresh });
     const saver = createSettingsSaver({ ...dependencies, priority: () => priority.slice(), apiMode: getMode });
+    const template = createTemplateEditor(root, saver.changed);
+    const loader = createSettingsLoader({ ...dependencies, encoding: setPriority, apiMode: setMode, templateChanged: template.refresh, loading: saver.setLoading, loaded: saver.loaded });
     const storage = createStorageCheck({ ...dependencies, status: dependencies.storageStatus });
     const help = createSettingsHelp({ root, priority: () => priority.slice(), apiMode: getMode, open: dependencies.open });
     const cleanup = createCleanup(dependencies);

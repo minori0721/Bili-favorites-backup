@@ -167,3 +167,13 @@
     .account-removal-option strong { display:block; color:#294943; font-size:13px; }
     .account-removal-option span { display:block; margin-top:3px; color:#718581; font-size:11px; line-height:1.55; }
     .account-removal-preview { border:1px solid #E2EAE8; border-radius:6px; background:#FFFFFF; padding:10px 12px; color:#526B66; font-size:12px; line-height:1.7; }
+    .content-notice { flex:0 0 auto; display:flex; align-items:center; gap:10px; min-height:40px; padding:9px 20px; border-bottom:1px solid var(--border); background:var(--accent-soft); color:var(--accent-hover); font-size:13px; line-height:1.5; }
+    .content-notice[hidden] { display:none; }
+    .content-notice[data-state="error"] { background:#FFF3F1; color:var(--danger); }
+    .content-notice span { min-width:0; overflow-wrap:anywhere; }
+    .content-notice .retry-button { flex:0 0 auto; margin-left:auto; }
+    .content-skeleton-cover { aspect-ratio:16/9; border-radius:6px; background:var(--border); }
+    .content-skeleton-title { width:68%; height:12px; margin:12px 4px 24px; border-radius:4px; background:var(--border); }
+    .content-skeleton-card { opacity:.65; animation:contentSkeleton 1.6s var(--motion-ease) infinite alternate; }
+    @keyframes contentSkeleton { to { opacity:.35; } }
+    @media (prefers-reduced-motion: reduce) { .content-skeleton-card { animation:none; } }

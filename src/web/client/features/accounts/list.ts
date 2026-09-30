@@ -14,7 +14,7 @@ export function createAccountList(dependencies: {
   let generation = 0;
   let loaded = false;
   let disposed = false;
-  async function load() {
+  async function load(trigger?: HTMLButtonElement) {
     if (disposed) return;
     controller?.abort();
     const request = new AbortController();
@@ -24,7 +24,7 @@ export function createAccountList(dependencies: {
     try {
       const accounts = parsePublicAccounts(await dependencies.api.silent('/api/users', {signal:request.signal}));
       if (generation !== current) return;
-      renderAccountList(dependencies.root, host, accounts, dependencies.formatDateTime);
+      renderAccountList(dependencies.root, host, accounts, dependencies.formatDateTime, trigger);
       loaded = true;
       dependencies.status(accounts.length ? '' : '暂无账号，请先添加 B站账号。', accounts.length ? '' : 'muted');
     } catch (error) {

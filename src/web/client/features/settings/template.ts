@@ -18,7 +18,7 @@ export function templateKeys(template: string): string[] {
     return variables.filter(variable => template.includes(variable.key))
         .map(variable => variable.key).sort((a, b) => template.indexOf(a) - template.indexOf(b));
 }
-export function createTemplateEditor(root: ParentNode) {
+export function createTemplateEditor(root: ParentNode, changed: () => void) {
     const input = requireElement(root, '#filenameTemplate', HTMLInputElement);
     const available = requireElement(root, '#templateTags', HTMLElement);
     const selected = requireElement(root, '#selectedTags', HTMLElement);
@@ -30,6 +30,7 @@ export function createTemplateEditor(root: ParentNode) {
     function commit() {
         input.value = keys.join('-');
         refresh();
+        changed();
     }
     function render() {
         selected.replaceChildren();

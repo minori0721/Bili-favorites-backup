@@ -1,9 +1,15 @@
 import { isRecord } from '../shared/api/value.js';
-import type { RemoteFileRecord, RemoteFileFilenameMetadata } from '../state.js';
+import type { RemoteFileRecord, RemoteFileFilenameMetadata, RemoteFileMediaMetadata, UploadFileMetadata } from '../state.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import type { EncodingRetryContext, StrictMediaTarget } from '../tasks.js';
 
-export function invalid(field: string): never { throw new Error(`持久上传任务字段 ${field} 类型无效`); }
+export class UploadPayloadDecodeError extends Error {
+  constructor(readonly field: string) {
+    super(`持久上传任务字段 ${field} 类型无效`);
+    this.name = 'UploadPayloadDecodeError';
+  }
+}
+export function invalid(field: string): never { throw new UploadPayloadDecodeError(field); }
 export function object(value: unknown, field: string) {
   if (!isRecord(value)) return invalid(field);
   return value;
@@ -56,8 +62,31 @@ export function filenameMetadata(value: unknown, field: string): RemoteFileFilen
     videoCodecs: optional(v.videoCodecs, `${field}.videoCodecs`, text),
   };
 }
-export function metadataMap(value: unknown, field: string): Record<string, RemoteFileFilenameMetadata> {
-  return Object.fromEntries(Object.entries(object(value, field)).map(([key, entry]) => [key, filenameMetadata(entry, `${field}.${key}`)]));
+function positiveNumber(value: unknown, field: string): number {
+  const result = number(value, field);
+  return result > 0 ? result : invalid(field);
+}
+export function mediaMetadata(value: unknown, field: string): RemoteFileMediaMetadata {
+  const m = object(value, field);
+  const observedAt = text(m.observedAt, `${field}.observedAt`);
+  if (!Number.isFinite(Date.parse(observedAt))) return invalid(`${field}.observedAt`);
+  return {
+    width: positive(m.width, `${field}.width`), height: positive(m.height, `${field}.height`),
+    duration: optional(m.duration, `${field}.duration`, positiveNumber),
+    fps: optional(m.fps, `${field}.fps`, positiveNumber),
+    codec: optional(m.codec, `${field}.codec`, text),
+    source: oneOf(['ffprobe', 'browser'])(m.source, `${field}.source`), observedAt,
+  };
+}
+export function metadataMap(value: unknown, field: string): Record<string, UploadFileMetadata> {
+  return Object.fromEntries(Object.entries(object(value, field)).map(([key, entry]) => {
+    const entryField = `${field}.${key}`;
+    const v = object(entry, entryField);
+    return [key, {
+      ...filenameMetadata(v, entryField),
+      mediaMetadata: optional(v.mediaMetadata, `${entryField}.mediaMetadata`, mediaMetadata),
+    }];
+  }));
 }
 export function remoteFile(value: unknown, field: string): RemoteFileRecord {
   const v = object(value, field);
@@ -76,13 +105,7 @@ export function remoteFile(value: unknown, field: string): RemoteFileRecord {
       return { quality: text(q.quality, `${field}.quality`), encoding: text(q.encoding, `${field}.encoding`),
         hiRes: bool(q.hiRes, `${field}.hiRes`), dolby: bool(q.dolby, `${field}.dolby`) };
     }),
-    mediaMetadata: optional(v.mediaMetadata, `${field}.mediaMetadata`, (value, field) => {
-      const m = object(value, field);
-      return { width: number(m.width, `${field}.width`), height: number(m.height, `${field}.height`),
-        duration: optional(m.duration, `${field}.duration`, number), fps: optional(m.fps, `${field}.fps`, number),
-        codec: optional(m.codec, `${field}.codec`, text), source: oneOf(['ffprobe', 'browser'])(m.source, `${field}.source`),
-        observedAt: text(m.observedAt, `${field}.observedAt`) };
-    }),
+    mediaMetadata: optional(v.mediaMetadata, `${field}.mediaMetadata`, mediaMetadata),
   };
 }
 export function archiveProof(value: unknown, field: string): ExistingArchiveProof {

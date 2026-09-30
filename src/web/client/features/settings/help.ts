@@ -55,6 +55,7 @@ export function createSettingsHelp(dependencies:{root:ParentNode;priority():stri
           '<div class="flow-step"><div class="badge">状态对账</div><div class="desc">远端存储对账并发 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>，限速 <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' 次/秒</strong>，每轮最多补传 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> 个缺失视频。</div></div>' +
         '</div>' +
         '<div class="effect-groups">' +
+          '<div class="effect-group"><strong>保存后的生效范围</strong><div>下列规则在点击“保存设置并生效”并保存成功后适用；“有未保存修改”表示表单仍有未提交的改动，正在运行的任务不会中途切换画质或命名。</div></div>' +
           '<div class="effect-group"><strong>立即生效</strong><div>轮询间隔、同时下载并发数、同时上传并发数、远端文件上传间隔、本地缓存软上限；画质重调的下载阶段共享下载队列，上传替换阶段共享上传队列。</div></div>' +
           '<div class="effect-group"><strong>新任务生效</strong><div>画质、编码、Hi-Res / Dolby、命名模板、远端路径、上传目录结构、失败重试次数、重试间隔。</div></div>' +
           '<div class="effect-group"><strong>对账时生效</strong><div>远端存储对账并发数、对账限速、每轮最多补传数量。</div></div>' +

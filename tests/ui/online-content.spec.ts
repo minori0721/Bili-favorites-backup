@@ -126,7 +126,7 @@ test("online content distinguishes request failure from an empty result", async 
   void browserProblems;
   await openOnlineContent(page);
   await page.locator("#onlineContentSearchInput").fill("broken");
-  await expect(page.locator("#onlineContentFooter")).toContainText("在线内容读取失败");
+  await expect(page.locator("#onlineContentNotice")).toContainText("在线内容读取失败");
   await expect(page.locator(".online-content-card")).toHaveCount(1);
   await page.locator("#onlineContentSearchInput").fill("empty");
   await expect(page.locator(".online-content-card")).toHaveCount(0);

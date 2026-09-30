@@ -1,4 +1,5 @@
 import { requireElement } from '../../shared/dom.js';
+import { renderContentNotice, showContentSkeleton } from '../../shared/content-feedback.js';
 import type { ApiClient } from '../../shared/api.js';
 import { parseOnlinePage, parseOnlineNavigation, type OnlineItem } from '../../../../shared/api/online-content.js';
 import { createManualArchive, type ManualArchiveContext as Context } from './manual-archive.js';
@@ -270,7 +271,14 @@ export function createOnlineContent(dependencies:{root:Document;api:ApiClient;la
       if (context.mediaId) params.set('mediaId', String(context.mediaId));
       if (context.query) params.set('q', context.query);
       if (append && onlineContentState.cursor) params.set('cursor', onlineContentState.cursor);
-      setOnlineContentFooter(append ? '正在加载更多...' : '正在读取在线内容...', 'muted');
+      if (append) {
+        renderContentNotice(element('onlineContentNotice'));
+        setOnlineContentFooter('正在加载更多…', 'muted');
+      } else {
+        renderContentNotice(element('onlineContentNotice'), '正在更新在线内容…');
+        setOnlineContentFooter('');
+        if (!onlineContentState.items.length) showContentSkeleton(element('onlineContentGrid'));
+      }
       try {
         const data = parseOnlinePage(await api.silent('/api/online-content/items?' + params.toString(), { signal:controller.signal }));
         if (!onlineContentCurrent(token, sessionToken)) return;
@@ -294,6 +302,7 @@ export function createOnlineContent(dependencies:{root:Document;api:ApiClient;la
         renderOnlineCards(append);
         renderOnlineNavigation();
         setOnlineContentFooter(onlineContentState.hasMore ? '继续滚动加载更多' : (onlineContentState.items.length ? '已加载全部' : '当前分类没有内容'));
+        renderContentNotice(element('onlineContentNotice'));
       } catch (error) {
         if ((error instanceof Error && error.name === 'AbortError') || !onlineContentCurrent(token, sessionToken)) return;
         if (!append) {
@@ -301,7 +310,13 @@ export function createOnlineContent(dependencies:{root:Document;api:ApiClient;la
           if (onlineContentState.appliedContext) applyOnlineContentContext(onlineContentState.appliedContext);
           renderOnlineNavigation();
         }
-        setOnlineContentFooter('在线内容读取失败：' + (error instanceof Error ? error.message : String(error)), 'error', () => void loadOnlineContentItems(false, context));
+        const message = '在线内容读取失败：' + (error instanceof Error ? error.message : String(error));
+        const retry = () => { void loadOnlineContentItems(append, context); };
+        if (append) setOnlineContentFooter(message, 'error', retry);
+        else {
+          element('onlineContentGrid').querySelectorAll('.content-skeleton-card').forEach(card => card.remove());
+          renderContentNotice(element('onlineContentNotice'), message, 'error', retry);
+        }
       } finally {
         if (onlineContentState.controller === controller) onlineContentState.controller = null;
         if (onlineContentCurrent(token, sessionToken)) {
@@ -342,6 +357,7 @@ export function createOnlineContent(dependencies:{root:Document;api:ApiClient;la
 
     async function openOnlineContent(trigger:HTMLElement) {
       cleanupOnlineContent();
+      renderContentNotice(element('onlineContentNotice'));
       dependencies.open(modal,trigger);
       const sessionToken = onlineContentState.sessionToken;
       const navigationToken = ++onlineContentState.navigationToken;
@@ -363,7 +379,12 @@ export function createOnlineContent(dependencies:{root:Document;api:ApiClient;la
         });
       } catch (error) {
         if (!(error instanceof Error && error.name === 'AbortError') && navigationToken === onlineContentState.navigationToken && sessionToken === onlineContentState.sessionToken) {
-          setOnlineContentFooter('在线目录读取失败：' + (error instanceof Error ? error.message : String(error)), 'error', () => void openOnlineContent(trigger));
+          renderContentNotice(element('onlineContentNotice'), '在线目录读取失败：' + (error instanceof Error ? error.message : String(error)), 'error', () => { void openOnlineContent(trigger); });
+          if (layout.matches) {
+            shell.classList.add('show-content');
+            syncOnlineContentPanels();
+            element('onlineContentMobileBackBtn').focus({ preventScroll:true });
+          }
         }
       } finally {
         if (onlineContentState.navigationController === navigationController) onlineContentState.navigationController = null;

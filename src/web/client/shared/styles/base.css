@@ -13,6 +13,7 @@
       --border: #D6F0ED;
       --border-strong: rgba(214,240,237,0.95);
       --focus-ring: 0 0 0 3px rgba(57,197,187,0.22);
+      --field-focus-ring: inset 0 0 0 2px rgba(57,197,187,0.22);
       --danger: #B94747;
       --danger-hover: #9F3939;
       --warning: #A9681F;

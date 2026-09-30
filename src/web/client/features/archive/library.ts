@@ -4,6 +4,7 @@ import { isRecord } from '../../../../shared/api/value.js';
 import { ApiError, type ApiClient } from '../../shared/api.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
 import { requireElement } from '../../shared/dom.js';
+import { renderContentNotice, showContentSkeleton } from '../../shared/content-feedback.js';
 import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
 import { archiveStatusLabel, sourceAvailabilityReasonLabel } from './status.js';
 type Navigation = ReturnType<typeof parseArchiveNavigation>;
@@ -55,6 +56,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     archiveLibraryMobileBackBtn: requireElement(document, '#archiveLibraryMobileBackBtn', HTMLButtonElement),
     archiveMembershipTextPlaceholder: document.getElementById('archiveMembershipTextPlaceholder'),
     archiveLibraryFooter: requireElement(document, '#archiveLibraryFooter', HTMLElement),
+    archiveLibraryNotice: requireElement(document, '#archiveLibraryNotice', HTMLElement),
     archiveLibraryGrid: requireElement(document, '#archiveLibraryGrid', HTMLElement),
     archiveLibraryDetailBody: requireElement(document, '#archiveLibraryDetailBody', HTMLElement),
     archiveLibraryDetailTitle: requireElement(document, '#archiveLibraryDetailTitle', HTMLElement),
@@ -697,7 +699,14 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       const controller = new AbortController();
       archiveLibraryState.controller = controller;
       archiveLibraryState.loading = true;
-      setArchiveLibraryFooter(reset ? '正在读取本地归档...' : '正在加载更多...', null);
+      if (reset) {
+        renderContentNotice(elements.archiveLibraryNotice, '正在更新归档列表…');
+        setArchiveLibraryFooter('');
+        if (!archiveLibraryState.items.length) showContentSkeleton(elements.archiveLibraryGrid);
+      } else {
+        renderContentNotice(elements.archiveLibraryNotice);
+        setArchiveLibraryFooter('正在加载更多…');
+      }
       try {
         const params = archiveLibraryQueryParams({ cursor:archiveLibraryState.nextCursor }, requestedContext);
         const data = parseArchiveLibraryPage(await fetchJsonSilent('/api/archive-library/items?' + params.toString(), { signal:controller.signal }));
@@ -737,6 +746,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         }
         setArchiveLibraryHeading();
         setArchiveLibraryFooter(archiveLibraryState.hasMore ? '' : '已加载全部', null);
+        renderContentNotice(elements.archiveLibraryNotice);
         archiveLibraryState.pendingReset = false;
         archiveLibraryState.pendingContext = null;
         archiveLibraryState.pendingViewState = null;
@@ -771,7 +781,15 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           }
           setArchiveLibraryResultsBusy(false);
         }
-        setArchiveLibraryFooter('加载失败，已保留现有内容', () => loadArchiveLibraryItems(Boolean(reset)));
+        const message = archiveLibraryState.items.length ? '加载失败，已保留现有内容。' : '归档列表加载失败。';
+        const retry = () => {
+          if (reset) applyArchiveLibraryContext(requestedContext);
+          void loadArchiveLibraryItems(reset);
+        };
+        if (reset) {
+          elements.archiveLibraryGrid.querySelectorAll('.content-skeleton-card').forEach(card => card.remove());
+          renderContentNotice(elements.archiveLibraryNotice, message, 'error', retry);
+        } else setArchiveLibraryFooter(message, retry);
       } finally {
         if (token === archiveLibraryState.token) {
           archiveLibraryState.loading = false;
@@ -1155,6 +1173,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       archiveLibraryState.pageSize = 50;
       archiveLibraryState.trigger = trigger || null;
       archiveLibraryState.navigation = null;
+      renderContentNotice(elements.archiveLibraryNotice);
       archiveLibraryState.title = '全部归档';
       elements.archiveLibrarySearchInput.value = '';
       document.querySelector<HTMLElement>('.archive-library-shell')?.classList.remove('show-content');
@@ -1185,7 +1204,12 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         await loadArchiveLibraryItems(true);
       } catch (error) {
         if ((error instanceof Error && error.name === 'AbortError') || !archiveLibrarySessionCurrent(token)) return;
-        setArchiveLibraryFooter('归档目录加载失败', () => openArchiveLibrary(trigger));
+        renderContentNotice(elements.archiveLibraryNotice, '归档目录加载失败。', 'error', () => { void openArchiveLibrary(trigger); });
+        if (isArchiveLibraryMobileLayout()) {
+          document.querySelector<HTMLElement>('.archive-library-shell')?.classList.add('show-content');
+          syncArchiveLibraryPanels();
+          elements.archiveLibraryMobileBackBtn.focus({ preventScroll:true });
+        }
       }
     }
 

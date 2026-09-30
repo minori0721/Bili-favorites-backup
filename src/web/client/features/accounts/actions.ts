@@ -8,13 +8,13 @@ export function createAccountActions(dependencies: {
   detail(id: string, mediaId: number, title: string): Promise<void>;
   unavailable(id: string): Promise<void>;
   remove(id: string, name: string, trigger: HTMLElement): void;
-  reload(): Promise<void>;
+  reload(trigger?: HTMLButtonElement): Promise<void>;
   copy(value: string): Promise<boolean>;
   notify(message: string, type?: string): void;
 }) {
   let generation = 0;
   let initialized = false;
-  const requests = new Map<string, AbortController>();
+  const requests = new Map<string, {controller: AbortController; restore(): void}>();
   async function act(event: Event) {
     const button = event.target instanceof Element ? event.target.closest('[data-action]') : null;
     if (!(button instanceof HTMLButtonElement) || !dependencies.root.contains(button)) return;
@@ -25,8 +25,19 @@ export function createAccountActions(dependencies: {
     const controller = new AbortController();
     const current = generation;
     const alive = () => current === generation && !controller.signal.aborted;
-    requests.set(key,controller);
     const disabled = button.disabled;
+    const label = button.textContent;
+    const minWidth = button.style.minWidth;
+    const restore = () => {
+      button.disabled = disabled;
+      button.textContent = label;
+      button.style.minWidth = minWidth;
+      button.removeAttribute('aria-busy');
+    };
+    const pendingLabels: Record<string, string> = { favorites:'读取中…', favorite_detail:'读取中…', unavailable:'读取中…', toggle:'更新中…', refresh_info:'刷新中…', refresh_auth:'更新中…', copy_cookie:'导出中…' };
+    requests.set(key,{controller,restore});
+    button.style.minWidth = button.getBoundingClientRect().width + 'px';
+    if (pendingLabels[action]) button.textContent = pendingLabels[action];
     button.disabled = true;
     button.setAttribute('aria-busy','true');
     const request = (suffix: string, options: RequestInit) => dependencies.api.silent('/api/users/' + encodeURIComponent(id) + suffix, {...options,signal:controller.signal});
@@ -37,12 +48,12 @@ export function createAccountActions(dependencies: {
       else if (action === 'remove') dependencies.remove(id,button.dataset.name || id,button);
       else if (action === 'toggle') {
         await request('', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:button.dataset.enabled !== 'true'})});
-        if (alive()) await dependencies.reload();
+        if (alive()) await dependencies.reload(button);
       } else if (action === 'refresh_info' || action === 'refresh_auth') {
         await request(action === 'refresh_info' ? '/refresh-info' : '/refresh-auth', {method:'POST'});
         if (!alive()) return;
         dependencies.notify(action === 'refresh_info' ? '账号信息已刷新' : '授权已更新','success');
-        await dependencies.reload();
+        await dependencies.reload(button);
       } else if (action === 'copy_cookie') {
         const confirmed = await dependencies.confirm({title:'导出 Cookie',message:'Cookie 等同于 B 站登录凭据。',
           detail:'导出后请只在可信环境使用，不要发送给不可信的人或服务。',requiredText:'EXPORT_COOKIE',
@@ -58,10 +69,9 @@ export function createAccountActions(dependencies: {
     } catch(error) {
       if (alive() && !(error instanceof Error && error.name === 'AbortError')) dependencies.notify(error instanceof Error ? error.message : String(error),'error');
     } finally {
-      if (requests.get(key) === controller) {
+      if (requests.get(key)?.controller === controller) {
         requests.delete(key);
-        button.disabled = disabled;
-        button.removeAttribute('aria-busy');
+        restore();
       }
     }
   }
@@ -71,9 +81,8 @@ export function createAccountActions(dependencies: {
     destroy() {
       initialized=false;generation+=1;
       dependencies.root.removeEventListener('click',onClick);
-      for (const request of requests.values()) request.abort();
+      for (const request of requests.values()) { request.controller.abort(); request.restore(); }
       requests.clear();
-      for (const button of dependencies.root.querySelectorAll<HTMLButtonElement>('button[aria-busy="true"]')) {button.disabled=false;button.removeAttribute('aria-busy');}
     },
   };
 }

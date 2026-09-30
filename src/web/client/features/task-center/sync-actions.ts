@@ -37,7 +37,9 @@ export function createSyncActions(dependencies: {
       const request = new AbortController();
       controller = request;
       const current = () => initialized && generation === currentGeneration && controller === request;
+      button.style.minWidth = button.getBoundingClientRect().width + 'px';
       button.disabled = true;
+      button.setAttribute('aria-busy','true');
       button.textContent = command.pending;
       try {
         const response = await dependencies.api.silent(command.path, {method:'POST',signal:request.signal});
@@ -54,9 +56,10 @@ export function createSyncActions(dependencies: {
         if (current()) {
           controller = null;
           button.disabled = false;
+          button.removeAttribute('aria-busy');
           timer = setTimeout(() => {
             timer = null;
-            if (initialized && generation === currentGeneration) button.textContent = command.label;
+            if (initialized && generation === currentGeneration) { button.textContent = command.label; button.style.removeProperty('min-width'); }
           }, 2000);
         }
       }
@@ -69,6 +72,7 @@ export function createSyncActions(dependencies: {
         controller?.abort();controller=null;confirming=false;
         if(timer!==null)clearTimeout(timer);timer=null;
         button.disabled=false;button.textContent=command.label;
+        button.removeAttribute('aria-busy');button.style.removeProperty('min-width');
       },
     };
   });

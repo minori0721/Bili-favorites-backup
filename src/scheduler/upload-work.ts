@@ -1,4 +1,4 @@
-import type { RemoteFileRecord } from '../state.js';
+import type { RemoteFileRecord, UploadFileMetadata } from '../state.js';
 import type { UploadIntent, ExistingArchiveProof } from '../upload-preflight.js';
 import type { EncodingRetryContext, StrictMediaTarget } from '../tasks.js';
 import { optional, text, bool, integer, positive, list, oneOf, archiveProof, remoteFile, metadataMap, encodingRetry, strictTarget } from './upload-payload-decoders.js';
@@ -14,7 +14,7 @@ export interface RecoveryUploadItem {
   upperName?: string;
   cover?: string;
   files?: string[];
-  filenameMetadataByPath?: Record<string, NonNullable<RemoteFileRecord["filenameMetadata"]>>;
+  filenameMetadataByPath?: Record<string, UploadFileMetadata>;
   partialBackup?: boolean;
   historyOnly?: boolean;
   historySnapshotAt?: string;

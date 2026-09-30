@@ -559,11 +559,12 @@
       "resourceSymbols": [
         "initialized",
         "controller",
-        "clearTimer"
+        "loading",
+        "savedSnapshot"
       ],
-      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
-      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
-      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+      "stop": "destroy removes form listeners, aborts the save request and releases the loading block; the saved form snapshot stays in memory only",
+      "lateCallback": "initialized and request identity prevent cancelled saves from acknowledging a newer form; edits during a save are compared with the submitted snapshot",
+      "rebind": "the settings loader supplies a fresh saved snapshot only after its current response is applied"
     },
     {
       "module": "web/client/features/settings/storage-check.ts",

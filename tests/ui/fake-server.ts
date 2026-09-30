@@ -6,6 +6,7 @@ import { renderReleaseNotes } from "../../src/release-notes.js";
 
 const app = express();
 const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
+const detailPreviewDelay = process.env.BFB_DETAILS_PREVIEW === '1' ? 650 : 0;
 
 type TestState = {
   previewCount: number;
@@ -38,6 +39,7 @@ type TestState = {
   manualArchiveCount: number;
   configRequests: number;
   configFailuresRemaining: number;
+  savedConfig: unknown;
   userRequests: number;
   userFailuresRemaining: number;
   usersMode: "single" | "double";
@@ -88,6 +90,7 @@ function initialState(): TestState {
     manualArchiveCount: 0,
     configRequests: 0,
     configFailuresRemaining: 0,
+    savedConfig: null,
     userRequests: 0,
     userFailuresRemaining: 0,
     usersMode: "single",
@@ -254,11 +257,15 @@ app.get("/api/updates", (_request, response) => response.json({ success: true, d
     url: "https://github.com/minori0721/Bili-favorites-backup/releases/tag/v2.5.4" },
   releasesUrl: "https://github.com/minori0721/Bili-favorites-backup/releases",
 } }));
-app.get("/api/config", (_request, response) => {
+app.get("/api/config", async (_request, response) => {
   state.configRequests += 1;
   if (state.configFailuresRemaining > 0) {
     state.configFailuresRemaining -= 1;
     response.json({ success: false, message: "隔离设置读取失败" });
+    return;
+  }
+  if (state.savedConfig !== null) {
+    response.json(ok(state.savedConfig));
     return;
   }
   response.json(ok({
@@ -289,6 +296,11 @@ app.get("/api/config", (_request, response) => {
   filenameTemplate: "<videoTitle>-<bvid>",
   renameScanMaxFiles: 10_000,
   }));
+});
+app.put("/api/config", async (request, response) => {
+  if (detailPreviewDelay) await wait(detailPreviewDelay);
+  state.savedConfig = request.body;
+  response.json(ok({}));
 });
 app.post("/api/storage/check", (request, response) => {
   state.storageCheckCount += 1;
@@ -367,8 +379,8 @@ app.patch("/api/users/:id", async (request, response) => {
   await wait(180);
   response.json(ok({ id:request.params.id, enabled:Boolean(request.body?.enabled) }));
 });
-app.post("/api/users/:id/refresh-info", (_request, response) => response.json(ok({ refreshed: true })));
-app.post("/api/users/:id/refresh-auth", (_request, response) => response.json(ok({ refreshed: true })));
+app.post("/api/users/:id/refresh-info", async (_request, response) => { if (detailPreviewDelay) await wait(detailPreviewDelay); response.json(ok({ refreshed: true })); });
+app.post("/api/users/:id/refresh-auth", async (_request, response) => { if (detailPreviewDelay) await wait(detailPreviewDelay); response.json(ok({ refreshed: true })); });
 app.post("/api/users/login/start", (_request, response) => {
   state.loginStartCount += 1;
   response.json(ok({
@@ -616,6 +628,7 @@ app.get("/api/logs/stream", (request, response) => {
 
 app.get("/api/archive-library/navigation", (_request, response) => response.json(ok(navigation())));
 app.get("/api/archive-library/items", async (request, response) => {
+  if (detailPreviewDelay) await wait(detailPreviewDelay);
   const query = String(request.query.q || "");
   state.itemQueries.push(query);
   if (query === "slow") await wait(700);
@@ -669,6 +682,7 @@ app.get("/api/online-content/navigation", (_request, response) => {
   }));
 });
 app.get("/api/online-content/items", async (request, response) => {
+  if (detailPreviewDelay) await wait(detailPreviewDelay);
   const query = String(request.query.q || "");
   const mediaId = Number(request.query.mediaId || 0);
   state.onlineItemQueries.push(query);

@@ -275,6 +275,7 @@ function getSettingsSection() {
       <div class="section-title-row">
         <h2>全局设置</h2>
         <button class="help-icon-btn" id="settingsHelpBtn" type="button" title="查看当前设置如何执行" aria-label="查看当前设置如何执行">?</button>
+        <span class="settings-draft-status" id="settingsDraftStatus" role="status" aria-live="polite"></span>
       </div>
       <details class="settings-fold" open><summary>同步节奏</summary><div class="settings-grid">
         <div><label for="pollInterval">轮询间隔 (分钟)</label><input id="pollInterval" type="number" min="1" /></div>
@@ -494,6 +495,7 @@ function getModals() {
           <button type="button" data-archive-filter="retained">「留存」</button>
           <button type="button" data-archive-filter="deleted">已删除</button>
         </div>
+        <div class="content-notice" id="archiveLibraryNotice" role="status" aria-live="polite" hidden></div>
         <div class="archive-library-results" id="archiveLibraryResults" tabindex="-1">
           <div class="archive-library-grid" id="archiveLibraryGrid"></div>
           <div class="archive-library-footer" id="archiveLibraryFooter" aria-live="polite"></div>
@@ -526,6 +528,7 @@ function getModals() {
         <div class="archive-library-toolbar">
           <label class="archive-library-search"><span class="sr-only">搜索在线内容</span><input id="onlineContentSearchInput" type="search" maxlength="80" placeholder="搜索当前分类" /></label>
         </div>
+        <div class="content-notice" id="onlineContentNotice" role="status" aria-live="polite" hidden></div>
         <div class="archive-library-results" id="onlineContentResults" tabindex="-1"><div class="archive-library-grid" id="onlineContentGrid"></div><div class="archive-library-footer" id="onlineContentFooter" aria-live="polite"></div></div>
       </section>
     </section>

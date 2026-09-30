@@ -13,8 +13,9 @@ export function createSettingsLoader(dependencies: {
     encoding(value: string[]): void;
     apiMode(value: string): void;
     templateChanged(): void;
+    loading(value: boolean): void;
+    loaded(): void;
 }) {
-    const saveButton = requireElement(dependencies.root, '#saveConfigBtn', HTMLButtonElement);
     const input = (id: string) => requireElement(dependencies.root, '#' + id, HTMLInputElement);
     function field(id: string): HTMLInputElement | HTMLSelectElement {
         const element = dependencies.root.querySelector('#' + id);
@@ -36,8 +37,8 @@ export function createSettingsLoader(dependencies: {
         const controller = new AbortController();
         const token = ++configLoadState.token;
         configLoadState.controller = controller;
+        dependencies.loading(true);
         if (!configLoadState.loaded) {
-            saveButton.disabled = true;
             dependencies.status('正在读取设置...', 'muted');
         }
         try {
@@ -84,6 +85,7 @@ export function createSettingsLoader(dependencies: {
             field('renameScanMaxFiles').value = String(d.renameScanMaxFiles ?? 10000);
             dependencies.templateChanged();
             configLoadState.loaded = true;
+            dependencies.loaded();
             dependencies.status('');
         }
         catch (error) {
@@ -96,9 +98,9 @@ export function createSettingsLoader(dependencies: {
             if (token === configLoadState.token) {
                 if (configLoadState.controller === controller)
                     configLoadState.controller = null;
-                saveButton.disabled = !configLoadState.loaded;
+                dependencies.loading(false);
             }
         }
     }
-    return { load: loadConfig, init() { disposed = false; }, destroy() { disposed = true; configLoadState.token++; configLoadState.controller?.abort(); configLoadState.controller = null; } };
+    return { load: loadConfig, init() { disposed = false; }, destroy() { disposed = true; configLoadState.token++; configLoadState.controller?.abort(); configLoadState.controller = null; dependencies.loading(false); } };
 }

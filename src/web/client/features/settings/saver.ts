@@ -16,6 +16,8 @@ export function createSettingsSaver(dependencies: {
     const { root } = dependencies;
     const btn = requireElement(root, '#saveConfigBtn', HTMLButtonElement);
     const st = requireElement(root, '#configStatus', HTMLElement);
+    const section = requireElement(root, '#settingsSection', HTMLElement);
+    const draftStatus = requireElement(root, '#settingsDraftStatus', HTMLElement);
     const input = (id: string) => requireElement(root, '#' + id, HTMLInputElement);
     function field(id: string): HTMLInputElement | HTMLSelectElement {
         const element = root.querySelector('#' + id);
@@ -25,30 +27,10 @@ export function createSettingsSaver(dependencies: {
     }
     let initialized = false;
     let controller: AbortController | null = null;
-    let clearTimer: ReturnType<typeof setTimeout> | null = null;
-    async function saveConfig() {
-        if (!initialized || controller || btn.disabled)
-            return;
-        const invalid = Array.from(root.querySelectorAll<HTMLInputElement | HTMLSelectElement>('#settingsSection input, #settingsSection select')).find((field) => field.willValidate && !field.validity.valid);
-        if (invalid) {
-            const fold = invalid.closest('.settings-fold');
-            if (fold instanceof HTMLDetailsElement)
-                fold.open = true;
-            invalid.scrollIntoView({ block: 'center' });
-            invalid.reportValidity();
-            invalid.focus({ preventScroll: true });
-            return;
-        }
-        const request = new AbortController();
-        controller = request;
-        const current = () => initialized && controller === request && !request.signal.aborted;
-        if (clearTimer !== null)
-            clearTimeout(clearTimer);
-        clearTimer = null;
-        btn.disabled = true;
-        btn.textContent = '保存中...';
-        st.textContent = '';
-        const payload = {
+    let loading = false;
+    let savedSnapshot: string | null = null;
+    function readPayload() {
+        return {
             pollIntervalMinutes: Number(field('pollInterval').value),
             perVideoDelaySeconds: Number(field('delaySeconds').value),
             uploadLayout: field('uploadLayout').value,
@@ -78,12 +60,58 @@ export function createSettingsSaver(dependencies: {
             remoteVerifyRateLimitPerSecond: Number(field('remoteVerifyRateLimitPerSecond').value),
             remoteRequeueLimitPerCycle: Number(field('remoteRequeueLimitPerCycle').value),
         };
+    }
+    function refreshDraft() {
+        if (!initialized) return;
+        const dirty = savedSnapshot !== null && JSON.stringify(readPayload()) !== savedSnapshot;
+        const state = controller ? 'saving' : loading ? 'loading' : savedSnapshot === null ? 'unavailable' : dirty ? 'dirty' : 'saved';
+        draftStatus.dataset.state = state;
+        draftStatus.textContent = state === 'saving' ? '保存中…' : state === 'loading' ? '正在读取…' : state === 'unavailable' ? '设置尚未读取' : dirty ? '有未保存修改' : '已保存';
+        btn.disabled = loading || controller !== null || savedSnapshot === null;
+    }
+    function setLoading(value: boolean) {
+        loading = value;
+        if (!initialized) return;
+        section.querySelectorAll<HTMLElement>('.settings-fold').forEach(fold => { fold.inert = value || savedSnapshot === null; });
+        refreshDraft();
+    }
+    function loaded() {
+        savedSnapshot = JSON.stringify(readPayload());
+        refreshDraft();
+    }
+    function changed() {
+        if (st.classList.contains('status-success')) dependencies.status('');
+        refreshDraft();
+    }
+    async function saveConfig() {
+        if (!initialized || controller || btn.disabled)
+            return;
+        const invalid = Array.from(root.querySelectorAll<HTMLInputElement | HTMLSelectElement>('#settingsSection input, #settingsSection select')).find((field) => field.willValidate && !field.validity.valid);
+        if (invalid) {
+            const fold = invalid.closest('.settings-fold');
+            if (fold instanceof HTMLDetailsElement)
+                fold.open = true;
+            invalid.scrollIntoView({ block: 'center' });
+            invalid.reportValidity();
+            invalid.focus({ preventScroll: true });
+            return;
+        }
+        const request = new AbortController();
+        controller = request;
+        const current = () => initialized && controller === request && !request.signal.aborted;
+        btn.style.minWidth = btn.getBoundingClientRect().width + 'px';
+        btn.textContent = '保存中...';
+        btn.setAttribute('aria-busy', 'true');
+        refreshDraft();
+        st.textContent = '';
+        const payload = readPayload();
         try {
             await dependencies.api.silent('/api/config', { signal: request.signal, method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             if (!current())
                 return;
             dependencies.playback({ deliveryMode: payload.playbackDeliveryMode === 'proxy' ? 'proxy' : 'auto', alistBrowserConfigured: Boolean(payload.alistBrowserUrl) });
-            dependencies.status('设置已保存。轮询间隔和并发数立即生效；画质、编码、命名模板、重试次数、远端路径等对新任务生效，正在运行的任务不会中途切换。', 'success');
+            savedSnapshot = JSON.stringify(payload);
+            dependencies.status(JSON.stringify(readPayload()) === savedSnapshot ? '设置已保存。' : '本次设置已保存；还有新的修改未保存。', 'success');
         }
         catch (e) {
             if (!current())
@@ -91,41 +119,39 @@ export function createSettingsSaver(dependencies: {
             const message = e instanceof Error ? e.message : String(e);
             dependencies.notify(message);
             dependencies.status('保存失败: ' + message, 'error');
-            root.querySelectorAll('.settings-fold').forEach(group => { if (group instanceof HTMLDetailsElement)
-                group.open = true; });
             if (e instanceof ApiError && e.code === 'PATH_MIGRATION_REQUIRED') {
+                requireElement(root, '#storageSettings', HTMLDetailsElement).open = true;
                 await dependencies.migrationRequired(payload.alistDest, request.signal);
             }
         }
         finally {
             if (controller === request) {
                 controller = null;
-                btn.disabled = false;
                 btn.textContent = '保存设置并生效';
-                clearTimer = setTimeout(() => {
-                    clearTimer = null;
-                    if (initialized && !st.classList.contains('status-error'))
-                        dependencies.status('');
-                }, 3000);
+                btn.removeAttribute('aria-busy');
+                btn.style.removeProperty('min-width');
+                refreshDraft();
             }
         }
     }
     const onClick = () => { void saveConfig(); };
-    return { init() { if (initialized)
-            return; initialized = true; btn.addEventListener('click', onClick); },
+    return { setLoading, loaded, changed, init() { if (initialized)
+            return; initialized = true; btn.addEventListener('click', onClick); section.addEventListener('input', changed); section.addEventListener('change', changed); refreshDraft(); },
         destroy() {
             if (!initialized)
                 return;
             initialized = false;
             btn.removeEventListener('click', onClick);
+            section.removeEventListener('input', changed);
+            section.removeEventListener('change', changed);
             if (controller) {
                 controller.abort();
                 controller = null;
                 btn.disabled = false;
                 btn.textContent = '保存设置并生效';
             }
-            if (clearTimer !== null)
-                clearTimeout(clearTimer);
-            clearTimer = null;
+            btn.removeAttribute('aria-busy');
+            btn.style.removeProperty('min-width');
+            section.querySelectorAll<HTMLElement>('.settings-fold').forEach(fold => { fold.inert = false; });
         } };
 }

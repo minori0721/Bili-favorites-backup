@@ -1,6 +1,7 @@
 import { isRecord } from '../shared/api/value.js';
-import type { RemoteFileFilenameMetadata } from '../state.js';
+import type { UploadFileMetadata } from '../state.js';
 import { parseStrictMediaTarget, parseEncodingRetryContext } from './recovery-context.js';
+import { metadataMap, UploadPayloadDecodeError } from './upload-payload-decoders.js';
 
 export class VerificationPayloadError extends Error {
   constructor(field: string) { super(`Invalid persisted verification field: ${field}`); this.name = 'VerificationPayloadError'; }
@@ -24,25 +25,16 @@ export function parseVerificationPayload(value: unknown) {
     if (typeof item !== 'string' || item.length === 0) throw new VerificationPayloadError('files');
     return item;
   });
-  if (raw.filenameMetadataByPath !== undefined && !isRecord(raw.filenameMetadataByPath)) throw new VerificationPayloadError('filenameMetadataByPath');
   if (raw.encodingRetry !== undefined && !parseEncodingRetryContext(raw.encodingRetry)) throw new VerificationPayloadError('encodingRetry');
   if (raw.strictMediaTarget !== undefined && !parseStrictMediaTarget(raw.strictMediaTarget)) throw new VerificationPayloadError('strictMediaTarget');
-  const filenameMetadataByPath: Record<string, RemoteFileFilenameMetadata> = {};
-  if (isRecord(raw.filenameMetadataByPath)) {
-    for (const [path, entry] of Object.entries(raw.filenameMetadataByPath)) {
-      if (!isRecord(entry)) throw new VerificationPayloadError(`filenameMetadataByPath.${path}`);
-      for (const key of ['publishDate', 'videoDate', 'cid', 'pageIndex']) {
-        if (entry[key] !== undefined && finite(entry[key]) === undefined) throw new VerificationPayloadError(`filenameMetadataByPath.${path}.${key}`);
-      }
-      for (const key of ['bilibiliQuality', 'dfn', 'videoCodecs']) {
-        if (entry[key] !== undefined && typeof entry[key] !== 'string') throw new VerificationPayloadError(`filenameMetadataByPath.${path}.${key}`);
-      }
-      filenameMetadataByPath[path] = {
-        publishDate: finite(entry.publishDate), videoDate: finite(entry.videoDate),
-        cid: finite(entry.cid), pageIndex: finite(entry.pageIndex),
-        bilibiliQuality: text(entry.bilibiliQuality), dfn: text(entry.dfn), videoCodecs: text(entry.videoCodecs),
-      };
+  let filenameMetadataByPath: Record<string, UploadFileMetadata> | undefined;
+  try {
+    if (raw.filenameMetadataByPath !== undefined) {
+      filenameMetadataByPath = metadataMap(raw.filenameMetadataByPath, 'filenameMetadataByPath');
     }
+  } catch (error) {
+    if (error instanceof UploadPayloadDecodeError) throw new VerificationPayloadError(error.field);
+    throw error;
   }
   return {
     encodingRetry: raw.encodingRetry,
@@ -53,7 +45,7 @@ export function parseVerificationPayload(value: unknown) {
     putCompletedAt: text(raw.putCompletedAt), folderTitle: text(raw.folderTitle),
     videoTitle: text(raw.videoTitle), upperName: text(raw.upperName), cover: text(raw.cover),
     files,
-    filenameMetadataByPath: raw.filenameMetadataByPath === undefined ? undefined : filenameMetadataByPath,
+    filenameMetadataByPath,
     strictMediaTarget: parseStrictMediaTarget(raw.strictMediaTarget),
   };
 }

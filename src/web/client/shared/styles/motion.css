@@ -189,3 +189,12 @@ header button:not(:disabled):active,
 @media (prefers-reduced-motion: reduce) {
   .scheduler-status.running .scheduler-status-title::before { animation: none; }
 }
+button[aria-busy="true"], .row button[aria-busy="true"] {
+  cursor: progress;
+  opacity: .85;
+  background-image: linear-gradient(110deg, transparent 25%, rgba(255,255,255,.25) 45%, transparent 65%);
+  background-size: 240% 100%;
+  animation: buttonWorking 1.8s var(--motion-ease) infinite;
+}
+@keyframes buttonWorking { from { background-position: 130% 0; } to { background-position: -30% 0; } }
+@media (prefers-reduced-motion: reduce) { button[aria-busy="true"] { animation: none; } }

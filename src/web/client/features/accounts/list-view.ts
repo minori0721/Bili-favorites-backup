@@ -1,6 +1,9 @@
 import type { PublicAccount } from '../../../../shared/api/accounts.js';
 
-export function renderAccountList(document: Document, el: HTMLElement, users: readonly PublicAccount[], formatDateTime: (value: string) => string) {
+export function renderAccountList(document: Document, el: HTMLElement, users: readonly PublicAccount[], formatDateTime: (value: string) => string, focusFallback?: HTMLButtonElement) {
+  const active = document.activeElement;
+  const focused = active instanceof HTMLButtonElement && el.contains(active) ? active
+    : active === document.body && focusFallback && el.contains(focusFallback) ? focusFallback : null;
   const safeText = (value: unknown, fallback: string) => value == null || value === '' ? fallback : String(value);
       const fragment = document.createDocumentFragment();
       users.forEach(user => {
@@ -114,5 +117,10 @@ export function renderAccountList(document: Document, el: HTMLElement, users: re
         fragment.appendChild(item);
       });
       el.replaceChildren(fragment);
+      if (focused && !el.closest('[inert]')) {
+        const replacement = Array.from(el.querySelectorAll<HTMLButtonElement>('button[data-action]')).find(button =>
+          button.dataset.id === focused.dataset.id && button.dataset.action === focused.dataset.action && button.dataset.mediaId === focused.dataset.mediaId);
+        replacement?.focus({ preventScroll: true });
+      }
 
 }

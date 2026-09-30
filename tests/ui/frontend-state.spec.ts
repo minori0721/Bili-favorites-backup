@@ -366,7 +366,7 @@ test("archive reset disables stale cards and retains the last valid page on fail
   await search.fill("broken");
   await page.waitForTimeout(340);
   await expect(page.locator("#archiveLibraryResults")).toHaveAttribute("inert", "");
-  await expect(page.locator("#archiveLibraryFooter")).toContainText("加载失败");
+  await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
   await expect(page.locator("#archiveLibraryResults")).not.toHaveAttribute("inert", "");
   await expect(search).toHaveValue("");
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
@@ -377,7 +377,7 @@ test("archive reset disables stale cards and retains the last valid page on fail
   expect(state.itemQueries).toHaveLength(requestCount);
 
   await search.fill("duplicates");
-  await expect(page.locator("#archiveLibraryFooter")).toContainText("加载失败");
+  await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
   await expect(search).toHaveValue("");
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
 });

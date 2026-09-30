@@ -17,9 +17,12 @@ import {
   UploadStartLimiter,
 } from "../src/uploader.js";
 import { StateDatabase } from "../src/database.js";
+import { StateManager } from "../src/state.js";
+import { createHeldScheduler } from './fixtures/held-scheduler.js';
+import { verificationState } from './fixtures/verification-state.js';
 import { TransferSessionStore } from "../src/transfer-session.js";
 import { UploadOperationError } from "../src/upload-health.js";
-import { UploadTask } from "../src/tasks.js";
+import { UploadTask, UploadVerificationTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 import { createRemoteFileResolver } from "../src/remote-file-resolver.js";
 
@@ -330,6 +333,100 @@ test("upload result preserves selected Bilibili quality and actual media metadat
     await removeTestDir(runtime);
   }
 });
+
+for (const delayed of [false, true]) {
+  test(`persisted ${delayed ? 'delayed confirmation' : 'ordinary upload'} retains measurements in SQLite`, async () => {
+    const runtime = await createTestDir(`upload-metadata-${delayed ? 'delayed' : 'immediate'}`);
+    const server = await startWebDavServer({ visibilityDelayPropfinds: delayed ? 3 : 0 });
+    const localDir = path.join(runtime, 'temp', 'BVVERIFY');
+    await fs.promises.mkdir(localDir, { recursive: true });
+    await fs.promises.writeFile(path.join(localDir, 'video.mp4'), Buffer.alloc(12, 1));
+    const manager = new StateManager({ statePath: path.join(runtime, 'data', 'state.json'),
+      dbPath: path.join(runtime, 'data', 'bfb.sqlite') });
+    manager.replaceStateSnapshot(verificationState(localDir));
+    const config = testConfig({ alistUrl: server.url, bbdownQuality: '1080P60', bbdownEncoding: 'HEVC' });
+    let now = Date.now();
+    const { scheduler, jobs, queues } = createHeldScheduler({ get: () => config },
+      { list: () => [], getById: () => null }, manager, { now: () => now });
+    const mediaMetadata = { width: 1080, height: 1920, duration: 30, fps: 60, codec: 'HEVC',
+      source: 'ffprobe' as const, observedAt: new Date(now).toISOString() };
+    try {
+      jobs.enqueue({ kind: 'upload', dedupeKey: 'upload:measured', bvid: 'BVVERIFY', userId: 'u1', mediaId: 1,
+        payload: { localDir, remotePath: '/target', files: ['video.mp4'], filenameMetadataByPath: {
+          'video.mp4': { cid: 501, pageIndex: 1, dfn: '1080p60', bilibiliQuality: '1080P60', mediaMetadata },
+        } } });
+      scheduler.wake();
+      const upload = queues.get('upload').getTasks().find(task => task instanceof UploadTask);
+      assert.ok(upload instanceof UploadTask);
+      await upload.run();
+      assert.equal(upload.result?.allVerified, !delayed);
+      queues.get('upload').emit('taskCompleted', upload);
+      if (delayed) {
+        assert.equal(manager.getRelationStatus('u1', 1, 'BVVERIFY')?.backupStatus, 'uploaded');
+        now = Date.now() + 3_000;
+        scheduler.wake();
+        const verification = queues.get('verification').getTasks().find(task => task instanceof UploadVerificationTask);
+        assert.ok(verification instanceof UploadVerificationTask);
+        await verification.run();
+        assert.equal(verification.transferResult?.allVerified, true);
+        queues.get('verification').emit('taskCompleted', verification);
+      }
+      const relation = manager.getRelationStatus('u1', 1, 'BVVERIFY');
+      assert.equal(relation?.backupStatus, 'verified');
+      assert.deepEqual(relation?.remoteFiles?.[0]?.mediaMetadata, mediaMetadata);
+      assert.equal(relation?.remoteFiles?.[0]?.filenameMetadata?.cid, 501);
+      assert.equal(server.puts.length, 1, 'confirmation must not upload the body again');
+      const rows = manager.getDatabase().db.prepare<[string], {
+        actual_width: number | null; actual_height: number | null; actual_duration: number | null; actual_fps: number | null;
+        actual_codec: string | null; actual_metadata_source: string | null;
+      }>(`SELECT actual_width, actual_height, actual_duration, actual_fps, actual_codec, actual_metadata_source
+        FROM remote_files WHERE bvid=? ORDER BY user_id`).all('BVVERIFY');
+      assert.equal(rows.length, 2, 'global and favorite projections must retain the same proof');
+      for (const row of rows) assert.deepEqual(row, { actual_width: 1080, actual_height: 1920,
+        actual_duration: 30, actual_fps: 60, actual_codec: 'HEVC', actual_metadata_source: 'ffprobe' });
+    } finally {
+      await scheduler.shutdown(1_000, { closeDatabase: false });
+      manager.close();
+      await server.close();
+      await removeTestDir(runtime);
+    }
+  });
+}
+
+for (const kind of ['upload', 'verify_upload'] as const) {
+  test(`invalid ${kind} measurements park the real persistent task before transport`, async () => {
+    const runtime = await createTestDir(`upload-metadata-invalid-${kind}`);
+    const localDir = path.join(runtime, 'temp', 'BVVERIFY');
+    await fs.promises.mkdir(localDir, { recursive: true });
+    const body = Buffer.alloc(12, 1);
+    await fs.promises.writeFile(path.join(localDir, 'video.mp4'), body);
+    const manager = new StateManager({ statePath: path.join(runtime, 'data', 'state.json'),
+      dbPath: path.join(runtime, 'data', 'bfb.sqlite') });
+    manager.replaceStateSnapshot(verificationState(localDir));
+    // No HTTP server is started: reaching the transport would fail this contract.
+    const { scheduler, jobs, queues } = createHeldScheduler({ get: () => testConfig() },
+      { list: () => [], getById: () => null }, manager);
+    try {
+      const job = jobs.enqueue({ kind, dedupeKey: `invalid:${kind}`, bvid: 'BVVERIFY', userId: 'u1', mediaId: 1,
+        payload: { localDir, remotePath: '/target', remoteFile: '/target/video.mp4', expectedSize: body.length,
+          files: ['video.mp4'], filenameMetadataByPath: { 'video.mp4': { mediaMetadata: {
+            width: 0, height: 1080, source: 'ffprobe', observedAt: new Date().toISOString(),
+          } } } } });
+      scheduler.wake();
+      const parked = required(jobs.findById(job.id));
+      assert.equal(parked.status, 'manual_wait');
+      assert.equal(parked.payload.awaitingManualRecovery, true);
+      assert.match(parked.lastError || '', /mediaMetadata\.width/);
+      assert.equal(queues.get('upload').getTasks().length, 0);
+      assert.equal(queues.get('verification').getTasks().length, 0);
+      assert.deepEqual(await fs.promises.readFile(path.join(localDir, 'video.mp4')), body);
+    } finally {
+      await scheduler.shutdown(1_000, { closeDatabase: false });
+      manager.close();
+      await removeTestDir(runtime);
+    }
+  });
+}
 
 test("the global upload limiter spaces concurrent PUT starts", async () => {
   let now = 0;
