@@ -2,7 +2,7 @@ import type { StateManager } from '../state.js';
 import type { JobRepository } from '../repositories/jobs.js';
 import type { SourceAvailabilityReason } from '../state.js';
 import type { BiliUser } from '../users.js';
-import { normalizeAccessProbeIntents, type AccessProbeIntent } from './access-rules.js';
+import { accessProbeRequestRevision, normalizeAccessProbeIntents, type AccessProbeIntent } from './access-rules.js';
 interface Dependencies {
   state: Pick<StateManager, 'getChargingRestriction' | 'getVideoMeta' | 'getSourceAvailability'>;
   jobs: Pick<JobRepository, 'findByDedupeKey' | 'findById' | 'enqueue' | 'updatePayload'>;
@@ -55,8 +55,19 @@ export function createAccessAdmission(deps: Dependencies) {
       Number.isFinite(Number(existingJob?.notBefore)) && Number(existingJob?.notBefore) > 0 ? Number(existingJob!.notBefore) : Number.MAX_SAFE_INTEGER,
       input.notBefore ?? deps.now(),
     );
+    const active = existingJob && ["leased", "running"].includes(existingJob.status);
+    const previousIntents = existingJob ? normalizeAccessProbeIntents(existingPayload) : [];
+    const requestChanged = incomingIntents.some(intent => !previousIntents.includes(intent))
+      || input.manual === true
+      || (input.preferredUserId !== undefined && input.preferredUserId !== existingPayload.preferredUserId)
+      || (input.skipUserIds !== undefined && JSON.stringify(input.skipUserIds) !== JSON.stringify(existingPayload.skipUserIds || []))
+      || (input.previewAvailable !== undefined && input.previewAvailable !== existingPayload.previewAvailable)
+      || (input.availabilityReason !== undefined && input.availabilityReason !== existingPayload.availabilityReason)
+      || incomingAvailabilityRound > existingAvailabilityRound || incomingUnknownRound > existingUnknownRound;
+    const requestRevision = accessProbeRequestRevision(existingPayload) + (active && requestChanged ? 1 : 0);
     const payload = {
       ...existingPayload,
+      requestRevision,
       preferredUserId: input.preferredUserId || existingPayload.preferredUserId || "",
       skipUserIds: input.skipUserIds || existingPayload.skipUserIds || [],
       checkedAccountUids: checkedAccountUids.map(String),
@@ -68,22 +79,18 @@ export function createAccessAdmission(deps: Dependencies) {
       availabilityReason: input.availabilityReason || existingPayload.availabilityReason,
       manual: input.manual === true || existingPayload.manual === true,
     };
-    const job = deps.jobs.enqueue({
-      kind: "access_probe",
-      dedupeKey: `access_probe:${bvid}`,
-      bvid,
-      priority: 90,
-      maxAttempts: 1,
-      notBefore: Math.max(0, Number.isFinite(notBefore) ? notBefore : deps.now()),
-      payload,
-    });
-    // enqueue intentionally preserves a leased/running payload. Merge a newly
-    // discovered intent into that active job without touching its lease.
-    if (existingJob && ["leased", "running"].includes(existingJob.status)) {
-      deps.jobs.updatePayload(existingJob.id, payload);
-      return deps.jobs.findById(existingJob.id) || job;
+    // Active requests only update their payload. Completion notices the new
+    // revision and schedules a rerun without releasing this request's lease.
+    if (active) {
+      if (!deps.jobs.updatePayload(existingJob.id, payload)) throw new Error('Active access probe request changed before merge');
+      const updated = deps.jobs.findById(existingJob.id);
+      if (!updated) throw new Error('Active access probe disappeared after merge');
+      return updated;
     }
-    return job;
+    return deps.jobs.enqueue({
+      kind: "access_probe", dedupeKey: `access_probe:${bvid}`, bvid, priority: 90, maxAttempts: 1,
+      notBefore: Math.max(0, Number.isFinite(notBefore) ? notBefore : deps.now()), payload,
+    });
   }
 
   function enqueueAvailabilityProbe(

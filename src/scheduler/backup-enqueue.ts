@@ -81,8 +81,10 @@ export function createBackupEnqueue(deps: Dependencies) {
       deps.state.runAtomic(() => {
         if (restriction && local) {
           deps.state.clearChargingRestriction(bvid);
-          const probe = deps.jobs.findByDedupeKey(`access_probe:${bvid}`);
-          if (probe) deps.jobs.complete(probe.id);
+          if (!accessChecked) {
+            const probe = deps.jobs.findByDedupeKey(`access_probe:${bvid}`);
+            if (probe) deps.jobs.complete(probe.id);
+          }
         }
         deps.state.markQueued(bvid, remotePath, user.id, mediaId);
         deps.jobs.enqueueBatch(jobs);

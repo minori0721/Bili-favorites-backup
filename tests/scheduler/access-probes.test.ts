@@ -16,9 +16,11 @@ for (const interruption of ['generation', 'maintenance', 'lease', 'attempt'] as 
     const user: BiliUser = { id: 'u', uid: 1, name: 'Fixture', favorites: [{ mediaId: 1, title: 'Favorites' }], enabled: true, lastLoginAt: '', cookie: { SESSDATA: '', bili_jct: '', DedeUserID: '1' } };
     let generation = 0, active = true, queued = 0;
     let resolve!: (snapshot: VideoPageSnapshotResult) => void;
+    let started!: () => void;
+    const requestStarted = new Promise<void>(done => { started = done; });
     const probes = createAccessProbes({ state, jobs, users: { list: () => [user] }, owner: 'fixture', now: Date.now, random: () => 0.5,
       generation: () => generation, canContinue: () => active, eligible: () => true,
-      inspect: () => new Promise(done => { resolve = done; }), sleep: async () => {}, accountIntervalMs: 0,
+      inspect: () => new Promise(done => { resolve = done; started(); }),
       resolve: () => null, prepareAfterAccessCheck: () => { queued++; return assert.fail('late response must not prepare work'); } });
     try {
       state.recordFavoriteItem('u', 1, 'Favorites', { bvid: 'BVPROBE', title: 'Fixture', upperName: 'UP', unavailable: true });
@@ -28,6 +30,7 @@ for (const interruption of ['generation', 'maintenance', 'lease', 'attempt'] as 
       assert.ok(job);
       const before = state.getSourceAvailability('BVPROBE');
       const work = probes.availability(job);
+      await requestStarted;
       if (interruption === 'generation') generation++;
       if (interruption === 'maintenance') active = false;
       if (interruption === 'lease') state.getDatabase().db.prepare('UPDATE jobs SET lease_owner=? WHERE id=?').run('new-owner', job.id);

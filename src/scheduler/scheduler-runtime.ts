@@ -13,7 +13,8 @@ getVideoPageSnapshot,
 listFavoriteItemsPage,
 refreshUserAuth,
 resolveSelfVisibleFavoriteItem,
-type VideoPageSnapshotResult
+type VideoPageSnapshotResult,
+type VideoPageSnapshotOptions
 } from "../bili.js";
 import { ConfigStore, type AppConfig } from "../config.js";
 import { queueCoverCache } from "../cover-cache.js";
@@ -150,7 +151,7 @@ export interface SchedulerDependencies {
   createQueue?: (stage: 'download' | 'upload' | 'verification', concurrency: number, maxSize: number) => TaskQueue;
   /** Application bootstrap owns recovery ordering and opens admission only in start(). */
   deferAdmissionUntilStart?: boolean;
-  videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string) => Promise<VideoPageSnapshotResult>;
+  videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string, options?: VideoPageSnapshotOptions) => Promise<VideoPageSnapshotResult>;
   cacheInspector?: (rootDir: string, concurrency?: number) => Promise<DownloadCacheInspection>;
   remoteFileInspector?: typeof inspectRemoteFileSize;
   biliContent?: Pick<BiliContentPort, 'listPage' | 'refreshAuth' | 'selfVisible'>;
@@ -411,7 +412,6 @@ export class SchedulerRuntime implements SchedulerControl {
       now: this.now, random: this.random, generation: () => this.runtime.generation,
       canContinue: () => !this.runtime.shuttingDown && !this.maintenance.isAnyLocked(),
       eligible: this.userSyncEligibility, inspect: this.videoAccessProbe,
-      sleep: this.sleep, accountIntervalMs: 10_000,
       resolve: relation => this.resolveRelation(relation),
       prepareAfterAccessCheck: (user, mediaId, title, bvid, options) => this.backupEnqueueWorkflow.prepareAfterAccessCheck(user, mediaId, title, bvid, options),
     });
@@ -422,11 +422,11 @@ export class SchedulerRuntime implements SchedulerControl {
       generation: () => this.runtime.generation,
       accepting: () => this.runtime.accepting,
       shuttingDown: () => this.runtime.shuttingDown,
-      run: job => this.runChargingAccessProbe(job),
+      run: (job, beforeRequest) => this.accessProbes.charging(job, beforeRequest),
       failed: (job, error) => this.accessProbes.failed(job, error),
       wake: () => this.dispatchPersistentJobs(),
       sleep: this.sleep,
-      minIntervalMs: 10_000,
+      requestIntervalMs: 10_000,
     });
     this.localCapacity = createLocalCapacity({
       limitGB: () => this.configStore.get().localCacheLimitGB,
@@ -1032,7 +1032,6 @@ export class SchedulerRuntime implements SchedulerControl {
   private handleChargingRestrictedTask(task: DownloadTask | QualityUpgradeDownloadTask, error: unknown) {
     return this.accessFailureWorkflow.handleChargingRestrictedTask(task, error);
   }
-  private runChargingAccessProbe(job: import('../database.js').PersistentJobRecord) { return this.accessProbes.charging(job); }
 
   private dispatchChargingAccessProbe() {
     this.accessProbeWorkflow.dispatch();

@@ -2,16 +2,17 @@ import type { BiliUser, UserStore } from '../users.js';
 import type { StateManager, FavoriteRelation, SourceAvailabilityReason } from '../state.js';
 import type { PersistentJobRecord } from '../database.js';
 import type { JobRepository } from '../repositories/jobs.js';
-import { BiliRiskOrLoginError, type VideoPageSnapshotResult } from '../bili.js';
+import { BiliRiskOrLoginError, type VideoPageSnapshotOptions, type VideoPageSnapshotResult } from '../bili.js';
+import type { AccessProbeRequestGate } from './access-probe-workflow.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText } from '../upload-health.js';
 import { isRecord } from '../shared/api/value.js';
-import { normalizeAccessProbeIntents, snapshotAvailability, normalizeSourceAvailabilityReason } from './access-rules.js';
+import { accessProbeRequestRevision, normalizeAccessProbeIntents, snapshotAvailability, normalizeSourceAvailabilityReason } from './access-rules.js';
 import { CHARGING_NO_ACCOUNT_DELAY_MS, AVAILABILITY_UNKNOWN_DELAYS_MS, AVAILABILITY_UNAVAILABLE_DELAYS_MS, computeChargingRecheckDelayMs, computeChargingTransientDelayMs, computeAvailabilityUnknownDelayMs, computeAvailabilityUnavailableDelayMs } from './retry-policy.js';
 
 interface AccessProbeDependencies {
   users: Pick<UserStore, 'list'>;
-  state: Pick<StateManager, 'runAtomic' | 'listRelationsForBvid' | 'getVideoMeta' | 'markChargingRestricted' | 'markAvailabilityPending' | 'markAvailabilityUnknown' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityDormant' | 'markAvailabilityRecovered' | 'markLegacyAccessClassification' | 'shouldEnqueueBackup' | 'clearChargingRestriction'>;
+  state: Pick<StateManager, 'runAtomic' | 'listRelationsForBvid' | 'getVideoMeta' | 'getChargingRestriction' | 'markChargingRestricted' | 'markAvailabilityPending' | 'markAvailabilityUnknown' | 'markAvailabilityConfirmedUnavailable' | 'getSourceAvailability' | 'markAvailabilityDormant' | 'markAvailabilityRecovered' | 'markLegacyAccessClassification' | 'shouldEnqueueBackup' | 'clearChargingRestriction'>;
   jobs: Pick<JobRepository, 'updatePayload' | 'defer' | 'findById' | 'complete' | 'hasJobsForBvid' | 'list' | 'wakeByBvid'>;
   owner: string;
   now(): number;
@@ -19,24 +20,90 @@ interface AccessProbeDependencies {
   generation(): number;
   canContinue(): boolean;
   eligible(user: BiliUser): boolean;
-  inspect(cookie: BiliUser['cookie'], bvid: string): Promise<VideoPageSnapshotResult>;
-  sleep(ms: number): Promise<void>;
-  accountIntervalMs: number;
+  inspect(cookie: BiliUser['cookie'], bvid: string, options?: VideoPageSnapshotOptions): Promise<VideoPageSnapshotResult>;
   resolve(relation: FavoriteRelation): {user: BiliUser; mediaId: number; folderTitle: string} | null;
   prepareAfterAccessCheck(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: {persisted: boolean; downloadUserId: string}): {commit(): boolean} | null;
+}
+
+class AccessProbeSuperseded extends Error {
+  constructor() { super('Access probe has a newer request'); }
 }
 
 /** A claimed probe runs inside scheduling control's tracked promise and lease. */
 export function createAccessProbes(deps: AccessProbeDependencies) {
 function checkpoint(job: PersistentJobRecord) {
   const generation = deps.generation();
+  const revision = accessProbeRequestRevision(job.payload);
   return () => {
     const current = deps.jobs.findById(job.id);
     if (generation !== deps.generation() || !deps.canContinue() || !current || current.leaseOwner !== deps.owner
       || current.attempts !== job.attempts || !['leased', 'running'].includes(current.status)) {
       throw new Error('Access probe interrupted by lifecycle or lease change');
     }
+    if (accessProbeRequestRevision(current.payload) !== revision) throw new AccessProbeSuperseded();
   };
+}
+
+function rescheduleNewRequest(job: PersistentJobRecord) {
+  deps.state.runAtomic(() => {
+    const current = deps.jobs.findById(job.id);
+    if (!current || current.leaseOwner !== deps.owner || current.attempts !== job.attempts
+      || !['leased', 'running'].includes(current.status)) throw new Error('Access probe reschedule lost its lease');
+    // Keep the latest payload, including manual intent and account selection.
+    if (!deps.jobs.defer(job.id, deps.owner, '收到新的复核要求，等待重新检查', deps.now())) {
+      throw new Error('Access probe reschedule lost its lease');
+    }
+  });
+}
+
+async function inspect(user: BiliUser, bvid: string, assertCurrent: () => void, beforeRequest: AccessProbeRequestGate) {
+  await beforeRequest(assertCurrent);
+  let firstRequest = true;
+  const result = await deps.inspect({ ...user.cookie, accessToken: user.accessToken || '' }, bvid, {
+    beforeRequest: async () => {
+      // Reserve the first request above so injected single-request adapters use
+      // the same pacing contract. The real adapter gates its fallback requests.
+      if (firstRequest) { firstRequest = false; assertCurrent(); }
+      else await beforeRequest(assertCurrent);
+    },
+  });
+  assertCurrent();
+  return result;
+}
+
+function commitRecoveredAccess(job: PersistentJobRecord, user: BiliUser, checkedAt: string,
+  options: { availability: boolean; charging: boolean; legacy: boolean }, assertCurrent: () => void) {
+  assertCurrent();
+  const bvid = String(job.bvid || '');
+  const replacements = deps.state.listRelationsForBvid(bvid)
+    .filter(relation => relation.activeInFavorite
+      && (relation.sourceKind !== 'manual' || (options.charging && relation.backupStatus === 'charging_restricted'))
+      && !['uploaded', 'verified', 'partial_verified'].includes(relation.backupStatus || ''))
+    .map(relation => {
+      const resolved = deps.resolve(relation);
+      return { relation, resolved, replacement: resolved && deps.prepareAfterAccessCheck(
+        resolved.user, relation.mediaId, resolved.folderTitle, bvid, { persisted: true, downloadUserId: user.id }) };
+    });
+  assertCurrent();
+  return deps.state.runAtomic(() => {
+    assertCurrent();
+    const changed = options.availability && deps.state.markAvailabilityRecovered(bvid, checkedAt);
+    if (options.charging) deps.state.clearChargingRestriction(bvid, checkedAt);
+    if (options.legacy) deps.state.markLegacyAccessClassification(bvid, { result: 'available', classifiedAt: checkedAt });
+    for (const { relation, resolved, replacement } of replacements) {
+      if (!resolved || !deps.state.shouldEnqueueBackup(bvid, relation.userId, relation.mediaId, undefined, true)) continue;
+      if (!replacement || !replacement.commit()) throw new Error('Access recovered but the replacement task was not accepted');
+    }
+    for (const qualityJob of deps.jobs.list(['quality_download'], 10_000)) {
+      if (qualityJob.bvid !== bvid) continue;
+      if (!deps.jobs.updatePayload(qualityJob.id, { ...qualityJob.payload, downloadUserId: user.id })) {
+        throw new Error('Access recovered but the quality task changed before commit');
+      }
+    }
+    deps.jobs.wakeByBvid(bvid, ['quality_download'], deps.now());
+    if (!deps.jobs.complete(job.id, deps.owner)) throw new Error('Access probe completion lost its lease');
+    return changed;
+  });
 }
 function orderedEnabledUsers(preferredUserId: string, skipped: Set<string>) {
     return deps.users.list()
@@ -104,7 +171,8 @@ function deferAvailabilityProbe(
     const nextCheckAt = new Date(value.nextAt).toISOString();
     deps.state.runAtomic(() => {
       const current = deps.jobs.findById(job.id);
-      if (!current || current.leaseOwner !== deps.owner || current.attempts !== job.attempts) {
+      if (!current || current.leaseOwner !== deps.owner || current.attempts !== job.attempts
+        || !['leased', 'running'].includes(current.status)) {
         throw new Error('Access probe reschedule lost its lease');
       }
       if (value.state === "pending_confirmation") {
@@ -128,7 +196,7 @@ function deferAvailabilityProbe(
     });
   }
 
-async function runAvailabilityProbe(job: PersistentJobRecord) {
+async function runAvailabilityProbe(job: PersistentJobRecord, beforeRequest: AccessProbeRequestGate) {
     const assertCurrent = checkpoint(job);
     assertCurrent();
     const bvid = String(job.bvid || "");
@@ -138,13 +206,13 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
     }
     const payload = (job.payload || {});
     const intents = normalizeAccessProbeIntents(payload);
-    const wantsCharging = intents.includes("charging");
+    const wantsCharging = intents.includes("charging") || Boolean(deps.state.getChargingRestriction(bvid));
     const wantsLegacyClassification = intents.includes("legacy_classification");
     const manualProbe = payload.manual === true;
     const relations = deps.state.listRelationsForBvid(bvid);
     const hasUnbackedRelation = relations.some((relation) => relation.activeInFavorite
-      && relation.sourceKind !== "manual"
-      && !relation.selfVisible
+      && ((relation.sourceKind !== "manual" && !relation.selfVisible)
+        || (wantsCharging && relation.backupStatus === "charging_restricted"))
       && !["uploaded", "verified", "partial_verified"].includes(relation.backupStatus || ""));
     const previousAvailability = deps.state.getSourceAvailability(bvid);
     if (!manualProbe && !hasUnbackedRelation
@@ -243,31 +311,21 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
       return;
     }
 
-    let inspectedThisRun = 0;
     for (const user of users) {
-      if (inspectedThisRun > 0 && deps.accountIntervalMs > 0) {
-        await deps.sleep(deps.accountIntervalMs);
-        assertCurrent();
-      }
-      inspectedThisRun += 1;
       checkedUids.add(String(user.uid || user.cookie.DedeUserID || user.id));
       try {
-        const snapshot = await deps.inspect({
-          ...user.cookie,
-          accessToken: user.accessToken || "",
-        }, bvid);
-        assertCurrent();
+        const snapshot = await inspect(user, bvid, assertCurrent, beforeRequest);
         const availability = snapshotAvailability(snapshot);
         if (availability === "available") {
           recoveredUser ||= user;
           previewAvailable = snapshot.access.previewAvailable ?? snapshot.access.isUgcPayPreview ?? previewAvailable;
-          if (wantsCharging && snapshot.access.classification === "charging_restricted") {
+          if (snapshot.access.classification === "charging_restricted") {
             chargingRestrictedCount += 1;
             previewAvailable = snapshot.access.previewAvailable ?? snapshot.access.isUgcPayPreview ?? previewAvailable;
-          } else if (!wantsCharging || ["normal", "charging_allowed"].includes(snapshot.access.classification)) {
+          } else if (["normal", "charging_allowed"].includes(snapshot.access.classification)) {
             chargingUser ||= user;
           }
-          if (!wantsCharging || chargingUser) break;
+          if (chargingUser) break;
           continue;
         }
         if (availability === "unavailable") {
@@ -296,32 +354,9 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
 
     const checkedAt = new Date(deps.now()).toISOString();
     if (recoveredUser) {
-      if (!wantsCharging || chargingUser) {
-        const downloadUserId = chargingUser?.id || recoveredUser.id;
-        // Preparing may inspect local files. The status, probe completion and
-        // replacement jobs are committed together only after that I/O succeeds.
-        const replacements = relations.filter((item) => item.activeInFavorite
-          && item.sourceKind !== "manual"
-          && !["uploaded", "verified", "partial_verified"].includes(item.backupStatus || ""))
-          .map((relation) => {
-          const resolved = deps.resolve(relation);
-          return { relation, replacement: resolved && deps.prepareAfterAccessCheck(
-            resolved.user, relation.mediaId, resolved.folderTitle, bvid,
-            { persisted: true, downloadUserId },
-          ) };
-          });
-        assertCurrent();
-        const recovered = deps.state.runAtomic(() => {
-          assertCurrent();
-          const changed = deps.state.markAvailabilityRecovered(bvid, checkedAt);
-          if (wantsLegacyClassification) deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
-          if (!deps.jobs.complete(job.id, deps.owner)) throw new Error('Access probe completion lost its lease');
-          for (const { relation, replacement } of replacements) {
-            if (!deps.state.shouldEnqueueBackup(bvid, relation.userId, relation.mediaId, undefined, true)) continue;
-            if (replacement && !replacement.commit()) throw new Error('Access recovered but the replacement task was not accepted');
-          }
-          return changed;
-        });
+      if (chargingUser) {
+        const recovered = commitRecoveredAccess(job, chargingUser, checkedAt,
+          { availability: true, charging: wantsCharging || Boolean(deps.state.getChargingRestriction(bvid)), legacy: wantsLegacyClassification }, assertCurrent);
         if (recovered || previousAvailability) logManager.push({
           timestamp: checkedAt,
           type: "download",
@@ -334,22 +369,26 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
         });
         return;
       }
-      deps.state.markAvailabilityRecovered(bvid, checkedAt);
-      if (wantsLegacyClassification) deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
-      deps.state.markChargingRestricted(bvid, {
-        checkedAt,
-        nextCheckAt: new Date(deps.now() + computeChargingRecheckDelayMs(deps.random)).toISOString(),
-        previewAvailable,
-        checkedAccountUids: [...checkedUids],
+      if (chargingRestrictedCount === 0) {
+        const unknownRound = Number(payload.availabilityUnknownRound || 0);
+        deferAvailabilityProbe(job, { nextAt: deps.now() + computeAvailabilityUnknownDelayMs(unknownRound, bvid),
+          state: 'unknown', reason: 'temporary_error', unknownRound: Math.min(unknownRound + 1, AVAILABILITY_UNKNOWN_DELAYS_MS.length),
+          message: '视频详情可见，但完整观看权限暂时无法确认' });
+        return;
+      }
+      const nextAt = deps.now() + computeChargingRecheckDelayMs(deps.random);
+      deps.state.runAtomic(() => {
+        assertCurrent();
+        deps.state.markAvailabilityRecovered(bvid, checkedAt);
+        if (wantsLegacyClassification) deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
+        deps.state.markChargingRestricted(bvid, {
+          checkedAt, nextCheckAt: new Date(nextAt).toISOString(), previewAvailable, checkedAccountUids: [...checkedUids],
+        });
+        if (!deps.jobs.updatePayload(job.id, {
+          ...payload, intents: ["charging"], manual: false, checkedAccountUids: [...checkedUids], previewAvailable,
+        })) throw new Error('Access probe payload changed before commit');
+        if (!deps.jobs.defer(job.id, deps.owner, "视频已恢复，但仍需要充电权限", nextAt)) throw new Error('Access probe reschedule lost its lease');
       });
-      deps.jobs.updatePayload(job.id, {
-        ...payload,
-        intents: ["charging"],
-        manual: false,
-        checkedAccountUids: [...checkedUids],
-        previewAvailable,
-      });
-      deps.jobs.defer(job.id, deps.owner, "视频已恢复，但仍需要充电权限", deps.now() + computeChargingRecheckDelayMs(deps.random));
       return;
     }
 
@@ -434,12 +473,12 @@ async function runAvailabilityProbe(job: PersistentJobRecord) {
     });
   }
 
-async function runChargingAccessProbe(job: PersistentJobRecord) {
+async function runChargingAccessProbe(job: PersistentJobRecord, beforeRequest: AccessProbeRequestGate) {
     const assertCurrent = checkpoint(job);
     assertCurrent();
     const intents = normalizeAccessProbeIntents(job.payload || {});
     if (intents.includes("availability")) {
-      await runAvailabilityProbe(job);
+      await runAvailabilityProbe(job, beforeRequest);
       return;
     }
     const bvid = String(job.bvid || "");
@@ -481,11 +520,7 @@ async function runChargingAccessProbe(job: PersistentJobRecord) {
     for (const user of users) {
       checkedUids.add(String(user.uid || user.cookie.DedeUserID || user.id));
       try {
-        const snapshot = await deps.inspect({
-          ...user.cookie,
-          accessToken: user.accessToken || "",
-        }, bvid);
-        assertCurrent();
+        const snapshot = await inspect(user, bvid, assertCurrent, beforeRequest);
         const availability = snapshotAvailability(snapshot);
         if (availability === "unavailable") {
           unavailableCount += 1;
@@ -517,35 +552,13 @@ async function runChargingAccessProbe(job: PersistentJobRecord) {
     if (allowedUser) {
       const downloadUser = allowedUser;
       const checkedAt = new Date(deps.now()).toISOString();
-      const relation = relations.find(item => item.activeInFavorite && !['uploaded', 'verified', 'partial_verified'].includes(item.backupStatus || ''));
-      const resolved = relation ? deps.resolve(relation) : null;
-      // Preparation may inspect local files; keep it outside the SQLite transaction.
-      const replacement = relation && resolved ? deps.prepareAfterAccessCheck(resolved.user, relation.mediaId, resolved.folderTitle, bvid, {
-        persisted: true, downloadUserId: downloadUser.id,
-      }) : null;
-      if (relation && resolved && !replacement) throw new Error('Access recovered but the replacement task could not be prepared');
-      assertCurrent();
-      deps.state.runAtomic(() => {
-        if (payload.purpose === "legacy_failure_classification") {
-          deps.state.markLegacyAccessClassification(bvid, { result: "available", classifiedAt: checkedAt });
-        }
-        deps.state.clearChargingRestriction(bvid, checkedAt);
-        if (!deps.jobs.complete(job.id, deps.owner)) throw new Error('Access probe completion lost its lease');
-        for (const qualityJob of deps.jobs.list(["quality_download"], 10_000)) {
-          if (qualityJob.bvid !== bvid) continue;
-          deps.jobs.updatePayload(qualityJob.id, {
-            ...qualityJob.payload,
-            downloadUserId: downloadUser.id,
-          });
-        }
-        deps.jobs.wakeByBvid(bvid, ["quality_download"], deps.now());
-        if (replacement && !replacement.commit()) throw new Error('Access recovered but the replacement task was not accepted');
-      });
+      commitRecoveredAccess(job, downloadUser, checkedAt, { availability: Boolean(deps.state.getSourceAvailability(bvid)), charging: true,
+        legacy: intents.includes('legacy_classification') }, assertCurrent);
       logManager.push({
         timestamp: checkedAt,
         type: "download",
         level: "info",
-        summary: `充电视频权限已恢复 ${bvid}${replacement ? '，已重新加入下载' : '，当前无待恢复收藏任务'}`,
+        summary: `充电视频权限已恢复 ${bvid}，已恢复符合条件的备份任务`,
         raw: `[ChargingAccess] allowed bvid=${bvid} checkedAccounts=${checkedUids.size}`,
         bvid,
         simpleVisible: true,
@@ -612,6 +625,13 @@ async function runChargingAccessProbe(job: PersistentJobRecord) {
     });
   }
 function failed(job: PersistentJobRecord, error: unknown) {
+      const current = deps.jobs.findById(job.id);
+      if (!deps.canContinue() || !current || current.leaseOwner !== deps.owner || current.attempts !== job.attempts
+        || !['leased', 'running'].includes(current.status)) return;
+      if (accessProbeRequestRevision(current.payload) !== accessProbeRequestRevision(job.payload)) {
+        rescheduleNewRequest(job);
+        return;
+      }
       const reason = sanitizeUploadText(error instanceof Error ? error.message : error).slice(0, 300);
       const intents = normalizeAccessProbeIntents(job.payload || {});
       if (intents.includes("availability")) {
@@ -646,5 +666,17 @@ function failed(job: PersistentJobRecord, error: unknown) {
       }
 
 }
-return { availability: runAvailabilityProbe, charging: runChargingAccessProbe, users: availabilityProbeUsers, failed };
+async function runCurrent(job: PersistentJobRecord, run: typeof runAvailabilityProbe, beforeRequest: AccessProbeRequestGate) {
+  try { await run(job, beforeRequest); }
+  catch (error: unknown) {
+    if (!(error instanceof AccessProbeSuperseded)) throw error;
+    rescheduleNewRequest(job);
+  }
+}
+const immediateRequest: AccessProbeRequestGate = async check => { check(); };
+return {
+  availability: (job: PersistentJobRecord, beforeRequest = immediateRequest) => runCurrent(job, runAvailabilityProbe, beforeRequest),
+  charging: (job: PersistentJobRecord, beforeRequest = immediateRequest) => runCurrent(job, runChargingAccessProbe, beforeRequest),
+  users: availabilityProbeUsers, failed,
+};
 }

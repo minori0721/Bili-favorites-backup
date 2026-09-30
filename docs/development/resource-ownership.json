@@ -7,12 +7,11 @@
         "active",
         "jobId",
         "nextAllowedAt",
-        "pendingWake",
         "stopped"
       ],
-      "stop": "stop cancels the pending pacing timer and rejects new claims while the active probe remains busy until its promise settles",
-      "lateCallback": "stopped state, generation and lease checks reject old timer and probe results",
-      "rebind": "resetAfterRebind rejects an active promise or claimed job; the timer is cleared before storage rebind"
+      "stop": "stop rejects new claims and HTTP requests while the active request or pacing wait remains busy until its promise settles",
+      "lateCallback": "stopped state, generation, lease and request revision checks reject stale requests and results",
+      "rebind": "resetAfterRebind rejects an active promise or claimed job; the last request pacing deadline remains authoritative"
     },
     {
       "module": "scheduler/account-retirement.ts",

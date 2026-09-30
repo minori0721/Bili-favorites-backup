@@ -169,7 +169,7 @@
   },
   "accessProbes": {
     "currentOwner": "access-probes",
-    "lifetime": "Probe policy uses narrow adapters; scheduling control owns the claimed job and active promise. Results must pass generation and admission checks.",
+    "lifetime": "Probe policy uses narrow adapters and one atomic recovery commit; scheduling control owns the claimed job, active promise and HTTP pacing deadline. Results must pass generation, admission, lease and request-revision checks; newer requests are rescheduled without committing stale observations.",
     "fields": [
       "accessProbes"
     ]

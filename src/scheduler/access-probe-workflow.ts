@@ -1,6 +1,8 @@
 import type { PersistentJobRecord } from '../database.js';
 import type { PersistentJobStore } from '../job-store.js';
 
+export type AccessProbeRequestGate = (check: () => void) => Promise<void>;
+
 export interface AccessProbeWorkflowDependencies {
   jobs: Pick<PersistentJobStore, 'claimDue' | 'markRunning' | 'findById' | 'extendLease'>;
   owner: string;
@@ -8,11 +10,11 @@ export interface AccessProbeWorkflowDependencies {
   generation(): number;
   accepting(): boolean;
   shuttingDown(): boolean;
-  run(job: PersistentJobRecord): Promise<void>;
+  run(job: PersistentJobRecord, beforeRequest: AccessProbeRequestGate): Promise<void>;
   failed(job: PersistentJobRecord, error: unknown): void;
   wake(): void;
   sleep(ms: number): Promise<void>;
-  minIntervalMs?: number;
+  requestIntervalMs?: number;
 }
 
 /** Owns the claimed access-probe job and its promise for the full lifecycle. */
@@ -21,26 +23,29 @@ export function createAccessProbeWorkflow(dependencies: AccessProbeWorkflowDepen
   let jobId: string | null = null;
   let stopped = false;
   let nextAllowedAt = 0;
-  let pendingWake: ReturnType<typeof setTimeout> | null = null;
 
   function dispatch() {
-    if (stopped || active || pendingWake || !dependencies.accepting()) return;
-    const waitMs = nextAllowedAt - dependencies.now();
-    if (waitMs > 0) {
-      pendingWake = setTimeout(() => {
-        pendingWake = null;
-        dispatch();
-      }, waitMs);
-      pendingWake.unref?.();
-      return;
-    }
+    if (stopped || active || !dependencies.accepting()) return;
     const [job] = dependencies.jobs.claimDue(['access_probe'], 1, dependencies.owner, 5 * 60_000, dependencies.now());
     if (!job || !dependencies.jobs.markRunning(job.id, dependencies.owner, 5 * 60_000)) return;
-    nextAllowedAt = dependencies.now() + (dependencies.minIntervalMs ?? 0);
     jobId = job.id;
     const generation = dependencies.generation();
-    active = dependencies.run(job).catch((error: unknown) => {
-      if (generation !== dependencies.generation() || dependencies.shuttingDown()) return;
+    const beforeRequest: AccessProbeRequestGate = async (check) => {
+      const assertAdmission = () => {
+        if (stopped || !dependencies.accepting() || generation !== dependencies.generation()) {
+          throw new Error('Access probe interrupted by lifecycle or lease change');
+        }
+        check();
+      };
+      assertAdmission();
+      while (nextAllowedAt > dependencies.now()) {
+        await dependencies.sleep(nextAllowedAt - dependencies.now());
+        assertAdmission();
+      }
+      nextAllowedAt = dependencies.now() + (dependencies.requestIntervalMs ?? 0);
+    };
+    active = dependencies.run(job, beforeRequest).catch((error: unknown) => {
+      if (stopped || !dependencies.accepting() || generation !== dependencies.generation() || dependencies.shuttingDown()) return;
       const current = dependencies.jobs.findById(job.id);
       if (!current || current.leaseOwner !== dependencies.owner || current.attempts !== job.attempts) return;
       dependencies.failed(job, error);
@@ -53,7 +58,7 @@ export function createAccessProbeWorkflow(dependencies: AccessProbeWorkflowDepen
 
   return {
     start: () => { stopped = false; },
-    stop: () => { stopped = true; if (pendingWake) clearTimeout(pendingWake); pendingWake = null; },
+    stop: () => { stopped = true; },
     dispatch,
     renewLease: () => {
       if (jobId) dependencies.jobs.extendLease(jobId, dependencies.owner, 5 * 60_000);

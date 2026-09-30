@@ -4,6 +4,15 @@ import { isRecord } from '../shared/api/value.js';
 
 export type AccessProbeIntent = "charging" | "availability" | "legacy_classification";
 
+export function accessProbeRequestRevision(payload: Record<string, unknown> | undefined): number {
+  const revision = payload?.requestRevision;
+  if (revision === undefined) return 0;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error('Invalid access probe requestRevision');
+  }
+  return revision;
+}
+
 export function normalizeAccessProbeIntents(payload: Record<string, unknown> | undefined): AccessProbeIntent[] {
   const explicit = Array.isArray(payload?.intents)
     ? payload.intents.map(String).filter((value): value is AccessProbeIntent =>

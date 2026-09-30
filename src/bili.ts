@@ -764,14 +764,17 @@ export function classifyVideoAccess(
 }
 
 async function resolveVideoAccessFallback(
-  client: ReturnType<typeof createBiliClient>,
+  io: Pick<VideoPageProbeIO, 'player'>,
   bvid: string,
   cid: number,
-  current: VideoAccessSnapshot
+  current: VideoAccessSnapshot,
+  beforeRequest?: () => Promise<void>,
 ) {
   if (current.classification !== "unknown" || cid <= 0) return current;
+  // Lifecycle/pacing failures belong to the caller, not to Bilibili error classification.
+  await beforeRequest?.();
   try {
-    const player = decodePlayerInfoResponse(await client.video.playerInfo({ bvid, cid }) as unknown);
+    const player = decodePlayerInfoResponse(await io.player(bvid, cid));
     const fallback = classifyVideoAccess(player, "player");
     return fallback.classification === "unknown" ? current : fallback;
   } catch (error: unknown) {
@@ -865,11 +868,33 @@ export async function resolveSelfVisibleFavoriteItem(
   return item;
 }
 
+export interface VideoPageSnapshotOptions {
+  beforeRequest?: () => Promise<void>;
+}
+
+export interface VideoPageProbeIO {
+  view(url: string, referer: string): Promise<unknown>;
+  player(bvid: string, cid: number): Promise<unknown>;
+}
+
 export async function getVideoPageSnapshot(
   cookie: BiliCookie,
-  bvidValue: string
+  bvidValue: string,
+  options: VideoPageSnapshotOptions = {},
 ): Promise<VideoPageSnapshotResult> {
   const client = createBiliClient(cookie, Number(cookie.DedeUserID), String(cookie.accessToken || ""));
+  return inspectVideoPageSnapshot({
+    view: (url, referer) => client.video.request.get(url, { headers: { referer }, extra: { rawResponse: true } }),
+    player: (bvid, cid) => client.video.playerInfo({ bvid, cid }),
+  }, bvidValue, options);
+}
+
+/** The real adapter and isolated tests share endpoint fallback and request admission. */
+export async function inspectVideoPageSnapshot(
+  io: VideoPageProbeIO,
+  bvidValue: string,
+  options: VideoPageSnapshotOptions = {},
+): Promise<VideoPageSnapshotResult> {
   const bvid = encodeURIComponent(bvidValue);
   const urls = [
     `https://api.bilibili.com/x/web-interface/view/detail?bvid=${bvid}`,
@@ -878,11 +903,9 @@ export async function getVideoPageSnapshot(
   const observations: VideoPageEndpointObservation[] = [];
   for (const [urlIndex, url] of urls.entries()) {
     let responseBody: unknown;
+    await options.beforeRequest?.();
     try {
-      responseBody = await client.video.request.get(url, {
-        headers: { referer: `https://www.bilibili.com/video/${bvidValue}/` },
-        extra: { rawResponse: true },
-      });
+      responseBody = await io.view(url, `https://www.bilibili.com/video/${bvidValue}/`);
     } catch (error: unknown) {
       const value = record(error);
       const response = record(value.response);
@@ -917,10 +940,11 @@ export async function getVideoPageSnapshot(
       continue;
     }
     const access = await resolveVideoAccessFallback(
-      client,
+      io,
       bvidValue,
       Number(view.cid || 0),
-      classifyVideoAccess(view, urlIndex === 0 ? "view_detail" : "view")
+      classifyVideoAccess(view, urlIndex === 0 ? "view_detail" : "view"),
+      options.beforeRequest,
     );
     const rawPages = Array.isArray(view.pages) ? view.pages : [];
     const pages = rawPages
