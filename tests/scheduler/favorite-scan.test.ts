@@ -7,6 +7,8 @@ import type { BiliUser } from '../../src/users.js';
 import { BiliResponseFormatError, BiliRiskOrLoginError, type FavoriteItemsPage } from '../../src/bili.js';
 import { createTestDir, removeTestDir } from '../helpers.js';
 import { availabilityJitter } from '../../src/scheduler/retry-policy.js';
+import { createSyncWorkflow } from '../../src/scheduler/sync-workflow.js';
+import type { SchedulerSnapshot } from '../../src/scheduler/sync-runtime.js';
 
 const user: BiliUser = { id: 'scan-account', uid: 1, name: 'Fixture', enabled: true, favorites: [], lastLoginAt: '',
   cookie: { SESSDATA: '', bili_jct: '', DedeUserID: '1' } };
@@ -61,54 +63,178 @@ test('full scan keeps completed pages but does not complete after a malformed la
   } finally { state.close(); await removeTestDir(runtime); }
 });
 
-test('auth refresh retry reports the new response format error', async () => {
-  const runtime = await createTestDir('scan-auth-format-retry');
+for (const retryError of [
+  new BiliResponseFormatError('favorite.medias'),
+  Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+  Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' }),
+  new BiliRiskOrLoginError('new login rejection'),
+]) {
+  test(`auth refresh retry reports the actual ${retryError.name}: ${retryError.message}`, async () => {
+    const runtime = await createTestDir('scan-auth-format-retry');
+    const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite') });
+    const authUser: BiliUser = {
+      ...user,
+      id: 'scan-auth-format',
+      cookie: { ...user.cookie },
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      expires: 1,
+    };
+    let pageCalls = 0;
+    const scan = createFavoriteScan({
+      deletions: { folder: () => false, source: () => false },
+      state,
+      users: {
+        getById: () => authUser,
+        updatePartial: (_id, patch) => Object.assign(authUser, patch),
+      },
+      now: () => 1_000,
+      random: () => 0,
+      sleep: async () => {},
+      generation: () => 0,
+      canRun: () => true,
+      listPage: async () => {
+        pageCalls += 1;
+        if (pageCalls === 1) throw new BiliRiskOrLoginError('expired login');
+        throw retryError;
+      },
+      refreshAuth: async () => ({
+        rawAuth: '{}',
+        cookie: { SESSDATA: 'fresh', bili_jct: 'fresh', DedeUserID: '1' },
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        expires: 2_000,
+        uid: 1,
+      }),
+      resolveSelfVisible: async (_cookie, _uid, value) => value,
+      cacheCover() {},
+      progress() {},
+      recordCount() {},
+      probe() {},
+      enqueue: () => false,
+    });
+    try {
+      await assert.rejects(scan.hot(authUser, 1, 'Favorites', false), error => error === retryError);
+      assert.equal(pageCalls, 2);
+      assert.equal(authUser.accessToken, 'new-access');
+    } finally { state.close(); await removeTestDir(runtime); }
+  });
+}
+
+for (const failurePoint of ['persistence', 'missing-account', 'late-response', 'late-risk-response', 'late-network-response'] as const) {
+  test(`refreshed auth ${failurePoint} cannot become an obsolete risk cooldown`, async (t) => {
+    const runtime = await createTestDir('scan-auth-failure');
+    const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite') });
+    const authUser: BiliUser = { ...user, id: 'auth-failure', cookie: { ...user.cookie }, favorites: [{ mediaId: 1, title: 'Favorites' }], accessToken: 'old-access', refreshToken: 'old-refresh' };
+    let pageCalls = 0;
+    let generation = 0;
+    let position: { mediaId?: number; page?: number } = {};
+    const messages: string[] = [];
+    t.mock.method(console, 'error', (message: string) => { messages.push(message); });
+    const scan = createFavoriteScan({
+      state, deletions: { folder: () => false, source: () => false },
+      users: {
+        getById: () => authUser,
+        updatePartial: (_id, patch) => {
+          if (failurePoint === 'persistence') throw new Error('account persistence failed');
+          if (failurePoint === 'missing-account') return null;
+          return Object.assign(authUser, patch);
+        },
+      },
+      now: () => 1_000, random: () => 0, sleep: async () => {}, generation: () => generation, canRun: () => true,
+      listPage: async () => {
+        pageCalls++;
+        if (pageCalls === 1) throw new BiliRiskOrLoginError('old expired login');
+        generation++;
+        if (failurePoint === 'late-risk-response') throw new BiliRiskOrLoginError('late rejected login');
+        if (failurePoint === 'late-network-response') throw Object.assign(new Error('late reset'), { code: 'ECONNRESET' });
+        return { items: [item], page: 1, pageSize: 20, hasMore: false };
+      },
+      refreshAuth: async () => ({ rawAuth: '{}', cookie: { ...user.cookie }, accessToken: 'fresh-access', refreshToken: 'fresh-refresh', expires: 2_000, uid: 1 }),
+      resolveSelfVisible: async (_cookie, _uid, value) => value, cacheCover() {},
+      progress: patch => { position = { ...position, ...patch }; }, recordCount() {}, probe() {}, enqueue: () => false,
+    });
+    const workflow = createSyncWorkflow({
+      users: () => [authUser], eligible: () => true, state, scan, scanPosition: () => position,
+      progress: patch => { position = { ...position, ...patch }; }, enterUser() {}, leaveUser() {}, random: () => 0, sleep: async () => {},
+    });
+    try {
+      await workflow.run(false, false);
+      assert.equal(state.getUserCooldown(authUser.id), null);
+      assert.equal(state.getVideoMeta(item.bvid), null);
+      assert.equal(pageCalls, failurePoint.startsWith('late-') ? 2 : 1);
+      assert.equal(messages.length, 1);
+      assert.match(messages[0], /media_id=1 phase=hot page=1 category=other/);
+      assert.doesNotMatch(messages[0], /old expired login/);
+      assert.match(messages[0], failurePoint === 'persistence' ? /account persistence failed/ : failurePoint === 'missing-account' ? /Account no longer exists/ : /lifecycle change/);
+    } finally { state.close(); await removeTestDir(runtime); }
+  });
+}
+
+test('a retried network failure reports its page without cooling the refreshed account', async (t) => {
+  const runtime = await createTestDir('scan-auth-network');
   const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite') });
-  const authUser: BiliUser = {
-    ...user,
-    id: 'scan-auth-format',
-    cookie: { ...user.cookie },
-    accessToken: 'old-access',
-    refreshToken: 'old-refresh',
-    expires: 1,
-  };
+  const authUser: BiliUser = { ...user, id: 'auth-network', cookie: { ...user.cookie }, favorites: [{ mediaId: 1, title: 'Favorites' }], accessToken: 'old-access', refreshToken: 'old-refresh' };
   let pageCalls = 0;
+  let position: { mediaId?: number; page?: number } = {};
+  const messages: string[] = [];
+  t.mock.method(console, 'error', (message: string) => { messages.push(message); });
   const scan = createFavoriteScan({
-    deletions: { folder: () => false, source: () => false },
-    state,
-    users: {
-      getById: () => authUser,
-      updatePartial: (_id, patch) => Object.assign(authUser, patch),
-    },
-    now: () => 1_000,
-    random: () => 0,
-    sleep: async () => {},
-    generation: () => 0,
-    canRun: () => true,
+    state, deletions: { folder: () => false, source: () => false },
+    users: { getById: () => authUser, updatePartial: (_id, patch) => Object.assign(authUser, patch) },
+    now: () => 1_000, random: () => 0, sleep: async () => {}, generation: () => 0, canRun: () => true,
     listPage: async () => {
-      pageCalls += 1;
+      pageCalls++;
       if (pageCalls === 1) throw new BiliRiskOrLoginError('expired login');
-      throw new BiliResponseFormatError('favorite.medias');
+      throw Object.assign(new Error('read reset access_token=secret-value'), { code: 'ECONNRESET' });
     },
-    refreshAuth: async () => ({
-      rawAuth: '{}',
-      cookie: { SESSDATA: 'fresh', bili_jct: 'fresh', DedeUserID: '1' },
-      accessToken: 'new-access',
-      refreshToken: 'new-refresh',
-      expires: 2_000,
-      uid: 1,
-    }),
-    resolveSelfVisible: async (_cookie, _uid, value) => value,
-    cacheCover() {},
-    progress() {},
-    recordCount() {},
-    probe() {},
-    enqueue: () => false,
+    refreshAuth: async () => ({ rawAuth: '{}', cookie: { ...user.cookie }, accessToken: 'fresh-access', refreshToken: 'fresh-refresh', expires: 2_000, uid: 1 }),
+    resolveSelfVisible: async (_cookie, _uid, value) => value, cacheCover() {},
+    progress: patch => { position = { ...position, ...patch }; }, recordCount() {}, probe() {}, enqueue: () => false,
   });
   try {
-    await assert.rejects(scan.hot(authUser, 1, 'Favorites', false), BiliResponseFormatError);
+    await createSyncWorkflow({
+      users: () => [authUser], eligible: () => true, state, scan, scanPosition: () => position,
+      progress: patch => { position = { ...position, ...patch }; }, enterUser() {}, leaveUser() {}, random: () => 0, sleep: async () => {},
+    }).run(false, false);
     assert.equal(pageCalls, 2);
-    assert.equal(authUser.accessToken, 'new-access');
+    assert.equal(authUser.accessToken, 'fresh-access');
+    assert.equal(state.getUserCooldown(authUser.id), null);
+    assert.equal(messages.length, 1);
+    assert.match(messages[0], /phase=hot page=1 category=network code=ECONNRESET/);
+    assert.doesNotMatch(messages[0], /secret-value|expired login/);
+  } finally { state.close(); await removeTestDir(runtime); }
+});
+
+test('each scan request publishes its current page and display identity before waiting', async () => {
+  const runtime = await createTestDir('scan-request-progress');
+  const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'state.sqlite') });
+  const snapshots: Array<Partial<SchedulerSnapshot>> = [];
+  let requests = 0;
+  const scan = createFavoriteScan({
+    state, deletions: { folder: () => false, source: () => false },
+    users: { getById: () => user, updatePartial: () => user },
+    now: () => 1_000, random: () => 0, sleep: async () => {}, generation: () => 0, canRun: () => true,
+    listPage: async (_cookie, mediaId, page = 1, pageSize = 20) => {
+      requests++;
+      const current = snapshots.at(-1);
+      assert.equal(current?.userName, user.name);
+      assert.equal(current?.folderTitle, 'Favorites');
+      assert.equal(current?.mediaId, mediaId);
+      assert.equal(current?.page, page);
+      assert.equal(current?.pageSize, pageSize);
+      assert.match(current?.detail ?? '', new RegExp(`第 ${page} 页`));
+      return { items: [], page, pageSize, hasMore: false, total: 0 };
+    },
+    refreshAuth: async () => { throw new Error('unexpected refresh'); },
+    resolveSelfVisible: async (_cookie, _uid, value) => value, cacheCover() {},
+    progress: patch => { snapshots.push(patch); }, recordCount() {}, probe() {}, enqueue: () => false,
+  });
+  try {
+    await scan.all(user, 1, 'Favorites');
+    await scan.hot(user, 1, 'Favorites', false);
+    await scan.history(user, 1, 'Favorites', false);
+    assert.equal(requests, 3);
   } finally { state.close(); await removeTestDir(runtime); }
 });
 

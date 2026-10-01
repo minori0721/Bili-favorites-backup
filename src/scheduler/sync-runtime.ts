@@ -89,6 +89,7 @@ export function createSyncRuntime(dependencies: SyncRuntimeDependencies): SyncWo
     state: dependencies.state,
     scan: dependencies.scan,
     progress: patch => updateProgress(patch),
+    scanPosition: () => progress && ({ mediaId: progress.mediaId, page: progress.page }),
     enterUser: id => activeUsers.add(id),
     leaveUser: id => activeUsers.delete(id),
     random: dependencies.random,

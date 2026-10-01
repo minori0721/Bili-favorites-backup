@@ -47,3 +47,10 @@ export function safeErrorSummary(error: unknown, fallback = "操作失败") {
   const message = sanitizeDiagnosticText(rawMessage || fallback, 500);
   return Number.isFinite(status) && status > 0 ? `status=${status}: ${message}` : message;
 }
+
+/** Error codes are identifiers; reject arbitrary external text and credentials. */
+export function safeErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object' || !('code' in error)) return 'unknown';
+  return typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
+    ? error.code : 'unknown';
+}

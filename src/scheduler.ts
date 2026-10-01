@@ -83,6 +83,7 @@ export class SyncScheduler {
   getQualityUpgradeTargetKeys(...args: Parameters<SchedulerRuntime['getQualityUpgradeTargetKeys']>) { return this.runtime.getQualityUpgradeTargetKeys(...args); }
   getQualityUpgradeState(...args: Parameters<SchedulerRuntime['getQualityUpgradeState']>) { return this.runtime.getQualityUpgradeState(...args); }
   getQueueSnapshot(...args: Parameters<SchedulerRuntime['getQueueSnapshot']>) { return this.runtime.getQueueSnapshot(...args); }
+  getRuntimeResourceCounts() { return this.runtime.getRuntimeResourceCounts(); }
   tick(...args: Parameters<SchedulerRuntime['tick']>) { return this.runtime.tick(...args); }
   enqueueManualArchive(...args: Parameters<SchedulerRuntime['enqueueManualArchive']>) { return this.runtime.enqueueManualArchive(...args); }
 }

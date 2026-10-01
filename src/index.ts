@@ -89,6 +89,7 @@ import { closePlaybackDeliveryTracker } from './playback.js';
 import { previewDetailLimit } from './preview-options.js';
 import { createRemoteReplacementRunner } from "./remote-operations.js";
 import { createRenameService } from './rename-service.js';
+import { createRuntimeMemoryObservation } from './runtime-memory-observation.js';
 import { SyncScheduler } from "./scheduler.js";
 import type { SchedulerControl } from './ports/scheduler-control.js';
 import type { RecoveryPort, SyncControlPort } from './ports/task-control.js';
@@ -146,6 +147,15 @@ const favoriteFolderListCache = new FavoriteFolderListCache(
   },
 );
 const favoriteBrowsing = createFavoriteBrowsing({folders: favoriteFolderListCache, covers: favoriteFolderCover, users: userStore, load: listFavoriteFolders});
+const memoryObservation = createRuntimeMemoryObservation({
+  resources: () => ({
+    stateCache: stateManager.getLazyCacheStats(),
+    folders: favoriteFolderListCache.getResourceCounts(),
+    covers: onlineCoverCache.getResourceCounts(),
+    logs: logManager.getEntryCount(),
+    queues: scheduler.getRuntimeResourceCounts(),
+  }),
+});
 const mediaProbe = new MediaProbeService(
   configStore,
   undefined,
@@ -431,6 +441,7 @@ app.use(createRenameRouter({service: renameService, boundary: asyncHandler}));
 app.use(createHttpErrorHandler(message => console.error(message)));
 
 export async function closeAppResources() {
+  memoryObservation.stop();
   startupLifecycle.stop();
   const accountRefreshStopped = accountRefresh.stop(5_000);
   const accountLoginStopped = accountLogin.stop(5_000);
@@ -463,6 +474,7 @@ export { app };
 if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.PORT || 3000);
   const server = app.listen(port, () => {
+    memoryObservation.start();
     console.log(`Server listening on http://localhost:${port}`);
     for (const warning of collectSecurityConfigurationWarnings({
       adminPassword: adminPass,
@@ -478,6 +490,7 @@ if (process.env.NODE_ENV !== "test") {
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    memoryObservation.stop();
     console.log(`[Shutdown] ${signal}: stopping scheduler and active downloads`);
     startupLifecycle.stop();
     const accountRefreshStopped = accountRefresh.stop(20_000);

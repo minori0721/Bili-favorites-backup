@@ -99,6 +99,10 @@ export class LogManager extends EventEmitter {
     return [...this.entries];
   }
 
+  getEntryCount() {
+    return this.entries.length;
+  }
+
   reload() {
     this.entries = this.sanitizeEntries(readStoredLogEntries(this.filePath).entries);
     return this.getAll();

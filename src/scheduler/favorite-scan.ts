@@ -1,6 +1,6 @@
 import type { BiliUser, UserStore } from '../users.js';
 import type { StateManager, SourceAvailabilityReason } from '../state.js';
-import { BiliResponseFormatError, BiliRiskOrLoginError, type listFavoriteItemsPage, type refreshUserAuth, type resolveSelfVisibleFavoriteItem } from '../bili.js';
+import { BiliRiskOrLoginError, type listFavoriteItemsPage, type refreshUserAuth, type resolveSelfVisibleFavoriteItem } from '../bili.js';
 import type { queueCoverCache } from '../cover-cache.js';
 import { isAuthRefreshAttemptBlocked, nextAuthRefreshFailureState } from '../auth-refresh.js';
 import { safeErrorSummary } from '../diagnostics.js';
@@ -69,9 +69,10 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
         expiresAt: number;
         item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number];
     }>();
-    async function listFavoriteItemsPageWithAuthRetry(user: BiliUser, mediaId: number, page: number, pageSize: number) {
+    async function listFavoriteItemsPageWithAuthRetry(user: BiliUser, mediaId: number, page: number, pageSize: number, context: { folderTitle: string; detail: string }) {
         const assertCurrent = checkpoint();
         assertCurrent();
+        deps.progress({ userName: user.name, ...context, mediaId, page, pageSize });
         try {
             const result = await deps.listPage(user.cookie, mediaId, page, pageSize);
             assertCurrent();
@@ -105,40 +106,35 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 });
                 throw error;
             }
+            const updated = deps.users.updatePartial(user.id, {
+                cookie: refreshed.cookie,
+                rawAuth: refreshed.rawAuth,
+                accessToken: refreshed.accessToken || user.accessToken,
+                refreshToken: refreshed.refreshToken || user.refreshToken,
+                expires: refreshed.expires || user.expires,
+                lastAuthRefreshAt: new Date(deps.now()).toISOString(),
+                lastAuthRefreshError: "",
+                authRefreshFailureCategory: undefined,
+                authRefreshFailureAttempts: undefined,
+                authRefreshRetryAt: undefined,
+            });
+            if (!updated) {
+                throw new Error('Account no longer exists while saving refreshed authorization');
+            }
+            user.cookie = updated.cookie;
+            user.accessToken = updated.accessToken;
+            user.refreshToken = updated.refreshToken;
+            user.expires = updated.expires;
+            console.warn(`[Scheduler] Refreshed auth for ${user.name} after login/risk error; retrying page ${page}.`);
+            // Refresh succeeded: the retried request and persistence failures must
+            // keep their actual error, rather than revive the obsolete login error.
             try {
-                const updated = deps.users.updatePartial(user.id, {
-                    cookie: refreshed.cookie,
-                    rawAuth: refreshed.rawAuth,
-                    accessToken: refreshed.accessToken || user.accessToken,
-                    refreshToken: refreshed.refreshToken || user.refreshToken,
-                    expires: refreshed.expires || user.expires,
-                    lastAuthRefreshAt: new Date(deps.now()).toISOString(),
-                    lastAuthRefreshError: "",
-                    authRefreshFailureCategory: undefined,
-                    authRefreshFailureAttempts: undefined,
-                    authRefreshRetryAt: undefined,
-                });
-                if (!updated) {
-                    throw error;
-                }
-                user.cookie = updated.cookie;
-                user.accessToken = updated.accessToken;
-                user.refreshToken = updated.refreshToken;
-                user.expires = updated.expires;
-                console.warn(`[Scheduler] Refreshed auth for ${user.name} after login/risk error; retrying page ${page}.`);
                 const result = await deps.listPage(user.cookie, mediaId, page, pageSize);
                 assertCurrent();
                 return result;
-            }
-            catch (retryError: unknown) {
-                // A refreshed token can still be rejected by the specific page request;
-                // let the normal Bilibili risk/login cooldown handle that without
-                // falsely recording a token-refresh failure.
-                if (retryError instanceof BiliRiskOrLoginError)
-                    throw retryError;
-                if (retryError instanceof BiliResponseFormatError)
-                    throw retryError;
-                throw error;
+            } catch (retryError) {
+                assertCurrent();
+                throw retryError;
             }
         }
     }
@@ -208,7 +204,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             lastHistoryScanAt: scanStartedAt,
         });
         while (true) {
-            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在全量扫描第 ${page} 页。` });
             assertCurrent();
             lastTotal = result.total;
             deps.progress({
@@ -269,7 +265,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
         const maxPages = manual ? 40 : hotScanMaxPages;
         let lastPage = 0;
         for (let page = 1; page <= maxPages; page += 1) {
-            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在扫描近期第 ${page} 页。` });
             assertCurrent();
             deps.progress({
                 userName: user.name,
@@ -330,7 +326,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             ? historyPagesPerTick
             : (manual ? manualHistoryPagesPerTick : initialHistoryPagesPerTick);
         for (let i = 0; i < pagesThisRun; i += 1) {
-            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20);
+            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在补扫历史第 ${page} 页。` });
             assertCurrent();
             deps.progress({
                 userName: user.name,

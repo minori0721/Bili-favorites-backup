@@ -23,6 +23,16 @@ async function fixture(adapters: OnlineCoverAdapters = {}) {
   return {cache, root, directory, close: () => removeTestDir(root)};
 }
 
+test('resource counts do not initialize or scan the cover directory', async () => {
+  let downloads = 0;
+  const f = await fixture({ download: async () => { downloads++; } });
+  try {
+    assert.deepEqual(f.cache.getResourceCounts(), { entries: 0, requests: 0, promotions: 0, waitingFetches: 0 });
+    assert.equal(downloads, 0);
+    await assert.rejects(fs.access(f.directory), { code: 'ENOENT' });
+  } finally { await f.close(); }
+});
+
 test('cleanup failure releases cover download slots', async () => {
   let downloads = 0;
   const f = await fixture({

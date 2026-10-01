@@ -80,6 +80,10 @@ export class FavoriteFolderListCache {
     this.entries.clear();
   }
 
+  getResourceCounts() {
+    return { entries: this.entries.size, requests: this.active.size, generations: this.generations.size };
+  }
+
   private store(user: BiliUser, folders: FavoriteFolderInfo[]) {
     const data = folders.map((folder) => ({ ...folder }));
     this.entries.delete(user.id);

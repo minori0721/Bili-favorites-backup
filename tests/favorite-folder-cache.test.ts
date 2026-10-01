@@ -19,6 +19,23 @@ function folder(mediaId: number, cover?: string) {
   return { mediaId, title: `收藏夹${mediaId}`, mediaCount: mediaId, cover };
 }
 
+test('resource counts are passive snapshots of the cache and its in-flight request', async () => {
+  let calls = 0;
+  let release!: (value: ReturnType<typeof folder>[]) => void;
+  const result = new Promise<ReturnType<typeof folder>[]>(resolve => { release = resolve; });
+  const cache = new FavoriteFolderListCache(async () => { calls++; return result; });
+  assert.deepEqual(cache.getResourceCounts(), { entries: 0, requests: 0, generations: 0 });
+  assert.equal(calls, 0);
+  const pending = cache.get(user());
+  assert.deepEqual(cache.getResourceCounts(), { entries: 0, requests: 1, generations: 0 });
+  assert.equal(calls, 1);
+  release([folder(1)]);
+  await pending;
+  assert.deepEqual(cache.getResourceCounts(), { entries: 1, requests: 0, generations: 0 });
+  cache.clear();
+  assert.deepEqual(cache.getResourceCounts(), { entries: 0, requests: 0, generations: 1 });
+});
+
 test("收藏夹列表短缓存合并并发请求且不影响选中状态合并", async () => {
   let calls = 0;
   const cache = new FavoriteFolderListCache(async () => {

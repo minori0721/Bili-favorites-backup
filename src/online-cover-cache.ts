@@ -245,6 +245,15 @@ export class OnlineCoverCache {
     return { bytes: this.totalBytes, files: this.entries.size, limitBytes: this.limitBytes };
   }
 
+  getResourceCounts() {
+    return {
+      entries: this.entries.size,
+      requests: this.active.size,
+      promotions: this.activePromotions.size,
+      waitingFetches: this.fetchWaiters.length,
+    };
+  }
+
   private async fetchAndStore(key: string, url: string) {
     await this.initialize();
     await this.acquireFetchSlot();

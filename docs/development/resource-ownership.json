@@ -1,6 +1,14 @@
 {
   "resources": [
     {
+      "module": "runtime-memory-observation.ts",
+      "ownerSymbol": "createRuntimeMemoryObservation",
+      "resourceSymbols": ["cancelTimer", "generation", "previousHeapUsed"],
+      "stop": "application shutdown stops the five-minute timer before draining background work; duplicate starts and stops are idempotent",
+      "lateCallback": "timer generation rejects callbacks delivered after cancellation or replacement",
+      "rebind": "snapshots read only current in-memory counters through callbacks; no database connection or cache snapshot is retained"
+    },
+    {
       "module": "scheduler/access-probe-workflow.ts",
       "ownerSymbol": "createAccessProbeWorkflow",
       "resourceSymbols": [

@@ -1369,6 +1369,14 @@ export class SchedulerRuntime implements SchedulerControl {
     return this.statusProjection.getQueueSnapshot();
   }
 
+  getRuntimeResourceCounts() {
+    return {
+      download: this.downloadQueue.getTaskCount(),
+      upload: this.uploadQueue.getTaskCount(),
+      verification: this.verificationQueue.getTaskCount(),
+    };
+  }
+
   async tick(manual = false, options: TickOptions = {}) {
     return this.syncWorkflow.run(manual, options);
   }
