@@ -118,7 +118,7 @@
         "localCleanupRetries"
       ],
       "stop": "stop cancels the retry timer; per-video-and-directory work drains before rebind; persistent cleanup plans survive failures and restart",
-      "lateCallback": "generation, completed transfer or resolved candidate identity, active references, manifest stamp and file identity are rechecked before deletion and reconciliation",
+      "lateCallback": "generation, completed transfer or resolved candidate identity, active references, manifest stamp and file identity are rechecked before deletion and reconciliation; missing-directory completion rechecks the root and plan snapshot before atomic reference cleanup",
       "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
     },
     {

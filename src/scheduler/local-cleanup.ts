@@ -14,6 +14,7 @@ import { computeLocalCleanupRetryDelayMs } from './retry-policy.js';
 import { isRecord } from '../shared/api/value.js';
 import type { ScheduleTimer } from '../ports/timer.js';
 import { cleanupRecoveryReplacement } from './recovery-replacement-cleanup.js';
+import { inspectLocalCleanupDirectory, sameCleanupRoot, type CleanupRootIdentity } from './local-cleanup-directory.js';
 
 function readCleanupManifest(localDir: string) {
     const session = readDownloadSession(localDir);
@@ -32,7 +33,7 @@ interface LocalCleanupDependencies {
     config: {
         get(): AppConfig;
     };
-    state: Pick<StateManager, 'getLocalCleanupPlans' | 'listVerifiedLocalCleanupPage' | 'listRelationsForBvid' | 'getVideoMeta' | 'reconcileLocalCleanupPlans' | 'markLocalUploadGroupComplete'>;
+    state: Pick<StateManager, 'getLocalCleanupPlans' | 'listVerifiedLocalCleanupPage' | 'listRelationsForBvid' | 'getVideoMeta' | 'reconcileLocalCleanupPlans' | 'markLocalUploadGroupComplete' | 'finishLocalCleanupDirectory'>;
     storage: ReturnType<typeof createLocalCleanupStorage>;
     jobs: Pick<JobRepository, 'hasActiveJobsForBvid'>;
     transfers: Pick<TransferSessionRepository, 'get' | 'hasActiveForBvid'>;
@@ -41,6 +42,7 @@ interface LocalCleanupDependencies {
     safeCandidate(path: string): boolean;
     refreshCapacity(force: boolean): void;
     cleanupFiles?: typeof cleanupUploadedSessionFiles;
+    inspectDirectory?: typeof inspectLocalCleanupDirectory;
 }
 /** Owns cleanup work, retry scheduling and authorization checks. Stores are rebound by the maintenance barrier. */
 export function createLocalCleanup(deps: LocalCleanupDependencies) {
@@ -103,7 +105,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         });
     }
     function startLocalCleanupSweep() {
-        if (localCleanupSweepPromise || !deps.canRun() || !deps.canRun())
+        if (localCleanupSweepPromise || !deps.canRun())
             return;
         localCleanupSweepPromise = (async () => {
             let cursor: import("../database.js").VerifiedLocalCleanupCursor | null = null;
@@ -160,6 +162,32 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         const session = deps.transfers.get(plan.transferSessionId);
         return Boolean(session && session.generation === plan.transferGeneration && session.phase === "completed");
     }
+    function inspectDirectory(localDir: string) {
+        try {
+            return (deps.inspectDirectory || inspectLocalCleanupDirectory)(deps.tempRoot, localDir);
+        } catch (error) {
+            throw Object.assign(new Error(`Local cleanup inspection failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
+        }
+    }
+    function finishMissingDirectory(bvid: string, localDir: string, plans: LocalCleanupPlan[], root: CleanupRootIdentity, generation: number) {
+        if (!deps.canRun() || generation !== deps.generation()
+            || deps.jobs.hasActiveJobsForBvid(bvid) || deps.transfers.hasActiveForBvid(bvid)
+            || !plans.every(plan => cleanupGenerationIsCurrent(plan, bvid))) return false;
+        const confirmation = inspectDirectory(localDir);
+        if (confirmation.kind === 'unsafe') return false;
+        if (!sameCleanupRoot(root, confirmation.root)) throw Object.assign(new Error('Local cleanup root changed before commit'), { localCleanupRetryable: true });
+        if (confirmation.kind !== 'missing' || !deps.canRun() || generation !== deps.generation()
+            || deps.jobs.hasActiveJobsForBvid(bvid) || deps.transfers.hasActiveForBvid(bvid)
+            || !plans.every(plan => cleanupGenerationIsCurrent(plan, bvid))) return false;
+        let finished: boolean;
+        try {
+            finished = deps.state.finishLocalCleanupDirectory(bvid, localDir, plans);
+        } catch (error) {
+            throw Object.assign(new Error(`Local cleanup finalization failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
+        }
+        if (finished) deps.refreshCapacity(true);
+        return finished;
+    }
     async function performVerifiedLocalCleanup(bvid: string, localDir: string) {
         const generation = deps.generation();
         if (!deps.canRun() || !localDir)
@@ -167,6 +195,12 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         const cleanupPlans = deps.state.getLocalCleanupPlans(bvid, localDir);
         if (cleanupPlans.length === 0) return;
         if (deps.jobs.hasActiveJobsForBvid(bvid) || deps.transfers.hasActiveForBvid(bvid)) throw localCleanupRetryableError();
+        const directory = inspectDirectory(localDir);
+        if (directory.kind === 'unsafe') return;
+        if (directory.kind === 'missing') {
+            finishMissingDirectory(bvid, localDir, cleanupPlans, directory.root, generation);
+            return;
+        }
         const replacementPlans = cleanupPlans.filter(plan => plan.reason === 'recovery_replaced');
         if (replacementPlans.length) {
             const proofFiles = () => [...(deps.storage.video(bvid)?.remoteFiles || []),
@@ -188,6 +222,13 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                 }
             }
             if (!deps.canRun() || generation !== deps.generation()) return;
+            const after = inspectDirectory(localDir);
+            if (after.kind === 'unsafe') return;
+            if (!sameCleanupRoot(directory.root, after.root)) throw Object.assign(new Error('Local cleanup root changed before reconciliation'), { localCleanupRetryable: true });
+            if (after.kind === 'missing') {
+                finishMissingDirectory(bvid, localDir, cleanupPlans, directory.root, generation);
+                return;
+            }
             const remainingPaths = [...new Set(cleanupPlans.flatMap(plan => plan.files.map(file => file.relativePath)))].filter(relative => {
                 try { fs.lstatSync(path.join(localDir, relative)); return true; }
                 catch (error) {
@@ -195,7 +236,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                     throw Object.assign(new Error(`Recovery cleanup reconciliation failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
                 }
             });
-            deps.state.reconcileLocalCleanupPlans(bvid, localDir, remainingPaths, !fs.existsSync(localDir));
+            deps.state.reconcileLocalCleanupPlans(bvid, localDir, remainingPaths, false);
             deps.refreshCapacity(true);
             return;
         }
@@ -211,26 +252,6 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         const relations = deps.state.listRelationsForBvid(bvid);
         if (relations.length === 0 || relations.some((relation) => !["verified", "partial_verified"].includes(relation.backupStatus || "")))
             return;
-        const tempRoot = path.resolve(deps.tempRoot);
-        const candidateDir = path.resolve(localDir);
-        if (candidateDir === tempRoot || !candidateDir.startsWith(`${tempRoot}${path.sep}`) || path.basename(candidateDir) !== bvid)
-            return;
-        let localStat: fs.Stats;
-        try {
-            localStat = await fs.promises.lstat(candidateDir);
-            if (!localStat.isDirectory() || localStat.isSymbolicLink())
-                return;
-            const [realRoot, realCandidate] = await Promise.all([
-                fs.promises.realpath(tempRoot),
-                fs.promises.realpath(candidateDir),
-            ]);
-            if (realCandidate === realRoot || !realCandidate.startsWith(`${realRoot}${path.sep}`))
-                return;
-        }
-        catch (error) {
-            if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
-            throw Object.assign(new Error(`Local cleanup inspection failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
-        }
         const manifest = readCleanupManifest(localDir);
         if (!manifest || manifest.bvid !== bvid || !["complete", "partial"].includes(manifest.status))
             return;
@@ -646,38 +667,56 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         const generation = deps.generation();
         const current = () => deps.canRun() && generation === deps.generation();
         try {
+            const directory = inspectDirectory(downloadDir);
+            if (directory.kind === 'unsafe' || !current()) return;
+            const plans = new Map([...bvids].map(bvid => [bvid, deps.state.getLocalCleanupPlans(bvid, downloadDir)]));
+            if (directory.kind === 'missing') {
+                for (const [bvid, expected] of plans) if (expected.length) finishMissingDirectory(bvid, downloadDir, expected, directory.root, generation);
+                return;
+            }
             const result = await (deps.cleanupFiles || cleanupUploadedSessionFiles)(downloadDir, {
                 ...options, canDelete: () => current() && (options.canDelete?.() ?? false),
             });
             if (!current())
                 return;
+            if (result.removedDirectory) {
+                for (const [bvid, expected] of plans) {
+                    if (expected.length) finishMissingDirectory(bvid, downloadDir, expected, directory.root, generation);
+                    else {
+                        const confirmation = inspectDirectory(downloadDir);
+                        if (confirmation.kind === 'unsafe') continue;
+                        if (!sameCleanupRoot(directory.root, confirmation.root)) throw Object.assign(new Error('Local cleanup root changed before explicit release completion'), { localCleanupRetryable: true });
+                        if (confirmation.kind === 'missing' && current() && options.canDelete?.()
+                            && deps.state.getLocalCleanupPlans(bvid, downloadDir).length === 0) deps.state.markLocalUploadGroupComplete(bvid, downloadDir);
+                    }
+                }
+                return;
+            }
             const remainingManifest = readCleanupManifest(downloadDir);
             const remainingPaths = remainingManifest
                 ? [...remainingManifest.outputs, ...(remainingManifest.history || [])].map((file) => file.relativePath)
                 : [];
-            if (remainingManifest || result.removedDirectory) {
+            if (remainingManifest) {
                 for (const bvid of bvids) {
-                    deps.state.reconcileLocalCleanupPlans(bvid, downloadDir, remainingPaths, result.removedDirectory);
+                    deps.state.reconcileLocalCleanupPlans(bvid, downloadDir, remainingPaths, false);
                 }
             }
-            if (result.removedDirectory || (remainingManifest
+            if (remainingManifest
                 && remainingManifest.outputs.length === 0
-                && (remainingManifest.history || []).length === 0)) {
+                && (remainingManifest.history || []).length === 0) {
                 for (const bvid of bvids) {
                     deps.state.markLocalUploadGroupComplete(bvid, downloadDir);
                 }
             }
-            if (!result.removedDirectory) {
-                logManager.push({
-                    timestamp: new Date().toISOString(),
-                    type: "system",
-                    level: "warn",
-                    summary: `本地文件已保留，未授权清理的文件不会自动删除`,
-                    raw: `[DownloadRecovery] retained ${result.retainedBytes} bytes in ${downloadDir}`,
-                    simpleVisible: true,
-                    debugVisible: true,
-                });
-            }
+            logManager.push({
+                timestamp: new Date().toISOString(),
+                type: "system",
+                level: "warn",
+                summary: `本地文件已保留，未授权清理的文件不会自动删除`,
+                raw: `[DownloadRecovery] retained ${result.retainedBytes} bytes in ${downloadDir}`,
+                simpleVisible: true,
+                debugVisible: true,
+            });
         }
         catch (error: unknown) {
             throw Object.assign(new Error(`Local cleanup failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });

@@ -9,6 +9,7 @@ import { writeJsonFile } from "../src/storage.js";
 import { cleanupUploadedSessionFiles, readDownloadSession as readDownloadSessionResult, writeDownloadSession } from "../src/download-session.js";
 import { SyncScheduler } from "../src/scheduler.js";
 import { createLocalCleanup } from '../src/scheduler/local-cleanup.js';
+import { inspectLocalCleanupDirectory } from '../src/scheduler/local-cleanup-directory.js';
 import type { inspectRemoteFileSize } from '../src/uploader.js';
 import { StateManager, type RemoteFileRecord } from "../src/state.js";
 import { PersistentJobStore } from "../src/job-store.js";
@@ -76,6 +77,7 @@ function seedVerifiedState(state: StateManager, bvid: string, localDir: string, 
         biliStatus: "available" as const,
         backupStatus: "verified" as const,
         localDir,
+        downloadSession: { id: `${bvid}-session`, localDir, kind: 'backup', status: 'complete', completedPages: remoteFiles.length, totalPages: remoteFiles.length, updatedAt: now },
         remotePath: "/archive",
         remoteFiles,
       },
@@ -118,6 +120,7 @@ function seedVerifiedState(state: StateManager, bvid: string, localDir: string, 
     }),
     }, job.id);
     jobs.complete(job.id);
+    return job.id;
   }
 }
 
@@ -153,20 +156,22 @@ function makeScheduler(
   );
 }
 
-function makeCleanup(state: StateManager, tempRoot: string, inspectRemote: typeof inspectRemoteFileSize) {
+function makeCleanup(state: StateManager, tempRoot: string, inspectRemote: typeof inspectRemoteFileSize,
+  options: { inspectDirectory?: typeof inspectLocalCleanupDirectory; now?: () => number } = {}) {
   let enabled = true;
   let generation = 0;
   const jobStore = new PersistentJobStore(state.getDatabase());
   const service = createLocalCleanup({
     storage: createLocalCleanupStorage(state),
     state, jobs: jobStore, transfers: new TransferSessionStore(state.getDatabase()), tempRoot,
-    config: { get: () => testConfig({ pollIntervalMinutes: 60 }) }, now: Date.now,
+    config: { get: () => testConfig({ pollIntervalMinutes: 60 }) }, now: options.now || Date.now,
     canRun: () => enabled, generation: () => generation, inspectRemote,
     safeCandidate: value => {
       const candidate = path.resolve(value);
       return candidate.startsWith(path.resolve(tempRoot) + path.sep) && !fs.lstatSync(candidate).isSymbolicLink();
     },
     refreshCapacity() {},
+    inspectDirectory: options.inspectDirectory,
   });
   return { ...service, jobStore, now: Date.now,
     get busy() { return service.busy; },
@@ -175,6 +180,220 @@ function makeCleanup(state: StateManager, tempRoot: string, inspectRemote: typeo
     stop() { enabled = false; service.stop(); },
   };
 }
+
+async function missingCleanupFixture(name: string, nested = false) {
+  const runtime = await createTestDir(`cleanup-missing-${name}`);
+  const tempRoot = path.join(runtime, 'temp'), bvid = 'BVLOCALMISSING';
+  const localDir = nested ? path.join(tempRoot, bvid, 'attempt') : path.join(tempRoot, bvid);
+  const options = { statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'bfb.sqlite') };
+  let state = new StateManager(options), remoteCalls = 0;
+  await fs.promises.mkdir(localDir, { recursive: true });
+  await fs.promises.writeFile(path.join(localDir, 'video.mp4'), 'hello');
+  writeManifest(localDir, bvid, [{ relativePath: 'video.mp4', size: 5 }]);
+  const jobId = required(seedVerifiedState(state, bvid, localDir, [{ name: 'video.mp4', path: '/archive/video.mp4', size: 5,
+    localRelativePath: 'video.mp4', verificationStatus: 'verified' }]));
+  const before = required(state.getVideoForLocalCleanup(bvid));
+  await fs.promises.rm(localDir, { recursive: true });
+  return {
+    runtime, tempRoot, bvid, localDir, before, jobId,
+    get state() { return state; }, get remoteCalls() { return remoteCalls; },
+    reopen() { state.close(); state = new StateManager(options); },
+    cleanup(settings: Parameters<typeof makeCleanup>[3] = {}) {
+      return makeCleanup(state, tempRoot, async () => { remoteCalls++; return { status: 'verified', remoteSize: 5 }; }, settings);
+    },
+    async close() { state.close(); await removeTestDir(runtime); },
+  };
+}
+
+test('missing-directory startup cleanup atomically settles old plans and references after SQLite reopen without remote requests', async () => {
+  const f = await missingCleanupFixture('restart'); f.reopen();
+  const cleanup = f.cleanup();
+  try {
+    cleanup.startSweep(); await waitForCondition(() => !cleanup.busy);
+    assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 0);
+    assert.equal(cleanup.jobStore.findById(f.jobId), null);
+    const video = required(f.state.getVideoForLocalCleanup(f.bvid));
+    assert.equal(video.localDir, undefined); assert.equal(video.downloadSession, undefined);
+    assert.equal(video.backupStatus, f.before.backupStatus); assert.deepEqual(video.remoteFiles, f.before.remoteFiles);
+    await cleanup.perform(f.bvid, f.localDir); assert.equal(f.remoteCalls, 0);
+    f.reopen(); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 0);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, undefined);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('a missing nested attempt directory uses the same completion path', async () => {
+  const f = await missingCleanupFixture('nested', true), cleanup = f.cleanup();
+  try {
+    await cleanup.perform(f.bvid, f.localDir);
+    assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 0);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).downloadSession, undefined);
+    assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('an unavailable temporary root retains the plan and retries instead of treating all children as removed', async () => {
+  const f = await missingCleanupFixture('root'); let now = Date.now();
+  const cleanup = f.cleanup({ now: () => now });
+  try {
+    await fs.promises.rm(f.tempRoot, { recursive: true }); await cleanup.request(f.bvid, f.localDir);
+    assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1); assert.ok(cleanup.retryState(f.bvid));
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, f.localDir);
+    await fs.promises.mkdir(f.tempRoot); now += 60_001; await cleanup.request(f.bvid, f.localDir);
+    assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 0); assert.equal(cleanup.retryState(f.bvid), undefined);
+    assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+for (const code of ['EACCES', 'EPERM', 'EIO']) {
+  test(`directory inspection ${code} remains observable and retryable without consuming proof or plans`, async () => {
+    const f = await missingCleanupFixture(code); let failing = true, now = Date.now();
+    const cleanup = f.cleanup({ now: () => now, inspectDirectory(root, dir) {
+      if (failing) throw Object.assign(new Error(`injected ${code}`), { code });
+      return inspectLocalCleanupDirectory(root, dir);
+    } });
+    try {
+      await cleanup.request(f.bvid, f.localDir); assert.ok(cleanup.retryState(f.bvid));
+      assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1);
+      assert.deepEqual(required(f.state.getVideoForLocalCleanup(f.bvid)).remoteFiles, f.before.remoteFiles);
+      failing = false; now += 60_001; await cleanup.request(f.bvid, f.localDir);
+      assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 0); assert.equal(f.remoteCalls, 0);
+    } finally { cleanup.stop(); await f.close(); }
+  });
+}
+
+test('a directory recreated between the missing checks is preserved with its cleanup plan', async () => {
+  const f = await missingCleanupFixture('recreated'); let inspections = 0;
+  const cleanup = f.cleanup({ inspectDirectory(root, dir) {
+    inspections++;
+    if (inspections === 2) { fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'new.mp4'), 'new attempt'); }
+    return inspectLocalCleanupDirectory(root, dir);
+  } });
+  try {
+    await cleanup.perform(f.bvid, f.localDir); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1);
+    assert.equal(fs.readFileSync(path.join(f.localDir, 'new.mp4'), 'utf8'), 'new attempt'); assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+for (const interruption of ['stop', 'generation', 'job', 'transfer', 'transfer-generation'] as const) {
+  test(`missing-directory completion rejects an intervening ${interruption}`, async () => {
+    const f = await missingCleanupFixture(interruption); let inspected = false;
+    const cleanup = f.cleanup({ inspectDirectory(root, dir) {
+      const result = inspectLocalCleanupDirectory(root, dir);
+      if (!inspected) {
+        inspected = true;
+        if (interruption === 'stop') cleanup.setAdmission(false);
+        if (interruption === 'generation') cleanup.invalidate();
+        if (interruption === 'job') cleanup.jobStore.enqueue({ kind: 'download', bvid: f.bvid, dedupeKey: 'new-download' });
+        const transfers = new TransferSessionStore(f.state.getDatabase());
+        if (interruption === 'transfer') transfers.ensurePrepared({ dedupeKey: 'new-transfer', bvid: f.bvid, localDir: f.localDir, remotePath: '/new' }, [{ relativePath: 'new.mp4', name: 'new.mp4', expectedSize: 5 }]);
+        if (interruption === 'transfer-generation') {
+          const plan = required(f.state.getLocalCleanupPlans(f.bvid)[0]);
+          const previous = required(transfers.get(required(plan.transferSessionId)));
+          const advanced = transfers.ensurePrepared({ dedupeKey: previous.dedupeKey, bvid: f.bvid, localDir: f.localDir, remotePath: '/archive' },
+            [{ relativePath: 'video.mp4', name: 'video.mp4', expectedSize: 5 }]);
+          transfers.updateSession(advanced.id, { phase: 'completed' }, advanced.generation);
+        }
+      }
+      return result;
+    } });
+    try {
+      await cleanup.perform(f.bvid, f.localDir); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1);
+      assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, f.localDir); assert.equal(f.remoteCalls, 0);
+    } finally { cleanup.stop(); await f.close(); }
+  });
+}
+
+test('changing a checked plan snapshot blocks missing-directory completion', async () => {
+  const f = await missingCleanupFixture('new-plan'); let inspected = false;
+  const cleanup = f.cleanup({ inspectDirectory(root, dir) {
+    const result = inspectLocalCleanupDirectory(root, dir);
+    if (!inspected) {
+      inspected = true;
+      const original = required(f.state.getLocalCleanupPlans(f.bvid)[0]);
+      const jobs = new PersistentJobStore(f.state.getDatabase()), job = required(jobs.findById(f.jobId));
+      f.state.recordLocalCleanupPlan(f.bvid, { ...original, id: 'new-plan', manifestSessionId: 'new-session' }, job.id);
+    }
+    return result;
+  } });
+  try {
+    await cleanup.perform(f.bvid, f.localDir); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 2);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, f.localDir); assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('a root replaced between the missing checks keeps the plan and schedules retry', async () => {
+  const f = await missingCleanupFixture('root-replaced'); let inspections = 0;
+  const cleanup = f.cleanup({ inspectDirectory(root, dir) {
+    inspections++;
+    if (inspections === 2) { fs.renameSync(root, `${root}-old`); fs.mkdirSync(root); }
+    return inspectLocalCleanupDirectory(root, dir);
+  } });
+  try {
+    await cleanup.request(f.bvid, f.localDir); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1);
+    assert.ok(cleanup.retryState(f.bvid)); assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, f.localDir);
+    assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('a new download session reference is not cleared by an old missing-directory plan', async () => {
+  const f = await missingCleanupFixture('new-session');
+  const session = required(f.before.downloadSession);
+  f.state.markDownloadPrepared(f.bvid, f.localDir, { ...session, id: 'new-session', status: 'downloading' });
+  const cleanup = f.cleanup();
+  try {
+    await cleanup.perform(f.bvid, f.localDir); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).downloadSession?.id, 'new-session'); assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('missing-directory completion leaves another directory plan and a newer directory reference intact', async () => {
+  const f = await missingCleanupFixture('another-directory');
+  const other = path.join(f.tempRoot, 'another-attempt'); await fs.promises.mkdir(other);
+  await fs.promises.writeFile(path.join(other, 'new.mp4'), 'keep');
+  const original = required(f.state.getLocalCleanupPlans(f.bvid)[0]);
+  const jobs = new PersistentJobStore(f.state.getDatabase()), job = required(jobs.findById(f.jobId));
+  f.state.recordLocalCleanupPlan(f.bvid, { ...original, id: 'other-plan', localDir: other, manifestSessionId: 'new-session' }, job.id);
+  f.state.markDownloadPrepared(f.bvid, other, { ...required(f.before.downloadSession), id: 'new-session', localDir: other });
+  const cleanup = f.cleanup();
+  try {
+    await cleanup.perform(f.bvid, f.localDir);
+    assert.equal(f.state.getLocalCleanupPlans(f.bvid, f.localDir).length, 0); assert.equal(f.state.getLocalCleanupPlans(f.bvid, other).length, 1);
+    assert.equal(required(jobs.findById(f.jobId)).status, 'completed'); assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, other);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).downloadSession?.id, 'new-session');
+    assert.equal(fs.readFileSync(path.join(other, 'new.mp4'), 'utf8'), 'keep'); assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('a cleanup commit failure rolls back plan deletion and local references, then retries the transaction', async () => {
+  const f = await missingCleanupFixture('rollback'); let now = Date.now();
+  const cleanup = f.cleanup({ now: () => now });
+  try {
+    f.state.getDatabase().db.exec("CREATE TRIGGER reject_cleanup_reference BEFORE UPDATE OF local_dir ON videos WHEN NEW.local_dir IS NULL BEGIN SELECT RAISE(ABORT, 'injected cleanup commit failure'); END");
+    await cleanup.request(f.bvid, f.localDir);
+    assert.ok(cleanup.retryState(f.bvid)); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 1);
+    assert.equal(required(cleanup.jobStore.findById(f.jobId)).status, 'completed');
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, f.localDir);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).downloadSession?.id, f.before.downloadSession?.id);
+    f.state.getDatabase().db.exec('DROP TRIGGER reject_cleanup_reference'); now += 60_001;
+    await cleanup.request(f.bvid, f.localDir); assert.equal(f.state.getLocalCleanupPlans(f.bvid).length, 0);
+    assert.equal(required(f.state.getVideoForLocalCleanup(f.bvid)).localDir, undefined); assert.equal(f.remoteCalls, 0);
+  } finally { cleanup.stop(); await f.close(); }
+});
+
+test('directory inspection rejects escaped paths and symlink ancestors and distinguishes a missing root', async (t) => {
+  const runtime = await createTestDir('cleanup-directory-paths'), root = path.join(runtime, 'temp');
+  try {
+    await fs.promises.mkdir(root);
+    assert.equal(inspectLocalCleanupDirectory(root, path.join(runtime, 'outside')).kind, 'unsafe');
+    assert.equal(inspectLocalCleanupDirectory(root, root).kind, 'unsafe');
+    assert.equal(inspectLocalCleanupDirectory(root, path.join(root, 'missing', 'child')).kind, 'missing');
+    assert.throws(() => inspectLocalCleanupDirectory(path.join(runtime, 'missing-root'), path.join(runtime, 'missing-root', 'child')), /ENOENT/);
+    const target = path.join(runtime, 'target'), link = path.join(root, 'linked'); await fs.promises.mkdir(target);
+    try { await fs.promises.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir'); }
+    catch (error) { if (error instanceof Error && 'code' in error && ['EPERM', 'EACCES'].includes(String(error.code))) { t.skip('Creating test links is unavailable'); return; } throw error; }
+    assert.equal(inspectLocalCleanupDirectory(root, path.join(link, 'missing')).kind, 'unsafe');
+  } finally { await removeTestDir(runtime); }
+});
 
 test("startup cleanup verifies remote proof before removing a completed local session", async () => {
   const runtime = await createTestDir("local-cleanup-startup");
@@ -201,11 +420,37 @@ test("startup cleanup verifies remote proof before removing a completed local se
     const row = state.getDatabase().db.prepare<[string], { local_dir: string | null }>("SELECT local_dir FROM videos WHERE bvid=?").get("BVLOCALCLEAN");
     assert.ok(row);
     assert.equal(row.local_dir, null);
+    const video = required(state.getVideoForLocalCleanup('BVLOCALCLEAN'));
+    assert.equal(video.downloadSession, undefined);
+    assert.equal(video.backupStatus, 'verified');
+    assert.deepEqual(video.remoteFiles, remoteFiles);
   } finally {
     cleanup.stop();
     state.close();
     await removeTestDir(runtime);
   }
+});
+
+test('a commit failure after authorized deletion retries only local bookkeeping without another remote request', async () => {
+  const runtime = await createTestDir('cleanup-deleted-commit-failure');
+  const tempRoot = path.join(runtime, 'temp'), bvid = 'BVLOCALCOMMIT', localDir = path.join(tempRoot, bvid);
+  const state = new StateManager({ statePath: path.join(runtime, 'state.json'), dbPath: path.join(runtime, 'bfb.sqlite') });
+  let now = Date.now(), inspections = 0;
+  const cleanup = makeCleanup(state, tempRoot, async () => { inspections++; return { status: 'verified', remoteSize: 5 }; }, { now: () => now });
+  try {
+    await fs.promises.mkdir(localDir, { recursive: true }); await fs.promises.writeFile(path.join(localDir, 'video.mp4'), 'hello');
+    writeManifest(localDir, bvid, [{ relativePath: 'video.mp4', size: 5 }]);
+    seedVerifiedState(state, bvid, localDir, [{ name: 'video.mp4', path: '/archive/video.mp4', size: 5, localRelativePath: 'video.mp4', verificationStatus: 'verified' }]);
+    state.getDatabase().db.exec("CREATE TRIGGER reject_cleanup_reference BEFORE UPDATE OF local_dir ON videos WHEN NEW.local_dir IS NULL BEGIN SELECT RAISE(ABORT, 'injected cleanup commit failure'); END");
+    await cleanup.request(bvid, localDir);
+    assert.equal(fs.existsSync(localDir), false); assert.equal(inspections, 1); assert.ok(cleanup.retryState(bvid));
+    assert.equal(state.getLocalCleanupPlans(bvid).length, 1); assert.equal(required(state.getVideoForLocalCleanup(bvid)).localDir, localDir);
+    state.getDatabase().db.exec('DROP TRIGGER reject_cleanup_reference'); now += 60_001;
+    await cleanup.request(bvid, localDir);
+    assert.equal(state.getLocalCleanupPlans(bvid).length, 0); assert.equal(cleanup.retryState(bvid), undefined);
+    assert.equal(required(state.getVideoForLocalCleanup(bvid)).localDir, undefined);
+    assert.equal(required(state.getVideoForLocalCleanup(bvid)).downloadSession, undefined); assert.equal(inspections, 1);
+  } finally { cleanup.stop(); state.close(); await removeTestDir(runtime); }
 });
 
 test("cleanup plans survive SQLite reopen and are removed only after authorized files are gone", async () => {

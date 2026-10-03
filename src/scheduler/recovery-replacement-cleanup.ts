@@ -4,6 +4,7 @@ import type { LocalCleanupPlan, RemoteFileRecord } from '../state.js';
 import { DOWNLOAD_SESSION_FILE, DOWNLOAD_RETAINED_FILE } from '../download-session.js';
 import { isRecoveryProtected, RECOVERY_PROTECTION_FILE } from '../recovery-file-protection.js';
 import { recoveryManifestStamp } from './recovery-replacement.js';
+import { inspectLocalCleanupDirectory, sameCleanupRoot } from './local-cleanup-directory.js';
 
 function errorCode(error: unknown) {
   return error instanceof Error && 'code' in error ? error.code : undefined;
@@ -20,9 +21,10 @@ interface Dependencies {
 /** Removes a fixed inventory after replacement commits; never recursively deletes its source directory. */
 export async function cleanupRecoveryReplacement(plan: LocalCleanupPlan, deps: Dependencies) {
   if (plan.reason !== 'recovery_replaced' || !plan.replacementFiles?.length || !deps.current()) return null;
-  if (!fs.existsSync(plan.localDir)) return [];
-  const root = fs.realpathSync(deps.tempRoot), directory = fs.realpathSync(plan.localDir);
-  if (fs.lstatSync(plan.localDir).isSymbolicLink() || !directory.startsWith(`${root}${path.sep}`)) return null;
+  const location = inspectLocalCleanupDirectory(deps.tempRoot, plan.localDir);
+  if (location.kind === 'unsafe') return null;
+  if (location.kind === 'missing') return deps.current() ? [] : null;
+  const directory = location.realPath;
   const controls = new Set([DOWNLOAD_SESSION_FILE, DOWNLOAD_RETAINED_FILE, RECOVERY_PROTECTION_FILE]);
   const onlyControlsRemain = () => {
     if (!fs.readdirSync(plan.localDir).every(name => controls.has(name))) return false;
@@ -34,6 +36,8 @@ export async function cleanupRecoveryReplacement(plan: LocalCleanupPlan, deps: D
   };
   const current = () => {
     if (!deps.current() || !plan.replacementFiles!.every(file => deps.proof(file))) return false;
+    const inspected = inspectLocalCleanupDirectory(deps.tempRoot, plan.localDir);
+    if (inspected.kind !== 'present' || !sameCleanupRoot(location.root, inspected.root)) return false;
     const stamp = recoveryManifestStamp(plan.localDir);
     if (isRecoveryProtected(plan.localDir) && stamp === plan.replacementManifestStamp) return true;
     // A previous authorized attempt may have removed some control files before

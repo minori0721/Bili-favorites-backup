@@ -78,6 +78,30 @@ test('a successful replacement automatically releases its held original director
   } finally { await f.close(); }
 });
 
+test('a replacement whose original directory is already gone settles only its old plan without remote calls', async () => {
+  const f = await fixture(); let calls = 0;
+  try {
+    f.commit(); await fs.promises.rm(f.old, { recursive: true });
+    const cleanup = createLocalCleanup({ state: f.state, jobs: f.jobs, transfers: f.sessions, tempRoot: f.root,
+      storage: createLocalCleanupStorage(f.state), config: { get: testConfig }, now: Date.now, canRun: () => true, generation: () => 0,
+      inspectRemote: async () => { calls++; return { status: 'verified' }; }, safeCandidate: () => true, refreshCapacity() {} });
+    try {
+      await cleanup.perform('BVREPLACE', f.old); assert.equal(f.state.getLocalCleanupPlans('BVREPLACE').length, 0);
+      assert.ok(fs.existsSync(path.join(f.next, 'new.mp4'))); assert.equal(calls, 0);
+    } finally { cleanup.stop(); }
+  } finally { await f.close(); }
+});
+
+test('replacement cleanup distinguishes an unavailable root from a missing child', async () => {
+  const f = await fixture();
+  try {
+    f.commit(); const unavailableRoot = path.join(f.root, 'not-mounted');
+    await assert.rejects(cleanupRecoveryReplacement({ ...f.plans[0], localDir: path.join(unavailableRoot, 'old') },
+      { tempRoot: unavailableRoot, current: () => true, proof: () => true, inspect: async () => true }), /ENOENT/);
+    assert.equal(f.state.getLocalCleanupPlans('BVREPLACE').length, 1); assert.ok(fs.existsSync(path.join(f.old, 'p1.mp4')));
+  } finally { await f.close(); }
+});
+
 test('replacement coverage preserves old-only pages, historical versions and unknown files', async () => {
   const f = await fixture(true);
   try {

@@ -1803,6 +1803,24 @@ export class StateManager {
     return this.database.reconcileLocalCleanupPlans(bvid, localDir, remainingRelativePaths, removedDirectory, Date.now());
   }
 
+  /** Commit only the checked directory's plans and references; never promote archive proof or status. */
+  finishLocalCleanupDirectory(bvid: string, localDir: string, expectedPlans: readonly LocalCleanupPlan[]) {
+    if (!expectedPlans.length || expectedPlans.some(plan => plan.localDir !== localDir)) return false;
+    const expected = expectedPlans.map(plan => JSON.stringify(plan)).sort();
+    return this.runAtomic(() => {
+      const current = this.getLocalCleanupPlans(bvid, localDir).map(plan => JSON.stringify(plan)).sort();
+      if (JSON.stringify(current) !== JSON.stringify(expected)) return false;
+      const entry = this.state.videos?.[bvid];
+      const sessionIds = new Set(expectedPlans.map(plan => plan.manifestSessionId));
+      if (entry?.downloadSession?.localDir === localDir && !sessionIds.has(entry.downloadSession.id)) return false;
+      this.reconcileLocalCleanupPlans(bvid, localDir, [], true);
+      if (entry?.localDir === localDir) entry.localDir = undefined;
+      if (entry?.downloadSession?.localDir === localDir) entry.downloadSession = undefined;
+      this.save();
+      return true;
+    });
+  }
+
   recordManualArchiveItem(
     userId: string,
     item: ObservedFavoriteItem,
