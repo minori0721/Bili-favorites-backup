@@ -117,7 +117,7 @@ function decodeBiliStatus(value: unknown, context: string): VideoArchiveEntry['b
   return value as VideoArchiveEntry['biliStatus'];
 }
 
-function decodeFilenameMetadata(value: unknown, context: string): RemoteFileFilenameMetadata {
+export function decodeFilenameMetadata(value: unknown, context: string): RemoteFileFilenameMetadata {
   const source = record(value, context);
   return {
     publishDate: optionalNumber(source, 'publishDate', context),
@@ -130,7 +130,7 @@ function decodeFilenameMetadata(value: unknown, context: string): RemoteFileFile
   };
 }
 
-function decodeMediaMetadata(value: unknown, context: string): RemoteFileMediaMetadata {
+export function decodeMediaMetadata(value: unknown, context: string): RemoteFileMediaMetadata {
   const source = record(value, context);
   const metadataSource = source.source;
   if (metadataSource !== 'ffprobe' && metadataSource !== 'browser') {
@@ -147,7 +147,7 @@ function decodeMediaMetadata(value: unknown, context: string): RemoteFileMediaMe
   };
 }
 
-function decodeRemoteFile(value: unknown, context: string): RemoteFileRecord {
+export function decodeRemoteFile(value: unknown, context: string): RemoteFileRecord {
   const source = record(value, context);
   const verificationStatus = source.verificationStatus;
   if (verificationStatus !== undefined && verificationStatus !== 'awaiting_verification'
@@ -321,7 +321,7 @@ function decodeConflictArchive(value: unknown, context: string): RemoteConflictA
   };
 }
 
-function decodeExistingArchiveProof(value: unknown, context: string): ExistingArchiveProof {
+export function decodeExistingArchiveProof(value: unknown, context: string): ExistingArchiveProof {
   const source = record(value, context);
   const status = source.status;
   if (status !== 'verified' && status !== 'partial_verified') throw new PersistedDomainDecodeError(context, 'status is invalid');
@@ -331,8 +331,8 @@ function decodeExistingArchiveProof(value: unknown, context: string): ExistingAr
     remotePath: requiredString(source, 'remotePath', context),
     files: files.map((item, index) => decodeRemoteFile(item, `${context}.files[${index}]`)),
     status,
-    uploadedAt: optionalString(source, 'uploadedAt', context),
-    verifiedAt: optionalString(source, 'verifiedAt', context),
+    ...(source.uploadedAt === undefined ? {} : { uploadedAt: optionalString(source, 'uploadedAt', context) }),
+    ...(source.verifiedAt === undefined ? {} : { verifiedAt: optionalString(source, 'verifiedAt', context) }),
   };
 }
 
@@ -519,7 +519,7 @@ export function decodeUploadCooldown(value: unknown, context = 'upload cooldown'
 export function decodeLocalCleanupPlan(value: unknown, context = 'local cleanup plan'): LocalCleanupPlan {
   const source = record(value, context);
   const reason = source.reason;
-  if (reason !== 'upload_verified' && reason !== 'quality_upgrade') {
+  if (reason !== 'upload_verified' && reason !== 'quality_upgrade' && reason !== 'recovery_replaced') {
     throw new PersistedDomainDecodeError(context, 'reason is invalid');
   }
   if (!Array.isArray(source.files) || source.files.length === 0) {
@@ -548,6 +548,13 @@ export function decodeLocalCleanupPlan(value: unknown, context = 'local cleanup 
   if (transferGeneration !== undefined && (typeof transferGeneration !== 'number' || !Number.isFinite(transferGeneration))) {
     throw new PersistedDomainDecodeError(context, 'transferGeneration must be a finite number');
   }
+  let replacementFiles: RemoteFileRecord[] | undefined;
+  if (reason === 'recovery_replaced') {
+    if (!Array.isArray(source.replacementFiles) || source.replacementFiles.length === 0) throw new PersistedDomainDecodeError(context, 'replacementFiles must be non-empty');
+    replacementFiles = source.replacementFiles.map((file, index) => decodeRemoteFile(file, `${context}.replacementFiles[${index}]`));
+    if (replacementFiles.some(file => file.verificationStatus !== 'verified' || file.size === undefined || file.size <= 0
+      || !file.filenameMetadata?.cid || file.filenameMetadata.cid <= 0)) throw new PersistedDomainDecodeError(context, 'replacement proof is incomplete');
+  }
   return {
     id: requiredString(source, 'id', context),
     localDir: requiredString(source, 'localDir', context),
@@ -557,6 +564,9 @@ export function decodeLocalCleanupPlan(value: unknown, context = 'local cleanup 
     reason,
     files,
     createdAt: requiredString(source, 'createdAt', context),
+    verifiedCandidateId: optionalString(source, 'verifiedCandidateId', context),
+    replacementManifestStamp: reason === 'recovery_replaced' ? requiredString(source, 'replacementManifestStamp', context) : undefined,
+    replacementFiles,
   };
 }
 

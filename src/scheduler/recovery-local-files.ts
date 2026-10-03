@@ -5,10 +5,10 @@ import type { PersistentJobRecord } from '../database.js';
 import { inspectLocalArchiveDirectory } from './local-archive-evidence.js';
 
 interface LocalFileInspection {
-  stat(file: string): Pick<fs.Stats, 'isFile' | 'size'>;
+  stat(file: string): Pick<fs.Stats, 'isFile' | 'size'> & Partial<Pick<fs.Stats, 'isSymbolicLink'>>;
   directory: typeof inspectLocalArchiveDirectory;
 }
-const localFiles: LocalFileInspection = { stat: file => fs.statSync(file), directory: inspectLocalArchiveDirectory };
+const localFiles: LocalFileInspection = { stat: file => fs.lstatSync(file), directory: inspectLocalArchiveDirectory };
 
 export function inspectRecoveryLocalFiles(
   transfers: Pick<TransferSessionRepository, 'get' | 'listFiles'>,
@@ -37,7 +37,7 @@ export function inspectRecoveryLocalFiles(
         }
         try {
           const stat = local.stat(localFile);
-          if (!stat.isFile() || stat.size !== file.expectedSize) {
+          if (!stat.isFile() || stat.isSymbolicLink?.() || stat.size !== file.expectedSize) {
             return { status: "changed" as const, session, files };
           }
         } catch (error) {
@@ -67,7 +67,7 @@ export function inspectRecoveryLocalFiles(
       }
       try {
         const stat = local.stat(localFile);
-        if (!stat.isFile() || stat.size <= 0) {
+        if (!stat.isFile() || stat.isSymbolicLink?.() || stat.size <= 0) {
           return { status: "changed" as const, session: null, files: [] as ReturnType<TransferSessionRepository["listFiles"]> };
         }
       } catch (error) {

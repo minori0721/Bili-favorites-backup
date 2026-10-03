@@ -2,7 +2,7 @@ import type { UploadTask } from '../tasks.js';
 import type { EnqueuePersistentJob } from '../repositories/jobs.js';
 import { UPLOAD_VERIFY_SCHEDULE_MS } from './retry-policy.js';
 
-type VerificationSource = Pick<UploadTask, 'automaticRecoveryAttempts' | 'bvid' | 'cover' | 'downloadDir' | 'encodingRetry' | 'filenameMetadataByPath' | 'files' | 'folderTitle' | 'historyOnly' | 'historySnapshotAt' | 'mediaId' | 'partialBackup' | 'remotePath' | 'result' | 'sessionGeneration' | 'sessionId' | 'strictMediaTarget' | 'upperName' | 'userId' | 'videoTitle'>;
+type VerificationSource = Pick<UploadTask, 'recoverySources' | 'automaticRecoveryAttempts' | 'bvid' | 'cover' | 'downloadDir' | 'encodingRetry' | 'filenameMetadataByPath' | 'files' | 'folderTitle' | 'historyOnly' | 'historySnapshotAt' | 'mediaId' | 'partialBackup' | 'remotePath' | 'result' | 'sessionGeneration' | 'sessionId' | 'strictMediaTarget' | 'upperName' | 'userId' | 'videoTitle'>;
 
 export function buildUploadVerificationJobs(task: VerificationSource, files: Array<{
     path: string;
@@ -46,6 +46,7 @@ export function buildUploadVerificationJobs(task: VerificationSource, files: Arr
           localRelativePath: first.localRelativePath,
           putCompletedAt: first.putCompletedAt || new Date().toISOString(),
           partialBackup: task.partialBackup,
+          recoverySources: task.recoverySources,
           automaticRecoveryAttempts: Math.max(0, Number(task.automaticRecoveryAttempts || 0)),
           historyOnly: task.historyOnly,
           historySnapshotAt: task.historySnapshotAt,
@@ -89,6 +90,8 @@ export function buildUploadVerificationJobs(task: VerificationSource, files: Arr
           localRelativePath: file.localRelativePath,
           putCompletedAt: file.putCompletedAt || new Date().toISOString(),
           partialBackup: task.partialBackup,
+          recoverySources: task.recoverySources,
+          automaticRecoveryAttempts: Math.max(0, Number(task.automaticRecoveryAttempts || 0)),
           historyOnly: task.historyOnly,
           historySnapshotAt: task.historySnapshotAt,
           folderTitle: task.folderTitle,

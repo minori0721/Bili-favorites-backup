@@ -2,7 +2,7 @@ import { mapQueueBoardTask, type Task, type QueueBoardItem, type QueueBoardPhase
 import { UploadVerificationTask } from '../tasks.js';
 import type { StateManager } from '../state.js';
 import type { PersistentJobRecord } from '../database.js';
-import { recoveryIssueDisposition } from '../recovery-policy.js';
+import { recoveryIssueDisposition, downloadRecoveryDisposition } from '../recovery-policy.js';
 import { parseEncodingRetryContext } from './recovery-context.js';
 import { parseRecoveryAssessment } from './recovery-projection.js';
 import { uploadRecoverySummary } from './recovery-issue-projection.js';
@@ -52,7 +52,10 @@ export function createQueueBoardProjection(deps: { metadata: StateManager['getVi
 
     const assessment = payload.awaitingManualRecovery ? parseRecoveryAssessment(payload) : null;
     const retryBusy = Boolean(payload.encodingRetry && ["running", "uploading", "verifying"].includes(String(encodingRetry.state || "")));
-    const disposition = assessment ? recoveryIssueDisposition(assessment.kind) : undefined;
+    const download = record(payload.downloadRecovery);
+    const disposition = kind === 'download' && payload.awaitingManualRecovery
+      ? downloadRecoveryDisposition(download.category) : assessment ? recoveryIssueDisposition(assessment.kind) : undefined;
+    const automaticDownload = kind === 'download' && disposition === 'background';
     const isVerification = kind === "verify_upload";
     const stage: QueueBoardItem["stage"] = isDownload
       ? (job.status === "running" ? "download_running" : "download_pending")
@@ -77,7 +80,8 @@ export function createQueueBoardProjection(deps: { metadata: StateManager['getVi
         : payload.lifecycleState === "partial_upload"
           ? `部分分P已完成 · ${Number(payload.verifiedPages || 0)}/${Number(payload.totalPages || 0)}`
           : undefined;
-    const detail = payload.awaitingManualRecovery
+    const detail = automaticDownload ? '下载暂时失败，将按计划自动继续'
+      : payload.awaitingManualRecovery
       ? uploadRecoverySummary(
         recoveryKind,
         assessment,
@@ -87,12 +91,13 @@ export function createQueueBoardProjection(deps: { metadata: StateManager['getVi
       : lifecycleDetail || (isVerification
         ? (job.status === "running" || job.status === "leased" ? "正在确认远端文件" : "已上传，等待远端确认")
         : String(payload.qualityStageLabel || payload.detail || job.lastError || "等待处理"));
-    const nextAction: QueueBoardAction | undefined = payload.awaitingManualRecovery
+    const nextAction: QueueBoardAction | undefined = automaticDownload ? 'retry' : payload.awaitingManualRecovery
       ? "recheck"
       : job.status === "retry_wait"
         ? (isVerification ? "verify" : "retry")
         : undefined;
-    const nextActionAt = payload.awaitingManualRecovery
+    const nextActionAt = automaticDownload && typeof download.nextCheckAt === 'number'
+      ? download.nextCheckAt : payload.awaitingManualRecovery
       ? assessment?.nextCheckAt
       : job.status === "retry_wait" && Number(job.notBefore) > 0
         ? Number(job.notBefore)

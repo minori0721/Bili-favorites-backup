@@ -1,3 +1,5 @@
+import { buildLocalCleanupPlan } from './local-cleanup-plan.js';
+import { decodeRecoverySources, buildRecoveryReplacementPlans } from './recovery-replacement.js';
 import path from 'node:path';
 import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager, RemoteFileRecord } from '../state.js';
@@ -11,10 +13,11 @@ import { readTaskFailure } from './task-failure.js';
 import type { RecoveryLockAccess } from './recovery-work.js';
 import type { RecoveryIssue } from './recovery-contracts.js';
 import type { RecoveryActionResult } from './recovery-action-contracts.js';
+import { PersistedDomainDecodeError } from '../repositories/domain-decoders.js';
 
 interface Dependencies {
   jobs: Pick<JobRepository, 'findById' | 'complete'>;
-  state: Pick<StateManager, 'runAtomic' | 'getRelationStatus' | 'restoreExistingArchiveProof' | 'markVerifiedUpload' | 'resolveRemoteConflictCandidate'>;
+  state: Pick<StateManager, 'recordLocalCleanupPlan' | 'runAtomic' | 'getRelationStatus' | 'restoreExistingArchiveProof' | 'markVerifiedUpload' | 'resolveRemoteConflictCandidate'>;
   sessions: Pick<TransferSessionRepository, 'get' | 'supersede'>;
   config: Pick<ConfigStore, 'get'>;
   locks: RecoveryLockAccess;
@@ -80,8 +83,17 @@ export function createConflictResolution(deps: Dependencies) {
           if (!await verify(retainedProof.files)) return { ok: false, status: 409, message: '现有归档已经变化，不能安全保留为当前来源' };
         }
       } catch (error) {
+        if (error instanceof PersistedDomainDecodeError) {
+          return { ok: false, status: 409, message: `恢复证据损坏，文件已保留：${sanitizeUploadText(error.message, 180)}` };
+        }
         return { ok: false, status: 503, message: `暂时无法连接 AList / OpenList 复核候选：${sanitizeUploadText(readTaskFailure(error).message || error, 180)}` };
       }
+      const localDir = typeof payload.localDir === 'string' ? payload.localDir : '';
+      const originalSession = typeof payload.sessionId === 'string' ? deps.sessions.get(payload.sessionId) : null;
+      const cleanupPlan = buildLocalCleanupPlan(String(job.bvid || ''), localDir, recorded.files, 'upload_verified', deps.now,
+        { verifiedCandidateId: recorded.id, transferSessionId: originalSession?.id, transferGeneration: originalSession?.generation });
+      const replacementPlans = originalSession ? buildRecoveryReplacementPlans(decodeRecoverySources(payload.recoverySources), recorded.files,
+        originalSession, deps.now()).map(plan => ({ ...plan, verifiedCandidateId: recorded.id })) : [];
       try {
         deps.state.runAtomic(() => {
           const current = deps.jobs.findById(jobId);
@@ -102,6 +114,8 @@ export function createConflictResolution(deps: Dependencies) {
               throw new ConflictChanged('传输会话已经变化，请重新检查');
             }
           }
+          if (cleanupPlan) deps.state.recordLocalCleanupPlan(String(job.bvid || ''), cleanupPlan, job.id);
+          for (const plan of replacementPlans) deps.state.recordLocalCleanupPlan(String(job.bvid || ''), plan, job.id);
           if (resolution === 'keep_existing') {
             if (!retainedProof || !deps.state.restoreExistingArchiveProof(String(job.bvid || ''), job.userId, job.mediaId, retainedProof)) {
               throw new ConflictChanged('现有归档证明无法恢复到当前收藏来源');

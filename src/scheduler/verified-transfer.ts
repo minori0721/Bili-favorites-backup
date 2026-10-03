@@ -23,6 +23,7 @@ export interface VerifiedTransferCommit {
   historyOnly: boolean;
   encodingRetry?: EncodingRetryContext;
   cleanupPlan?: LocalCleanupPlan | null;
+  replacementPlans?: LocalCleanupPlan[];
 }
 
 /** The proof, archive, cleanup permission and job completion are one synchronous transaction. */
@@ -45,6 +46,7 @@ export function commitVerifiedTransfer(dependencies: VerifiedTransferDependencie
     }
     if (!command.historyOnly) state.markVerifiedUpload(bvid, result.remotePath, result.files, command.userId, command.mediaId, command.partialBackup);
     if (cleanupPlan) state.recordLocalCleanupPlan(bvid, cleanupPlan, jobId);
+    for (const plan of command.replacementPlans || []) state.recordLocalCleanupPlan(bvid, plan, jobId);
     if (encodingRetry) {
       if (!jobs.completeEncodingRetryCommit(encodingRetry.parentJobId, encodingRetry.generation, jobId, leaseOwner)) {
         throw new Error('Encoding retry execution changed before verified commit');

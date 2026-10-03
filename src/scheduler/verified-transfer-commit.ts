@@ -3,6 +3,7 @@ import type { TransferSessionRepository } from '../repositories/transfer-session
 import type { LocalCleanupPlan, RemoteFileRecord, StateManager } from '../state.js';
 import { UploadTask, type EncodingRetryContext, type UploadVerificationTask } from '../tasks.js';
 import { commitVerifiedTransfer as commitVerifiedTransferTransaction } from './verified-transfer.js';
+import { buildRecoveryReplacementPlans } from './recovery-replacement.js';
 
 interface VerifiedTransferCommitDependencies {
   state: Pick<StateManager, 'runAtomic' | 'markVerifiedUpload' | 'recordLocalCleanupPlan'>;
@@ -59,6 +60,8 @@ export function createVerifiedTransferCommit(deps: VerifiedTransferCommitDepende
       historyOnly,
       encodingRetry,
       cleanupPlan,
+      replacementPlans: result.sessionId && result.sessionGeneration && !historyOnly
+        ? buildRecoveryReplacementPlans(task.recoverySources || [], result.files, { id: result.sessionId, generation: result.sessionGeneration }, deps.now()) : [],
     });
   };
 }

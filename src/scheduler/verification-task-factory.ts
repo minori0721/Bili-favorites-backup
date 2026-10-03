@@ -29,6 +29,8 @@ export function createVerificationTaskFactory(deps: Dependencies) {
           filenameMetadataByPath: payload.filenameMetadataByPath,
           encodingRetry: parseEncodingRetryContext(payload.encodingRetry) || undefined,
         });
+      task.recoverySources = payload.recoverySources;
+      task.automaticRecoveryAttempts = payload.automaticRecoveryAttempts;
       task.persistentJobId = job.id;
       task.persistentJob = job;
       return task;

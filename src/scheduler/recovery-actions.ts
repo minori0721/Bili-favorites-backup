@@ -15,7 +15,7 @@ interface Dependencies {
   resolveLegacyDownloadFailureIssue(id: string, action: RecoveryIssueActionId, options: RecoveryActionOptions): Action;
   resolveDownloadRecoveryIssue(id: string, action: RecoveryIssueActionId, options: RecoveryActionOptions): Action;
   abandonRecoveryJob(id: string, kinds: string[]): RecoveryActionResult;
-  assessManualRecoveryJob(id: string, options: { force: boolean; allowAutomatic: boolean }): Promise<unknown>;
+  assessManualRecoveryJob(id: string, options: { force: boolean; allowAutomatic: boolean; userInitiatedDownload?: boolean }): Promise<unknown>;
   recoverUploadJob(id: string, reupload: boolean): Action;
   startConflictCandidate(id: string): RecoveryActionResult;
   recoveryAssessment(payload: unknown): RecoveryAssessment | null;
@@ -77,6 +77,11 @@ export function createRecoveryActions(deps: Dependencies) {
           : result;
       }
       if (action === "redownload") {
+        if (currentJob && deps.recoveryAssessment(currentJob.payload)?.kind === 'download_retry_exhausted') {
+          await deps.assessManualRecoveryJob(jobId, { force: true, allowAutomatic: true, userInitiatedDownload: true });
+          if (!deps.jobStore.findById(jobId)) return { ok: true as const, issues: deps.getRecoveryIssueSnapshot().issues };
+          return { ok: false as const, status: 409, message: '当前证据或来源不允许独立下载恢复，原文件继续保留' };
+        }
         await deps.assessManualRecoveryJob(jobId, { force: true, allowAutomatic: false });
         const current = deps.jobStore.findById(jobId);
         const assessment = current ? deps.recoveryAssessment(current.payload) : null;

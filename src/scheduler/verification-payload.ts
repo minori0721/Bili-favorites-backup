@@ -1,3 +1,5 @@
+import { PersistedDomainDecodeError } from '../repositories/domain-decoders.js';
+import { decodeRecoverySources, type RecoverySource } from './recovery-replacement.js';
 import { isRecord } from '../shared/api/value.js';
 import type { UploadFileMetadata } from '../state.js';
 import { parseStrictMediaTarget, parseEncodingRetryContext } from './recovery-context.js';
@@ -19,6 +21,7 @@ export function parseVerificationPayload(value: unknown) {
     if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw new VerificationPayloadError(key);
   }
   if (raw.sessionGeneration !== undefined && (typeof raw.sessionGeneration !== 'number' || !Number.isInteger(raw.sessionGeneration) || raw.sessionGeneration < 1)) throw new VerificationPayloadError('sessionGeneration');
+  if (raw.automaticRecoveryAttempts !== undefined && (typeof raw.automaticRecoveryAttempts !== 'number' || !Number.isSafeInteger(raw.automaticRecoveryAttempts) || raw.automaticRecoveryAttempts < 0)) throw new VerificationPayloadError('automaticRecoveryAttempts');
   const rawFiles = raw.files;
   if (rawFiles !== undefined && !Array.isArray(rawFiles)) throw new VerificationPayloadError('files');
   const files = rawFiles === undefined ? [] : rawFiles.map(item => {
@@ -27,16 +30,21 @@ export function parseVerificationPayload(value: unknown) {
   });
   if (raw.encodingRetry !== undefined && !parseEncodingRetryContext(raw.encodingRetry)) throw new VerificationPayloadError('encodingRetry');
   if (raw.strictMediaTarget !== undefined && !parseStrictMediaTarget(raw.strictMediaTarget)) throw new VerificationPayloadError('strictMediaTarget');
+  let recoverySources: RecoverySource[];
   let filenameMetadataByPath: Record<string, UploadFileMetadata> | undefined;
   try {
+    recoverySources = decodeRecoverySources(raw.recoverySources);
     if (raw.filenameMetadataByPath !== undefined) {
       filenameMetadataByPath = metadataMap(raw.filenameMetadataByPath, 'filenameMetadataByPath');
     }
   } catch (error) {
+    if (error instanceof PersistedDomainDecodeError) throw new VerificationPayloadError('recoverySources');
     if (error instanceof UploadPayloadDecodeError) throw new VerificationPayloadError(error.field);
     throw error;
   }
   return {
+    recoverySources,
+    automaticRecoveryAttempts: raw.automaticRecoveryAttempts === undefined ? undefined : finite(raw.automaticRecoveryAttempts),
     encodingRetry: raw.encodingRetry,
     partialBackup: raw.partialBackup === true, historyOnly: raw.historyOnly === true,
     historySnapshotAt: text(raw.historySnapshotAt),

@@ -11,9 +11,11 @@ import { normalizeActualCodec, normalizeBilibiliQualityLabel } from "./media-met
 import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotResult } from "./bili.js";
 import { cacheLocalCover } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
+import { createDownloadProgressSampler, downloadProgressPolicy, readDownloadDirectorySize } from "./download-progress.js";
 import { createDebugLogPath, writeDebugLogAtomic } from "./debug-log-retention.js";
 import {
   buildSelectPageArgument,
+  buildDownloadConfigFingerprint,
   assessStrictEncoding,
   assessStrictQuality,
   currentSessionFiles,
@@ -22,6 +24,7 @@ import {
   findLegacyCover,
   markDownloadSessionStatus,
   prepareDownloadSession,
+  reuseVerifiedRecoveryOutputs,
   quarantineBrokenAria2Track,
   readDownloadSession,
   recordDownloadSelectedStream,
@@ -31,7 +34,18 @@ import {
   type DownloadSessionManifest,
 } from "./download-session.js";
 
-type DownloadError = Error & Record<string, unknown>;
+interface DownloadErrorMetadata {
+  code?: string;
+  permanent?: boolean;
+  deferToNextCycle?: boolean;
+  downloadFailureCategory?: 'transient' | 'source_unavailable' | 'tool' | 'account';
+  availabilityReason?: VideoPageSnapshotResult['availabilityReason'];
+  aria2RecoveryIssue?: Aria2TrackRecoveryIssue;
+  biliRiskControl?: boolean;
+  apiMode?: BBDownApiMode;
+  appNoVideoInfo?: boolean;
+  filenameTooLong?: boolean;
+}
 
 function errorRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object"
@@ -39,9 +53,8 @@ function errorRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function withDownloadErrorMetadata<T extends Error>(error: T, metadata: Record<string, unknown>): T & DownloadError {
-  Object.assign(error, metadata);
-  return error as T & DownloadError;
+function withDownloadErrorMetadata<T extends Error>(error: T, metadata: DownloadErrorMetadata): T & DownloadErrorMetadata {
+  return Object.assign(error, metadata);
 }
 
 export interface DownloadResult {
@@ -549,6 +562,7 @@ export async function downloadWithBBDown(
   config: AppConfig,
   options: {
     downloadDir?: string;
+    recoverySourceDir?: string;
     kind?: DownloadSessionKind;
     onPrepared?: (downloadDir: string, manifest: DownloadSessionManifest) => void;
     pageSnapshot?: VideoPageSnapshotResult;
@@ -572,10 +586,16 @@ export async function downloadWithBBDown(
   if (snapshot.access?.classification === "charging_restricted") {
     throw new ChargingRestrictedError(bvid, Number(cookie.DedeUserID || 0), snapshot.access);
   }
+  const effectiveApiMode: BBDownApiMode = options.apiModeOverride || config.bbdownApiMode || "web";
+  const sessionConfig: AppConfig = { ...config, bbdownApiMode: effectiveApiMode };
   const previousSession = readDownloadSession(downloadDir);
+  const sourceSession = options.recoverySourceDir ? readDownloadSession(options.recoverySourceDir) : { kind: 'missing' as const };
+  const sourcePages = sourceSession.kind === 'valid' && sourceSession.manifest.bvid === bvid
+    && sourceSession.manifest.configFingerprint === buildDownloadConfigFingerprint(sessionConfig, Number(cookie.DedeUserID || 0))
+    ? sourceSession.manifest.pages : [];
   let effectivePages = snapshot.pages.length > 0
     ? snapshot.pages
-    : previousSession.kind === "valid" ? previousSession.manifest.pages : [];
+    : previousSession.kind === "valid" ? previousSession.manifest.pages : sourcePages;
   let interactiveDigest: string | undefined;
   if (snapshot.interactive && snapshotAvailability === "available") {
     const inventory = await probeMediaWithBBDown(bvid, cookie, config, {
@@ -603,8 +623,10 @@ export async function downloadWithBBDown(
     throw createSourceUnavailableError(snapshot.availabilityReason);
   }
   await fs.promises.mkdir(downloadDir, { recursive: true });
-  const effectiveApiMode: BBDownApiMode = options.apiModeOverride || config.bbdownApiMode || "web";
-  const sessionConfig: AppConfig = { ...config, bbdownApiMode: effectiveApiMode };
+  if (options.recoverySourceDir && options.recoverySourceDir !== downloadDir) {
+    await reuseVerifiedRecoveryOutputs(options.recoverySourceDir, downloadDir, bvid, effectivePages,
+      buildDownloadConfigFingerprint(sessionConfig, Number(cookie.DedeUserID || 0)));
+  }
   const prepared = await prepareDownloadSession({
     downloadDir,
     bvid,
@@ -1187,38 +1209,6 @@ export function classifyBBDownFailure(output: string): {
   return null;
 }
 
-const lowSpeedWatchdog = {
-  sampleIntervalMs: 60_000,
-  minRuntimeMs: 30 * 60_000,
-  windowMs: 10 * 60_000,
-  minBytesPerSecond: 10 * 1024,
-};
-
-async function getDirectoryTotalSize(dir: string): Promise<number> {
-  let total = 0;
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      total += await getDirectoryTotalSize(fullPath);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    try {
-      const stat = await fs.promises.stat(fullPath);
-      total += stat.size;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.debug('[BBDown] failed to sample a cache file size', error);
-    }
-  }
-  return total;
-}
-
 async function runDebugProbe(
   command: string,
   bvid: string,
@@ -1317,7 +1307,6 @@ function runCommand(
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     const commandStartedAt = Date.now();
-    const sizeSamples: Array<{ at: number; size: number }> = [];
     let watchdogTimer: NodeJS.Timeout | null = null;
     let killedByWatchdog = false;
     let settled = false;
@@ -1367,6 +1356,7 @@ function runCommand(
     };
 
     const cleanupWatchdog = () => {
+      progressSampler.stop();
       if (watchdogTimer) {
         clearInterval(watchdogTimer);
         watchdogTimer = null;
@@ -1407,43 +1397,29 @@ function runCommand(
       resolve();
     };
 
-    const sampleDownloadSize = async () => {
-      const now = Date.now();
-      const size = await getDirectoryTotalSize(cwd);
-      sizeSamples.push({ at: now, size });
-      while (sizeSamples.length > 0 && now - sizeSamples[0].at > lowSpeedWatchdog.windowMs) {
-        sizeSamples.shift();
-      }
-      if (now - commandStartedAt < lowSpeedWatchdog.minRuntimeMs || sizeSamples.length < 2) {
-        return;
-      }
-      const first = sizeSamples[0];
-      const last = sizeSamples[sizeSamples.length - 1];
-      const seconds = Math.max(1, (last.at - first.at) / 1000);
-      const bytesPerSecond = Math.max(0, (last.size - first.size) / seconds);
-      if (bytesPerSecond >= lowSpeedWatchdog.minBytesPerSecond) {
-        return;
-      }
-      killedByWatchdog = true;
-      cleanupWatchdog();
-      logManager.push({
-        timestamp: new Date().toISOString(),
-        type: "download",
-        level: "warn",
-        summary: `下载低速卡住，已自动重试 ${bvid}`,
-        raw: `Low speed watchdog: ${(bytesPerSecond / 1024).toFixed(2)}KB/s for ${Math.round(seconds)}s after ${Math.round((now - commandStartedAt) / 1000)}s`,
-        bvid,
-        simpleVisible: true,
-        debugVisible: true,
-      });
-      void terminateDownloadProcessTree(child, false);
-    };
+    const progressSampler = createDownloadProgressSampler({
+      readSize: () => readDownloadDirectorySize(cwd), now: Date.now, startedAt: commandStartedAt,
+      onSamplingFailure: error => console.warn(`[Download] progress sampling failed: ${safeErrorSummary(error)}`),
+      onLowSpeed: ({ bytesPerSecond, seconds, runtimeMs }) => {
+        if (settled || strictSelectionError) return;
+        killedByWatchdog = true;
+        cleanupWatchdog();
+        logManager.push({
+          timestamp: new Date().toISOString(), type: "download", level: "warn",
+          summary: `下载低速卡住，已自动重试 ${bvid}`,
+          raw: `Low speed watchdog: ${(bytesPerSecond / 1024).toFixed(2)}KB/s for ${Math.round(seconds)}s after ${Math.round(runtimeMs / 1000)}s`,
+          bvid, simpleVisible: true, debugVisible: true,
+        });
+        void terminateDownloadProcessTree(child, false);
+      },
+    });
 
     const startWatchdog = () => {
-      void sampleDownloadSize();
+      const sample = () => { void progressSampler.sample().catch(error => console.warn(`[Download] progress watchdog failed: ${safeErrorSummary(error)}`)); };
+      sample();
       watchdogTimer = setInterval(() => {
-        void sampleDownloadSize().catch(error => console.warn(`[Download] progress sampling failed: ${safeErrorSummary(error)}`));
-      }, lowSpeedWatchdog.sampleIntervalMs);
+        sample();
+      }, downloadProgressPolicy.sampleIntervalMs);
     };
 
     const consumeSignal = (line: string) => {

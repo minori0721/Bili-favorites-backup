@@ -77,6 +77,8 @@ export function createUploadTaskFactory(deps: Dependencies) {
     };
     uploadTask.sharedDownloadDir = item.localDir;
     uploadTask.encodingRetry = item.encodingRetry;
+    uploadTask.automaticRecoveryAttempts = item.automaticRecoveryAttempts;
+    uploadTask.recoverySources = item.recoverySources;
     uploadTask.userId = item.userId;
     uploadTask.mediaId = item.mediaId;
     uploadTask.folderTitle = item.folderTitle;

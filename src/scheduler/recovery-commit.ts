@@ -13,11 +13,13 @@ interface RecoveryCommitDependencies {
 class RecoveryCommitRejected extends Error {}
 
 /** A rejected proof must roll back both the session and the in-memory archive projection. */
-export function commitRetainedRecovery(deps: RecoveryCommitDependencies, jobId: string, proof: ExistingArchiveProof, allowResumeOnly = false) {
+export function commitRetainedRecovery(deps: RecoveryCommitDependencies, jobId: string, proof: ExistingArchiveProof, allowResumeOnly = false, expected?: PersistentJobRecord) {
   try {
     return deps.state.runAtomic(() => {
       const current = deps.jobs.findById(jobId);
       if (!current) return null;
+      if (expected && (current.status !== expected.status || current.attempts !== expected.attempts
+        || current.leaseOwner !== expected.leaseOwner || JSON.stringify(current.payload) !== JSON.stringify(expected.payload))) return null;
       const payload: Record<string, unknown> = current.payload;
       const resumeOnly = allowResumeOnly
         && ['manual_wait', 'retry_wait', 'failed'].includes(current.status)
@@ -51,6 +53,7 @@ interface VerifiedRecoveryCommand {
   files: ReturnType<TransferSessionRepository['listFiles']>;
   verifiedFiles: RemoteFileRecord[];
   cleanupPlan: LocalCleanupPlan | null;
+  replacementPlans?: LocalCleanupPlan[];
   expectedGeneration: number;
   now: number;
 }
@@ -62,12 +65,11 @@ export function commitVerifiedRecovery(deps: RecoveryCommitDependencies, command
     const current = deps.jobs.findById(job.id);
     if (!current || current.payload.awaitingManualRecovery !== true
       || current.attempts !== job.attempts || current.leaseOwner !== job.leaseOwner
-      || current.payload.sessionId !== job.payload.sessionId
-      || current.payload.sessionGeneration !== job.payload.sessionGeneration) {
+      || current.status !== job.status || JSON.stringify(current.payload) !== JSON.stringify(job.payload)) {
       throw new Error('Recovery task changed before commit');
     }
     const active = deps.sessions.get(session.id);
-    if (!active || active.generation !== expectedGeneration) throw new Error('Recovery attempt changed before commit');
+    if (!active || active.generation !== expectedGeneration || active.phase === 'superseded') throw new Error('Recovery attempt changed before commit');
     const activeFiles = deps.sessions.listFiles(session.id, expectedGeneration);
     if (files.length === 0 || activeFiles.length !== files.length || activeFiles.some(file => !file.putAcceptedAt
       || !files.some(expected => expected.relativePath === file.relativePath
@@ -85,6 +87,7 @@ export function commitVerifiedRecovery(deps: RecoveryCommitDependencies, command
     const bvid = String(current.bvid || session.bvid || '');
     if (!payload.historyOnly) deps.state.markVerifiedUpload(bvid, String(payload.remotePath || session.remotePath || ''), verifiedFiles, current.userId, current.mediaId, Boolean(payload.partialBackup));
     if (cleanupPlan) deps.state.recordLocalCleanupPlan(bvid, cleanupPlan, current.id);
+    for (const plan of command.replacementPlans || []) deps.state.recordLocalCleanupPlan(bvid, plan, current.id);
     if (!deps.jobs.complete(current.id)) throw new Error('Recovery task changed before completion');
   });
 }

@@ -1,6 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
+export class JsonFileDecodeError extends Error {
+  constructor(filePath: string, readonly preservedAt: string | null, cause: unknown) {
+    const detail = cause instanceof SyntaxError ? "invalid JSON" : cause instanceof Error ? cause.message : "invalid persisted data";
+    super(`Failed to decode JSON file ${filePath}; ${preservedAt ? `original preserved at ${preservedAt}` : "original could not be backed up"}: ${detail}`);
+    this.name = "JsonFileDecodeError";
+  }
+}
+
 /** Read persisted JSON through an explicit boundary decoder. */
 export function readJsonFileDecoded<T>(
   filePath: string,
@@ -12,19 +20,19 @@ export function readJsonFileDecoded<T>(
     fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2), "utf-8");
     return defaultValue;
   }
+  const contents = fs.readFileSync(filePath, "utf-8");
   try {
-    return decode(JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown);
+    return decode(JSON.parse(contents) as unknown);
   } catch (error) {
     const backupPath = `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-    let preservedAt = filePath;
+    let preservedAt: string | null = null;
     try {
-      fs.copyFileSync(filePath, backupPath);
+      fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
       preservedAt = backupPath;
     } catch (backupError) {
       console.warn(`[Storage] corrupt JSON backup could not be created for ${filePath}`, backupError);
     }
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to decode JSON file ${filePath}; corrupt data was preserved at ${preservedAt}: ${message}`);
+    throw new JsonFileDecodeError(filePath, preservedAt, error);
   }
 }
 

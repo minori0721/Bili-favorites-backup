@@ -212,6 +212,7 @@ export function createDownloadCompletionHandler(dependencies: Dependencies) {
           filenameMetadataByPath: buildUploadFileMetadataFromSession(task.downloadDir!, task.outputFiles),
           partialBackup: task.partialBackup,
           automaticRecoveryAttempts: Math.max(0, Number(task.automaticRecoveryAttempts || 0)),
+          recoverySources: task.recoverySources,
           encodingRetry,
           strictMediaTarget: persistedStrictMediaTarget,
         }));
@@ -251,6 +252,7 @@ export function createDownloadCompletionHandler(dependencies: Dependencies) {
           filenameMetadataByPath: buildUploadFileMetadataFromSession(task.downloadDir!, task.outputFiles),
           partialBackup: task.partialBackup,
           automaticRecoveryAttempts: Math.max(0, Number(task.automaticRecoveryAttempts || 0)),
+          recoverySources: task.recoverySources,
           strictMediaTarget: persistedStrictMediaTarget,
         }, false);
         for (const history of historyGroups) {
@@ -268,6 +270,7 @@ export function createDownloadCompletionHandler(dependencies: Dependencies) {
             historyOnly: true,
             historySnapshotAt: history.snapshotAt,
             automaticRecoveryAttempts: Math.max(0, Number(task.automaticRecoveryAttempts || 0)),
+          recoverySources: task.recoverySources,
           }, false);
         }
       }

@@ -14,6 +14,7 @@ test('recovery batch shares work and stops before another job after maintenance 
   let allowed = true;
   const seen: string[] = [];
   const service = createRecoveryAutomation({
+    resumeDownload: () => false,
     jobs: { listDueManualRecovery: () => [job('first'), job('second')] },
     now: () => 1, canRun: () => allowed, generation: () => 0, refreshProjection: () => {},
     assess: async id => { seen.push(id); await gate; }, reportError: assert.fail,
@@ -33,6 +34,7 @@ test('recovery batch shares work and stops before another job after maintenance 
 test('stopping invalidates a queued recovery batch before projection reads', async () => {
   let reads = 0;
   const service = createRecoveryAutomation({
+    resumeDownload: () => false,
     jobs: { listDueManualRecovery: () => { reads++; return []; } },
     now: () => 1, canRun: () => true, generation: () => 0,
     refreshProjection: () => { reads++; }, assess: async () => {}, reportError: assert.fail,
@@ -48,6 +50,7 @@ test('stopping invalidates a queued recovery batch before projection reads', asy
 test('recovery rejection releases the batch for a later explicit retry', async () => {
   let failed = true;
   const service = createRecoveryAutomation({
+    resumeDownload: () => false,
     jobs: { listDueManualRecovery: () => [job('first')] },
     now: () => 1, canRun: () => true, generation: () => 0, refreshProjection: () => {},
     assess: async () => { if (failed) throw new Error('offline'); }, reportError: assert.fail,

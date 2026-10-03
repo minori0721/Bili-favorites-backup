@@ -1,9 +1,26 @@
 {
   "resources": [
     {
+      "module": "download-progress.ts",
+      "ownerSymbol": "createDownloadProgressSampler",
+      "resourceSymbols": [
+        "samples",
+        "pending",
+        "stopped",
+        "samplingFailed"
+      ],
+      "stop": "download process cleanup stops sampling and clears its window; one in-flight directory read is shared until it settles",
+      "lateCallback": "stopped samples cannot report low speed or alter the window; failed measurements reset the valid window",
+      "rebind": "the sampler is local to one child process and retains no database connection"
+    },
+    {
       "module": "runtime-memory-observation.ts",
       "ownerSymbol": "createRuntimeMemoryObservation",
-      "resourceSymbols": ["cancelTimer", "generation", "previousHeapUsed"],
+      "resourceSymbols": [
+        "cancelTimer",
+        "generation",
+        "previousHeapUsed"
+      ],
       "stop": "application shutdown stops the five-minute timer before draining background work; duplicate starts and stops are idempotent",
       "lateCallback": "timer generation rejects callbacks delivered after cancellation or replacement",
       "rebind": "snapshots read only current in-memory counters through callbacks; no database connection or cache snapshot is retained"
@@ -100,8 +117,8 @@
         "localCleanupInFlight",
         "localCleanupRetries"
       ],
-      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
-      "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
+      "stop": "stop cancels the retry timer; per-video-and-directory work drains before rebind; persistent cleanup plans survive failures and restart",
+      "lateCallback": "generation, completed transfer or resolved candidate identity, active references, manifest stamp and file identity are rechecked before deletion and reconciliation",
       "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
     },
     {
@@ -185,7 +202,7 @@
         "pending",
         "epoch"
       ],
-      "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
+      "stop": "stop cancels both timers and invalidates the batch epoch; a running remote read remains busy until it settles; download resumes use only the local persistent queue",
       "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
       "rebind": "storage-backed owners reset only while scheduling admission is closed and after active work has drained"
     },

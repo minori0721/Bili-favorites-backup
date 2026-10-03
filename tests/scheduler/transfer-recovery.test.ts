@@ -369,7 +369,7 @@ test("a failed transfer session without a job is projected once into recovery", 
   }
 });
 
-test("remote invisibility creates one isolated candidate after three persisted observations over 30 minutes", async () => {
+test("remote invisibility stays read-only after repeated observations and automatically finalizes when files appear", async () => {
   const start = Date.parse("2026-08-24T00:00:00.000Z");
   let clock = start;
   const fixture = await createStructuredRecoveryFixture(
@@ -377,7 +377,7 @@ test("remote invisibility creates one isolated candidate after three persisted o
     { status: "missing" as const, parentStatus: "visible" },
     { now: () => clock },
   );
-  const { runtime, manager, scheduler, job, jobs, sessions } = fixture;
+  const { runtime, manager, scheduler, job, jobs, sessions, session, remote } = fixture;
   try {
     await scheduler.runRecoveryAutomationNow();
     let assessment = record(required(jobs.findById(job.id)?.payload).recoveryAssessment);
@@ -393,9 +393,19 @@ test("remote invisibility creates one isolated candidate after three persisted o
     clock = start + 31 * 60_000;
     await scheduler.runRecoveryAutomationNow();
     const current = jobs.findById(job.id)!;
-    assert.equal((current.payload).conflictCandidateOnly, true, JSON.stringify(current));
-    assert.equal((current.payload).lifecycleState, "conflict_candidate");
-    assert.equal((current.payload).userDisposition, "automatic_candidate");
+    assert.equal(current.status, 'manual_wait');
+    assert.equal(current.payload.conflictCandidateOnly, undefined);
+    assert.notEqual(current.payload.userDisposition, 'automatic_candidate');
+    const stalled = record(current.payload.recoveryAssessment);
+    assert.equal(stalled.kind, 'remote_visibility_stalled');
+    assert.ok(typeof stalled.nextCheckAt === 'number' && stalled.nextCheckAt > clock);
+    assert.equal(sessions.get(session.id)?.generation, session.generation);
+    clock = start + 152 * 60_000;
+    remote.inspect = async () => ({ status: 'verified', remoteSize: 12 });
+    await scheduler.runRecoveryAutomationNow();
+    assert.equal(sessions.get(session.id)?.phase, 'completed');
+    assert.equal(manager.getRelationStatus('u1', 1, 'BVVERIFY')?.backupStatus, 'verified');
+    assert.equal(scheduler.getRecoveryIssues().some(item => item.id === `upload.${job.id}`), false);
   } finally {
     scheduler.stop();
     manager.close();
@@ -447,7 +457,8 @@ test("repeated missing target with a visible parent becomes actionable without c
     assert.equal(boardItem?.phase, "manual_action");
     assert.equal(boardItem?.actionRequired, true);
     assert.deepEqual(boardItem?.recoveryActions?.map((action) => action.id), ["redownload_with_encoding"]);
-    assert.match(issue?.summary || "", /可以尝试一次换编码/);
+    assert.match(issue?.summary || "", /低频只读复核/);
+    assert.ok(issue?.nextAutomaticCheckAt && issue.nextAutomaticCheckAt > Date.now());
     assert.doesNotMatch(issue?.summary || "", /超过存储限制/);
     assert.doesNotMatch(issue?.safeDiagnostic || "", /\/target/);
 
@@ -576,7 +587,8 @@ test("recovery automation selects due work beyond a thousand deferred issues", a
       });
     }
     await scheduler.runRecoveryAutomationNow();
-    assert.equal(jobs.findById(job.id), null);
+    assert.equal(scheduler.getRecoveryIssues().some(item => item.id === `upload.${job.id}`), false);
+    assert.equal(jobs.listDueManualRecovery(['upload']).some(item => item.id === job.id), false);
     assert.equal(sessions.get(session.id)?.phase, "completed");
     assert.equal(manager.getRelationStatus("u1", 1, "BVVERIFY")?.backupStatus, "verified");
   } finally {
@@ -646,7 +658,7 @@ test("a size conflict candidate is idempotently projected as one full-group uplo
   }
 });
 
-test("multipart mixed remote state creates one candidate containing every part", async () => {
+test("multipart owned PUTs awaiting visibility stay in read-only review without creating a duplicate candidate", async () => {
   const fixture = await createStructuredRecoveryFixture("recovery-multipart-candidate", { status: "missing" as const, parentStatus: "visible" });
   const { runtime, localDir, manager, scheduler, session, job, jobs, sessions } = fixture;
   try {
@@ -674,7 +686,12 @@ test("multipart mixed remote state creates one candidate containing every part",
 
     await scheduler.runRecoveryAutomationNow();
     const updated = jobs.findById(job.id)!;
-    assert.equal((updated.payload).conflictCandidateOnly, true);
+    assert.equal(updated.status, 'manual_wait');
+    assert.equal(updated.payload.conflictCandidateOnly, undefined);
+    assert.equal(sessions.get(session.id)?.generation, session.generation);
+    const issue = scheduler.getRecoveryIssues().find(item => item.id === `upload.${job.id}`);
+    assert.equal(issue?.kind, 'partial_remote_state');
+    assert.ok(issue?.nextAutomaticCheckAt && issue.nextAutomaticCheckAt > Date.now());
     assert.deepEqual((updated.payload).files, ["video.mp4", "video-p2.mp4"]);
     assert.equal((updated.payload).remotePath, "/target");
   } finally {

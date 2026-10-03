@@ -1,3 +1,4 @@
+import { decodeRecoverySources, type RecoverySource } from './recovery-replacement.js';
 import type { RemoteFileRecord, UploadFileMetadata } from '../state.js';
 import type { UploadIntent, ExistingArchiveProof } from '../upload-preflight.js';
 import type { EncodingRetryContext, StrictMediaTarget } from '../tasks.js';
@@ -42,6 +43,7 @@ export interface RecoveryUploadItem {
   verifiedPages?: number;
   totalPages?: number;
   automaticRecoveryAttempts?: number;
+  recoverySources?: RecoverySource[];
   notBefore?: number;
   priority?: boolean;
   encodingRetry?: EncodingRetryContext;
@@ -96,6 +98,7 @@ export function parseRecoveryUploadItem(value: unknown): RecoveryUploadItem {
     mediaId: optional(source.mediaId, 'mediaId', integer),
     verifiedPages: optional(source.verifiedPages, 'verifiedPages', integer),
     totalPages: optional(source.totalPages, 'totalPages', integer),
+    recoverySources: optional(source.recoverySources, 'recoverySources', decodeRecoverySources),
     automaticRecoveryAttempts: optional(source.automaticRecoveryAttempts, 'automaticRecoveryAttempts', integer),
     notBefore: optional(source.notBefore, 'notBefore', integer),
     files: optional(source.files, 'files', list(text)),

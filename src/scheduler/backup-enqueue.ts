@@ -8,10 +8,13 @@ import type { RecoveryUploadItem } from './upload-work.js';
 import { buildQualityArtifactKey, normalizeQualityArtifactProfile, type QualityArtifactProfile } from '../quality-artifact.js';
 import { buildUploadFileMetadataFromSession, historySessionGroups } from '../download-session.js';
 import { joinRemotePath } from '../utils.js';
+import type { RecoverySource } from './recovery-replacement.js';
 
 export interface BackupEnqueueOptions {
   persisted?: boolean; notBefore?: number; downloadUserId?: string; recoveryAttempt?: number; dedupeKey?: string;
   qualityProfile?: QualityArtifactProfile; qualityStrict?: boolean; qualityEncodingOverride?: QualityEncodingOverride;
+  recoveryParentJobId?: string; recoveryOriginalLocalDir?: string;
+  recoverySources?: RecoverySource[];
 }
 interface Dependencies {
   config: Pick<ConfigStore, 'get'>;
@@ -68,6 +71,8 @@ export function createBackupEnqueue(deps: Dependencies) {
         maxAttempts: config.maxRetries + 1, notBefore: options.notBefore || 0,
         payload: { primaryUserId: user.id, primaryMediaId: mediaId, primaryFolderTitle: folderTitle,
           downloadUserId: options.downloadUserId || user.id, automaticRecoveryAttempts: Math.max(0, Number(options.recoveryAttempt || 0)),
+          recoveryParentJobId: options.recoveryParentJobId, recoveryOriginalLocalDir: options.recoveryOriginalLocalDir,
+          recoverySources: options.recoverySources,
           qualityProfile: options.qualityProfile, qualityStrict: options.qualityStrict === true,
           qualityEncodingOverride: options.qualityEncodingOverride,
           qualityArtifactKey: exact && options.qualityProfile ? buildQualityArtifactKey(bvid, normalizeQualityArtifactProfile(options.qualityProfile)) : undefined } });
@@ -77,6 +82,7 @@ export function createBackupEnqueue(deps: Dependencies) {
       if (recoveryDownload) {
         const existing = deps.jobs.findByDedupeKey(jobs[0].dedupeKey);
         if (existing && (existing.kind !== 'download' || !['pending', 'leased', 'running', 'retry_wait'].includes(existing.status))) return false;
+        if (existing && options.recoveryParentJobId && existing.payload.recoveryParentJobId !== options.recoveryParentJobId) return false;
       }
       deps.state.runAtomic(() => {
         if (restriction && local) {

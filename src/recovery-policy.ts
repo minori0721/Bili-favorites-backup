@@ -1,4 +1,6 @@
 export type RecoveryIssueKind =
+  | "recovery_evidence_wait"
+  | "recovery_source_wait"
   | "remote_visibility_timeout"
   | "remote_visibility_stalled"
   | "remote_write_rejected"
@@ -120,7 +122,7 @@ const actions = {
   recheck: (): RecoveryIssueAction => ({
     id: "recheck",
     label: "重新检查远端",
-    description: "只读取远端状态，不上传或删除文件。",
+    description: "复核远端并尝试重建恢复记录，不上传或删除文件。",
   }),
   reupload: (): RecoveryIssueAction => ({
     id: "reupload",
@@ -136,7 +138,7 @@ const actions = {
   redownload: (): RecoveryIssueAction => ({
     id: "redownload",
     label: "重新下载",
-    description: "废弃失效补传任务并重新下载，不删除任何远端文件。",
+    description: "结束失效补传尝试并安排一次独立下载，原本地文件和远端归档继续保留。",
   }),
   redownloadWithEncoding: (quality = false): RecoveryIssueAction => ({
     id: "redownload_with_encoding",
@@ -211,8 +213,12 @@ const actions = {
   }),
 };
 
+export function downloadRecoveryDisposition(category: unknown): RecoveryIssueDisposition {
+  return category === 'transient' ? 'background' : 'action_required';
+}
+
 export function recoveryIssueDisposition(kind: RecoveryIssueKind): RecoveryIssueDisposition {
-  if (["remote_visibility_timeout", "remote_connection"].includes(kind)) return "background";
+  if (["remote_visibility_timeout", "remote_connection", "recovery_source_wait", "recovery_evidence_wait"].includes(kind)) return "background";
   if (kind === "conflict_candidate_ready") return "intentional_confirmation";
   return "action_required";
 }
@@ -276,6 +282,9 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
 
   const candidate = context.candidateEligible ? actions.createCandidate() : undefined;
   switch (context.kind) {
+    case 'download_retry_exhausted':
+      return context.jobKind === 'upload' && !context.historyOnly
+        ? [actions.redownload(), actions.recheck(), actions.abandonAttempt()] : [actions.recheck(), actions.abandonAttempt()];
     case "local_file_missing":
     case "local_file_changed":
       return context.remoteStatus === "missing"
@@ -305,6 +314,8 @@ export function planRecoveryActions(context: RecoveryPolicyContext): RecoveryIss
         ? [candidate, actions.recheck(), actions.openSettings(), actions.abandonAttempt()]
         : [actions.recheck(), actions.openSettings(), actions.abandonAttempt()];
     case "remote_connection":
+    case "recovery_evidence_wait":
+    case "recovery_source_wait":
     case "remote_visibility_timeout":
       return [actions.recheck()];
     case "conflict_candidate_ready":

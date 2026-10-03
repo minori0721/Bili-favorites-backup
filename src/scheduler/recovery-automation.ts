@@ -9,6 +9,7 @@ interface RecoveryAutomationDependencies {
   generation(): number;
   refreshProjection(): void;
   assess(jobId: string): Promise<unknown>;
+  resumeDownload(jobId: string): boolean;
   reportError(error: unknown): void;
 }
 
@@ -28,9 +29,10 @@ export function createRecoveryAutomation(deps: RecoveryAutomationDependencies) {
     pending = Promise.resolve().then(async () => {
       if (!active()) return;
       deps.refreshProjection();
-      const jobs = deps.jobs.listDueManualRecovery(['upload', 'history_upload'], deps.now(), 25);
+      const jobs = deps.jobs.listDueManualRecovery(['upload', 'history_upload', 'download'], deps.now(), 25);
       for (const job of jobs) {
         if (!active()) break;
+        if (job.kind === 'download') { deps.resumeDownload(job.id); continue; }
         await deps.assess(job.id);
       }
     }).finally(() => { pending = undefined; });

@@ -492,6 +492,7 @@ export class SchedulerRuntime implements SchedulerControl {
       generation: () => this.runtime.generation,
       refreshProjection: () => this.refreshRecoveryProjection(),
       assess: id => this.recoveryWorkflow.assessManualRecoveryJob(id, { allowAutomatic: true }),
+      resumeDownload: id => this.recoveryWorkflow.resumeAutomaticDownload(id),
       reportError: error => console.error('[Recovery] Automatic review failed: ' + sanitizeUploadText(error)),
     });
     const config = this.configStore.get();

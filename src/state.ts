@@ -183,7 +183,7 @@ export interface DownloadSessionReference {
   updatedAt: string;
 }
 
-export type LocalCleanupPlanReason = "upload_verified" | "quality_upgrade";
+export type LocalCleanupPlanReason = "upload_verified" | "quality_upgrade" | "recovery_replaced";
 
 export interface LocalCleanupPlanFile {
   relativePath: string;
@@ -206,6 +206,9 @@ export interface LocalCleanupPlan {
   reason: LocalCleanupPlanReason;
   files: LocalCleanupPlanFile[];
   createdAt: string;
+  verifiedCandidateId?: string;
+  replacementManifestStamp?: string;
+  replacementFiles?: RemoteFileRecord[];
 }
 
 export interface VideoArchiveEntry {

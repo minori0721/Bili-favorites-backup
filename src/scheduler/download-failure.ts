@@ -10,6 +10,7 @@ import { strictEncodingDiagnosticPatch, strictQualityDiagnosticPatch } from '../
 import { isSourceUnavailableFailure } from './access-rules.js';
 import { serializeQualityUpgrade } from './quality-rules.js';
 import { readTaskFailure, taskUploadFailure } from './task-failure.js';
+import { downloadRecoveryDelay } from './download-recovery-automation.js';
 
 type Download = DownloadTask | QualityUpgradeDownloadTask;
 interface Dependencies {
@@ -148,7 +149,12 @@ export function createDownloadFailureHandler(dependencies: Dependencies) {
             kind: downloadFailure.kind,
             summary: downloadFailure.summary,
             occurredAt: deps.now(),
+            ...((downloadFailure.category === 'transient' || downloadFailure.category === 'account') ? {
+              nextCheckAt: deps.now() + downloadRecoveryDelay(typeof task.persistentJob?.payload.automaticDownloadResumes === 'number'
+                ? task.persistentJob.payload.automaticDownloadResumes : 0),
+            } : {}),
             downloadUserId: task.downloadUserId || task.userId,
+            credentialRevision: task.credentialRevision,
             targets: targets.map((target) => ({ ...target })),
           },
           ...(task.qualityStrict || task.qualityEncodingOverride?.strict

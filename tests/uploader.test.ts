@@ -1113,6 +1113,26 @@ test("persistent upload sessions PUT only to the final path and never require MO
   }
 });
 
+test('resuming a partially uploaded owned session PUTs only the never-started page', async () => {
+  const runtime = await createTestDir('partial-owned-upload');
+  const first = Buffer.from('first-page'), second = Buffer.from('second-page');
+  const server = await startWebDavServer({ existingFiles: { '/dav/target/p1.mp4': first } });
+  const database = new StateDatabase(':memory:');
+  try {
+    await fs.promises.writeFile(path.join(runtime, 'p1.mp4'), first); await fs.promises.writeFile(path.join(runtime, 'p2.mp4'), second);
+    const sessions = new TransferSessionStore(database);
+    const session = sessions.ensurePrepared({ dedupeKey: 'partial', bvid: 'BVPARTIAL', localDir: runtime, remotePath: '/target' },
+      [{ relativePath: 'p1.mp4', name: 'p1.mp4', expectedSize: first.length }, { relativePath: 'p2.mp4', name: 'p2.mp4', expectedSize: second.length }]);
+    sessions.updateFile(session.id, 'p1.mp4', { status: 'verified', putAcceptedAt: Date.now(), verifiedAt: Date.now() }, session.generation);
+    const result = await uploadWithAList(runtime, '/target', testConfig({ alistUrl: server.url }), {
+      files: ['p1.mp4', 'p2.mp4'], cleanupLocal: false, transferSessionStore: sessions, sessionId: session.id,
+      sessionGeneration: session.generation, bvid: 'BVPARTIAL', verificationDelaysMs: [0], log: noopLog,
+    });
+    assert.equal(result.allVerified, true); assert.deepEqual(server.puts.map(put => put.path), ['/dav/target/p2.mp4']);
+    assert.equal(sessions.getFile(session.id, 'p1.mp4')?.attempts, 0);
+  } finally { database.close(); await server.close(); await removeTestDir(runtime); }
+});
+
 test("persistent direct upload keeps the compatible filename fallback without MOVE", async () => {
   const runtime = await createTestDir("upload-transfer-compatible-name");
   const server = await startWebDavServer({ rejectFourByteNames: true, failMoveName: "video.mp4" });

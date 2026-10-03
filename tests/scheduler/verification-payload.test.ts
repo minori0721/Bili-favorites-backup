@@ -16,7 +16,7 @@ test('verification recovery keeps filename evidence and explicit media targets',
 test('malformed verification evidence is rejected instead of losing files or generation', () => {
   for (const input of [null, [], {files: ['video.mp4', {}]}, {sessionGeneration: Infinity}, {sessionGeneration: 0},
     {filenameMetadataByPath: {'video.mp4': {cid: {}}}}, {filenameMetadataByPath: {bad: []}},
-    {historyOnly: 'true'}, {encodingRetry: {}}, {strictMediaTarget: {encoding: 'garbage'}}]) {
+    {recoverySources: [{}]}, {automaticRecoveryAttempts: -1}, {automaticRecoveryAttempts: '2'}, {historyOnly: 'true'}, {encodingRetry: {}}, {strictMediaTarget: {encoding: 'garbage'}}]) {
     assert.throws(() => parseVerificationPayload(input), /Invalid persisted verification/);
   }
   assert.deepEqual(parseVerificationPayload({}).files, [], 'absence is distinct from invalid evidence');

@@ -4,6 +4,7 @@ import {
   isVerifiedArchiveProofForRecovery,
   parseExistingArchiveProof,
   parseRecoveryAssessment,
+  verifiedFilesFromRecovery,
 } from '../../src/scheduler/recovery-projection.js';
 
 test('recovery assessment projection rejects unsafe values and keeps safe diagnostics', () => {
@@ -17,6 +18,32 @@ test('recovery assessment projection rejects unsafe values and keeps safe diagno
   assert.equal(assessment?.remoteStatus, 'unknown');
   assert.deepEqual(assessment?.responseHeaders, { allow: 'GET' });
   assert.equal(assessment?.responseSnippet?.length, 240);
+});
+
+test('archive proof rejects a damaged member as a whole instead of filtering it', () => {
+  const valid = { name: 'v.mp4', path: '/a/v.mp4', size: 10 };
+  for (const files of [[], [valid, null], [valid, { ...valid, size: '10' }], [valid, { ...valid, size: 0 }],
+    [valid, { ...valid, verificationStatus: 'yes' }], [valid, { ...valid, mediaMetadata: {} }], [valid, { ...valid, path: '/../v.mp4' }]]) {
+    assert.throws(() => parseExistingArchiveProof({ existingArchiveProof: { remotePath: '/a', status: 'verified', files } }), /Invalid persisted JSON/);
+  }
+  assert.equal(parseExistingArchiveProof({}), null);
+  assert.throws(() => parseExistingArchiveProof({ existingArchiveProof: { remotePath: '../a', status: 'verified', files: [valid] } }), /remotePath is invalid/);
+});
+
+test('historical optional evidence remains readable without inventing cleanup authorization', () => {
+  const proof = parseExistingArchiveProof({ existingArchiveProof: { status: 'verified',
+    files: [{ name: 'v.mp4', path: '/a/v.mp4', size: 10 }] } });
+  assert.ok(proof); assert.equal(proof.remotePath, '/a');
+  assert.equal(proof.files[0].localRelativePath, undefined);
+  assert.equal(proof.files[0].putCompletedAt, undefined);
+  assert.equal(proof.files[0].verificationStatus, undefined);
+  assert.equal(isVerifiedArchiveProofForRecovery({ remotePath: '/a', files: ['v.mp4'] }, proof), false);
+  assert.throws(() => parseExistingArchiveProof({ existingArchiveProof: { status: 'verified',
+    files: [{ name: 'v.mp4', path: '/a/v.mp4', size: 10 }, { name: 'p.mp4', path: '/b/p.mp4', size: 10 }] } }), /inconsistent directories/);
+});
+
+test('provided recovery metadata is decoded and malformed metadata cannot become a verified record', () => {
+  assert.throws(() => verifiedFilesFromRecovery({ filenameMetadataByPath: [] }, []), /expected an object/);
 });
 
 test('verified archive proof requires matching directory, complete names and positive files', () => {

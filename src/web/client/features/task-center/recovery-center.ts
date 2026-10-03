@@ -181,6 +181,8 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
         local_file_changed:'本地补传文件已变化',
         remote_permission:'存储权限被拒绝',
         remote_connection:'存储连接暂时不可用',
+        recovery_source_wait:'等待来源恢复后重新探测',
+        recovery_evidence_wait:'等待后台重建恢复记录',
         remote_unsupported:'存储不支持当前方法',
         remote_unknown:'存储返回未知错误',
         unknown_same_size:'远端证明还未确认',
@@ -363,10 +365,10 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
           title:reupload ? '确认继续上传' : '确认重新下载',
           message:reupload
             ? '系统会重新检查远端，只为当前任务授权一次上传。'
-            : '系统会废弃失效的补传尝试并重新下载这个来源。',
+            : '系统会结束失效的补传尝试，在独立目录安排一次下载恢复。',
           detail:reupload
             ? '发现同名异大小文件时仍会停止，不会直接覆盖。'
-            : '不会删除远端文件；其他已验证来源和归档证明不受影响。',
+            : '原本地文件和远端归档继续保留；新下载可能占用额外本地空间和下载流量。',
           confirmText:reupload ? '继续上传' : '重新下载',
           danger:reupload,
           trigger,

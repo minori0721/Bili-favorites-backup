@@ -13,6 +13,7 @@ import type { QualityArtifactProfile } from "./quality-artifact.js";
 import type { UploadFileMetadata } from "./state.js";
 import { BBDOWN_BUILD_INFO } from "./generated/bbdown-build-info.js";
 import { writeJsonFile } from "./storage.js";
+import { isRecoveryProtected, RECOVERY_PROTECTION_FILE } from './recovery-file-protection.js';
 import {
   actualQualityLabel,
   normalizeActualCodec,
@@ -527,6 +528,8 @@ export interface DownloadCleanupOptions {
   canDelete?: () => boolean;
   /** Keep the manifest when some tracked outputs still need upload. */
   preserveManifest?: boolean;
+  /** Only a scheduler plan backed by a completed transfer or verified candidate may release held outputs. */
+  allowProtected?: boolean;
 }
 
 export interface Aria2TrackRecoveryIssue {
@@ -1301,6 +1304,52 @@ async function scanAndValidateOutputs(downloadDir: string, manifest: DownloadSes
   manifest.outputs = [...uniqueByCid.values()].sort((a, b) => a.pageIndex - b.pageIndex);
 }
 
+/** Copies independently verified pages into a new attempt; the original is never modified. */
+export async function reuseVerifiedRecoveryOutputs(
+  sourceDir: string, targetDir: string, bvid: string, pages: DownloadPageSnapshot[], fingerprint: string,
+  verify: typeof validateMediaOutput = validateMediaOutput,
+) {
+  const source = readDownloadSession(sourceDir);
+  if (source.kind !== 'valid' || source.manifest.bvid !== bvid || source.manifest.configFingerprint !== fingerprint) return 0;
+  const root = await fs.promises.realpath(sourceDir);
+  const rootInfo = await fs.promises.lstat(sourceDir);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error('Recovery source is not a regular directory');
+  const targetInfo = await fs.promises.lstat(targetDir);
+  if (!targetInfo.isDirectory() || targetInfo.isSymbolicLink()) throw new Error('Recovery destination is not a regular directory');
+  let copied = 0;
+  for (const output of source.manifest.outputs) {
+    const page = pages.find(page => page.cid === output.cid && page.index === output.pageIndex);
+    // prepareDownloadSession will discover copied outputs by their filenames.
+    // Ambiguous old names must not be assigned to another page.
+    if (!page || inferPageIndex(output.relativePath, pages.length) !== page.index) continue;
+    const original = path.resolve(sourceDir, output.relativePath);
+    const destination = path.resolve(targetDir, output.relativePath);
+    if (!original.startsWith(`${path.resolve(sourceDir)}${path.sep}`) || !destination.startsWith(`${path.resolve(targetDir)}${path.sep}`)) throw new Error('Recovery output escapes its directory');
+    let info: fs.Stats;
+    try { info = await fs.promises.lstat(original); }
+    catch (error) { if (errorCode(error) === 'ENOENT') continue; throw error; }
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== output.size
+      || !(await fs.promises.realpath(original)).startsWith(`${root}${path.sep}`)) continue;
+    try {
+      const actual = await verify(original, page.duration);
+      if (output.quickHash && output.quickHash !== actual.quickHash) continue;
+    } catch (error) {
+      console.warn(`[Recovery] existing page failed media verification and was preserved: ${path.basename(original)}`);
+      continue;
+    }
+    await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+    const targetRoot = await fs.promises.realpath(targetDir);
+    const targetParent = await fs.promises.realpath(path.dirname(destination));
+    if (targetParent !== targetRoot && !targetParent.startsWith(`${targetRoot}${path.sep}`)) throw new Error('Recovery destination escapes its directory');
+    const latest = await fs.promises.lstat(original);
+    if (!latest.isFile() || latest.isSymbolicLink() || latest.size !== info.size || latest.ino !== info.ino
+      || latest.mtimeMs !== info.mtimeMs || latest.ctimeMs !== info.ctimeMs) continue;
+    try { await fs.promises.copyFile(original, destination, fs.constants.COPYFILE_EXCL); copied++; }
+    catch (error) { if (errorCode(error) !== 'EEXIST') throw error; }
+  }
+  return copied;
+}
+
 export async function prepareDownloadSession(options: {
   downloadDir: string;
   bvid: string;
@@ -1519,6 +1568,10 @@ async function removeEmptyDirectories(target: string, root: string): Promise<voi
 }
 
 export async function cleanupUploadedSessionFiles(downloadDir: string, options: DownloadCleanupOptions = {}) {
+  if (isRecoveryProtected(downloadDir) && !options.allowProtected) {
+    return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0,
+      removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
+  }
   if (options.confirmedRelativePaths === undefined && options.authorizedFiles === undefined) {
     return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
   }
@@ -1588,6 +1641,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       // Keep the final application-state check and unlink in one event-loop turn.
       const currentSession = readDownloadSession(downloadDir);
       if (currentSession.kind !== "valid" || JSON.stringify(currentSession.manifest) !== JSON.stringify(manifest)) break;
+      if (isRecoveryProtected(downloadDir) && !options.allowProtected) break;
       if (options.canDelete && !options.canDelete()) break;
       const currentStat = fs.lstatSync(target);
       const identity = authorization.expectedIdentity || stat;
@@ -1600,6 +1654,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       removedBytes += stat.size;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") removedPaths.add(relativePath);
+      else throw error;
     }
   }
   // An asynchronous file inspection may have yielded to a new download. Never
@@ -1626,6 +1681,11 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
   try { remaining = await fs.promises.readdir(downloadDir); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0, removedBytes, removedDirectory: true, retainedBytes: 0 };
+  }
+  if (!preserveManifest && options.allowProtected && (options.canDelete?.() ?? false)
+    && remaining.every(name => name === RECOVERY_PROTECTION_FILE || name === DOWNLOAD_RETAINED_FILE)) {
+    for (const name of remaining) await fs.promises.unlink(path.join(downloadDir, name));
+    remaining = [];
   }
   if (remaining.length === 0) {
     await fs.promises.rmdir(downloadDir);
@@ -1770,7 +1830,7 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
       result.removedDirectories += 1;
       continue;
     }
-    if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE))) {
+    if (fs.existsSync(path.join(downloadDir, DOWNLOAD_RETAINED_FILE)) || isRecoveryProtected(downloadDir)) {
       // A retained marker can include the only surviving media or a partial manifest.
       // Releasing these files requires explicit per-file authorization.
       result.retainedBytes += directorySizeSync(downloadDir);
@@ -1798,7 +1858,12 @@ export async function cleanupDownloadRecoveryArtifacts(rootDir: string): Promise
         throw error;
       }
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
-      await fs.promises.unlink(target);
+      // Keep the durable hold check and deletion in the same event-loop turn.
+      if (isRecoveryProtected(downloadDir)) {
+        result.retainedBytes += directorySizeSync(downloadDir);
+        break;
+      }
+      fs.unlinkSync(target);
       result.removedFiles += 1;
       result.removedRelativePaths.push(path.relative(downloadDir, target).replace(/\\/g, "/"));
       result.removedBytes += stat.size;
@@ -1896,7 +1961,7 @@ export async function inspectDownloadCache(rootDir: string, concurrency = 4): Pr
         result.exportableFiles += fileSizes.size;
       }
       if (isBBDownCredentialDirectoryName(entry.name)) continue;
-      if (fileSizes.has(DOWNLOAD_RETAINED_FILE)) {
+      if (fileSizes.has(DOWNLOAD_RETAINED_FILE) || fileSizes.has(RECOVERY_PROTECTION_FILE)) {
         result.recovery.retainedBytes += bytes;
         continue;
       }

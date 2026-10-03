@@ -17,6 +17,7 @@ import { inspectConflictCandidateEligibility as inspectConflictCandidateEligibil
 import { createConflictCandidateRecovery } from './conflict-candidate-recovery.js';
 import { createConflictResolution } from './conflict-resolution.js';
 import { createDownloadRecoveryActions } from './download-recovery-actions.js';
+import { resumeAutomaticDownload as resumeDownloadAutomatically } from './download-recovery-automation.js';
 import { createEncodingRecovery } from './encoding-recovery.js';
 import { createLegacyDownloadRecovery } from './legacy-download-recovery.js';
 import { createLegacyRecoveryProjection } from './legacy-recovery-projection.js';
@@ -38,6 +39,7 @@ import {
 } from './recovery-projection.js';
 import { createRecoveryWork } from './recovery-work.js';
 import { createUploadResumeService } from './upload-resume.js';
+import { createRecoveryEvidenceRebuild, preserveRecoveryEvidence } from './recovery-evidence-rebuild.js';
 
 type ProofDeps = Parameters<typeof createArchiveProofRecovery>[0];
 type FinalizationDeps = Parameters<typeof createRecoveryFinalization>[0];
@@ -47,7 +49,7 @@ type IssueDeps = Parameters<typeof createRecoveryIssueProjection>[0];
 interface RecoveryWorkflowDependencies {
   stateManager: ProofDeps['stateManager'] & FinalizationDeps['stateManager'] & ConflictDeps['state'] & LegacyDeps['stateManager'] & IssueDeps['state'] & Pick<StateManager, 'runBatch' | 'markRelationRetryPending'>;
   jobStore: Pick<JobRepository, 'findById' | 'complete' | 'updatePayload' | 'listManualRecovery' | 'listFailed' | 'listObsoleteArchiveRecoveryCandidates' | 'removeObsoleteArchiveRecoveryCandidate' | 'findByDedupeKey' | 'startEncodingRetry' | 'abandonRecovery' | 'list' | 'enqueue' | 'listLegacyDownloadRecovery' | 'findLegacyDownloadRecovery' | 'wakeManualJob' | 'restartFailedQualityAsDownload'>;
-  transferSessions: ProofDeps['transferSessions'] & FinalizationDeps['transferSessions'] & Pick<TransferSessionRepository, 'get' | 'listFiles' | 'supersede'>;
+  transferSessions: ProofDeps['transferSessions'] & FinalizationDeps['transferSessions'] & Pick<TransferSessionRepository, 'get' | 'listFiles' | 'supersede' | 'ensurePrepared' | 'ensureFile'>;
   database(): ReturnType<LegacyDeps['database']> & ReturnType<Parameters<typeof createLegacyRecoveryProjection>[0]['database']>;
   atomic<T>(work: () => T): T;
   configStore: Pick<ConfigStore, 'get'>;
@@ -131,10 +133,11 @@ export function createRecoveryWorkflow(deps: RecoveryWorkflowDependencies) {
       candidateEligible: inspectConflictCandidateEligibility(current, assessment).eligible,
     };
     const previous = recoveryAssessment(current.payload);
-    if (previous && JSON.stringify(previous) === JSON.stringify(persistedAssessment)) return true;
+    if (current.payload.recoveryEvidenceChecked === true && previous && JSON.stringify(previous) === JSON.stringify(persistedAssessment)) return true;
     return deps.jobStore.updatePayload(jobId, {
       ...current.payload,
       recoveryAssessment: persistedAssessment,
+      recoveryEvidenceChecked: true,
     });
   }
 
@@ -159,7 +162,13 @@ export function createRecoveryWorkflow(deps: RecoveryWorkflowDependencies) {
     resolveRelation: deps.resolveRelation, prepareDownload: deps.prepareDownload,
     verifiedFilesFromRecovery, buildLocalCleanupPlan: deps.buildLocalCleanupPlan,
     cleanup: (bvid, dir) => deps.cleanup(bvid, dir), now: () => deps.now(),
+    canRun: deps.canRun,
     dispatchPersistentJobs: () => deps.dispatchPersistentJobs(),
+  });
+  const evidenceRebuild = createRecoveryEvidenceRebuild({
+    jobs: deps.jobStore, sessions: deps.transferSessions, atomic: deps.atomic,
+    captureProof: captureExistingArchiveProof, canRun: deps.canRun, generation: deps.generation, now: deps.now,
+    preserve: job => preserveRecoveryEvidence(deps.legacyTempDir, job),
   });
 
   function finalizeRetainedArchiveRecovery(job: import('../database.js').PersistentJobRecord, proof: ExistingArchiveProof, options: { allowResumeOnly?: boolean } = {}) {
@@ -174,16 +183,33 @@ export function createRecoveryWorkflow(deps: RecoveryWorkflowDependencies) {
     return recoveryFinalization.queueFreshDownloadForRecovery(job, localStatus, userInitiated);
   }
 
-  function assessManualRecoveryJob(jobId: string, options: { force?: boolean; allowAutomatic?: boolean } = {}) {
+  function assessManualRecoveryJob(jobId: string, options: { force?: boolean; allowAutomatic?: boolean; userInitiatedDownload?: boolean } = {}) {
     return work.run(jobId, () => assessManualRecoveryJobOnce(jobId, options));
   }
 
-  function assessManualRecoveryJobOnce(jobId: string, options: { force?: boolean; allowAutomatic?: boolean } = {}) {
+  function assessManualRecoveryJobOnce(jobId: string, options: { force?: boolean; allowAutomatic?: boolean; userInitiatedDownload?: boolean } = {}) {
     return createRecoveryAssessmentService({
       jobStore: deps.jobStore, transferSessions: deps.transferSessions, configStore: deps.configStore,
       recoveryJobLocks: work.locks, remoteFileInspector: deps.remoteFileInspector,
       now: () => deps.now(),
       atomic: deps.atomic,
+      canRun: deps.canRun, generation: deps.generation,
+      rebuildEvidence: evidenceRebuild.rebuild, preserveForReprobe: evidenceRebuild.preserveForReprobe,
+      downloadReadiness: recoveryFinalization.downloadReadiness,
+      resumeUpload: job => {
+        const current = deps.jobStore.findById(job.id);
+        if (!deps.canRun() || !current || current.status !== job.status || current.attempts !== job.attempts
+          || current.leaseOwner !== job.leaseOwner || JSON.stringify(current.payload) !== JSON.stringify(job.payload)) return false;
+        if (!job.payload.historyOnly) {
+          const relation = job.userId && job.mediaId !== undefined && job.bvid
+            ? deps.stateManager.getRelationStatus(job.userId, job.mediaId, job.bvid) : null;
+          if (!relation?.activeInFavorite || relation.accountDetachedAt || !deps.resolveRelation(relation)) return false;
+        }
+        const resumed = deps.jobStore.wakeManualJob(job.id, { awaitingManualRecovery: false, resumeOnly: false,
+          allowReupload: false, reuploadAuthorizedFiles: [], recoveryAssessment: undefined });
+        if (resumed) deps.dispatchPersistentJobs();
+        return Boolean(resumed);
+      },
       recoveryAssessment,
       captureExistingArchiveProof,
       isVerifiedArchiveProofForRecovery,
@@ -208,7 +234,6 @@ export function createRecoveryWorkflow(deps: RecoveryWorkflowDependencies) {
     manualDownloadRecoveryJobs: () => manualDownloadRecoveryJobs(),
     recoveryAssessment: payload => recoveryAssessment(payload),
     inspectConflictCandidateEligibility: (job, assessment) => inspectConflictCandidateEligibility(job, assessment),
-    persistedExistingArchiveProof: payload => persistedExistingArchiveProof(payload),
   });
 
   function qualityEncodingRetryEligibility(job: import('../database.js').PersistentJobRecord) {
@@ -354,5 +379,17 @@ export function createRecoveryWorkflow(deps: RecoveryWorkflowDependencies) {
       dispatchPersistentJobs: deps.dispatchPersistentJobs,
     }).recover(jobId, allowReupload);
   }
-  return { startConflictCandidate, captureExistingArchiveProof, reconcileObsoleteVerifiedArchiveRecoveries, reconcileLegacyDownloadRecoveryJobs, assessManualRecoveryJob, getRecoveryIssues, getRecoveryIssueSnapshot, resolveRecoveryIssue, recoverUploadJob, get busy() { return work.busy; } };
+  function resumeAutomaticDownload(jobId: string) {
+    return resumeDownloadAutomatically({ jobs: deps.jobStore, user: id => deps.userStore.getById(id),
+      atomic: deps.atomic, now: deps.now, canRun: deps.canRun,
+      eligible: (job, user) => deps.isUserSyncEligible(user) && downloadRecoveryTargets(job).some(target => {
+        const relation = deps.stateManager.getRelationStatus(target.userId, target.mediaId, job.bvid || '');
+        return Boolean(relation?.activeInFavorite && !relation.accountDetachedAt && !relation.favoriteUnavailable
+          && !deps.database().isArchiveSourceDeletionBlocked(target.userId, target.mediaId, job.bvid || ''));
+      }),
+      resumed: job => resumeDownloadRecoveryRelations(job, '暂时失败后自动继续下载。'),
+      dispatch: deps.dispatchPersistentJobs,
+    }, jobId);
+  }
+  return { startConflictCandidate, captureExistingArchiveProof, reconcileObsoleteVerifiedArchiveRecoveries, reconcileLegacyDownloadRecoveryJobs, assessManualRecoveryJob, resumeAutomaticDownload, getRecoveryIssues, getRecoveryIssueSnapshot, resolveRecoveryIssue, recoverUploadJob, get busy() { return work.busy; } };
 }

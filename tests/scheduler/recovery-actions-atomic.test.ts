@@ -62,7 +62,7 @@ for (const localStatus of ['missing', 'changed'] as const) {
         const service = createRecoveryFinalization({stateManager:f.state,transferSessions:f.sessions,
           jobStore:{findById:id=>f.jobs.findById(id),complete:id=>rejectCompletion ? false : f.jobs.complete(id)},
           resolveRelation:()=>({user,folderTitle:'Favorites'}),prepareDownload:enqueue.prepareRecoveryDownload,
-          verifiedFilesFromRecovery:()=>[],buildLocalCleanupPlan:()=>null,cleanup:()=>{},now:()=>100,dispatchPersistentJobs:()=>{dispatches++;},
+          verifiedFilesFromRecovery:()=>[],buildLocalCleanupPlan:()=>null,cleanup:()=>{},now:()=>100,canRun:()=>true,dispatchPersistentJobs:()=>{dispatches++;},
         });
         assert.equal(service.queueFreshDownloadForRecovery(f.job,localStatus,true),!rejectCompletion);
         const replacement = f.jobs.findByDedupeKey(`download:${f.bvid}`);
@@ -134,7 +134,7 @@ for (const failCommit of [true, false]) {
         f.jobs.enqueue({ kind: 'download' as const, dedupeKey: 'fresh', bvid: f.bvid });
         return !failCommit;
       } }),
-      verifiedFilesFromRecovery: () => [], buildLocalCleanupPlan: () => null, cleanup: () => {}, now: () => 100,
+      verifiedFilesFromRecovery: () => [], buildLocalCleanupPlan: () => null, cleanup: () => {}, now: () => 100, canRun: () => true,
       dispatchPersistentJobs: () => { dispatched++; },
     });
     try {

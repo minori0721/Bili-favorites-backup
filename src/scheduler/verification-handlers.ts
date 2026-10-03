@@ -160,7 +160,7 @@ export function createVerificationHandlers(deps: Dependencies) {
       return;
     }
 
-    const reason = "PUT 已成功，但远端在 10 分钟内仍不可见；已暂停自动重传，请在队列中手动继续";
+    const reason = "PUT 已成功，但远端在 10 分钟内仍不可见；已暂停自动重传，将继续低频只读复核";
     if (encodingRetry) {
       deps.finishEncodingRetryFailure(
         task.bvid,
@@ -187,6 +187,8 @@ export function createVerificationHandlers(deps: Dependencies) {
       cover: String(payload.cover || ""),
       files: Array.isArray(payload.files) ? payload.files : [],
       filenameMetadataByPath: payload.filenameMetadataByPath,
+      automaticRecoveryAttempts: payload.automaticRecoveryAttempts,
+      recoverySources: payload.recoverySources,
       partialBackup: Boolean(payload.partialBackup),
       historyOnly: Boolean(payload.historyOnly),
       historySnapshotAt: payload.historySnapshotAt,
@@ -244,6 +246,8 @@ export function createVerificationHandlers(deps: Dependencies) {
       cover: String(payload.cover || ""),
       files,
       filenameMetadataByPath: payload.filenameMetadataByPath,
+      automaticRecoveryAttempts: payload.automaticRecoveryAttempts,
+      recoverySources: payload.recoverySources,
       partialBackup: Boolean(payload.partialBackup),
       historyOnly: Boolean(payload.historyOnly),
       historySnapshotAt: payload.historySnapshotAt,

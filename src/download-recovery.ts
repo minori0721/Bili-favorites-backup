@@ -51,6 +51,8 @@ export function classifyDownloadRecoveryFailure(error: unknown): DownloadFailure
   }
 
   if (explicit === "transient"
+    || Number(value.status || value.statusCode) === 429
+    || Number(value.status || value.statusCode) >= 500
     || value.deferToNextCycle
     || value.biliRiskControl
     || value.appNoVideoInfo

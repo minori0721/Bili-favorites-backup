@@ -1,28 +1,20 @@
 import type { BBDownEncoding } from '../config.js';
+import { decodeRecoveryFiles, parseExistingArchiveProof } from './recovery-projection.js';
+import { PersistedDomainDecodeError } from '../repositories/domain-decoders.js';
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value)) : {};
 }
-function parseExistingArchiveProof(value: unknown) {
-  const proof = record(record(value).existingArchiveProof);
-  if (!Array.isArray(proof.files) || proof.files.length === 0) return undefined;
-  if (proof.status !== 'verified' && proof.status !== 'partial_verified') return undefined;
-  const files = proof.files.filter((item): item is Record<string, unknown> =>
-    item !== null && typeof item === 'object' && !Array.isArray(item)
-  ).map(item => ({
-    name: text(item.name) || '', path: text(item.path) || '',
-    size: number(item.size), verificationStatus: item.verificationStatus === 'verified' ? 'verified' as const : undefined,
-  })).filter(item => item.name && item.path && item.verificationStatus);
-  if (files.length === 0) return undefined;
-  const uploadedAt = text(proof.uploadedAt);
-  const verifiedAt = text(proof.verifiedAt);
-  return {
-    remotePath: text(proof.remotePath) || '', files,
-    status: proof.status,
-    ...(uploadedAt ? { uploadedAt } : {}),
-    ...(verifiedAt ? { verifiedAt } : {}),
-  };
+function displayProof(value: unknown) {
+  try {
+    const raw = record(value);
+    if (raw.conflictCandidate != null) decodeRecoveryFiles(record(raw.conflictCandidate).files, 'recovery.conflictCandidate.files');
+    return { proof: parseExistingArchiveProof(value) || undefined, error: undefined };
+  } catch (error) {
+    if (!(error instanceof PersistedDomainDecodeError)) throw error;
+    return { proof: undefined, error: error.message };
+  }
 }
 const text = (value: unknown) => typeof value === 'string' ? value : undefined;
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -42,7 +34,8 @@ export function parseRecoveryIssuePayload(value: unknown) {
   const retry = record(raw.encodingRetry);
   const target = record(raw.target);
   const candidate = record(raw.conflictCandidate);
-  const existingArchiveProof = parseExistingArchiveProof(raw);
+  const existing = displayProof(raw);
+  const candidateProof = displayProof({ existingArchiveProof: candidate.existingArchiveProof });
   const headers = record(raw.responseHeaders);
   return {
     ...raw,
@@ -58,12 +51,14 @@ export function parseRecoveryIssuePayload(value: unknown) {
     remoteErrorCode: text(raw.remoteErrorCode), responseSnippet: text(raw.responseSnippet),
     responseHeaders: raw.responseHeaders && Object.values(headers).every(value => typeof value === 'string')
       ? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined,
-    conflictCandidate: { existingArchiveProof: candidate.existingArchiveProof },
-    existingArchiveProof: existingArchiveProof || undefined,
+    conflictCandidate: { existingArchiveProof: candidateProof.proof },
+    existingArchiveProof: existing.proof,
+    evidenceError: existing.error || candidateProof.error,
     encodingRetry: raw.encodingRetry == null ? undefined : { ...retry, state: text(retry.state) },
     downloadRecovery: {
       category: text(download.category), kind: text(download.kind), downloadUserId: text(download.downloadUserId),
       summary: text(download.summary), occurredAt: number(download.occurredAt),
+      nextCheckAt: number(download.nextCheckAt),
     },
     qualityFailure: raw.qualityFailure == null ? undefined : {
       category: text(failure.category), encodingEligible: boolean(failure.encodingEligible),

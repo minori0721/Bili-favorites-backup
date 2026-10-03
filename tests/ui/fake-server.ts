@@ -25,7 +25,7 @@ type TestState = {
   lastRecoveryAction: string;
   lastRecoveryBody: unknown;
   recoveryIssueResolved: boolean;
-  recoveryIssueKind: "visibility" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
+  recoveryIssueKind: "visibility" | "source_wait" | "evidence_wait" | "reprobe_exhausted" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
   recoveryIssueEmpty: boolean;
   storageCheckCount: number;
   storageCheckBody: unknown;
@@ -226,7 +226,7 @@ app.post("/__test/reset", (request, response) => {
   state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
   state.sourceStartDelayMs = Math.max(0, Number(request.body?.sourceStartDelayMs || 0));
   const recoveryIssueKind = String(request.body?.recoveryIssueKind || "");
-  if (["visibility", "candidate", "create_candidate", "download", "quality", "storage"].includes(recoveryIssueKind)) {
+  if (["visibility", "source_wait", "evidence_wait", "reprobe_exhausted", "candidate", "create_candidate", "download", "quality", "storage"].includes(recoveryIssueKind)) {
     state.recoveryIssueKind = recoveryIssueKind as TestState["recoveryIssueKind"];
   }
   state.recoveryIssueEmpty = request.body?.recoveryIssueEmpty === true;
@@ -477,6 +477,27 @@ app.get("/api/queue/state", (_request, response) => {
   }] : [];
   const candidateIssue = state.recoveryIssueKind === "candidate";
   const issueByKind = {
+    reprobe_exhausted: {
+      kind: 'download_retry_exhausted' as const, severity: 'warning', title: '自动下载恢复次数已用完',
+      summary: '已安排三次独立下载恢复，原文件继续保留。',
+      recommendedAction: { id: 'redownload', label: '重新下载', description: '安排一次独立下载，原文件与远端归档保留。' },
+      availableActions: [
+        { id: 'redownload', label: '重新下载', description: '安排一次独立下载，原文件与远端归档保留。' },
+        { id: 'recheck', label: '重新检查远端', description: '复核恢复证据。' },
+      ],
+    },
+    source_wait: {
+      kind: 'recovery_source_wait' as const, severity: 'info', title: '等待来源恢复后重新探测',
+      summary: '已有文件保留，等待访问探测恢复后再继续独立下载。',
+      recommendedAction: { id: 'recheck', label: '重新检查远端', description: '复核恢复证据。' },
+      availableActions: [{ id: 'recheck', label: '重新检查远端', description: '复核恢复证据。' }],
+    },
+    evidence_wait: {
+      kind: 'recovery_evidence_wait' as const, severity: 'info', title: '等待后台重建恢复记录',
+      summary: '恢复证据损坏，后台将尝试重建，文件已保留。',
+      recommendedAction: { id: 'recheck', label: '重新检查远端', description: '复核恢复证据。' },
+      availableActions: [{ id: 'recheck', label: '重新检查远端', description: '复核恢复证据。' }],
+    },
     visibility: {
       kind: "remote_visibility_timeout" as const,
       severity: "info",
@@ -582,7 +603,7 @@ app.get("/api/queue/state", (_request, response) => {
   }];
   const disposition = candidateIssue
     ? "intentional_confirmation"
-    : (state.recoveryIssueKind === "visibility" ? "background" : "action_required");
+    : (["visibility", "source_wait", "evidence_wait"].includes(state.recoveryIssueKind) ? "background" : "action_required");
   const visibleIssues = disposition === "background" ? [] : issues.map((issue) => ({ ...issue, disposition }));
   response.json(ok({
     downloadPending: [], downloadRunning: [], uploadPending: queueItems, uploadRunning: [],

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.js";
-import { readJsonFileDecoded, writeJsonFile } from "./storage.js";
+import { JsonFileDecodeError, readJsonFileDecoded, writeJsonFile } from "./storage.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { normalizeBilibiliQualityLabel } from "./media-metadata.js";
 import { isRecord } from "./shared/api/value.js";
@@ -62,15 +62,16 @@ export function decodeStoredLogEntries(value: unknown): LogEntry[] {
 interface StoredLogReadResult {
   entries: LogEntry[];
   degraded: boolean;
+  persistenceAllowed: boolean;
 }
 
 function readStoredLogEntries(filePath: string): StoredLogReadResult {
   try {
-    return { entries: readJsonFileDecoded(filePath, [], decodeStoredLogEntries), degraded: false };
+    return { entries: readJsonFileDecoded(filePath, [], decodeStoredLogEntries), degraded: false, persistenceAllowed: true };
   } catch (error) {
     const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 500);
     console.warn(`[Logger] persisted log history is unavailable; continuing with an empty in-memory log: ${message}`);
-    return { entries: [], degraded: true };
+    return { entries: [], degraded: true, persistenceAllowed: error instanceof JsonFileDecodeError && error.preservedAt !== null };
   }
 }
 
@@ -78,11 +79,14 @@ export class LogManager extends EventEmitter {
   private entries: LogEntry[];
   private persistTimer: NodeJS.Timeout | null = null;
   private readonly filePath: string;
+  private persistenceAllowed: boolean;
 
   constructor(filePath = logsPath) {
     super();
     this.filePath = filePath;
-    this.entries = this.sanitizeEntries(readStoredLogEntries(this.filePath).entries);
+    const stored = readStoredLogEntries(this.filePath);
+    this.entries = this.sanitizeEntries(stored.entries);
+    this.persistenceAllowed = stored.persistenceAllowed;
   }
 
   push(entry: LogEntry) {
@@ -104,7 +108,13 @@ export class LogManager extends EventEmitter {
   }
 
   reload() {
-    this.entries = this.sanitizeEntries(readStoredLogEntries(this.filePath).entries);
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    const stored = readStoredLogEntries(this.filePath);
+    this.entries = this.sanitizeEntries(stored.entries);
+    this.persistenceAllowed = stored.persistenceAllowed;
     return this.getAll();
   }
 
@@ -116,7 +126,9 @@ export class LogManager extends EventEmitter {
     }
     try {
       fs.rmSync(this.filePath, { force: true });
+      this.persistenceAllowed = true;
     } catch (error) {
+      this.persistenceAllowed = false;
       console.warn('[Logger] failed to remove persisted log file', error);
     }
   }
@@ -126,7 +138,7 @@ export class LogManager extends EventEmitter {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
-    writeJsonFile(this.filePath, this.entries);
+    this.persist();
   }
 
   close() {
@@ -135,13 +147,24 @@ export class LogManager extends EventEmitter {
   }
 
   private schedulePersist() {
-    if (this.persistTimer) {
+    if (!this.persistenceAllowed || this.persistTimer) {
       return;
     }
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      writeJsonFile(this.filePath, this.entries);
+      this.persist();
     }, 300);
+  }
+
+  private persist() {
+    if (!this.persistenceAllowed) return;
+    try {
+      writeJsonFile(this.filePath, this.entries);
+    } catch (error) {
+      this.persistenceAllowed = false;
+      const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 500);
+      console.warn(`[Logger] log persistence failed; continuing in memory without overwriting history: ${message}`);
+    }
   }
 
   private sanitizeEntry(entry: LogEntry): LogEntry {
@@ -153,7 +176,7 @@ export class LogManager extends EventEmitter {
   }
 
   private sanitizeEntries(entries: LogEntry[]) {
-    return Array.isArray(entries) ? entries.map((entry) => this.sanitizeEntry(entry)) : [];
+    return entries.map((entry) => this.sanitizeEntry(entry));
   }
 }
 

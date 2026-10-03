@@ -81,6 +81,9 @@ export class SqliteCleanupPlanRepository implements CleanupPlanRepository {
       transferSessionId: validatedPlan.transferSessionId,
       transferGeneration: validatedPlan.transferGeneration,
       reason: validatedPlan.reason,
+      verifiedCandidateId: validatedPlan.verifiedCandidateId,
+      replacementManifestStamp: validatedPlan.replacementManifestStamp,
+      replacementFiles: validatedPlan.replacementFiles,
       files: [...filesByPath.values()], createdAt: validatedPlan.createdAt,
     };
     const existingPlans = cleanupPlans(jobPayload.localCleanupPlans, `job ${jobId}`);

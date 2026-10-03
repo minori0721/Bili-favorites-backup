@@ -20,6 +20,7 @@ import {
 import { sanitizeUploadText } from "./upload-health.js";
 import { redactRemotePathForDisplay } from "./diagnostics.js";
 import type { TransferSessionRepository } from "./repositories/transfer-sessions.js";
+import type { RecoverySource } from './scheduler/recovery-replacement.js';
 import { createRemoteReplacementRunner, type RemoteReplacementRunner } from "./remote-operations.js";
 import {
   applyQualityArtifactProfile,
@@ -62,12 +63,15 @@ export interface StrictMediaTarget {
 }
 
 export class DownloadTask extends Task {
+  credentialRevision?: string;
   automaticRecoveryAttempts?: number;
+  recoverySources?: RecoverySource[];
   bvid: string;
   cookie: BiliCookie;
   config: AppConfig;
   downloadDir?: string;
   downloadDirOverride?: string;
+  recoverySourceDir?: string;
   encodingRetry?: EncodingRetryContext;
   /** Manual/archive exact requests keep their target separate from the global preference. */
   qualityProfile?: QualityArtifactProfile;
@@ -107,6 +111,7 @@ export class DownloadTask extends Task {
     this.onDownloading?.(this);
     const result = await downloadWithBBDown(this.bvid, this.cookie, this.config, {
       downloadDir: this.downloadDirOverride,
+      recoverySourceDir: this.recoverySourceDir,
       onPrepared: (downloadDir, manifest) => {
         this.downloadDir = downloadDir;
         this.recoveredPages = manifest.outputs.length;
@@ -543,6 +548,7 @@ export class QualityUpgradeCleanupTask extends QualityUpgradePhaseTask {
 }
 
 export class UploadTask extends Task {
+  recoverySources?: RecoverySource[];
   automaticRecoveryAttempts?: number;
   sharedDownloadDir?: string;
   bvid: string;
@@ -809,6 +815,8 @@ export class UploadTask extends Task {
 }
 
 export class UploadVerificationTask extends Task {
+  recoverySources?: RecoverySource[];
+  automaticRecoveryAttempts?: number;
   result?: Awaited<ReturnType<typeof inspectRemoteFileSize>>;
   transferResult?: UploadResult;
   transferSessionStore?: TransferSessionRepository;

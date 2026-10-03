@@ -1,3 +1,5 @@
+import { buildLocalCleanupPlan } from './local-cleanup-plan.js';
+import { buildRecoveryReplacementPlans } from './recovery-replacement.js';
 import { UploadTask, QualityUpgradeUploadReplaceTask, QualityUpgradeReplaceTask, QualityUpgradeCleanupTask, type EncodingRetryContext } from '../tasks.js';
 import type { JobRepository, EnqueuePersistentJob } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
@@ -15,7 +17,7 @@ function isQualityUploadPhaseTask(task: unknown): task is QualityUploadPhaseTask
 }
 interface Dependencies {
   jobStore: Pick<JobRepository, 'complete' | 'completeAndEnqueue' | 'enqueue' | 'parkManualRecovery' | 'completeEncodingRetryCommit' | 'transitionEncodingRetryChildren'>;
-  stateManager: Pick<StateManager, 'clearUploadCooldown' | 'restoreExistingArchiveProof' | 'markUploadFailed' | 'recordRemoteConflictCandidate' | 'runAtomic' | 'markVerifiedUpload' | 'resolveRemoteConflictCandidate' | 'markUploadedPendingVerification'>;
+  stateManager: Pick<StateManager, 'recordLocalCleanupPlan' | 'clearUploadCooldown' | 'restoreExistingArchiveProof' | 'markUploadFailed' | 'recordRemoteConflictCandidate' | 'runAtomic' | 'markVerifiedUpload' | 'resolveRemoteConflictCandidate' | 'markUploadedPendingVerification'>;
   configStore: Pick<ConfigStore, 'get'>;
   uploadCircuit: Pick<UploadCircuitBreaker, 'recordSuccess'>;
   downloadQueue: { poke(): void };
@@ -130,10 +132,20 @@ export function createUploadCompletionHandler(dependencies: Dependencies) {
           files: candidate.files,
           existingArchiveProof: candidate.existingArchiveProof,
         });
+        const candidateCleanup = buildLocalCleanupPlan(task.bvid, task.downloadDir, candidate.files, 'upload_verified', deps.now,
+          { verifiedCandidateId: candidate.id, transferSessionId: task.sessionId, transferGeneration: task.sessionGeneration });
+        const replacementPlans = task.sessionId && task.sessionGeneration
+          ? buildRecoveryReplacementPlans(task.recoverySources || [], candidate.files,
+            { id: task.sessionId, generation: task.sessionGeneration }, deps.now()).map(plan => ({ ...plan, verifiedCandidateId: candidate.id })) : [];
+        const recordCleanup = () => {
+          if (candidateCleanup) deps.stateManager.recordLocalCleanupPlan(task.bvid, candidateCleanup, task.persistentJobId);
+          for (const plan of replacementPlans) deps.stateManager.recordLocalCleanupPlan(task.bvid, plan, task.persistentJobId);
+        };
         const completeExisting = candidate.existingArchiveProof?.status === "verified";
         const completeCandidate = !task.partialBackup;
         if (!completeExisting) {
           deps.stateManager.runAtomic(() => {
+            recordCleanup();
             deps.stateManager.markVerifiedUpload(
               task.bvid,
               candidate.candidateRemotePath,
@@ -177,16 +189,17 @@ export function createUploadCompletionHandler(dependencies: Dependencies) {
             debugVisible: true,
           });
           return;
-        }        const retainedExisting = deps.restoreConflictCandidateExistingArchive(task);
+        }
+        const retainedExisting = deps.restoreConflictCandidateExistingArchive(task);
         if (!completeCandidate) {
-          deps.stateManager.resolveRemoteConflictCandidate(
-            task.bvid,
-            task.userId,
-            task.mediaId,
-            candidate.id,
-            "kept_existing",
-          );
-          deps.supersedeUploadTaskSession(task);
+          deps.stateManager.runAtomic(() => {
+            recordCleanup();
+            deps.stateManager.resolveRemoteConflictCandidate(task.bvid, task.userId, task.mediaId, candidate.id, "kept_existing");
+            deps.supersedeUploadTaskSession(task);
+            if (!encodingRetry && task.persistentJobId && !deps.jobStore.complete(task.persistentJobId, deps.leaseOwner)) {
+              throw new Error('Partial candidate completion changed before commit');
+            }
+          });
           const retainedSummary = "新候选仅包含部分可用内容，系统已继续保留完整旧归档；两份远端文件均未删除。";
           if (encodingRetry) {
             deps.finishEncodingRetryFailure(
@@ -197,7 +210,6 @@ export function createUploadCompletionHandler(dependencies: Dependencies) {
               task.persistentJobId,
             );
           } else {
-            if (task.persistentJobId) deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
             void deps.localCleanup.request(task.bvid, task.downloadDir);
             deps.dispatchPersistentJobs();
           }

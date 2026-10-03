@@ -10,9 +10,9 @@ export function buildLocalCleanupPlan(
   remoteFiles: RemoteFileRecord[],
   reason: LocalCleanupPlan['reason'],
   now: () => number,
-  options: { id?: string; transferSessionId?: string; transferGeneration?: number } = {},
+  options: { id?: string; transferSessionId?: string; transferGeneration?: number; verifiedCandidateId?: string } = {},
 ): LocalCleanupPlan | null {
-  if (!localDir || !Array.isArray(remoteFiles) || remoteFiles.length === 0) return null;
+  if (!localDir || remoteFiles.length === 0) return null;
   const session = readDownloadSession(localDir);
   if (session.kind !== 'valid') return null;
   const manifest = session.manifest;
@@ -20,11 +20,11 @@ export function buildLocalCleanupPlan(
   const manifestFiles = [...manifest.outputs, ...(manifest.history || [])];
   const files: LocalCleanupPlan['files'] = [];
   for (const remoteFile of remoteFiles) {
-    const relativePath = String(remoteFile.localRelativePath || '').replace(/\\/g, '/');
+    const relativePath = (remoteFile.localRelativePath || '').replace(/\\/g, '/');
     if (!relativePath || !remoteFile.path) return null;
     const manifestFile = manifestFiles.find(file => file.relativePath.replace(/\\/g, '/') === relativePath);
-    if (!manifestFile || !Number.isFinite(Number(manifestFile.size)) || Number(manifestFile.size) < 0) return null;
-    if (remoteFile.size === undefined || Number(remoteFile.size) !== Number(manifestFile.size)) return null;
+    if (!manifestFile) return null;
+    if (remoteFile.size === undefined || remoteFile.size !== manifestFile.size) return null;
     let identity: fs.Stats;
     try {
       const root = fs.realpathSync(localDir);
@@ -38,14 +38,14 @@ export function buildLocalCleanupPlan(
     } catch { return null; }
     const previous = files.find(file => file.relativePath === relativePath);
     if (previous) {
-      previous.remotePaths = [...new Set([...previous.remotePaths, String(remoteFile.path)])];
+      previous.remotePaths = [...new Set([...previous.remotePaths, remoteFile.path])];
       continue;
     }
     files.push({
       relativePath,
-      expectedSize: Number(manifestFile.size),
+      expectedSize: manifestFile.size,
       expectedIdentity: { dev: identity.dev, ino: identity.ino, mtimeMs: identity.mtimeMs, ctimeMs: identity.ctimeMs },
-      remotePaths: [String(remoteFile.path)],
+      remotePaths: [remoteFile.path],
     });
   }
   if (files.length === 0) return null;
@@ -57,5 +57,6 @@ export function buildLocalCleanupPlan(
     id: String(options.id || `${reason}:${derivedId}`), localDir, manifestSessionId: manifest.sessionId,
     transferSessionId: options.transferSessionId, transferGeneration: options.transferGeneration,
     reason, files, createdAt: new Date(now()).toISOString(),
+    verifiedCandidateId: options.verifiedCandidateId,
   };
 }

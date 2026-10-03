@@ -1072,8 +1072,16 @@ export class PersistentJobStore implements JobRepository {
         AND status IN ('manual_wait','failed','retry_wait','pending')
         AND json_extract(payload_json, '$.awaitingManualRecovery')=1
         AND ${RECOVERY_NOT_STOPPED_SQL}
+        AND (kind!='download' OR (
+          json_extract(payload_json, '$.downloadRecovery.category') IN ('transient','account')
+          AND COALESCE(json_extract(payload_json, '$.downloadRecovery.nextCheckAt'), 0)<=?
+          AND not_before<=?
+        ))
         AND (
-          json_type(payload_json, '$.recoveryAssessment') IS NULL
+          kind='download'
+          OR json_type(payload_json, '$.recoveryAssessment') IS NULL
+          OR (json_extract(payload_json, '$.recoveryAssessment.kind')='manual_review'
+            AND COALESCE(json_extract(payload_json, '$.recoveryEvidenceChecked'), 0)=0)
           OR (
             json_type(payload_json, '$.recoveryAssessment.nextCheckAt') IN ('integer','real')
             AND json_extract(payload_json, '$.recoveryAssessment.nextCheckAt')<=?
@@ -1081,7 +1089,7 @@ export class PersistentJobStore implements JobRepository {
         )
       ORDER BY priority ASC, updated_at ASC, created_at ASC
       LIMIT ?
-    `).all(...kinds, Math.max(0, Math.floor(now)), Math.max(1, limit)), "due manual recovery jobs");
+    `).all(...kinds, Math.max(0, Math.floor(now)), Math.max(0, Math.floor(now)), Math.max(0, Math.floor(now)), Math.max(1, limit)), "due manual recovery jobs");
   }
 
   listFailed(kinds: PersistentJobKind[], limit = 1000) {

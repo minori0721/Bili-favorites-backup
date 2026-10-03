@@ -3,7 +3,6 @@ import type { PersistentJobRecord } from '../database.js';
 import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager } from '../state.js';
 import type { UserStore, BiliUser } from '../users.js';
-import type { ExistingArchiveProof } from '../upload-preflight.js';
 import { sanitizeUploadText, type UploadCircuitBreaker } from '../upload-health.js';
 import type { EncodingRetryContext, QualityUpgradeTarget } from '../tasks.js';
 import { parseEncodingRetryContext } from './recovery-context.js';
@@ -11,6 +10,7 @@ import { parseRecoveryIssuePayload } from './recovery-issue-payload.js';
 import {
   planRecoveryActions,
   recoveryIssueDisposition,
+  downloadRecoveryDisposition,
   recoveryIssueSeverity,
   type DownloadRecoveryCategory,
   type RecoveryIssueAction,
@@ -35,7 +35,6 @@ interface RecoveryIssueProjectionDependencies {
   manualDownloadRecoveryJobs(): PersistentJobRecord[];
   recoveryAssessment(payload: unknown): RecoveryAssessment | null;
   inspectConflictCandidateEligibility(job: PersistentJobRecord, assessment: RecoveryAssessment | null): { eligible: boolean };
-  persistedExistingArchiveProof(payload: unknown): ExistingArchiveProof | null;
 }
 
 function payloadOf(job: PersistentJobRecord) {
@@ -87,10 +86,11 @@ function uploadRecoveryActions(
     remoteStatus: assessment?.remoteStatus,
     candidateEligible: eligible,
   });
+  if (payload.evidenceError) return planned.filter(action => action.id === 'recheck' || action.id === 'abandon_attempt'
+    || (assessment?.kind === 'download_retry_exhausted' && action.id === 'redownload'));
   if (assessment?.kind !== 'conflict_candidate_ready') return planned;
   const candidateRecord = payload.conflictCandidate;
-  const existingProof = deps.persistedExistingArchiveProof(payload)
-    || deps.persistedExistingArchiveProof({ existingArchiveProof: candidateRecord?.existingArchiveProof });
+  const existingProof = payload.existingArchiveProof || candidateRecord?.existingArchiveProof;
   return existingProof ? planned : planned.filter(action => action.id !== 'keep_existing');
 }
 
@@ -102,7 +102,11 @@ function buildUploadRecoveryIssue(
   const storedMeta = (!payload.videoTitle || !payload.upperName) && job.bvid
     ? deps.state.getVideoMeta(String(job.bvid))
     : null;
-  const assessment = deps.recoveryAssessment(payload);
+  const persistedAssessment = deps.recoveryAssessment(payload);
+  const assessment: RecoveryAssessment | null = payload.evidenceError && !persistedAssessment ? {
+    kind: 'recovery_evidence_wait', checkedAt: deps.now(), localStatus: 'unknown', remoteStatus: 'unknown',
+    summary: `恢复证据损坏，后台将尝试重建，文件已保留：${sanitizeUploadText(payload.evidenceError, 180)}`,
+  } : persistedAssessment;
   const remoteErrorCode = assessment?.remoteErrorCode || payload.remoteErrorCode;
   const responseHeaders = assessment?.responseHeaders || payload.responseHeaders;
   const responseSnippet = assessment?.responseSnippet || payload.responseSnippet;
@@ -116,6 +120,10 @@ function buildUploadRecoveryIssue(
       : deps.inspectConflictCandidateEligibility(job, assessment).eligible;
   const actions = retryBusy ? [] : uploadRecoveryActions(deps, assessment, job, candidateEligible);
   const titleByKind: Record<string, string> = {
+    download_retry_exhausted: '自动下载恢复次数已用完',
+    download_account_required: '当前账号无法继续恢复下载',
+    recovery_evidence_wait: '等待后台重建恢复记录',
+    recovery_source_wait: '等待来源恢复后重新探测',
     remote_visibility_timeout: '远端文件仍在等待可见',
     remote_visibility_stalled: '远端文件长时间不可见',
     remote_write_rejected: '远端写入结果未确认',
@@ -251,11 +259,13 @@ function buildDownloadRecoveryIssue(
   };
   const local = job.bvid ? deps.state.getCompletedLocalDownload(String(job.bvid)) : null;
   const strictMediaTarget = payload.qualityStrict === true || payload.qualityEncodingOverride?.strict === true;
+  const automaticallyResumable = downloadRecoveryDisposition(category) === 'background';
   return {
     id: `download.${job.id}`,
     kind,
     severity: recoveryIssueSeverity(kind),
-    title: strictMediaTarget && payload.qualityFailure ? '严格媒体目标未满足' : (titleByKind[kind] || titleByKind.download_retry_exhausted),
+    title: automaticallyResumable ? '下载暂时失败，稍后自动继续'
+      : strictMediaTarget && payload.qualityFailure ? '严格媒体目标未满足' : (titleByKind[kind] || titleByKind.download_retry_exhausted),
     summary: sanitizeUploadText(stored.summary || job.lastError || '下载任务已安全暂停，等待选择恢复方式。', 300),
     protectedFacts: [
       '收藏来源和远端目标保持不变',
@@ -292,7 +302,8 @@ function buildDownloadRecoveryIssue(
       requestedEncoding: payload.qualityFailure?.requestedEncoding || payload.qualityEncodingOverride?.priority?.[0],
       actualEncodings: payload.qualityFailure?.actualEncodings,
     }, null, 2),
-    disposition: 'action_required',
+    disposition: automaticallyResumable ? 'background' : 'action_required',
+    nextAutomaticCheckAt: automaticallyResumable ? stored.nextCheckAt : undefined,
   };
 }
 

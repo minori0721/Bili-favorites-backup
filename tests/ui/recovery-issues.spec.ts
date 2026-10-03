@@ -15,7 +15,7 @@ const test = base.extend<{ browserProblems: string[] }>({
   },
 });
 
-type RecoveryFixtureKind = "visibility" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
+type RecoveryFixtureKind = "visibility" | "reprobe_exhausted" | "candidate" | "create_candidate" | "download" | "quality" | "storage";
 
 test("polished recovery and media picker keep compact layout and hidden legacy controls", async ({ page, browserProblems }) => {
   void browserProblems;
@@ -156,6 +156,21 @@ test("background remote visibility recovery does not ask for manual action", asy
   await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
 });
 
+for (const kind of ['source_wait', 'evidence_wait']) {
+  test(`automatic recovery ${kind} stays out of the manual problem count on all devices`, async ({ page, browserProblems }) => {
+    void browserProblems;
+    await page.request.post('/__test/reset', { data: { recoveryIssueKind: kind } });
+    await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+    await page.goto('/');
+    await expect(page.locator('#recoveryIssuesBtn')).toHaveText('待处理 0');
+    await page.locator('#recoveryIssuesBtn').click();
+    await expect(page.locator('#recoveryIssuesEmptyState')).toBeVisible();
+    await expect(page.locator('#recoveryIssuesEmptyTitle')).toHaveText('当前没有需要处理的问题');
+    await expect(page.locator('.recovery-issue-row')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}
+
 test("problem center shows a visible retry state and preserves the last list", async ({ page, browserProblems }) => {
   void browserProblems;
   await openRecoveryCenter(page);
@@ -222,6 +237,29 @@ test("abandon candidate requires confirmation and is sent only once", async ({ p
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
   expect(state.lastRecoveryAction).toBe("abandon_attempt");
+});
+
+test("exhausted automatic recovery allows one confirmed independent download without duplicate requests", async ({ page, browserProblems }, testInfo) => {
+  void browserProblems;
+  await openRecoveryCenter(page, 'reprobe_exhausted');
+  const row = page.locator('.recovery-issue-row');
+  if (testInfo.project.name === 'desktop') await row.click();
+  else await row.tap();
+  await expect(page.locator('#recoveryIssuesDetail')).toContainText('下载重试次数已用完');
+  await page.getByRole('button', { name: '重新下载', exact: true }).click();
+  await expect(page.locator('#confirmActionModal')).toHaveClass(/active/);
+  await expect(page.locator('#confirmActionMessage')).toContainText('独立目录');
+  await expect(page.locator('#confirmActionDetail')).toContainText('原本地文件和远端归档继续保留');
+  await expect(page.locator('#confirmActionDetail')).toContainText('额外本地空间和下载流量');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.locator('#confirmActionOkBtn').evaluate((element: HTMLButtonElement) => {
+    element.click();
+    element.click();
+  });
+  await expect(page.locator('#recoveryIssuesEmptyState')).toBeVisible();
+  const state = await page.request.get('/__test/state').then(response => response.json());
+  expect(state.recoveryActionCount).toBe(1);
+  expect(state.lastRecoveryAction).toBe('redownload');
 });
 
 test("complete local groups can create one isolated candidate without touching the official path", async ({ page, browserProblems }, testInfo) => {

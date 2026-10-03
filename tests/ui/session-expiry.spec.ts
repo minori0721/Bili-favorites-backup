@@ -1,5 +1,9 @@
 import {test, expect} from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+});
+
 test('update requests share session expiry while 503 remains a retryable failure', async ({page}) => {
   await page.request.post('/__test/reset');
   let status = 503;

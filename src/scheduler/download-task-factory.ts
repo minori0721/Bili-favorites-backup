@@ -1,4 +1,7 @@
+import { downloadCredentialRevision } from './download-recovery-automation.js';
+import { decodeRecoverySources } from './recovery-replacement.js';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { DownloadTask } from '../tasks.js';
 import type { UploadTarget } from '../tasks.js';
 import type { PersistentJobRecord } from '../database.js';
@@ -100,6 +103,7 @@ export function createDownloadTaskFactory(deps: Dependencies) {
     task.persistentJob = job;
     task.userId = downloadUser.id;
     task.downloadUserId = downloadUser.id;
+    task.credentialRevision = downloadCredentialRevision(downloadUser);
     task.mediaId = primary?.relation.mediaId || Number(payload.primaryMediaId || targets[0].mediaId);
     task.folderTitle = primary?.resolved.folderTitle || String(payload.primaryFolderTitle || targets[0].folderTitle);
     task.remotePath = targets[0]?.remotePath;
@@ -112,7 +116,11 @@ export function createDownloadTaskFactory(deps: Dependencies) {
       ? String(payload.qualityArtifactKey || buildQualityArtifactKey(bvid, payloadQualityProfile))
       : "";
     task.downloadDirOverride = encodingRetry?.candidateLocalDir
-      || (exactArtifact ? path.join(tempDir, `manual-${bvid}-${exactArtifact.slice(0, 16)}`) : undefined);
+      || (typeof payload.recoveryParentJobId === 'string'
+        ? path.join(tempDir, `recovery-${createHash('sha256').update(job.id).digest('hex').slice(0, 24)}`)
+        : exactArtifact ? path.join(tempDir, `manual-${bvid}-${exactArtifact.slice(0, 16)}`) : undefined);
+    task.recoverySourceDir = typeof payload.recoveryOriginalLocalDir === 'string' ? payload.recoveryOriginalLocalDir : undefined;
+    task.recoverySources = decodeRecoverySources(payload.recoverySources);
     task.automaticRecoveryAttempts = Math.max(0, Number(payload.automaticRecoveryAttempts || 0));
     const meta = deps.stateManager.getVideoMeta(bvid);
     task.videoTitle = meta?.title || bvid;

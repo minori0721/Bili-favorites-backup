@@ -18,6 +18,16 @@ test('persisted recovery display rejects malformed fields and never grants retry
   assert.deepEqual(value.qualityEncodingOverride.priority, ['HEVC']);
 });
 
+test('display and execution share whole-proof validation and keep independent records usable', () => {
+  const file = { name: 'v.mp4', path: '/a/v.mp4', size: 10 };
+  const records = [{ existingArchiveProof: { status: 'verified', remotePath: '/a', files: [file, null] } },
+    { existingArchiveProof: { status: 'verified', remotePath: '/a', files: [file] } }].map(parseRecoveryIssuePayload);
+  assert.equal(records[0].existingArchiveProof, undefined);
+  assert.match(records[0].evidenceError || '', /files\[1\]/);
+  assert.deepEqual(records[1].existingArchiveProof?.files, [file]);
+  assert.equal(records[1].evidenceError, undefined);
+});
+
 test('recovery display preserves raw proof and target identity for dedicated validators', () => {
   const target = { userId: 'u', mediaId: -1, remotePath: '/a', folderTitle: 'manual' };
   const proof = { status: 'verified' as const, remotePath: '/a', files: [{ name: 'proof.mp4', path: '/a/proof.mp4', size: 1, verificationStatus: 'verified' as const }] };

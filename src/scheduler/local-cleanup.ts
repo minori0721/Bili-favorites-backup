@@ -13,6 +13,7 @@ import { safeErrorSummary } from '../diagnostics.js';
 import { computeLocalCleanupRetryDelayMs } from './retry-policy.js';
 import { isRecord } from '../shared/api/value.js';
 import type { ScheduleTimer } from '../ports/timer.js';
+import { cleanupRecoveryReplacement } from './recovery-replacement-cleanup.js';
 
 function readCleanupManifest(localDir: string) {
     const session = readDownloadSession(localDir);
@@ -39,6 +40,7 @@ interface LocalCleanupDependencies {
     inspectRemote: typeof inspectRemoteFileSize;
     safeCandidate(path: string): boolean;
     refreshCapacity(force: boolean): void;
+    cleanupFiles?: typeof cleanupUploadedSessionFiles;
 }
 /** Owns cleanup work, retry scheduling and authorization checks. Stores are rebound by the maintenance barrier. */
 export function createLocalCleanup(deps: LocalCleanupDependencies) {
@@ -49,6 +51,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         attempts: number;
         nextAt: number;
         localDir: string;
+        bvid: string;
     }>();
     function scheduleLocalCleanupRetryTimer() {
         if (localCleanupRetryTimer) {
@@ -70,17 +73,19 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         localCleanupRetryTimer = schedule(() => {
             localCleanupRetryTimer = null;
             const now = deps.now();
-            for (const [bvid, item] of localCleanupRetries) {
+            for (const item of localCleanupRetries.values()) {
                 if (item.nextAt <= now)
-                    requestLocalCleanup(bvid, item.localDir);
+                    requestSingleCleanup(item.bvid, item.localDir);
             }
             scheduleLocalCleanupRetryTimer();
         }, Math.max(1000, next - deps.now()), false);
     }
-    function scheduleLocalCleanupRetry(bvid: string, localDir: string) {
-        const previous = localCleanupRetries.get(bvid);
+    function scheduleLocalCleanupRetry(bvid: string, localDir: string, error: unknown) {
+        const key = cleanupKey(bvid, localDir);
+        const previous = localCleanupRetries.get(key);
         const attempts = (previous?.attempts || 0) + 1;
-        localCleanupRetries.set(bvid, {
+        localCleanupRetries.set(key, {
+            bvid,
             attempts,
             nextAt: deps.now() + computeLocalCleanupRetryDelayMs(attempts - 1),
             localDir,
@@ -91,7 +96,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             type: "system",
             level: "warn",
             summary: `已验证归档暂未完成本地清理，将在稍后自动重试 ${bvid}`,
-            raw: `[DownloadRecovery] remote proof was not ready for local cleanup; attempt=${attempts}`,
+            raw: `[DownloadRecovery] local cleanup will retry; attempt=${attempts}; reason=${safeErrorSummary(error)}`,
             bvid,
             simpleVisible: true,
             debugVisible: true,
@@ -140,7 +145,16 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             return "remote_retry" as const;
         }
     }
-    function cleanupGenerationIsCurrent(plan: LocalCleanupPlan) {
+    function cleanupGenerationIsCurrent(plan: LocalCleanupPlan, bvid: string) {
+        if (plan.verifiedCandidateId) {
+            const session = plan.transferSessionId ? deps.transfers.get(plan.transferSessionId) : null;
+            if (plan.transferSessionId && (!session || session.generation !== plan.transferGeneration
+                || !['completed', 'superseded'].includes(session.phase))) return false;
+            return deps.state.listRelationsForBvid(bvid).some(relation => relation.remoteConflictCandidates?.some(candidate =>
+                candidate.id === plan.verifiedCandidateId && Boolean(candidate.resolution)
+                && (plan.replacementFiles || plan.files.flatMap(file => file.remotePaths.map(remote => ({ path: remote, size: file.expectedSize }))))
+                  .every(file => candidate.files.some(proof => proof.path === file.path && proof.size === file.size))));
+        }
         if (!plan.transferSessionId)
             return plan.reason === "quality_upgrade";
         const session = deps.transfers.get(plan.transferSessionId);
@@ -150,11 +164,41 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         const generation = deps.generation();
         if (!deps.canRun() || !localDir)
             return;
-        if (deps.jobs.hasActiveJobsForBvid(bvid) || deps.transfers.hasActiveForBvid(bvid))
-            return;
         const cleanupPlans = deps.state.getLocalCleanupPlans(bvid, localDir);
-        if (cleanupPlans.length === 0)
+        if (cleanupPlans.length === 0) return;
+        if (deps.jobs.hasActiveJobsForBvid(bvid) || deps.transfers.hasActiveForBvid(bvid)) throw localCleanupRetryableError();
+        const replacementPlans = cleanupPlans.filter(plan => plan.reason === 'recovery_replaced');
+        if (replacementPlans.length) {
+            const proofFiles = () => [...(deps.storage.video(bvid)?.remoteFiles || []),
+                ...deps.state.listRelationsForBvid(bvid).flatMap(relation => [...(relation.remoteFiles || []),
+                    ...(relation.remoteConflictCandidates || []).filter(candidate => candidate.resolution).flatMap(candidate => candidate.files)])];
+            for (const plan of replacementPlans) {
+                try {
+                    await cleanupRecoveryReplacement(plan, {
+                        tempRoot: deps.tempRoot,
+                        current: () => deps.canRun() && generation === deps.generation() && cleanupGenerationIsCurrent(plan, bvid)
+                            && !deps.jobs.hasActiveJobsForBvid(bvid) && !deps.transfers.hasActiveForBvid(bvid),
+                        proof: file => proofFiles().some(proof => proof.path === file.path && proof.size === file.size
+                            && proof.filenameMetadata?.cid === file.filenameMetadata?.cid && proof.verificationStatus === 'verified'),
+                        inspect: file => inspectCleanupRemoteFile(deps.config.get(), file).then(result => result === 'verified'),
+                    });
+                    if (!deps.canRun() || generation !== deps.generation()) return;
+                } catch (error) {
+                    throw Object.assign(new Error(`Recovery cleanup failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
+                }
+            }
+            if (!deps.canRun() || generation !== deps.generation()) return;
+            const remainingPaths = [...new Set(cleanupPlans.flatMap(plan => plan.files.map(file => file.relativePath)))].filter(relative => {
+                try { fs.lstatSync(path.join(localDir, relative)); return true; }
+                catch (error) {
+                    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+                    throw Object.assign(new Error(`Recovery cleanup reconciliation failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
+                }
+            });
+            deps.state.reconcileLocalCleanupPlans(bvid, localDir, remainingPaths, !fs.existsSync(localDir));
+            deps.refreshCapacity(true);
             return;
+        }
         if (path.basename(path.resolve(localDir)) !== bvid) {
             return performPlannedLocalCleanup(bvid, localDir, cleanupPlans);
         }
@@ -183,8 +227,9 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             if (realCandidate === realRoot || !realCandidate.startsWith(`${realRoot}${path.sep}`))
                 return;
         }
-        catch {
-            return;
+        catch (error) {
+            if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+            throw Object.assign(new Error(`Local cleanup inspection failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
         }
         const manifest = readCleanupManifest(localDir);
         if (!manifest || manifest.bvid !== bvid || !["complete", "partial"].includes(manifest.status))
@@ -201,7 +246,8 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                 return stat.isFile() && !stat.isSymbolicLink() && stat.size === expectedSize ? stat : false;
             }
             catch (error) {
-                return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" as const : false;
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing" as const;
+                throw Object.assign(new Error(`Local file inspection failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
             }
         };
         const proofByRelativePath = new Map<string, RemoteFileRecord[]>();
@@ -221,11 +267,14 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         for (const relation of relations) {
             for (const file of relation.remoteFiles || [])
                 addProof(file);
+            for (const candidate of relation.remoteConflictCandidates || []) {
+                if (candidate.resolution) for (const file of candidate.files) addProof(file);
+            }
         }
         const manifestFiles = [...manifest.outputs, ...(manifest.history || [])];
         const authorizedFiles: DownloadCleanupAuthorization[] = [];
         for (const plan of cleanupPlans) {
-            if (plan.manifestSessionId !== manifest.sessionId || !cleanupGenerationIsCurrent(plan))
+            if (plan.manifestSessionId !== manifest.sessionId || !cleanupGenerationIsCurrent(plan, bvid))
                 return;
             for (const planned of plan.files) {
                 const relativePath = normalizeRelative(planned.relativePath);
@@ -264,8 +313,9 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         if (!deps.canRun() || generation !== deps.generation())
             return;
         const cleanupOptions: DownloadCleanupOptions = {
+            allowProtected: true,
             authorizedFiles,
-            canDelete: () => deps.canRun() && cleanupPlans.every((plan) => cleanupGenerationIsCurrent(plan))
+            canDelete: () => deps.canRun() && cleanupPlans.every((plan) => cleanupGenerationIsCurrent(plan, bvid))
                 && !deps.jobs.hasActiveJobsForBvid(bvid) && !deps.transfers.hasActiveForBvid(bvid),
             preserveManifest: manifestFiles.some((file) => !authorizedPaths.has(normalizeRelative(file.relativePath))),
         };
@@ -299,10 +349,13 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         for (const relation of deps.state.listRelationsForBvid(bvid)) {
             for (const file of relation.remoteFiles || [])
                 addProof(file);
+            for (const candidate of relation.remoteConflictCandidates || []) {
+                if (candidate.resolution) for (const file of candidate.files) addProof(file);
+            }
         }
         const authorizedFiles: DownloadCleanupAuthorization[] = [];
         for (const plan of cleanupPlans) {
-            if (plan.manifestSessionId !== manifest.sessionId || !cleanupGenerationIsCurrent(plan))
+            if (plan.manifestSessionId !== manifest.sessionId || !cleanupGenerationIsCurrent(plan, bvid))
                 return;
             for (const planned of plan.files) {
                 const relativePath = String(planned.relativePath || "").replace(/\\/g, "/");
@@ -322,7 +375,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
                 }
                 catch (error) {
                     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-                        return;
+                        throw Object.assign(new Error(`Local file inspection failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
                 }
                 const proofs = (proofByRelativePath.get(relativePath) || [])
                     .filter((file) => Number(file.size) === Number(planned.expectedSize) && planned.remotePaths.includes(file.path));
@@ -347,8 +400,9 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         if (!deps.canRun() || generation !== deps.generation())
             return;
         await cleanupSharedUploadDir(localDir, new Set([bvid]), {
+            allowProtected: true,
             authorizedFiles,
-            canDelete: () => deps.canRun() && cleanupPlans.every((plan) => cleanupGenerationIsCurrent(plan))
+            canDelete: () => deps.canRun() && cleanupPlans.every((plan) => cleanupGenerationIsCurrent(plan, bvid))
                 && !deps.jobs.hasActiveJobsForBvid(bvid) && !deps.transfers.hasActiveForBvid(bvid),
             preserveManifest: manifestFiles.some((file) => !authorizedPaths.has(file.relativePath.replace(/\\/g, "/"))),
         });
@@ -372,7 +426,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             hasVerifiedArchive?: boolean;
         }> = [];
         for (const plans of groups.values()) {
-            if (plans.length === 0 || !plans.every((plan) => cleanupGenerationIsCurrent(plan)))
+            if (plans.length === 0 || !plans.every((plan) => cleanupGenerationIsCurrent(plan, bvid)))
                 continue;
             const localDir = plans[0].localDir;
             const manifest = readCleanupManifest(localDir);
@@ -527,15 +581,17 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             return { ok: false as const, status: 409 as const, message: "该视频仍有传输任务，请先停止本次尝试，再删除本地文件" };
         }
         if (candidate.manualFiles) {
-            if (!deps.canRun() || localCleanupInFlight.has(bvid)) {
+            if (!deps.canRun() || [...localCleanupInFlight.keys()].some(key => key.startsWith(`${bvid}\u0000`))) {
                 return { ok: false as const, status: 409 as const, message: "本地清理正在进行，请稍后重试" };
             }
             const work = cleanupSharedUploadDir(candidate.localDir, new Set([bvid]), {
                 authorizedFiles: candidate.manualFiles,
+                allowProtected: true,
                 canDelete: () => deps.canRun() && localReleaseSessionStamp(bvid) === candidate.sessionStamp
                     && !deps.jobs.hasActiveJobsForBvid(bvid) && !deps.transfers.hasActiveForBvid(bvid),
-            }).finally(() => localCleanupInFlight.delete(bvid));
-            localCleanupInFlight.set(bvid, work);
+            }).catch(error => { console.warn(`[LocalCleanup] explicit release failed: ${safeErrorSummary(error)}`); })
+                .finally(() => localCleanupInFlight.delete(cleanupKey(bvid, candidate.localDir)));
+            localCleanupInFlight.set(cleanupKey(bvid, candidate.localDir), work);
             return { ok: true as const, status: 202 as const, bvid, releaseId, fileCount: candidate.fileCount, totalBytes: candidate.totalBytes };
         }
         const work = requestLocalCleanup(bvid, candidate.localDir);
@@ -545,44 +601,52 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         void work;
         return { ok: true as const, status: 202 as const, bvid, releaseId, fileCount: candidate.fileCount, totalBytes: candidate.totalBytes };
     }
+    function cleanupKey(bvid: string, localDir: string) { return `${bvid}\u0000${path.resolve(localDir)}`; }
     function requestLocalCleanup(bvid: string, localDir: string) {
+        if (!localDir || !deps.canRun()) return null;
+        const directories = new Set([localDir, ...deps.state.getLocalCleanupPlans(bvid).map(plan => plan.localDir)]);
+        const work = [...directories].map(dir => requestSingleCleanup(bvid, dir)).filter(item => item !== null);
+        return work.length ? Promise.all(work).then(() => undefined) : null;
+    }
+    function requestSingleCleanup(bvid: string, localDir: string) {
         if (!deps.canRun() || !localDir)
             return null;
         const generation = deps.generation();
-        const active = localCleanupInFlight.get(bvid);
+        const key = cleanupKey(bvid, localDir);
+        const active = localCleanupInFlight.get(key);
         if (active)
             return active;
-        const retry = localCleanupRetries.get(bvid);
+        const retry = localCleanupRetries.get(key);
         if (retry && retry.nextAt > deps.now())
             return null;
         const work = performVerifiedLocalCleanup(bvid, localDir)
             .then(() => {
             if (generation !== deps.generation())
                 return;
-            localCleanupRetries.delete(bvid);
+            localCleanupRetries.delete(key);
             scheduleLocalCleanupRetryTimer();
         })
             .catch((error: unknown) => {
             if (generation !== deps.generation())
                 return;
             if (isRecord(error) && error.localCleanupRetryable) {
-                scheduleLocalCleanupRetry(bvid, localDir);
+                scheduleLocalCleanupRetry(bvid, localDir, error);
             }
             else {
                 console.warn(`[Scheduler] Verified local cleanup skipped for ${bvid}: ${safeErrorSummary(error)}`);
             }
         })
             .finally(() => {
-            localCleanupInFlight.delete(bvid);
+            localCleanupInFlight.delete(key);
         });
-        localCleanupInFlight.set(bvid, work);
+        localCleanupInFlight.set(key, work);
         return work;
     }
     async function cleanupSharedUploadDir(downloadDir: string, bvids: Set<string> = new Set(), options: DownloadCleanupOptions = {}) {
         const generation = deps.generation();
         const current = () => deps.canRun() && generation === deps.generation();
         try {
-            const result = await cleanupUploadedSessionFiles(downloadDir, {
+            const result = await (deps.cleanupFiles || cleanupUploadedSessionFiles)(downloadDir, {
                 ...options, canDelete: () => current() && (options.canDelete?.() ?? false),
             });
             if (!current())
@@ -616,7 +680,7 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
             }
         }
         catch (error: unknown) {
-            console.warn(`[Scheduler] Failed to cleanup ${downloadDir}: ${safeErrorSummary(error)}`);
+            throw Object.assign(new Error(`Local cleanup failed: ${safeErrorSummary(error)}`), { cause: error, localCleanupRetryable: true });
         }
         finally {
             if (current())
@@ -640,6 +704,6 @@ export function createLocalCleanup(deps: LocalCleanupDependencies) {
         perform: performVerifiedLocalCleanup, stop, reset,
         get sweeping() { return Boolean(localCleanupSweepPromise); },
         get busy() { return Boolean(localCleanupSweepPromise) || localCleanupInFlight.size > 0; },
-        retryState(bvid: string) { const retry = localCleanupRetries.get(bvid); return retry ? { ...retry } : undefined; },
+        retryState(bvid: string) { const retry = [...localCleanupRetries.values()].find(item => item.bvid === bvid); return retry ? { ...retry } : undefined; },
     };
 }
