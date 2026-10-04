@@ -565,6 +565,7 @@ export function decodeFavoriteItemsPage(data: unknown, page: number, pageSize: n
     : rawHasMore === 0 || rawHasMore === false
       ? false
       : total !== undefined && page * pageSize < total;
+  if (hasMore && items.length === 0) throw new BiliResponseFormatError('favorite.pagination.empty_continuation');
   return { items, page, pageSize, hasMore, total };
 }
 

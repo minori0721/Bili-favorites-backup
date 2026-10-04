@@ -64,6 +64,16 @@ test("收藏内容坏条目和坏分页不能变成空页", () => {
   assert.throws(() => decodeFavoriteItemsPage({ medias: [], has_more: "false" }, 1, 20), /favorite\.has_more/);
 });
 
+test('empty continuing favorite pages fail, while legitimate empty endings and changing totals remain supported', () => {
+  for (const has_more of [true, 1]) {
+    assert.throws(() => decodeFavoriteItemsPage({medias: [], has_more, info: {media_count: 40}}, 1, 20), /empty_continuation/);
+  }
+  assert.throws(() => decodeFavoriteItemsPage({medias: [], info: {media_count: 40}}, 1, 20), /empty_continuation/);
+  assert.equal(decodeFavoriteItemsPage({medias: [], has_more: false}, 1, 20).hasMore, false);
+  assert.equal(decodeFavoriteItemsPage({medias: [], info: {media_count: 40}}, 3, 20).hasMore, false);
+  assert.equal(decodeFavoriteItemsPage({medias: [{bvid: 'BVVALID'}], has_more: false, info: {media_count: 99}}, 1, 20).items.length, 1);
+});
+
 
 test('endpoint identity rules reject fabricated watch-later entries and preserve non-video history', () => {
   assert.throws(() => decodeOnlineContentPage({list: [{id: 1, title: 'bad'}], count: 1}, 'watch_later', 1, 20), /aid/);

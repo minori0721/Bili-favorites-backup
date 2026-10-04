@@ -1,5 +1,4 @@
-import { DownloadTask, QualityUpgradeDownloadTask, UploadTask, QualityUpgradeUploadReplaceTask, QualityUpgradeReplaceTask, QualityUpgradeCleanupTask, type UploadVerificationTask, type QualityUpgradeTask } from '../tasks.js';
-import type { JobRepository } from '../repositories/jobs.js';
+import { DownloadTask, QualityUpgradeDownloadTask, UploadTask, QualityUpgradeUploadReplaceTask, QualityUpgradeReplaceTask, QualityUpgradeCleanupTask, type QualityUpgradeTask } from '../tasks.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText, type UploadFailureInfo } from '../upload-health.js';
 import { qualityDownloadStageLabel } from './quality-rules.js';
@@ -12,8 +11,6 @@ function isQualityUpload(task: unknown): task is QualityUpload {
   return task instanceof QualityUpgradeUploadReplaceTask || task instanceof QualityUpgradeReplaceTask || task instanceof QualityUpgradeCleanupTask;
 }
 interface Dependencies {
-  jobs: Pick<JobRepository, 'markRunning'>;
-  leaseOwner: string;
   markDownloadStarted(): void;
   syncQuality(task: QualityUpgradeDownloadTask | QualityUpload, status: QualityUpgradeTask['status']): void;
   downloadFailure(task: Download, error: unknown): unknown;
@@ -27,7 +24,6 @@ export function createTaskProgressHandlers(deps: Dependencies) {
   return {
     downloadStart(task: Download) {
       deps.markDownloadStarted();
-      if (task.persistentJobId) deps.jobs.markRunning(task.persistentJobId, deps.leaseOwner, 30 * 60_000);
       if (task instanceof QualityUpgradeDownloadTask) {
         task.control.qualityStage = 'download';
         task.control.qualityStageLabel = qualityDownloadStageLabel(task.control, '下载新版');
@@ -35,16 +31,12 @@ export function createTaskProgressHandlers(deps: Dependencies) {
       }
     },
     uploadStart(task: Upload) {
-      if (task.persistentJobId) deps.jobs.markRunning(task.persistentJobId, deps.leaseOwner, 30 * 60_000);
       if (!isQualityUpload(task)) return;
       task.control.error = undefined;
       task.control.qualityStage = 'upload';
       task.control.qualityStageLabel = task instanceof QualityUpgradeCleanupTask ? '清理旧文件备份'
         : task instanceof QualityUpgradeReplaceTask ? '替换远端文件' : '上传新版到临时目录';
       deps.syncQuality(task, 'running');
-    },
-    verificationStart(task: UploadVerificationTask) {
-      if (task.persistentJobId) deps.jobs.markRunning(task.persistentJobId, deps.leaseOwner, 5 * 60_000);
     },
     downloadRetry(task: Download, error: unknown) {
       retryLog(task, error);

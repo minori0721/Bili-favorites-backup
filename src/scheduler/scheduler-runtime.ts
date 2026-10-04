@@ -146,6 +146,7 @@ function delay(ms: number) {
 }
 
 export interface SchedulerDependencies {
+  onFatalError?: (error: Error) => void;
   scheduleTimer?: ScheduleTimer;
   leaseOwner?: string;
   createQueue?: (stage: 'download' | 'upload' | 'verification', concurrency: number, maxSize: number) => TaskQueue;
@@ -287,7 +288,7 @@ export class SchedulerRuntime implements SchedulerControl {
     this.remoteFileInspector = dependencies.remoteFileInspector || dependencies.remoteStorage?.inspect || inspectRemoteFileSize;
     this.legacyTempDir = dependencies.legacyTempDir || tempDir;
     this.leaseOwner = dependencies.leaseOwner ?? crypto.randomUUID();
-    this.timers = createRuntimeTimers(dependencies.scheduleTimer);
+    this.timers = createRuntimeTimers(dependencies.scheduleTimer, error => this.failRuntime(error));
     const clock = dependencies.clock;
     this.now = dependencies.now ?? (clock ? () => clock.now() : Date.now);
     this.random = dependencies.random ?? (clock ? () => clock.random() : Math.random);
@@ -295,6 +296,7 @@ export class SchedulerRuntime implements SchedulerControl {
     this.deadlineNow = clock ? () => clock.now() : Date.now;
     this.cycleLogger = createCycleLogger({ now: this.now, push: entry => logManager.push(entry) });
     this.runtime = createSchedulingRuntime({
+      failed: dependencies.onFatalError,
       initiallyAccepting: !dependencies.deferAdmissionUntilStart,
       clock: clock ? {now: () => clock.now(), sleep: ms => clock.sleep(ms)} : undefined,
       stopProducers: () => this.stopWorkProducers(),
@@ -505,6 +507,12 @@ export class SchedulerRuntime implements SchedulerControl {
       Math.max(1, Math.min(10, config.remoteVerifyConcurrency || 3)),
       this.queueHighWater(config.remoteVerifyConcurrency || 3, config.queuePrefetchLimit)
     );
+    for (const queue of [this.downloadQueue, this.uploadQueue, this.verificationQueue]) {
+      queue.setBeforeRun(task => !task.persistentJobId || this.jobStore.markRunning(
+        task.persistentJobId, this.leaseOwner, queue === this.verificationQueue ? 5 * 60_000 : 30 * 60_000,
+      ));
+      queue.setFailureHandler(error => this.failRuntime(error));
+    }
     this.downloadAdmission = createDownloadAdmission({
       state: this.stateManager,
       now: this.now,
@@ -885,7 +893,6 @@ export class SchedulerRuntime implements SchedulerControl {
 
   private bindTaskLifecycleEvents() {
     const progress = createTaskProgressHandlers({
-      jobs: this.jobStore, leaseOwner: this.leaseOwner,
       markDownloadStarted: () => this.downloadAdmission.markStarted(),
       syncQuality: (task, status) => this.syncQualityUpgradeControl(task, status),
       downloadFailure: (task, error) => this.downloadAdmission.handleTaskFailure(task, error),
@@ -900,7 +907,6 @@ export class SchedulerRuntime implements SchedulerControl {
         uploadStart: progress.uploadStart,
         uploadSettled: () => { this.dispatchPersistentJobs(); this.downloadQueue.poke(); },
         downloadSettled: () => { this.dispatchPersistentJobs(); },
-        verificationStart: progress.verificationStart,
         verificationCompleted: task => this.handleUploadVerificationCompleted(task),
         verificationError: (task, error) => this.handleUploadVerificationError(task, error),
         verificationSettled: () => { this.dispatchPersistentJobs(); },
@@ -929,18 +935,12 @@ export class SchedulerRuntime implements SchedulerControl {
   }
 
   private renewActiveLeases() {
-    for (const queue of [this.downloadQueue, this.uploadQueue, this.verificationQueue]) {
-      for (const task of queue.getTasks()) {
-        if (task.status === "running" && task.persistentJobId) {
-          this.jobStore.extendLease(task.persistentJobId, this.leaseOwner, 30 * 60_000);
-        }
-      }
-    }
+    this.persistentJobDispatcher.renewLeases();
     this.accessProbeWorkflow.renewLease();
   }
 
   private ensureLeaseHeartbeat() {
-    if (this.runtime.closed) return;
+    if (this.runtime.closed || this.runtime.failure) return;
     if (this.timers.has('heartbeat')) return;
     this.timers.start('heartbeat', () => this.renewActiveLeases(), 60_000, true);
   }
@@ -1038,7 +1038,19 @@ export class SchedulerRuntime implements SchedulerControl {
     this.accessProbeWorkflow.dispatch();
   }
 
-  private dispatchPersistentJobs() { this.persistentJobDispatcher.dispatch(); }
+  private dispatchPersistentJobs() {
+    try { this.persistentJobDispatcher.dispatch(); }
+    catch (error) { this.failRuntime(error); }
+  }
+
+  private failRuntime(cause: unknown) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    if (this.runtime.failure) return;
+    for (const queue of [this.downloadQueue, this.uploadQueue, this.verificationQueue]) queue.halt(error);
+    this.timers.cancel('heartbeat');
+    this.runtime.fail(error);
+    console.error(`[Scheduler] Critical failure; admission closed: ${safeErrorSummary(error)}`);
+  }
 
   private schedulePersistentJobWake() {
     this.timers.cancel('dispatch');
@@ -1204,7 +1216,7 @@ export class SchedulerRuntime implements SchedulerControl {
     this.localCleanup.startSweep();
 
     this.dispatchPersistentJobs();
-    return true;
+    return this.runtime.accepting;
   }
 
   setPathMigrationMaintenance(

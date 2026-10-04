@@ -8,6 +8,7 @@ export class HeldQueue extends TaskQueue {
     super.setStartGate(() => false);
   }
   admitted(task: Task) { return this.admission?.(task) ?? true; }
+  allowExecution() { super.setStartGate(this.admission); }
 }
 export function heldQueues() {
   const queues = new Map<'download' | 'upload' | 'verification', HeldQueue>();

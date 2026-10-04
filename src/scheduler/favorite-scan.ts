@@ -228,7 +228,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 lastHistoryScanAt: scanStartedAt,
                 total: result.total,
             });
-            if (!result.hasMore || result.items.length === 0) {
+            if (!result.hasMore) {
                 break;
             }
             page += 1;
@@ -339,7 +339,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             });
             await recordPage(user, mediaId, folderTitle, result.items, page, 20);
             assertCurrent();
-            if (!result.hasMore || result.items.length === 0) {
+            if (!result.hasMore) {
                 const completeWithoutTotal = !manual && !totalPages && page > Math.max(startAfterPage + 1, 1);
                 deps.state.updateFolderScan(user.id, mediaId, {
                     folderTitle,

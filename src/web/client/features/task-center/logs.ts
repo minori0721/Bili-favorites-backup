@@ -18,8 +18,9 @@ export function createLogController(root:HTMLElement, checkSession: (signal: Abo
   const feed = createLogFeed({connect:() => {
     const source = new EventSource('/api/logs/stream');
     const connection: LogConnection = {onmessage:null,onerror:null,close:() => {
-      source.onmessage = null; source.onerror = null; source.close();
+      source.onmessage = null; source.onerror = null; source.onopen = null; source.close();
     }};
+    source.onopen = () => connection.onopen?.();
     source.onmessage = event => connection.onmessage?.({data:String(event.data)});
     source.onerror = () => connection.onerror?.();
     return connection;

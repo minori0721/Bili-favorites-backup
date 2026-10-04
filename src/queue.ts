@@ -1,7 +1,7 @@
 import type { QueueBoardItem, QueueBoardStage, QueueBoardPhase } from './shared/api/queue-item.js';
 export type { QueueBoardItem, QueueBoardStage, QueueBoardPhase, QueueBoardAction } from './shared/api/queue-item.js';
 import { EventEmitter } from "node:events";
-import { sanitizeDiagnosticText } from "./diagnostics.js";
+import { safeErrorSummary, sanitizeDiagnosticText } from "./diagnostics.js";
 
 export abstract class Task {
   id: string;
@@ -95,6 +95,9 @@ export class TaskQueue extends EventEmitter {
   private concurrency: number;
   private sequenceCounter = 0;
   private canStartTask?: (task: Task) => boolean;
+  private beforeRun?: (task: Task) => boolean;
+  private failure: Error | null = null;
+  private onFailure?: (error: QueueLifecycleError) => void;
   private maxSize: number;
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -114,6 +117,25 @@ export class TaskQueue extends EventEmitter {
     this.processQueue();
   }
 
+  /** A stale claim is discarded without executing or changing its durable job. */
+  setBeforeRun(beforeRun: (task: Task) => boolean) { this.beforeRun = beforeRun; }
+
+  setFailureHandler(handler: (error: QueueLifecycleError) => void) { this.onFailure = handler; }
+
+  getFailure() { return this.failure; }
+
+  halt(error: Error) {
+    if (this.failure) return;
+    this.failure = error;
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+  }
+
+  hasPersistentJob(id: string) {
+    return this.queue.some(task => task.persistentJobId === id
+      && (task.status === 'pending' || task.status === 'running' || task.status === 'retry_wait'));
+  }
+
   setMaxSize(maxSize: number) {
     this.maxSize = Math.max(this.concurrency, Math.floor(maxSize));
   }
@@ -123,27 +145,32 @@ export class TaskQueue extends EventEmitter {
   }
 
   canAccept(count = 1) {
-    return this.queue.length + count <= this.maxSize;
+    return !this.failure && this.queue.length + count <= this.maxSize;
   }
 
   addTask(task: Task) {
-    if (!this.canAccept()) return false;
+    if (!this.canAccept() || this.queue.includes(task) || (task.persistentJobId && this.hasPersistentJob(task.persistentJobId))) return false;
     this.prepareTask(task);
     this.queue.push(task);
-    this.emit("taskAdded", task);
+    try { this.emit("taskAdded", task); }
+    catch (error) { this.fail(task, 'admission', error); return false; }
     this.processQueue();
     return true;
   }
 
   addTasks(tasks: Task[]) {
-    const accepted = tasks.slice(0, Math.max(0, this.maxSize - this.queue.length));
-    for (const task of accepted) {
+    let accepted = 0;
+    for (const task of tasks) {
+      if (!this.canAccept()) break;
+      if (this.queue.includes(task) || (task.persistentJobId && this.hasPersistentJob(task.persistentJobId))) continue;
       this.prepareTask(task);
       this.queue.push(task);
-      this.emit("taskAdded", task);
+      try { this.emit("taskAdded", task); }
+      catch (error) { this.fail(task, 'admission', error); break; }
+      accepted++;
     }
     this.processQueue();
-    return accepted.length;
+    return accepted;
   }
 
   private prepareTask(task: Task) {
@@ -203,78 +230,122 @@ export class TaskQueue extends EventEmitter {
   }
 
   private processQueue() {
-    if (this.activeCount >= this.concurrency) {
+    if (this.failure || this.activeCount >= this.concurrency) {
       return;
     }
     const runnableTasks = this.queue.filter((t) => t.status === "pending");
     for (const task of runnableTasks) {
-      if (this.activeCount >= this.concurrency) {
+      if (this.failure || this.activeCount >= this.concurrency) {
         return;
       }
-      if (this.canStartTask && !this.canStartTask(task)) {
-        continue;
+      try {
+        if (this.canStartTask && !this.canStartTask(task)) continue;
+      } catch (error) {
+        this.fail(task, 'admission', error);
+        return;
       }
-      void this.runTask(task);
+      if (task.status !== 'pending' || !this.queue.includes(task)) continue;
+      // runTask handles lifecycle errors and always releases its active slot.
+      void this.runTask(task).catch(error => this.fail(task, 'settled', error));
     }
   }
 
   private async runTask(task: Task) {
     this.activeCount++;
-    task.status = "running";
-    task.startedAt = Date.now();
-    this.emit("taskStart", task);
-
+    let phase: QueueLifecyclePhase = 'start';
     try {
-      await task.run();
+      if (this.beforeRun && !this.beforeRun(task)) {
+        task.status = 'error';
+        return;
+      }
+      task.status = "running";
+      task.startedAt = Date.now();
+      this.emit("taskStart", task);
+      if (this.failure) { task.status = 'error'; return; }
+      try {
+        await task.run();
+      } catch (error: unknown) {
+        if (this.failure) { task.status = 'error'; return; }
+        // Only the task's own failure enters retry policy. Commit/listener
+        // failures must never restart an already successful transfer.
+        phase = 'failure';
+        this.handleTaskFailure(task, error);
+        return;
+      }
+      if (this.failure) { task.status = 'error'; return; }
+      phase = 'completion';
       task.status = "completed";
       this.emit("taskCompleted", task);
-    } catch (error: unknown) {
-      task.error = error instanceof Error ? error : new Error(String(error));
-      const failure = error !== null && typeof error === 'object' ? error : {};
-      const permanent = 'permanent' in failure && failure.permanent === true;
-      const deferred = 'deferToNextCycle' in failure && failure.deferToNextCycle === true;
-      const retryDelay = 'retryAfterMs' in failure ? failure.retryAfterMs : undefined;
-      if (permanent || deferred || task.retries >= task.maxRetries) {
-        task.status = "error";
-        this.emit("taskError", task, error);
-      } else {
-        const retryIndex = task.retries;
-        task.retries++;
-        task.status = "retry_wait";
-        task.startedAt = undefined;
-        const retryAfterMs = computeTaskRetryDelayMs(task.retryDelaySeconds, retryIndex, typeof retryDelay === 'number' ? retryDelay : undefined);
-        task.retryAt = Date.now() + retryAfterMs;
-        this.emit("taskRetry", task, error);
-        if (!this.queue.includes(task) || task.status !== 'retry_wait') return;
-        const timer = setTimeout(() => {
-          this.retryTimers.delete(task.id);
-          task.status = "pending";
-          task.retryAt = undefined;
-          this.processQueue();
-        }, retryAfterMs);
-        this.retryTimers.set(task.id, timer);
-      }
+    } catch (error) {
+      task.status = 'error';
+      this.fail(task, phase, error);
     } finally {
       this.activeCount--;
       if (task.status === "completed" || task.status === "error") {
-        this.queue = this.queue.filter(t => t.id !== task.id);
+        this.queue = this.queue.filter(t => t !== task);
       }
-
-      this.emit("taskSettled", task);
+      try {
+        this.emit("taskSettled", task);
+      } catch (error) {
+        this.fail(task, 'settled', error);
+      }
       this.processQueue();
     }
   }
 
+  private fail(task: Task, phase: QueueLifecyclePhase, cause: unknown) {
+    if (this.failure) return;
+    const failure = new QueueLifecycleError(task, phase, cause);
+    this.halt(failure);
+    // This notification is the terminal application boundary, not task retry.
+    console.error(`[Queue] ${failure.message}`);
+    try {
+      this.onFailure?.(failure);
+    } catch (error) {
+      console.error(`[Queue] Failure notification failed: ${safeErrorSummary(error)}`);
+    }
+  }
+
+  private handleTaskFailure(task: Task, error: unknown) {
+    task.error = error instanceof Error ? error : new Error(String(error));
+    const failure = error !== null && typeof error === 'object' ? error : {};
+    const permanent = 'permanent' in failure && failure.permanent === true;
+    const deferred = 'deferToNextCycle' in failure && failure.deferToNextCycle === true;
+    const retryDelay = 'retryAfterMs' in failure ? failure.retryAfterMs : undefined;
+    if (permanent || deferred || task.retries >= task.maxRetries) {
+      task.status = "error";
+      this.emit("taskError", task, error);
+    } else {
+      const retryIndex = task.retries;
+      task.retries++;
+      task.status = "retry_wait";
+      task.startedAt = undefined;
+      const retryAfterMs = computeTaskRetryDelayMs(task.retryDelaySeconds, retryIndex, typeof retryDelay === 'number' ? retryDelay : undefined);
+      task.retryAt = Date.now() + retryAfterMs;
+      this.emit("taskRetry", task, error);
+      if (this.failure || !this.queue.includes(task) || task.status !== 'retry_wait') return;
+      const timer = setTimeout(() => {
+        this.retryTimers.delete(task.id);
+        task.status = "pending";
+        task.retryAt = undefined;
+        this.processQueue();
+      }, retryAfterMs);
+      this.retryTimers.set(task.id, timer);
+    }
+  }
+
   async waitForIdle(timeoutMs = 20_000) {
+    if (this.failure) throw this.failure;
     if (!this.isBusy()) return true;
-    return await new Promise<boolean>((resolve) => {
+    return await new Promise<boolean>((resolve, reject) => {
       let settled = false;
       const finish = (value: boolean) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         this.removeListener("taskSettled", onSettled);
-        resolve(value);
+        if (this.failure) reject(this.failure);
+        else resolve(value);
       };
       const onSettled = () => {
         if (!this.isBusy()) finish(true);
@@ -282,6 +353,19 @@ export class TaskQueue extends EventEmitter {
       const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
       this.on("taskSettled", onSettled);
     });
+  }
+}
+
+export type QueueLifecyclePhase = 'admission' | 'start' | 'completion' | 'failure' | 'settled';
+export class QueueLifecycleError extends Error {
+  readonly taskId: string;
+  readonly persistentJobId?: string;
+  constructor(task: Task, readonly phase: QueueLifecyclePhase, readonly cause: unknown) {
+    const detail = sanitizeDiagnosticText(cause instanceof Error ? cause.message : String(cause), 500);
+    super(`Task lifecycle failed: phase=${phase} task=${task.id} job=${task.persistentJobId ?? 'none'}: ${detail}`);
+    this.name = 'QueueLifecycleError';
+    this.taskId = task.id;
+    this.persistentJobId = task.persistentJobId;
   }
 }
 

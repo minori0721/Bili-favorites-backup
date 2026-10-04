@@ -9,7 +9,7 @@ export const scheduleSystemTimer: ScheduleTimer = (callback, delayMs, recurring)
 };
 
 /** Owns timer registrations and invalidates callbacks from replaced or cancelled timers. */
-export function createRuntimeTimers(schedule: ScheduleTimer = scheduleSystemTimer) {
+export function createRuntimeTimers(schedule: ScheduleTimer = scheduleSystemTimer, failed?: (error: unknown) => void) {
   const registrations = new Map<RuntimeTimer, { cancel(): void }>();
   function cancel(key: RuntimeTimer) {
     const previous = registrations.get(key);
@@ -24,7 +24,11 @@ export function createRuntimeTimers(schedule: ScheduleTimer = scheduleSystemTime
       entry.cancel = schedule(() => {
         if (registrations.get(key) !== entry) return;
         if (!recurring) registrations.delete(key);
-        callback();
+        try { callback(); }
+        catch (error) {
+          if (!failed) throw error;
+          failed(error);
+        }
       }, delayMs, recurring);
     } catch (error) {
       registrations.delete(key);

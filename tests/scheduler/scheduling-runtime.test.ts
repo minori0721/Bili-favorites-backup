@@ -84,3 +84,20 @@ test('shutdown during storage replacement prevents resume from reopening admissi
   assert.ok(calls.includes('release'));
   assert.ok(!calls.includes('close'));
 });
+
+test('critical failure permanently closes admission and never releases recovery leases or closes SQLite', async () => {
+  const {runtime, state, calls} = fixture();
+  const original = new Error('SQLite commit failed');
+  assert.equal(runtime.fail(original), true);
+  assert.equal(runtime.fail(new Error('secondary error')), false);
+  assert.equal(runtime.failure, original);
+  assert.equal(runtime.accepting, false);
+  assert.equal(runtime.admit(), false);
+  assert.equal(runtime.generation, 1);
+  state.barrier = true;
+  assert.throws(() => runtime.rebind(), /failed scheduler/);
+  await assert.rejects(runtime.shutdown(10), /database and leases retained/);
+  assert.equal(runtime.closed, false);
+  assert.ok(!calls.includes('release'));
+  assert.ok(!calls.includes('close'));
+});

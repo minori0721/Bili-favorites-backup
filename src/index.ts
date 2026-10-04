@@ -123,7 +123,14 @@ const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const archiveLibrary = createArchiveLibraryService({database: () => stateManager.getDatabase(), users: () => userStore.list()});
-const scheduler = new SyncScheduler(configStore, userStore, stateManager, {deferAdmissionUntilStart: true});
+let stopFailedApplication: ((error: Error) => void) | undefined;
+const scheduler = new SyncScheduler(configStore, userStore, stateManager, {
+  deferAdmissionUntilStart: true,
+  onFatalError: error => {
+    console.error(`[Application] Scheduler failed: ${safeErrorSummary(error)}`);
+    stopFailedApplication?.(error);
+  },
+});
 // Keep the composition root as the only place that knows the compatibility
 // facade.  HTTP modules receive narrow capabilities instead of the scheduler.
 const schedulerControl: SchedulerControl = scheduler;
@@ -487,7 +494,7 @@ if (process.env.NODE_ENV !== "test") {
     console.log(`[Runtime] BFB ${appInfo.versionLabel}; BBDown release ${BBDOWN_BUILD_INFO.release}; source commit ${BBDOWN_SOURCE_COMMIT}; FFmpeg ${process.env.FFMPEG_VERSION || "system"}; aria2 resume enabled`);
   });
   let shuttingDown = false;
-  const shutdown = async (signal: string) => {
+  const shutdown = async (signal: string, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     memoryObservation.stop();
@@ -540,7 +547,13 @@ if (process.env.NODE_ENV !== "test") {
       console.warn("[Shutdown] Skipped explicit state database close because background work did not quiesce");
     }
     logManager.close();
-    process.exit(quiesced ? 0 : 1);
+    process.exit(quiesced ? exitCode : 1);
+  };
+  stopFailedApplication = () => {
+    void shutdown('critical scheduler failure', 1).catch(error => {
+      console.error(`[Shutdown] Critical shutdown failed; persistent work retained: ${safeErrorSummary(error)}`);
+      process.exit(1);
+    });
   };
   process.once("SIGINT", () => { void shutdown("SIGINT"); });
   process.once("SIGTERM", () => { void shutdown("SIGTERM"); });

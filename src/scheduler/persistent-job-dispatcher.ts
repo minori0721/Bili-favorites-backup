@@ -31,8 +31,29 @@ export interface PersistentJobDispatcherDependencies {
 
 /** Claims durable work and turns it into bounded in-memory tasks. */
 export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDependencies) {
+  function renewLeases(force = true) {
+    for (const queue of [deps.downloadQueue, deps.uploadQueue, deps.verificationQueue]) {
+      const stale = new Set<string>();
+      for (const task of queue.getTasks()) {
+        if (!task.persistentJobId || (task.status !== 'pending' && task.status !== 'running' && task.status !== 'retry_wait')) continue;
+        const duration = queue === deps.verificationQueue ? 5 * 60_000 : 30 * 60_000;
+        if (!force && task.persistentJob?.leaseExpiresAt !== undefined && task.persistentJob.leaseExpiresAt > deps.now() + 60_000) continue;
+        if (deps.jobs.extendLease(task.persistentJobId, deps.leaseOwner, duration)) {
+          if (task.persistentJob) task.persistentJob.leaseExpiresAt = deps.now() + duration;
+          continue;
+        }
+        if (task.status === 'running') {
+          throw new Error(`Running task lost its lease: job=${task.persistentJobId}`);
+        }
+        stale.add(task.id);
+      }
+      queue.removePendingTasks(task => stale.has(task.id));
+    }
+  }
   const dispatch = () => {
     if (!deps.accepting() || deps.maintenanceLocked()) return;
+    // Renew prefetched claims before any claimDue call recovers expired jobs.
+    renewLeases(false);
     deps.dispatchChargingAccessProbe();
     const config = deps.configStore.get();
     const downloadCapacity = Math.max(0, deps.queueHighWater(config.concurrentDownloads, config.queuePrefetchLimit) - deps.downloadQueue.getSize());
@@ -42,6 +63,8 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
         .filter(task => task instanceof QualityUpgradeDownloadTask)
         .map(task => String(task.control.artifactKey || task.bvid || '')));
       for (const job of jobs) {
+        if (!deps.accepting()) return;
+        if (deps.downloadQueue.hasPersistentJob(job.id)) continue;
         const qualityArtifact = String(job.payload.artifactKey || job.bvid || '');
         if (job.kind === 'quality_download' && activeQualityArtifacts.has(qualityArtifact)) {
           deps.jobs.defer(job.id, deps.leaseOwner, 'Shared quality download is active', deps.now() + 1_000);
@@ -54,8 +77,9 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
         task.persistentJobId = job.id;
         task.persistentJob = job;
         if (!deps.downloadQueue.addTask(task)) {
+          if (!deps.accepting()) return;
           deps.jobs.defer(job.id, deps.leaseOwner, 'Download queue is full', deps.now() + 1_000);
-          break;
+          continue;
         }
         if (job.kind === 'quality_download') activeQualityArtifacts.add(qualityArtifact);
       }
@@ -65,6 +89,8 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
     if (uploadCapacity > 0) {
       const jobs = deps.jobs.claimDue(['upload', 'quality_upload', 'quality_replace', 'quality_cleanup', 'history_upload'], uploadCapacity, deps.leaseOwner, 30 * 60_000);
       for (const job of jobs) {
+        if (!deps.accepting()) return;
+        if (deps.uploadQueue.hasPersistentJob(job.id)) continue;
         if (['quality_upload', 'quality_replace', 'quality_cleanup'].includes(job.kind)) {
           const control = deps.buildQualityUpgradeTask(job);
           if (!control) { deps.jobs.complete(job.id, deps.leaseOwner); continue; }
@@ -75,8 +101,9 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
           task.persistentJobId = job.id;
           task.persistentJob = job;
           if (!deps.uploadQueue.addTask(task)) {
+            if (!deps.accepting()) return;
             deps.jobs.defer(job.id, deps.leaseOwner, 'Upload queue is full', deps.now() + 1_000);
-            break;
+            continue;
           }
           continue;
         }
@@ -109,8 +136,9 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
         task.persistentJobId = job.id;
         task.persistentJob = job;
         if (!deps.uploadQueue.addTask(task)) {
+          if (!deps.accepting()) return;
           deps.jobs.defer(job.id, deps.leaseOwner, 'Upload queue is full', deps.now() + 1_000);
-          break;
+          continue;
         }
       }
     }
@@ -124,15 +152,18 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
           summary: `上传核验证据无效，任务已暂停 ${job.bvid || ''}`, raw: `[Verification] job=${job.id}: ${reason}`, bvid: job.bvid, simpleVisible: true, debugVisible: true }),
       });
       for (const job of jobs) {
+        if (!deps.accepting()) return;
+        if (deps.verificationQueue.hasPersistentJob(job.id)) continue;
         const task = factory(job);
         if (!task) continue;
         if (!deps.verificationQueue.addTask(task)) {
+          if (!deps.accepting()) return;
           deps.jobs.defer(job.id, deps.leaseOwner, 'Verification queue is full', deps.now() + 1_000);
-          break;
+          continue;
         }
       }
     }
     deps.scheduleWake();
   };
-  return { dispatch };
+  return { dispatch, renewLeases };
 }

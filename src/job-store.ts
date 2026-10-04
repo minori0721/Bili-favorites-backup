@@ -395,16 +395,16 @@ export class PersistentJobStore implements JobRepository {
     const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET status='running', lease_expires_at=?, updated_at=?
-      WHERE id=? AND lease_owner=? AND status='leased'
-    `).run(now + leaseMs, now, id, leaseOwner).changes === 1;
+      WHERE id=? AND lease_owner=? AND status='leased' AND lease_expires_at>?
+    `).run(now + leaseMs, now, id, leaseOwner, now).changes === 1;
   }
 
   extendLease(id: string, leaseOwner: string, leaseMs = 30 * 60_000) {
     const now = this.now();
     return this.stateDatabase.db.prepare(`
       UPDATE jobs SET lease_expires_at=?, updated_at=?
-      WHERE id=? AND lease_owner=? AND status IN ('leased','running')
-    `).run(now + leaseMs, now, id, leaseOwner).changes === 1;
+      WHERE id=? AND lease_owner=? AND status IN ('leased','running') AND lease_expires_at>?
+    `).run(now + leaseMs, now, id, leaseOwner, now).changes === 1;
   }
 
   private completeUnsafe(id: string, leaseOwner?: string) {

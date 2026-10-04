@@ -12,6 +12,7 @@ interface Dependencies {
   canRebind(): boolean;
   rebindAdapters(): void;
   resumeAfterRebind(): void;
+  failed?(error: Error): void;
   clock?: QuiescenceClock;
 }
 
@@ -25,6 +26,7 @@ export function createSchedulingRuntime(deps: Dependencies) {
   let resumeAdmission: boolean | null = null;
   let adaptersRebound = false;
   let initialized = false;
+  let failure: Error | null = null;
 
   function stop() {
     accepting = false;
@@ -46,6 +48,7 @@ export function createSchedulingRuntime(deps: Dependencies) {
     if (!await waitForQuiescence(deps.busy, timeoutMs, deps.clock)) {
       throw new Error('Scheduler work did not stop before the shutdown deadline; database and leases retained');
     }
+    if (failure) throw Object.assign(new Error('Scheduler failed; database and leases retained for restart recovery'), {cause: failure});
     deps.releaseWork();
     if (options.closeDatabase !== false) deps.closeDatabase();
     closed = true;
@@ -55,6 +58,7 @@ export function createSchedulingRuntime(deps: Dependencies) {
     get generation() { return generation; },
     get shuttingDown() { return shuttingDown; },
     get closed() { return closed; },
+    get failure() { return failure; },
     get rebinding() { return resumeAdmission !== null; },
     isIdle() { return !deps.busy(); },
     waitForIdle(timeoutMs = 20_000) {
@@ -71,6 +75,13 @@ export function createSchedulingRuntime(deps: Dependencies) {
       return true;
     },
     stop,
+    fail(error: Error) {
+      if (failure) return false;
+      failure = error;
+      beginShutdown();
+      deps.failed?.(error);
+      return true;
+    },
     beginShutdown,
     shutdown(timeoutMs = 20_000, options: ShutdownOptions = {}): Promise<void> {
       if (closed) return Promise.resolve();
@@ -81,6 +92,7 @@ export function createSchedulingRuntime(deps: Dependencies) {
       return shutdown;
     },
     rebind() {
+      if (failure) throw Object.assign(new Error('Cannot rebind a failed scheduler'), {cause: failure});
       if (!deps.canRebind()) throw new Error('State database rebind requires an idle maintenance barrier');
       if (resumeAdmission === null) resumeAdmission = accepting;
       accepting = false;

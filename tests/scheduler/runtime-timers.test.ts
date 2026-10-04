@@ -55,3 +55,14 @@ test('timer adapter registration failure is propagated without retaining an acti
   assert.throws(() => timers.start('dispatch', () => {}, 0), /Timer unavailable/);
   assert.equal(timers.has('dispatch'), false);
 });
+
+test('a critical recurring timer reports its original error and lets the owner stop all registrations', () => {
+  const time = new ManualTime();
+  const original = new Error('lease persistence failed');
+  const errors: unknown[] = [];
+  const timers = createRuntimeTimers(time.schedule, error => { errors.push(error); timers.dispose(); });
+  timers.start('heartbeat', () => { throw original; }, 10, true);
+  time.advance(30);
+  assert.deepEqual(errors, [original]);
+  assert.equal(time.pending, 0);
+});

@@ -19,6 +19,42 @@ test('update requests share session expiry while 503 remains a retryable failure
   await expect(page.locator('#updatesModal')).not.toBeVisible();
 });
 
+test('log stream reconnects after an interrupted connection and a 503 session check', async ({page}) => {
+  await page.request.post('/__test/reset');
+  await page.clock.install();
+  let release!: () => void;
+  const interrupted = new Promise<void>(resolve => { release = resolve; });
+  let streams = 0, checks = 0;
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/api/logs/stream', async route => {
+    streams++;
+    if (streams === 1) {
+      await interrupted;
+      await route.fulfill({status: 503, body: 'temporarily unavailable'});
+      return;
+    }
+    await route.fulfill({status: 200, contentType: 'text/event-stream',
+      body: `data: ${JSON.stringify({level: 'info', timestamp: '', summary: '隔离日志连接已恢复', raw: 'isolated reconnect', simpleVisible: true})}\n\n`});
+  });
+  await page.goto('/');
+  await expect(page.locator('.user-item')).toHaveCount(1);
+  await page.locator('#logSimpleBtn').click();
+  // Board polling is stopped, so this is the log feed's protected session check.
+  await page.route('**/api/queue/state', async route => {
+    checks++;
+    if (checks === 1) await route.fulfill({status: 503, json: {success: false, message: 'temporary session check failure'}});
+    else await route.continue();
+  });
+  release();
+  await expect.poll(() => checks).toBe(1);
+  await expect(page.locator('#sessionExpiredDialog')).toHaveCount(0);
+  await page.clock.fastForward(4000);
+  await expect(page.locator('#logConsole')).toContainText('隔离日志连接已恢复');
+  expect(streams).toBe(2);
+  expect(errors).toEqual([]);
+});
+
 test('expired session stops application work and shows one accessible login entry', async ({page}) => {
   await page.request.post('/__test/reset');
   await page.goto('/');

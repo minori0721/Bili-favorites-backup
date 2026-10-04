@@ -12,7 +12,6 @@ export interface TaskEventHandlers {
   uploadStart(task: UploadTaskEvent): void;
   uploadSettled(): void;
   downloadSettled(): void;
-  verificationStart(task: UploadVerificationTask): void;
   verificationCompleted(task: UploadVerificationTask): void;
   verificationError(task: UploadVerificationTask, error: unknown): void;
   verificationSettled(): void;
@@ -28,7 +27,6 @@ export function bindTaskLifecycleEvents(
   register(queues.upload, 'taskStart', handlers.uploadStart);
   register(queues.upload, 'taskSettled', handlers.uploadSettled);
   register(queues.download, 'taskSettled', handlers.downloadSettled);
-  register(queues.verification, 'taskStart', handlers.verificationStart);
   register(queues.verification, 'taskCompleted', handlers.verificationCompleted);
   register(queues.verification, 'taskError', handlers.verificationError);
   register(queues.verification, 'taskSettled', handlers.verificationSettled);

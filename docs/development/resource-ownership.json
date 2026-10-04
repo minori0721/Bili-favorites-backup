@@ -1,6 +1,14 @@
 {
   "resources": [
     {
+      "module": "queue.ts",
+      "ownerSymbol": "TaskQueue",
+      "resourceSymbols": ["queue", "activeCount", "concurrency", "sequenceCounter", "canStartTask", "beforeRun", "failure", "onFailure", "maxSize", "retryTimers"],
+      "stop": "halt rejects admission and clears retry timers; active task slots are released only when their executions settle; pending tasks and durable evidence are retained until the owner drains or recovers",
+      "lateCallback": "a halted queue does not execute retries or completion/failure policy from tasks settling after a critical failure",
+      "rebind": "the runtime must drain and remove pending work before storage replacement; a failed queue cannot resume within the same runtime"
+    },
+    {
       "module": "download-progress.ts",
       "ownerSymbol": "createDownloadProgressSampler",
       "resourceSymbols": [
@@ -251,7 +259,8 @@
         "shutdown",
         "resumeAdmission",
         "adaptersRebound",
-        "initialized"
+        "initialized",
+        "failure"
       ],
       "stop": "the workflow stop or dispose path rejects new work and drains, cancels or retains durable evidence for owned resources",
       "lateCallback": "generation, lease identity and stopped state reject callbacks that no longer belong to the active runtime",
@@ -662,10 +671,12 @@
         "running",
         "connection",
         "reconnect",
-        "checking"
+        "checking",
+        "checkTimeout",
+        "retryAttempt"
       ],
-      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
-      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
+      "stop": "stop detaches the EventSource handlers, closes the connection, aborts session checks and clears timeout and backoff timers",
+      "lateCallback": "connection and session-check identity prevent old events or rejected checks from stopping a restarted feed",
       "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
     },
     {

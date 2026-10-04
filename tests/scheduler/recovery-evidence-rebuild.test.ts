@@ -491,11 +491,16 @@ test('remote write rejection keeps scheduled read-only checks and finalizes when
   } finally { await f.close(); }
 });
 
-test('owned partial upload resumes only never-started pages from the unchanged download snapshot', async () => {
+test('owned partial upload resumes only never-started pages from the unchanged download snapshot', async t => {
   const f = await fixture();
   try {
     await fs.writeFile(path.join(f.directory, 'p2.mp4'), 'second');
-    const observed = new Date().toISOString();
+    const stats = await Promise.all(['v.mp4', 'p2.mp4'].map(file => fs.stat(path.join(f.directory, file))));
+    // Windows filesystem timestamps can lead Date.now() slightly. Model the
+    // actual sequence: file probe first, transfer session creation afterward.
+    const observedAt = Math.ceil(Math.max(Date.now(), ...stats.flatMap(stat => [stat.mtimeMs, stat.ctimeMs])));
+    const observed = new Date(observedAt).toISOString();
+    t.mock.method(Date, 'now', () => observedAt + 1);
     f.manifest.outputs[0].verifiedAt = observed;
     f.manifest.pages.push({ index: 2, cid: 22, title: 'P2', duration: 1 });
     f.manifest.outputs.push({ ...f.manifest.outputs[0], cid: 22, pageIndex: 2, relativePath: 'p2.mp4', size: 6 }); f.writeManifest();
@@ -503,7 +508,8 @@ test('owned partial upload resumes only never-started pages from the unchanged d
     f.sessions.ensureFile(session.id, { relativePath: 'p2.mp4', name: 'p2.mp4', expectedSize: 6 }, session.generation);
     const job = f.enqueue('partial-resume', { sessionId: session.id, sessionGeneration: session.generation, files: ['v.mp4', 'p2.mp4'] });
     const service = f.assessment(async (_config, remote) => remote.endsWith('v.mp4') ? { status: 'verified' } : { status: 'missing', parentStatus: 'visible' });
-    assert.equal((await service.assess(job.id, { allowAutomatic: true })).resumed, true);
+    const result = await service.assess(job.id, { allowAutomatic: true });
+    assert.equal(result.resumed, true, JSON.stringify(result));
     assert.equal(f.jobs.findById(job.id)?.payload.allowReupload, false);
     assert.equal(f.sessions.getFile(session.id, 'v.mp4')?.putAcceptedAt, 100);
     assert.equal(f.sessions.getFile(session.id, 'p2.mp4')?.attempts, 0);

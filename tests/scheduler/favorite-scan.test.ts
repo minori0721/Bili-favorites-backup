@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createFavoriteScan } from '../../src/scheduler/favorite-scan.js';
 import { StateManager } from '../../src/state.js';
 import type { BiliUser } from '../../src/users.js';
-import { BiliResponseFormatError, BiliRiskOrLoginError, type FavoriteItemsPage } from '../../src/bili.js';
+import { BiliResponseFormatError, BiliRiskOrLoginError, decodeFavoriteItemsPage, type FavoriteItemsPage } from '../../src/bili.js';
 import { createTestDir, removeTestDir } from '../helpers.js';
 import { availabilityJitter } from '../../src/scheduler/retry-policy.js';
 import { createSyncWorkflow } from '../../src/scheduler/sync-workflow.js';
@@ -13,6 +13,46 @@ import type { SchedulerSnapshot } from '../../src/scheduler/sync-runtime.js';
 const user: BiliUser = { id: 'scan-account', uid: 1, name: 'Fixture', enabled: true, favorites: [], lastLoginAt: '',
   cookie: { SESSDATA: '', bili_jct: '', DedeUserID: '1' } };
 const item = { bvid: 'BVSCAN', title: 'Fixture', upperName: 'Fixture', cover: 'https://example.test/cover.jpg' };
+
+test('a contradictory later empty page preserves old relations and retries the folder on the next cycle', async t => {
+  const root = await createTestDir('scan-empty-continuation');
+  const state = new StateManager({statePath: path.join(root, 'state.json'), dbPath: path.join(root, 'state.sqlite')});
+  const authUser = {...user, favorites: [{mediaId: 1, title: 'Favorites'}, {mediaId: 2, title: 'Independent'}]};
+  const previous = {...item, bvid: 'BVPREVIOUS'};
+  state.recordFavoriteItem(user.id, 1, 'Favorites', previous);
+  let broken = true;
+  const messages: string[] = [];
+  const calls: Array<[number, number]> = [];
+  t.mock.method(console, 'error', (message: string) => { messages.push(message); });
+  const scan = createFavoriteScan({
+    state, deletions: {folder: () => false, source: () => false}, users: {getById: () => authUser, updatePartial: () => authUser},
+    now: () => 1_000, random: () => 0, sleep: async () => {}, generation: () => 0, canRun: () => true,
+    listPage: async (_cookie, mediaId, page = 1, pageSize = 20) => {
+      calls.push([mediaId, page]);
+      if (mediaId === 2) return decodeFavoriteItemsPage({medias: [], has_more: false}, page, pageSize);
+      if (page === 1) return decodeFavoriteItemsPage({medias: [{bvid: item.bvid, title: item.title}], has_more: true, info: {media_count: 40}}, page, pageSize);
+      return decodeFavoriteItemsPage({medias: broken ? [] : [{bvid: previous.bvid}], has_more: broken, info: {media_count: 40}}, page, pageSize);
+    },
+    refreshAuth: async () => { throw new Error('unexpected auth refresh'); },
+    resolveSelfVisible: async (_cookie, _uid, value) => value, cacheCover() {}, progress() {}, recordCount() {}, probe() {}, enqueue: () => false,
+  });
+  const workflow = createSyncWorkflow({users: () => [authUser], eligible: () => true, state, scan,
+    progress() {}, scanPosition: () => ({mediaId: 1, page: 2}), enterUser() {}, leaveUser() {}, random: () => 0, sleep: async () => {}});
+  try {
+    await workflow.run(true, true);
+    assert.equal(state.getRelationStatus(user.id, 1, previous.bvid)?.activeInFavorite, true);
+    assert.ok(state.getVideoMeta(item.bvid));
+    assert.equal(state.getFolderScan(user.id, 1, 'Favorites').initStatus, 'initializing');
+    assert.equal(state.getFolderScan(user.id, 2, 'Independent').initStatus, 'complete');
+    assert.equal(state.getUserCooldown(user.id), null);
+    assert.ok(messages.some(message => message.includes('category=response_format') && message.includes('empty_continuation')));
+    broken = false;
+    await workflow.run(true, true);
+    assert.equal(state.getFolderScan(user.id, 1, 'Favorites').initStatus, 'complete');
+    assert.equal(state.getRelationStatus(user.id, 1, previous.bvid)?.activeInFavorite, true);
+    assert.deepEqual(calls, [[1, 1], [1, 2], [2, 1], [1, 1], [1, 2], [2, 1]]);
+  } finally { state.close(); await removeTestDir(root); }
+});
 
 test('a newly visible favorite advances one probe without clearing its persisted backoff', async () => {
   const runtime = await createTestDir('scan-availability-signal');
