@@ -15,7 +15,7 @@ import type { RecoveryAssessment } from './recovery-contracts.js';
 import type { RecoveryUploadItem } from './upload-work.js';
 
 interface Dependencies {
-  jobStore: Pick<JobRepository, 'complete' | 'countEncodingRetryJobs' | 'completeEncodingRetryParent' | 'hasDedupePrefix' | 'defer' | 'retry' | 'findByDedupeKey' | 'updatePayload'>;
+  jobStore: Pick<JobRepository, 'complete' | 'countEncodingRetryJobs' | 'completeEncodingRetryParent' | 'hasDedupePrefix' | 'defer' | 'retry' | 'findById' | 'findByDedupeKey' | 'updatePayload'>;
   stateManager: Pick<StateManager, 'clearUploadCooldown' | 'deferUploadFileVerification' | 'runAtomic' | 'markUploadFileVerified' | 'failUploadFileVerification' | 'setUploadCooldown'>;
   transferSessions: Pick<TransferSessionRepository, 'get' | 'listFiles'>;
   uploadCircuit: Pick<UploadCircuitBreaker, 'recordSuccess' | 'recordFailure' | 'getSnapshot'>;
@@ -34,9 +34,15 @@ interface Dependencies {
 
 /** Verification outcomes and recovery handoffs share the existing atomic commit boundary. */
 export function createVerificationHandlers(deps: Dependencies) {
+  function ownsExecution(job: PersistentJobRecord) {
+    const current = deps.jobStore.findById(job.id);
+    return current?.leaseOwner === deps.leaseOwner && current.attempts === job.attempts
+      && ['leased', 'running'].includes(current.status) && (current.leaseExpiresAt ?? 0) > deps.now();
+  }
+
   function handleUploadVerificationCompleted(task: UploadVerificationTask) {
     const job: PersistentJobRecord | undefined = task.persistentJob;
-    if (!job || !task.persistentJobId || !task.result) return;
+    if (!job || !task.persistentJobId || !task.result || !ownsExecution(job)) return;
     const payload = parseVerificationPayload(job.payload);
     const encodingRetry = task.encodingRetry || parseEncodingRetryContext(payload.encodingRetry);
     if (encodingRetry && !deps.isEncodingRetryParentActive(encodingRetry)) {
@@ -53,7 +59,10 @@ export function createVerificationHandlers(deps: Dependencies) {
           return;
         }
         deps.commitVerifiedTransfer(task, transfer, Boolean(payload.partialBackup), Boolean(payload.historyOnly));
-        if (payload.historyOnly && payload.historySnapshotAt) markHistoryGroupUploaded(String(payload.localDir || ""), payload.historySnapshotAt, `${task.userId || "video"}:${task.mediaId || 0}`);
+        if (payload.historyOnly) {
+          if (payload.historySnapshotAt) markHistoryGroupUploaded(String(payload.localDir || ""), payload.historySnapshotAt, `${task.userId || "video"}:${task.mediaId || 0}`);
+          if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error('History verification ownership changed before finalization');
+        }
         void deps.localCleanup.request(task.bvid, String(payload.localDir || ""));
         if (deps.uploadCircuit.recordSuccess(`verify:${task.bvid}`)) deps.stateManager.clearUploadCooldown();
         deps.dispatchPersistentJobs();
@@ -87,18 +96,27 @@ export function createVerificationHandlers(deps: Dependencies) {
         if (retryCommitted) deps.afterEncodingRetryCommitted(task.bvid, encodingRetry);
         return;
       }
-      deps.jobStore.complete(job.id, deps.leaseOwner);
-      if (deps.uploadCircuit.recordSuccess(`verify:${task.bvid}`)) deps.stateManager.clearUploadCooldown();
       if (payload.historyOnly) {
         const prefix = `verify:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:history:${payload.historySnapshotAt || "unknown"}:`;
-        if (!deps.jobStore.hasDedupePrefix(prefix) && payload.historySnapshotAt) {
+        const recoveryKey = `upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || ""}:${payload.historySnapshotAt || "history"}`;
+        const groupFinished = !deps.jobStore.hasDedupePrefix(prefix, job.id)
+          && !deps.jobStore.findByDedupeKey(recoveryKey) && Boolean(payload.historySnapshotAt);
+        if (groupFinished && payload.historySnapshotAt) {
+          // The last verifier remains durable until the idempotent file update succeeds.
           markHistoryGroupUploaded(String(payload.localDir || ""), payload.historySnapshotAt, `${task.userId || "video"}:${task.mediaId || 0}`);
-          void deps.localCleanup.request(task.bvid, String(payload.localDir || ""));
         }
+        if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error('History verification ownership changed before finalization');
+        if (groupFinished) void deps.localCleanup.request(task.bvid, String(payload.localDir || ""));
       } else {
-        const relationVerified = deps.stateManager.markUploadFileVerified(task.bvid, task.userId, task.mediaId, task.remoteFile);
+        const relationVerified = deps.stateManager.runAtomic(() => {
+          if (!ownsExecution(job)) return false;
+          const verified = deps.stateManager.markUploadFileVerified(task.bvid, task.userId, task.mediaId, task.remoteFile);
+          if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error('Verification ownership changed before commit');
+          return verified;
+        });
         if (relationVerified) void deps.localCleanup.request(task.bvid, String(payload.localDir || ""));
       }
+      if (deps.uploadCircuit.recordSuccess(`verify:${task.bvid}`)) deps.stateManager.clearUploadCooldown();
       return;
     }
     if (task.result.status === "mismatch") {
@@ -107,10 +125,15 @@ export function createVerificationHandlers(deps: Dependencies) {
         deps.finishEncodingRetryFailure(task.bvid, encodingRetry, reason, "mismatch", task.persistentJobId);
         return;
       }
-      deps.jobStore.complete(job.id, deps.leaseOwner);
-      if (!payload.historyOnly) {
-        deps.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
+      if (payload.historyOnly) {
+        queueUploadVerificationConflictRecovery(task, job, payload, taskUploadFailure(new Error(reason), task.remoteFile));
+        return;
       }
+      deps.stateManager.runAtomic(() => {
+        if (!ownsExecution(job)) return;
+        deps.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
+        if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error('Verification ownership changed before conflict commit');
+      });
       logManager.push({ timestamp: new Date().toISOString(), type: "upload", level: "error", summary: reason, raw: `[UploadVerify] mismatch ${redactRemotePathForDisplay(task.remoteFile)}`, bvid: task.bvid, simpleVisible: true });
       return;
     }
@@ -171,7 +194,6 @@ export function createVerificationHandlers(deps: Dependencies) {
       );
       return;
     }
-    deps.jobStore.complete(job.id, deps.leaseOwner);
     if (!payload.historyOnly) {
       deps.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, task.remoteFile, reason);
     }
@@ -205,10 +227,12 @@ export function createVerificationHandlers(deps: Dependencies) {
         : undefined,
       strictMediaTarget: payload.strictMediaTarget,
     });
-    if (manualRecovery) {
-      const recovery = deps.jobStore.findByDedupeKey(`upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || ""}:${payload.historyOnly ? payload.historySnapshotAt || "history" : "main"}`);
-      if (recovery) deps.jobStore.updatePayload(recovery.id, { ...recovery.payload, awaitingManualRecovery: true, allowReupload: false, resumeOnly: true });
+    if (!manualRecovery) throw new Error('Recovery upload task was not accepted; verification retained');
+    const recovery = deps.jobStore.findByDedupeKey(`upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || ""}:${payload.historyOnly ? payload.historySnapshotAt || "history" : "main"}`);
+    if (!recovery || !deps.jobStore.updatePayload(recovery.id, { ...recovery.payload, awaitingManualRecovery: true, allowReupload: false, resumeOnly: true })) {
+      throw new Error('Recovery upload task changed before handoff; verification retained');
     }
+    if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error('Verification ownership changed before recovery handoff');
   }
 
   function queueUploadVerificationConflictRecovery(task: UploadVerificationTask, job: PersistentJobRecord, payload: ReturnType<typeof parseVerificationPayload>, failure: UploadFailureInfo) {
@@ -217,7 +241,6 @@ export function createVerificationHandlers(deps: Dependencies) {
       deps.finishEncodingRetryFailure(task.bvid, encodingRetry, failure.summary, "mismatch", task.persistentJobId);
       return;
     }
-    deps.jobStore.complete(task.persistentJobId!, deps.leaseOwner);
     const conflictRemotePath = failure.remotePath || task.remoteFile;
     if (!payload.historyOnly) {
       deps.stateManager.failUploadFileVerification(task.bvid, task.userId, task.mediaId, conflictRemotePath, failure.summary);
@@ -264,11 +287,10 @@ export function createVerificationHandlers(deps: Dependencies) {
         : undefined,
       strictMediaTarget: payload.strictMediaTarget,
     });
-    if (manualRecovery) {
-      const recoveryKey = `upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || session?.remotePath || ""}:${payload.historyOnly ? payload.historySnapshotAt || "history" : "main"}`;
-      const recovery = deps.jobStore.findByDedupeKey(recoveryKey);
-      if (recovery) {
-        deps.jobStore.updatePayload(recovery.id, {
+    if (!manualRecovery) throw new Error('Conflict recovery task was not accepted; verification retained');
+    const recoveryKey = `upload:${task.userId || "video"}:${task.mediaId || 0}:${task.bvid}:${payload.remotePath || session?.remotePath || ""}:${payload.historyOnly ? payload.historySnapshotAt || "history" : "main"}`;
+    const recovery = deps.jobStore.findByDedupeKey(recoveryKey);
+    if (!recovery || !deps.jobStore.updatePayload(recovery.id, {
           ...recovery.payload,
           awaitingManualRecovery: true,
           allowReupload: false,
@@ -277,9 +299,10 @@ export function createVerificationHandlers(deps: Dependencies) {
           conflictRemotePath,
           conflictRelativePath: conflictFile?.relativePath,
           manualRecoveryReason: failure.summary,
-        });
-      }
+        })) {
+      throw new Error('Conflict recovery task changed before handoff; verification retained');
     }
+    if (!deps.jobStore.complete(job.id, deps.leaseOwner)) throw new Error('Verification ownership changed before conflict handoff');
     logManager.push({
       timestamp: new Date().toISOString(),
       type: "upload",
@@ -294,7 +317,7 @@ export function createVerificationHandlers(deps: Dependencies) {
   function handleUploadVerificationError(task: UploadVerificationTask, rawError: unknown) {
     const error = readTaskFailure(rawError);
     const job: PersistentJobRecord | undefined = task.persistentJob;
-    if (!job || !task.persistentJobId) return;
+    if (!job || !task.persistentJobId || !ownsExecution(job)) return;
     const encodingRetry = task.encodingRetry || parseEncodingRetryContext(job.payload.encodingRetry);
     if (encodingRetry && !deps.isEncodingRetryParentActive(encodingRetry)) {
       deps.jobStore.complete(job.id, deps.leaseOwner);

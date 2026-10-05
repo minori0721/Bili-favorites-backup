@@ -319,7 +319,9 @@ export function createUploadCompletionHandler(dependencies: Dependencies) {
         } else if (task.result?.files.length) {
           deps.enqueueUploadVerificationJobs(task, task.result.files, task.result.pendingChecks);
         }
-        if (task.persistentJobId) deps.jobStore.complete(task.persistentJobId, deps.leaseOwner);
+        if (task.persistentJobId && !deps.jobStore.complete(task.persistentJobId, deps.leaseOwner)) {
+          throw new Error('History upload ownership changed before finalization');
+        }
         if (task.result?.allVerified) void deps.localCleanup.request(task.bvid, task.downloadDir);
         deps.dispatchPersistentJobs();
         return;

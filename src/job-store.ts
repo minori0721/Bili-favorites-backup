@@ -1326,9 +1326,27 @@ export class PersistentJobStore implements JobRepository {
     return keys;
   }
 
-  hasDedupePrefix(prefix: string) {
-    const row = this.stateDatabase.db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed'").get(`${prefix}%`);
+  hasDedupePrefix(prefix: string, excludeId = '') {
+    const row = this.stateDatabase.db.prepare<[string, string], { count: number }>("SELECT COUNT(*) AS count FROM jobs WHERE dedupe_key LIKE ? AND status<>'completed' AND id<>?").get(`${prefix}%`, excludeId);
     return decodeCountRow(row, "job dedupe prefix count").count > 0;
+  }
+
+  hasUploadVerificationWork(target: { bvid: string; userId: string; mediaId: number; remoteFile: string; sessionId?: string; sessionGeneration?: number }) {
+    const input = { ...target, sessionId: target.sessionId || '', sessionGeneration: target.sessionGeneration ?? 0 };
+    const row = this.stateDatabase.db.prepare<typeof input, { count: number }>(`
+      SELECT COUNT(*) AS count FROM jobs
+      WHERE bvid=@bvid AND COALESCE(user_id,'')=@userId AND COALESCE(media_id,0)=@mediaId AND status<>'completed'
+        AND (
+          (kind='verify_upload' AND (
+            (json_extract(payload_json,'$.remoteFile')=@remoteFile
+              AND (@sessionId='' OR json_extract(payload_json,'$.sessionId') IS NULL))
+            OR (json_extract(payload_json,'$.sessionId')=@sessionId AND json_extract(payload_json,'$.sessionGeneration')=@sessionGeneration)))
+          OR (kind IN ('upload','history_upload') AND (
+            (@sessionId='' AND kind='upload' AND COALESCE(json_extract(payload_json,'$.historyOnly'),0)=0)
+            OR (json_extract(payload_json,'$.sessionId')=@sessionId AND json_extract(payload_json,'$.sessionGeneration')=@sessionGeneration)))
+        )
+    `).get(input);
+    return decodeCountRow(row, 'upload verification work count').count > 0;
   }
 
   wakeByBvid(bvid: string, kinds: PersistentJobKind[], now = this.now()) {

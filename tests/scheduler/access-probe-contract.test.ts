@@ -212,7 +212,8 @@ test('pure charging probes pace consecutive accounts through the production work
     let finish!: () => void; const done = new Promise<void>(resolve => { finish = resolve; });
     workflow = createAccessProbeWorkflow({ jobs: f.jobs, owner, now: () => clock, generation: () => 0,
       accepting: () => true, shuttingDown: () => false, requestIntervalMs: 10_000, sleep: async ms => { clock += ms; },
-      run: (job, gate) => probes.charging(job, gate), failed: (_job, error) => { throw error; }, wake: finish });
+      run: (job, gate) => probes.charging(job, gate), failed: (_job, error) => { throw error; },
+      fatal: error => assert.fail(String(error)), wake: finish });
     workflow.dispatch(); await done; assert.deepEqual(requests.map(at => at - f.now), [0, 10_000]);
   } finally { workflow?.stop(); await f.close(); }
 });
@@ -237,7 +238,8 @@ for (const fallback of ['view', 'player'] as const) {
       workflow = createAccessProbeWorkflow({ jobs: f.jobs, owner, now: () => clock, generation: () => 0,
         accepting: () => true, shuttingDown: () => false, requestIntervalMs: 10_000, sleep: async ms => { clock += ms; },
         run: async (job, beforeRequest) => { await probes.charging(job, beforeRequest); completed++; },
-        failed: (_job, error) => { throw error; }, wake: () => { if (completed === 2) finish(); else workflow!.dispatch(); } });
+        failed: (_job, error) => { throw error; }, fatal: error => assert.fail(String(error)),
+        wake: () => { if (completed === 2) finish(); else workflow!.dispatch(); } });
       workflow.dispatch(); await done; assert.deepEqual(starts.map(at => at - f.now), [0, 10_000, 20_000, 30_000]);
     } finally { workflow?.stop(); await f.close(); }
   });

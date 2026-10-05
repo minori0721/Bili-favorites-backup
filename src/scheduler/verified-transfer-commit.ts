@@ -8,7 +8,7 @@ import { buildRecoveryReplacementPlans } from './recovery-replacement.js';
 interface VerifiedTransferCommitDependencies {
   state: Pick<StateManager, 'runAtomic' | 'markVerifiedUpload' | 'recordLocalCleanupPlan'>;
   sessions: Pick<TransferSessionRepository, 'assertGeneration' | 'listFiles' | 'updateSession'>;
-  jobs: Pick<JobRepository, 'complete' | 'completeEncodingRetryCommit'>;
+  jobs: Pick<JobRepository, 'findById' | 'complete' | 'completeEncodingRetryCommit'>;
   leaseOwner: string;
   now(): number;
   buildCleanupPlan(

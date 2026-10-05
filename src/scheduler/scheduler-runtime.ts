@@ -426,6 +426,7 @@ export class SchedulerRuntime implements SchedulerControl {
       shuttingDown: () => this.runtime.shuttingDown,
       run: (job, beforeRequest) => this.accessProbes.charging(job, beforeRequest),
       failed: (job, error) => this.accessProbes.failed(job, error),
+      fatal: error => this.failRuntime(error),
       wake: () => this.dispatchPersistentJobs(),
       sleep: this.sleep,
       requestIntervalMs: 10_000,

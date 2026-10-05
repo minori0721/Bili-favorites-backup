@@ -3,7 +3,7 @@ import type { StateManager, FavoriteRelation, SourceAvailabilityReason } from '.
 import type { PersistentJobRecord } from '../database.js';
 import type { JobRepository } from '../repositories/jobs.js';
 import { BiliRiskOrLoginError, type VideoPageSnapshotOptions, type VideoPageSnapshotResult } from '../bili.js';
-import type { AccessProbeRequestGate } from './access-probe-workflow.js';
+import { AccessProbeStateError, type AccessProbeRequestGate } from './access-probe-workflow.js';
 import { logManager } from '../logger.js';
 import { sanitizeUploadText } from '../upload-health.js';
 import { isRecord } from '../shared/api/value.js';
@@ -667,10 +667,17 @@ function failed(job: PersistentJobRecord, error: unknown) {
 
 }
 async function runCurrent(job: PersistentJobRecord, run: typeof runAvailabilityProbe, beforeRequest: AccessProbeRequestGate) {
-  try { await run(job, beforeRequest); }
-  catch (error: unknown) {
-    if (!(error instanceof AccessProbeSuperseded)) throw error;
-    rescheduleNewRequest(job);
+  try {
+    try { await run(job, beforeRequest); }
+    catch (error: unknown) {
+      if (!(error instanceof AccessProbeSuperseded)) throw error;
+      rescheduleNewRequest(job);
+    }
+  } catch (error: unknown) {
+    // The per-account request boundary already converts external failures to
+    // scheduled retries. Failures escaping that boundary must not be retried
+    // as if the external service were unavailable.
+    throw new AccessProbeStateError(error);
   }
 }
 const immediateRequest: AccessProbeRequestGate = async check => { check(); };

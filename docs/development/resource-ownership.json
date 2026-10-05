@@ -42,8 +42,8 @@
         "nextAllowedAt",
         "stopped"
       ],
-      "stop": "stop rejects new claims and HTTP requests while the active request or pacing wait remains busy until its promise settles",
-      "lateCallback": "stopped state, generation, lease and request revision checks reject stale requests and results",
+      "stop": "stop rejects new claims and HTTP requests while the active request or pacing wait remains busy until its promise settles; state persistence or wake failures close admission through the runtime fatal boundary before further work can start",
+      "lateCallback": "stopped state, generation, lease and request revision checks reject stale requests and results; stopped or failed probes do not wake scheduling",
       "rebind": "resetAfterRebind rejects an active promise or claimed job; the last request pacing deadline remains authoritative"
     },
     {

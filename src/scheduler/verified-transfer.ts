@@ -8,7 +8,7 @@ import type { EncodingRetryContext } from '../tasks.js';
 export interface VerifiedTransferDependencies {
   state: Pick<StateManager, 'runAtomic' | 'markVerifiedUpload' | 'recordLocalCleanupPlan'>;
   sessions: Pick<TransferSessionRepository, 'assertGeneration' | 'listFiles' | 'updateSession'>;
-  jobs: Pick<JobRepository, 'complete' | 'completeEncodingRetryCommit'>;
+  jobs: Pick<JobRepository, 'findById' | 'complete' | 'completeEncodingRetryCommit'>;
   now(): number;
   leaseOwner: string;
 }
@@ -35,6 +35,12 @@ export function commitVerifiedTransfer(dependencies: VerifiedTransferDependencie
   }
   if (encodingRetry && !jobId) throw new Error('Encoding retry commit requires a persistent child job');
   state.runAtomic(() => {
+    if (command.historyOnly && jobId) {
+      const job = jobs.findById(jobId);
+      if (job?.leaseOwner !== leaseOwner || !['leased', 'running'].includes(job.status)) {
+        throw new Error('History upload task execution ownership changed before commit');
+      }
+    }
     if (result.sessionId) {
       const session = sessions.assertGeneration(result.sessionId, result.sessionGeneration);
       const files = sessions.listFiles(session.id, session.generation);
@@ -51,8 +57,10 @@ export function commitVerifiedTransfer(dependencies: VerifiedTransferDependencie
       if (!jobs.completeEncodingRetryCommit(encodingRetry.parentJobId, encodingRetry.generation, jobId, leaseOwner)) {
         throw new Error('Encoding retry execution changed before verified commit');
       }
-    } else if (jobId && !jobs.complete(jobId, leaseOwner)) {
+    } else if (jobId && !command.historyOnly && !jobs.complete(jobId, leaseOwner)) {
       throw new Error('Upload task execution ownership changed before commit');
     }
+    // History jobs retain the committed proof and cleanup plan until the local
+    // manifest update succeeds. File I/O is replayable and stays outside SQLite.
   });
 }

@@ -510,7 +510,7 @@ test("transfer-session verification uses the same timeout and manual recovery pa
   const job = resources(scheduler).jobs.claimDue(["verify_upload"], 1, resources(scheduler).owner, 60_000)[0];
   const task = new UploadVerificationTask("BVVERIFY", "u1", 1, "/target/video.mp4", 12, config);
   task.persistentJobId = job.id;
-  task.persistentJob = { ...job, attempts: 5, payload: { ...job.payload, putCompletedAt } };
+  task.persistentJob = job;
   task.result = { status: "missing" as const };
   task.transferResult = {
     remotePath: "/target",

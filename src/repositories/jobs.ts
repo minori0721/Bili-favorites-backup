@@ -143,7 +143,8 @@ export interface JobRepository {
   countQualityJobsForArtifact(artifactKey: string): number;
   hasQualityTarget(userId: string, mediaId: number, bvid: string): boolean;
   listQualityTargetKeys(): Set<string>;
-  hasDedupePrefix(prefix: string): boolean;
+  hasDedupePrefix(prefix: string, excludeId?: string): boolean;
+  hasUploadVerificationWork(target: { bvid: string; userId: string; mediaId: number; remoteFile: string; sessionId?: string; sessionGeneration?: number }): boolean;
   wakeByBvid(bvid: string, kinds: PersistentJobKind[], now?: number): number;
   rescheduleByBvid(bvid: string, kinds: PersistentJobKind[], notBefore: number, now?: number): number;
   wakeAll(kinds: PersistentJobKind[], now?: number): number;

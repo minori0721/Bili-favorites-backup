@@ -35,7 +35,7 @@ function readRecoveryManifest(localDir: string, verified = false) {
 
 interface Dependencies {
   stateManager: Pick<StateManager, 'listStaleActiveBackups' | 'runBatch' | 'markDownloadInterrupted' | 'markUploadFailed' | 'resetRelationForRetry' | 'hasPersistentJobBootstrap' | 'normalizePersistedWorkForRecovery' | 'listBackupsToResume' | 'listPendingUploadVerifications' | 'getRelationStatus' | 'getVideoMeta' | 'markPersistentJobBootstrapComplete' | 'listUploadFailuresForRecoveryPage'>;
-  jobStore: Pick<JobRepository, 'hasJobsForBvid' | 'enqueue' | 'countRecoverable' | 'enqueueBatch'>;
+  jobStore: Pick<JobRepository, 'hasJobsForBvid' | 'hasUploadVerificationWork' | 'enqueue' | 'countRecoverable' | 'enqueueBatch'>;
   transferSessions: Pick<TransferSessionRepository, 'listFiles' | 'findForTarget'>;
   configStore: Pick<ConfigStore, 'get'>;
   staleActiveBackupMs: number;
@@ -125,6 +125,7 @@ export function createStartupRecovery(deps: Dependencies) {
     }
     if (deps.stateManager.hasPersistentJobBootstrap()) {
       recoverOrphanedUploadFailures();
+      restorePendingUploadVerifications();
       return;
     }
     deps.stateManager.normalizePersistedWorkForRecovery();
@@ -224,6 +225,23 @@ export function createStartupRecovery(deps: Dependencies) {
       deps.enqueueIfNeeded(resolved.user, resolved.mediaId, resolved.folderTitle, entry.bvid, { persisted: true });
     }
 
+    restorePendingUploadVerifications();
+    deps.stateManager.markPersistentJobBootstrapComplete();
+    const pendingUploads = deps.jobStore.countRecoverable(['upload', 'history_upload', 'quality_upload']);
+    const pendingDownloads = deps.jobStore.countRecoverable(['download', 'quality_download']);
+    const pendingVerificationCount = deps.jobStore.countRecoverable(['verify_upload']);
+    logManager.push({
+      timestamp: new Date().toISOString(),
+      type: "system",
+      level: "info",
+      summary: `启动恢复初始化完成，当前待处理：待补传 ${pendingUploads}，待下载 ${pendingDownloads}，待确认 ${pendingVerificationCount}`,
+      raw: `[Recovery] current recoverable sqlite jobs uploads=${pendingUploads} downloads=${pendingDownloads} verify=${pendingVerificationCount}`,
+      simpleVisible: true,
+      debugVisible: true,
+    });
+  }
+
+  function restorePendingUploadVerifications() {
     const sessionFilesCache = new Map<string, ReturnType<TransferSessionRepository["listFiles"]>>();
     const sessionVerificationJobs = new Map<string, VerificationCandidate>();
     // Bootstrap is synchronous: enqueuing jobs does not mutate these source rows,
@@ -243,6 +261,11 @@ export function createStartupRecovery(deps: Dependencies) {
       for (const file of pending.files) {
         if (typeof file.size !== "number") continue;
         const transferSession = deps.transferSessions.findForTarget(pending.userId, pending.mediaId, pending.bvid, file.path);
+        if (transferSession && ['failed', 'superseded'].includes(transferSession.phase)) continue;
+        if (deps.jobStore.hasUploadVerificationWork({
+          bvid: pending.bvid, userId: pending.userId, mediaId: pending.mediaId,
+          remoteFile: file.path, sessionId: transferSession?.id, sessionGeneration: transferSession?.generation,
+        })) continue;
         const transferSessionKey = transferSession ? `${transferSession.id}:g${transferSession.generation}` : "";
         const transferFiles = transferSession
           ? (sessionFilesCache.get(transferSessionKey) || (() => {
@@ -331,19 +354,6 @@ export function createStartupRecovery(deps: Dependencies) {
         },
       });
     }
-    deps.stateManager.markPersistentJobBootstrapComplete();
-    const pendingUploads = deps.jobStore.countRecoverable(['upload', 'history_upload', 'quality_upload']);
-    const pendingDownloads = deps.jobStore.countRecoverable(['download', 'quality_download']);
-    const pendingVerificationCount = deps.jobStore.countRecoverable(['verify_upload']);
-    logManager.push({
-      timestamp: new Date().toISOString(),
-      type: "system",
-      level: "info",
-      summary: `启动恢复初始化完成，当前待处理：待补传 ${pendingUploads}，待下载 ${pendingDownloads}，待确认 ${pendingVerificationCount}`,
-      raw: `[Recovery] current recoverable sqlite jobs uploads=${pendingUploads} downloads=${pendingDownloads} verify=${pendingVerificationCount}`,
-      simpleVisible: true,
-      debugVisible: true,
-    });
   }
 
 

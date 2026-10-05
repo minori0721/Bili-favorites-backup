@@ -32,6 +32,7 @@ for (const stopAfterFirst of [false, true]) {
         completed++;
       },
       failed: (_job, error) => { throw error; },
+      fatal: error => assert.fail(String(error)),
       wake: () => { if (stopAfterFirst) workflow.stop(); if (stopAfterFirst || completed === 2) finish(); else workflow.dispatch(); },
       sleep: async ms => { waits.push(ms); clock += ms; },
     });
@@ -51,19 +52,19 @@ test('stop during request pacing keeps the operation busy until its wait settles
   const jobs = new PersistentJobStore(state.getDatabase());
   jobs.enqueue({ kind: 'access_probe', dedupeKey: 'probe:stop' });
   let clock = Date.now(), requests = 0;
-  let release!: () => void, waiting!: () => void, finish!: () => void;
+  let release!: () => void, waiting!: () => void;
   const start = new Promise<void>(resolve => { waiting = resolve; });
   const wait = new Promise<void>(resolve => { release = resolve; });
-  const done = new Promise<void>(resolve => { finish = resolve; });
   const workflow = createAccessProbeWorkflow({ jobs, owner: 'pacing-test', now: () => clock, generation: () => 0,
     accepting: () => true, shuttingDown: () => false, requestIntervalMs: 10_000,
     sleep: async ms => { waiting(); await wait; clock += ms; },
     run: async (_job, beforeRequest) => { await beforeRequest(() => {}); requests++; await beforeRequest(() => {}); requests++; },
-    failed: () => assert.fail('stopping must not record an external failure'), wake: finish });
+    failed: () => assert.fail('stopping must not record an external failure'),
+    fatal: error => assert.fail(String(error)), wake: () => assert.fail('stopped workflow must not wake scheduling') });
   try {
     workflow.dispatch(); await start; workflow.stop();
     assert.equal(workflow.isBusy(), true); assert.throws(() => workflow.resetAfterRebind(), /active/);
-    release(); await done;
+    release(); assert.equal(await workflow.waitForIdle(), true);
     assert.equal(requests, 1); assert.equal(workflow.isIdle(), true);
     assert.equal(jobs.list(['access_probe'], 10)[0].status, 'running');
   } finally { workflow.stop(); release(); state.close(); await removeTestDir(root); }
