@@ -3,7 +3,18 @@
     {
       "module": "queue.ts",
       "ownerSymbol": "TaskQueue",
-      "resourceSymbols": ["queue", "activeCount", "concurrency", "sequenceCounter", "canStartTask", "beforeRun", "failure", "onFailure", "maxSize", "retryTimers"],
+      "resourceSymbols": [
+        "queue",
+        "activeCount",
+        "concurrency",
+        "sequenceCounter",
+        "canStartTask",
+        "beforeRun",
+        "failure",
+        "onFailure",
+        "maxSize",
+        "retryTimers"
+      ],
       "stop": "halt rejects admission and clears retry timers; active task slots are released only when their executions settle; pending tasks and durable evidence are retained until the owner drains or recovers",
       "lateCallback": "a halted queue does not execute retries or completion/failure policy from tasks settling after a critical failure",
       "rebind": "the runtime must drain and remove pending work before storage replacement; a failed queue cannot resume within the same runtime"
@@ -854,6 +865,61 @@
       "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
       "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
       "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "users.ts",
+      "ownerSymbol": "UserStore",
+      "resourceSymbols": [
+        "users",
+        "filePath",
+        "write",
+        "read",
+        "identities",
+        "snapshots",
+        "removals"
+      ],
+      "stop": "No timers are owned. Account removal leases release in finally; shutdown drains login and refresh owners before closing storage.",
+      "lateCallback": "Process-local account, authorization and selection tokens reject obsolete scans and refreshes. A failed file write never publishes candidate users or tokens.",
+      "rebind": "Reload invalidates all account authority. Durable UID and archive relations remain reusable; tokens never enter users.json or SQLite."
+    },
+    {
+      "module": "config.ts",
+      "ownerSymbol": "ConfigStore",
+      "resourceSymbols": [
+        "config",
+        "filePath",
+        "write"
+      ],
+      "stop": "Synchronous writes have a single rename commit point and no background resources.",
+      "lateCallback": "The candidate configuration is published only after file persistence succeeds.",
+      "rebind": "Reload reads and validates the current configuration file before replacing memory."
+    },
+    {
+      "module": "account-refresh-service.ts",
+      "ownerSymbol": "createAccountRefresh",
+      "resourceSymbols": [
+        "started",
+        "stopped",
+        "timer",
+        "requests",
+        "active"
+      ],
+      "stop": "Stop clears the polling timer, rejects new calls and waits for all active refresh promises, including superseded requests.",
+      "lateCallback": "Captured account and authorization identity guard success and failure writes. Finally removes only its own map entry.",
+      "rebind": "Import maintenance drains requests; UserStore reload invalidates old identity; no connection or credentials are cached beyond the request."
+    },
+    {
+      "module": "account-login-service.ts",
+      "ownerSymbol": "createAccountLogin",
+      "resourceSymbols": [
+        "sessions",
+        "active",
+        "generation",
+        "stopped"
+      ],
+      "stop": "Invalidate stops QR polling; stop waits for accepted callbacks, including those waiting for account deletion.",
+      "lateCallback": "Session generation and ownership are rechecked after user info and the account removal barrier before persistence.",
+      "rebind": "Import invalidates login sessions before replacing storage; re-added UID restores retained archive evidence through the existing restore use case."
     }
   ]
 }

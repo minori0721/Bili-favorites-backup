@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { required } from './contract-values.js';
 import { PersistentJobStore } from '../src/job-store.js';
 import { createDownloadTaskFactory } from '../src/scheduler/download-task-factory.js';
@@ -58,7 +59,7 @@ test("manual archive exact quality and encoding use an isolated strict download 
   const config = testConfig({ bbdownQuality: "4K", bbdownEncoding: "HEVC" });
   const scheduler = new SyncScheduler(
     { get: () => config },
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null, updatePartial: () => user },
+    memoryUsers([user]),
     manager,
     { legacyTempDir: path.join(runtime, "temp"), deferAdmissionUntilStart: true },
   );
@@ -126,7 +127,7 @@ test("strict regular download recovery keeps the candidate isolated when changin
   });
   const scheduler = new SyncScheduler(
     { get: () => testConfig({ bbdownQuality: "4K", bbdownEncoding: "HEVC" }) },
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null, updatePartial: () => user },
+    memoryUsers([user]),
     manager,
     {deferAdmissionUntilStart: true},
   );

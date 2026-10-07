@@ -1,3 +1,4 @@
+import { memoryUsers } from '../fixtures/memory-users.js';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
@@ -24,7 +25,7 @@ test('construction and repeated snapshots do not normalize jobs or start filesys
   const changes = () => state.getDatabase().db.prepare<unknown[], { "count": number }>('SELECT total_changes() AS count').get();
   const before = changes();
   let inspections = 0;
-  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state,
+  const scheduler = new SyncScheduler({get:() => testConfig()}, memoryUsers([]), state,
     {cacheInspector:async () => {inspections+=1;return inspectDownloadCache(directory);}});
   try {
     for(let index=0;index<5;index++) {
@@ -52,7 +53,7 @@ test('recovery summary counts active and explicit manual recoveries, not termina
   state.getDatabase().db.prepare("UPDATE jobs SET status='failed', lease_owner=NULL, lease_expires_at=NULL WHERE id=?").run(failedAbandoned.id);
   try {
     assert.equal(jobs.countRecoverable(['upload']),3);
-    const scheduler = new SyncScheduler({get: () => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state,
+    const scheduler = new SyncScheduler({get: () => testConfig()}, memoryUsers([]), state,
       {cacheInspector:async () => inspectDownloadCache(directory)});
     try {
       assert.equal(scheduler.getQueueSnapshot().recovery.pendingUploads,3);
@@ -135,7 +136,7 @@ test('queue summary counts upload, confirmation, and quality finalization separa
     for (const kind of ['quality_download','quality_upload','quality_replace','quality_cleanup','verify_upload'] as const) {
       jobs.enqueue({kind,dedupeKey:`quality-summary-${kind}`,bvid:`BV${kind}`});
     }
-    const scheduler = new SyncScheduler({get:()=>testConfig()}, {list:()=>[],getById:()=>null,updatePartial:()=>null}, state,
+    const scheduler = new SyncScheduler({get:()=>testConfig()}, memoryUsers([]), state,
       {cacheInspector:async () => inspectDownloadCache(directory)});
     try {
       const snapshot = scheduler.getQueueSnapshot();

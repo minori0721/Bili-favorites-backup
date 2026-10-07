@@ -124,8 +124,16 @@ const userStore = new UserStore();
 const stateManager = new StateManager();
 const archiveLibrary = createArchiveLibraryService({database: () => stateManager.getDatabase(), users: () => userStore.list()});
 let stopFailedApplication: ((error: Error) => void) | undefined;
+// Only the application owns authorization refresh. Callbacks run after assembly.
+const accountRefresh = createAccountRefresh({
+  users: userStore, maintenance: importMaintenance, refresh: refreshUserAuth, info: getUserInfo,
+  wake: userId => scheduler.wakeChargingAccessProbes(userId),
+  transfersRunning: () => scheduler.hasRunningTransferTasks(), now: Date.now,
+  timers: {set: setTimeout, clear: clearTimeout},
+});
 const scheduler = new SyncScheduler(configStore, userStore, stateManager, {
   deferAdmissionUntilStart: true,
+  refreshAccount: (id, reason) => accountRefresh.refresh(id, reason),
   onFatalError: error => {
     console.error(`[Application] Scheduler failed: ${safeErrorSummary(error)}`);
     stopFailedApplication?.(error);
@@ -253,12 +261,6 @@ async function cleanupBBDownCredentialResidue() {
   return removed;
 }
 
-const accountRefresh = createAccountRefresh({
-  users: userStore, maintenance: importMaintenance, refresh: refreshUserAuth, info: getUserInfo,
-  wake: userId => scheduler.wakeChargingAccessProbes(userId),
-  transfersRunning: () => scheduler.hasRunningTransferTasks(), now: Date.now,
-  timers: {set: setTimeout, clear: clearTimeout},
-});
 if (process.env.NODE_ENV !== "test") accountRefresh.start();
 
 const app = express();

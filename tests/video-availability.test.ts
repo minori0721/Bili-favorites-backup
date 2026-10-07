@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { required, readField, readArray, readString } from './contract-values.js';
 import { createAccessFixture } from './fixtures/access-workflow.js';
 import { createHeldScheduler } from './fixtures/held-scheduler.js';
@@ -176,10 +177,11 @@ test("availability ignores unrelated accounts while charging probes retain them"
   manager.replaceStateSnapshot(availabilityState());
   manager.markAvailabilityPending("BVAVAIL", "favorite_flag", checkedAt);
   const users = [...testUsers(), { ...testUsers()[0], id: "u3", uid: 3, cookie: { SESSDATA: "three", bili_jct: "three", DedeUserID: "3" }, favorites: [] }];
+  const userStore = memoryUsers(users);
   const checked: string[] = [];
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    userStore,
     manager,
     { videoAccessProbe: async (cookie) => {
       checked.push(String(cookie.DedeUserID));
@@ -197,7 +199,8 @@ test("availability ignores unrelated accounts while charging probes retain them"
     assert.equal(manager.getSourceAvailability("BVAVAIL")?.state, "confirmed_unavailable");
     const chargingUsers = resources(scheduler).probes.users("BVAVAIL", "", new Set(), true);
     assert.equal(chargingUsers.some((user) => user.id === "u3"), true);
-    users.splice(0, 2);
+    userStore.remove('u1');
+    userStore.remove('u2');
     assert.equal(scheduler.requestAvailabilityRecheck("BVAVAIL").status, 409);
   } finally {
     await scheduler.shutdown(100);
@@ -465,7 +468,7 @@ test("a source-unavailable download becomes a low-frequency probe without an upl
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs },
   );
@@ -504,7 +507,7 @@ test("unavailable probes prefer the uploader and keep a monthly recovery opportu
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     {
       now: () => nowMs,
@@ -553,7 +556,7 @@ test(`unknown availability (${diagnosticReason}) preserves the backoff and keeps
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     {
       now: () => nowMs,
@@ -611,7 +614,7 @@ test("manual recheck preserves an existing unavailable schedule when the source 
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs, videoAccessProbe: async () => unavailableSnapshot() },
   );
@@ -653,7 +656,7 @@ test("one available account revives the relation and queues exactly one download
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs, videoAccessProbe: async () => availableSnapshot() },
   );
@@ -686,7 +689,7 @@ test("a related available account can download once for both favorite relations"
   const users = testUsers().map((user) => user.id === "u2" ? {...user, favorites: [{mediaId: 2, title: "Owner"}]} : user);
   const scheduler = makeScheduler(
     {get: () => testConfig()},
-    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    memoryUsers(users),
     manager,
     {now: () => nowMs, videoAccessProbe: async (cookie) => cookie.DedeUserID === "2" ? availableSnapshot() : unavailableSnapshot()},
   );
@@ -716,7 +719,7 @@ test("a failed replacement insert rolls back recovery and keeps the probe for re
   const users = testUsers();
   const scheduler = makeScheduler(
     {get: () => testConfig()},
-    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    memoryUsers(users),
     manager,
     {now: () => nowMs, videoAccessProbe: async () => availableSnapshot()},
   );
@@ -756,7 +759,7 @@ test("ordinary availability probes do not download through an unrelated enabled 
   const checkedUsers: string[] = [];
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs, videoAccessProbe: async (cookie) => { const uid = String(cookie.DedeUserID || ""); checkedUsers.push(uid); return uid === "3" ? availableSnapshot() : unavailableSnapshot(); } },
   );
@@ -791,7 +794,7 @@ test("an archived video keeps its source status without an automatic long-term p
   let probeCalls = 0;
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs, videoAccessProbe: async () => { probeCalls += 1; return availableSnapshot(); } },
   );
@@ -822,7 +825,7 @@ test("charging and availability intents share one persistent probe", async () =>
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: () => users[0] },
+    memoryUsers(users),
     manager,
     { now: () => Date.parse(checkedAt) },
   );
@@ -851,7 +854,7 @@ test("manual availability recheck requires an enabled account", async () => {
   manager.replaceStateSnapshot(availabilityState());
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager,
     { now: () => Date.parse(checkedAt) },
   );
@@ -886,7 +889,7 @@ test("logging in wakes charging plus related or owner availability probes withou
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs },
   );
@@ -949,7 +952,7 @@ test("logging in wakes a related dormant video once without resetting its lifecy
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs, videoAccessProbe: async () => unavailableSnapshot() },
   );
@@ -989,7 +992,7 @@ test("startup migrates a legacy fixed availability schedule once and keeps one s
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs },
   );
@@ -1020,7 +1023,7 @@ test("startup reopens an old dormant video over a month without duplicating its 
   const users = testUsers();
   const scheduler = makeScheduler(
     {get: () => testConfig()},
-    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    memoryUsers(users),
     manager, {now: () => nowMs},
   );
   try {
@@ -1047,7 +1050,7 @@ test("startup leaves an existing low-frequency retry's due date and round untouc
   const users = testUsers();
   const scheduler = makeScheduler(
     {get: () => testConfig()},
-    {list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null},
+    memoryUsers(users),
     manager, {now: () => nowMs},
   );
   try {
@@ -1089,7 +1092,7 @@ test("overdue legacy availability schedules migrate into a short stable catch-up
   const users = testUsers();
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+    memoryUsers(users),
     manager,
     { now: () => nowMs },
   );
@@ -1136,7 +1139,7 @@ test("startup migration leaves manual, merged charging, leased, and already-woke
     const users = testUsers();
     const scheduler = makeScheduler(
       { get: () => testConfig() },
-      { list: () => users, getById: (id: string) => users.find(user => user.id === id) ?? null },
+      memoryUsers(users),
       manager,
       { now: () => nowMs },
     );

@@ -1,8 +1,8 @@
-import type { BiliUser, UserStore } from '../users.js';
+import { AccountOperationCancelled, type AccountIdentity, type BiliUser, type UserStore } from '../users.js';
 import type { StateManager, SourceAvailabilityReason } from '../state.js';
-import { BiliRiskOrLoginError, type listFavoriteItemsPage, type refreshUserAuth, type resolveSelfVisibleFavoriteItem } from '../bili.js';
+import { BiliRiskOrLoginError, type listFavoriteItemsPage, type resolveSelfVisibleFavoriteItem } from '../bili.js';
 import type { queueCoverCache } from '../cover-cache.js';
-import { isAuthRefreshAttemptBlocked, nextAuthRefreshFailureState } from '../auth-refresh.js';
+import { isAuthRefreshAttemptBlocked } from '../auth-refresh.js';
 import { safeErrorSummary } from '../diagnostics.js';
 import { logManager } from '../logger.js';
 import { availabilityJitter } from './retry-policy.js';
@@ -12,14 +12,14 @@ interface ScanDependencies {
         folder(userId: string, mediaId: number): boolean;
         source(userId: string, mediaId: number, bvid: string): boolean;
     };
-    users: Pick<UserStore, 'getById' | 'updatePartial'>;
+    users: Pick<UserStore, 'getById' | 'captureAccount' | 'getCurrentUser' | 'isScanCurrent' | 'isAuthorizationCurrent'>;
     now(): number;
     random(): number;
     sleep(milliseconds: number): Promise<void>;
     generation(): number;
     canRun(): boolean;
     listPage: typeof listFavoriteItemsPage;
-    refreshAuth: typeof refreshUserAuth;
+    refreshAccount(userId: string, reason: 'on_error'): Promise<void>;
     resolveSelfVisible: typeof resolveSelfVisibleFavoriteItem;
     cacheCover: typeof queueCoverCache;
     progress(patch: {
@@ -52,12 +52,15 @@ export interface FavoriteScanPort {
 /** Owns scan policy and observations; admission, persistent enqueue and progress belong to scheduling control. */
 export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & { reset(): void } {
     let epoch = 0;
-    function checkpoint() {
+    function checkpoint(user: BiliUser, mediaId: number) {
+        const snapshot = deps.users.getCurrentUser(user) && deps.users.captureAccount(user.id);
+        if (!snapshot) throw new AccountOperationCancelled();
         const currentEpoch = epoch;
         const generation = deps.generation();
-        const current = () => currentEpoch === epoch && generation === deps.generation() && deps.canRun();
+        const current = () => currentEpoch === epoch && generation === deps.generation() && deps.canRun()
+            && deps.users.isScanCurrent(snapshot.identity, mediaId) && !deps.deletions.folder(user.id, mediaId);
         return Object.assign(() => { if (!current())
-            throw new Error('Favorite scan interrupted by lifecycle change'); }, { current });
+            throw new AccountOperationCancelled(); }, { current });
     }
     const hotScanMinPages = 3;
     const hotScanMaxPages = 12;
@@ -67,82 +70,45 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
     const manualHistoryPagesPerTick = 20;
     const selfVisibleProbeCache = new Map<string, {
         expiresAt: number;
+        identity: AccountIdentity;
         item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number];
     }>();
-    async function listFavoriteItemsPageWithAuthRetry(user: BiliUser, mediaId: number, page: number, pageSize: number, context: { folderTitle: string; detail: string }) {
-        const assertCurrent = checkpoint();
+    async function listFavoriteItemsPageWithAuthRetry(user: BiliUser, mediaId: number, page: number, pageSize: number, context: { folderTitle: string; detail: string }, assertCurrent: ReturnType<typeof checkpoint>) {
+        async function requestPage() {
+            assertCurrent();
+            const snapshot = deps.users.captureAccount(user.id);
+            if (!snapshot) throw new AccountOperationCancelled();
+            try {
+                const result = await deps.listPage(snapshot.user.cookie, mediaId, page, pageSize);
+                assertCurrent();
+                if (!deps.users.isAuthorizationCurrent(snapshot.identity)) throw new AccountOperationCancelled();
+                return result;
+            } catch (error) {
+                assertCurrent();
+                if (!deps.users.isAuthorizationCurrent(snapshot.identity)) throw new AccountOperationCancelled();
+                throw error;
+            }
+        }
         assertCurrent();
         deps.progress({ userName: user.name, ...context, mediaId, page, pageSize });
-        try {
-            const result = await deps.listPage(user.cookie, mediaId, page, pageSize);
-            assertCurrent();
-            return result;
-        }
+        try { return await requestPage(); }
         catch (error: unknown) {
             assertCurrent();
-            if (!(error instanceof BiliRiskOrLoginError)) {
-                throw error;
-            }
-            if (!user.accessToken || !user.refreshToken) {
-                throw error;
-            }
-            if (isAuthRefreshAttemptBlocked(user.authRefreshFailureCategory, user.authRefreshFailureAttempts, user.authRefreshRetryAt, deps.now())) {
-                throw error;
-            }
-            let refreshed;
-            try {
-                refreshed = await deps.refreshAuth(user.accessToken, user.refreshToken);
-                assertCurrent();
-            }
-            catch (refreshError: unknown) {
-                assertCurrent();
-                const current = deps.users.getById(user.id) || user;
-                const failure = nextAuthRefreshFailureState(current.authRefreshFailureCategory, current.authRefreshFailureAttempts, refreshError, deps.now());
-                deps.users.updatePartial(user.id, {
-                    lastAuthRefreshError: safeErrorSummary(refreshError),
-                    authRefreshFailureCategory: failure.category,
-                    authRefreshFailureAttempts: failure.attempts,
-                    authRefreshRetryAt: failure.retryAt,
-                });
-                throw error;
-            }
-            const updated = deps.users.updatePartial(user.id, {
-                cookie: refreshed.cookie,
-                rawAuth: refreshed.rawAuth,
-                accessToken: refreshed.accessToken || user.accessToken,
-                refreshToken: refreshed.refreshToken || user.refreshToken,
-                expires: refreshed.expires || user.expires,
-                lastAuthRefreshAt: new Date(deps.now()).toISOString(),
-                lastAuthRefreshError: "",
-                authRefreshFailureCategory: undefined,
-                authRefreshFailureAttempts: undefined,
-                authRefreshRetryAt: undefined,
-            });
-            if (!updated) {
-                throw new Error('Account no longer exists while saving refreshed authorization');
-            }
-            user.cookie = updated.cookie;
-            user.accessToken = updated.accessToken;
-            user.refreshToken = updated.refreshToken;
-            user.expires = updated.expires;
+            if (!(error instanceof BiliRiskOrLoginError)) throw error;
+            const current = deps.users.getById(user.id);
+            if (!current?.accessToken || !current.refreshToken
+                || isAuthRefreshAttemptBlocked(current.authRefreshFailureCategory, current.authRefreshFailureAttempts, current.authRefreshRetryAt, deps.now())) throw error;
+            await deps.refreshAccount(user.id, 'on_error');
+            assertCurrent();
             console.warn(`[Scheduler] Refreshed auth for ${user.name} after login/risk error; retrying page ${page}.`);
-            // Refresh succeeded: the retried request and persistence failures must
-            // keep their actual error, rather than revive the obsolete login error.
-            try {
-                const result = await deps.listPage(user.cookie, mediaId, page, pageSize);
-                assertCurrent();
-                return result;
-            } catch (retryError) {
-                assertCurrent();
-                throw retryError;
-            }
+            // The actual retry or persistence error propagates to the caller.
+            return requestPage();
         }
     }
     function selfVisibleProbeKey(userId: string, bvid: string) {
         return `${userId}:${bvid}`;
     }
-    async function resolveSelfVisibleItemForSync(user: BiliUser, mediaId: number, item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number]) {
-        const assertCurrent = checkpoint();
+    async function resolveSelfVisibleItemForSync(user: BiliUser, mediaId: number, item: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"][number], assertCurrent: ReturnType<typeof checkpoint>) {
         assertCurrent();
         if (!item.unavailable || !user.uid || Number(item.upperMid || 0) !== Number(user.uid)) {
             return item;
@@ -156,15 +122,25 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             }
         }
         const cached = selfVisibleProbeCache.get(key);
-        if (cached && cached.expiresAt > deps.now()) {
+        if (cached && cached.expiresAt > deps.now() && deps.users.isAuthorizationCurrent(cached.identity)) {
             return cached.item;
         }
         const previousRelation = deps.state.getRelationStatus(user.id, mediaId, item.bvid);
         const wasSelfVisible = previousRelation?.selfVisible === true;
-        const resolved = await deps.resolveSelfVisible(user.cookie, user.uid, item);
+        const snapshot = deps.users.captureAccount(user.id);
+        if (!snapshot) throw new AccountOperationCancelled();
+        let resolved: typeof item;
+        try { resolved = await deps.resolveSelfVisible(snapshot.user.cookie, snapshot.user.uid, item); }
+        catch (error) {
+            assertCurrent();
+            if (!deps.users.isAuthorizationCurrent(snapshot.identity)) throw new AccountOperationCancelled();
+            throw error;
+        }
         assertCurrent();
+        if (!deps.users.isAuthorizationCurrent(snapshot.identity)) throw new AccountOperationCancelled();
         selfVisibleProbeCache.set(key, {
             expiresAt: deps.now() + 10 * 60000,
+            identity: snapshot.identity,
             item: resolved,
         });
         if (resolved.selfVisible && !wasSelfVisible) {
@@ -182,7 +158,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
         return resolved;
     }
     async function scanAllPages(user: BiliUser, mediaId: number, folderTitle: string) {
-        const assertCurrent = checkpoint();
+        const assertCurrent = checkpoint(user, mediaId);
         assertCurrent();
         deps.progress({
             mode: "reconcile",
@@ -204,7 +180,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             lastHistoryScanAt: scanStartedAt,
         });
         while (true) {
-            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在全量扫描第 ${page} 页。` });
+            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在全量扫描第 ${page} 页。` }, assertCurrent);
             assertCurrent();
             lastTotal = result.total;
             deps.progress({
@@ -217,7 +193,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 biliTotal: result.total,
                 detail: `正在全量扫描第 ${page} 页。`,
             });
-            await recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids);
+            await recordPage(user, mediaId, folderTitle, result.items, page, 20, scanStartedAt, seenBvids, assertCurrent);
             assertCurrent();
             deps.state.updateFolderScan(user.id, mediaId, {
                 folderTitle,
@@ -249,7 +225,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
         }
     }
     async function scanHotPages(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean) {
-        const assertCurrent = checkpoint();
+        const assertCurrent = checkpoint(user, mediaId);
         assertCurrent();
         deps.progress({
             mode: manual ? "manual" : "auto",
@@ -265,7 +241,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
         const maxPages = manual ? 40 : hotScanMaxPages;
         let lastPage = 0;
         for (let page = 1; page <= maxPages; page += 1) {
-            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在扫描近期第 ${page} 页。` });
+            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在扫描近期第 ${page} 页。` }, assertCurrent);
             assertCurrent();
             deps.progress({
                 userName: user.name,
@@ -276,7 +252,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 biliTotal: result.total,
                 detail: `正在扫描近期第 ${page} 页。`,
             });
-            const pageStats = await recordPage(user, mediaId, folderTitle, result.items, page, 20);
+            const pageStats = await recordPage(user, mediaId, folderTitle, result.items, page, 20, undefined, undefined, assertCurrent);
             assertCurrent();
             lastPage = page;
             const previousScan = deps.state.getFolderScan(user.id, mediaId, folderTitle);
@@ -306,7 +282,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
         return lastPage;
     }
     async function scanHistoryPages(user: BiliUser, mediaId: number, folderTitle: string, manual: boolean, startAfterPage = 0) {
-        const assertCurrent = checkpoint();
+        const assertCurrent = checkpoint(user, mediaId);
         assertCurrent();
         deps.progress({
             userName: user.name,
@@ -326,7 +302,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             ? historyPagesPerTick
             : (manual ? manualHistoryPagesPerTick : initialHistoryPagesPerTick);
         for (let i = 0; i < pagesThisRun; i += 1) {
-            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在补扫历史第 ${page} 页。` });
+            const result = await listFavoriteItemsPageWithAuthRetry(user, mediaId, page, 20, { folderTitle, detail: `正在补扫历史第 ${page} 页。` }, assertCurrent);
             assertCurrent();
             deps.progress({
                 userName: user.name,
@@ -337,7 +313,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 biliTotal: result.total,
                 detail: `正在补扫历史第 ${page} 页。`,
             });
-            await recordPage(user, mediaId, folderTitle, result.items, page, 20);
+            await recordPage(user, mediaId, folderTitle, result.items, page, 20, undefined, undefined, assertCurrent);
             assertCurrent();
             if (!result.hasMore) {
                 const completeWithoutTotal = !manual && !totalPages && page > Math.max(startAfterPage + 1, 1);
@@ -369,15 +345,14 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             assertCurrent();
         }
     }
-    async function recordPage(user: BiliUser, mediaId: number, folderTitle: string, items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"], page: number, pageSize = 20, seenAt = new Date(deps.now()).toISOString(), seenBvids?: Set<string>) {
-        const assertCurrent = checkpoint();
+    async function recordPage(user: BiliUser, mediaId: number, folderTitle: string, items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"], page: number, pageSize: number, seenAt: string = new Date(deps.now()).toISOString(), seenBvids: Set<string> | undefined, assertCurrent: ReturnType<typeof checkpoint>) {
         assertCurrent();
         let newItems = 0;
         for (const [indexInPage, rawItem] of items.entries()) {
             if (deps.deletions.source(user.id, mediaId, rawItem.bvid)) {
                 continue;
             }
-            const item = await resolveSelfVisibleItemForSync(user, mediaId, rawItem);
+            const item = await resolveSelfVisibleItemForSync(user, mediaId, rawItem, assertCurrent);
             assertCurrent();
             if (deps.deletions.source(user.id, mediaId, item.bvid))
                 continue;

@@ -1,3 +1,4 @@
+import { memoryUsers } from '../fixtures/memory-users.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
@@ -140,7 +141,7 @@ test('production scheduler heartbeat renews pending claims without executing ext
   const user = seedQueuedDownload(state, 'BVHEARTBEAT');
   const time = new ManualTime();
   // Resolve the queued task's account without enrolling it in automatic scans.
-  const f = createHeldScheduler({get: () => testConfig({pollIntervalMinutes: 1440})}, {list: () => [], getById: () => user}, state, {now: time.now, scheduleTimer: time.schedule});
+  const f = createHeldScheduler({get: () => testConfig({pollIntervalMinutes: 1440})}, memoryUsers([user]), state, {now: time.now, scheduleTimer: time.schedule});
   try {
     const job = f.jobs.enqueue({kind: 'download', dedupeKey: 'heartbeat', bvid: 'BVHEARTBEAT', payload: {primaryUserId: user.id, primaryMediaId: 1, primaryFolderTitle: 'Favorites'}});
     f.scheduler.start();
@@ -160,7 +161,7 @@ test('production start failure closes admission and retains SQLite recovery evid
   const state = new StateManager({statePath: path.join(root, 'state.json'), dbPath: path.join(root, 'state.sqlite')});
   const user = seedQueuedDownload(state, 'BVSTARTFAIL');
   let failures = 0, runs = 0;
-  const f = createHeldScheduler({get: () => testConfig()}, {list: () => [], getById: () => user}, state, {onFatalError: () => { failures++; }});
+  const f = createHeldScheduler({get: () => testConfig()}, memoryUsers([user]), state, {onFatalError: () => { failures++; }});
   try {
     const job = f.jobs.enqueue({kind: 'download', dedupeKey: 'start-failure', bvid: 'BVSTARTFAIL', payload: {primaryUserId: user.id, primaryMediaId: 1, primaryFolderTitle: 'Favorites'}});
     f.scheduler.start(); f.scheduler.wake();
@@ -188,7 +189,7 @@ test('production timer persistence failure stops scheduling instead of escaping 
   const user = seedQueuedDownload(state, 'BVTIMERFAIL');
   const time = new ManualTime();
   let failures = 0;
-  const f = createHeldScheduler({get: () => testConfig({pollIntervalMinutes: 1440})}, {list: () => [], getById: () => user}, state,
+  const f = createHeldScheduler({get: () => testConfig({pollIntervalMinutes: 1440})}, memoryUsers([user]), state,
     {now: time.now, scheduleTimer: time.schedule, onFatalError: () => { failures++; }});
   try {
     const job = f.jobs.enqueue({kind: 'download', dedupeKey: 'timer-failure', bvid: 'BVTIMERFAIL', payload: {primaryUserId: user.id, primaryMediaId: 1, primaryFolderTitle: 'Favorites'}});

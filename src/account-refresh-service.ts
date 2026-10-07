@@ -3,10 +3,10 @@ import type { getUserInfo, refreshUserAuth } from './bili.js';
 import { safeErrorSummary } from './diagnostics.js';
 import type { ImportMaintenance } from './import-maintenance.js';
 import { waitForQuiescence } from './scheduler/quiescence.js';
-import type { UserStore } from './users.js';
+import { AccountOperationCancelled, type AccountIdentity, type BiliUser, type UserStore } from './users.js';
 
 export interface AccountRefreshDependencies {
-  users: Pick<UserStore, 'getById' | 'list' | 'updatePartial'>;
+  users: Pick<UserStore, 'getById' | 'list' | 'updatePartial' | 'captureAccount' | 'isAuthorizationCurrent'>;
   maintenance: Pick<ImportMaintenance, 'run' | 'blocked'>;
   refresh: typeof refreshUserAuth;
   info: typeof getUserInfo;
@@ -22,30 +22,55 @@ export function createAccountRefresh(deps: AccountRefreshDependencies) {
   let started = false;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const requests = new Map<string, Promise<void>>();
+  const requests = new Map<string, { identity: AccountIdentity; promise: Promise<void> }>();
+  const active = new Set<Promise<void>>();
   function refreshUserAuthForStore(userId: string, reason: 'manual' | 'auto' | 'on_error'): Promise<void> {
     if (stopped) return Promise.reject(Object.assign(new Error('Account refresh is stopping'), { statusCode: 503 }));
+    const snapshot = userStore.captureAccount(userId);
+    if (!snapshot) return Promise.reject(new AccountOperationCancelled());
     const existing = requests.get(userId);
-    if (existing) return existing;
-    const work = importMaintenance.run(() => refreshUserAuthForStoreUnlocked(userId, reason));
-    const tracked = work.finally(() => { requests.delete(userId); });
-    requests.set(userId, tracked);
+    if (existing && existing.identity.instance === snapshot.identity.instance
+      && existing.identity.authorization === snapshot.identity.authorization) return existing.promise;
+    const work = importMaintenance.run(() => refreshUserAuthForStoreUnlocked(snapshot, reason));
+    const tracked = work.finally(() => {
+      if (requests.get(userId)?.promise === tracked) requests.delete(userId);
+      active.delete(tracked);
+    });
+    requests.set(userId, { identity: snapshot.identity, promise: tracked });
+    active.add(tracked);
     return tracked;
   }
-  async function refreshUserAuthForStoreUnlocked(userId: string, reason: "manual" | "auto" | "on_error") {
-    const user = userStore.getById(userId);
-    if (!user) {
-      throw new Error("User not found");
-    }
+  async function refreshUserAuthForStoreUnlocked(snapshot: { user: BiliUser; identity: AccountIdentity }, reason: "manual" | "auto" | "on_error") {
+    const { user, identity } = snapshot;
+    const assertCurrent = () => { if (!userStore.isAuthorizationCurrent(identity)) throw new AccountOperationCancelled(); };
+    assertCurrent();
     if (!user.accessToken || !user.refreshToken) {
       throw new Error("当前账号缺少 accessToken 或 refreshToken，请重新扫码登录。");
     }
 
+    let refreshed: Awaited<ReturnType<typeof refreshUserAuth>>;
+    let info: Awaited<ReturnType<typeof getUserInfo>>;
     try {
-      const refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
-      const info = await getUserInfo(refreshed.cookie);
-      const nowIso = new Date(deps.now()).toISOString();
+      refreshed = await refreshUserAuth(user.accessToken, user.refreshToken);
+      assertCurrent();
+      info = await getUserInfo(refreshed.cookie);
+      assertCurrent();
+      if (info.uid !== user.uid) throw new Error('Refreshed authorization belongs to a different account');
+    } catch (error) {
+      assertCurrent();
+      if (error instanceof AccountOperationCancelled) throw error;
+      const current = userStore.getById(user.id)!;
+      const failure = nextAuthRefreshFailureState(current.authRefreshFailureCategory, current.authRefreshFailureAttempts, error, deps.now());
       userStore.updatePartial(user.id, {
+        lastAuthRefreshError: safeErrorSummary(error), authRefreshFailureCategory: failure.category,
+        authRefreshFailureAttempts: failure.attempts, authRefreshRetryAt: failure.retryAt,
+      });
+      throw error;
+    }
+    // Persistence and wake failures are not remote authentication failures.
+    assertCurrent();
+    const nowIso = new Date(deps.now()).toISOString();
+    userStore.updatePartial(user.id, {
         name: info.name,
         avatar: info.avatar,
         cookie: refreshed.cookie,
@@ -58,24 +83,9 @@ export function createAccountRefresh(deps: AccountRefreshDependencies) {
         authRefreshFailureCategory: undefined,
         authRefreshFailureAttempts: undefined,
         authRefreshRetryAt: undefined,
-        lastLoginAt: reason === "manual" ? nowIso : user.lastLoginAt,
-      });
-      deps.wake(user.id);
-    } catch (error) {
-      const current = userStore.getById(user.id) || user;
-      const failure = nextAuthRefreshFailureState(
-        current.authRefreshFailureCategory,
-        current.authRefreshFailureAttempts,
-        error, deps.now(),
-      );
-      userStore.updatePartial(user.id, {
-        lastAuthRefreshError: safeErrorSummary(error),
-        authRefreshFailureCategory: failure.category,
-        authRefreshFailureAttempts: failure.attempts,
-        authRefreshRetryAt: failure.retryAt,
-      });
-      throw error;
-    }
+        ...(reason === "manual" ? { lastLoginAt: nowIso } : {}),
+    });
+    deps.wake(user.id);
   }
 
   // ---------- auto token refresh (biliLive-tools pattern) ----------
@@ -94,8 +104,11 @@ export function createAccountRefresh(deps: AccountRefreshDependencies) {
         }
 
         const users = userStore.list();
-        for (const user of users) {
+        for (const listed of users) {
           if (stopped) return;
+          const snapshot = userStore.captureAccount(listed.id);
+          if (!snapshot) continue;
+          const user = snapshot.user;
           const now = deps.now();
           const failureCategory = user.authRefreshFailureCategory;
           const failureAttempts = Math.max(0, Math.floor(Number(user.authRefreshFailureAttempts) || 0));
@@ -115,6 +128,7 @@ export function createAccountRefresh(deps: AccountRefreshDependencies) {
                 await refreshUserAuthForStore(user.id, "auto");
                 console.log(`[Auth] Token refreshed for user ${user.name}`);
               } catch (error) {
+                if (error instanceof AccountOperationCancelled) continue;
                 const updated = userStore.getById(user.id);
                 const retry = updated?.authRefreshRetryAt ? Date.parse(updated.authRefreshRetryAt) : NaN;
                 if (Number.isFinite(retry)) nextInterval = Math.min(nextInterval, Math.max(60_000, retry - deps.now()));
@@ -141,7 +155,7 @@ export function createAccountRefresh(deps: AccountRefreshDependencies) {
     stop(timeoutMs: number) {
       stopped = true;
       if (timer !== undefined) { deps.timers.clear(timer); timer = undefined; }
-      return waitForQuiescence(() => requests.size > 0, timeoutMs);
+      return waitForQuiescence(() => active.size > 0, timeoutMs);
     },
   };
 }

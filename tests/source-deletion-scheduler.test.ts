@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { sourceAdmissionBlocked } from '../src/scheduler/source-admission.js';
 import { createUploadAdmission } from '../src/scheduler/upload-admission.js';
 import { buildQualityUpgradeTask } from '../src/scheduler/quality-task-factory.js';
@@ -51,7 +52,7 @@ async function createScheduler(name: string, users: BiliUser[]) {
   });
   const scheduler = new SyncScheduler(
     { get: () => testConfig() },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) || null, updatePartial: () => null },
+    memoryUsers(users),
     manager,
     {deferAdmissionUntilStart: true},
   );

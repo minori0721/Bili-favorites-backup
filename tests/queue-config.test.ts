@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { requeueRetryPending } from '../src/scheduler/retry-pending-recovery.js';
 import { recoveryFixture } from './fixtures/recovery.js';
 import { heldQueues } from './fixtures/held-queues.js';
@@ -39,8 +40,8 @@ function resources(scheduler: SyncScheduler) {
   assert.ok(value);
   return value;
 }
-function makeScheduler(config: SchedulerArgs[0], users: Omit<SchedulerArgs[1], 'updatePartial'>, state: SchedulerArgs[2], dependencies: SchedulerArgs[3] = {}) {
-  const args = [config, {...users, updatePartial: () => { throw new Error('Unexpected user update'); }}, state, dependencies] as const;
+function makeScheduler(config: SchedulerArgs[0], users: SchedulerArgs[1], state: SchedulerArgs[2], dependencies: SchedulerArgs[3] = {}) {
+  const args = [config, users, state, dependencies] as const;
   const queues = heldQueues();
   const time = new ManualTime();
   let inspect = args[3]?.cacheInspector ?? inspectDownloadCache;
@@ -94,7 +95,7 @@ test("queue snapshots reuse one asynchronous cache inspection and coalesce force
   };
   const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     state,
     { cacheInspector }
   );
@@ -254,7 +255,7 @@ test("cache refresh completion dispatches persisted downloads without an externa
     });
     const scheduler = makeScheduler(
       { get: () => testConfig({ localCacheLimitGB: 1, queuePrefetchLimit: 5 }) },
-      { list: () => [user], getById: () => user },
+      memoryUsers([user]),
       state
     );
     await scheduler.getLocalCacheCapacity();
@@ -296,7 +297,7 @@ test("repeated start preserves scheduled admission and renews active leases only
   const runtime = await createTestDir("timer-preservation");
   const state = new StateManager({ statePath: path.join(runtime, "state.json") });
   const user = seedQueuedDownload(state, "BVFUTUREWAKE");
-  const scheduler = makeScheduler({get: () => testConfig()}, {list: () => [user], getById: () => user}, state);
+  const scheduler = makeScheduler({get: () => testConfig()}, memoryUsers([user]), state);
   const {time, jobs, queues} = resources(scheduler);
   try {
     await scheduler.getLocalCacheCapacity();
@@ -337,7 +338,7 @@ test("a stopped scheduler does not dispatch when an in-flight cache refresh comp
   const user = seedQueuedDownload(state, "BVSTOPPEDREFRESH");
   const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) },
-    { list: () => [user], getById: () => user },
+    memoryUsers([user]),
     state
   );
   try {
@@ -375,7 +376,7 @@ test("concurrent cache wake callbacks lease a persisted download only once", asy
   const user = seedQueuedDownload(state, "BVCONCURRENTWAKE");
   const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) },
-    { list: () => [user], getById: () => user },
+    memoryUsers([user]),
     state
   );
   try {
@@ -413,7 +414,7 @@ test("a transient cache refresh failure recovers without an external scheduler e
   const user = seedQueuedDownload(state, "BVREFRESHRECOVERY");
   const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) },
-    { list: () => [user], getById: () => user },
+    memoryUsers([user]),
     state
   );
   const originalWarn = console.warn;
@@ -464,7 +465,7 @@ test("stop followed by start immediately resumes due persisted jobs", async () =
   const user = seedQueuedDownload(state, "BVRESTARTWAKE");
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [user], getById: () => user },
+    memoryUsers([user]),
     state
   );
   try {
@@ -492,7 +493,7 @@ test("a due download blocked by a full cache does not create a zero-delay dispat
   const user = seedQueuedDownload(state, "BVCACHEFULL");
   const scheduler = makeScheduler(
     { get: () => testConfig({ localCacheLimitGB: 1 }) },
-    { list: () => [user], getById: () => user },
+    memoryUsers([user]),
     state
   );
   try {
@@ -581,7 +582,7 @@ test("persistent quality uploads respect the upload queue hard limit", () => {
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `quality-capacity-${Date.now()}.json`) });
   const scheduler = makeScheduler(
     { get: () => config },
-    { list: () => [user], getById: () => user },
+    memoryUsers([user]),
     state
   );
 
@@ -606,7 +607,7 @@ test("quality upgrade advances atomically through download upload and replace wh
   const config = testConfig();
   const user = { id: "u1", uid: 1, name: "Tester", enabled: true, cookie: {SESSDATA: "test", bili_jct: "test", DedeUserID: "1"}, lastLoginAt: new Date().toISOString(), accessToken: "token", favorites: [] };
   const state = new StateManager({ statePath: path.join(process.cwd(), ".test-runtime", `quality-phases-${Date.now()}.json`) });
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [user], getById: () => user }, state);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([user]), state);
 
 
   const control = new QualityUpgradeTask("BVQUALITYPHASE", user.cookie, config, { userId: "u1", mediaId: 1, folderTitle: "Favorites", remotePath: "/target", oldFiles: [] });
@@ -659,7 +660,7 @@ test("download completion re-reads relations added after the BVID job was claime
       "u1:2:BVRACE": { userId: "u1", mediaId: 2, bvid: "BVRACE", folderTitle: "Two", firstSeenAt: now, lastSeenAt: now, activeInFavorite: true, backupStatus: "queued" as const },
     },
   });
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [user], getById: () => user }, state);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([user]), state);
 
   const task = new DownloadTask("BVRACE", user.cookie, config);
   task.downloadDir = "local";

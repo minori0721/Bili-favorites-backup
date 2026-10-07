@@ -1,12 +1,13 @@
 import { BiliResponseFormatError, BiliRiskOrLoginError } from '../bili.js';
 import { safeErrorCode, safeErrorSummary, sanitizeDiagnosticText } from '../diagnostics.js';
 import type { StateManager } from '../state.js';
-import type { BiliUser } from '../users.js';
+import { AccountOperationCancelled, type BiliUser } from '../users.js';
 import type { FavoriteScanPort } from './favorite-scan.js';
 
 export interface SyncWorkflowDependencies {
   users(): BiliUser[];
   eligible(user: BiliUser): boolean;
+  currentUser(user: BiliUser): BiliUser | null;
   state: Pick<StateManager, 'getUserCooldown' | 'setUserCooldown'>;
   scan: FavoriteScanPort;
   progress(patch: { detail: string; userName?: string; folderTitle?: string; mediaId?: number; page?: number }): void;
@@ -22,7 +23,9 @@ export function createSyncWorkflow(dependencies: SyncWorkflowDependencies) {
   async function run(manual: boolean, forceFullFavoriteScan: boolean) {
     const users = dependencies.users().filter((user) => dependencies.eligible(user));
     dependencies.progress({ detail: `正在检查 ${users.length} 个启用账号。` });
-    for (const user of users) {
+    for (const candidate of users) {
+      const user = dependencies.currentUser(candidate);
+      if (!user || !dependencies.eligible(user)) continue;
       dependencies.enterUser(user.id);
       try {
         const cooldown = dependencies.state.getUserCooldown(user.id);
@@ -32,6 +35,9 @@ export function createSyncWorkflow(dependencies: SyncWorkflowDependencies) {
         }
 
         for (const folder of user.favorites) {
+          const current = dependencies.currentUser(user);
+          if (!current || !dependencies.eligible(current)) break;
+          if (!current.favorites.some(item => item.mediaId === folder.mediaId)) continue;
           let phase = forceFullFavoriteScan ? 'full' : 'hot';
           try {
             dependencies.progress({
@@ -50,6 +56,9 @@ export function createSyncWorkflow(dependencies: SyncWorkflowDependencies) {
               await dependencies.scan.history(user, folder.mediaId, folder.title, manual, hotLastPage);
             }
           } catch (error) {
+            const current = dependencies.currentUser(user);
+            if (!current || !dependencies.eligible(current)) break;
+            if (error instanceof AccountOperationCancelled) continue;
             const position = dependencies.scanPosition();
             const page = position?.mediaId === folder.mediaId ? position.page : undefined;
             const code = safeErrorCode(error);

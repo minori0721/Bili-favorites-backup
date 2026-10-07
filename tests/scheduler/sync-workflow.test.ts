@@ -4,12 +4,14 @@ import { BiliRiskOrLoginError } from '../../src/bili.js';
 import { createSyncWorkflow, type SyncWorkflowDependencies } from '../../src/scheduler/sync-workflow.js';
 import type { BiliUser } from '../../src/users.js';
 import { createSyncRuntime } from '../../src/scheduler/sync-runtime.js';
+import { AccountOperationCancelled } from '../../src/users.js';
+import { memoryUsers } from '../fixtures/memory-users.js';
 
 function fixture() {
   const user: BiliUser = { id: 'u', uid: 1, name: 'user', cookie: { SESSDATA: 'fake', bili_jct: 'fake', DedeUserID: '1' }, favorites: [{ mediaId: 1, title: 'one' }, { mediaId: 2, title: 'two' }], enabled: true, lastLoginAt: '' };
   const calls: string[] = [];
   const dependencies: SyncWorkflowDependencies = {
-    users: () => [user], eligible: item => item.enabled,
+    users: () => [user], currentUser: item => item, eligible: item => item.enabled,
     state: { getUserCooldown: () => null, setUserCooldown: (_id, _reason, ms) => { calls.push(`cooldown:${ms}`); } },
     scan: {
       all: async (_user, id) => { calls.push(`all:${id}`); },
@@ -22,6 +24,28 @@ function fixture() {
   };
   return { dependencies, calls };
 }
+
+test('account invalidation stops its remaining folders without cooldown and allows the next account', async t => {
+  const f = fixture();
+  const first = f.dependencies.users()[0];
+  const other = {...first, id: 'other', uid: 2};
+  const users = memoryUsers([first, other]);
+  f.dependencies.users = () => users.list();
+  f.dependencies.currentUser = user => users.getCurrentUser(user);
+  const errors: unknown[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {errors.push(args);});
+  f.dependencies.scan.hot = async user => {
+    f.calls.push(`hot:${user.id}`);
+    if (user.id === first.id) {const release = users.beginAccountRemoval(user.id); users.remove(user.id); release(); throw new AccountOperationCancelled();}
+    return 3;
+  };
+  await createSyncWorkflow(f.dependencies).run(false, false);
+  assert.equal(f.calls.filter(call => call === 'hot:u').length, 1);
+  assert.equal(f.calls.filter(call => call === 'hot:other').length, 2);
+  assert.equal(f.calls.some(call => call.startsWith('cooldown:')), false);
+  assert.equal(errors.length, 0);
+  assert.ok(f.calls.includes('leave:u'));
+});
 
 test('sync workflow preserves hot/history order and injected pacing', async () => {
   const f = fixture(); await createSyncWorkflow(f.dependencies).run(false, false);
@@ -92,7 +116,7 @@ test('production sync-runtime wiring reads failure position from its owned progr
   const messages: string[] = [];
   t.mock.method(console, 'error', (message: string) => { messages.push(message); });
   const runtime = createSyncRuntime({
-    users: f.dependencies.users, eligible: f.dependencies.eligible, state: f.dependencies.state, scan: f.dependencies.scan,
+    users: f.dependencies.users, currentUser: f.dependencies.currentUser, eligible: f.dependencies.eligible, state: f.dependencies.state, scan: f.dependencies.scan,
     accepting: () => true, blocked: () => false, now: () => 1_000, random: () => 0, sleep: async () => {},
     triggerLabel: trigger => trigger, clearRemoteListings() {}, recoverStaleActiveBackups() {},
     requeueRetryPendingBeforeScan: () => 0, verifyRemoteSamples: async () => ({}), logCycleSummary() {}, scheduleQueued() {},

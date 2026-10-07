@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { executeAccountRemoval, type AccountRemovalDependencies } from "../src/account-removal.js";
 import type { BiliUser } from "../src/users.js";
+import { memoryUsers } from './fixtures/memory-users.js';
 
 function account(): BiliUser {
   return {
@@ -13,6 +14,28 @@ function account(): BiliUser {
     enabled: true,
     lastLoginAt: "2026-07-29T00:00:00.000Z",
   };
+}
+
+for (const fail of [false, true]) {
+  test(`account-only removal invalidates scans before retirement awaits and ${fail ? 'reopens with fresh authority after failure' : 'allows later reuse of the UID'}`, async () => {
+    const f = harness();
+    const users = memoryUsers([account()]);
+    const before = users.captureAccount('1001')!;
+    let entered!: () => void, finish!: () => void;
+    const started = new Promise<void>(resolve => {entered = resolve;});
+    const held = new Promise<void>(resolve => {finish = resolve;});
+    f.scheduler.retireUser = async () => {entered(); await held; if (fail) throw new Error('retirement failed'); return {detachedRelations: 1};};
+    const pending = executeAccountRemoval({...f, userStore: users}, '1001');
+    await started;
+    assert.equal(users.isScanCurrent(before.identity, 1), false);
+    assert.equal(users.captureAccount('1001'), null);
+    finish();
+    if (fail) await assert.rejects(pending, /retirement failed/);
+    else {await pending; users.upsert(account());}
+    assert.ok(users.captureAccount('1001'));
+    assert.equal(users.getCurrentUser(before.user), null);
+    assert.equal(users.isAuthorizationCurrent(before.identity), false);
+  });
 }
 
 function harness(options: {
@@ -71,6 +94,7 @@ function harness(options: {
     restoreUserAfterLogin: () => { calls.push("restore-scheduler"); },
   };
   const userStore = {
+    beginAccountRemoval: () => () => {},
     getById: () => storedUser,
     upsert: (next: BiliUser) => { calls.push("upsert"); storedUser = next; },
     remove: () => {

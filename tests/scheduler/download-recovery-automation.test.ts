@@ -1,3 +1,4 @@
+import { memoryUsers } from '../fixtures/memory-users.js';
 import { SyncScheduler } from '../../src/scheduler.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -100,7 +101,7 @@ test('credentials updated before the first review still resume the failed attemp
 
 test('the real queue board and issue projection agree that transient download recovery is background work', async () => {
   const f = await fixture();
-  const scheduler = new SyncScheduler({ get: testConfig }, { list: () => [f.user], getById: () => f.user, updatePartial: () => null }, f.state);
+  const scheduler = new SyncScheduler({ get: testConfig }, memoryUsers([f.user]), f.state);
   try {
     const transient = f.enqueue('transient');
     const snapshot = scheduler.getQueueSnapshot();

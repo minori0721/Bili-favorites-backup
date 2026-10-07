@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { required } from './contract-values.js';
 import { createHeldScheduler } from './fixtures/held-scheduler.js';
 import assert from "node:assert/strict";
@@ -225,7 +226,7 @@ test("1000 orphaned upload failures persist in bounded SQL pages and keep the ta
   };
   const fixture = createHeldScheduler(
     { get: () => config },
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null },
+    memoryUsers([user]),
     manager
   );
   try {

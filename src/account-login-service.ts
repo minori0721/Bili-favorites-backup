@@ -22,7 +22,7 @@ export function createAccountLogin(deps: {
   qr(url: string): Promise<string>;
   normalize: typeof normalizeTvAuthResult;
   info: typeof getUserInfo;
-  users: Pick<UserStore, 'upsert'>;
+  users: Pick<UserStore, 'upsert' | 'waitForAccountRemoval'>;
   maintenance: Pick<ImportMaintenance, 'enter'>;
   restore(id: string): void;
   id(): string;
@@ -69,6 +69,8 @@ export function createAccountLogin(deps: {
         const info = await deps.info(auth.cookie);
         if (!current() || session.status !== 'pending') return;
         const id = String(info.uid);
+        await deps.users.waitForAccountRemoval(id);
+        if (!current() || session.status !== 'pending') return;
         const now = new Date(deps.now()).toISOString();
         deps.users.upsert({id, uid: info.uid, name: info.name, avatar: info.avatar, cookie: auth.cookie,
           favorites: [], enabled: true, lastLoginAt: now, rawAuth: auth.rawAuth,

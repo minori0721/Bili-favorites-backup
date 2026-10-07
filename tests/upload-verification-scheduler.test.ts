@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { required, readField } from './contract-values.js';
 import { createHeldScheduler } from './fixtures/held-scheduler.js';
 import { buildUploadVerificationJobs } from '../src/scheduler/verification-jobs.js';
@@ -40,7 +41,7 @@ test("upload confirmation survives restart and times out into manual recovery", 
   manager.replaceStateSnapshot(verificationState(localDir));
   const config = testConfig();
   const configStore = { get: () => config };
-  const userStore = { list: () => [], getById: () => null };
+  const userStore = memoryUsers([]);
   let scheduler = makeScheduler(configStore, userStore, manager);
 
   const putCompletedAt = new Date().toISOString();
@@ -142,7 +143,7 @@ test("stale resume-only recovery converges to the current verified archive when 
   await fs.promises.rm(path.join(localDir, "video.mp4"));
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager,
     { remoteFileInspector: async () => ({ status: "verified" as const }) },
   );
@@ -297,7 +298,7 @@ test("manual recovery never settles a conflict candidate from an unrelated verif
   let inspections = 0;
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager,
     { remoteFileInspector: async () => { inspections += 1; return { status: "verified" as const }; } },
   );
@@ -345,7 +346,7 @@ test("stale resume-only recovery stays pending when the stored archive is no lon
   let inspections = 0;
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager,
     { remoteFileInspector: async () => { inspections += 1; return { status: "missing" as const }; } },
   );
@@ -439,7 +440,7 @@ test("manual recovery with no session refuses a missing local candidate before w
   manager.replaceStateSnapshot(verificationState(localDir));
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager,
   );
 
@@ -485,7 +486,7 @@ test("transfer-session verification uses the same timeout and manual recovery pa
   const manager = new StateManager({ statePath, dbPath });
   manager.replaceStateSnapshot(verificationState(localDir));
   const config = testConfig();
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
 
   const putCompletedAt = new Date(Date.now() - 11 * 60_000).toISOString();
   resources(scheduler).jobs.enqueue({
@@ -539,7 +540,7 @@ test("one transfer session creates one session-level verification job for multip
   const manager = new StateManager({ statePath, dbPath });
   manager.replaceStateSnapshot(verificationState(localDir));
   const config = testConfig();
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
 
 
   try {
@@ -582,7 +583,7 @@ test("deterministic remote size conflicts enter manual recovery instead of retry
   const manager = new StateManager({ statePath, dbPath });
   manager.replaceStateSnapshot(verificationState(path.join(runtime, "temp", "BVVERIFY")));
   const config = testConfig();
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
 
   try {
     resources(scheduler).jobs.enqueue({
@@ -643,7 +644,7 @@ test("confirmation-stage 409 parks one generation-aware upload recovery item", a
   const manager = new StateManager({ statePath, dbPath });
   manager.replaceStateSnapshot(verificationState(localDir));
   const config = testConfig();
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
 
   try {
     const session = resources(scheduler).sessions.ensure({
@@ -721,7 +722,7 @@ test("a one-time re-upload authorization failure parks the upload for manual rec
   const manager = new StateManager({ statePath, dbPath });
   manager.replaceStateSnapshot(verificationState(localDir));
   const config = testConfig();
-  const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+  const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
 
   try {
     const job = resources(scheduler).jobs.enqueue({
@@ -801,7 +802,7 @@ test("a successful confirmation promotes uploaded to verified without another PU
     const manager = new StateManager({ statePath: path.join(runtime, "data", "state.json"), dbPath: path.join(runtime, "data", "bfb.sqlite") });
     manager.replaceStateSnapshot(verificationState(localDir));
     const config = testConfig();
-    const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+    const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
 
     resources(scheduler).jobs.enqueue({ kind: "verify_upload" as const, dedupeKey: "verify:success", bvid: "BVVERIFY", userId: "u1", mediaId: 1, payload: { remoteFile: "/target/video.mp4", expectedSize: 12, localDir: "" } });
     const job = resources(scheduler).jobs.claimDue(["verify_upload"], 1, resources(scheduler).owner, 60_000)[0];
@@ -877,7 +878,7 @@ async function createConflictCandidateFixture(
   };
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager,
     {
       remoteFileInspector: (...args) => remote.inspect(...args),
@@ -1159,7 +1160,7 @@ test("upload circuit state is restored from the shared cooldown table", async ()
     manager.close();
     manager = new StateManager({ statePath, dbPath });
     const config = testConfig();
-    const scheduler = makeScheduler({ get: () => config }, { list: () => [], getById: () => null }, manager);
+    const scheduler = makeScheduler({ get: () => config }, memoryUsers([]), manager);
     assert.equal(scheduler.getQueueSnapshot().uploadHealth.state, "open");
     assert.equal(scheduler.getQueueSnapshot().uploadHealth.pausedDownloads, true);
     scheduler.stop();

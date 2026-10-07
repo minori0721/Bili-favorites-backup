@@ -54,6 +54,7 @@ export interface SyncCycleStats {
 export interface SyncRuntimeDependencies {
   users(): BiliUser[];
   eligible(user: BiliUser): boolean;
+  currentUser(user: BiliUser): BiliUser | null;
   state: Pick<StateManager, 'getUserCooldown' | 'setUserCooldown'>;
   scan: FavoriteScanPort;
   accepting(): boolean;
@@ -86,6 +87,7 @@ export function createSyncRuntime(dependencies: SyncRuntimeDependencies): SyncWo
   const workflow = createSyncWorkflow({
     users: dependencies.users,
     eligible: dependencies.eligible,
+    currentUser: dependencies.currentUser,
     state: dependencies.state,
     scan: dependencies.scan,
     progress: patch => updateProgress(patch),

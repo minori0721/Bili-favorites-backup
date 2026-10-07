@@ -53,7 +53,10 @@ export function createConfigurationService(deps: {
     return { status: 400, body: { success: false, message: runtimeError } };
   }
   const updated = deps.config.update(patch);
-  deps.changed(previous, updated);
+  try { deps.changed(previous, updated); }
+  catch (cause) {
+    throw Object.assign(new Error('配置已保存，但运行设置应用失败'), { cause, code: 'CONFIG_APPLY_FAILED', statusCode: 500 });
+  }
   return { status: 200, body: { success: true, data: updated } };
   }
   async function checkStorage(input: unknown) {

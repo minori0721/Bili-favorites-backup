@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import fs from 'node:fs';
 import {relationFor} from './fixtures/state-observation.js';
 import { required, readField, readArray } from './contract-values.js';
@@ -20,7 +21,7 @@ import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 
 type QualityFixture = ReturnType<typeof createHeldScheduler> & { migration: ReturnType<typeof createLegacyQualityMigration> };
 const schedulerFixtures = new WeakMap<SyncScheduler, QualityFixture>();
-function makeScheduler(config: ConstructorParameters<typeof SyncScheduler>[0], users: {list(): ReturnType<typeof user>[]; getById(id: string): ReturnType<typeof user> | null}, state: StateManager) {
+function makeScheduler(config: ConstructorParameters<typeof SyncScheduler>[0], users: ConstructorParameters<typeof SyncScheduler>[1], state: StateManager) {
   const fixture = createHeldScheduler(config, users, state);
   schedulerFixtures.set(fixture.scheduler, {...fixture, migration: createLegacyQualityMigration({
     configStore: config, userStore: users, jobStore: fixture.jobs, database: () => state.getDatabase(),
@@ -200,7 +201,7 @@ test("scheduler rebuild prefers relation quality proofs over stale job payload f
   const users = [user("u1", 1)];
   const scheduler = makeScheduler(
     { get: () => config },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) ?? null },
+    memoryUsers(users),
     manager,
   );
   const oldFile = { name: "old.mp4", path: "/target/old.mp4", size: 10, verificationStatus: "verified" as const };
@@ -264,7 +265,7 @@ test("three targets share one quality download and fan out after a running targe
   const config = testConfig({ bbdownQuality: "1080P", bbdownEncoding: "HEVC" });
   const scheduler = makeScheduler(
     { get: () => config },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) ?? null },
+    memoryUsers(users),
     manager
   );
   try {
@@ -322,7 +323,7 @@ test("different quality profiles keep independent jobs and artifact cleanup coun
   const config4k = testConfig({ bbdownQuality: "4K" });
   const scheduler = makeScheduler(
     { get: () => config1080 },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) ?? null },
+    memoryUsers(users),
     manager
   );
   try {
@@ -349,7 +350,7 @@ test("legacy per-target quality downloads merge without shortening retry time", 
   const config = testConfig({ bbdownQuality: "1080P" });
   const scheduler = makeScheduler(
     { get: () => config },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) ?? null },
+    memoryUsers(users),
     manager
   );
   const now = Date.now();
@@ -402,7 +403,7 @@ test("legacy quality migration enforces its safety limit without listing or mark
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager
   );
   try {
@@ -432,7 +433,7 @@ test("a database with only shared quality jobs marks legacy migration complete w
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager
   );
   try {
@@ -469,7 +470,7 @@ test("legacy quality migration leaves its marker absent when a candidate has no 
   const manager = new StateManager({ dbPath: path.join(runtime, "bfb.sqlite"), statePath: path.join(runtime, "missing.json") });
   const scheduler = makeScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null },
+    memoryUsers([]),
     manager
   );
   try {
@@ -586,7 +587,7 @@ test("quality cleanup locks the artifact against a concurrent new download", asy
   const config = testConfig({ bbdownQuality: "1080P" });
   const scheduler = makeScheduler(
     { get: () => config },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) ?? null },
+    memoryUsers(users),
     manager
   );
   try {
@@ -660,7 +661,7 @@ test("account reassignment preserves every shared target and completed artifacts
   const config = testConfig({ bbdownQuality: "1080P" });
   const scheduler = makeScheduler(
     { get: () => config },
-    { list: () => users, getById: (id: string) => users.find((item) => item.id === id) ?? null },
+    memoryUsers(users),
     manager
   );
   try {

@@ -1,3 +1,4 @@
+import { memoryUsers } from '../fixtures/memory-users.js';
 import { required } from '../contract-values.js';
 import { heldQueues } from '../fixtures/held-queues.js';
 import { verificationState } from '../fixtures/verification-state.js';
@@ -38,7 +39,7 @@ test("manual recovery uploads keep scheduler maintenance locked", async () => {
   const queues = heldQueues();
   const scheduler = new SyncScheduler(
     { get: () => testConfig() },
-    { list: () => [], getById: () => null, updatePartial: () => { throw new Error('Unexpected user update'); } },
+    memoryUsers([]),
     manager, {createQueue: queues.create},
   );
   try {
@@ -89,7 +90,7 @@ async function createStructuredRecoveryFixture(
   const queues = heldQueues();
   const scheduler = new SyncScheduler(
     { get: () => testConfig() },
-    { list: () => [user], getById: (id: string) => id === user.id ? user : null, updatePartial: () => { throw new Error('Unexpected user update'); } },
+    memoryUsers([user]),
     manager,
     { createQueue: queues.create, remoteFileInspector: (...args) => remote.inspect(...args), legacyTempDir: path.join(runtime, "temp"), now: options.now },
   );

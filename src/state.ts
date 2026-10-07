@@ -1,3 +1,4 @@
+import { copyRemoteFiles, matchesRemoteCheckEvidence, sharesRemoteUpload, type RemoteCheckEvidence, type RemoteCheckOutcome } from './remote-check.js';
 import { projectFolderDetailItem } from './state/folder-projection.js';
 import { BACKED_UP_STATUSES, isPlaceholderTitle, isPlaceholderUpperName, hasUsableFavoriteMeta, displayTitle, displayUpperName, displayCover, displayCoverLocalPath, displayDescription, isSourceAvailabilityError, sourceIsConfirmedUnavailable, sourceBlocksBackup, relationTreatsUnavailable, archivedSourceUnavailable } from './state/archive-rules.js';
 import { projectRemoteFilePreviews } from './remote-file-preview-projection.js';
@@ -2250,24 +2251,36 @@ export class StateManager {
     }
   }
 
+  commitRemoteCheck(expected: RemoteCheckEvidence, outcome: RemoteCheckOutcome) {
+    return this.runAtomic(() => {
+      const relation = this.getRelation(expected.userId, expected.mediaId, expected.bvid);
+      if (!relation || !matchesRemoteCheckEvidence(expected, relation)) return false;
+      if (outcome.kind === 'ok') {
+        const files = relation.remoteFiles?.length ? copyRemoteFiles(relation.remoteFiles)! : outcome.files;
+        this.markRemoteCheckOk(expected.bvid, outcome.remotePath, files, expected.userId, expected.mediaId);
+      } else if (outcome.kind === 'missing') {
+        this.markRemoteCheckMissing(expected.bvid, outcome.files, expected.userId, expected.mediaId);
+      } else {
+        this.markRemoteCheckDeferred(expected.bvid, outcome.delayMs, outcome.reason, expected.userId, expected.mediaId);
+      }
+      return true;
+    });
+  }
+
   markRemoteCheckOk(bvid: string, remotePath?: string, remoteFiles?: RemoteFileRecord[], userId?: string, mediaId?: number) {
     const entry = this.state.videos?.[bvid];
     if (!entry) return;
     const at = nowIso();
     const relation = this.getRelation(userId, mediaId, bvid);
-    const partial = entry.backupStatus === "partial_verified" || relation?.backupStatus === "partial_verified";
-    this.setVideoStatus(entry, partial ? "partial_verified" : "verified", at);
-    if (remotePath) {
-      entry.remotePath = remotePath;
+    const partial = (relation ? relation.backupStatus : entry.backupStatus) === "partial_verified";
+    const updatesCanonicalProof = !relation || !entry.remoteFiles?.length || sharesRemoteUpload(entry, relation);
+    if (updatesCanonicalProof) {
+      if (remotePath) entry.remotePath = remotePath;
+      if (remoteFiles?.length) entry.remoteFiles = remoteFiles;
+      entry.lastRemoteCheckAt = at;
+      entry.nextRemoteCheckAt = undefined;
+      entry.remoteMissingCount = 0;
     }
-    if (Array.isArray(remoteFiles) && remoteFiles.length > 0) {
-      entry.remoteFiles = remoteFiles;
-    }
-    entry.verifiedAt = at;
-    entry.lastRemoteCheckAt = at;
-    entry.nextRemoteCheckAt = undefined;
-    entry.remoteMissingCount = 0;
-    entry.lastError = undefined;
     if (relation) {
       this.setRelationStatus(relation, partial ? "partial_verified" : "verified", at);
       if (remotePath) relation.remotePath = remotePath;
@@ -2277,6 +2290,17 @@ export class StateManager {
       relation.nextRemoteCheckAt = undefined;
       relation.remoteMissingCount = 0;
       relation.lastError = undefined;
+      this.refreshVideoAggregateStatus(bvid);
+    } else {
+      this.setVideoStatus(entry, partial ? "partial_verified" : "verified", at);
+    }
+    if (entry.backupStatus === 'verified' || entry.backupStatus === 'partial_verified') {
+      entry.verifiedAt = at;
+      entry.lastError = undefined;
+    } else {
+      entry.verifiedAt = undefined;
+      entry.lastError = this.listRelationsForBvid(bvid)
+        .find(item => (item.userId !== userId || item.mediaId !== mediaId) && Boolean(item.lastError))?.lastError;
     }
     if (userId && mediaId) {
       this.clearFailed(userId, mediaId, bvid);

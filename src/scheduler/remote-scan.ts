@@ -1,3 +1,4 @@
+import { captureRemoteCheckEvidence, copyRemoteFiles, type RemoteCheckOutcome } from '../remote-check.js';
 import type { AppConfig } from '../config.js';
 import type { StateManager, VideoArchiveEntry, FavoriteRelation } from '../state.js';
 import type { BiliUser } from '../users.js';
@@ -12,7 +13,7 @@ interface RemoteScanStats {
 }
 interface RemoteScanDependencies {
   config: {get(): AppConfig};
-  state: Pick<StateManager, 'listVideosForRemoteVerify' | 'countVideosForRemoteVerify' | 'markRemoteCheckOk' | 'markRemoteCheckDeferred' | 'markRemoteCheckMissing' | 'listRelationsForBvid'>;
+  state: Pick<StateManager, 'listVideosForRemoteVerify' | 'countVideosForRemoteVerify' | 'commitRemoteCheck' | 'listRelationsForBvid'>;
   io: Pick<ReturnType<typeof createRemoteVerificationIO>, 'clearPathReservations' | 'list' | 'waitForSlot'>;
   random(): number;
   sleep(milliseconds: number): Promise<void>;
@@ -65,103 +66,58 @@ async function verifyRemoteSamples(manual: boolean, forceFullRemoteVerify: boole
     const rateLimit = Math.max(0.5, Math.min(100, Number(config.remoteVerifyRateLimitPerSecond || 2)));
     let requeueCount = 0;
 
-    const executeOne = async (entry: RemoteVerifyCandidate) => {
+    const executeOne = async (candidate: RemoteVerifyCandidate) => {
+      // Detach all file evidence consumed by I/O; state may expose tracked proxies.
+      const relation = {...candidate.relation, remoteFiles: copyRemoteFiles(candidate.relation.remoteFiles)};
+      const entry = {...candidate, remoteFiles: copyRemoteFiles(candidate.remoteFiles), relation};
+      const expected = captureRemoteCheckEvidence(relation);
+      const resolvedRemotePath = relation.remotePath || entry.remotePath || deriveRemotePathFromRelation(entry, relation);
+      await applyRemoteVerifyRateLimit(rateLimit, resolvedRemotePath || '<remote-unknown>');
+      if (!current()) return;
+      await deps.sleep(100 + Math.floor(deps.random() * 201));
+      if (!current()) return;
+      let observation: Awaited<ReturnType<typeof confirmRemoteStillMissing>>;
+      let requestError: unknown;
       try {
-        const relation = entry.relation;
-        const resolvedRemotePath = relation.remotePath || entry.remotePath || deriveRemotePathFromRelation(entry, relation);
-        await applyRemoteVerifyRateLimit(rateLimit, resolvedRemotePath || "<remote-unknown>");
-        if (!current()) return;
-        const jitter = 100 + Math.floor(deps.random() * 201);
-        await deps.sleep(jitter);
-        if (!current()) return;
         const remoteFiles = await resolveRemoteFilesForVerify(entry, relation, resolvedRemotePath);
         if (!current()) return;
-        if (!remoteFiles?.length) {
-          const confirmed = await confirmRemoteStillMissing(entry, relation, undefined, resolvedRemotePath);
-        if (!current()) return;
-          if (confirmed.status === "ok") {
-            deps.state.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, confirmed.remoteFiles, relation.userId, relation.mediaId);
-            stats.remoteOk += 1;
-            return;
-          }
-          if (confirmed.status === "unknown") {
-            const delayMs = computeRemoteVerifyBackoffMs(entry);
-            deps.state.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
-            stats.remoteErrors += 1;
-            return;
-          }
-          const missing = confirmed.missing?.length
-            ? confirmed.missing
-            : [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"];
-          deps.state.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
-          stats.remoteMissingDetected += 1;
-          if (entry.biliStatus === "unavailable") {
-            stats.remoteMissingUnavailable += 1;
-          }
-          if (requeueCount < requeueLimit) {
-            const requeued = enqueueMissingIfPossible(entry, relation);
-            if (requeued) {
-              requeueCount += 1;
-              stats.requeuedFromRemoteMissing += 1;
-            }
-          }
-          return;
-        }
-
-        const result = await deps.verify(config, remoteFiles);
-        if (!current()) return;
-        if (result.ok) {
-          deps.state.markRemoteCheckOk(entry.bvid, resolvedRemotePath || entry.remotePath, remoteFiles, relation.userId, relation.mediaId);
-          stats.remoteOk += 1;
-          return;
-        }
-        if (result.unknown.length > 0) {
-          const delayMs = computeRemoteVerifyBackoffMs(entry, result.retryAfterMs);
-          deps.state.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
-          stats.remoteErrors += 1;
-          return;
-        }
-
-        const confirmed = await confirmRemoteStillMissing(entry, relation, remoteFiles, resolvedRemotePath);
-        if (!current()) return;
-        if (confirmed.status === "ok") {
-          deps.state.markRemoteCheckOk(
-            entry.bvid,
-            resolvedRemotePath || entry.remotePath,
-            confirmed.remoteFiles || remoteFiles,
-            relation.userId,
-            relation.mediaId
-          );
-          stats.remoteOk += 1;
-          return;
-        }
-        if (confirmed.status === "unknown") {
-          const delayMs = computeRemoteVerifyBackoffMs(entry, confirmed.retryAfterMs);
-          deps.state.markRemoteCheckDeferred(entry.bvid, delayMs, "Remote verify inconclusive; deferred.", relation.userId, relation.mediaId);
-          stats.remoteErrors += 1;
-          return;
-        }
-
-        const missing = confirmed.missing?.length ? confirmed.missing : result.missing;
-        deps.state.markRemoteCheckMissing(entry.bvid, missing, relation.userId, relation.mediaId);
-        stats.remoteMissingDetected += 1;
-        if (entry.biliStatus === "unavailable") {
-          stats.remoteMissingUnavailable += 1;
-        }
-        if (requeueCount < requeueLimit) {
-          const requeued = enqueueMissingIfPossible(entry, relation);
-          if (requeued) {
-            requeueCount += 1;
-            stats.requeuedFromRemoteMissing += 1;
-          }
+        if (!remoteFiles.length) {
+          observation = await confirmRemoteStillMissing(entry, relation, undefined, resolvedRemotePath, config);
+        } else {
+          const result = await deps.verify(config, remoteFiles);
+          if (!current()) return;
+          observation = result.ok ? { status: 'ok', remoteFiles }
+            : result.unknown.length ? { status: 'unknown', retryAfterMs: result.retryAfterMs }
+              : await confirmRemoteStillMissing(entry, relation, remoteFiles, resolvedRemotePath, config);
         }
       } catch (error: unknown) {
-        if (!current()) return;
-        const delayMs = computeRemoteVerifyBackoffMs(entry);
-        const relation = entry.relation;
-        deps.state.markRemoteCheckDeferred(entry.bvid, delayMs, error instanceof Error ? error.message : "Remote verify failed", relation.userId, relation.mediaId);
-        stats.remoteErrors += 1;
-        console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}: ${safeErrorSummary(error)}`);
+        requestError = error;
+        observation = { status: 'unknown' };
+      }
+      if (!current()) return;
+      const currentConfig = deps.config.get();
+      if (config.alistUrl !== currentConfig.alistUrl || config.alistDest !== currentConfig.alistDest
+          || config.uploadLayout !== currentConfig.uploadLayout || config.alistUsername !== currentConfig.alistUsername
+          || config.alistPassword !== currentConfig.alistPassword) return;
+      const outcome: RemoteCheckOutcome = observation.status === 'ok'
+        ? { kind: 'ok', remotePath: resolvedRemotePath || entry.remotePath, files: observation.remoteFiles }
+        : observation.status === 'missing'
+          ? { kind: 'missing', files: observation.missing }
+          : { kind: 'deferred', delayMs: computeRemoteVerifyBackoffMs(entry, observation.retryAfterMs),
+              reason: requestError instanceof Error ? safeErrorSummary(requestError) : 'Remote verify inconclusive; deferred.' };
+      // The database commit is deliberately outside the external-request catch.
+      if (!deps.state.commitRemoteCheck(expected, outcome)) return;
+      if (outcome.kind === 'ok') { stats.remoteOk++; return; }
+      if (outcome.kind === 'deferred') {
+        stats.remoteErrors++;
+        if (requestError) console.warn(`[Scheduler] Remote verify failed for ${entry.bvid}: ${safeErrorSummary(requestError)}`);
+        return;
+      }
+      stats.remoteMissingDetected++;
+      if (entry.biliStatus === 'unavailable') stats.remoteMissingUnavailable++;
+      if (requeueCount < requeueLimit && enqueueMissingIfPossible(entry, relation)) {
+        requeueCount++;
+        stats.requeuedFromRemoteMissing++;
       }
     };
 
@@ -247,9 +203,10 @@ function enqueueMissingIfPossible(entry: VideoArchiveEntry, targetRelation?: Fav
 
 async function confirmRemoteStillMissing(
     entry: VideoArchiveEntry,
-    relation?: FavoriteRelation,
-    knownFiles?: VideoArchiveEntry["remoteFiles"],
-    resolvedRemotePath?: string | null
+    relation: FavoriteRelation | undefined,
+    knownFiles: VideoArchiveEntry["remoteFiles"],
+    resolvedRemotePath: string | null | undefined,
+    config: AppConfig
   ): Promise<
     | { status: "ok"; remoteFiles: NonNullable<VideoArchiveEntry["remoteFiles"]> }
     | { status: "missing"; missing: string[] }
@@ -262,7 +219,6 @@ async function confirmRemoteStillMissing(
       if (!remoteFiles?.length) {
         return { status: "missing", missing: [resolvedRemotePath || entry.remotePath || "<remote-path-unknown>"] };
       }
-      const config = deps.config.get();
       const result = await deps.verify(config, remoteFiles);
       if (result.ok) {
         return { status: "ok", remoteFiles };

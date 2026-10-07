@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import type { BiliUser } from '../src/users.js';
 import { readField, readArray, readString } from './contract-values.js';
 import test from "node:test";
@@ -536,10 +537,7 @@ test("account retirement reassigns credentials while preserving detached upload 
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
     { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [], enabled: true, lastLoginAt: "" },
   ] satisfies BiliUser[];
-  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
-    list: () => [...users],
-    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
-  };
+  const userStore = memoryUsers([...users]);
   const configStore = { get: () => testConfig() };
   const scheduler = new SyncScheduler(configStore, userStore, manager);
   const jobs = new PersistentJobStore(manager.getDatabase());
@@ -574,10 +572,7 @@ test("account retirement pauses without an alternate and same-UID login resumes 
   const users: BiliUser[] = [
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "fav" }], enabled: true, lastLoginAt: "" },
   ];
-  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
-    list: () => [...users],
-    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
-  };
+  const userStore = memoryUsers([...users]);
   const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
   const jobs = new PersistentJobStore(manager.getDatabase());
   try {
@@ -598,8 +593,10 @@ test("account retirement pauses without an alternate and same-UID login resumes 
     assert.ok(job);
     assert.equal(job.payload.pausedForUserId, "u1");
 
-    users.splice(0, users.length);
-    users.push({ id: "u1", uid: 1, name: "one-new", cookie: { SESSDATA: "new", bili_jct: "new", DedeUserID: "1" }, favorites: [], enabled: true, lastLoginAt: "" });
+    const beforeRemoval = userStore.captureAccount('u1')!;
+    userStore.remove('u1');
+    userStore.upsert({ id: "u1", uid: 1, name: "one-new", cookie: { SESSDATA: "new", bili_jct: "new", DedeUserID: "1" }, favorites: [], enabled: true, lastLoginAt: "" });
+    assert.equal(userStore.isAccountCurrent(beforeRemoval.identity), false);
     const restored = scheduler.restoreUserAfterLogin("u1");
     assert.equal(restored.resumedJobs, 1);
     job = jobs.findByDedupeKey("download:BVPAUSED");
@@ -624,7 +621,7 @@ test("account retirement turns a complete local download into upload work withou
     id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" },
     favorites: [{ mediaId: 10, title: "fav" }], enabled: true, lastLoginAt: "",
   };
-  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); }, list: () => [user], getById: (id: string) => id === "u1" ? user : null };
+  const userStore = memoryUsers([user]);
   const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
   const downloadDir = path.join(runtime, "BVLOCAL");
   const jobs = new PersistentJobStore(manager.getDatabase());
@@ -688,10 +685,7 @@ test("remote account deletion prunes only that account from shared persistent wo
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
     { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [{ mediaId: 20, title: "two-fav" }], enabled: true, lastLoginAt: "" },
   ];
-  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
-    list: () => [...users],
-    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
-  };
+  const userStore = memoryUsers([...users]);
   const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
   const jobs = new PersistentJobStore(manager.getDatabase());
   try {
@@ -760,10 +754,7 @@ test("remote account deletion rolls back task pruning when account persistence f
     { id: "u1", uid: 1, name: "one", cookie: { SESSDATA: "a", bili_jct: "b", DedeUserID: "1" }, favorites: [{ mediaId: 10, title: "one-fav" }], enabled: true, lastLoginAt: "" },
     { id: "u2", uid: 2, name: "two", cookie: { SESSDATA: "c", bili_jct: "d", DedeUserID: "2" }, favorites: [{ mediaId: 20, title: "two-fav" }], enabled: true, lastLoginAt: "" },
   ];
-  const userStore = { updatePartial: () => { throw new Error('Unexpected user update'); },
-    list: () => [...users],
-    getById: (id: string) => users.find((user) => readField(user, 'id') === id) || null,
-  };
+  const userStore = memoryUsers([...users]);
   const scheduler = new SyncScheduler({ get: () => testConfig() }, userStore, manager);
   const jobs = new PersistentJobStore(manager.getDatabase());
   try {

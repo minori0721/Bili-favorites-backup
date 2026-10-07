@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 export class JsonFileDecodeError extends Error {
   constructor(filePath: string, readonly preservedAt: string | null, cause: unknown) {
@@ -36,11 +37,36 @@ export function readJsonFileDecoded<T>(
   }
 }
 
-export function writeJsonFile<T>(filePath: string, value: T): void {
+export function writeJsonFile<T>(filePath: string, value: T, options: { flush?: boolean } = {}): void {
+  const contents = JSON.stringify(value, null, 2);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf-8");
-  fs.renameSync(tempPath, filePath);
+  const tempPath = `${filePath}.${randomUUID()}.tmp`;
+  let descriptor: number | undefined;
+  let created = false;
+  try {
+    const existingMode = fs.existsSync(filePath) ? fs.statSync(filePath).mode & 0o777 : undefined;
+    const mode = existingMode ?? 0o600;
+    descriptor = fs.openSync(tempPath, 'wx', mode);
+    created = true;
+    // open() applies umask; restore the existing permissions before committing.
+    if (existingMode !== undefined) fs.fchmodSync(descriptor, existingMode);
+    fs.writeFileSync(descriptor, contents, 'utf-8');
+    if (options.flush) fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    // Rename is the commit point. No fallible cleanup follows a successful rename.
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); }
+      catch (cleanupError) { console.warn('[Storage] Failed to close temporary JSON file', cleanupError); }
+    }
+    if (created) {
+      try { fs.rmSync(tempPath, { force: true }); }
+      catch (cleanupError) { console.warn('[Storage] Failed to remove temporary JSON file', cleanupError); }
+    }
+    throw error;
+  }
 }
 
 export async function clearDirectoryContents(directoryPath: string): Promise<void> {

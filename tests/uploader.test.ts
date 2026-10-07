@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import {HttpFailure} from './fixtures/http-failure.js';
 import { required, readField, readString } from './contract-values.js';
 import assert from "node:assert/strict";
@@ -347,7 +348,7 @@ for (const delayed of [false, true]) {
     const config = testConfig({ alistUrl: server.url, bbdownQuality: '1080P60', bbdownEncoding: 'HEVC' });
     let now = Date.now();
     const { scheduler, jobs, queues } = createHeldScheduler({ get: () => config },
-      { list: () => [], getById: () => null }, manager, { now: () => now });
+      memoryUsers([]), manager, { now: () => now });
     const mediaMetadata = { width: 1080, height: 1920, duration: 30, fps: 60, codec: 'HEVC',
       source: 'ffprobe' as const, observedAt: new Date(now).toISOString() };
     try {
@@ -405,7 +406,7 @@ for (const kind of ['upload', 'verify_upload'] as const) {
     manager.replaceStateSnapshot(verificationState(localDir));
     // No HTTP server is started: reaching the transport would fail this contract.
     const { scheduler, jobs, queues } = createHeldScheduler({ get: () => testConfig() },
-      { list: () => [], getById: () => null }, manager);
+      memoryUsers([]), manager);
     try {
       const job = jobs.enqueue({ kind, dedupeKey: `invalid:${kind}`, bvid: 'BVVERIFY', userId: 'u1', mediaId: 1,
         payload: { localDir, remotePath: '/target', remoteFile: '/target/video.mp4', expectedSize: body.length,

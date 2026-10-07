@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { required } from './contract-values.js';
 import { heldQueues } from './fixtures/held-queues.js';
 import { PersistentJobStore } from '../src/job-store.js';
@@ -75,7 +76,7 @@ test("1000 persisted tasks stay bounded and refill at the low-water mark", async
       cwd: runtime,
       encoding: "utf-8",
       timeout: 30_000,
-      env: { ...process.env, NODE_ENV: "test" },
+      env: { ...process.env, NODE_ENV: "test", BFB_TEST_APP_ROOT: runtime },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("RECOVERY_RESULT="));
@@ -187,7 +188,7 @@ test("startup recovery prioritizes upload_failed and downloaded local files befo
       cwd: runtime,
       encoding: "utf-8",
       timeout: 15_000,
-      env: { ...process.env, NODE_ENV: "test" },
+      env: { ...process.env, NODE_ENV: "test", BFB_TEST_APP_ROOT: runtime },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("RECOVERY_PRIORITY_RESULT="));
@@ -290,9 +291,7 @@ test("startup restores each orphaned upload relation after persistent bootstrap 
   const users = [user, secondUser];
   const queues = heldQueues();
   const jobs = new PersistentJobStore(manager.getDatabase(), {normalizeRecovery: false});
-  const scheduler = new SyncScheduler({ get: () => config }, {
-    list: () => users, getById: id => users.find(item => item.id === id) ?? null, updatePartial: () => null,
-  }, manager, {createQueue: queues.create});
+  const scheduler = new SyncScheduler({ get: () => config }, memoryUsers(users), manager, {createQueue: queues.create});
   try {
     jobs.enqueue({
       kind: "upload" as const,
@@ -387,7 +386,7 @@ test("one deterministic upload failure is isolated without blocking unrelated do
       cwd: runtime,
       encoding: "utf-8",
       timeout: 15_000,
-      env: { ...process.env, NODE_ENV: "test" },
+      env: { ...process.env, NODE_ENV: "test", BFB_TEST_APP_ROOT: runtime },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("ISOLATED_UPLOAD_FAILURE_RESULT="));
@@ -463,7 +462,7 @@ test("a provider single-file limit is parked in the recovery center without open
       cwd: runtime,
       encoding: "utf-8",
       timeout: 15_000,
-      env: { ...process.env, NODE_ENV: "test", BFB_TEST_UPLOAD_SIZE_LIMIT: "1" },
+      env: { ...process.env, NODE_ENV: "test", BFB_TEST_APP_ROOT: runtime, BFB_TEST_UPLOAD_SIZE_LIMIT: "1" },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("ISOLATED_UPLOAD_FAILURE_RESULT="));
@@ -540,7 +539,7 @@ test("a progressive 405 persists a five-minute upload retry without opening the 
       cwd: runtime,
       encoding: "utf-8",
       timeout: 15_000,
-      env: { ...process.env, NODE_ENV: "test", BFB_TEST_UPLOAD_SESSION_TRANSIENT: "1" },
+      env: { ...process.env, NODE_ENV: "test", BFB_TEST_APP_ROOT: runtime, BFB_TEST_UPLOAD_SESSION_TRANSIENT: "1" },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const line = result.stdout.split(/\r?\n/).find((item) => item.startsWith("ISOLATED_UPLOAD_FAILURE_RESULT="));

@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { required } from './contract-values.js';
 import { inspectLocalArchiveDirectory } from '../src/scheduler/local-archive-evidence.js';
 import { createLocalCleanupStorage } from '../src/scheduler/local-cleanup-storage.js';
@@ -132,7 +133,7 @@ function makeScheduler(
   const config = testConfig({ pollIntervalMinutes: 60 });
   return new SyncScheduler(
     { get: () => config },
-    { list: () => [], getById: () => null, updatePartial: () => { throw new Error('Unexpected user update'); } },
+    memoryUsers([]),
     state,
     {
       legacyTempDir: tempRoot,

@@ -40,6 +40,7 @@ interface AccountRemovalUserGateway {
   getById(id: string): BiliUser | null;
   upsert(user: BiliUser): void;
   remove(id: string): void;
+  beginAccountRemoval(id: string): () => void;
 }
 
 export interface AccountRemovalDependencies {
@@ -114,16 +115,18 @@ export async function executeAccountRemoval(
     }
 
     if (mode === "account_only") {
-      dependencies.archiveDeletion.rememberAccount(user);
+      const release = dependencies.userStore.beginAccountRemoval(user.id);
       try {
+        dependencies.archiveDeletion.rememberAccount(user);
         const retired = await dependencies.scheduler.retireUser(user);
         dependencies.archiveDeletion.markAccountRemoved(user.id);
         dependencies.userStore.remove(user.id);
         return { mode, retired, operation: undefined };
       } catch (error) {
+        release();
         restoreAccountAfterFailure(dependencies, user);
         throw error;
-      }
+      } finally { release(); }
     }
 
     const preview = dependencies.archiveDeletion.get(previewId);
@@ -137,6 +140,7 @@ export async function executeAccountRemoval(
 
     let retired: Record<string, unknown> = {};
     let configRemoved = false;
+    const release = dependencies.userStore.beginAccountRemoval(user.id);
     try {
       const quiesced = await dependencies.scheduler.quiesceUserRemoteDeletion(user);
       dependencies.archiveDeletion.validateAccountPreparation(previewId);
@@ -161,6 +165,7 @@ export async function executeAccountRemoval(
         }
         throw error;
       }
+      release();
       if (restoreAccountAfterFailure(dependencies, user, previewId)) throw error;
       try {
         dependencies.archiveDeletion.markAccountRemoved(user.id);
@@ -170,6 +175,6 @@ export async function executeAccountRemoval(
         dependencies.onRollbackError?.(recoveryError);
         throw error;
       }
-    }
+    } finally { release(); }
   });
 }

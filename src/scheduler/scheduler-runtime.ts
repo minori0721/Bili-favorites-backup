@@ -11,7 +11,6 @@ import crypto from "node:crypto";
 import {
 getVideoPageSnapshot,
 listFavoriteItemsPage,
-refreshUserAuth,
 resolveSelfVisibleFavoriteItem,
 type VideoPageSnapshotResult,
 type VideoPageSnapshotOptions
@@ -155,7 +154,8 @@ export interface SchedulerDependencies {
   videoAccessProbe?: (cookie: BiliUser["cookie"], bvid: string, options?: VideoPageSnapshotOptions) => Promise<VideoPageSnapshotResult>;
   cacheInspector?: (rootDir: string, concurrency?: number) => Promise<DownloadCacheInspection>;
   remoteFileInspector?: typeof inspectRemoteFileSize;
-  biliContent?: Pick<BiliContentPort, 'listPage' | 'refreshAuth' | 'selfVisible'>;
+  refreshAccount?: (userId: string, reason: 'on_error') => Promise<void>;
+  biliContent?: Pick<BiliContentPort, 'listPage' | 'selfVisible'>;
   remoteStorage?: Pick<RemoteStoragePort, 'list' | 'verify' | 'inspect'>;
   legacyTempDir?: string;
   clock?: ClockPort;
@@ -184,7 +184,7 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly polling: ReturnType<typeof createPollingSchedule>;
   private readonly syncWorkflow!: SyncWorkflowPort;
   private configStore: Pick<ConfigStore, 'get'>;
-  private userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial'>;
+  private userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial' | 'captureAccount' | 'getCurrentUser' | 'isScanCurrent' | 'isAuthorizationCurrent'>;
   private stateManager: StateManager;
 
   private downloadQueue: TaskQueue;
@@ -199,7 +199,7 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly legacyCacheRecovery: ReturnType<typeof createLegacyCacheRecovery>;
   private readonly staleActiveBackupMs = 20 * 60_000;
   private remoteStorage?: Pick<RemoteStoragePort, 'list' | 'verify' | 'inspect'>;
-  private readonly biliContent?: Pick<BiliContentPort, 'listPage' | 'refreshAuth' | 'selfVisible'>;
+  private readonly biliContent?: Pick<BiliContentPort, 'listPage' | 'selfVisible'>;
   private readonly remoteVerificationIO = createRemoteVerificationIO({
     list: remotePath => this.remoteStorage?.list(remotePath) || listRemoteDir(this.configStore.get(), remotePath),
     now:()=>this.now(),sleep:ms => this.sleep(ms),
@@ -268,13 +268,14 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly userSyncEligibility!: ReturnType<typeof createUserSyncEligibility>;
   private readonly syncCommands!: SyncCommandPort;
 
-  constructor(configStore: Pick<ConfigStore, 'get'>, userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial'>, stateManager: StateManager, dependencies: SchedulerDependencies = {}) {
+  constructor(configStore: Pick<ConfigStore, 'get'>, userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial' | 'captureAccount' | 'getCurrentUser' | 'isScanCurrent' | 'isAuthorizationCurrent'>, stateManager: StateManager, dependencies: SchedulerDependencies = {}) {
 
     this.configStore = configStore;
     this.userStore = userStore;
     this.stateManager = stateManager;
     this.userSyncEligibility = createUserSyncEligibility({
       hasUnfinishedArchiveAccountDeletion: userId => this.stateManager.getDatabase().hasUnfinishedArchiveAccountDeletion(userId),
+      currentUser: user => this.userStore.getCurrentUser(user),
     });
     this.archiveTargets = createArchiveTargets({
       config: configStore, state: stateManager, users: userStore,
@@ -444,7 +445,7 @@ export class SchedulerRuntime implements SchedulerControl {
       generation: () => this.runtime.generation,
       canRun: () => this.runtime.accepting && !this.maintenance.isAnyLocked(),
       listPage: this.biliContent?.listPage || listFavoriteItemsPage,
-      refreshAuth: this.biliContent?.refreshAuth || refreshUserAuth,
+      refreshAccount: dependencies.refreshAccount ?? (() => Promise.reject(new Error('Account refresh service is unavailable'))),
       resolveSelfVisible: this.biliContent?.selfVisible || resolveSelfVisibleFavoriteItem,
       cacheCover: queueCoverCache,
       progress: patch => this.updateSchedulerProgress(patch),
@@ -455,6 +456,7 @@ export class SchedulerRuntime implements SchedulerControl {
     this.syncWorkflow = createSyncRuntime({
       users: () => this.userStore.list(),
       eligible: this.userSyncEligibility,
+      currentUser: user => this.userStore.getCurrentUser(user),
       state: this.stateManager,
       scan: this.favoriteScan,
       accepting: () => this.runtime.accepting,

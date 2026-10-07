@@ -1,10 +1,10 @@
 import { buildAuthHealth, formatExpiresText } from './account-auth-projection.js';
 import { sanitizeDiagnosticText } from './diagnostics.js';
 import type { getUserInfo } from './bili.js';
-import type { UserStore } from './users.js';
+import { AccountOperationCancelled, type UserStore } from './users.js';
 import type { logManager } from './logger.js';
 export function createAccountService(deps: {
-  users: Pick<UserStore, 'list' | 'getById' | 'updatePartial'>;
+  users: Pick<UserStore, 'list' | 'getById' | 'updatePartial' | 'captureAccount' | 'isAuthorizationCurrent'>;
   info: typeof getUserInfo;
   refresh(id: string): Promise<void>;
   cookieExportEnabled: boolean;
@@ -35,7 +35,14 @@ async function refreshInfo(id: string) {
   if (!user) {
     return {status: 404, body: { success: false, message: "User not found" }};
   }
-  const info = await deps.info(user.cookie);
+  const snapshot = deps.users.captureAccount(id);
+  if (!snapshot) throw new AccountOperationCancelled();
+  const assertCurrent = () => {if (!deps.users.isAuthorizationCurrent(snapshot.identity)) throw new AccountOperationCancelled();};
+  let info: Awaited<ReturnType<typeof deps.info>>;
+  try {info = await deps.info(snapshot.user.cookie);}
+  catch (error) {assertCurrent(); throw error;}
+  assertCurrent();
+  if (info.uid !== snapshot.user.uid) throw new Error('Account profile response belongs to a different account');
   deps.users.updatePartial(user.id, {
     name: info.name,
     avatar: info.avatar,

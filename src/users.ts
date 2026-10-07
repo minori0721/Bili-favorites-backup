@@ -53,6 +53,20 @@ const defaultUsers: BiliUser[] = [];
 const appBuvidPattern = /^XY[0-9a-fA-F]{35}$/;
 const nonCookieCredentialKeys = new Set(["accessToken", "refreshToken", "appBuvid"]);
 
+/** Process-local authority; it is never serialized with credentials or archive identities. */
+export interface AccountIdentity {
+  readonly userId: string;
+  readonly instance: symbol;
+  readonly authorization: symbol;
+  readonly selection: symbol;
+}
+
+export class AccountOperationCancelled extends Error {
+  readonly code = 'ACCOUNT_OPERATION_CANCELLED';
+  readonly statusCode = 409;
+  constructor() { super('账号操作已失效，请使用当前账号重试'); this.name = 'AccountOperationCancelled'; }
+}
+
 export function decodeStoredUsers(value: unknown): BiliUser[] {
   if (!Array.isArray(value)) throw new Error("Stored users must be an array");
   const ids = new Set<string>();
@@ -155,10 +169,19 @@ export function biliWebCookieValues(cookie: BiliCookie) {
 
 export class UserStore {
   private users: BiliUser[];
+  private readonly filePath: string;
+  private readonly write: (file: string, value: BiliUser[]) => void;
+  private readonly read: () => BiliUser[];
+  private readonly identities = new Map<string, AccountIdentity>();
+  private readonly snapshots = new WeakMap<BiliUser, symbol>();
+  private readonly removals = new Map<string, { done: Promise<void>; release(): void }>();
 
-  constructor() {
-    this.users = readJsonFileDecoded(usersPath, defaultUsers, decodeStoredUsers);
-    if (ensureUserAppBuvids(this.users)) this.save();
+  constructor(options: { filePath?: string; read?: () => BiliUser[]; write?: (file: string, value: BiliUser[]) => void } = {}) {
+    this.filePath = options.filePath ?? usersPath;
+    this.write = options.write ?? ((file, value) => writeJsonFile(file, value, { flush: true }));
+    this.read = options.read ?? (() => readJsonFileDecoded(this.filePath, defaultUsers, decodeStoredUsers));
+    this.users = [];
+    this.reload();
   }
 
   list() {
@@ -166,8 +189,11 @@ export class UserStore {
   }
 
   reload() {
-    this.users = readJsonFileDecoded(usersPath, defaultUsers, decodeStoredUsers);
-    if (ensureUserAppBuvids(this.users)) this.save();
+    const next = this.read();
+    if (ensureUserAppBuvids(next)) this.write(this.filePath, next);
+    this.users = next;
+    this.identities.clear();
+    for (const user of next) this.register(user, this.newIdentity(user.id));
     return this.list();
   }
 
@@ -176,20 +202,28 @@ export class UserStore {
   }
 
   upsert(user: BiliUser) {
+    this.assertWritable(user.id);
     const existingIndex = this.users.findIndex((item) => item.id === user.id);
+    const next = [...this.users];
+    const candidate = structuredClone(user);
     if (existingIndex >= 0) {
       const existing = this.users[existingIndex];
-      this.users[existingIndex] = {
+      next[existingIndex] = {
         ...existing,
-        ...user,
-        favorites: existing.favorites,
+        ...candidate,
+        favorites: structuredClone(existing.favorites),
       };
-      ensureUserAppBuvid(this.users[existingIndex]);
+      ensureUserAppBuvid(next[existingIndex]);
     } else {
-      ensureUserAppBuvid(user);
-      this.users.push(user);
+      ensureUserAppBuvid(candidate);
+      next.push(candidate);
     }
-    this.save();
+    this.write(this.filePath, next);
+    this.users = next;
+    const identity = this.identities.get(user.id) ?? this.newIdentity(user.id);
+    this.register(next[existingIndex >= 0 ? existingIndex : next.length - 1], { ...identity, authorization: Symbol(),
+      selection: Symbol(),
+    });
   }
 
   updateFavorites(id: string, favorites: FavoriteFolder[]) {
@@ -197,9 +231,7 @@ export class UserStore {
     if (!user) {
       return null;
     }
-    user.favorites = favorites;
-    this.save();
-    return user;
+    return this.updatePartial(id, { favorites });
   }
 
   updatePartial(id: string, patch: Partial<BiliUser>) {
@@ -207,23 +239,106 @@ export class UserStore {
     if (!user) {
       return null;
     }
-    Object.assign(user, patch);
-    this.save();
-    return user;
+    this.assertWritable(id);
+    const candidate = { ...structuredClone(user), ...structuredClone(patch) };
+    const next = this.users.map(item => item.id === id ? candidate : item);
+    this.write(this.filePath, next);
+    this.users = next;
+    const identity = this.identities.get(id)!;
+    const authorizationChanged = ['cookie', 'rawAuth', 'accessToken', 'refreshToken', 'expires', 'lastLoginAt']
+      .some(key => Object.prototype.hasOwnProperty.call(patch, key));
+    const selectionChanged = candidate.enabled !== user.enabled
+      || candidate.favorites.map(folder => folder.mediaId).join(',') !== user.favorites.map(folder => folder.mediaId).join(',');
+    this.register(candidate, { ...identity,
+      authorization: authorizationChanged ? Symbol() : identity.authorization,
+      selection: selectionChanged ? Symbol() : identity.selection,
+    });
+    return candidate;
   }
 
   remove(id: string) {
     const next = this.users.filter((user) => user.id !== id);
-    writeJsonFile(usersPath, next);
+    this.write(this.filePath, next);
     this.users = next;
+    this.identities.delete(id);
   }
 
   clear() {
     this.users = [];
+    this.identities.clear();
   }
 
-  private save() {
-    writeJsonFile(usersPath, this.users);
+  captureAccount(id: string) {
+    const user = this.getById(id);
+    const identity = this.identities.get(id);
+    if (!user || !identity || this.removals.has(id)) return null;
+    const snapshot = structuredClone(user);
+    this.snapshots.set(snapshot, identity.instance);
+    return { user: snapshot, identity };
+  }
+
+  isAccountCurrent(identity: AccountIdentity) {
+    return !this.removals.has(identity.userId) && this.identities.get(identity.userId)?.instance === identity.instance;
+  }
+
+  isAuthorizationCurrent(identity: AccountIdentity) {
+    return this.isAccountCurrent(identity) && this.identities.get(identity.userId)?.authorization === identity.authorization;
+  }
+
+  isScanCurrent(identity: AccountIdentity, mediaId: number) {
+    const user = this.getById(identity.userId);
+    return this.isSelectionCurrent(identity)
+      && Boolean(user?.enabled && user.favorites.some(folder => folder.mediaId === mediaId));
+  }
+
+  isSelectionCurrent(identity: AccountIdentity) {
+    return this.isAccountCurrent(identity) && this.identities.get(identity.userId)?.selection === identity.selection;
+  }
+
+  getCurrentUser(snapshot: BiliUser) {
+    const identity = this.identities.get(snapshot.id);
+    if (!identity || this.removals.has(snapshot.id) || this.snapshots.get(snapshot) !== identity.instance) return null;
+    return this.getById(snapshot.id);
+  }
+
+  async waitForAccountRemoval(id: string) {
+    while (this.removals.has(id)) await this.removals.get(id)!.done;
+  }
+
+  beginAccountRemoval(id: string) {
+    if (this.removals.has(id)) throw new AccountOperationCancelled();
+    let release!: () => void;
+    const done = new Promise<void>(resolve => { release = resolve; });
+    const removal = { done, release };
+    this.removals.set(id, removal);
+    this.rotateInstance(id);
+    return () => {
+      if (this.removals.get(id) !== removal) return;
+      this.removals.delete(id);
+      this.rotateInstance(id);
+      release();
+    };
+  }
+
+  private assertWritable(id: string) {
+    if (this.removals.has(id)) throw new AccountOperationCancelled();
+  }
+
+  private newIdentity(userId: string): AccountIdentity {
+    return { userId, instance: Symbol(), authorization: Symbol(), selection: Symbol() };
+  }
+
+  private register(user: BiliUser, identity: AccountIdentity) {
+    this.identities.set(user.id, identity);
+    this.snapshots.set(user, identity.instance);
+  }
+
+  private rotateInstance(id: string) {
+    const user = this.getById(id);
+    if (!user) return;
+    const next = structuredClone(user);
+    this.users = this.users.map(item => item.id === id ? next : item);
+    this.register(next, this.newIdentity(id));
   }
 }
 

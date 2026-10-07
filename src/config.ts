@@ -237,12 +237,16 @@ function needsConfigMigration(input: Partial<AppConfig>, normalized: AppConfig) 
 
 export class ConfigStore {
   private config: AppConfig;
+  private readonly filePath: string;
+  private readonly write: (file: string, value: AppConfig) => void;
 
-  constructor() {
-    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(configPath, defaultConfig, decodeStoredConfig);
+  constructor(options: { filePath?: string; write?: (file: string, value: AppConfig) => void } = {}) {
+    this.filePath = options.filePath ?? configPath;
+    this.write = options.write ?? ((file, value) => writeJsonFile(file, value, { flush: true }));
+    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(this.filePath, defaultConfig, decodeStoredConfig);
     this.config = normalizeLoadedConfig(stored);
     if (needsConfigMigration(stored, this.config)) {
-      writeJsonFile(configPath, this.config);
+      this.write(this.filePath, this.config);
     }
   }
 
@@ -251,7 +255,7 @@ export class ConfigStore {
   }
 
   reload() {
-    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(configPath, defaultConfig, decodeStoredConfig);
+    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(this.filePath, defaultConfig, decodeStoredConfig);
     this.config = normalizeLoadedConfig(stored);
     return this.get();
   }
@@ -261,8 +265,8 @@ export class ConfigStore {
       ...this.config,
       ...next,
     });
+    this.write(this.filePath, merged);
     this.config = merged;
-    writeJsonFile(configPath, this.config);
     return this.get();
   }
 

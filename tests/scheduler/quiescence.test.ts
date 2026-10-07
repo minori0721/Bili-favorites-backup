@@ -1,3 +1,4 @@
+import { memoryUsers } from '../fixtures/memory-users.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { once } from 'node:events';
@@ -13,7 +14,7 @@ import {createStartupLifecycle} from '../../src/startup-lifecycle.js';
 test('application bootstrap keeps admission closed after a recovery failure', async () => {
   const directory = await createTestDir('startup-admission');
   const state = new StateManager({statePath: path.join(directory, 'state.json'), dbPath: path.join(directory, 'state.sqlite')});
-  const scheduler = new SyncScheduler({get: () => testConfig()}, {list: () => [], getById: () => null, updatePartial: () => null}, state, {deferAdmissionUntilStart: true});
+  const scheduler = new SyncScheduler({get: () => testConfig()}, memoryUsers([]), state, {deferAdmissionUntilStart: true});
   try {
     const startup = createStartupLifecycle([{name: 'restore', run: () => { throw new Error('recovery failed'); }}, {name: 'scheduler', run: () => scheduler.start()}]);
     await assert.rejects(startup.start(), /recovery failed/);
@@ -57,7 +58,7 @@ test('scheduler timeout leaves the database usable, blocks new scans, and allows
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let inspections = 0;
-  const scheduler = new SyncScheduler({get:() => testConfig()}, {list:() => [],getById:() => null,updatePartial:() => null}, state,
+  const scheduler = new SyncScheduler({get:() => testConfig()}, memoryUsers([]), state,
     {cacheInspector:async () => { inspections += 1; await held; return inspectDownloadCache(directory); },legacyTempDir:directory});
   try {
     assert.equal(inspections,0,'construction must not launch background inspection');

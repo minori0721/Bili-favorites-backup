@@ -1,3 +1,4 @@
+import { memoryUsers } from './fixtures/memory-users.js';
 import { PersistentJobStore } from '../src/job-store.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -44,7 +45,7 @@ test("queue board restores manual remote verification metadata after restart", a
     const jobs = new PersistentJobStore(manager.getDatabase(), {normalizeRecovery: false});
     const scheduler = new SyncScheduler(
       { get: () => testConfig({ queuePrefetchLimit: 25 }) },
-      { list: () => [], getById: () => null, updatePartial: () => null },
+      memoryUsers([]),
       manager,
     );
     try {
@@ -107,7 +108,7 @@ test("queue board presents strict media retry failures without raw upload errors
     const jobs = new PersistentJobStore(manager.getDatabase(), {normalizeRecovery: false});
     const scheduler = new SyncScheduler(
       { get: () => testConfig({ queuePrefetchLimit: 25 }) },
-      { list: () => [], getById: () => null, updatePartial: () => null },
+      memoryUsers([]),
       manager,
     );
     try {
