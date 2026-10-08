@@ -338,6 +338,66 @@ test("secure remembered login cookies are fixed for thirty days", async () => {
   }
 });
 
+test('session observers unsubscribe independently and cancelled expiry callbacks cannot revoke new observers', async () => {
+  const runtime = await createTestDir('admin-session-observers');
+  const timers: Array<{callback: () => void; cancelled: boolean}> = [];
+  const secret = 'isolated-observer-secret';
+  const fingerprint = buildAdminAuthFingerprint(secret, 'admin', 'password');
+  const store = new AdminSessionStore({filePath: path.join(runtime, 'auth.sqlite'), sessionSecret: secret,
+    adminUser: 'admin', adminPassword: 'password', now: () => 1000, cleanupIntervalMs: 0,
+    scheduleExpiry(callback) {
+      const timer = {callback, cancelled: false};
+      timers.push(timer);
+      return () => { timer.cancelled = true; };
+    }});
+  try {
+    await storeSet(store, 'observed', storedSession(fingerprint, 2000));
+    let invalidations = 0;
+    const listener = () => { invalidations++; };
+    const a = store.observe('observed', listener), b = store.observe('observed', listener);
+    assert.equal(timers.length, 1);
+    a(); a();
+    assert.equal(timers[0].cancelled, false);
+    b();
+    assert.equal(timers[0].cancelled, true);
+    const c = store.observe('observed', listener);
+    timers[0].callback();
+    assert.equal(invalidations, 0);
+    assert.equal(timers[1].cancelled, false);
+    await new Promise<void>((resolve, reject) => store.destroy('observed', error => error ? reject(error) : resolve()));
+    assert.equal(invalidations, 1);
+    assert.equal(timers[1].cancelled, true);
+    c(); c();
+    store.observe('missing', listener)();
+    assert.equal(invalidations, 2);
+  } finally { store.close(); await removeTestDir(runtime); }
+});
+
+test('session cleanup notifies corrupted records only after a successful persistent deletion', async () => {
+  const runtime = await createTestDir('admin-session-cleanup-observers');
+  const dbPath = path.join(runtime, 'auth.sqlite');
+  const secret = 'isolated-cleanup-secret';
+  const store = new AdminSessionStore({filePath: dbPath, sessionSecret: secret,
+    adminUser: 'admin', adminPassword: 'password', now: () => 1000, cleanupIntervalMs: 0});
+  try {
+    await storeSet(store, 'corrupt-record', storedSession(buildAdminAuthFingerprint(secret, 'admin', 'password'), 2000));
+    let invalidations = 0;
+    store.observe('corrupt-record', () => { invalidations++; });
+    const database = new Database(dbPath);
+    try {
+      database.prepare('UPDATE admin_sessions SET payload_json = ?').run('{broken');
+      database.exec("CREATE TRIGGER fail_cleanup BEFORE DELETE ON admin_sessions BEGIN SELECT RAISE(ABORT, 'isolated cleanup failure'); END");
+      assert.throws(() => store.cleanup(), /isolated cleanup failure/);
+      assert.equal(invalidations, 0);
+      database.exec('DROP TRIGGER fail_cleanup');
+      assert.equal(store.cleanup(), 1);
+      assert.equal(invalidations, 1);
+      assert.equal(store.cleanup(), 0);
+      assert.equal(await storeGet(store, 'corrupt-record'), null);
+    } finally { database.close(); }
+  } finally { store.close(); await removeTestDir(runtime); }
+});
+
 declare module "express-session" {
   interface SessionData {
     user?: { name: string };

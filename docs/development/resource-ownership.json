@@ -1,6 +1,14 @@
 {
   "resources": [
     {
+      "module": "admin-session.ts",
+      "ownerSymbol": "AdminSessionStore",
+      "resourceSymbols": ["db", "filePath", "sessionSecret", "adminUser", "authFingerprint", "now", "cleanupIntervalMs", "sessionLimit", "warn", "cleanupTimer", "closed", "observations", "scheduleExpiry"],
+      "stop": "close 幂等取消清理和会话到期计时器、关闭实时连接并释放独立会话数据库；HTTP 连接断开只注销自己的观察者，最后一个观察者离开时取消该会话的到期计时器。",
+      "lateCallback": "到期回调核对观察对象身份和固定到期时间，不续期；持久撤销提交成功后才通知观察者，事务失败不冒充撤销成功。",
+      "rebind": "管理员会话库与业务库独立，不参与导入替换；重启按当前认证指纹验证持久会话。"
+    },
+    {
       "module": "queue.ts",
       "ownerSymbol": "TaskQueue",
       "resourceSymbols": [

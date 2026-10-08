@@ -61,4 +61,6 @@ APP模式要求所有启用账号都具有扫码登录得到的access token。
 
 ## 环境变量
 
-部署安全和日志上限使用环境变量，包括`ADMIN_USER`、`ADMIN_PASS`、`SESSION_SECRET`、`COOKIE_SECURE`、`ALLOW_COOKIE_EXPORT`、`BFB_DEBUG_LOG_RETENTION_DAYS`、`BFB_DEBUG_LOG_MAX_FILES`和`BFB_DEBUG_LOG_MAX_MIB`。参见[安全配置](../operations/security)与[日志](../operations/logs)。
+部署安全和日志上限使用环境变量，包括`ADMIN_USER`、`ADMIN_PASS`、`SESSION_SECRET`、`TRUST_PROXY`、`COOKIE_SECURE`、`ALLOW_COOKIE_EXPORT`、`BFB_DEBUG_LOG_RETENTION_DAYS`、`BFB_DEBUG_LOG_MAX_FILES`和`BFB_DEBUG_LOG_MAX_MIB`。参见[安全配置](../operations/security)与[日志](../operations/logs)。
+
+`TRUST_PROXY` 默认 `false`，反代部署填写实际连接BFB的代理IP/CIDR，可用逗号分隔多项；不接受全部信任或跳数。HTTPS反代同时设置 `COOKIE_SECURE=true`。这两项通过Compose的 `environment` 传入，不能仅写 `.env`。已有反代部署更新时也要检查，详见[反向代理与登录安全](../operations/security#反向代理与登录安全)。

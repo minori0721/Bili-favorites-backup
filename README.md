@@ -44,6 +44,8 @@ services:
       ADMIN_PASS: ${ADMIN_PASS:?请在.env中设置ADMIN_PASS}
       SESSION_SECRET: ${SESSION_SECRET:?请在.env中设置SESSION_SECRET}
       ALLOW_COOKIE_EXPORT: "false"
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
@@ -67,6 +69,8 @@ services:
       ADMIN_PASS: ${ADMIN_PASS:?请在.env中设置ADMIN_PASS}
       SESSION_SECRET: ${SESSION_SECRET:?请在.env中设置SESSION_SECRET}
       ALLOW_COOKIE_EXPORT: "false"
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
@@ -110,6 +114,8 @@ docker compose logs --tail=100 app
 
 访问 **`http://服务器地址:3000`**，使用 `admin` 和你设置的密码登录。公网访问建议通过HTTPS反向代理，并限制管理端口的访问范围。
 
+**反向代理配置提醒：** 域名本身无需写入BFB。直连HTTP保持 `TRUST_PROXY=false`、`COOKIE_SECURE=false`；宝塔 / Nginx反代需要将 `TRUST_PROXY` 设置为实际连接BFB的代理IP/CIDR，HTTPS同时设置 `COOKIE_SECURE=true`。Docker下来源不一定是 `127.0.0.1`，并且应限制绕过代理的源端口访问。见[完整配置步骤](https://minori0721.github.io/Bili-favorites-backup/operations/security#反向代理与登录安全)。
+
 ### 第一次归档
 
 1. 在设置中填写BFB容器可访问的存储地址、WebDAV账号和归档目录。
@@ -137,6 +143,8 @@ docker compose logs --tail=100 app
 - 已有归档时，使用“迁移归档路径”调整目标目录，不要通过清空数据库或直接修改路径绕过保护。
 
 升级BFB时保留挂载，只更新 `app` 服务：
+
+> **当前dev升级提醒：** 默认的一跳代理信任已移除。已有反代部署更新前也要配置 `TRUST_PROXY` 并核对HTTPS Cookie模式。自定义Compose需显式传入这两个变量，仅写 `.env` 不够；配置变化需重建容器生效。具体步骤见上面的安全配置链接。
 
 ```bash
 docker compose pull app
@@ -169,7 +177,7 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 ## 安全与开发
 
 - 使用独立强密码，妥善保管 `.env`、`data` 和迁移包，其中可能含账号凭据。不要直接公开日志或备份。
-- 不需要导出B站Cookie时保持 `ALLOW_COOKIE_EXPORT=false`。HTTPS反向代理部署时设置 `COOKIE_SECURE=true`，纯HTTP不要开启。
+- 不需要导出B站Cookie时保持 `ALLOW_COOKIE_EXPORT=false`。反向代理只信任明确配置的 `TRUST_PROXY` 来源；HTTPS设置 `COOKIE_SECURE=true`，纯HTTP不要开启。
 - 仅备份你有权访问和保存的内容；BFB不绕过隐私、付费权限或审核限制。
 
 | 镜像标签 | 用途 |

@@ -9,7 +9,8 @@ test('log HTTP stream sends history and releases its subscription on disconnect'
   let active = 0;
   let release!: () => void;
   const released = new Promise<void>(resolve => { release = resolve; });
-  const app = express(); app.use(createLogRouter({ getAll: () => [entry], subscribe: () => { active++; return () => { active--; release(); }; } }));
+  const app = express(); app.use(createLogRouter({ getAll: () => [entry], subscribe: () => { active++; return () => { active--; release(); }; } },
+    {observe: () => () => {}}));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');

@@ -15,6 +15,8 @@ services:
       - ADMIN_PASS=${ADMIN_PASS:-please-change-admin-pass}
       - SESSION_SECRET=${SESSION_SECRET:-please-change-session-secret}
       - ALLOW_COOKIE_EXPORT=${ALLOW_COOKIE_EXPORT:-false}
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp
@@ -48,6 +50,12 @@ ALIST_ADMIN_PASSWORD=换成另一个强密码
 ```
 
 不要提交或公开`.env`。如果确实需要网页导出B站Cookie，再显式设置`ALLOW_COOKIE_EXPORT=true`。
+
+::: warning 反向代理部署与更新提醒
+直接通过 IP 或域名使用 HTTP 时，保持 `TRUST_PROXY=false`、`COOKIE_SECURE=false`。通过宝塔 / Nginx 的 HTTPS 反向代理访问时，必须将 `TRUST_PROXY` 设置为 BFB 实际收到连接的代理 IP 或网段，并设置 `COOKIE_SECURE=true`；Docker 中的连接来源可能是桥接网关，不能直接猜成 `127.0.0.1`。
+
+新版本不再默认信任一跳代理。已有反代部署更新前也要检查这两项，详见[反向代理与登录安全](../operations/security#反向代理与登录安全)。自定义 Compose 必须加入上面的两个 `environment` 条目，仅在 `.env` 写值不会自动传入容器。
+:::
 
 ## 启动
 

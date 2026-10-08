@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import session from "express-session";
+import type { AdminSessionInvalidationPort } from './ports/admin-session.js';
 
 export const ADMIN_SESSION_COOKIE_NAME = "bfb.sid";
 export const ADMIN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -15,6 +16,16 @@ interface StoredAdminSession extends session.SessionData {
   authFingerprint?: string;
   absoluteExpiresAt?: number;
   remember?: boolean;
+}
+
+interface ValidAdminSession extends StoredAdminSession {
+  absoluteExpiresAt: number;
+}
+
+interface SessionObservation {
+  expiresAt: number;
+  listeners: Set<() => void>;
+  cancelExpiry?: () => void;
 }
 
 interface SessionRow {
@@ -33,6 +44,13 @@ interface AdminSessionStoreOptions {
   cleanupIntervalMs?: number;
   sessionLimit?: number;
   warn?: (message: string) => void;
+  scheduleExpiry?: (callback: () => void, delayMs: number) => () => void;
+}
+
+function scheduleSessionExpiry(callback: () => void, delayMs: number) {
+  const timer = setTimeout(callback, delayMs);
+  timer.unref();
+  return () => clearTimeout(timer);
 }
 
 class CorruptSessionDatabaseError extends Error {}
@@ -83,7 +101,7 @@ function quarantineDatabase(filePath: string) {
   }
 }
 
-export class AdminSessionStore extends session.Store {
+export class AdminSessionStore extends session.Store implements AdminSessionInvalidationPort {
   private db!: Database.Database;
   private readonly filePath: string;
   private readonly sessionSecret: string;
@@ -95,6 +113,8 @@ export class AdminSessionStore extends session.Store {
   private readonly warn: (message: string) => void;
   private cleanupTimer?: NodeJS.Timeout;
   private closed = false;
+  private readonly observations = new Map<string, SessionObservation>();
+  private readonly scheduleExpiry: (callback: () => void, delayMs: number) => () => void;
 
   constructor(options: AdminSessionStoreOptions) {
     super();
@@ -106,6 +126,7 @@ export class AdminSessionStore extends session.Store {
     this.cleanupIntervalMs = options.cleanupIntervalMs ?? ADMIN_SESSION_CLEANUP_INTERVAL_MS;
     this.sessionLimit = Math.max(1, Math.floor(options.sessionLimit ?? ADMIN_SESSION_LIMIT));
     this.warn = options.warn || ((message) => console.warn(`[Security] ${message}`));
+    this.scheduleExpiry = options.scheduleExpiry ?? scheduleSessionExpiry;
     this.openWithRecovery();
     this.cleanup();
     if (this.cleanupIntervalMs > 0) {
@@ -178,16 +199,67 @@ export class AdminSessionStore extends session.Store {
     return buildSessionKey(this.sessionSecret, sessionId);
   }
 
-  private isValidStoredSession(parsed: StoredAdminSession, row: SessionRow) {
-    const expiresAt = Number(parsed?.absoluteExpiresAt || 0);
+  private isValidStoredSession(parsed: StoredAdminSession, row: SessionRow): parsed is ValidAdminSession {
+    const expiresAt = parsed?.absoluteExpiresAt;
     return Boolean(parsed && typeof parsed === "object")
       && parsed.authFingerprint === this.authFingerprint
       && parsed.user?.name === this.adminUser
       && row.subject === this.adminUser
-      && Number.isInteger(expiresAt)
+      && typeof expiresAt === 'number' && Number.isInteger(expiresAt)
       && expiresAt === row.expires_at
       && Boolean(parsed.cookie && typeof parsed.cookie === "object")
       && typeof parsed.remember === "boolean";
+  }
+
+  private invalidateObservedSession(key: string) {
+    const observation = this.observations.get(key);
+    if (!observation) return;
+    this.observations.delete(key);
+    observation.cancelExpiry?.();
+    for (const listener of observation.listeners) {
+      try { listener(); } catch {
+        this.warn('管理员会话已失效，但释放实时连接失败，请检查 HTTP 连接状态。');
+      }
+    }
+    observation.listeners.clear();
+  }
+
+  private scheduleObservedExpiry(key: string, observation: SessionObservation) {
+    const remaining = observation.expiresAt - this.now();
+    if (remaining <= 0) {
+      this.invalidateObservedSession(key);
+      return;
+    }
+    // Thirty days exceeds Node's maximum timeout. Recheck the same fixed
+    // deadline in bounded slices; this never renews the session.
+    observation.cancelExpiry = this.scheduleExpiry(() => {
+      if (this.observations.get(key) !== observation) return;
+      this.scheduleObservedExpiry(key, observation);
+    }, Math.min(remaining, 2_147_483_647));
+  }
+
+  observe(sessionId: string, invalidated: () => void): () => void {
+    const stored = this.readSession(sessionId);
+    if (!stored) { invalidated(); return () => {}; }
+    const key = this.key(sessionId);
+    const listener = () => invalidated();
+    let observation = this.observations.get(key);
+    if (!observation) {
+      observation = {expiresAt: stored.absoluteExpiresAt, listeners: new Set()};
+      this.observations.set(key, observation);
+      observation.listeners.add(listener);
+      this.scheduleObservedExpiry(key, observation);
+    } else {
+      observation.listeners.add(listener);
+    }
+    const owned = observation;
+    return () => {
+      owned.listeners.delete(listener);
+      if (!owned.listeners.size && this.observations.get(key) === owned) {
+        this.observations.delete(key);
+        owned.cancelExpiry?.();
+      }
+    };
   }
 
   cleanup(now = this.now()) {
@@ -209,61 +281,73 @@ export class AdminSessionStore extends session.Store {
       }
     }
     const transaction = this.db.transaction(() => {
+      const expiredKeys = this.db.prepare<[number, string], {session_key: string}>(
+        'SELECT session_key FROM admin_sessions WHERE expires_at <= ? OR auth_fingerprint <> ?',
+      ).all(now, this.authFingerprint).map(row => row.session_key);
       let changes = this.db.prepare("DELETE FROM admin_sessions WHERE expires_at <= ? OR auth_fingerprint <> ?")
         .run(now, this.authFingerprint).changes;
       const removeMalformed = this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?");
       for (const key of malformedKeys) changes += removeMalformed.run(key).changes;
-      return changes;
+      return {changes, removedKeys: [...expiredKeys, ...malformedKeys]};
     });
-    return transaction();
+    const result = transaction();
+    for (const key of result.removedKeys) this.invalidateObservedSession(key);
+    return result.changes;
+  }
+
+  private readSession(sessionId: string): ValidAdminSession | null {
+    if (this.closed) throw new Error("Admin session store is closed");
+    const key = this.key(sessionId);
+    const row = this.db.prepare(`
+      SELECT payload_json, subject, auth_fingerprint, expires_at
+      FROM admin_sessions
+      WHERE session_key = ?
+    `).get(key) as SessionRow | undefined;
+    if (!row) {
+      this.invalidateObservedSession(key);
+      return null;
+    }
+    if (row.expires_at <= this.now() || row.auth_fingerprint !== this.authFingerprint) {
+      this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
+      this.invalidateObservedSession(key);
+      return null;
+    }
+    let parsed: StoredAdminSession;
+    try {
+      parsed = JSON.parse(row.payload_json) as StoredAdminSession;
+    } catch {
+      this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
+      this.invalidateObservedSession(key);
+      return null;
+    }
+    if (!this.isValidStoredSession(parsed, row)) {
+      this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
+      this.invalidateObservedSession(key);
+      return null;
+    }
+    return parsed;
   }
 
   override get(sessionId: string, callback: (err: unknown, session?: session.SessionData | null) => void) {
+    let stored: ValidAdminSession | null;
     try {
-      if (this.closed) throw new Error("Admin session store is closed");
-      const key = this.key(sessionId);
-      const row = this.db.prepare(`
-        SELECT payload_json, subject, auth_fingerprint, expires_at
-        FROM admin_sessions
-        WHERE session_key = ?
-      `).get(key) as SessionRow | undefined;
-      if (!row) {
-        callback(null, null);
-        return;
-      }
-      if (row.expires_at <= this.now() || row.auth_fingerprint !== this.authFingerprint) {
-        this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
-        callback(null, null);
-        return;
-      }
-      let parsed: StoredAdminSession;
-      try {
-        parsed = JSON.parse(row.payload_json) as StoredAdminSession;
-      } catch {
-        this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
-        callback(null, null);
-        return;
-      }
-      if (!this.isValidStoredSession(parsed, row)) {
-        this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
-        callback(null, null);
-        return;
-      }
-      callback(null, parsed);
+      stored = this.readSession(sessionId);
     } catch (error) {
       callback(error);
+      return;
     }
+    callback(null, stored);
   }
 
   override set(sessionId: string, sessionData: session.SessionData, callback?: (err?: unknown) => void) {
     try {
       if (this.closed) throw new Error("Admin session store is closed");
       const stored = sessionData as StoredAdminSession;
-      const expiresAt = Number(stored.absoluteExpiresAt || 0);
-      const subject = String(stored.user?.name || "");
+      const expiresAt = stored.absoluteExpiresAt;
+      const subject = stored.user?.name;
       if (subject !== this.adminUser
         || stored.authFingerprint !== this.authFingerprint
-        || !Number.isInteger(expiresAt)
+        || typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)
         || expiresAt <= this.now()
         || !stored.cookie || typeof stored.cookie !== "object"
         || typeof stored.remember !== "boolean") {
@@ -273,6 +357,9 @@ export class AdminSessionStore extends session.Store {
       const key = this.key(sessionId);
       const payload = JSON.stringify(stored);
       const transaction = this.db.transaction(() => {
+        const expiredKeys = this.db.prepare<[number, string], {session_key: string}>(
+          'SELECT session_key FROM admin_sessions WHERE expires_at <= ? OR auth_fingerprint <> ?',
+        ).all(now, this.authFingerprint).map(row => row.session_key);
         this.db.prepare("DELETE FROM admin_sessions WHERE expires_at <= ? OR auth_fingerprint <> ?")
           .run(now, this.authFingerprint);
         this.db.prepare(`
@@ -285,6 +372,11 @@ export class AdminSessionStore extends session.Store {
             updated_at=excluded.updated_at,
             expires_at=excluded.expires_at
         `).run(key, payload, subject, this.authFingerprint, now, now, expiresAt);
+        const evictedKeys = this.db.prepare<[string, string, number], {session_key: string}>(`
+          SELECT session_key FROM admin_sessions
+          WHERE subject = ? AND auth_fingerprint = ?
+          ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
+        `).all(subject, this.authFingerprint, this.sessionLimit).map(row => row.session_key);
         this.db.prepare(`
           DELETE FROM admin_sessions
           WHERE session_key IN (
@@ -295,8 +387,10 @@ export class AdminSessionStore extends session.Store {
             LIMIT -1 OFFSET ?
           )
         `).run(subject, this.authFingerprint, this.sessionLimit);
+        return [...expiredKeys, ...evictedKeys];
       });
-      transaction();
+      const removedKeys = transaction();
+      for (const key of removedKeys) this.invalidateObservedSession(key);
       chmodPrivateDatabase(this.filePath, this.warn);
       callback?.();
     } catch (error) {
@@ -307,7 +401,9 @@ export class AdminSessionStore extends session.Store {
   override destroy(sessionId: string, callback?: (err?: unknown) => void) {
     try {
       if (this.closed) throw new Error("Admin session store is closed");
-      this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(this.key(sessionId));
+      const key = this.key(sessionId);
+      this.db.prepare("DELETE FROM admin_sessions WHERE session_key = ?").run(key);
+      this.invalidateObservedSession(key);
       callback?.();
     } catch (error) {
       callback?.(error);
@@ -318,6 +414,7 @@ export class AdminSessionStore extends session.Store {
     if (this.closed) return;
     this.closed = true;
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    for (const key of this.observations.keys()) this.invalidateObservedSession(key);
     if (this.db.open) {
       try {
         this.db.pragma("wal_checkpoint(TRUNCATE)");

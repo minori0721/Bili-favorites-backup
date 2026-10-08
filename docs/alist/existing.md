@@ -15,6 +15,8 @@ services:
       - ADMIN_PASS=${ADMIN_PASS:-please-change-admin-pass}
       - SESSION_SECRET=${SESSION_SECRET:-please-change-session-secret}
       - ALLOW_COOKIE_EXPORT=${ALLOW_COOKIE_EXPORT:-false}
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     volumes:
       - ./data:/app/data
       - ./temp:/app/temp

@@ -14,6 +14,12 @@ docker compose logs --tail=100 app
 
 ## 更新前检查
 
+::: warning 已有反向代理部署：先检查登录配置
+新版本默认不信任代理头。宝塔 / Nginx 反代用户更新前必须设置 `TRUST_PROXY` 为实际代理 IP/CIDR，HTTPS 访问还应设置 `COOKIE_SECURE=true`，并核对代理转发的域名、端口与协议。直连 HTTP 保持两项为 `false`。
+
+自定义 Compose 必须显式传入这两个环境变量，仅修改 `.env` 不够。配置变化需重建应用容器才生效。详见[反向代理与登录安全](./security#反向代理与登录安全)。
+:::
+
 - `data/`、`temp/`和内置AList的`alist/`确实挂载到宿主机。
 - 阅读[版本与升级记录](../reference/releases)中的迁移说明。
 - 涉及 AList / OpenList 版本变化时，先备份对应数据目录并阅读[AList / OpenList升级](../alist/upgrade)。

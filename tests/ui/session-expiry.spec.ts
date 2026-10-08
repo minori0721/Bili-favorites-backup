@@ -55,6 +55,38 @@ test('log stream reconnects after an interrupted connection and a 503 session ch
   expect(errors).toEqual([]);
 });
 
+test('revoked log stream shows login and stops reconnecting after a confirmed 401', async ({page}) => {
+  await page.request.post('/__test/reset');
+  await page.clock.install();
+  let release!: () => void;
+  const ended = new Promise<void>(resolve => { release = resolve; });
+  let streams = 0, checks = 0;
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/api/logs/stream', async route => {
+    streams++;
+    await ended;
+    await route.fulfill({status: 200, contentType: 'text/event-stream',
+      body: `data: ${JSON.stringify({level: 'info', timestamp: '', summary: '隔离会话日志', raw: 'isolated session log', simpleVisible: true})}\n\n`});
+  });
+  await page.goto('/');
+  await expect(page.locator('.user-item')).toHaveCount(1);
+  await page.locator('#logSimpleBtn').click();
+  // Stop board polling before isolating the stream's session check.
+  await page.route('**/api/queue/state', async route => {
+    checks++;
+    await route.fulfill({status: 401, json: {success: false, message: 'Unauthorized'}});
+  });
+  release();
+  const dialog = page.locator('#sessionExpiredDialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('link', {name: '重新登录'})).toBeFocused();
+  await page.clock.fastForward(60_000);
+  expect(streams).toBe(1);
+  expect(checks).toBe(1);
+  expect(errors).toEqual([]);
+});
+
 test('expired session stops application work and shows one accessible login entry', async ({page}) => {
   await page.request.post('/__test/reset');
   await page.goto('/');

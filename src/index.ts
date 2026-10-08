@@ -97,7 +97,7 @@ import { recoverInterruptedQualityDownloads } from './scheduler/quality-download
 import { createQualityMaintenance } from './scheduler/quality-maintenance.js';
 import { createQualityStartupRecovery } from './scheduler/quality-startup-recovery.js';
 import type { LegacyRecoveryMarkers } from './scheduler/legacy-import-recovery.js';
-import { collectSecurityConfigurationWarnings,createLoginRateLimiter } from "./security.js";
+import { collectSecurityConfigurationWarnings,createLoginRateLimiter,describeProxyTrust,parseTrustedProxies } from "./security.js";
 import { createStartupLifecycle,optionalStartupStep } from "./startup-lifecycle.js";
 import { StateManager } from "./state.js";
 import { createStorageCleanup } from './storage-cleanup-service.js';
@@ -113,6 +113,7 @@ import { UserStore } from "./users.js";
 import { renderAppPage,renderLoginPage } from "./web.js";
 import { readAssetManifest } from "./web/server/assets.js";
 
+const trustedProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 readAssetManifest();
 ensureAppDirs();
 recoverImportTransaction();
@@ -264,8 +265,6 @@ async function cleanupBBDownCredentialResidue() {
 if (process.env.NODE_ENV !== "test") accountRefresh.start();
 
 const app = express();
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true }));
 
 const sessionSecret = process.env.SESSION_SECRET || "dev-secret";
 const adminUser = process.env.ADMIN_USER || "admin";
@@ -280,7 +279,7 @@ const adminSessionStore = new AdminSessionStore({
 });
 const authentication = createAuthentication({secret: sessionSecret, username: adminUser, password: adminPass,
   secure: secureSessionCookie, store: adminSessionStore, rateLimit: createLoginRateLimiter(), now: Date.now});
-app.set('trust proxy', 1);
+app.set('trust proxy', trustedProxies);
 app.use(authentication.session);
 app.use(createPageRouter({coversDirectory: coversDir, onlineCoversDirectory: onlineCoversDir,
   playerAssetPath: artplayerAssetPath, loginPage: renderLoginPage, appPage: renderAppPage}));
@@ -290,6 +289,7 @@ const asyncHandler = createRequestBoundary(importMaintenance);
 
 app.use("/api", requireAuth, requireSameOrigin);
 app.use("/api", createMaintenanceGuard(importMaintenance));
+app.use('/api', express.json({limit: '10mb'}), express.urlencoded({extended: true}));
 
 app.use(authentication.logout);
 
@@ -371,7 +371,7 @@ app.use(createLogRouter({
     logManager.on('log', listener);
     return () => { logManager.removeListener('log', listener); };
   },
-}));
+}, adminSessionStore));
 
 app.use(createQueueStateRouter({ snapshot: () => scheduler.getQueueSnapshot() }));
 
@@ -485,6 +485,7 @@ if (process.env.NODE_ENV !== "test") {
   const server = app.listen(port, () => {
     memoryObservation.start();
     console.log(`Server listening on http://localhost:${port}`);
+    console.log(`[Security] ${describeProxyTrust(trustedProxies, secureSessionCookie)}`);
     for (const warning of collectSecurityConfigurationWarnings({
       adminPassword: adminPass,
       sessionSecret,
