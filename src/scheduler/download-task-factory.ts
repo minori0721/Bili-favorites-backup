@@ -52,7 +52,8 @@ export function createDownloadTaskFactory(deps: Dependencies) {
           || deps.isArchiveSourceDeletionBlocked(item.userId, Number(item.mediaId), bvid)) return [];
         return [{ userId: item.userId, mediaId: Number(item.mediaId), folderTitle: item.folderTitle, remotePath: item.remotePath }];
       }) : [];
-    if (encodingRetry?.target && !preservedTargets.some((target) => target.userId === encodingRetry.target!.userId && target.mediaId === encodingRetry.target!.mediaId)) {
+    if (encodingRetry?.target && !deps.isArchiveSourceDeletionBlocked(encodingRetry.target.userId,encodingRetry.target.mediaId,bvid)
+      && !preservedTargets.some((target) => target.userId === encodingRetry.target!.userId && target.mediaId === encodingRetry.target!.mediaId)) {
       preservedTargets.push(encodingRetry.target);
     }
     if (relations.length === 0 && preservedTargets.length === 0) return null;

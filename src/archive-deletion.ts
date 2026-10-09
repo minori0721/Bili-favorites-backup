@@ -12,7 +12,7 @@ import { getRemoteBackendProfile } from "./remote-storage.js";
 import { normalizeLegacyRemotePath, remoteBasename } from "./remote-path.js";
 import { parsePersistedJsonValue } from './repositories/domain-decoders.js';
 
-export type ArchiveDeletionScope = "account" | "source";
+export type ArchiveDeletionScope = "account" | "source" | "video";
 export type ArchiveDeletionStatus = "preview" | "preparing" | "config_removing" | "pending" | "running" | "retry_wait" | "failed" | "completed" | "expired" | "superseded";
 
 export interface ArchiveDeletionDavClient {
@@ -35,7 +35,7 @@ export interface ArchiveDeletionOptions {
     bvid?: string;
   }) => void;
   isSchedulerIdle?: () => boolean;
-  prepareSourceDeletion?: (userId: string, mediaId: number, bvid: string) => Promise<void>;
+  prepareSourceDeletion?: (userId: string, mediaId: number, bvid?: string) => Promise<void>;
   onAccountDeletionCompleted?: (userId: string) => void;
   onAccountPreparationRecovery?: (userId: string, accountRemoved: boolean) => void;
 }
@@ -354,25 +354,74 @@ export class ArchiveDeletionService {
     return this.createPreview("account", user.id);
   }
 
-  previewSource(userId: string, mediaId: number, bvid: string) {
+  previewSource(userId: string, mediaId: number, bvid: string, options: {allowActive?:boolean} = {}) {
+    const upSource=mediaId<=-2?this.db.upSubscriptions.getByRoute(mediaId):null;
+    const explicitlyExcluded=upSource && (this.db.upSubscriptions.decision(upSource.id,bvid)==='exclude'||this.db.upSubscriptions.globallyExcluded(bvid));
+    if(upSource && !options.allowActive && !explicitlyExcluded) throw archiveDeletionError('请在 UP 订阅中选择删除范围并确认排除规则',409);
     if (!this.isKnownOwner(userId)) throw archiveDeletionError("归档账号不存在", 404);
-    if (!Number.isInteger(mediaId) || (mediaId < 1 && mediaId !== -1) || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
+    if (!Number.isSafeInteger(mediaId) || mediaId === 0 || (mediaId <= -2 && !this.db.upSubscriptions.getByRoute(mediaId)) || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
       throw archiveDeletionError("归档来源参数无效", 400);
     }
-    return this.createPreview("source", userId, mediaId, bvid);
+    return this.createPreview("source", userId, mediaId, bvid, options.allowActive === true);
+  }
+
+  previewVideo(bvid: string) {
+    if (!/^BV[0-9A-Za-z]+$/.test(bvid)) throw archiveDeletionError('视频标识无效',400);
+    return this.createPreview('video','',undefined,bvid,true);
+  }
+
+  /** A whole UP source uses the existing durable deletion transaction and worker. */
+  previewSubscription(userId: string, mediaId: number) {
+    const source = this.db.upSubscriptions.getByRoute(mediaId);
+    if (!source || source.userId !== userId) throw archiveDeletionError('UP 订阅不存在', 404);
+    const preview = this.createPreview('source', userId, mediaId, undefined, true);
+    const row = this.db.db.prepare<unknown[], { bytes: number }>(`
+      SELECT COALESCE(SUM(i.expected_size),0) AS bytes FROM archive_deletion_items i
+      WHERE i.deletion_id=? AND i.status<>'conflict' AND NOT EXISTS(
+        SELECT 1 FROM remote_files rf WHERE rf.remote_path=i.remote_path AND rf.user_id<>''
+          AND NOT EXISTS(SELECT 1 FROM archive_deleted_sources s
+            WHERE s.deletion_id=? AND s.user_id=rf.user_id AND s.media_id=rf.media_id AND s.bvid=rf.bvid)
+      )
+    `).get(preview.id, preview.id);
+    if (!row) throw archiveDeletionError('归档清理空间查询失败', 500);
+    return {...preview, reclaimableBytes: row.bytes};
+  }
+
+  hasUnfinishedSubscriptionRemoval(mediaId: number) {
+    return Boolean(this.db.db.prepare<unknown[], { present: number }>(`
+      SELECT EXISTS(SELECT 1 FROM archive_deletions
+        WHERE scope='source' AND media_id=? AND bvid IS NULL
+          AND status IN ('pending','running','retry_wait','failed')) AS present
+    `).get(mediaId)?.present);
+  }
+
+  listSubscriptionRemovals() {
+    const rows = this.db.db.prepare<unknown[], { id: string; source_id: string; source_name: string }>(`
+      SELECT d.id, s.id AS source_id, s.name AS source_name FROM archive_deletions d
+      JOIN up_subscriptions s ON s.routing_key=d.media_id
+      WHERE d.scope='source' AND d.bvid IS NULL
+        AND (d.status IN ('pending','running','retry_wait','failed')
+          OR (d.status='completed' AND d.completed_at>=?))
+      ORDER BY CASE WHEN d.status='completed' THEN 1 ELSE 0 END, d.updated_at DESC, d.id
+    `).all(this.now() - 24 * 60 * 60_000);
+    return rows.map(row => ({...this.get(row.id)!, sourceId: row.source_id, sourceName: row.source_name}));
   }
 
   repreview(id: string) {
     const operation = this.get(id);
     if (!operation) throw archiveDeletionError("归档清理任务不存在", 404);
     if (operation.status !== "failed") throw archiveDeletionError("只有失败的归档清理可以重新预览", 409);
-    if (!this.isKnownOwner(operation.userId)) throw archiveDeletionError("归档账号不存在", 404);
+    if (operation.scope !== 'video' && !this.isKnownOwner(operation.userId)) throw archiveDeletionError("归档账号不存在", 404);
+    if (operation.scope === 'video') return this.previewVideo(operation.bvid!);
+    if (operation.scope === 'source' && operation.bvid === undefined) {
+      return this.previewSubscription(operation.userId, operation.mediaId!);
+    }
     return operation.scope === "account"
       ? this.createPreview("account", operation.userId)
       : this.previewSource(operation.userId, operation.mediaId!, operation.bvid!);
   }
 
-  private createPreview(scope: ArchiveDeletionScope, userId: string, mediaId?: number, bvid?: string) {
+  private createPreview(scope: ArchiveDeletionScope, userId: string, mediaId?: number, bvid?: string, allowActive = false) {
     this.pruneExpiredPreviews();
     if (this.db.getActivePathMigration()) throw archiveDeletionError("归档路径迁移期间不能创建删除任务", 409);
     if (this.db.hasActiveArchiveDeletion()) throw archiveDeletionError("已有归档清理任务正在执行", 409);
@@ -394,13 +443,15 @@ export class ArchiveDeletionService {
       : this.db.db.prepare<unknown[], { "user_id": string; "media_id": number; "bvid": string; "active_in_favorite": number; "source_kind": string }>(`
            SELECT r.user_id, r.media_id, r.bvid, r.active_in_favorite, r.source_kind
           FROM favorite_relations r
-          WHERE r.user_id=? AND r.media_id=? AND r.bvid=? AND EXISTS(
+          WHERE (?='video' OR (r.user_id=? AND r.media_id=?)) AND (? IS NULL OR r.bvid=?)
+            AND (? IS NULL OR EXISTS(
             SELECT 1 FROM remote_files rf
             WHERE rf.user_id=r.user_id AND rf.media_id=r.media_id AND rf.bvid=r.bvid AND rf.status='verified'
-          )
-        `).all(userId, mediaId, bvid);
-    if (scope === "source" && relationRows.length === 0) throw archiveDeletionError("该来源没有可删除的已验证归档", 409);
-    if (scope === "source") {
+          )) ORDER BY r.bvid
+        `).all(scope,userId, mediaId ?? null, bvid ?? null, bvid ?? null, bvid ?? null);
+    if (scope === "source" && bvid !== undefined && relationRows.length === 0) throw archiveDeletionError("该来源没有可删除的已验证归档", 409);
+    if (scope === 'video' && relationRows.length === 0) throw archiveDeletionError('该视频没有可删除的已验证归档',409);
+    if (scope === "source" && !allowActive && !this.db.upSubscriptions.isBlocked(userId,mediaId!,bvid!)) {
       const live = this.userStore.getById(userId);
       const selected = Boolean(live?.favorites.some((folder) => folder.mediaId === mediaId));
        if (String(relationRows[0].source_kind || "favorite") !== "manual" && selected && Number(relationRows[0].active_in_favorite) === 1) {
@@ -409,7 +460,7 @@ export class ArchiveDeletionService {
     }
     const relationCount = scope === "account"
       ? Number((this.db.db.prepare<unknown[], { "count": number }>("SELECT COUNT(*) AS count FROM favorite_relations WHERE user_id=?").get(userId))?.count || 0)
-      : 1;
+      : relationRows.length;
     const resolvedId = this.db.db.transaction(() => {
       const candidates = scope === "account"
         ? this.db.db.prepare<unknown[], { "id": string; "scope": string; "user_id": string; "media_id": number | null; "bvid": string | null; "status": string; "alist_identity_hash": string; "archive_root": string; "relation_count": number; "source_count": number; "file_count": number; "total_bytes": number; "shared_count": number; "completed_count": number; "retained_count": number; "conflict_count": number; "failed_count": number; "last_error": string | null; "expires_at": number | null; "created_at": number; "updated_at": number; "started_at": number | null; "completed_at": number | null }>(`
@@ -420,10 +471,10 @@ export class ArchiveDeletionService {
           `).all(userId)
         : this.db.db.prepare<unknown[], { "id": string; "scope": string; "user_id": string; "media_id": number | null; "bvid": string | null; "status": string; "alist_identity_hash": string; "archive_root": string; "relation_count": number; "source_count": number; "file_count": number; "total_bytes": number; "shared_count": number; "completed_count": number; "retained_count": number; "conflict_count": number; "failed_count": number; "last_error": string | null; "expires_at": number | null; "created_at": number; "updated_at": number; "started_at": number | null; "completed_at": number | null }>(`
             SELECT * FROM archive_deletions
-            WHERE scope='source' AND user_id=? AND media_id=? AND bvid=?
+            WHERE scope=? AND user_id=? AND media_id IS ? AND bvid IS ?
               AND status='preview'
             ORDER BY created_at DESC, id DESC
-          `).all(userId, mediaId, bvid);
+          `).all(scope,userId, mediaId ?? null, bvid ?? null);
       const identityHash = alistIdentityHash(config);
       let reusableId: string | undefined;
       for (const candidate of candidates) {
@@ -587,7 +638,7 @@ export class ArchiveDeletionService {
         activeTasks = Number((this.db.db.prepare(`
           SELECT COUNT(*) AS count FROM jobs j
           WHERE j.kind<>'archive_delete' AND j.status IN (${statuses})
-            AND j.bvid=? AND (
+            AND (? IS NULL OR j.bvid=?) AND (
               (j.user_id=? AND j.media_id=?)
               OR json_extract(j.payload_json, '$.target.userId')=?
                  AND CAST(json_extract(j.payload_json, '$.target.mediaId') AS INTEGER)=?
@@ -599,6 +650,7 @@ export class ArchiveDeletionService {
             )
         `).get(
           ...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES,
+          row.bvid,
           row.bvid,
           row.user_id,
           row.media_id,
@@ -836,12 +888,28 @@ export class ArchiveDeletionService {
   }
 
   start(id: string, confirmation: string) {
-    const operation = this.validateStart(id, confirmation);
-    if (operation.scope === "account") {
+    return this.startOperation(id, confirmation);
+  }
+
+  startSubscriptionRemoval(id: string, confirmation: string, remove: () => void) {
+    const operation = this.get(id);
+    if (!operation || operation.scope !== 'source' || operation.bvid !== undefined
+      || !this.db.upSubscriptions.getByRoute(operation.mediaId!)) {
+      throw archiveDeletionError('订阅清理预览无效', 409);
+    }
+    return this.startOperation(id, confirmation, remove);
+  }
+
+  private startOperation(id: string, confirmation: string, beforeStart?: () => void) {
+    const preview = this.get(id);
+    if (!preview) throw archiveDeletionError('归档清理预览不存在', 404);
+    if (preview.scope === "account") {
       throw archiveDeletionError("账号归档清理必须通过删除账号操作启动", 409);
     }
     const now = this.now();
     this.db.db.transaction(() => {
+      beforeStart?.();
+      const operation = this.validateStart(id, confirmation);
       const failedPredecessors = operation.scope === "account"
         ? this.db.db.prepare<unknown[], { "id": string }>(`
             SELECT id FROM archive_deletions
@@ -849,8 +917,8 @@ export class ArchiveDeletionService {
           `).all(id, operation.userId) as Array<{ id: string }>
         : this.db.db.prepare<unknown[], { "id": string }>(`
             SELECT id FROM archive_deletions
-            WHERE id<>? AND scope='source' AND user_id=? AND media_id=? AND bvid=? AND status='failed'
-          `).all(id, operation.userId, operation.mediaId, operation.bvid) as Array<{ id: string }>;
+            WHERE id<>? AND scope=? AND user_id=? AND media_id IS ? AND bvid IS ? AND status='failed'
+          `).all(id, operation.scope, operation.userId, operation.mediaId ?? null, operation.bvid ?? null) as Array<{ id: string }>;
       for (const predecessor of failedPredecessors) {
         this.db.db.prepare(`
           UPDATE archive_deletions
@@ -902,8 +970,10 @@ export class ArchiveDeletionService {
     if (operation.conflictCount > 0) throw archiveDeletionError("本地归档证明存在冲突，请重新同步或修复证明后再预览", 409);
     this.assertRemainingProofsStillCurrent(id);
     if (operation.scope === "source") {
-      this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid!);
+      if (operation.bvid === undefined) this.assertSubscriptionSourcesStillCurrent(id, operation.userId, operation.mediaId!);
+      this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid);
     }
+    if (operation.scope === 'video' && !this.db.upSubscriptions.globallyExcluded(operation.bvid!)) throw archiveDeletionError('请先确认所有来源不再归档此视频',409);
     return operation;
   }
 
@@ -922,7 +992,7 @@ export class ArchiveDeletionService {
       throw archiveDeletionError("AList连接或归档路径已变化，请重新预览", 409);
     }
     if (operation.scope === "source") {
-      this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid!);
+      this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid);
     }
     const now = this.now();
     this.db.db.transaction(() => {
@@ -940,12 +1010,32 @@ export class ArchiveDeletionService {
     return this.get(id)!;
   }
 
-  private assertSourceStillDeletable(userId: string, mediaId: number, bvid: string) {
+  private assertSourceStillDeletable(userId: string, mediaId: number, bvid?: string) {
+    const upSource=mediaId<=-2?this.db.upSubscriptions.getByRoute(mediaId):null;
+    if (bvid === undefined) {
+      if (!upSource || upSource.userId !== userId || !upSource.removed) {
+        throw archiveDeletionError('请先移除该 UP 订阅，再开始归档清理', 409);
+      }
+      return;
+    }
+    if(upSource && this.db.upSubscriptions.decision(upSource.id,bvid)!=='exclude'&&!this.db.upSubscriptions.globallyExcluded(bvid)) throw archiveDeletionError('请先确认该 UP 来源不再归档此视频',409);
     const row = this.db.db.prepare<unknown[], { "active_in_favorite": number }>("SELECT active_in_favorite FROM favorite_relations WHERE user_id=? AND media_id=? AND bvid=?").get(userId, mediaId, bvid);
     if (!row) throw archiveDeletionError("归档来源已不存在", 409);
     const live = this.userStore.getById(userId);
     const selected = Boolean(live?.favorites.some((folder) => folder.mediaId === mediaId));
-    if (selected && Number(row.active_in_favorite) === 1) throw archiveDeletionError("该视频已重新进入当前同步收藏夹，请刷新归档库", 409);
+    if (selected && Number(row.active_in_favorite) === 1 && !this.db.upSubscriptions.isBlocked(userId,mediaId,bvid)) throw archiveDeletionError("该视频已重新进入当前同步收藏夹，请刷新归档库", 409);
+  }
+
+  private assertSubscriptionSourcesStillCurrent(id: string, userId: string, mediaId: number) {
+    const row = this.db.db.prepare<unknown[], { changed: number }>(`
+      SELECT EXISTS(SELECT 1 FROM favorite_relations r WHERE r.user_id=? AND r.media_id=?
+        AND NOT EXISTS(SELECT 1 FROM archive_deleted_sources s WHERE s.deletion_id=?
+          AND s.user_id=r.user_id AND s.media_id=r.media_id AND s.bvid=r.bvid))
+      OR EXISTS(SELECT 1 FROM archive_deleted_sources s WHERE s.deletion_id=?
+        AND NOT EXISTS(SELECT 1 FROM favorite_relations r
+          WHERE r.user_id=s.user_id AND r.media_id=s.media_id AND r.bvid=s.bvid)) AS changed
+    `).get(userId, mediaId, id, id);
+    if (!row || row.changed) throw archiveDeletionError('订阅归档范围已变化，请重新核对', 409);
   }
 
   private currentProofs(id: string) {
@@ -1153,11 +1243,18 @@ export class ArchiveDeletionService {
     if (!operation) throw archiveDeletionError("归档清理任务不存在", 404);
     if (!this.isOperationRunnable(id)) return;
     if (operation.scope === "source") {
-      if (this.prepareSourceDeletion) {
-        await this.prepareSourceDeletion(operation.userId, operation.mediaId!, operation.bvid!);
-      }
+      await this.prepareSourceDeletion?.(operation.userId, operation.mediaId!, operation.bvid);
       if (!this.isOperationRunnable(id)) return;
-      this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid!);
+      if (operation.bvid === undefined) this.assertSubscriptionSourcesStillCurrent(id, operation.userId, operation.mediaId!);
+      this.assertSourceStillDeletable(operation.userId, operation.mediaId!, operation.bvid);
+    }
+    if (operation.scope === 'video') {
+      if(!this.db.upSubscriptions.globallyExcluded(operation.bvid!)) throw archiveDeletionError('视频全局排除规则已变化',409);
+      const sources=this.db.db.prepare<unknown[],{user_id:string;media_id:number;bvid:string}>('SELECT user_id,media_id,bvid FROM archive_deleted_sources WHERE deletion_id=? ORDER BY user_id,media_id').all(id);
+      for(const source of sources) {
+        await this.prepareSourceDeletion?.(source.user_id,source.media_id,source.bvid);
+        if(!this.isOperationRunnable(id)) return;
+      }
     }
     if (!this.isOperationRunnable(id)) return;
     this.assertRemainingProofsStillCurrent(id);

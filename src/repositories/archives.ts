@@ -136,7 +136,7 @@ export class SqliteArchiveRepository implements ArchiveRepository {
     return {
       upsert(relation: FavoriteRelation, now: number, parts: Pick<FavoriteRelation, "userId" | "mediaId" | "bvid"> = relation) { save.run({
           ...parts,
-          sourceKind: relation.sourceKind === "manual" ? "manual" : "favorite",
+          sourceKind: relation.sourceKind ?? "favorite",
           backupStatus: relation.backupStatus || "discovered",
           active: relation.activeInFavorite ? 1 : 0,
           folderTitle: relation.folderTitle || "",

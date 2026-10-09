@@ -17,7 +17,8 @@
     .modal.active.is-closing > .online-content-shell,
     .modal.active.is-closing > .playback-shell,
     .modal.active.is-closing > .recovery-issues-shell { opacity:0; transform:translateY(3px) scale(.998); transition-duration:.13s; }
-    .modal .panel { --dialog-inline:24px; width:100%; max-width:640px; max-height:min(90vh,820px); overflow-y:auto; overflow-x:hidden; scrollbar-gutter:stable; background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); border:1px solid var(--glass-border); border-radius:var(--radius-legacy-dialog); box-shadow:var(--shadow-dialog); }
+    .modal .panel { --dialog-inline:24px; width:100%; max-width:640px; max-height:min(90vh,820px); overflow-y:auto; overflow-x:hidden; scrollbar-gutter:auto; background:var(--glass-panel-strong); backdrop-filter:var(--glass-blur); border:1px solid var(--glass-border); border-radius:var(--radius-legacy-dialog); box-shadow:var(--shadow-dialog); }
+    .modal .panel::-webkit-scrollbar-track { margin-block:16px; }
     .modal .panel.panel-sm { max-width:480px; }
     .modal .panel.panel-md { max-width:680px; }
     .modal .panel.panel-lg { max-width:840px; }
@@ -26,7 +27,7 @@
     .modal .panel.panel-medium { max-width:680px; }
     .modal .panel.panel-large { max-width:840px; }
     .modal .panel.panel-wide,.modal .panel.panel-wider,.modal .panel.panel-max { max-width:980px; }
-    .modal .panel > h2,.modal .panel > .section-title-row:first-child { position:sticky; z-index:3; top:0; min-height:64px; margin:0; padding:19px var(--dialog-inline) 16px; border-bottom:1px solid var(--glass-border); background:transparent; backdrop-filter:none; }
+    .modal .panel > h2,.modal .panel > .section-title-row:first-child { position:sticky; z-index:3; top:0; min-height:64px; margin:0; padding:19px var(--dialog-inline) 16px; border-bottom:1px solid var(--dialog-header-border); background:var(--dialog-header-background); backdrop-filter:none; }
     .modal .panel > h2 { color:var(--ink); font-size:20px; line-height:1.35; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; overflow-wrap:normal; word-break:keep-all; }
     .modal .panel > .section-title-row:first-child { justify-content:space-between; }
     .modal .panel > .section-title-row:first-child h2 { color:var(--ink); font-size:20px; }

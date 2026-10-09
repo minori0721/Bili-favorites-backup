@@ -3,7 +3,21 @@
     {
       "module": "admin-session.ts",
       "ownerSymbol": "AdminSessionStore",
-      "resourceSymbols": ["db", "filePath", "sessionSecret", "adminUser", "authFingerprint", "now", "cleanupIntervalMs", "sessionLimit", "warn", "cleanupTimer", "closed", "observations", "scheduleExpiry"],
+      "resourceSymbols": [
+        "db",
+        "filePath",
+        "sessionSecret",
+        "adminUser",
+        "authFingerprint",
+        "now",
+        "cleanupIntervalMs",
+        "sessionLimit",
+        "warn",
+        "cleanupTimer",
+        "closed",
+        "observations",
+        "scheduleExpiry"
+      ],
       "stop": "close 幂等取消清理和会话到期计时器、关闭实时连接并释放独立会话数据库；HTTP 连接断开只注销自己的观察者，最后一个观察者离开时取消该会话的到期计时器。",
       "lateCallback": "到期回调核对观察对象身份和固定到期时间，不续期；持久撤销提交成功后才通知观察者，事务失败不冒充撤销成功。",
       "rebind": "管理员会话库与业务库独立，不参与导入替换；重启按当前认证指纹验证持久会话。"
@@ -928,6 +942,75 @@
       "stop": "Invalidate stops QR polling; stop waits for accepted callbacks, including those waiting for account deletion.",
       "lateCallback": "Session generation and ownership are rechecked after user info and the account removal barrier before persistence.",
       "rebind": "Import invalidates login sessions before replacing storage; re-added UID restores retained archive evidence through the existing restore use case."
+    },
+    {
+      "module": "up-subscriptions/bili-adapter.ts",
+      "ownerSymbol": "createUpBiliAdapter",
+      "resourceSymbols": [
+        "request",
+        "tail",
+        "nextRequestAt",
+        "riskUntil",
+        "keys",
+        "generation",
+        "stopped",
+        "requests"
+      ],
+      "stop": "调度停止时停止扫描并取消适配器请求；前端关闭对应弹窗取消读取与轮询，destroy 幂等释放事件、请求、缓存和计时器。服务预览缓存按十分钟过期，导入时 reset 清除。",
+      "lateCallback": "请求提交前检查账号授权身份、运行代次和订阅 revision；已关闭或已替换的前端请求不能修改新界面；停止后忙碌状态保留到 Promise 完成。",
+      "rebind": "仓储通过当前连接提供者读取；扫描排空后重置代次和 WBI 缓存，所有重绑定成功后才恢复准入；不长期缓存裸连接。"
+    },
+    {
+      "module": "up-subscriptions/scan.ts",
+      "ownerSymbol": "createUpScan",
+      "resourceSymbols": [
+        "stopped",
+        "generation",
+        "running"
+      ],
+      "stop": "调度停止时停止扫描并取消适配器请求；前端关闭对应弹窗取消读取与轮询，destroy 幂等释放事件、请求、缓存和计时器。服务预览缓存按十分钟过期，导入时 reset 清除。",
+      "lateCallback": "请求提交前检查账号授权身份、运行代次和订阅 revision；已关闭或已替换的前端请求不能修改新界面；停止后忙碌状态保留到 Promise 完成。",
+      "rebind": "仓储通过当前连接提供者读取；扫描排空后重置代次和 WBI 缓存，所有重绑定成功后才恢复准入；不长期缓存裸连接。"
+    },
+    {
+      "module": "up-subscriptions/service.ts",
+      "ownerSymbol": "createUpSubscriptionService",
+      "resourceSymbols": [
+        "previewItems",
+        "previews"
+      ],
+      "stop": "调度停止时停止扫描并取消适配器请求；前端关闭对应弹窗取消读取与轮询，destroy 幂等释放事件、请求、缓存和计时器。服务预览缓存按十分钟过期，导入时 reset 清除。",
+      "lateCallback": "请求提交前检查账号授权身份、运行代次和订阅 revision；已关闭或已替换的前端请求不能修改新界面；停止后忙碌状态保留到 Promise 完成。",
+      "rebind": "仓储通过当前连接提供者读取；扫描排空后重置代次和 WBI 缓存，所有重绑定成功后才恢复准入；不长期缓存裸连接。"
+    },
+    {
+      "module": "web/client/features/up-subscriptions/controller.ts",
+      "ownerSymbol": "createUpSubscriptions",
+      "resourceSymbols": [
+        "requests",
+        "picked",
+        "selected",
+        "pageItems",
+        "events",
+        "generation",
+        "list",
+        "tab",
+        "discoveryPage",
+        "discoveryMore",
+        "catalogCursor",
+        "filter",
+        "current",
+        "actionItem",
+        "anchorPage",
+        "mutation",
+        "poll",
+        "operationId",
+        "removalSource",
+        "homePoll"
+      ],
+      "stop": "destroy 取消所有请求、工作区轮询和首页清理轮询；关闭移除弹窗取消未完成读取。首页仅在有进行中清理任务时轮询，失败或完成后停止。",
+      "lateCallback": "代次、AbortController 和移除来源身份共同检查迟到响应；旧确认不能提交到新的订阅。持久删除任务由归档清理服务拥有，不随卡片或弹窗销毁。",
+      "rebind": "仓储通过当前连接提供者读取；扫描排空后重置代次和 WBI 缓存，所有重绑定成功后才恢复准入；不长期缓存裸连接。"
     }
   ]
 }

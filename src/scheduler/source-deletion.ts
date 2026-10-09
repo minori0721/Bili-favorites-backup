@@ -29,21 +29,22 @@ interface Dependencies {
   deadlineNow(): number;
 }
 export function createSourceDeletion(deps: Dependencies) {
-  async function prepareSourceDeletion(userId: string, mediaId: number, bvid: string, timeoutMs = 30_000) {
+  async function prepareSourceDeletion(userId: string, mediaId: number, bvid?: string, timeoutMs = 30_000) {
     if (deps.isDeletionLocked()) {
       throw Object.assign(new Error("账号归档清理期间不能执行来源级准备"), { statusCode: 409 });
     }
     const matches = (value: unknown) => {
       const target = record(value);
-      return deps.archiveDeletionTargetMatches(target.userId, target.mediaId, bvid)
+      return deps.archiveDeletionTargetMatches(target.userId, target.mediaId, bvid ?? '')
         && String(target.userId || '') === userId && Number(target.mediaId || 0) === mediaId;
     };
     const filterTargets = <T extends { userId?: unknown; mediaId?: unknown }>(targets: T[]) =>
       targets.filter((target) => !matches(target));
+    const matchesVideo = (value: string | undefined) => Boolean(value) && (bvid === undefined || value === bvid);
     let removedQueuedTasks = 0;
 
     for (const task of deps.downloadQueue.getTasks()) {
-      if (String(task.bvid || "") !== bvid) continue;
+      if (!matchesVideo(task.bvid)) continue;
       const running = task.status === "running";
       const taskTargets = retirementTargets(task.targets);
       if (taskTargets.length > 0) {
@@ -73,17 +74,20 @@ export function createSourceDeletion(deps: Dependencies) {
       }
     }
     removedQueuedTasks += deps.downloadQueue.removePendingTasks((task) => {
-      if (String(task.bvid || "") !== bvid) return false;
+      if (!matchesVideo(task.bvid)) return false;
       const targets = Array.isArray(task.targets) ? task.targets : [];
       return targets.length === 0 && !(task.userId && task.mediaId);
     }).length;
-    removedQueuedTasks += deps.uploadQueue.removePendingTasks((task) => matches(task)).length;
-    removedQueuedTasks += deps.verificationQueue.removePendingTasks((task) => matches(task)).length;
+    removedQueuedTasks += deps.uploadQueue.removePendingTasks((task) => matchesVideo(task.bvid) && matches(task)).length;
+    removedQueuedTasks += deps.verificationQueue.removePendingTasks((task) => matchesVideo(task.bvid) && matches(task)).length;
 
     const downloadJobs = deps.jobStore.list(["download", "quality_download"], 100_000);
     for (const job of downloadJobs) {
-      if (String(job.bvid || "") !== bvid) continue;
+      if (!job.bvid || !matchesVideo(job.bvid)) continue;
       const payload = { ...job.payload };
+      if (bvid === undefined && !matches(job) && !matches(payload.target)
+        && !matches({userId:payload.primaryUserId,mediaId:payload.primaryMediaId})
+        && !retirementTargets([...(Array.isArray(payload.targets)?payload.targets:[]),...(Array.isArray(payload.detachedTargets)?payload.detachedTargets:[])]).some(matches)) continue;
       if (job.kind === "quality_download") {
         const targets = filterTargets(qualityTargetsFromPayload(payload));
         const nextPayload: Record<string, unknown> = { ...payload, targets, targetCount: targets.length };
@@ -127,7 +131,7 @@ export function createSourceDeletion(deps: Dependencies) {
       for (const target of payloadTargets) {
         if (!matches(target)) candidates.set(`${target.userId}:${Number(target.mediaId)}`, target);
       }
-      for (const target of deps.snapshotRetirementTargets(bvid)) {
+      for (const target of deps.snapshotRetirementTargets(job.bvid)) {
         candidates.set(`${target.userId}:${target.mediaId}`, target);
       }
       const targets = [...candidates.values()];
@@ -154,7 +158,7 @@ export function createSourceDeletion(deps: Dependencies) {
       "upload", "verify_upload", "history_upload", "quality_upload", "quality_replace", "quality_cleanup",
     ];
     for (const job of deps.jobStore.list(transferKinds, 100_000)) {
-      if (String(job.bvid || "") !== bvid
+      if (!matchesVideo(job.bvid)
         || String(job.userId || "") !== userId
         || Number(job.mediaId || 0) !== mediaId) continue;
       if (!["running", "leased"].includes(String(job.status))) deps.jobStore.complete(job.id);
@@ -169,11 +173,11 @@ export function createSourceDeletion(deps: Dependencies) {
     while (true) {
       const runningQueueTask = [deps.downloadQueue, deps.uploadQueue, deps.verificationQueue]
         .some((queue) => queue.getTasks().some((task) => task.status === "running"
-          && String(task.bvid || "") === bvid
+          && matchesVideo(task.bvid)
           && (matches(task) || (Array.isArray(task.targets)
             && task.targets.some((target: unknown) => matches(target))))));
       const runningJob = deps.jobStore.list(transferKinds, 100_000).some((job) =>
-        String(job.bvid || "") === bvid
+        matchesVideo(job.bvid)
         && String(job.userId || "") === userId
         && Number(job.mediaId || 0) === mediaId
         && ["leased", "running"].includes(String(job.status)));

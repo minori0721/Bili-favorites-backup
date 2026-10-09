@@ -12,10 +12,10 @@
       "queueEvents",
       "projectionRefreshIntervalMs",
       "timers",
-      "persistentJobDispatcher"
-      ,"syncCommands"
-      ,"verificationHandlerSet"
-      ,"recoveryProjectionRefresh"
+      "persistentJobDispatcher",
+      "syncCommands",
+      "verificationHandlerSet",
+      "recoveryProjectionRefresh"
     ]
   },
   "scan": {
@@ -26,8 +26,10 @@
       "syncWorkflow",
       "retryPendingRecovery",
       "cycleLogger",
-      "staleActiveBackupMs"
-      ,"userSyncEligibility"
+      "staleActiveBackupMs",
+      "userSyncEligibility",
+      "upScan",
+      "upArchive"
     ]
   },
   "availability": {
@@ -115,9 +117,9 @@
     "lifetime": "Release artifact locks only after the associated operation has settled; recheck generation before replacement or cleanup.",
     "fields": [
       "qualityWorkflow",
-      "qualityUpgradeProjection"
-      ,"qualityTaskFactory"
-      ,"qualityRecoveryAdmission"
+      "qualityUpgradeProjection",
+      "qualityTaskFactory",
+      "qualityRecoveryAdmission"
     ]
   },
   "dependencies": {

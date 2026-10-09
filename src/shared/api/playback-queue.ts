@@ -1,4 +1,5 @@
 import { isRecord, ResponseFormatError, requireUnique } from './value.js';
+import { parseArchiveSourceIdentity } from './archive-source.js';
 
 function record(value: unknown, message: string): Record<string, unknown> {
   if (!isRecord(value)) throw new ResponseFormatError(message);
@@ -67,7 +68,7 @@ function parsePlaybackItem(value: unknown) {
     activeInFavorite: flag(data.activeInFavorite, '播放关系格式错误') ?? false,
     source: {
       userId: text(source.userId, '播放来源账号格式错误', false)!,
-      mediaId: integer(source.mediaId, '播放来源 mediaId 格式错误', false, -1)!,
+      ...parseArchiveSourceIdentity(source),
       folderTitle: optionalString(source.folderTitle, '播放来源目录格式错误'),
     },
     parts: requireUnique(data.parts.map(parsePlaybackPart), part => part.fileId, '播放分P包含重复文件'),

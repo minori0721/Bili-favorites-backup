@@ -26,13 +26,14 @@ interface ArchiveState extends ArchiveContext {
   scrollPositions: Record<string,number>; trigger: HTMLElement | null; pageSize?: number;
 }
 interface Options {
+  manageUpVideo?(sourceId:string,bvid:string,trigger:HTMLElement):void;
   root: Document; api: ApiClient; confirmAction: ConfirmAction; layout: MediaQueryList;
   formatBytes(value: number): string; formatDateTime(value: string | number): string;
   openModal(id: string, trigger?: HTMLElement | null): void; closeModal(id: string, options?: {restoreFocus?: boolean}): unknown;
   showToast(message: string, kind?: 'success' | 'error'): void;
   play(bvid: string, trigger: HTMLElement, context: ArchiveContext): void;
 }
-export function createArchiveLibrary({root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play}: Options) {
+export function createArchiveLibrary({root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play,manageUpVideo}: Options) {
   const requests = new Set<AbortController>();
   async function request(url: string, options: RequestInit = {}, silent = false) {
     const controller = new AbortController(); requests.add(controller);
@@ -362,6 +363,17 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       globalGroup.appendChild(globalList);
       host.appendChild(globalGroup);
 
+      if(navigation.upSubscriptions.length) {
+        const group=document.createElement('div');group.className='archive-nav-account';
+        const heading=document.createElement('h3');heading.className='archive-nav-heading';heading.textContent='UP 订阅';group.appendChild(heading);
+        const list=document.createElement('div');list.className='archive-nav-list';
+        for(const source of navigation.upSubscriptions) {
+          if(!source.userId) continue;
+          list.appendChild(createArchiveNavItem(source,{scope:'folder',userId:source.userId,mediaId:source.mediaId,title:source.title}));
+        }
+        group.appendChild(list);host.appendChild(group);
+      }
+
       const activeDeletions: {id:string;userId:string}[] = [];
       (navigation.accounts || []).forEach((account) => {
         const group = document.createElement(account.removed ? 'details' : 'section');
@@ -522,6 +534,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
 
     function archiveDirectoryExists(navigation: Navigation, scope: string, userId: string | null, mediaId: number | null) {
       if (scope === 'global') return true;
+      if(scope==='folder' && navigation.upSubscriptions.some(source=>source.userId===userId && source.mediaId===mediaId)) return true;
       const account = (navigation.accounts || []).find((entry) => entry.id === userId);
       if (!account) return false;
       if (scope === 'account') return true;
@@ -1029,7 +1042,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           const state = document.createElement('span');
           state.textContent = archiveStatusLabel({ backupStatus:membership.backupStatus, statusGroup:data.statusGroup, playback:{ available:false } }) +
             (membership.activeInFavorite ? ' · 当前关系' : ' · 历史记录') +
-            (membership.selectedFolder ? '' : ' · 已停用') +
+            (membership.sourceKind==='up' ? ' · UP 订阅' : membership.selectedFolder ? '' : ' · 已停用') +
             (membership.ownerRemoved ? ' · 已移除账号' : '') +
             (membership.lastSeenAt ? ' · ' + formatDateTime(membership.lastSeenAt) : '');
           source.appendChild(title);
@@ -1092,6 +1105,9 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
               }
             });
             actions.appendChild(repreview);
+          } else if(membership.sourceKind==='up' && membership.sourceId && manageUpVideo && !deletionRunning) {
+            remove.textContent='管理视频与排除';remove.disabled=false;
+            remove.addEventListener('click',()=>manageUpVideo?.(membership.sourceId!,data.bvid,remove));
           } else if (membership.deletable) {
             remove.addEventListener('click', () => deleteArchiveLibrarySource(data.bvid, membership, remove, progress, token));
           }
@@ -1155,7 +1171,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       return true;
     }
 
-    async function openArchiveLibrary(trigger: HTMLElement | null) {
+    async function openArchiveLibrary(trigger: HTMLElement | null, sourceId?:string) {
       archiveLibraryState.sessionToken += 1;
       archiveLibraryState.token += 1;
       if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
@@ -1185,6 +1201,10 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       try {
         const navigation = await requestArchiveLibraryNavigation(token);
         if (!navigation || !archiveLibrarySessionCurrent(token)) return;
+        if(sourceId) {
+          const source=navigation.upSubscriptions.find(item=>item.sourceId===sourceId);
+          if(source?.userId) {archiveLibraryState.scope='folder';archiveLibraryState.userId=source.userId;archiveLibraryState.mediaId=source.mediaId;archiveLibraryState.filter='all';}
+        }
         if (!archiveDirectoryExists(navigation, archiveLibraryState.scope, archiveLibraryState.userId, archiveLibraryState.mediaId)) {
           archiveLibraryState.scope = 'global';
           archiveLibraryState.userId = null;
@@ -1197,7 +1217,8 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           const account = navigation.accounts.find((entry) => entry.id === archiveLibraryState.userId);
           const folder = account && [...(account.folders || []), ...(account.inactiveFolders || [])]
             .find((entry) => Number(entry.mediaId) === Number(archiveLibraryState.mediaId));
-          archiveLibraryState.title = folder ? folder.title + (folder.inactive ? ' · 已停用' : '') : '收藏夹归档';
+          const up=navigation.upSubscriptions.find(item=>item.userId===archiveLibraryState.userId && item.mediaId===archiveLibraryState.mediaId);
+          archiveLibraryState.title = up ? up.title+' · UP 归档' : folder ? folder.title + (folder.inactive ? ' · 已停用' : '') : '收藏夹归档';
         }
         renderArchiveLibraryNavigation();
         setArchiveLibraryHeading();
@@ -1300,5 +1321,6 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     for(const id of frames)cancelAnimationFrame(id);frames.clear();
   }
   return {init, destroy, deactivate: cleanupArchiveLibrary, open: openArchiveLibrary, context: archiveLibraryContextSnapshot,
+    openUpSource:(id:string,trigger:HTMLElement|null)=>openArchiveLibrary(trigger,id),
     closeDetail: closeArchiveLibraryDetail, get detailOpen() { return elements.archiveLibraryDetail.classList.contains('open'); }};
 }

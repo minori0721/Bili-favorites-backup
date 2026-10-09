@@ -33,7 +33,8 @@ export interface ArchiveLibraryMembership {
   userId: string;
   userName: string;
   mediaId: number;
-  sourceKind: "favorite" | "manual";
+  sourceKind: "favorite" | "manual" | "up";
+  sourceId?: string;
   folderTitle: string;
   activeInFavorite: boolean;
   selectedFolder: boolean;
@@ -308,14 +309,14 @@ function normalizeQuery(users: BiliUser[], input: Partial<ArchiveLibraryQuery>):
   }
   const hasMediaId = input.mediaId !== undefined && input.mediaId !== null;
   const parsedMediaId = Number(input.mediaId);
-  if (hasMediaId && (!Number.isInteger(parsedMediaId) || (parsedMediaId < 1 && parsedMediaId !== MANUAL_ARCHIVE_MEDIA_ID))) {
+  if (hasMediaId && (!Number.isInteger(parsedMediaId) || parsedMediaId === 0)) {
     throw new ArchiveLibraryQueryError("Invalid archive folder");
   }
   const mediaId = hasMediaId ? parsedMediaId : undefined;
   if (scope !== "global" && (!userId || !allowedUserIds.includes(userId))) {
     throw new ArchiveLibraryQueryError("Unknown archive account");
   }
-  if (scope === "folder" && (!Number.isInteger(mediaId) || (Number(mediaId) < 1 && Number(mediaId) !== MANUAL_ARCHIVE_MEDIA_ID))) {
+  if (scope === "folder" && (!Number.isInteger(mediaId) || Number(mediaId) === 0)) {
     throw new ArchiveLibraryQueryError("Invalid archive folder");
   }
   const query = String(input.query || "").trim();
@@ -814,7 +815,7 @@ function choosePagePlaybackSources(
 function membershipFromRecord(record: HydratedRecord, users: Map<string, LibraryUser>, selected: Set<string>, includeError: boolean): ArchiveLibraryMembership {
   const { relation, video } = record;
   const user = users.get(relation.userId);
-  const sourceKind = relation.sourceKind === "manual" ? "manual" : "favorite";
+  const sourceKind = relation.sourceKind ?? "favorite";
   const selectedFolder = sourceKind === "favorite" && selected.has(`${relation.userId}:${relation.mediaId}`);
   const ownerRemoved = Boolean(user?.archiveRemoved);
   const deletionInProgress = Boolean(record.deletionStatus && record.deletionStatus !== "completed");
@@ -837,6 +838,7 @@ function membershipFromRecord(record: HydratedRecord, users: Map<string, Library
     userName: user?.name || "未知账号",
     mediaId: relation.mediaId,
     sourceKind,
+    sourceId: relation.sourceId,
     folderTitle: relation.folderTitle || `收藏夹 ${relation.mediaId}`,
     activeInFavorite: relation.activeInFavorite,
     selectedFolder,
@@ -1322,7 +1324,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       });
     }
     const inactiveFolders = folderRows
-      .filter((row) => row.user_id === user.id && Number(row.media_id) !== MANUAL_ARCHIVE_MEDIA_ID && !selected.has(`${user.id}:${row.media_id}`))
+      .filter((row) => row.user_id === user.id && Number(row.media_id) > 0 && !selected.has(`${user.id}:${row.media_id}`))
       .map((row) => ({
         mediaId: Number(row.media_id),
         title: String(row.folder_title || `收藏夹 ${row.media_id}`),
@@ -1357,5 +1359,12 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
   return {
     summary: decorateNavigationSummary(globalSummary, folderRows, remoteReferenceStats.get("global")),
     accounts: accountData,
+    upSubscriptions: database.upSubscriptions.list(true).map(source => {
+      const row=indexedFolders.get(`${source.userId}:${source.routingKey}`);
+      return {sourceId:source.id,userId:source.userId,mediaId:source.routingKey,title:source.name,
+        enabled:source.enabled,removed:source.removed,total:Number(row?.total||0),playable:Number(row?.playable||0),
+        pending:Number(row?.pending||0),issue:Number(row?.issue||0),deleted:Number(row?.deleted||0),sourceKind:'up',
+        cover:source.avatar};
+    }),
   };
 }

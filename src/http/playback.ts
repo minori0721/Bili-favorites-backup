@@ -5,7 +5,7 @@ import { MANUAL_ARCHIVE_MEDIA_ID } from '../state.js';
 import type { createPlaybackService } from '../playback-service.js';
 import type { RouteBoundary } from './route-boundary.js';
 function isPlaybackMediaId(mediaId: number) {
-  return Number.isInteger(mediaId) && (mediaId >= 1 || mediaId === MANUAL_ARCHIVE_MEDIA_ID);
+  return Number.isSafeInteger(mediaId) && mediaId !== 0;
 }
 export function createPlaybackRouter(deps: {service: ReturnType<typeof createPlaybackService>; boundary: RouteBoundary}) {
 const router = Router();

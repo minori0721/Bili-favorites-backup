@@ -3,6 +3,9 @@ import type { Socket } from "node:net";
 import { renderAppPage } from "../../src/web.js";
 import { serveAppAsset } from "../../src/web/server/assets.js";
 import { renderReleaseNotes } from "../../src/release-notes.js";
+import {createUpUiFixture} from './up-fixture.js';
+import {createUpSubscriptionRouter} from '../../src/http/up-subscriptions.js';
+import {createHttpErrorHandler} from '../../src/http/request-boundary.js';
 
 const app = express();
 const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
@@ -217,9 +220,18 @@ function detailItem(bvid: string) {
 }
 
 app.use(express.json());
+const upFixture=createUpUiFixture();
+  app.post('/__test/up-deletion-failure',(req,res)=>{upFixture.setDeletionFailure(req.body.enabled===true);res.json({success:true});});
+app.use(createUpSubscriptionRouter({service:upFixture.service,boundary:handler=>(req,res,next)=>{Promise.resolve(handler(req,res,next)).catch(next);}}));
+app.get('/__up/:kind/:id.svg',(req,res)=>{
+  const colors=['#247f76','#568ca1','#aa8561','#6e8274','#836c91','#658f87','#91766c','#5f7d8b'];const index=Number.parseInt(req.params.id,10)%colors.length;
+  const avatar=req.params.kind==='avatar';
+  res.type('image/svg+xml').send(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="${avatar?640:360}" viewBox="0 0 640 ${avatar?640:360}"><rect width="640" height="640" fill="${colors[index]??colors[0]}"/><circle cx="510" cy="60" r="180" fill="white" opacity=".09"/><path d="M0 330L180 130L320 270L490 100L640 310V640H0Z" fill="#132f32" opacity=".25"/><path d="M0 340L190 220L350 320L640 150V640H0Z" fill="white" opacity=".12"/><text x="${avatar?320:44}" y="${avatar?375:272}" text-anchor="${avatar?'middle':'start'}" fill="white" font-family="sans-serif" font-size="${avatar?150:35}" font-weight="600">${avatar?'UP':['影像与时间','一起看见世界','山野之间','记录日常','光的故事','无限进步','留住记忆','另一种可能'][index]??'留存'}</text><text x="44" y="315" fill="white" opacity=".6" font-family="sans-serif" font-size="15">BFB · ISOLATED PREVIEW</text></svg>`);
+});
 
 app.get("/__test/ready", (_request, response) => response.json({ ready: true }));
-app.post("/__test/reset", (request, response) => {
+app.post("/__test/reset", async (request, response) => {
+  await upFixture.reset();
   state = initialState();
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
   state.retainedArchivePreview = request.body?.retainedArchivePreview === true;
@@ -647,8 +659,9 @@ app.get("/api/logs/stream", (request, response) => {
   request.on("close", () => clearInterval(heartbeat));
 });
 
-app.get("/api/archive-library/navigation", (_request, response) => response.json(ok(navigation())));
+app.get("/api/archive-library/navigation", (_request, response) => response.json(ok({...navigation(),upSubscriptions:upFixture.navigation()})));
 app.get("/api/archive-library/items", async (request, response) => {
+  if(Number(request.query.mediaId)<=-2){response.json(ok(upFixture.items(request.query)));return;}
   if (detailPreviewDelay) await wait(detailPreviewDelay);
   const query = String(request.query.q || "");
   state.itemQueries.push(query);
@@ -679,6 +692,7 @@ app.get("/api/archive-library/items", async (request, response) => {
   }));
 });
 app.get("/api/archive-library/items/:bvid", (request, response) => {
+  if(Number(request.query.mediaId)<=-2){response.json(ok(upFixture.detail(request.query,request.params.bvid)));return;}
   state.detailQueries.push(String(request.query.q || ""));
   response.json(ok(detailItem(request.params.bvid)));
 });
@@ -852,6 +866,7 @@ if (process.env.BFB_REVIEW_PREVIEW === "1") {
 }
 
 export async function startFakeUiServer() {
+  app.use(createHttpErrorHandler(message=>console.warn(message)));
   return new Promise<() => Promise<void>>((resolve, reject) => {
     const sockets = new Set<Socket>();
     const server = app.listen(port, "127.0.0.1");
@@ -861,9 +876,9 @@ export async function startFakeUiServer() {
       socket.on("close", () => sockets.delete(socket));
     });
     server.once("listening", () => {
-      resolve(() => new Promise<void>((closeResolve) => {
+      resolve(() => new Promise<void>((closeResolve,closeReject) => {
         for (const socket of sockets) socket.destroy();
-        server.close(() => closeResolve());
+        server.close(() => {void upFixture.close().then(closeResolve,closeReject);});
       }));
     });
   });

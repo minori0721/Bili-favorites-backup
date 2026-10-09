@@ -11,7 +11,7 @@ export function createArchiveDeletionRouter(deps: {
     const bvid = String(req.params.bvid || "").trim();
     const userId = String(req.body?.userId || "").trim();
     const mediaId = Number(req.body?.mediaId);
-    if (!/^BV[0-9A-Za-z]+$/.test(bvid) || !userId || !Number.isInteger(mediaId) || (mediaId < 1 && mediaId !== -1)) {
+    if (!/^BV[0-9A-Za-z]+$/.test(bvid) || !userId || !Number.isInteger(mediaId) || mediaId === 0) {
       res.status(400).json({ success: false, message: "归档来源参数无效" });
       return;
     }

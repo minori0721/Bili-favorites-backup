@@ -3,7 +3,7 @@ import { required, readField } from './contract-values.js';
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { ArchiveDeletionService, type ArchiveDeletionDavClient } from "../src/archive-deletion.js";
+import { ArchiveDeletionService, type ArchiveDeletionDavClient, type ArchiveDeletionOptions } from "../src/archive-deletion.js";
 import { getArchiveLibraryNavigation, queryArchiveLibraryItems } from "../src/archive-library.js";
 import type { AppConfig } from "../src/config.js";
 import { PersistentJobStore } from "../src/job-store.js";
@@ -154,7 +154,7 @@ function createService(
     config?: AppConfig;
     previewCleanupIntervalMs?: number;
     preparationRecovery?: (userId: string, accountRemoved: boolean) => void;
-    prepareSourceDeletion?: (userId: string, mediaId: number, bvid: string) => Promise<void>;
+    prepareSourceDeletion?: ArchiveDeletionOptions['prepareSourceDeletion'];
   } = {}
 ) {
   const config = options.config || testConfig({
@@ -182,10 +182,10 @@ function deletionRowCount(manager: StateManager, table: "archive_deletion_items"
   return Number(readField((manager.getDatabase().db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE deletion_id=?`).get(deletionId)), 'count') || 0);
 }
 
-async function waitForOperation(service: ArchiveDeletionService, id: string, statuses: string[]) {
+async function waitForOperation(service: ArchiveDeletionService, id: string, statuses: string[], ready: () => boolean = () => true) {
   for (let attempt = 0; attempt < 300; attempt += 1) {
     const operation = service.get(id);
-    if (operation && statuses.includes(operation.status)) return operation;
+    if (operation && statuses.includes(operation.status) && ready()) return operation;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.fail(`archive deletion did not reach ${statuses.join("/")}: ${JSON.stringify(service.get(id))}`);
@@ -336,6 +336,7 @@ test("source deletion keeps the source identity while the worker is running", as
       maintenance,
       maintenanceSummaries,
       prepareSourceDeletion: async (userId, mediaId, bvid) => {
+        assert.ok(bvid, 'Single-video preparation must retain its BV identity');
         preparationCalls.push([userId, mediaId, bvid]);
       },
     });
@@ -598,13 +599,17 @@ test("archive deletion applies the three persistent transient backoffs before ma
     const preview = service.previewSource("u1", 10, "BVBACKOFF");
     service.start(preview.id, "DELETE ARCHIVE");
     const expectedDelays = [60_000, 10 * 60_000, 60 * 60_000];
-    for (const expectedDelay of expectedDelays) {
-      await waitForOperation(service, preview.id, ["retry_wait"]);
+    for (const [index, expectedDelay] of expectedDelays.entries()) {
+      await waitForOperation(service, preview.id, ["retry_wait"], () => {
+        const retry = manager.getDatabase().db.prepare<unknown[], { attempts: number; status: string }>(
+          "SELECT attempts, status FROM jobs WHERE kind='archive_delete'"
+        ).get();
+        return retry?.status === "retry_wait" && retry.attempts === index + 1;
+      });
       const job = manager.getDatabase().db.prepare<unknown[], { "not_before": number; "updated_at": number }>("SELECT not_before, updated_at FROM jobs WHERE kind='archive_delete'").get();
       assert.ok(job);
-      assert.ok(Number(job.not_before) - Number(job.updated_at) >= expectedDelay - 1_000);
-      assert.ok(job);
-      assert.ok(Number(job.not_before) - Number(job.updated_at) <= expectedDelay + 1_000);
+      assert.ok(job.not_before - job.updated_at >= expectedDelay - 1_000);
+      assert.ok(job.not_before - job.updated_at <= expectedDelay + 1_000);
       await service.stop();
       manager.getDatabase().db.prepare("UPDATE jobs SET not_before=0 WHERE kind='archive_delete'").run();
       service = createService(manager, users, dav);

@@ -1,4 +1,5 @@
 import { isRecord, ResponseFormatError, requireUnique } from './value.js';
+import { parseArchiveSourceIdentity } from './archive-source.js';
 export { parsePlaybackQueuePage, parsePlaybackSearchPage } from './playback-queue.js';
 
 function record(value: unknown, message: string): Record<string, unknown> {
@@ -20,7 +21,7 @@ function count(value: unknown, message: string, optional = true): number | undef
 
 function integer(value: unknown, message: string, optional = true): number | undefined {
   if (value == null && optional) return undefined;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < -1) throw new ResponseFormatError(message);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new ResponseFormatError(message);
   return value;
 }
 
@@ -78,7 +79,7 @@ function parseSummary(value: unknown) {
 function parseNavigationFolder(value: unknown) {
   const data = record(value, '归档目录格式错误');
   return {
-    mediaId: integer(data.mediaId, '归档目录 mediaId 格式错误', false)!,
+    ...parseArchiveSourceIdentity(data),
     title: text(data.title, '归档目录标题格式错误', false)!,
     selected: flag(data.selected, '归档目录选择状态格式错误') ?? false,
     inactive: flag(data.inactive, '归档目录停用状态格式错误') ?? false,
@@ -91,7 +92,7 @@ function parseNavigationFolder(value: unknown) {
     lastSyncedAt: optionalString(data.lastSyncedAt, '归档目录时间字段格式错误'),
     coverLocalPath: optionalString(data.coverLocalPath, '归档目录封面字段格式错误'),
     cover: optionalString(data.cover, '归档目录封面字段格式错误'),
-    sourceKind: optionalString(data.sourceKind, '归档目录来源字段格式错误'),
+    userId: optionalString(data.userId, '归档来源账号格式错误'),
   };
 }
 
@@ -142,6 +143,10 @@ export function parseArchiveNavigation(value: unknown) {
   return {
     summary: parseSummary(data.summary ?? {}),
     accounts: data.accounts.map(parseNavigationAccount),
+    upSubscriptions: data.upSubscriptions===undefined ? [] : (()=> {
+      if(!Array.isArray(data.upSubscriptions)) throw new ResponseFormatError('UP 归档目录格式错误');
+      return data.upSubscriptions.map(parseNavigationFolder);
+    })(),
   };
 }
 
@@ -170,7 +175,7 @@ function parseMembership(value: unknown) {
   return {
     userId: text(data.userId, '归档来源账号格式错误', false)!,
     userName: optionalString(data.userName, '归档来源账号名称格式错误'),
-    mediaId: integer(data.mediaId, '归档来源 mediaId 格式错误', false)!,
+    ...parseArchiveSourceIdentity(data),
     folderTitle: optionalString(data.folderTitle, '归档来源目录名称格式错误'),
     activeInFavorite: flag(data.activeInFavorite, '归档来源关系格式错误') ?? false,
     selectedFolder: flag(data.selectedFolder, '归档来源目录状态格式错误') ?? false,

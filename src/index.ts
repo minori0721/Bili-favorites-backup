@@ -112,6 +112,10 @@ listRemoteFilesRecursive
 import { UserStore } from "./users.js";
 import { renderAppPage,renderLoginPage } from "./web.js";
 import { readAssetManifest } from "./web/server/assets.js";
+import { createUpBiliAdapter } from './up-subscriptions/bili-adapter.js';
+import { createUpScan } from './up-subscriptions/scan.js';
+import { createUpSubscriptionService } from './up-subscriptions/service.js';
+import { createUpSubscriptionRouter } from './http/up-subscriptions.js';
 
 const trustedProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 readAssetManifest();
@@ -132,7 +136,20 @@ const accountRefresh = createAccountRefresh({
   transfersRunning: () => scheduler.hasRunningTransferTasks(), now: Date.now,
   timers: {set: setTimeout, clear: clearTimeout},
 });
+const upBili = createUpBiliAdapter({users:userStore});
+const upScan = createUpScan({
+  repository: () => stateManager.getDatabase().upSubscriptions, users:userStore, bili:upBili,
+  atomic: work => stateManager.runAtomic(work), ingest: (source,item) => scheduler.archiveUpSubmission(source,item),
+  now:Date.now, interval:()=>configStore.get().pollIntervalMinutes*60_000,
+  accountCooling: id => Boolean(stateManager.getUserCooldown(id) && stateManager.getUserCooldown(id)!.until>Date.now()),
+});
 const scheduler = new SyncScheduler(configStore, userStore, stateManager, {
+  upScan: {
+    run: upScan.run,
+    start(){upBili.start();upScan.start();},
+    stop(){upBili.stop();upScan.stop();},
+    resetAfterRebind(){upBili.reset();upScan.resetAfterRebind();},
+  },
   deferAdmissionUntilStart: true,
   refreshAccount: (id, reason) => accountRefresh.refresh(id, reason),
   onFatalError: error => {
@@ -204,6 +221,16 @@ const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, us
   },
 });
 
+const upSubscriptions = createUpSubscriptionService({
+  repository:()=>stateManager.getDatabase().upSubscriptions, users:userStore, bili:upBili,
+  atomic:work=>stateManager.runAtomic(work), ingest:(source,item)=>scheduler.archiveUpSubmission(source,item),
+  scan:()=>scheduler.scanUpSubscriptions(),
+  blocked:()=>importMaintenance.blocked || scheduler.isPathMigrationLocked() || stateManager.getDatabase().hasActiveArchiveDeletion(),
+  maintenance:work=>scheduler.withCleanupLock(work),
+  canRebind:()=>!scheduler.hasRunningTransferTasks() && !scheduler.hasPersistentTransferWork() && !scheduler.hasActiveOrQueuedSchedulerWork(),
+  rebind:(source,userId)=>stateManager.rebindUpSubscriptionRelations(source.id,source.userId,userId,source.routingKey),
+  relations:bvid=>stateManager.listRelationsForBvid(bvid), deletion:archiveDeletion, now:Date.now,
+});
 const accountLogin = createAccountLogin({
   create() {
     const login = new TvQrcodeLogin();
@@ -290,6 +317,7 @@ const asyncHandler = createRequestBoundary(importMaintenance);
 app.use("/api", requireAuth, requireSameOrigin);
 app.use("/api", createMaintenanceGuard(importMaintenance));
 app.use('/api', express.json({limit: '10mb'}), express.urlencoded({extended: true}));
+app.use(createUpSubscriptionRouter({service:upSubscriptions,boundary:asyncHandler}));
 
 app.use(authentication.logout);
 
@@ -397,6 +425,7 @@ app.use(createStorageCleanupRouter({ boundary: asyncHandler, service: createStor
 async function reloadStoresAfterImport(restored: string[], previousMarkers: LegacyRecoveryMarkers) {
   try {
     accountLogin.invalidate();
+    upSubscriptions.reset();
     configStore.reload();
     onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
     favoriteFolderListCache.clear();

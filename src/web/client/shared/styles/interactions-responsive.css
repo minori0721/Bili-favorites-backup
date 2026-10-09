@@ -107,7 +107,7 @@
       .modal { padding:10px; align-items:flex-end; }
       .archive-library-modal { padding:0; align-items:stretch; }
       .recovery-issues-modal { padding:0; }
-      .modal .panel { --dialog-inline:16px; max-height:calc(100dvh - 16px); border-radius:20px 20px 0 0; border-bottom:0; }
+      .modal .panel { --dialog-inline:16px; max-height:calc(100dvh - 16px); border-radius:20px; }
       .modal .panel > h2,.modal .panel > .section-title-row:first-child { min-height:58px; padding-top:16px; padding-bottom:14px; }
       .modal .panel > .modal-actions { padding-top:12px; padding-bottom:max(12px,env(safe-area-inset-bottom)); }
       .modal .panel > .modal-actions button { width:100%; min-width:0; }
@@ -188,7 +188,7 @@
     }
     @media (max-height:480px) and (pointer:coarse) {
       .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) { align-items:flex-end; padding:8px; }
-      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) .panel { --dialog-inline:16px; max-height:calc(100dvh - 8px); border-radius:20px 20px 0 0; border-bottom:0; }
+      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) .panel { --dialog-inline:16px; max-height:calc(100dvh - 8px); border-radius:20px; }
     }
     @media (max-width: 420px) {
       .playback-art .art-video-player { --art-control-icon-size:28px; --art-control-height:34px; --art-padding:10px; }

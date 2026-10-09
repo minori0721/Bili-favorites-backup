@@ -23,10 +23,12 @@ import { createApiClient } from "./shared/api.js";
 import { createUpdatesController } from './features/updates/controller.js';
 import { createPlayback } from './features/playback/controller.js';
 import { createArchiveLibrary } from './features/archive/library.js';
+import { createUpSubscriptions } from './features/up-subscriptions/controller.js';
 export function createApplication() {
     const { setHidden, setStatus, renderRequestStatus, copyTextToClipboard, formatDateTime, formatBytes, escapeHtml } = createPresentation(document, navigator);
     const archiveLibraryLayoutMedia = window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)');
     const modals = createModalManager(document, (modal, options) => {
+        if(['upAddModal','upWorkspaceModal','upActionModal','upRemovalModal'].includes(modal.id)) upSubscriptions.deactivate(modal.id);
         if (modal.id === 'updatesModal') {
             updatesFeature.deactivate();
         }
@@ -135,7 +137,9 @@ export function createApplication() {
     const loadConfig = settings.load;
     const onlineContent = createOnlineContent({ root: document, api, layout: archiveLibraryLayoutMedia, formatBytes, open: (modal, trigger) => openModal(modal.id, trigger), close: closeModal, openArchive: () => archiveLibrary.open(null), openExternal: url => window.open(url, '_blank', 'noopener,noreferrer'), notify: message => showToast(message, 'error'), status: (text, type, retry) => renderRequestStatus('onlineContentFooter', text, type, retry) });
     const playback = createPlayback({ root: document, api, openModal, closeModal, showToast, favoriteContext: () => videoDetail.context() });
-    const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context) });
+    const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context),manageUpVideo:(id,bvid,trigger)=>{void upSubscriptions.manageVideo(id,bvid,trigger).catch(error=>showToast(error instanceof Error?error.message:String(error),'error'));} });
+    const upSubscriptions = createUpSubscriptions({root:document,api,confirm:confirmAction,openModal,closeModal,notify:showToast,
+      openArchive:(id,trigger)=>{void archiveLibrary.openUpSource(id,trigger);},play:(bvid,trigger)=>playback.open(bvid,trigger)});
     const videoCards = createVideoCards({ root: document, api, formatDateTime, notify: (message, kind = 'error') => showToast(message, kind) });
     const videoDetail = createVideoDetail({ root: document, api, cards: videoCards, formatDateTime, open: modal => openModal(modal.id), close: closeModal, play: (bvid, trigger) => playback.open(bvid, trigger), notify: message => showToast(message, 'error') });
     const unavailable = createUnavailable({ root: document, api, renderItem: item => videoCards.render(item, requireElement(document, '#unavailableGrid', HTMLElement)), releaseItems: videoCards.release, open: modal => openModal(modal.id), close: closeModal, notify: message => showToast(message, 'error') });
@@ -158,7 +162,7 @@ export function createApplication() {
         },
     });
     const applicationLifecycle = createApplicationLifecycle(window, [
-        shellEvents, taskCenter, playback, archiveLibrary, settings, modals, confirmation, notifications, updatesFeature, pathMigrationFeature, accountList, favorites, accountRemoval, accountLogin, accountActions, onlineContent, videoCards, videoDetail, unavailable,
+        shellEvents, taskCenter, playback, archiveLibrary, upSubscriptions, settings, modals, confirmation, notifications, updatesFeature, pathMigrationFeature, accountList, favorites, accountRemoval, accountLogin, accountActions, onlineContent, videoCards, videoDetail, unavailable,
         {
             init() {
                 void Promise.allSettled([loadConfig(), loadUsers()]);

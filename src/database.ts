@@ -12,6 +12,7 @@ import { isoToMs, optionalIsoToMs } from './repositories/values.js';
 import { SqliteVideoRepository, type VideoRow } from './repositories/videos.js';
 import { decodeDownloadApiCooldown, decodeFailedEntry, decodeFavoriteRelation, decodeFolderScanState, decodeUserCooldown, decodeVideoPayload } from './repositories/domain-decoders.js';
 import { SqliteCleanupPlanRepository } from './repositories/cleanup-plans.js';
+import { SqliteUpSubscriptionRepository, UP_SUBSCRIPTION_SCHEMA } from './repositories/up-subscriptions.js';
 import type {
   FailedEntry,
   FavoriteRelation,
@@ -25,7 +26,7 @@ import type {
   VideoArchiveEntry,
 } from "./state.js";
 
-export const DATABASE_SCHEMA_VERSION = 11;
+export const DATABASE_SCHEMA_VERSION = 12;
 export const LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER = "legacy_quality_download_jobs_v1";
 export const LEGACY_TEMP_CACHE_MARKER = "legacy_temp_cache_v1";
 export const LEGACY_UNAVAILABLE_COVER_BACKFILL_MARKER = "unavailable_cover_backfill_v1";
@@ -89,6 +90,7 @@ export interface PermanentFailureRelationRecord {
 }
 
 const SCHEMA_SQL = `
+${UP_SUBSCRIPTION_SCHEMA}
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -786,6 +788,7 @@ function refreshArchiveLibraryProjectionUnsafe(db: Database.Database, bvids?: st
 }
 
 export class StateDatabase {
+  readonly upSubscriptions = new SqliteUpSubscriptionRepository(() => this.db);
   private readonly recoveryRepository = new SqliteRecoveryRepository(() => this.db);
   private readonly cleanupPlans = new SqliteCleanupPlanRepository(() => this.db);
   private readonly archives = new SqliteArchiveRepository(() => this.db, json => {
@@ -1162,6 +1165,7 @@ export class StateDatabase {
   }
 
   isArchiveSourceDeletionBlocked(userId: string, mediaId: number, bvid: string) {
+    if (this.upSubscriptions.isBlocked(userId, mediaId, bvid)) return true;
     const row = this.db.prepare(`
       SELECT EXISTS(
         SELECT 1 FROM archive_deleted_sources
@@ -1528,6 +1532,8 @@ export class StateDatabase {
     }
     const apiCooldown = this.db.prepare<unknown[], { "payload_json": string }>("SELECT payload_json FROM cooldowns WHERE kind='download_api' AND scope_id='global'").get();
     if (apiCooldown) state.downloadApiCooldown = decodeDownloadApiCooldown(parsePersistedJson(apiCooldown.payload_json, 'download API cooldown', true));
+    const subscriptions=this.upSubscriptions.snapshot();
+    if(subscriptions)state.upSubscriptions=subscriptions;
     return state;
   }
 
@@ -2102,6 +2108,12 @@ export class StateDatabase {
       this.deleteMeta(LEGACY_QUALITY_DOWNLOAD_JOBS_MARKER);
       this.deleteMeta(UNAVAILABLE_COVER_BACKFILL_MARKER);
       this.deleteMeta("path_migration_active");
+      this.upSubscriptions.restoreSnapshot(state.upSubscriptions);
+      for(const relation of Object.values(state.relations??{})) {
+        if(relation.sourceKind!=='up')continue;
+        const source=this.upSubscriptions.getByRoute(relation.mediaId);
+        if(!source || source.id!==relation.sourceId || source.userId!==relation.userId || !this.upSubscriptions.item(source.id,relation.bvid))throw new Error('UP 归档来源恢复证据缺失或不匹配');
+      }
       const dirty: StateDirtySet = {
         videos: new Set(Object.keys(state.videos || {})),
         relations: new Set(Object.keys(state.relations || {})),

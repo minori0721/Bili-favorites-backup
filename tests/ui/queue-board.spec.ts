@@ -161,7 +161,7 @@ test('scheduler shows polling time and account cooldown as separate values', asy
   expect(times.find(row => row.startsWith('下次自动同步：'))).not.toEqual(times.find(row => row.startsWith('账号冷却：')));
 });
 
-test("codec preference editor supports a stable three-item reorder", async ({ page, browserProblems }) => {
+test("codec preference editor supports a stable three-item reorder", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   await openBoard(page);
   const editor = page.locator("#bbdownEncodingPriorityEditor");
@@ -178,7 +178,15 @@ test("codec preference editor supports a stable three-item reorder", async ({ pa
   await expect(items.nth(1)).toContainText("HEVC");
   await expect(items.nth(2)).toContainText("AV1");
 
-  await items.nth(2).dragTo(items.nth(0));
+  if (testInfo.project.name === 'desktop') {
+    await items.nth(2).dragTo(items.nth(0));
+  } else {
+    // The touch UI uses explicit move controls. A mouse drag between rows
+    // outside a short landscape viewport does not exercise that interaction.
+    await items.nth(2).getByRole('button', {name: '上移 AV1'}).click();
+    await expect(items.nth(1)).toContainText('AV1');
+    await items.nth(1).getByRole('button', {name: '上移 AV1'}).click();
+  }
   await expect(items.nth(0)).toContainText("AV1");
   await expect(items.nth(1)).toContainText("AVC");
   await expect(items.nth(2)).toContainText("HEVC");

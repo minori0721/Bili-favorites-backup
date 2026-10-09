@@ -7,6 +7,8 @@ import type { ScheduleTimer } from '../ports/timer.js';
 import { createRuntimeTimers, scheduleSystemTimer } from './runtime-timers.js';
 import type { SchedulerControl } from '../ports/scheduler-control.js';
 import { createArchiveTargets } from './archive-targets.js';
+import { createUpArchive } from './up-archive.js';
+import { createArchiveTaskAdmission } from './archive-task-admission.js';
 import crypto from "node:crypto";
 import {
 getVideoPageSnapshot,
@@ -145,6 +147,7 @@ function delay(ms: number) {
 }
 
 export interface SchedulerDependencies {
+  upScan?: import('../up-subscriptions/scan.js').UpScanPort;
   onFatalError?: (error: Error) => void;
   scheduleTimer?: ScheduleTimer;
   leaseOwner?: string;
@@ -183,6 +186,8 @@ export class SchedulerRuntime implements SchedulerControl {
   private readonly queueEvents = createQueueEventBindings();
   private readonly polling: ReturnType<typeof createPollingSchedule>;
   private readonly syncWorkflow!: SyncWorkflowPort;
+  private readonly upArchive: ReturnType<typeof import('./up-archive.js').createUpArchive>;
+  private readonly upScan?: import('../up-subscriptions/scan.js').UpScanPort;
   private configStore: Pick<ConfigStore, 'get'>;
   private userStore: Pick<UserStore, 'list' | 'getById' | 'updatePartial' | 'captureAccount' | 'getCurrentUser' | 'isScanCurrent' | 'isAuthorizationCurrent'>;
   private stateManager: StateManager;
@@ -277,6 +282,7 @@ export class SchedulerRuntime implements SchedulerControl {
       hasUnfinishedArchiveAccountDeletion: userId => this.stateManager.getDatabase().hasUnfinishedArchiveAccountDeletion(userId),
       currentUser: user => this.userStore.getCurrentUser(user),
     });
+    this.upScan = dependencies.upScan;
     this.archiveTargets = createArchiveTargets({
       config: configStore, state: stateManager, users: userStore,
       eligible: this.userSyncEligibility,
@@ -302,6 +308,7 @@ export class SchedulerRuntime implements SchedulerControl {
       clock: clock ? {now: () => clock.now(), sleep: ms => clock.sleep(ms)} : undefined,
       stopProducers: () => this.stopWorkProducers(),
       beginDrain: () => {
+        dependencies.upScan?.stop();
         this.syncWorkflow?.stop();
         this.accessProbeWorkflow?.stop();
         this.downloadAdmission?.stop();
@@ -325,6 +332,7 @@ export class SchedulerRuntime implements SchedulerControl {
         this.transferSessions.rebind(this.stateManager.getDatabase());
         this.remoteVerificationIO.reset(); this.favoriteScan.reset(); this.transferRecoveryProjection.reset();
         this.syncWorkflow.resetAfterRebind();
+        dependencies.upScan?.resetAfterRebind();
         this.accessProbeWorkflow.resetAfterRebind();
         this.downloadAdmission.resetAfterRebind();
         this.transferRuntime.resetAfterRebind();
@@ -332,6 +340,7 @@ export class SchedulerRuntime implements SchedulerControl {
         this.localCleanup.reset(); this.localCapacity.reset();
       },
       resumeAfterRebind: () => {
+        dependencies.upScan?.start();
         this.syncWorkflow.start();
         this.accessProbeWorkflow.start();
         this.downloadAdmission.start();
@@ -459,6 +468,7 @@ export class SchedulerRuntime implements SchedulerControl {
       currentUser: user => this.userStore.getCurrentUser(user),
       state: this.stateManager,
       scan: this.favoriteScan,
+      scanSubscriptions: context => dependencies.upScan?.run(context) ?? Promise.resolve(),
       accepting: () => this.runtime.accepting,
       blocked: () => this.maintenance.isAnyLocked(),
       now: this.now,
@@ -510,10 +520,16 @@ export class SchedulerRuntime implements SchedulerControl {
       Math.max(1, Math.min(10, config.remoteVerifyConcurrency || 3)),
       this.queueHighWater(config.remoteVerifyConcurrency || 3, config.queuePrefetchLimit)
     );
+    const admitArchiveTask=createArchiveTaskAdmission({
+      blocked:(u,m,b)=>this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(u,m,b),
+      state:this.stateManager,jobs:this.jobStore,leaseOwner:this.leaseOwner,
+    });
     for (const queue of [this.downloadQueue, this.uploadQueue, this.verificationQueue]) {
-      queue.setBeforeRun(task => !task.persistentJobId || this.jobStore.markRunning(
-        task.persistentJobId, this.leaseOwner, queue === this.verificationQueue ? 5 * 60_000 : 30 * 60_000,
-      ));
+      queue.setBeforeRun(task => {
+        if(task.persistentJobId && !this.jobStore.markRunning(task.persistentJobId,this.leaseOwner,
+          queue===this.verificationQueue?5*60_000:30*60_000))return false;
+        return queue===this.verificationQueue || admitArchiveTask(task);
+      });
       queue.setFailureHandler(error => this.failRuntime(error));
     }
     this.downloadAdmission = createDownloadAdmission({
@@ -766,6 +782,12 @@ export class SchedulerRuntime implements SchedulerControl {
       uploadJob: this.buildPersistentUploadJob.bind(this), historySegment: this.historySnapshotSegment.bind(this),
       probe: this.enqueueChargingAccessProbe.bind(this), cycleStartedAt: () => this.syncWorkflow.getCycle()?.startedAt,
       generation: () => this.runtime.generation, now: () => this.now(), dispatch: () => this.dispatchPersistentJobs(),
+    });
+    this.upArchive = createUpArchive({
+      state: this.stateManager, user: id => this.userStore.getById(id), eligible: this.userSyncEligibility,
+      blocked: (u,m,b) => this.stateManager.getDatabase().isArchiveSourceDeletionBlocked(u,m,b),
+      accepting: () => this.runtime.accepting && !this.maintenance.isAnyLocked(),
+      enqueue: (user,route,title,bvid) => this.enqueueIfNeeded(user,route,title,bvid),
     });
     this.manualArchiveWorkflow = createManualArchive({
       users: this.userStore,
@@ -1187,7 +1209,7 @@ export class SchedulerRuntime implements SchedulerControl {
     return this.accountRetirement.retireUser(user);
   }
 
-  async prepareSourceDeletion(userId: string, mediaId: number, bvid: string, timeoutMs = 30_000) {
+  async prepareSourceDeletion(userId: string, mediaId: number, bvid?: string, timeoutMs = 30_000) {
     return this.sourceDeletionWorkflow.prepareSourceDeletion(userId, mediaId, bvid, timeoutMs);
   }
 
@@ -1207,6 +1229,7 @@ export class SchedulerRuntime implements SchedulerControl {
     if (this.runtime.shuttingDown || this.runtime.rebinding) return false;
     this.initializeRuntime();
     if (!this.runtime.admit()) return false;
+    this.upScan?.start();
     this.syncWorkflow.start();
     this.accessProbeWorkflow.start();
     this.downloadAdmission.start();
@@ -1257,6 +1280,7 @@ export class SchedulerRuntime implements SchedulerControl {
   }
 
   private stopWorkProducers() {
+    this.upScan?.stop();
     this.syncWorkflow?.stop();
     this.accessProbeWorkflow?.stop();
     this.downloadAdmission?.stop();
@@ -1412,6 +1436,12 @@ export class SchedulerRuntime implements SchedulerControl {
   private collectUploadTargets(bvid: string, fallback: UploadTarget[] = []) {
     return this.archiveTargets.collectUploadTargets(bvid, fallback);
   }
+
+  archiveUpSubmission(source: import('../repositories/up-subscriptions.js').StoredUpSubscription, item: import('../shared/up-subscriptions.js').UpSubmission) {
+    return this.upArchive(source, item);
+  }
+
+  scanUpSubscriptions() { return this.syncWorkflow.triggerOrQueue({trigger:'manual',skipFavoriteScan:true,skipRemoteScan:true}); }
 
   private enqueueIfNeeded(user: BiliUser, mediaId: number, folderTitle: string, bvid: string, options: BackupEnqueueOptions = {}) {
     return this.backupEnqueueWorkflow.enqueue(user, mediaId, folderTitle, bvid, options);

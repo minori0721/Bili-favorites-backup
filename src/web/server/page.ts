@@ -1,6 +1,7 @@
 import { appInfo } from "../../app-info.js";
 import { getQueueLoadingMarkup } from "../shared/queue-markup.js";
 import { renderAppAssets } from "./assets.js";
+import { renderUpSubscriptionSection,renderUpSubscriptionModals } from './up-subscriptions.js';
 
 const appFaviconHref = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -229,10 +230,12 @@ export function renderAppPage() {
   ${getAppHeader()}
   <main>
     ${getAccountSection()}
+    ${renderUpSubscriptionSection()}
     ${getLogSection()}
     ${getSettingsSection()}
   </main>
   ${getModals()}
+  ${renderUpSubscriptionModals()}
   <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
   <div id="appAssetError" role="alert" hidden>页面资源未能加载，请刷新页面重试。<button type="button" onclick="location.reload()">刷新页面</button></div>
 </body>

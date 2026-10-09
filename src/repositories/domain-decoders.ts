@@ -378,7 +378,7 @@ function decodeQualityUpgrade(value: unknown, context: string) {
 export function decodeFavoriteRelation(value: unknown, context = 'favorite relation'): FavoriteRelation {
   const source = record(value, context);
   const sourceKind = source.sourceKind;
-  if (sourceKind !== undefined && sourceKind !== 'favorite' && sourceKind !== 'manual') {
+  if (sourceKind !== undefined && sourceKind !== 'favorite' && sourceKind !== 'manual' && sourceKind !== 'up') {
     throw new PersistedDomainDecodeError(context, 'sourceKind is invalid');
   }
   const backupStatus = source.backupStatus === undefined ? undefined : decodeBackupStatus(source.backupStatus, context);
@@ -387,6 +387,7 @@ export function decodeFavoriteRelation(value: unknown, context = 'favorite relat
     mediaId: requiredNumber(source, 'mediaId', context),
     bvid: requiredString(source, 'bvid', context),
     sourceKind,
+    sourceId: sourceKind === 'up' ? requiredString(source, 'sourceId', context) : optionalString(source, 'sourceId', context),
     folderTitle: requiredString(source, 'folderTitle', context),
     firstSeenAt: requiredString(source, 'firstSeenAt', context),
     lastSeenAt: requiredString(source, 'lastSeenAt', context),

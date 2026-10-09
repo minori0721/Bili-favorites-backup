@@ -64,11 +64,17 @@ test("version dialog safely renders release notes, checks on demand and restores
   await page.locator("#checkUpdatesBtn").click();
   await expect.poll(() => calls).toBe(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
-  const body = await page.locator('.updates-body').boundingBox();
-  const title = await page.locator('#updatesModalTitle').boundingBox();
-  const footer = await page.locator('#updatesModal .modal-actions').boundingBox();
-  expect(body!.y).toBeGreaterThanOrEqual(title!.y + title!.height - 1);
-  expect(body!.y + body!.height).toBeLessThanOrEqual(footer!.y + 1);
+  // Read all three rectangles in one frame; the shared reveal animation must
+  // not turn separately sampled positions into a false overlap.
+  const layout = await page.locator('#updatesModal').evaluate(modal => {
+    const body = modal.querySelector('.updates-body')?.getBoundingClientRect();
+    const title = modal.querySelector('#updatesModalTitle')?.getBoundingClientRect();
+    const footer = modal.querySelector('.modal-actions')?.getBoundingClientRect();
+    if (!body || !title || !footer) throw new Error('updates layout is incomplete');
+    return {bodyTop: body.top, bodyBottom: body.bottom, titleBottom: title.bottom, footerTop: footer.top};
+  });
+  expect(layout.bodyTop).toBeGreaterThanOrEqual(layout.titleBottom - 1);
+  expect(layout.bodyBottom).toBeLessThanOrEqual(layout.footerTop + 1);
   await page.screenshot({ path: `output/updates-${test.info().project.name}.png` });
   await page.keyboard.press("Escape");
   await expect(page.locator("#versionInfoBtn")).toBeFocused();

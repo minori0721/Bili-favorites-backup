@@ -72,7 +72,7 @@
     .recovery-issues-modal { padding:18px; align-items:stretch; }
     .recovery-issues-shell { width:min(1220px,100%); height:min(820px,calc(100dvh - 36px)); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:rgba(244,248,247,0.92); border:1px solid var(--glass-border); border-radius:var(--radius-dialog); box-shadow:var(--shadow-dialog); backdrop-filter:var(--glass-blur); }
     .recovery-issues-shell.is-empty { height:min(520px,calc(100dvh - 36px)); }
-    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid var(--glass-border); background:rgba(255,255,255,0.92); backdrop-filter:var(--glass-blur); }
+    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid var(--dialog-header-border); background:var(--dialog-header-background); }
     .recovery-issues-heading { min-width:0; }
     .recovery-issues-heading h2 { margin:0; font-size:18px; }
     .recovery-issues-heading p { margin:4px 0 0; color:#60736F; font-size:12px; line-height:1.45; }

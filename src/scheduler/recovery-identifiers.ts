@@ -40,6 +40,6 @@ export function parseLegacyDownloadFailureKey(value: unknown) {
   const userId = String(parts.shift() || '');
   const mediaId = Number(parts.shift());
   const bvid = parts.join(':');
-  if (!userId || !Number.isInteger(mediaId) || mediaId <= 0 || !bvid) return null;
+  if (!userId || !Number.isSafeInteger(mediaId) || mediaId === 0 || !bvid) return null;
   return { userId, mediaId, bvid };
 }

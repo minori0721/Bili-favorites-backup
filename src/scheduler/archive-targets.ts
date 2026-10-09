@@ -31,11 +31,11 @@ export function createArchiveTargets(deps: Dependencies) {
         userId: relation.userId,
         mediaId: relation.mediaId,
         folderTitle: resolved.folderTitle,
-        remotePath: relation.remotePath || resolveRemotePath({
+      remotePath: relation.remotePath || resolveRemotePath({
           destination: config.alistDest,
           layout: config.uploadLayout,
           userName: resolved.user.name,
-          folderName: resolved.folderTitle,
+          folderName: relation.sourceKind === 'up' ? `__BFB_UP_SOURCE_${-relation.mediaId}` : resolved.folderTitle,
         }),
       });
     }
@@ -61,7 +61,7 @@ export function createArchiveTargets(deps: Dependencies) {
   ) {
     const folderName = mediaId === MANUAL_ARCHIVE_MEDIA_ID
       ? `__BFB_MANUAL_${sanitizeSegment(String(user.uid || user.cookie?.DedeUserID || user.id)).slice(0, 48) || "ACCOUNT"}`
-      : folderTitle;
+      : mediaId <= -2 ? `__BFB_UP_SOURCE_${-mediaId}` : folderTitle;
     return resolveRemotePath({
       destination: config.alistDest,
       layout: config.uploadLayout,
@@ -73,6 +73,7 @@ export function createArchiveTargets(deps: Dependencies) {
   function findBestRelationForBvid(bvid: string) {
     const relations = deps.state.listRelationsForBvid(bvid);
     for (const relation of relations) {
+      if (deps.sourceBlocked(relation.userId, relation.mediaId, bvid)) continue;
       const user = deps.users.getById(relation.userId);
       if (!deps.eligible(user)) continue;
       const folder = user.favorites.find((item) => item.mediaId === relation.mediaId);

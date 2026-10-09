@@ -35,7 +35,7 @@ export function sessionFromRow(value: unknown): TransferSessionRecord {
   const remotePath = text(source, 'remote_path');
   return {
     id: text(source, 'id'), dedupeKey: text(source, 'dedupe_key'), kind: 'upload', bvid: text(source, 'bvid'),
-    userId: optionalText(source, 'user_id'), mediaId: optionalInteger(source, 'media_id', -1),
+    userId: optionalText(source, 'user_id'), mediaId: optionalInteger(source, 'media_id', Number.MIN_SAFE_INTEGER),
     localDir: text(source, 'local_dir'), remotePath,
     // Legacy staging columns remain on disk; direct uploads use the final path.
     stagingPath: remotePath, phase, generation: integer(source, 'generation', 1),

@@ -93,6 +93,8 @@ export interface PlaybackQueueItem {
     userId: string;
     mediaId: number;
     folderTitle: string;
+    sourceKind?: 'favorite'|'manual'|'up';
+    sourceId?: string;
   };
   parts: PlaybackPart[];
 }
@@ -468,6 +470,8 @@ export function buildQueueItem(
       userId: relation.userId,
       mediaId: relation.mediaId,
       folderTitle: relation.folderTitle,
+      sourceKind: relation.sourceKind,
+      sourceId: relation.sourceId,
     },
     parts,
   };

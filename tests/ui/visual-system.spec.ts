@@ -77,7 +77,7 @@ test("main workspace and every standard dialog use the shared visual system", as
           actionsBackdrop: actions ? style(actions).backdropFilter : "missing",
           actionsBorder: actions ? style(actions).borderTopWidth : "missing",
           actionsPosition: actions ? style(actions).position : "missing",
-          innerScroll: panel.querySelector('.updates-body') ? style(panel.querySelector('.updates-body')!).overflowY : "",
+          innerScroll: panel.querySelector('.updates-body, .up-workspace-body') ? style(panel.querySelector('.updates-body, .up-workspace-body')!).overflowY : "",
           panelOverflow: style(panel).overflowY,
         };
       }),
@@ -109,17 +109,23 @@ test("main workspace and every standard dialog use the shared visual system", as
     legacyPanelRadius: "16px",
     legacyDialogRadius: "24px",
   });
-  expect(audit.cards).toHaveLength(3);
+  expect(audit.cards).toHaveLength(4);
   expect(audit.cards.every((card) => card.radius === "20px" && card.bottomBorder === "1px")).toBe(true);
   expect(audit.mainGap).toBe("22px");
   expect(audit.cards.every((card) => card.background.startsWith("rgba(") && card.backdrop.includes("blur") && card.shadow !== "none")).toBe(true);
   expect(audit.dialogs.length).toBeGreaterThanOrEqual(16);
   expect(audit.dialogs.every((dialog) => dialog.sizeClass && dialog.radius === "24px")).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.background.startsWith("rgba(") && dialog.background !== "rgba(0, 0, 0, 0)")).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.titleBackground === "rgba(0, 0, 0, 0)" && dialog.actionsBackground === "rgba(0, 0, 0, 0)")).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.titleBackdrop === "none" && dialog.actionsBackdrop === "none")).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === (dialog.id === 'updatesModal' ? 'static' : 'sticky'))).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === (dialog.id === 'updatesModal' ? 'static' : 'sticky'))).toBe(true);
+  const actionDialogs = audit.dialogs.filter((dialog) => dialog.id !== "upWorkspaceModal");
+  const headerBackground = audit.dialogs.find((dialog) => dialog.id === 'upWorkspaceModal')?.titleBackground;
+  expect(headerBackground).not.toBe('rgba(0, 0, 0, 0)');
+  expect(actionDialogs.every((dialog) => dialog.titleBackground === headerBackground && dialog.actionsBackground === "rgba(0, 0, 0, 0)")).toBe(true);
+  expect(actionDialogs.every((dialog) => dialog.titleBackdrop === "none" && dialog.actionsBackdrop === "none")).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === (dialog.id === 'updatesModal' ? 'static' : dialog.id === 'upWorkspaceModal' ? 'relative' : 'sticky'))).toBe(true);
+  expect(actionDialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === (dialog.id === 'updatesModal' ? 'static' : 'sticky'))).toBe(true);
+  expect(audit.dialogs.find((dialog) => dialog.id === "upWorkspaceModal")).toMatchObject({
+    actionsBackground: "missing", titleBackdrop: "none", titlePosition: "relative", innerScroll: "auto", panelOverflow: "hidden",
+  });
   expect(audit.dialogs.find(dialog => dialog.id === 'updatesModal')).toMatchObject({ innerScroll: 'auto', panelOverflow: 'hidden' });
   expect(audit.controls.primaryRadius).toBe("14px");
   expect(audit.controls.secondaryRadius).toBe("14px");
@@ -184,7 +190,7 @@ test("mobile standard dialogs stay inside the viewport with a reachable sticky f
   expect(metrics.footerBottom).toBeLessThanOrEqual(metrics.viewportHeight);
   expect(metrics.titlePosition).toBe("sticky");
   expect(metrics.footerPosition).toBe("sticky");
-  expect(metrics.panelRadius).toBe(metrics.isMobileSheet ? "20px 20px 0px 0px" : "24px");
+  expect(metrics.panelRadius).toBe(metrics.isMobileSheet ? "20px" : "24px");
 });
 
 test("full-screen workspaces share glass chrome while the player keeps its immersive theme", async ({ page, browserProblems }, testInfo) => {

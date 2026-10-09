@@ -83,7 +83,7 @@ test('archived favorite-only evidence is visible without changing unavailable or
 
 test("settings folds preserve unified save and reveal invalid hidden controls", async ({ page }) => {
   await expect(page.locator('#saveConfigBtn')).toBeEnabled();
-  expect(await page.locator('body > main > .card h2').allTextContents()).toEqual(['账号与同步', '任务中心', '全局设置']);
+    expect(await page.locator('body > main > .card h2').allTextContents()).toEqual(['账号与同步', 'UP 订阅', '任务中心', '全局设置']);
   await expect(page.locator('.settings-fold')).toHaveCount(6);
   await expect(page.locator('#storageSettings')).not.toHaveAttribute('open');
   let writes = 0;

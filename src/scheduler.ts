@@ -86,4 +86,6 @@ export class SyncScheduler {
   getRuntimeResourceCounts() { return this.runtime.getRuntimeResourceCounts(); }
   tick(...args: Parameters<SchedulerRuntime['tick']>) { return this.runtime.tick(...args); }
   enqueueManualArchive(...args: Parameters<SchedulerRuntime['enqueueManualArchive']>) { return this.runtime.enqueueManualArchive(...args); }
+  archiveUpSubmission(...args: Parameters<SchedulerRuntime['archiveUpSubmission']>) { return this.runtime.archiveUpSubmission(...args); }
+  scanUpSubscriptions() { return this.runtime.scanUpSubscriptions(); }
 }

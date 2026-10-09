@@ -266,7 +266,8 @@ export interface FavoriteRelation {
   userId: string;
   mediaId: number;
   bvid: string;
-  sourceKind?: "favorite" | "manual";
+  sourceKind?: "favorite" | "manual" | "up";
+  sourceId?: string;
   folderTitle: string;
   firstSeenAt: string;
   lastSeenAt: string;
@@ -398,6 +399,7 @@ export interface RemoteFilePreviewVideoRecord {
 }
 
 export interface StateFile {
+  upSubscriptions?: import('./repositories/up-subscriptions.js').UpSubscriptionSnapshot;
   schemaVersion?: number;
   processedByUser: Record<string, Record<string, ProcessedEntry>>;
   failedByUser?: Record<string, Record<string, FailedEntry>>;
@@ -994,6 +996,10 @@ export class StateManager {
     },
     seenAt = nowIso()
   ) {
+    if (this.database.upSubscriptions.isBlocked(userId, mediaId, item.bvid)) {
+      const entry = this.state.videos![item.bvid];
+      return { wasKnown: Boolean(entry), entry };
+    }
     const restoredArchiveSource = this.database.restoreCompletedArchiveSource(
       userId, mediaId, item.bvid, Date.parse(seenAt) || Date.now(),
     ) > 0;
@@ -1156,6 +1162,29 @@ export class StateManager {
     return { wasKnown, entry: this.state.videos![item.bvid] };
   }
 
+  recordUpSubscriptionItem(sourceId: string, userId: string, routingKey: number, title: string, item: ObservedFavoriteItem) {
+    return this.runAtomic(() => {
+      const result = this.recordFavoriteItem(userId, routingKey, title, item);
+      const relation = this.getRelation(userId, routingKey, item.bvid);
+      if (relation && !this.database.upSubscriptions.isBlocked(userId, routingKey, item.bvid)) {
+        relation.sourceKind = 'up';
+        relation.sourceId = sourceId;
+        this.save();
+      }
+      return result;
+    });
+  }
+
+  rebindUpSubscriptionRelations(sourceId: string, oldUserId: string, newUserId: string, routingKey: number) {
+    for(const relation of this.listRelationsForUser(oldUserId)) {
+      if(relation.mediaId!==routingKey || relation.sourceKind!=='up' || relation.sourceId!==sourceId) continue;
+      const next={...relation,userId:newUserId,accountDetachedAt:undefined};
+      this.state.relations![relationKey(newUserId,routingKey,relation.bvid)]=next;
+      delete this.state.relations![relationKey(oldUserId,routingKey,relation.bvid)];
+    }
+    this.save();
+  }
+
   recordCoverCache(bvid: string, coverLocalPath: string, capturedAt = nowIso()) {
     const entry = this.state.videos?.[bvid];
     if (!entry || !coverLocalPath) {
@@ -1204,6 +1233,7 @@ export class StateManager {
   }
 
   shouldEnqueueBackup(bvid: string, userId?: string, mediaId?: number, cycleStartedAt?: string, accessConfirmed = false) {
+    if (userId && mediaId !== undefined && this.database.isArchiveSourceDeletionBlocked(userId, mediaId, bvid)) return false;
     const entry = this.state.videos?.[bvid];
     const relation = userId && mediaId ? this.state.relations?.[relationKey(userId, mediaId, bvid)] : undefined;
     if (!entry || sourceBlocksBackup(relation, entry, accessConfirmed)) {
@@ -3749,20 +3779,26 @@ export class StateManager {
   }
 
   replaceStateSnapshot(state: StateFile) {
-    const normalized = this.normalizeLoadedState(state);
-    this.lazyState = false;
-    this.state = this.trackState(normalized);
-    this.suppressFlush = true;
-    this.migrateLegacyState();
-    this.suppressFlush = false;
-    this.database.replaceState(this.snapshotState());
-    this.videoCache.clear();
-    this.relationCache.clear();
-    this.videoDeletes.clear();
-    this.relationDeletes.clear();
-    this.state = this.trackDatabaseState(this.database.loadStateMetadata());
-    this.lazyState = true;
-    this.resetDirtySet();
+    try {
+      const normalized = this.normalizeLoadedState(state);
+      this.lazyState = false;
+      this.state = this.trackState(normalized);
+      this.suppressFlush = true;
+      this.migrateLegacyState();
+      this.suppressFlush = false;
+      this.database.replaceState(this.snapshotState());
+      this.videoCache.clear();
+      this.relationCache.clear();
+      this.videoDeletes.clear();
+      this.relationDeletes.clear();
+      this.state = this.trackDatabaseState(this.database.loadStateMetadata());
+      this.lazyState = true;
+      this.resetDirtySet();
+    } catch(error) {
+      this.suppressFlush=false;
+      this.reload();
+      throw error;
+    }
   }
 
   private save() {

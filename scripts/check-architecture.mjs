@@ -125,7 +125,7 @@ for (const entry of resourceOwnership.resources || []) {
   }
 }
 
-const resourceCoverageRoots = ['scheduler/', 'web/client/features/', 'web/client/shared/'];
+const resourceCoverageRoots = ['up-subscriptions/', 'scheduler/', 'web/client/features/', 'web/client/shared/'];
 for (const ownerFile of paths.filter(file => resourceCoverageRoots.some(prefix => relative(file).startsWith(prefix)))) {
   const ownerTree = ts.createSourceFile(ownerFile, fs.readFileSync(ownerFile, 'utf8'), ts.ScriptTarget.Latest, true);
   for (const statement of ownerTree.statements) {

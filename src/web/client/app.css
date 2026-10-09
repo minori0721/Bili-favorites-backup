@@ -9,5 +9,7 @@
 @import './features/playback/player.css';
 @import './features/settings/template-editor.css';
 @import './features/task-center/workspace.css';
+@import './features/up-subscriptions/style.css';
 @import './shared/styles/interactions-responsive.css';
 @import './shared/styles/motion.css';
+@import './shared/styles/scrollbars.css';

@@ -12,6 +12,7 @@ export interface TickOptions {
   forceFullRemoteVerify?: boolean;
   forceFullFavoriteScan?: boolean;
   skipFavoriteScan?: boolean;
+  skipRemoteScan?: boolean;
 }
 
 export interface SchedulerSnapshot {
@@ -69,6 +70,7 @@ export interface SyncRuntimeDependencies {
   verifyRemoteSamples(manual: boolean, force: boolean, cycle: SyncCycleStats): Promise<Partial<SyncCycleStats>>;
   logCycleSummary(stats: SyncCycleStats): void;
   scheduleQueued(options: TickOptions): void;
+  scanSubscriptions?: (context: import('../up-subscriptions/scan.js').UpScanContext) => Promise<void>;
 }
 
 /**
@@ -123,6 +125,7 @@ export function createSyncRuntime(dependencies: SyncRuntimeDependencies): SyncWo
       trigger: priority[incomingTrigger] >= priority[currentTrigger] ? incomingTrigger : currentTrigger,
       forceFullRemoteVerify: Boolean(current.forceFullRemoteVerify || incoming.forceFullRemoteVerify),
       forceFullFavoriteScan: Boolean(current.forceFullFavoriteScan || incoming.forceFullFavoriteScan),
+      skipRemoteScan: Boolean(current.skipRemoteScan && incoming.skipRemoteScan),
       skipFavoriteScan: Boolean(current.forceFullFavoriteScan || incoming.forceFullFavoriteScan)
         ? false : Boolean(current.skipFavoriteScan && incoming.skipFavoriteScan),
     };
@@ -163,7 +166,14 @@ export function createSyncRuntime(dependencies: SyncRuntimeDependencies): SyncWo
         cycle.queuedItems += dependencies.requeueRetryPendingBeforeScan();
         await workflow.run(manual, options.forceFullFavoriteScan === true);
       }
-      Object.assign(cycle, await dependencies.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true, cycle));
+      if(trigger!=='remote_reconcile') await dependencies.scanSubscriptions?.({
+        force:manual,
+        canRun: () => !stopped && dependencies.accepting() && !dependencies.blocked(),
+        enterUser: id => activeUsers.add(id), leaveUser: id => activeUsers.delete(id),
+        progress: patch => updateProgress(patch),
+        counts: (fresh,queued) => { if(cycle) {cycle.newItems+=fresh;cycle.queuedItems+=queued;} },
+      });
+      if (!options.skipRemoteScan) Object.assign(cycle, await dependencies.verifyRemoteSamples(manual, options.forceFullRemoteVerify === true, cycle));
       dependencies.logCycleSummary(cycle);
     } catch (error: unknown) {
       const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 1_000);
