@@ -47,7 +47,7 @@ export function buildAppInfo(
   const revision = cleanRevision(env.BFB_BUILD_REVISION);
   const shortRevision = revision.slice(0, 7);
   const releaseTag = `v${version}`;
-  const versionLabel = buildRef === releaseTag
+  const versionLabel = buildRef === releaseTag || (buildRef === 'dev' && version.endsWith('-dev'))
     ? `${releaseTag}${shortRevision ? ` · ${shortRevision}` : ""}`
     : `${releaseTag} · ${buildRef}${shortRevision ? `@${shortRevision}` : ""}`;
   return {

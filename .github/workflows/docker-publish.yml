@@ -24,6 +24,9 @@ env:
 jobs:
   docker:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # The final dev-only step maintains the rolling prerelease.
+      actions: read
     concurrency:
       group: bfb-image-${{ github.ref }}
       cancel-in-progress: false
@@ -59,11 +62,8 @@ jobs:
       - name: Validate release notes before publishing images
         env:
           BUILD_REF: ${{ github.ref }}
-          BUILD_REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG="v$(node -p "require('./package.json').version")"
-          if [[ "$BUILD_REF" == refs/tags/* ]]; then TAG="$BUILD_REF_NAME"; fi
-          node scripts/release-notes.mjs "$TAG" > "$RUNNER_TEMP/bfb-release-preview.md"
+          node scripts/release-notes.mjs --ref "$BUILD_REF" > "$RUNNER_TEMP/bfb-release-preview.md"
 
       - name: Install application dependencies
         run: npm ci
@@ -160,11 +160,27 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: node scripts/image-layer-report.mjs report "$RUNNER_TEMP/bfb-layer-baseline.json"
 
+      # Keep promotion and preview publication inside the same per-ref concurrency lock.
+      - name: Check that dev publication is current
+        if: github.ref == 'refs/heads/dev'
+        id: dev-publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-dev-preview.mjs check
+
       - name: Promote verified image tags
+        if: github.ref != 'refs/heads/dev' || steps.dev-publication.outputs.current == 'true'
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: node scripts/promote-image.mjs
+
+      - name: Publish development preview after verified image promotion
+        if: github.ref == 'refs/heads/dev' && steps.dev-publication.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: node scripts/publish-dev-preview.mjs publish
 
   release:
     needs: docker

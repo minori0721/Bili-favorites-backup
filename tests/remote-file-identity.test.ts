@@ -1,31 +1,10 @@
+import { remoteFileFixture as fixture, remoteFileFixtureTime as at } from './fixtures/remote-file-state.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import path from 'node:path';
+
 import { StateDatabase, type StateDirtySet } from '../src/database.js';
 import { getPlaybackQueue, resolvePlaybackFile } from '../src/playback.js';
-import type { StateFile, RemoteFileRecord } from '../src/state.js';
-import { StateManager } from '../src/state.js';
-import { PersistentJobStore } from '../src/job-store.js';
-import { TransferSessionStore } from '../src/transfer-session.js';
-import { createStartupRecovery } from '../src/scheduler/startup-recovery.js';
-import { createTestDir, removeTestDir, testConfig } from './helpers.js';
 
-const at = '2026-09-18T00:00:00.000Z';
-function fixture(count = 1): StateFile {
-  const state: StateFile = { schemaVersion: 13, processedByUser: {}, failedByUser: {},
-    userCooldowns: {}, folderScans: {}, videos: {}, relations: {} };
-  for (let n = 0; n < count; n++) {
-    const bvid = `BVFIXTURE${String(n).padStart(5, '0')}`;
-    const file: RemoteFileRecord = { name: 'part.mp4', path: `/archive/${bvid}/part.mp4`, size: 42,
-      verificationStatus: 'verified' as const, putCompletedAt: at };
-    state.videos![bvid] = { bvid, title: 'Fixture', upperName: 'Fixture', firstSeenAt: at, lastSeenAt: at,
-      backupStatus: 'verified' as const, biliStatus: 'available' as const, remotePath: `/archive/${bvid}`, remoteFiles: [file] };
-    state.relations![`u:1:${bvid}`] = { userId: 'u', mediaId: 1, bvid, folderTitle: 'Fixture',
-      firstSeenAt: at, lastSeenAt: at, activeInFavorite: true, backupStatus: 'verified' as const,
-      remotePath: `/archive/${bvid}`, remoteFiles: [structuredClone(file)] };
-  }
-  return state;
-}
 const dirty = (bvid: string): StateDirtySet => ({ videos: new Set([bvid]), relations: new Set([`u:1:${bvid}`]),
   folderScans: new Set(), failures: false, cooldowns: false, metadata: false });
 function queue(db: StateDatabase, mediaId = 1) {
@@ -177,39 +156,4 @@ test('pending verification limits and pages count real uploaded sources, not glo
     assert.equal(pages[0][0].relation.remoteFiles![0].nextVerifyAt, '2030-01-01T00:00:00Z');
     assert.deepEqual(db.listPendingUploadVerifications(20).map(item => item.relation.bvid), expected);
   } finally { db.close(); }
-});
-
-test('startup recovery traverses all verification pages and preserves delayed execution', async () => {
-  const directory = await createTestDir('verification-pages');
-  const manager = new StateManager({ statePath: path.join(directory, 'state.json'), dbPath: ':memory:' });
-  try {
-    const state = fixture(10_001);
-    const future = '2030-01-01T00:00:00.000Z';
-    for (const video of Object.values(state.videos!)) {
-      video.backupStatus = 'uploaded';
-      video.remoteFiles![0].verificationStatus = 'awaiting_verification';
-      video.remoteFiles![0].nextVerifyAt = future;
-    }
-    for (const source of Object.values(state.relations!)) {
-      source.backupStatus = 'uploaded';
-      source.remoteFiles = structuredClone(state.videos![source.bvid].remoteFiles!);
-    }
-    manager.getDatabase().replaceState(state);
-    manager.reload();
-    const jobs = new PersistentJobStore(manager.getDatabase());
-    const unexpected = () => assert.fail('unexpected transfer during bootstrap');
-    const recovery = createStartupRecovery({ stateManager: manager, jobStore: jobs,
-      transferSessions: new TransferSessionStore(manager.getDatabase()), configStore: { get: () => testConfig() },
-      staleActiveBackupMs: 1000, resolveRelation: () => null, findBestRelationForBvid: () => null,
-      resolveRelationRemotePath: unexpected, enqueueIfNeeded: unexpected, queueUploadWork: unexpected,
-      buildPersistentUploadJob: unexpected, historySnapshotSegment: unexpected,
-      ensurePersistedAvailabilityProbes: () => {}, ensurePersistedChargingAccessProbes: () => {},
-      dispatchPersistentJobs: unexpected, recordQueued: unexpected });
-    recovery.resumePersistedWork();
-    assert.equal(manager.hasPersistentJobBootstrap(), true);
-    assert.deepEqual(manager.getDatabase().db.prepare("SELECT count(*) count,min(not_before) earliest,max(not_before) latest FROM jobs WHERE kind='verify_upload'").get(),
-      { count: 10_001, earliest: Date.parse(future), latest: Date.parse(future) });
-    recovery.resumePersistedWork();
-    assert.deepEqual(manager.getDatabase().db.prepare<unknown[], { "count": number }>('SELECT count(*) count FROM jobs').get(), { count: 10_001 });
-  } finally { manager.close(); await removeTestDir(directory); }
 });

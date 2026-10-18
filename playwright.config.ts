@@ -22,10 +22,12 @@ export default defineConfig({
     },
     {
       name: "mobile",
+      grepInvert: /@desktop-only/,
       use: { ...devices["Pixel 5"], viewport: { width: 390, height: 844 } },
     },
     {
       name: "mobile-landscape",
+      grepInvert: /@desktop-only/,
       use: { ...devices["Pixel 5 landscape"], viewport: { width: 844, height: 390 } },
     },
   ],

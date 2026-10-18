@@ -38,10 +38,10 @@ test("failure keeps last successful data and respects rate limiting", async () =
   assert.ok(!JSON.stringify(bad).includes("secret"));
   now += 61000; await service.check(true); assert.equal(calls, 2);
 });
-test("dev and local builds are reference only; empty releases and bad responses never imply latest", async () => {
-  for (const ref of ["dev", "local"]) {
+test("dev and local builds, including next-version development builds, are reference only", async () => {
+  for (const [ref, version] of [["dev", "2.0.0"], ["local", "2.0.0"], ["dev", "2.7.0-dev"], ["local", "2.7.0-dev"]]) {
     const service = new UpdateCheckService((async () => Response.json(release)) as typeof fetch, Date.now,
-      buildAppInfo({ BFB_BUILD_REF: ref }, { version: "2.0.0" }));
+      buildAppInfo({ BFB_BUILD_REF: ref }, { version }));
     assert.equal((await service.check()).comparison, "reference");
   }
   for (const response of [Response.json({ ...release, draft: true }), Response.json({ ...release, prerelease: true }),
@@ -69,6 +69,20 @@ test('tool latest falls back to application releases, including across pages in 
   assert.equal(urls.length, 3);
   assert.ok(urls.every(url => url.startsWith('https://api.github.com/repos/minori0721/Bili-favorites-backup/releases')));
   assert.ok(urls[2].endsWith('page=2'));
+});
+
+test('the rolling development preview never replaces stable update information', async () => {
+  const service = new UpdateCheckService(async url => String(url).endsWith('/latest')
+    ? new Response(null, { status: 404 })
+    : Response.json([
+      { ...release, tag_name: 'dev-preview', prerelease: true, body: 'Development only' },
+      { ...release, tag_name: 'v99.0.0', prerelease: true, body: 'Development only' },
+      release,
+    ]), Date.now, stable);
+  const result = await service.check();
+  assert.equal(result.release?.version, 'v2.10.0');
+  assert.equal(result.comparison, 'update_available');
+  assert.doesNotMatch(result.release?.notes || '', /Development only/);
 });
 
 test('incomplete or failed pagination never publishes a partial latest claim', async () => {
