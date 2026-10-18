@@ -15,6 +15,10 @@ test('updates announce once, retain a badge, switch notes and channels, and rest
   await expect(page.locator('.toast-message')).toContainText('有新的版本');
   await page.locator('#versionInfoBtn').click();
   await expect(page.locator('#updatesNotes')).toContainText('更新提示仅出现一次');
+  await expect(page.locator('#updatesNotes')).toContainText('累计范围：v2.6.5');
+  await expect(page.locator('#updatesNotes')).toContainText('只归档选中的视频');
+  await expect(page.locator('#updatesNotes')).toContainText('统一主题');
+  await expect(page.locator('#updatesNotes')).toContainText('旧请求不能覆盖新账号');
   await expect(page.locator('#updatesLatestVersion')).toContainText('bbbbbbb');
   await page.locator('#updatesCurrentTab').click();
   await expect(page.locator('#updatesNotes')).toContainText('当前镜像保留自己的说明');

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isCurrentDevBuild, publishDevPreview, type DevPreviewBuild } from '../scripts/publish-dev-preview.mjs';
-import { buildDevPreviewNotes, buildImageNotes } from '../scripts/release-notes.mjs';
+import { buildCurrentReleaseNotes, buildDevPreviewNotes, buildImageNotes } from '../scripts/release-notes.mjs';
+import { parseRelease } from '../src/update-release.js';
 import { createTestDir, removeTestDir } from './helpers.js';
 
 const revision = 'a'.repeat(40);
@@ -13,8 +14,8 @@ const build = {
   repository: 'owner/app', revision, ref: 'refs/heads/dev', image: 'docker.io/owner/app', digest,
   runId: '42', runAttempt: '2', updatedAt: '2026-10-18T16:00:00.000Z',
 } satisfies DevPreviewBuild;
-const developing = '# 更新日志\n## [Unreleased]\n### 发布摘要\n- 订阅功能\n### 新增\n- 完整实现细节\n### 升级提醒\n配置代理来源。\n## [2.6.5] - 2026-10-05\n- 旧内容';
-const prepared = '## [Unreleased]\n## [2.7.0] - 2026-10-19\n### 发布摘要\n- 正式准备摘要\n### 修复\n- 完整细节\n### 升级与回滚\n- 保留备份';
+const developing = '# 更新日志\n## [Unreleased]\n### 发布摘要\n- 订阅功能\n### 新增\n- 完整实现细节\n### 变更\n- 统一主题\n### 修复\n- 修复旧回调\n### 升级提醒\n配置代理来源。\n## [2.6.5] - 2026-10-05\n- 旧内容';
+const prepared = '## [Unreleased]\n## [2.7.0] - 2026-10-19\n### 发布摘要\n- 正式准备摘要\n### 修复\n- 完整细节\n### 升级与回滚\n- 保留备份\n## [2.6.5] - 2026-10-05\n- 旧内容';
 
 interface Release {
   tag_name: string;
@@ -98,21 +99,47 @@ function fakePublication(initial?: { release?: Partial<Release>; ref?: Ref }) {
   return { calls, inspections, operations, refs, releases };
 }
 
-test('preview notes use the development summary and preserve upgrade cautions without advertising a stable image', () => {
+test('preview notes preserve the complete development cycle and upgrade cautions without advertising a stable image', () => {
   const notes = buildDevPreviewNotes(developing, '2.7.0-dev');
-  assert.match(notes, /订阅功能/);
-  assert.match(notes, /配置代理来源/);
-  assert.doesNotMatch(notes, /完整实现细节|旧内容|bili-favorites-backup:v/);
+  for (const text of ['累计范围：v2.6.5', '订阅功能', '完整实现细节', '统一主题', '修复旧回调', '配置代理来源']) assert.ok(notes.includes(text), text);
+  assert.doesNotMatch(notes, /旧内容|bili-favorites-backup:v/);
+  assert.equal(buildCurrentReleaseNotes(developing, '2.7.0-dev'), notes);
   const legacy = developing.replace('### 发布摘要\n- 订阅功能\n', '');
   assert.match(buildDevPreviewNotes(legacy, '2.7.0-dev'), /完整实现细节/);
   for (const body of ['', '### 发布摘要\n暂无。\n### 新增\n- 暂无。']) {
-    assert.equal(buildDevPreviewNotes(`## [Unreleased]\n${body}\n## [2.7.0] - today\n- Previous`, '2.7.1-dev'), '暂无未发布变更。');
+    const empty = buildDevPreviewNotes(`## [Unreleased]\n${body}\n## [2.7.0] - today\n- Previous`, '2.7.1-dev');
+    assert.match(empty, /累计范围：v2\.7\.0/);
+    assert.ok(empty.endsWith('暂无未发布变更。'));
+    assert.doesNotMatch(empty, /Previous/);
   }
   const release = buildDevPreviewNotes(prepared, '2.7.0');
   assert.match(release, /正式发布准备构建/);
+  assert.match(release, /累计范围：v2\.6\.5/);
   assert.match(release, /正式准备摘要/);
   assert.match(release, /保留备份/);
-  assert.doesNotMatch(release, /完整细节|bili-favorites-backup:v/);
+  assert.match(release, /完整细节/);
+  assert.doesNotMatch(release, /旧内容|bili-favorites-backup:v/);
+});
+
+test('cumulative notes retain earlier dev changes, follow current removals and reset after formal release', () => {
+  const extended = developing.replace('### 新增\n', '### 新增\n- 后续开发功能\n');
+  const notes = buildDevPreviewNotes(extended, '2.7.0-dev');
+  assert.match(notes, /后续开发功能/);
+  assert.match(notes, /完整实现细节/);
+  assert.doesNotMatch(buildDevPreviewNotes(extended.replace('- 后续开发功能\n', ''), '2.7.0-dev'), /后续开发功能/);
+  const next = '## [Unreleased]\n### 新增\n- 下一周期功能\n' + prepared.slice(prepared.indexOf('## [2.7.0]'));
+  const fresh = buildDevPreviewNotes(next, '2.7.1-dev');
+  assert.match(fresh, /累计范围：v2\.7\.0/);
+  assert.match(fresh, /下一周期功能/);
+  assert.doesNotMatch(fresh, /正式准备摘要|完整细节|旧内容/);
+});
+
+test('the cumulative baseline uses numeric version order and supports the first development cycle', () => {
+  const history = developing.replace('[2.6.5]', '[2.9.0]') + '\n## [2.10.0] - 2026-10-10\n- Published elsewhere';
+  assert.match(buildDevPreviewNotes(history, '2.11.0-dev'), /累计范围：v2\.10\.0/);
+  const first = buildDevPreviewNotes('## [Unreleased]\n### 新增\n- 首次功能', '0.1.0-dev');
+  assert.match(first, /当前开发周期累计更新/);
+  assert.match(first, /首次功能/);
 });
 
 test('invalid preview summaries fail the same pre-build validation used by CI', () => {
@@ -155,13 +182,17 @@ test('a first successful dev image creates one prerelease with exact revision, d
     assert.deepEqual(fake.inspections, [`${build.image}:dev`, `${build.image}:revision-${revision}`]);
     assert.deepEqual(fake.calls.filter(call => call.includes('--method')).map(call => call[2]), ['POST']);
     assert.equal(fake.releases.length, 1);
-    assert.equal(fake.releases[0].name, 'BFB 开发预览 · 2.7.0-dev');
+    assert.equal(fake.releases[0].name, 'BFB 开发预览 · 2.7.0-dev · aaaaaaa');
     const notes = fs.readFileSync(file, 'utf8');
     assert.equal(fake.releases[0].body, notes);
     for (const value of [digest, revision, build.updatedAt, ':dev', '/actions/runs/42/attempts/2', `/blob/${revision}/CHANGELOG.md`, '配置代理来源']) {
       assert.ok(notes.includes(value), value);
     }
-    assert.doesNotMatch(notes, /完整实现细节|旧内容|:v2\.7\.0/);
+    assert.doesNotMatch(notes, /旧内容|:v2\.7\.0/);
+    assert.ok(notes.indexOf(build.updatedAt) < notes.indexOf('### 发布摘要'));
+    const displayed = parseRelease({ ...fake.releases[0], updated_at: build.updatedAt }, 'dev');
+    assert.ok(displayed);
+    for (const text of ['累计范围：v2.6.5', '完整实现细节', '统一主题', '修复旧回调']) assert.ok(displayed.notes.includes(text), text);
     // Rerunning updates the same page and does not recreate or move its tag.
     fake.calls.length = 0;
     publishDevPreview(build, developing, '2.7.0-dev', file, fake.operations);

@@ -33,7 +33,7 @@ export function buildImageNotes(changelog, version, ref) {
         throw new Error('Development target must be newer than every released CHANGELOG version');
       }
     }
-    return `## 开发版 ${version}\n\n${developmentPreviewBody(body)}\n`;
+    return `## 开发版 ${version}\n\n${developmentPreviewBody(body, previousRelease(lines, version.replace(/-dev$/, '')))}\n`;
   }
   if (!stableVersion.test(version)) {
     throw new Error('Main and application release tags require a stable package version; dev supports only X.Y.Z-dev');
@@ -67,14 +67,18 @@ function extractSection(lines, heading) {
   return heading + '\n\n' + content;
 }
 
-function releasedBody(changelog, version) {
+function releasedSection(changelog, version) {
   const lines = changelog.replace(/\r\n/g, '\n').split('\n');
   const matching = lines.map((line, index) => line.startsWith('## [' + version + '] - ') ? index : -1).filter(index => index >= 0);
   if (matching.length !== 1) throw new Error('Expected one matching CHANGELOG section');
   const start = matching[0] + 1;
   let end = lines.findIndex((line, index) => index >= start && line.startsWith('## '));
   if (end < 0) end = lines.length;
-  const section = lines.slice(start, end);
+  return lines.slice(start, end);
+}
+
+function releasedBody(changelog, version) {
+  const section = releasedSection(changelog, version);
   let body = section.join('\n').trim();
   const summaryHeading = '### 发布摘要';
   const upgradeHeading = '### 升级与回滚';
@@ -88,11 +92,13 @@ function releasedBody(changelog, version) {
 export function buildDevPreviewNotes(changelog, version) {
   // Use the same validation as the image build, including stable release preparation on dev.
   buildImageNotes(changelog, version, 'refs/heads/dev');
+  const { lines, body } = unreleasedSection(changelog);
+  const base = previousRelease(lines, version.replace(/-dev$/, ''));
   if (stableVersion.test(version)) {
-    return '当前为正式发布准备构建，尚不代表该版本已经正式发布。\n\n' + releasedBody(changelog, version);
+    return '当前为正式发布准备构建，尚不代表该版本已经正式发布。\n\n'
+      + developmentPreviewBody(releasedSection(changelog, version).join('\n').trim(), base);
   }
-  const { body } = unreleasedSection(changelog);
-  return developmentPreviewBody(body);
+  return developmentPreviewBody(body, base);
 }
 
 // The same Git commit may be built on dev, main and a formal tag. Embedded
@@ -101,15 +107,33 @@ export function buildCurrentReleaseNotes(changelog, version) {
   return developmentVersion.test(version) ? buildDevPreviewNotes(changelog, version) : releasedBody(changelog, version);
 }
 
-function developmentPreviewBody(body) {
+function previousRelease(lines, target) {
+  const compare = (left, right) => {
+    const a = left.split('.').map(BigInt), b = right.split('.').map(BigInt);
+    const index = a.findIndex((part, i) => part !== b[i]);
+    return index < 0 ? 0 : a[index] > b[index] ? 1 : -1;
+  };
+  let previous;
+  for (const line of lines) {
+    const version = /^## \[([^\]]+)\] - /.exec(line)?.[1];
+    if (version && stableVersion.test(version) && compare(version, target) < 0
+      && (!previous || compare(version, previous) > 0)) previous = version;
+  }
+  return previous;
+}
+
+function developmentPreviewBody(body, base) {
   const lines = body.split('\n');
+  const range = base ? `**累计范围：v${base} → 当前开发版**` : '**当前开发周期累计更新**';
   if (!lines.some(line => {
     const text = line.trim();
     return text && !text.startsWith('### ') && text !== '暂无。' && text !== '- 暂无。';
-  })) return '暂无未发布变更。';
-  if (!lines.includes('### 发布摘要')) return body || '暂无未发布变更。';
-  return ['### 发布摘要', '### 升级提醒'].filter(heading => lines.includes(heading))
-    .map(heading => extractSection(lines, heading)).join('\n\n');
+  })) return range + '\n\n暂无未发布变更。';
+  // Keep summary validation, but preserve every cumulative change section.
+  for (const heading of ['### 发布摘要', '### 升级提醒']) {
+    if (lines.includes(heading)) extractSection(lines, heading);
+  }
+  return range + '\n\n' + body;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

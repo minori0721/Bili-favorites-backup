@@ -65,11 +65,12 @@ export function publishDevPreview(build, changelog, version, notesFile, operatio
 
   const url = `https://github.com/${build.repository}`;
   const runUrl = `${url}/actions/runs/${build.runId}/attempts/${build.runAttempt}`;
-  const title = `BFB 开发预览 · ${version}`;
+  const title = `BFB 开发预览 · ${version} · ${build.revision.slice(0, 7)}`;
   const metadata = `<!-- bfb-build:${JSON.stringify({ version, revision: build.revision })} -->\n`;
-  const body = metadata + `这是持续更新的开发预览，供愿意测试新改动的用户使用；正式部署请选择正式版本。\n\n${changes}\n\n` +
-    `### 构建与镜像\n\n- 程序版本：\`${version}\`\n- 更新时间：${build.updatedAt}\n` +
-    `- 对应提交：[\`${build.revision}\`](${url}/commit/${build.revision})\n- [本次构建与验收记录](${runUrl})\n` +
+  const body = metadata + `这是持续更新的开发预览，供愿意测试新改动的用户使用；正式部署请选择正式版本。\n\n` +
+    `### 当前构建\n\n- 程序版本：\`${version}\`\n- 更新时间：${build.updatedAt}\n` +
+    `- 对应提交：[\`${build.revision}\`](${url}/commit/${build.revision})\n\n${changes}\n\n` +
+    `### 镜像与验收\n\n- [本次构建与验收记录](${runUrl})\n` +
     `- 滚动镜像：\`${build.image}:dev\`\n- 本次固定镜像：\`${build.image}@${build.digest}\`\n\n` +
     `### 完整记录\n\n- [本次 CHANGELOG](${url}/blob/${build.revision}/CHANGELOG.md)\n` +
     `- [部署与升级文档](https://minori0721.github.io/Bili-favorites-backup/guide/docker)\n\n` +
