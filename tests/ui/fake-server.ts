@@ -2,16 +2,18 @@ import express from "express";
 import type { Socket } from "node:net";
 import { renderAppPage } from "../../src/web.js";
 import { serveAppAsset } from "../../src/web/server/assets.js";
-import { renderReleaseNotes } from "../../src/release-notes.js";
 import {createUpUiFixture} from './up-fixture.js';
 import {createUpSubscriptionRouter} from '../../src/http/up-subscriptions.js';
 import {createHttpErrorHandler} from '../../src/http/request-boundary.js';
+import { updatesFixture, isUpdateScenario, type UpdateScenario } from '../fixtures/updates.js';
 
 const app = express();
 const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
 const detailPreviewDelay = process.env.BFB_DETAILS_PREVIEW === '1' ? 650 : 0;
 
 type TestState = {
+  updatesMode: UpdateScenario;
+  updateRequests: number;
   previewCount: number;
   startCount: number;
   accountStartCount: number;
@@ -63,6 +65,8 @@ type TestState = {
 
 function initialState(): TestState {
   return {
+    updatesMode: process.env.BFB_UPDATE_PREVIEW === '1' ? 'dev-update' : 'current',
+    updateRequests: 0,
     previewCount: 0,
     startCount: 0,
     accountStartCount: 0,
@@ -231,6 +235,7 @@ app.get('/__up/:kind/:id.svg',(req,res)=>{
 
 app.get("/__test/ready", (_request, response) => response.json({ ready: true }));
 app.post("/__test/reset", async (request, response) => {
+  const updatesMode: unknown = request.body?.updatesMode;
   await upFixture.reset();
   state = initialState();
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
@@ -256,19 +261,18 @@ app.post("/__test/reset", async (request, response) => {
   if (request.body?.loginMode === "first_complete_then_pending") state.loginMode = "first_complete_then_pending";
   state.onlineSourceRace = request.body?.onlineSourceRace === true;
   state.onlineDuplicateMode = request.body?.onlineDuplicateMode === true;
+  if (isUpdateScenario(updatesMode)) state.updatesMode = updatesMode;
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
 
 app.get('/assets/app/:name', serveAppAsset);
 app.get("/", (_request, response) => response.set('Cache-Control','no-store').type("html").send(renderAppPage()));
-app.get("/api/updates", (_request, response) => response.json({ success: true, data: {
-  comparison: "reference", checkedAt: new Date().toISOString(), error: null,
-  release: { version: "v2.5.4", publishedAt: "2026-09-06T00:00:00Z", notes: "隔离预览数据，不代表 GitHub 实时发布状态。\n\n修复恢复状态展示，优化弹窗与任务看板。",
-    notesHtml: renderReleaseNotes('隔离预览数据，不代表 GitHub 实时发布状态。\n\n### 主要变化\n- **恢复**状态展示修复\n- 弹窗与任务看板优化\n\n### 升级注意\n配置与数据保持不变。'),
-    url: "https://github.com/minori0721/Bili-favorites-backup/releases/tag/v2.5.4" },
-  releasesUrl: "https://github.com/minori0721/Bili-favorites-backup/releases",
-} }));
+app.get('/api/updates', (request, response) => {
+  state.updateRequests++;
+  if (isUpdateScenario(request.query.scenario)) state.updatesMode = request.query.scenario;
+  response.json({ success: true, data: updatesFixture(state.updatesMode) });
+});
 app.get("/api/config", async (_request, response) => {
   state.configRequests += 1;
   if (state.configFailuresRemaining > 0) {

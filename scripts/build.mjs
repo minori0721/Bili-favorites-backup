@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { buildWeb } from './build-web.mjs';
+import fs from 'node:fs';
+import { buildCurrentReleaseNotes } from './release-notes.mjs';
 import './check-architecture.mjs';
 
 if (process.exitCode) process.exit(process.exitCode);
@@ -12,5 +14,11 @@ tsc(['-p','tsconfig.json','--noEmit']);
 tsc(['-p','tsconfig.web.json','--noEmit']);
 await buildWeb();
 tsc(['-p','tsconfig.json']);
+const { appInfo } = await import('../dist/app-info.js');
+const changelog = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+const notes = buildCurrentReleaseNotes(changelog, appInfo.version);
+fs.writeFileSync(new URL('../dist/build-release.json', import.meta.url), JSON.stringify({
+  version: appInfo.version, revision: appInfo.revision, notes,
+}));
 const { readAssetManifest } = await import('../dist/web/server/assets.js');
 readAssetManifest();

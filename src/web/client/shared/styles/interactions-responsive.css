@@ -83,7 +83,8 @@
       *,*::before,*::after { animation-duration:0.01ms!important; animation-iteration-count:1!important; transition-duration:0.01ms!important; scroll-behavior:auto!important; }
     }
     @supports not ((backdrop-filter: blur(1px))) {
-      header,.card,.modal .panel { background:var(--panel); }
+      header,.card { background:var(--panel); }
+      .modal .panel { background:var(--dialog-body-background); }
       .modal { background:rgba(26,47,45,0.58); }
     }
     @media (max-width: 760px) {

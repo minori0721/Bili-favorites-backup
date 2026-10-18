@@ -70,11 +70,11 @@
     .recovery-issues-entry.has-issues { border-color:#D98B36; color:#8D4D08; background:#FFF7EA; }
     .recovery-issues-entry.has-danger { border-color:#C94F4F; color:#9B2C2C; background:#FFF0F0; }
     .recovery-issues-modal { padding:18px; align-items:stretch; }
-    .recovery-issues-shell { width:min(1220px,100%); height:min(820px,calc(100dvh - 36px)); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:rgba(244,248,247,0.92); border:1px solid var(--glass-border); border-radius:var(--radius-dialog); box-shadow:var(--shadow-dialog); backdrop-filter:var(--glass-blur); }
+    .recovery-issues-shell { width:min(1220px,100%); height:min(820px,calc(100dvh - 36px)); margin:auto; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; background:var(--dialog-body-background); border:1px solid var(--border); border-radius:var(--radius-dialog); box-shadow:var(--shadow-dialog); }
     .recovery-issues-shell.is-empty { height:min(520px,calc(100dvh - 36px)); }
-    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid var(--dialog-header-border); background:var(--dialog-header-background); }
+    .recovery-issues-header { min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 18px; border-bottom:1px solid var(--dialog-header-border); background:var(--dialog-header-background); backdrop-filter:var(--glass-blur); }
     .recovery-issues-heading { min-width:0; }
-    .recovery-issues-heading h2 { margin:0; font-size:18px; }
+    .recovery-issues-heading h2 { margin:0; font-size:18px; color:var(--dialog-heading-color); }
     .recovery-issues-heading p { margin:4px 0 0; color:#60736F; font-size:12px; line-height:1.45; }
     .recovery-issues-summary { min-width:132px; padding:7px 10px; border:1px solid #D7E5E1; border-radius:7px; background:#F4F9F7; color:#3D5D57; font-size:12px; font-weight:800; text-align:center; }
     .recovery-issues-summary:empty { visibility:hidden; }

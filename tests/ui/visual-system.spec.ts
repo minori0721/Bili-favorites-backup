@@ -61,6 +61,9 @@ test("main workspace and every standard dialog use the shared visual system", as
         backdrop: style(card).backdropFilter,
         shadow: style(card).boxShadow,
       })),
+      chrome: {
+        backdrop: style(document.querySelector('body > header')!).backdropFilter,
+      },
       dialogs: panels.map((panel) => {
         const title = panel.querySelector(":scope > h2, :scope > .section-title-row");
         const actions = panel.querySelector(":scope > .modal-actions");
@@ -69,7 +72,9 @@ test("main workspace and every standard dialog use the shared visual system", as
           sizeClass: [...panel.classList].find((name) => /^panel-(sm|md|lg|xl)$/.test(name)) || "",
           radius: style(panel).borderRadius,
           background: style(panel).backgroundColor,
+          backdrop: style(panel).backdropFilter,
           titleBackground: title ? style(title).backgroundColor : "missing",
+          titleColor: title ? style(title.matches('h2') ? title : title.querySelector('h2,h3') || title).color : "missing",
           titleBackdrop: title ? style(title).backdropFilter : "missing",
           titleBorder: title ? style(title).borderBottomWidth : "missing",
           titlePosition: title ? style(title).position : "missing",
@@ -115,16 +120,17 @@ test("main workspace and every standard dialog use the shared visual system", as
   expect(audit.cards.every((card) => card.background.startsWith("rgba(") && card.backdrop.includes("blur") && card.shadow !== "none")).toBe(true);
   expect(audit.dialogs.length).toBeGreaterThanOrEqual(16);
   expect(audit.dialogs.every((dialog) => dialog.sizeClass && dialog.radius === "24px")).toBe(true);
-  expect(audit.dialogs.every((dialog) => dialog.background.startsWith("rgba(") && dialog.background !== "rgba(0, 0, 0, 0)")).toBe(true);
+  expect(audit.dialogs.every((dialog) => dialog.background === "rgb(238, 250, 248)" && dialog.backdrop === "none")).toBe(true);
   const actionDialogs = audit.dialogs.filter((dialog) => dialog.id !== "upWorkspaceModal");
   const headerBackground = audit.dialogs.find((dialog) => dialog.id === 'upWorkspaceModal')?.titleBackground;
-  expect(headerBackground).not.toBe('rgba(0, 0, 0, 0)');
-  expect(actionDialogs.every((dialog) => dialog.titleBackground === headerBackground && dialog.actionsBackground === "rgba(0, 0, 0, 0)")).toBe(true);
-  expect(actionDialogs.every((dialog) => dialog.titleBackdrop === "none" && dialog.actionsBackdrop === "none")).toBe(true);
+  expect(headerBackground).toBe('rgb(249, 253, 253)');
+  expect(audit.dialogs.every((dialog) => dialog.titleBackground === headerBackground && dialog.titleColor === 'rgb(36, 118, 111)')).toBe(true);
+  expect(actionDialogs.every((dialog) => dialog.actionsBackground === headerBackground)).toBe(true);
+  expect(actionDialogs.every((dialog) => dialog.titleBackdrop === audit.chrome.backdrop && dialog.actionsBackdrop === audit.chrome.backdrop)).toBe(true);
   expect(audit.dialogs.every((dialog) => dialog.titleBorder === "1px" && dialog.titlePosition === (dialog.id === 'updatesModal' ? 'static' : dialog.id === 'upWorkspaceModal' ? 'relative' : 'sticky'))).toBe(true);
   expect(actionDialogs.every((dialog) => dialog.actionsBorder === "1px" && dialog.actionsPosition === (dialog.id === 'updatesModal' ? 'static' : 'sticky'))).toBe(true);
   expect(audit.dialogs.find((dialog) => dialog.id === "upWorkspaceModal")).toMatchObject({
-    actionsBackground: "missing", titleBackdrop: "none", titlePosition: "relative", innerScroll: "auto", panelOverflow: "hidden",
+    actionsBackground: "missing", titleBackdrop: audit.chrome.backdrop, titlePosition: "relative", innerScroll: "auto", panelOverflow: "hidden",
   });
   expect(audit.dialogs.find(dialog => dialog.id === 'updatesModal')).toMatchObject({ innerScroll: 'auto', panelOverflow: 'hidden' });
   expect(audit.controls.primaryRadius).toBe("14px");
@@ -193,7 +199,7 @@ test("mobile standard dialogs stay inside the viewport with a reachable sticky f
   expect(metrics.panelRadius).toBe(metrics.isMobileSheet ? "20px" : "24px");
 });
 
-test("full-screen workspaces share glass chrome while the player keeps its immersive theme", async ({ page, browserProblems }, testInfo) => {
+test("full-screen workspaces share soft white chrome while the player keeps its immersive theme", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);
   await boot(page);
@@ -223,6 +229,7 @@ test("full-screen workspaces share glass chrome while the player keeps its immer
 
   expect(archiveChrome.closeRadius).toBe("6px");
   expect(recoveryChrome.closeRadius).toBe("6px");
+  expect(archiveChrome.topbarBackground).toBe('rgb(249, 253, 253)');
   expect(archiveChrome.topbarBackground).toBe(recoveryChrome.headerBackground);
   expect(await page.locator(".playback-shell").evaluate((player) => getComputedStyle(player).backgroundColor)).not.toBe(archiveChrome.topbarBackground);
 });

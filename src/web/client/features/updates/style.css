@@ -1,0 +1,36 @@
+header .update-available { min-width:0; max-width:260px; flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-radius:var(--radius-control); border-color:rgba(57,197,187,.35); background:var(--accent-soft); color:#24766F; font-size:12px; box-shadow:none; }
+.update-available[hidden],.updates-channel[hidden] { display:none; }
+.update-available-compact { display:none; }
+header:has(.update-available:not([hidden])) { flex-wrap:nowrap; }
+header:has(.update-available:not([hidden])) .app-brand { flex:1 1 0; gap:8px; }
+#versionInfoBtn { min-width:40px; flex:0 1 auto; }
+.updates-versions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; padding:6px 0 14px; border-bottom:1px solid var(--border); }
+.updates-versions > div { min-width:0; }
+.updates-eyebrow { display:block; color:var(--muted); font-size:12px; margin-bottom:6px; }
+.updates-versions strong { display:block; font-size:15px; line-height:1.7; overflow-wrap:anywhere; }
+.updates-commit { font-size:12px; overflow-wrap:anywhere; margin:10px 0 14px; }
+.updates-channel { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); font-size:13px; margin-bottom:12px; }
+#updatesChannel { width:auto; min-width:116px; margin:0; padding:7px 28px 7px 10px; font-size:13px; }
+#updatesStatus { margin:10px 0 6px; font-size:14px; line-height:1.7; }
+#updatesTime,#updatesReleaseDate { font-size:12px; margin:6px 0 14px; }
+.updates-tabs { display:flex; gap:4px; padding:4px; border:1px solid var(--border); background:var(--surface-strong); border-radius:var(--radius-control); margin:18px 0; }
+.updates-tabs button { flex:1; min-width:0; min-height:38px; border:1px solid transparent; border-radius:4px; font:inherit; font-size:13px; font-weight:600; color:var(--muted); background:transparent; cursor:pointer; transition:background-color .18s,color .18s,border-color .18s; }
+.updates-tabs button[aria-selected="true"] { color:#24766F; background:var(--panel); border-color:var(--border); box-shadow:0 2px 5px rgba(26,47,45,.04); }
+.updates-tabs button:hover { color:#24766F; }
+.updates-tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+#updatesReleaseTitle { font-size:16px; line-height:1.7; margin:16px 0 6px; overflow-wrap:anywhere; }
+#updatesNotesPanel { min-width:0; }
+@media (max-width:1000px) {
+  #updateAvailableText { display:none; }
+  .update-available-compact { display:inline; }
+  header #updateAvailableBtn { flex:0 0 auto; padding:6px 8px; }
+}
+@media (max-width:600px) {
+  header:has(.update-available:not([hidden])) { padding:12px 10px; gap:8px; }
+  header:has(.update-available:not([hidden])) h1 { font-size:18px; }
+  header:has(.update-available:not([hidden])) .github-link { display:none; }
+  header:has(.update-available:not([hidden])) #versionInfoBtn { max-width:115px; padding-inline:5px; }
+  header:has(.update-available:not([hidden])) #logoutBtn { padding-inline:8px; font-size:12px; }
+  .updates-versions { gap:12px; }
+  .updates-versions strong { font-size:13px; }
+}

@@ -45,16 +45,16 @@ test('failed whole cleanup is visible on home and retry works without the subscr
   await page.request.post('/__test/up-deletion-failure',{data:{enabled:false}});
   await page.locator('#upRemovalOperations').getByRole('button',{name:'重试清理'}).click();await expect(page.locator('#upRemovalOperations')).toContainText('清理完成');
 });
-test('dialog titles share the pale blue surface while the player keeps its dark surface',async({page})=>{
+test('dialog titles share the soft white surface while the player keeps its dark surface',async({page})=>{
   await page.locator('#upHelpBtn').click();
   const audit=await page.evaluate(()=>{
     const color=getComputedStyle(document.getElementById('upHelpTitle')!).backgroundColor;
     const titles=[...document.querySelectorAll('.modal>.panel>h2,.modal>.panel>.section-title-row:first-child')];
     return {color,headers:titles.map(item=>getComputedStyle(item).backgroundColor),player:getComputedStyle(document.querySelector('.playback-shell')!).backgroundColor,overflow:document.documentElement.scrollWidth>innerWidth};
   });
-  expect(audit.color).not.toBe('rgba(0, 0, 0, 0)');expect(audit.headers.every(color=>color===audit.color)).toBe(true);expect(audit.player).not.toBe(audit.color);expect(audit.overflow).toBe(false);
+  expect(audit.color).toBe('rgb(249, 253, 253)');expect(audit.headers.every(color=>color===audit.color)).toBe(true);expect(audit.player).not.toBe(audit.color);expect(audit.overflow).toBe(false);
 });
-test('UP dialogs keep four round corners, full-width tinted headings and an inset scrolling body',async({page})=>{
+test('UP dialogs keep four round corners, full-width soft white headings and an inset scrolling body',async({page})=>{
   await page.getByRole('button',{name:'移除 大象放映室 的订阅',exact:true}).click();
   const geometry=await page.locator('#upRemovalModal .panel').evaluate(panel=>{
     const style=getComputedStyle(panel),header=panel.querySelector('.up-dialog-heading')!,body=panel.querySelector('.up-dialog-body')!;
@@ -118,7 +118,7 @@ test('archive has an UP source directory and phone layout stays contained',async
   await expect(page.locator('#archiveLibraryResults')).toContainText('我们用一台摄影机');
   const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth);expect(overflow).toBe(false);
 });
-test('workspace keeps its tinted header and single close reachable after scrolling, restoring focus',async({page})=>{
+test('workspace keeps its soft white header and single close reachable after scrolling, restoring focus',async({page})=>{
   const trigger=page.locator('#upHomeList .up-subscription-card').filter({hasText:'影视飓风'}).getByRole('button',{name:'投稿选择'});
   const workspace=page.locator('#upWorkspaceModal');
   const close=workspace.getByRole('button',{name:'关闭 UP 订阅',exact:true});
@@ -142,9 +142,7 @@ test('workspace keeps its tinted header and single close reachable after scrolli
   expect(header.contentTop).toBeGreaterThan(header.headerBottom);
   expect(header.rightInset).toBeGreaterThanOrEqual(6);expect(header.bottomInset).toBeGreaterThanOrEqual(14);
   expect(header.rightInset).toBeLessThan(8);expect(Math.abs(header.cardLeft-header.avatarLeft)).toBeLessThan(1);
-  expect(header.background).toMatch(/^color\(srgb [\d.]+ [\d.]+ [\d.]+\)$/);
-  const channels=header.background.match(/[\d.]+/g)!.map(Number);
-  expect(channels[1]).toBeGreaterThan(channels[0]);
+  expect(header.background).toBe('rgb(249, 253, 253)');
   await close.click();await expect(workspace).not.toHaveClass(/active/);await expect(trigger).toBeFocused();
   await trigger.click();await expect(workspace).toHaveClass(/active/);
   await page.keyboard.press('Escape');await expect(workspace).not.toHaveClass(/active/);await expect(trigger).toBeFocused();

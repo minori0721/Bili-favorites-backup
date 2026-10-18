@@ -95,6 +95,12 @@ export function buildDevPreviewNotes(changelog, version) {
   return developmentPreviewBody(body);
 }
 
+// The same Git commit may be built on dev, main and a formal tag. Embedded
+// filesystem content must remain identical across those refs.
+export function buildCurrentReleaseNotes(changelog, version) {
+  return developmentVersion.test(version) ? buildDevPreviewNotes(changelog, version) : releasedBody(changelog, version);
+}
+
 function developmentPreviewBody(body) {
   const lines = body.split('\n');
   if (!lines.some(line => {

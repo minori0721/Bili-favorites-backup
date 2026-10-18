@@ -11,6 +11,7 @@ npm-debug.log
 *.log
 .codex-*
 /output
+/work
 /.tmp
 /.test-runtime
 /.preview-root

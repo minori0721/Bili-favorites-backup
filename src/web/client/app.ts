@@ -98,7 +98,9 @@ export function createApplication() {
     const openPathMigration = pathMigrationFeature.open;
     const stopPathMigrationPolling = pathMigrationFeature.deactivate;
     // ---- Event Bindings ----
-    const updatesFeature = createUpdatesController({ root: document, request: transport.request, openModal, closeModal });
+    const updatesFeature = createUpdatesController({ root: document, request: transport.request, openModal, closeModal,
+        notify: message => showToast(message, 'info'),
+    });
     // Rename and quality upgrade buttons
     const accountList = createAccountList({ root: document, api, formatDateTime,
         status: (message, type, retry) => renderRequestStatus('userListStatus', message, type, retry),

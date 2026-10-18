@@ -14,6 +14,7 @@ const scopeFiles = {
     'tests/promote-image.test.ts',
     'tests/image-layer-report.test.ts',
     'tests/update-check.test.ts',
+    'tests/update-channels.test.ts',
   ],
   quick: [
     'tests/domain-decoders.test.ts',

@@ -38,7 +38,8 @@
 - `src/web/client/bootstrap.ts` 是浏览器构建入口，`app.ts` 组装各功能。旧脚本已删除，客户端全部通过严格 TypeScript 检查；页面控制与展示辅助能力分别位于 `shared/shell.ts`、`shared/presentation.ts`。
 - `features/archive/library.ts` 拥有归档导航、搜索、选择、详情及释放操作；`features/playback/controller.ts` 拥有播放器实例、队列、搜索、交付回退和资源释放。播放器事件与异步结果均核验当前实例或请求代次。
 - `features/task-center/controller.ts` 组装日志、看板、待处理和媒体规格；`recovery-center.ts` 与 `media-retry.ts` 分别拥有动作确认、请求取消和轮询，不通过浏览器全局函数连接业务。
-- `app.css` 只声明有序样式导入。功能样式放在对应目录，共用弹窗、内容工作区和跨功能响应式规则放在 `shared/styles`；拆分后的完整压缩 CSS 与拆分前逐字一致。
+- `app.css` 只声明有序样式导入。功能样式放在对应目录，共用弹窗、内容工作区和跨功能响应式规则放在 `shared/styles`；主题色通过公共变量统一，功能模块不另造近似色。
+- 同类弹窗标题栏和操作栏使用固定 `#f9fdfd` 的 `--dialog-header-background`，内容区使用固定 `#eefaf8` 的 `--dialog-body-background`，匹配主页的柔白与淡绿观感，避免相同透明度因底色不同而产生色差。标题保持青绿；白底次要操作采用青绿描边，主要确认和危险操作分别保留实心和红色语义；滚动区保持在标题与操作栏之间。
 - `features/updates` 管理版本更新请求、冷却时间和按钮事件。
 - `features/accounts` 管理账号列表、扫码登录、收藏选择、账号操作和账号删除弹窗；请求代次、取消控制器、提交互斥和封面观察器由各控制器所有。公开账号 DTO 在 `src/shared/api/accounts.ts` 验证，不携带凭据。
 - `features/settings/controller.ts` 组装设置读取、保存、存储检查、编码顺序与模板编辑。响应在 `contract.ts` 完整校验后才写入表单；读取与保存各自取消并拒绝迟到响应。编码顺序由设置模块唯一持有，模板标签随加载和手工编辑同步。销毁时解绑事件、清除提示及焦点计时器。导入导出、重命名、画质维护分别由独立控制器持有状态。
@@ -172,7 +173,13 @@ npm version 2.7.1-dev --no-git-tag-version
 - dev 切换成正式号时，按正式发布准备校验；main 与正式标签执行同样的正式说明检查，且 `Unreleased` 只能保留空内容或占位标题。
 - 包版本与锁文件的两个根版本始终一致。正式标签额外要求标签、版本号和正式说明一致，不接受开发标签。手动构建其他分支时按包版本执行开发期或正式说明校验，保留原有 SHA 镜像构建能力，不更新 `dev` / `latest` 部署标签。
 
-正式标签的 Release 仍由现有成功镜像工作流创建。开发版的更新检查只展示最新正式版供参考，不声称该开发提交已经是最新正式版。
+正式标签的 Release 仍由现有成功镜像工作流创建。`UpdateCheckService` 独立缓存稳定与开发发布：正式版本只查稳定通道，dev 同时查询开发预览和正式发布；发布身份、分支最新提交和运行中构建严格区分。
+
+`update-release.ts` 校验 GitHub 发布边界并渲染安全 Markdown；开发预览携带 `bfb-build` JSON 注释，兼容首次滚动页的固定版本/提交格式。dev 提交不同后才用 compare API 判断前后，相同不重复提醒，领先不降级，分叉或未知不声称有更新。正式版可用属于通道切换提示，不能冒充 `:dev` 的常规升级。
+
+构建把 `buildCurrentReleaseNotes` 的结果写入 `dist/build-release.json`。该文件仅包含包版本、提交与说明，不包含分支、构建时间或最终镜像摘要，保持同一 Git 提交在 dev/main/tag 上的文件系统产物一致，沿用镜像层复用验收。`current-release.ts` 核对运行版本和提交后读取；缺失或损坏仅降级版本说明，不阻止备份服务。
+
+浏览器更新控制器负责共享一次请求、前台自动检查、弹窗请求取消、冷却计时器与资源释放。已提醒身份按站点与发布通道存入 localStorage，仅聚焦前台页面轻提示；存储不可用时在页面内去重。弹窗关闭不删除更新标记，销毁时停止全部检查和监听。前后端通过 `shared/api/updates.ts` 的 DTO 与浏览器边界校验协作。
 
 #### 滚动开发预发布
 

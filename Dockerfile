@@ -31,6 +31,7 @@ RUN node scripts/generate-bbdown-build-info.mjs \
   --release "$BBDOWN_RELEASE" \
   --commit "$BBDOWN_COMMIT" \
   --sha256 "$BBDOWN_SHA256"
+ARG BFB_BUILD_REVISION
 RUN npm run build
 
 FROM debian:bookworm-slim AS ffmpeg

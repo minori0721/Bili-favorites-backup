@@ -5,11 +5,34 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { buildAppInfo } from '../src/app-info.js';
-import { buildImageNotes, buildReleaseNotes } from '../scripts/release-notes.mjs';
+import { buildImageNotes, buildReleaseNotes, buildCurrentReleaseNotes } from '../scripts/release-notes.mjs';
+import { readCurrentRelease } from '../src/current-release.js';
 import { createTestDir, removeTestDir } from './helpers.js';
 
 const developing = '# 更新日志\n\n## [Unreleased]\n\n### 新增\n- 新订阅功能\n\n## [2.6.5] - 2026-10-05\n\n- 旧版内容\n';
 const prepared = '# 更新日志\n\n## [Unreleased]\n\n## [2.7.0] - 2026-10-18\n\n### 发布摘要\n- 新订阅功能\n### 升级与回滚\n- 升级前备份数据\n';
+
+test('embedded notes are deterministic across refs and remain bound to the exact build', async () => {
+  const dir = await createTestDir('embedded-release-');
+  const file = path.join(dir, 'build-release.json');
+  const revision = 'a'.repeat(40);
+  const notes = buildCurrentReleaseNotes(prepared, '2.7.0');
+  assert.doesNotMatch(notes, /正式发布准备构建|镜像与完整记录|bili-favorites-backup:v/);
+  assert.match(buildCurrentReleaseNotes(developing, '2.7.0-dev'), /新订阅功能/);
+  try {
+    await fs.writeFile(file, JSON.stringify({ version: '2.7.0', revision, notes }));
+    for (const buildRef of ['dev', 'main', 'v2.7.0']) {
+      const info = buildAppInfo({ BFB_BUILD_REF: buildRef, BFB_BUILD_REVISION: revision }, { version: '2.7.0' });
+      assert.equal(readCurrentRelease(info, file)?.notes, notes);
+    }
+    const info = buildAppInfo({ BFB_BUILD_REF: 'dev', BFB_BUILD_REVISION: 'b'.repeat(40) }, { version: '2.7.0' });
+    assert.equal(readCurrentRelease(info, file), null);
+    await fs.writeFile(file, '{bad json');
+    assert.equal(readCurrentRelease(info, file), null);
+    await fs.unlink(file);
+    assert.equal(readCurrentRelease(info, file), null);
+  } finally { await removeTestDir(dir); }
+});
 
 test('development image validation selects only Unreleased and accepts an empty new cycle', () => {
   const notes = buildImageNotes(developing, '2.7.0-dev', 'refs/heads/dev');

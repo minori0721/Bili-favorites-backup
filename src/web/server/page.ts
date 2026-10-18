@@ -247,6 +247,7 @@ function getAppHeader() {
     <div class="app-brand">
       <h1>B站收藏夹同步</h1>
       <button type="button" id="versionInfoBtn" class="version-link header-meta" title="版本与更新">${escapeHtml(appInfo.versionLabel)}</button>
+      <button type="button" id="updateAvailableBtn" class="update-available" hidden><span id="updateAvailableText"></span><span class="update-available-compact" aria-hidden="true">有更新</span></button>
     </div>
     <div class="header-actions">
       ${getGithubLink("header-meta")}
@@ -415,14 +416,22 @@ function getModals() {
     <div class="panel panel-md">
       <h2 id="updatesModalTitle">版本与更新</h2>
       <div class="updates-body" tabindex="0" aria-label="版本信息与发布说明">
-      <p>当前运行：${escapeHtml(appInfo.versionLabel)}</p>
-      <p class="muted">构建提交：${escapeHtml(appInfo.revision || "未提供")}</p>
+      <div class="updates-versions">
+        <div><span class="updates-eyebrow">当前运行</span><strong id="updatesRunning">${escapeHtml(appInfo.versionLabel)}</strong></div>
+        <div><span class="updates-eyebrow">可用版本</span><strong id="updatesLatestVersion">等待检查</strong></div>
+      </div>
+      <p class="updates-commit muted">构建提交：<span id="updatesRevision">${escapeHtml(appInfo.revision || "未提供")}</span></p>
+      <label id="updatesChannelRow" class="updates-channel" hidden>查看发布通道<select id="updatesChannel"><option value="dev">开发版</option><option value="stable">正式版</option></select></label>
       <p id="updatesStatus" role="status" aria-live="polite"></p>
       <p id="updatesTime" class="muted"></p>
+      <div class="updates-tabs" role="tablist" aria-label="版本说明"><button type="button" id="updatesLatestTab" role="tab" aria-controls="updatesNotesPanel" aria-selected="false" tabindex="-1">最新版本说明</button><button type="button" id="updatesCurrentTab" role="tab" aria-controls="updatesNotesPanel" aria-selected="true">当前版本说明</button></div>
+      <section id="updatesNotesPanel" role="tabpanel" aria-labelledby="updatesCurrentTab">
       <h3 id="updatesReleaseTitle">正式版发布说明</h3>
+      <p id="updatesReleaseDate" class="muted"></p>
       <div id="updatesNotes"></div>
       <p id="updatesTruncated" class="muted" hidden>内容已截取，可前往发布页面阅读完整说明。</p>
       <p><a id="updatesChangelogLink" class="version-link" href="${escapeHtml(appInfo.repositoryUrl)}/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">查看版本记录 ↗</a></p>
+      </section>
       </div>
       <div class="row modal-actions">
         <button id="closeUpdatesBtn" class="ghost">关闭</button>

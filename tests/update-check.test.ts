@@ -38,8 +38,8 @@ test("failure keeps last successful data and respects rate limiting", async () =
   assert.ok(!JSON.stringify(bad).includes("secret"));
   now += 61000; await service.check(true); assert.equal(calls, 2);
 });
-test("dev and local builds, including next-version development builds, are reference only", async () => {
-  for (const [ref, version] of [["dev", "2.0.0"], ["local", "2.0.0"], ["dev", "2.7.0-dev"], ["local", "2.7.0-dev"]]) {
+test("local builds remain reference only and invalid stable sources remain explicit", async () => {
+  for (const [ref, version] of [["local", "2.0.0"], ["local", "2.7.0-dev"]]) {
     const service = new UpdateCheckService((async () => Response.json(release)) as typeof fetch, Date.now,
       buildAppInfo({ BFB_BUILD_REF: ref }, { version }));
     assert.equal((await service.check()).comparison, "reference");
