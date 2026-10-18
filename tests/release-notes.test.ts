@@ -48,6 +48,7 @@ test('publishing is idempotent and rerunning an old tag cannot downgrade Latest'
   assert.equal(calls.length, 2);
   assert.ok(calls[1].includes('--latest=false'));
   assert.ok(calls[1].includes('--verify-tag'));
+  assert.equal(calls[1][calls[1].indexOf('--title') + 1], 'v2.9.0');
   const existing: string[][] = [];
   publishRelease('v2.9.0', 'notes.md', (args: string[]) => { existing.push(args); return JSON.stringify([[{ tag_name: 'v2.9.0' }]]); });
   assert.equal(existing.length, 1);

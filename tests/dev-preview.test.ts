@@ -182,7 +182,7 @@ test('a first successful dev image creates one prerelease with exact revision, d
     assert.deepEqual(fake.inspections, [`${build.image}:dev`, `${build.image}:revision-${revision}`]);
     assert.deepEqual(fake.calls.filter(call => call.includes('--method')).map(call => call[2]), ['POST']);
     assert.equal(fake.releases.length, 1);
-    assert.equal(fake.releases[0].name, 'BFB 开发预览 · 2.7.0-dev · aaaaaaa');
+    assert.equal(fake.releases[0].name, '开发预览 · 2.7.0-dev · aaaaaaa');
     const notes = fs.readFileSync(file, 'utf8');
     assert.equal(fake.releases[0].body, notes);
     for (const value of [digest, revision, build.updatedAt, ':dev', '/actions/runs/42/attempts/2', `/blob/${revision}/CHANGELOG.md`, '配置代理来源']) {

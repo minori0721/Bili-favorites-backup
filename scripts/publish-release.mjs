@@ -22,7 +22,7 @@ export function publishRelease(tag, notesFile, gh = args => execFileSync('gh', a
     if (existing.draft || existing.prerelease) throw new Error('Existing release needs manual review');
     return 'Existing release preserved';
   }
-  gh(['release', 'create', tag, '--verify-tag', '--title', 'BFB ' + tag, '--notes-file', notesFile,
+  gh(['release', 'create', tag, '--verify-tag', '--title', tag, '--notes-file', notesFile,
     '--latest=' + shouldMakeLatest(tag, releases)]);
   return 'Release created';
 }

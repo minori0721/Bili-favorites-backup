@@ -65,7 +65,7 @@ export function publishDevPreview(build, changelog, version, notesFile, operatio
 
   const url = `https://github.com/${build.repository}`;
   const runUrl = `${url}/actions/runs/${build.runId}/attempts/${build.runAttempt}`;
-  const title = `BFB 开发预览 · ${version} · ${build.revision.slice(0, 7)}`;
+  const title = `开发预览 · ${version} · ${build.revision.slice(0, 7)}`;
   const metadata = `<!-- bfb-build:${JSON.stringify({ version, revision: build.revision })} -->\n`;
   const body = metadata + `这是持续更新的开发预览，供愿意测试新改动的用户使用；正式部署请选择正式版本。\n\n` +
     `### 当前构建\n\n- 程序版本：\`${version}\`\n- 更新时间：${build.updatedAt}\n` +
