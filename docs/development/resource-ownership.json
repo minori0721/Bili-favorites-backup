@@ -1,6 +1,22 @@
 {
   "resources": [
     {
+      "module": "media-probe.ts",
+      "ownerSymbol": "MediaProbeService",
+      "resourceSymbols": ["jobs", "activeByUser", "ttlMs", "previewCache", "nextPreviewAt"],
+      "stop": "应用关闭通过 shutdownActiveDownloads 终止受跟踪的 BBDown 子进程，探测 Promise 结算后释放 activeByUser；无后台轮询计时器，结果随实例释放。",
+      "lateCallback": "预览缓存绑定账号授权、API 与选择设置的散列；失败结果不复用，过期结果清除，探测结果不授予上传、替换或清理权限。",
+      "rebind": "维护准入排空活动探测后才能替换数据库；缓存不保存连接，账号或设置变化产生新的身份键。"
+    },
+    {
+      "module": "web/client/features/settings/quality-probe.ts",
+      "ownerSymbol": "createQualityPreviewProbe",
+      "resourceSymbols": ["rows", "pending", "controller", "timer", "finishWait", "running", "disposed", "observer"],
+      "stop": "stop 幂等中止当前 HTTP 请求、解除视区和控件监听、清除等待计时器并结算等待 Promise、丢弃尚未开始的探测。",
+      "lateCallback": "disposed 阻止旧响应改动已关闭或重新预览的 DOM；服务端已开始的只读探测由既有子进程期限收尾。",
+      "rebind": "刷新预览、关闭或提交时停止旧读取器；新预览使用新 DOM 和当前账号，后台暂停启动和查询，恢复后继续串行。"
+    },
+    {
       "module": "admin-session.ts",
       "ownerSymbol": "AdminSessionStore",
       "resourceSymbols": [
@@ -597,7 +613,8 @@
         "confirming",
         "read",
         "action",
-        "stateRead"
+        "stateRead",
+        "previewProbe"
       ],
       "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
       "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",

@@ -121,6 +121,7 @@ test('gzip assets preserve authentication, MIME, negotiation, private caching, H
 });
 
 test('shared asset responder supports authentication and private immutable caching', async () => {
+  // Ephemeral ports can overlap Fetch's blocked list; use the existing Node HTTP reader.
   const directory = await createTestDir('web-assets-http');
   const manifest = await fixture(directory);
   const assets = createAppAssetService(directory);
@@ -135,14 +136,14 @@ test('shared asset responder supports authentication and private immutable cachi
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
     const base = `http://127.0.0.1:${address.port}/assets/app/`;
-    assert.equal((await fetch(base + manifest.script.file)).status,401);
+    assert.equal((await rawResponse(base + manifest.script.file)).status,401);
     const headers = {authorization:'test-session'};
-    const response = await fetch(base + manifest.script.file,{headers});
+    const response = await rawResponse(base + manifest.script.file,headers);
     assert.equal(response.status,200);
-    assert.equal(response.headers.get('cache-control'),'private, max-age=31536000, immutable');
-    assert.equal(await response.text(),'console.log("fixture");');
-    assert.equal((await fetch(base+'manifest.json',{headers})).status,404);
-    assert.equal((await fetch(base+'app-NOTFOUND.js',{headers})).status,404);
+    assert.equal(response.headers['cache-control'],'private, max-age=31536000, immutable');
+    assert.equal(response.body.toString(),'console.log("fixture");');
+    assert.equal((await rawResponse(base+'manifest.json',headers)).status,404);
+    assert.equal((await rawResponse(base+'app-NOTFOUND.js',headers)).status,404);
     assert.match(assets.renderAppAssets(), /script defer src="\/assets\/app\/app-ABC123.js"/);
     assert.match(assets.renderAppAssets(), /appAssetError/);
   } finally {

@@ -2,12 +2,13 @@ import { MediaProbeBusyError, type MediaProbeService } from './media-probe.js';
 import { isSelectableBilibiliQuality } from './media-metadata.js';
 import type { UserStore } from './users.js';
 export function createMediaProbeRequests(deps: {users: Pick<UserStore, 'getById'>; probe: Pick<MediaProbeService, 'start' | 'get'>}) {
-  return {get: (id: string) => deps.probe.get(id), start(input: {userId?: unknown; bvid?: unknown; quality?: unknown; encoding?: unknown; strict?: unknown}) {
+  return {get: (id: string) => deps.probe.get(id), start(input: {userId?: unknown; bvid?: unknown; quality?: unknown; encoding?: unknown; strict?: unknown; reuse?: unknown}) {
 
   const userId = String(input.userId || "").trim();
   const bvid = String(input.bvid || "").trim();
   const user = deps.users.getById(userId);
-  if (!user || !user.enabled || !/^BV[0-9A-Za-z]+$/.test(bvid)) {
+  if (!user || !user.enabled || !/^BV[0-9A-Za-z]+$/.test(bvid)
+    || (input.reuse !== undefined && typeof input.reuse !== 'boolean')) {
     return {status: 400, body: { success: false, message: "媒体探测参数无效" }};
   }
   const requestedQuality = String(input.quality || "").trim().toUpperCase();
@@ -22,7 +23,7 @@ export function createMediaProbeRequests(deps: {users: Pick<UserStore, 'getById'
       quality: requestedQuality || undefined,
       encoding: requestedEncoding === "HEVC" || requestedEncoding === "AVC" || requestedEncoding === "AV1" ? requestedEncoding : undefined,
       strict: Boolean(input.strict || requestedQuality || requestedEncoding),
-    });
+    }, {reuse: input.reuse === true});
   } catch (error) {
     if (error instanceof MediaProbeBusyError) {
       return {status: 409, body: { success: false, code: error.code, message: error.message }};

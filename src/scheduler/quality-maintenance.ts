@@ -1,10 +1,11 @@
-import type { AppConfig } from '../config.js';
+import { DEFAULT_BBDOWN_ENCODING_PRIORITY, type AppConfig } from '../config.js';
 import { normalizeEncodingPriority, normalizeQualityPriority } from '../downloader.js';
 import { relationKey, type RemoteFileRecord, type StateManager } from '../state.js';
 import { downloadCredentialsForUser, type UserStore } from '../users.js';
 import { QualityUpgradeTask } from '../tasks.js';
 import { resolveQualityUpgradeRemoteTarget } from '../quality-upgrade-target.js';
 import { SkippedPreviewCollector } from '../preview-summary.js';
+import { actualQualityLabel, normalizeActualCodec, normalizeBilibiliQualityLabel } from '../media-metadata.js';
 export interface QualityUpgradeRequest {
     key?: string;
     userId?: string;
@@ -12,17 +13,33 @@ export interface QualityUpgradeRequest {
     bvid?: string;
     forceUnknown?: boolean;
 }
-function describeUpgradeReason(config: AppConfig) {
-    const parts: string[] = [];
-    if (config.bbdownQuality)
-        parts.push(`目标清晰度 ${config.bbdownQuality}`);
-    if (config.bbdownEncoding)
-        parts.push(`编码优先 ${config.bbdownEncoding}`);
-    if (config.bbdownHiRes)
-        parts.push("Hi-Res 音频");
-    if (config.bbdownDolby)
-        parts.push("杜比音效");
-    return parts.length ? parts.join(" / ") : "按当前 BBDown 画质设置重新下载";
+function describeUpgradeReason(files: RemoteFileRecord[], bvid: string, config: AppConfig) {
+    const mediaFiles = files.filter(isMediaRemoteFile);
+    const template = buildTemplateMetadataRegex(config.filenameTemplate || "<videoTitle>-<bvid>", bvid);
+    const current = new Set(mediaFiles.map(file => {
+        const filename = template?.regex.exec(file.name.replace(/\.[^.]+$/, ""))?.groups;
+        const quality = normalizeBilibiliQualityLabel(file.filenameMetadata?.bilibiliQuality)
+            || normalizeBilibiliQualityLabel(actualQualityLabel(file.mediaMetadata))
+            || normalizeBilibiliQualityLabel(file.filenameMetadata?.dfn || filename?.dfn);
+        const encoding = normalizeActualCodec(file.mediaMetadata?.codec)
+            || normalizeActualCodec(file.filenameMetadata?.videoCodecs)
+            || normalizeActualCodec(filename?.videoCodecs);
+        const profile = file.qualityProfile;
+        const qualityText = quality || (profile ? `${profile.quality || '自动最高'}（原下载设置）` : '原画质未记录');
+        const encodingText = encoding || (profile?.encoding ? `${profile.encoding}（原编码设置）` : '原编码未记录');
+        return `${qualityText} / ${encodingText}`;
+    }));
+    const priority = config.bbdownEncodingPriority.length ? config.bbdownEncodingPriority : DEFAULT_BBDOWN_ENCODING_PRIORITY;
+    const targetQuality = config.bbdownQuality || '自动最高可用画质';
+    const targetEncoding = config.bbdownEncoding || `${priority.join(' > ')}（编码优先顺序）`;
+    const parts = [`现有：${[...current].join('；') || '原画质未记录 / 原编码未记录'} → 目标：${targetQuality} / ${targetEncoding}`];
+    for (const [label, field, enabled] of [['Hi-Res 优先', 'hiRes', config.bbdownHiRes], ['杜比音频优先', 'dolby', config.bbdownDolby]] as const) {
+        if (enabled || mediaFiles.some(file => file.qualityProfile?.[field])) {
+            const previous = new Set(mediaFiles.map(file => file.qualityProfile ? (file.qualityProfile[field] ? '开' : '关') : '未记录'));
+            parts.push(`${label}：${[...previous].join(' / ') || '未记录'} → ${enabled ? '开' : '关'}`);
+        }
+    }
+    return parts.join('；');
 }
 function getQualityProfile(config: AppConfig) {
     return {
@@ -140,7 +157,6 @@ export function createQualityMaintenance(dependencies: {
 }) {
     function preview(detailLimit?: number) {
         const config = dependencies.config();
-        const reason = describeUpgradeReason(config);
         const records = dependencies.records();
         const qualityTargetKeys = dependencies.targetKeys();
         const candidates: Array<{
@@ -212,7 +228,8 @@ export function createQualityMaintenance(dependencies: {
                     folderTitle: relation.folderTitle,
                     remotePath,
                     oldFiles,
-                    reason: matchStatus === "unknown" ? "旧文件缺少可确认的画质档案，需要人工确认" : reason,
+                    reason: describeUpgradeReason(oldFiles, record.bvid, config)
+                        + (matchStatus === "unknown" ? '；旧画质档案不完整，需要人工确认' : ''),
                 };
                 if (matchStatus === "unknown")
                     uncertain.push({ ...previewItem, matchStatus: "unknown" });

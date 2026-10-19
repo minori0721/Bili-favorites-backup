@@ -4,7 +4,7 @@ import type { RouteBoundary } from './route-boundary.js';
 export function createMediaProbeRouter(deps: {service: ReturnType<typeof createMediaProbeRequests>; boundary: RouteBoundary}) {
   const router = Router();
   router.post('/api/media-probe', deps.boundary(async (req, res) => {
-    const result = deps.service.start({userId: req.body?.userId, bvid: req.body?.bvid, quality: req.body?.quality, encoding: req.body?.encoding, strict: req.body?.strict});
+    const result = deps.service.start({userId: req.body?.userId, bvid: req.body?.bvid, quality: req.body?.quality, encoding: req.body?.encoding, strict: req.body?.strict, reuse: req.body?.reuse});
     res.status(result.status).json(result.body);
   }));
   router.get('/api/media-probe/:id', (req, res) => {

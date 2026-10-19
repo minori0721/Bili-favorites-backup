@@ -8,6 +8,90 @@ import { parseBBDownSignal } from "../src/downloader.js";
 import { buildBBDownProbeArgs, buildBBDownTrackSelectionArgs, parseBBDownProbeOutput, probeMediaWithBBDown, interactivePageSetHash, validateInteractiveInventory, validateInteractiveProbeCoverage, classifyBBDownFailure, type BBDownProbePage } from "../src/downloader.js";
 import type { BiliUser } from "../src/users.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
+import { MediaProbeBusyError } from '../src/media-probe.js';
+
+test('quality preview merges in-flight reads and reuses successful results for five minutes', async context => {
+  context.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-19T00:00:00Z')});
+  let calls=0;
+  const service=new MediaProbeService({get:()=>testConfig()},async bvid=>{calls++;return {bvid,pages:pages(),source:'bbdown'};});
+  const first=service.start(user(),'BV1Probe00001',undefined,{reuse:true});
+  assert.equal(service.start(user(),'BV1Probe00001',undefined,{reuse:true}),first);
+  assert.equal((await waitFor(first)).status,'complete');
+  assert.equal(service.start(user(),'BV1Probe00001',undefined,{reuse:true}),first);
+  assert.equal(calls,1);
+  context.mock.timers.tick(300_001);
+  const next=service.start(user(),'BV1Probe00001',undefined,{reuse:true});
+  assert.notEqual(next.probeId,first.probeId);
+  assert.equal((await waitFor(next)).status,'complete');assert.equal(calls,2);
+});
+
+test('quality preview keeps different videos separate during probing and cached reuse', async context => {
+  context.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-19T00:00:00Z')});
+  const calls:string[]=[];
+  const service=new MediaProbeService({get:()=>testConfig()},async bvid=>{
+    calls.push(bvid);return {bvid,pages:pages().map(page=>({...page,bvid})),source:'bbdown'};
+  });
+  const first=service.start(user(),'BV1Probe00001',undefined,{reuse:true});
+  assert.throws(()=>service.start(user(),'BV1Other00002',undefined,{reuse:true}),MediaProbeBusyError);
+  assert.equal((await waitFor(first)).status,'complete');
+  assert.throws(()=>service.start(user(),'BV1Other00002',undefined,{reuse:true}),MediaProbeBusyError);
+  context.mock.timers.tick(2_001);
+  const second=await waitFor(service.start(user(),'BV1Other00002',undefined,{reuse:true}));
+  assert.equal(second.status,'complete');assert.notEqual(second.probeId,first.probeId);
+  assert.equal(second.bvid,'BV1Other00002');
+  assert.ok(second.pages?.every(page=>page.bvid==='BV1Other00002'));
+  assert.equal(service.start(user(),' BV1Probe00001 ',undefined,{reuse:true}),first);
+  assert.equal(service.start(user(),'BV1Other00002',undefined,{reuse:true}),second);
+  assert.deepEqual(calls,['BV1Probe00001','BV1Other00002']);
+});
+
+test('quality preview cache follows authorization and config, snapshots credentials, and retains global admission', async context => {
+  context.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-19T00:00:00Z')});
+  let config=testConfig();let calls=0;
+  const account=user();
+  let releaseAvailability:(value:{available:boolean})=>void=()=>{throw new Error('availability was not started');};
+  const availability=new Promise<{available:boolean}>(resolve=>{releaseAvailability=resolve;});
+  const received:Array<{session:string;quality:string}>=[];
+  const service=new MediaProbeService({get:()=>config},async(bvid,cookie,selected)=>{
+    calls++;received.push({session:cookie.SESSDATA,quality:selected.bbdownQuality});return {bvid,pages:pages(),source:'bbdown'};
+  },undefined,()=>availability);
+  const first=service.start(account,'BV1Probe00001',undefined,{reuse:true});
+  assert.throws(()=>service.start({...user(),id:'other'},'BV1Probe00001',undefined,{reuse:true}),MediaProbeBusyError);
+  account.cookie.SESSDATA='new-test-authorization';config={...config,bbdownQuality:'1080P'};
+  releaseAvailability({available:true});assert.equal((await waitFor(first)).status,'complete');
+  assert.deepEqual(received,[{session:'redacted',quality:''}]);
+  assert.throws(()=>service.start(account,'BV1Probe00001',undefined,{reuse:true}),MediaProbeBusyError);
+  context.mock.timers.tick(2_001);
+  const second=await waitFor(service.start(account,'BV1Probe00001',undefined,{reuse:true}));
+  assert.notEqual(second.probeId,first.probeId);assert.equal(calls,2);
+  context.mock.timers.tick(2_001);config={...config,bbdownEncoding:'AV1'};
+  assert.notEqual((await waitFor(service.start(account,'BV1Probe00001',undefined,{reuse:true}))).probeId,second.probeId);
+  assert.equal(calls,3);
+});
+
+test('failed quality preview is retryable and does not change the strict probe path', async context => {
+  context.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-19T00:00:00Z')});
+  let calls=0;const targets:unknown[]=[];
+  const service=new MediaProbeService({get:()=>testConfig()},async(bvid,_cookie,_config,target)=>{
+    calls++;targets.push(target);if(calls===1)throw new Error('test unavailable');return {bvid,pages:pages(),source:'bbdown'};
+  });
+  const failed=await waitFor(service.start(user(),'BV1Probe00001',undefined,{reuse:true}));
+  assert.equal(failed.status,'failed');context.mock.timers.tick(2_001);
+  const complete=await waitFor(service.start(user(),'BV1Probe00001',undefined,{reuse:true}));
+  assert.equal(complete.status,'complete');assert.notEqual(complete.probeId,failed.probeId);
+  const strict=await waitFor(service.start(user(),'BV1Probe00001',{quality:'4K',strict:true},{reuse:true}));
+  assert.notEqual(strict.probeId,complete.probeId);assert.deepEqual(targets,[undefined,undefined,{quality:'4K',encoding:undefined}]);
+});
+
+test('media probe receives current APP authorization without adding credentials to public results',async()=>{
+  const account={...user(),accessToken:'app-test-token',appBuvid:'app-test-device'};
+  const service=new MediaProbeService({get:()=>testConfig({bbdownApiMode:'app'})},async(bvid,cookie)=>{
+    assert.equal(cookie.accessToken,account.accessToken);assert.equal(cookie.appBuvid,account.appBuvid);
+    return {bvid,pages:pages(),source:'bbdown'};
+  });
+  const result=await waitFor(service.start(account,'BV1Probe00001',undefined,{reuse:true}));
+  assert.equal(result.status,'complete');assert.doesNotMatch(JSON.stringify(result),/app-test-token|app-test-device/);
+});
 
 test("BBDown signals accept legacy framing but reject title and JSON markers", () => {
   for (const prefix of ["", "[2026-07-11 00:00:00.000] - "]) {

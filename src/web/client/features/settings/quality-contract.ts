@@ -35,7 +35,7 @@ function candidate(value: unknown) {
     const key = text(item.key);
     if (!key)
         throw new Error('画质重调候选缺少标识');
-    return { key, bvid: text(item.bvid), title: text(item.title), ownerName: text(item.ownerName), folderTitle: text(item.folderTitle), remotePath: text(item.remotePath), reason: text(item.reason), forceUnknown: false,
+    return { key, userId: text(item.userId), bvid: text(item.bvid), title: text(item.title), ownerName: text(item.ownerName), folderTitle: text(item.folderTitle), remotePath: text(item.remotePath), reason: text(item.reason), forceUnknown: false,
         oldFiles: list(item.oldFiles ?? [], value => { const file = record(value); return { name: text(file.name), path: text(file.path) }; }) };
 }
 export function parseQualityPreview(value: unknown) {

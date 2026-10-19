@@ -2,6 +2,7 @@ import type { ApiClient } from '../../shared/api.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
 import { requireElement } from '../../shared/dom.js';
 import { parseQualityPreview, parseQualityResult, parseQualityState, type QualityPreview } from './quality-contract.js';
+import { createQualityPreviewProbe } from './quality-probe.js';
 export function createQualityUpgrade(dependencies: {
     root: Document;
     api: ApiClient;
@@ -24,6 +25,7 @@ export function createQualityUpgrade(dependencies: {
     let read: AbortController | null = null;
     let action: AbortController | null = null;
     let stateRead: AbortController | null = null;
+    let previewProbe: ReturnType<typeof createQualityPreviewProbe> | undefined;
     function empty(): QualityPreview { return { candidates: [], uncertain: [], skipped: [], skippedTotal: 0, target: { quality: '', encoding: '', hiRes: false, dolby: false } }; }
     const safeText = (value: unknown, fallback: string) => String(value || fallback);
     const setHidden = (target: HTMLElement, hidden: boolean) => target.classList.toggle('is-hidden', hidden);
@@ -37,6 +39,7 @@ export function createQualityUpgrade(dependencies: {
     }
     function deactivate() {
         generation++;
+        previewProbe?.stop(); previewProbe = undefined;
         read?.abort();
         action?.abort();
         stateRead?.abort();
@@ -55,6 +58,7 @@ export function createQualityUpgrade(dependencies: {
         if (!initialized || action || confirming)
             return;
         generation++;
+        previewProbe?.stop(); previewProbe = undefined;
         const token = generation;
         read?.abort();
         stateRead?.abort();
@@ -102,10 +106,11 @@ export function createQualityUpgrade(dependencies: {
         const list = element('qualityUpgradeList');
         const skippedBlock = element('qualityUpgradeSkippedBlock');
         const skippedList = element('qualityUpgradeSkippedList');
-        const targetText = [target.quality ? '清晰度 ' + target.quality : '', target.encoding ? '编码 ' + target.encoding : '', target.hiRes ? 'Hi-Res' : '', target.dolby ? '杜比' : ''].filter(Boolean).join(' / ') || '当前默认画质设置';
+        const targetText = [target.quality ? '清晰度 ' + target.quality : '自动最高可用画质', target.encoding ? '编码 ' + target.encoding : '按当前编码优先顺序', target.hiRes ? 'Hi-Res 优先' : '', target.dolby ? '杜比音频优先' : ''].filter(Boolean).join(' / ');
         const skippedTotal = Number.isFinite(Number(qualityUpgradePreviewState.skippedTotal)) ? Number(qualityUpgradePreviewState.skippedTotal) : skipped.length;
         summary.textContent = '目标：' + targetText + '。明确需升级 ' + candidates.length + ' 个，无法判断 ' + uncertain.length + ' 个，跳过 ' + skippedTotal + ' 个。';
         list.innerHTML = '';
+        previewProbe = createQualityPreviewProbe(document, api);
         if (!displayItems.length) {
             const empty = document.createElement('div');
             empty.className = 'empty-state';
@@ -133,11 +138,13 @@ export function createQualityUpgrade(dependencies: {
             files.textContent = '将替换旧文件：' + (item.oldFiles || []).map((file) => file.name || file.path).join('，');
             const reason = document.createElement('div');
             reason.className = 'rename-path';
-            reason.textContent = item.forceUnknown ? '无法判断旧文件画质；勾选即表示仍要强制重新下载。' : (item.reason || '按当前画质设置重新下载，上传验证成功后删除旧文件。');
+            reason.textContent = (item.reason || '原画质未记录 → 目标：' + targetText)
+                + (item.forceUnknown ? '；勾选即表示仍要强制重新下载。' : '');
             body.appendChild(title);
             body.appendChild(folder);
             body.appendChild(files);
             body.appendChild(reason);
+            previewProbe?.register(item, body);
             row.appendChild(checkbox);
             row.appendChild(body);
             list.appendChild(row);
@@ -163,7 +170,9 @@ export function createQualityUpgrade(dependencies: {
         }
     }
     function select(checked: boolean) {
-        document.querySelectorAll<HTMLInputElement>('#qualityUpgradeList input[type="checkbox"]').forEach(input => { input.checked = checked && input.dataset.qualityUnknown !== '1'; });
+        document.querySelectorAll<HTMLInputElement>('#qualityUpgradeList input[type="checkbox"]').forEach(input => {
+            input.checked = checked && input.dataset.qualityUnknown !== '1';
+        });
     }
     async function loadState() {
         if (!initialized || stateRead)
@@ -213,6 +222,7 @@ export function createQualityUpgrade(dependencies: {
             return;
         const controller = new AbortController();
         action = controller;
+        previewProbe?.stop(); previewProbe = undefined;
         submit.disabled = true;
         refresh.disabled = true;
         submit.textContent = '提交中...';

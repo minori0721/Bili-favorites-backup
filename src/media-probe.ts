@@ -67,8 +67,8 @@ export interface MediaProbeCacheCapacity {
 export class MediaProbeBusyError extends Error {
   readonly code = "MEDIA_PROBE_BUSY";
 
-  constructor() {
-    super("该账号已有媒体探测正在进行");
+  constructor(message = "该账号已有媒体探测正在进行") {
+    super(message);
     this.name = "MediaProbeBusyError";
   }
 }
@@ -145,6 +145,8 @@ export class MediaProbeService {
   private readonly jobs = new Map<string, MediaProbeResult>();
   private readonly activeByUser = new Set<string>();
   private readonly ttlMs = 15 * 60_000;
+  private readonly previewCache = new Map<string, string>();
+  private nextPreviewAt = 0;
 
   constructor(
     private readonly configStore: { get(): AppConfig },
@@ -156,10 +158,31 @@ export class MediaProbeService {
 
   isBusy() { return this.activeByUser.size > 0; }
 
-  start(user: BiliUser, bvid: string, target?: TargetMediaProfile) {
+  start(user: BiliUser, bvid: string, target?: TargetMediaProfile, options: { reuse?: boolean } = {}) {
     this.prune();
     const normalized = String(bvid || "").trim();
     if (!/^BV[0-9A-Za-z]+$/.test(normalized)) throw new Error("BVID 无效");
+    const config = this.configStore.get();
+    const cookie = {...user.cookie,
+      ...(user.accessToken ? {accessToken: user.accessToken} : {}),
+      ...(user.appBuvid ? {appBuvid: user.appBuvid} : {}),
+    };
+    // Preview reuse is bound to the video, account authorization and selection settings;
+    // it is never evidence for upload, replacement or deletion.
+    const cacheKey = options.reuse && !target?.strict ? crypto.createHash('sha256').update(JSON.stringify({
+      bvid: normalized, userId: user.id, uid: user.uid, cookie: Object.entries(cookie).sort(([a], [b]) => a.localeCompare(b)),
+      accessToken: user.accessToken, appBuvid: user.appBuvid,
+      api: config.bbdownApiMode, quality: config.bbdownQuality, encoding: config.bbdownEncoding,
+      priority: config.bbdownEncodingPriority, hiRes: config.bbdownHiRes, dolby: config.bbdownDolby,
+    })).digest('hex') : undefined;
+    if (cacheKey) {
+      const cachedId = this.previewCache.get(cacheKey);
+      const cached = cachedId ? this.jobs.get(cachedId) : undefined;
+      if (cached && (cached.status === 'running' || (cached.status === 'complete' && cached.finishedAt
+        && Date.now() - Date.parse(cached.finishedAt) < 5 * 60_000))) return cached;
+      this.previewCache.delete(cacheKey);
+      if (this.isBusy() || Date.now() < this.nextPreviewAt) throw new MediaProbeBusyError('媒体探测正在限速或等待其他探测，请稍后重试');
+    }
     if (this.activeByUser.has(user.id)) throw new MediaProbeBusyError();
     const probeId = crypto.randomUUID();
     const result: MediaProbeResult = {
@@ -171,12 +194,20 @@ export class MediaProbeService {
     };
     this.jobs.set(probeId, result);
     this.activeByUser.add(user.id);
+    if (cacheKey) {
+      if (this.previewCache.size >= 200) {
+        const oldest = this.previewCache.keys().next();
+        if (!oldest.done) this.previewCache.delete(oldest.value);
+      }
+      this.previewCache.set(cacheKey, probeId);
+      this.nextPreviewAt = Date.now() + 2_000;
+    }
     const probeTarget = target?.strict
       ? { quality: target.quality, encoding: target.encoding }
       : undefined;
     void (async () => {
       if (this.availabilityProbe) {
-        const availability = await this.availabilityProbe(user.cookie, normalized);
+        const availability = await this.availabilityProbe(cookie, normalized);
         if (availability.available === false && (!Array.isArray(availability.pages) || availability.pages.length === 0)) {
           if (availability.availability === "unavailable") {
             throw new Error("B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小");
@@ -184,7 +215,7 @@ export class MediaProbeService {
           throw new Error("暂时无法确认B站源状态，请稍后重新探测可用画质、编码和大小");
         }
       }
-      return this.probeRunner(normalized, user.cookie, this.configStore.get(), probeTarget);
+      return this.probeRunner(normalized, cookie, config, probeTarget);
     })()
       .then(async (probe) => {
         const pages = probe.pages.map((page) => {
@@ -309,6 +340,9 @@ export class MediaProbeService {
     const cutoff = Date.now() - this.ttlMs;
     for (const [id, result] of this.jobs) {
       if (Date.parse(result.finishedAt || result.createdAt) < cutoff) this.jobs.delete(id);
+    }
+    for (const [key, id] of this.previewCache) {
+      if (!this.jobs.has(id)) this.previewCache.delete(key);
     }
   }
 }
