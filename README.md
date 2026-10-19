@@ -187,7 +187,7 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 | `v2.6.5` | 上一固定稳定版本 |
 | `dev` | 开发测试版，不保证与稳定版一致 |
 
-开发版使用下一目标版本的 `-dev` 标识，例如 `2.7.0-dev`，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
+开发版使用下一目标版本的 `-dev` 标识，当前为 `2.7.1-dev`，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
 
 [开发预览与更新说明](https://github.com/minori0721/Bili-favorites-backup/releases/tag/dev-preview)标记为 Pre-release，在 dev 镜像验收并发布成功后更新同一个页面，包含本次提交、更新时间和固定镜像摘要。开发预览不代表正式版本，不会替代正式 Latest；使用 `:dev` 的用户继续按原方式拉取镜像。
 
