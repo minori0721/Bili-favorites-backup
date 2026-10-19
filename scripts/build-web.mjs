@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { publishAsset } from './publish-asset.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -20,7 +21,7 @@ export async function buildWeb({ watch = false } = {}) {
     target: 'es2020',
     charset: 'utf8',
     write: false,
-    minify: false,
+    minify: !watch,
     plugins: [{
       name: 'publish-complete-assets',
       setup(build) {
@@ -32,10 +33,18 @@ export async function buildWeb({ watch = false } = {}) {
             const name = path.basename(output.path);
             await publishAsset(output.path, output.contents);
             const kind = name.endsWith('.js') ? 'script' : name.endsWith('.css') ? 'style' : null;
-            if (kind) entries[kind] = {file:name, sha256:createHash('sha256').update(output.contents).digest('hex')};
+            if (kind) {
+              const entry = {file:name, sha256:createHash('sha256').update(output.contents).digest('hex')};
+              if (!watch) {
+                const compressed = gzipSync(output.contents, {level:9});
+                await publishAsset(output.path + '.gz', compressed);
+                entry.gzip = {sha256:createHash('sha256').update(compressed).digest('hex')};
+              }
+              entries[kind] = entry;
+            }
           }
           if (!entries.script || !entries.style) throw new Error('Incomplete browser build');
-          // Publish only after both content-addressed resources exist.
+          // Publish only after both resources and their advertised encodings exist.
           await publishAsset(path.join(assetDirectory, 'manifest.json'), JSON.stringify({version:1,...entries}, null, 2));
         });
       },

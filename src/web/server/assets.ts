@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import type { RequestHandler } from 'express';
 
 const directory = fileURLToPath(new URL('../../../dist/web/assets/', import.meta.url));
-type AssetEntry = {file: string; sha256: string};
+type AssetEntry = {file: string; sha256: string; gzip?: {sha256: string}};
 export type AssetManifest = {version: 1; script: AssetEntry; style: AssetEntry};
 export function createAppAssetService(directory: string) {
 let cached: {stamp: number; size: number; manifest: AssetManifest} | undefined;
@@ -25,6 +25,13 @@ function readAssetManifest(): AssetManifest {
       || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) throw new Error('Invalid browser asset entry');
     const actual = createHash('sha256').update(fs.readFileSync(path.join(directory,file))).digest('hex');
     if (actual !== hash) throw new Error('Browser asset integrity mismatch');
+    const gzip: unknown = Reflect.get(entry, 'gzip');
+    if (gzip !== undefined) {
+      if (!gzip || typeof gzip !== 'object' || !('sha256' in gzip)
+        || typeof gzip.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(gzip.sha256)) throw new Error('Invalid compressed browser asset entry');
+      const compressedHash = createHash('sha256').update(fs.readFileSync(path.join(directory,file + '.gz'))).digest('hex');
+      if (compressedHash !== gzip.sha256) throw new Error('Compressed browser asset integrity mismatch');
+    }
   }
   const manifest = value as AssetManifest;
   cached = {stamp:stat.mtimeMs,size:stat.size,manifest};
@@ -41,7 +48,17 @@ const serveAppAsset: RequestHandler = (req, res, next) => {
   try {
     const name = req.params.name;
     if (typeof name !== 'string' || !/^app-[A-Z0-9]+\.(js|css)$/.test(name)) { res.sendStatus(404); return; }
-    res.sendFile(path.join(directory, name), {headers:{'Cache-Control':'private, max-age=31536000, immutable'}}, error => {
+    let gzip = false;
+    if (!req.headers.range && req.headers['accept-encoding'] && req.acceptsEncodings('gzip','identity') === 'gzip') {
+      const manifest = readAssetManifest();
+      gzip = [manifest.script, manifest.style].some(entry => entry.file === name && entry.gzip !== undefined);
+    }
+    res.vary('Accept-Encoding');
+    res.type(name.endsWith('.js') ? 'text/javascript' : 'text/css');
+    res.sendFile(path.join(directory, name + (gzip ? '.gz' : '')), {headers:{
+      'Cache-Control':'private, max-age=31536000, immutable',
+      ...(gzip ? {'Content-Encoding':'gzip'} : {}),
+    }}, error => {
       if (error && !res.headersSent) {
         if ('status' in error && error.status === 404) { res.sendStatus(404); return; }
         next(error);

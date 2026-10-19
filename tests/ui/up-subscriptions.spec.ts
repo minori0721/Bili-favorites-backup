@@ -2,11 +2,73 @@ import {test,expect,type Page} from '@playwright/test';
 import {isRecord} from '../../src/shared/api/value.js';
 import {parseUpList,parseUpSubscription} from '../../src/shared/api/up-subscriptions.js';
 async function data(page:Page,path:string){const value:unknown=await(await page.request.get(path)).json();if(!isRecord(value))throw new Error('Invalid test response');return value.data;}
+async function pageHidden(page:Page,hidden:boolean){await page.evaluate(value=>{Object.defineProperty(document,'hidden',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));},hidden);}
 test.beforeEach(async({page})=>{
   await page.request.post('/__test/reset');
   await page.route('https://fonts.googleapis.com/**',route=>route.fulfill({status:200,contentType:'text/css',body:''}));
   await page.goto('/');
   await expect(page.locator('#upHomeList .up-subscription-card')).toHaveCount(3);
+});
+
+test('home polling pauses while hidden and updates counts without replacing cards or focus', {tag:'@desktop-only'}, async({page})=>{
+  const listing=parseUpList(await data(page,'/api/up-subscriptions')),source=listing.items[0];
+  if(!source)throw new Error('missing subscription fixture');
+  let calls=0,archivedCount=source.archivedCount;
+  await page.clock.install();
+  await page.route('**/api/up-subscriptions',route=>{
+    calls++;
+    return route.fulfill({json:{success:true,data:{...listing,items:listing.items.map(item=>item.id===source.id?{...item,archivedCount}:item),
+      operations:[{id:'polling-fixture',sourceId:source.id,sourceName:source.name,status:'running',fileCount:2,completedCount:0,retainedCount:0,lastError:null}]}}});
+  });
+  await page.reload();await expect.poll(()=>calls).toBe(1);
+  const card=page.locator('#upHomeList .up-subscription-card').filter({hasText:source.name});
+  const trigger=card.getByRole('button',{name:'投稿选择',exact:true});
+  const cardNode=await card.elementHandle(),buttonNode=await trigger.elementHandle();
+  if(!cardNode||!buttonNode)throw new Error('missing rendered subscription');
+  await trigger.focus();archivedCount++;
+  await card.locator('.up-avatar img').dispatchEvent('error');await expect(card.locator('.up-avatar img')).toHaveCount(0);
+  await page.clock.fastForward(5000);await expect(card.locator('.up-card-stats strong').first()).toHaveText(String(archivedCount));
+  await expect(card.locator('.up-avatar img')).toHaveCount(1);
+  expect(calls).toBe(2);expect(await cardNode.evaluate(node=>node.isConnected)).toBe(true);expect(await buttonNode.evaluate(node=>node.isConnected)).toBe(true);await expect(trigger).toBeFocused();
+  await pageHidden(page,true);await page.clock.fastForward(30000);expect(calls).toBe(2);
+  await pageHidden(page,false);await expect.poll(()=>calls).toBe(3);await expect(trigger).toBeFocused();
+  await page.clock.fastForward(5000);await expect.poll(()=>calls).toBe(4);
+});
+
+test('workspace polling resumes once and closes without leaving a polling chain', {tag:'@desktop-only'}, async({page})=>{
+  await page.clock.install();
+  let calls=0;page.on('request',request=>{if(new URL(request.url()).pathname==='/api/up-subscriptions'&&request.method()==='GET')calls++;});
+  const trigger=page.locator('#upHomeList .up-subscription-card').filter({hasText:'影视飓风'}).getByRole('button',{name:'投稿选择',exact:true});
+  await trigger.click();await expect(page.locator('#upCatalogList .up-video')).toHaveCount(30);
+  await expect(page.locator('#upCatalogMore')).toBeEnabled();
+  await pageHidden(page,true);await page.clock.fastForward(30000);expect(calls).toBe(0);
+  await pageHidden(page,false);await expect.poll(()=>calls).toBe(1);
+  await page.clock.fastForward(10000);await expect.poll(()=>calls).toBe(2);
+  await page.locator('#upWorkspaceModal').getByRole('button',{name:'关闭 UP 订阅',exact:true}).click();
+  await page.clock.fastForward(30000);expect(calls).toBe(2);
+  await trigger.click();await expect(page.locator('#upCatalogList .up-video')).toHaveCount(30);
+  await expect(page.locator('#upCatalogMore')).toBeEnabled();
+  await page.clock.fastForward(10000);await expect.poll(()=>calls).toBe(3);
+});
+
+test('a late read from before foreground refresh cannot overwrite the new subscription snapshot', {tag:'@desktop-only'}, async({page})=>{
+  const listing=parseUpList(await data(page,'/api/up-subscriptions')),source=listing.items[0];
+  if(!source)throw new Error('missing subscription fixture');
+  let calls=0,release!:()=>void;
+  const pending=new Promise<void>(resolve=>{release=resolve;});
+  await page.clock.install();
+  await page.route('**/api/up-subscriptions',async route=>{
+    const call=++calls;if(call===2)await pending;
+    await route.fulfill({json:{success:true,data:{...listing,items:listing.items.map(item=>item.id===source.id?{...item,archivedCount:call===2?source.archivedCount+1:source.archivedCount+2}:item)}}});
+  });
+  await page.reload();await expect.poll(()=>calls).toBe(1);
+  try {
+    await page.locator('#upRefreshBtn').click();await expect.poll(()=>calls).toBe(2);
+    await pageHidden(page,true);await pageHidden(page,false);await expect.poll(()=>calls).toBe(3);
+    release();
+    await expect(page.locator('#upHomeList .up-subscription-card').filter({hasText:source.name}).locator('.up-card-stats strong').first()).toHaveText(String(source.archivedCount+2));
+    await expect(page.locator('#upHomeStatus')).not.toHaveClass(/error/);
+  } finally {release();}
 });
 test('subscription X opens the safe default, supports cancel and keeps archives on retain',async({page})=>{
   const card=page.locator('#upHomeList .up-subscription-card').filter({hasText:'老师好我叫何同学'});

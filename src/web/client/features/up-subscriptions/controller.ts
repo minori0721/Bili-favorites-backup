@@ -27,6 +27,7 @@ export function createUpSubscriptions(deps:{
   const picked=new Map<number,UpIdentity>();
   const selected=new Set<string>();
   const pageItems=new Map<string,UpCatalogItem>();
+  const homeCards=new Map<string,{element:HTMLElement;update(source:UpSubscription):void}>();
   let events:AbortController|null=null;
   let generation=0;
   let list:ReturnType<typeof parseUpList>={items:[],accounts:[],operations:[]};
@@ -67,19 +68,39 @@ export function createUpSubscriptions(deps:{
   function options(host:HTMLSelectElement,values:{value:string;label:string}[],chosen?:string){host.replaceChildren(...values.map(item=>{const option=node('option',item.label);option.value=item.value;return option;}));if(chosen)host.value=chosen;}
   function accounts(host:HTMLSelectElement,chosen?:string){options(host,list.accounts.map(account=>({value:account.id,label:account.name})),chosen);
     if(chosen&&!list.accounts.some(account=>account.id===chosen)){const option=node('option','当前授权账号不可用，请选择新账号');option.value=chosen;option.disabled=true;option.selected=true;host.prepend(option);}}
-  function home() {
-    const host=element('upHomeList');host.replaceChildren();
-    if(!list.items.length){host.append(node('div','还没有订阅。添加一位 UP，让新投稿自动归档。','up-empty'));return;}
-    for(const source of list.items){
-      const card=node('article',undefined,'up-subscription-card'),heading=node('div',undefined,'up-profile-heading'),picture=node('span',undefined,'up-avatar');avatar(picture,source.name,source.avatar);
-      const copy=node('div');copy.append(node('h3',source.name),node('p',`UID ${source.uid} · ${modeText[source.mode]}`,'muted'));heading.append(picture,copy);
-      const bar=node('div',undefined,'up-card-heading'),remove=node('button','×','up-card-remove');remove.type='button';remove.dataset.upRemove=source.id;remove.title='移除订阅';remove.setAttribute('aria-label',`移除 ${source.name} 的订阅`);remove.setAttribute('aria-haspopup','dialog');bar.append(heading,remove);card.append(bar);
-      const stats=node('div',undefined,'up-card-stats');for(const [label,count]of [['已归档',source.archivedCount],['发现投稿',source.discoveredCount],['已排除',source.excludedCount]] as const){const item=node('span',label);item.prepend(node('strong',String(count)));stats.append(item);}card.append(stats);
+  function createHomeCard(id:string) {
+    const card=node('article',undefined,'up-subscription-card'),heading=node('div',undefined,'up-profile-heading'),picture=node('span',undefined,'up-avatar');
+    const name=node('h3'),meta=node('p',undefined,'muted'),copy=node('div');copy.append(name,meta);heading.append(picture,copy);
+    const bar=node('div',undefined,'up-card-heading'),remove=node('button','×','up-card-remove');remove.type='button';remove.dataset.upRemove=id;remove.title='移除订阅';remove.setAttribute('aria-haspopup','dialog');bar.append(heading,remove);card.append(bar);
+    const stats=node('div',undefined,'up-card-stats');
+    const counts=['已归档','发现投稿','已排除'].map(label=>{const item=node('span',label),count=node('strong');item.prepend(count);stats.append(item);return count;});card.append(stats);
+    const badge=node('span'),status=node('p',undefined,'muted'),statusText=root.createTextNode('');status.style.fontSize='12px';status.append(badge,statusText);card.append(status);
+    const error=node('p',undefined,'up-notice error');card.append(error);
+    const actions=node('div',undefined,'row'),manage=node('button','投稿选择','ghost'),archive=node('button','归档库 ↗','ghost');manage.type=archive.type='button';manage.dataset.upManage=id;archive.dataset.upArchive=id;actions.append(manage,archive);card.append(actions);
+    let previous:UpSubscription|null=null;
+    const text=(host:HTMLElement,value:string)=>{if(host.textContent!==value)host.textContent=value;};
+    return {element:card,update(source:UpSubscription){
+      if(!previous||previous.name!==source.name||previous.avatar!==source.avatar||(source.avatar&&!picture.querySelector('img')))avatar(picture,source.name,source.avatar);
+      text(name,source.name);text(meta,`UID ${source.uid} · ${modeText[source.mode]}`);
+      const label=`移除 ${source.name} 的订阅`;if(remove.getAttribute('aria-label')!==label)remove.setAttribute('aria-label',label);
+      [source.archivedCount,source.discoveredCount,source.excludedCount].forEach((count,index)=>text(counts[index],String(count)));
       const unavailable=source.accountAvailable===false;
-      const badge=node('span',unavailable?'授权账号不可用':source.enabled?'持续订阅':'已暂停','up-badge'+(unavailable?' warning':source.enabled?'':' paused'));
-      const status=node('p',` · ${source.historyComplete?'历史扫描完成':`历史扫描至第 ${source.nextPage} 页`} · ${date(source.lastScanAt)}`,'muted');status.style.fontSize='12px';status.prepend(badge);card.append(status);
-      if(source.lastError)card.append(node('p',source.lastError,'up-notice error'));
-      const actions=node('div',undefined,'row'),manage=node('button','投稿选择','ghost'),archive=node('button','归档库 ↗','ghost');manage.type=archive.type='button';manage.dataset.upManage=source.id;archive.dataset.upArchive=source.id;actions.append(manage,archive);card.append(actions);host.append(card);
+      text(badge,unavailable?'授权账号不可用':source.enabled?'持续订阅':'已暂停');
+      const badgeClass='up-badge'+(unavailable?' warning':source.enabled?'':' paused');if(badge.className!==badgeClass)badge.className=badgeClass;
+      const suffix=` · ${source.historyComplete?'历史扫描完成':`历史扫描至第 ${source.nextPage} 页`} · ${date(source.lastScanAt)}`;if(statusText.nodeValue!==suffix)statusText.nodeValue=suffix;
+      text(error,source.lastError??'');error.hidden=!source.lastError;previous=source;
+    }};
+  }
+  function home() {
+    const host=element('upHomeList');
+    if(!list.items.length){if(homeCards.size||!host.querySelector('.up-empty')){homeCards.clear();host.replaceChildren(node('div','还没有订阅。添加一位 UP，让新投稿自动归档。','up-empty'));}return;}
+    if(!homeCards.size)host.replaceChildren();
+    const ids=new Set(list.items.map(source=>source.id));
+    for(const [id,view]of homeCards)if(!ids.has(id)){view.element.remove();homeCards.delete(id);}
+    let position=host.firstElementChild;
+    for(const source of list.items){
+      let view=homeCards.get(source.id);if(!view){view=createHomeCard(source.id);homeCards.set(source.id,view);}view.update(source);
+      if(view.element!==position)host.insertBefore(view.element,position);position=view.element.nextElementSibling;
     }
   }
   function removalOperations(){
@@ -96,8 +117,8 @@ export function createUpSubscriptions(deps:{
   }
   function scheduleHomePoll(){
     if(homePoll)clearTimeout(homePoll);homePoll=null;
-    if(!events||visible('upWorkspaceModal')||!list.operations.some(item=>item.status!=='completed'&&item.status!=='failed'))return;
-    homePoll=setTimeout(()=>{homePoll=null;void loadList().catch(error=>notice('upHomeStatus',errorText(error),true)).finally(scheduleHomePoll);},5000);
+    if(!events||root.hidden||visible('upWorkspaceModal')||!list.operations.some(item=>item.status!=='completed'&&item.status!=='failed'))return;
+    homePoll=setTimeout(()=>{homePoll=null;if(root.hidden)return;void loadList().catch(error=>notice('upHomeStatus',errorText(error),true)).finally(scheduleHomePoll);},5000);
   }
   async function loadList() {
     const response=await request('home','/api/up-subscriptions');if(response.kind==='cancelled')return false;
@@ -199,7 +220,8 @@ export function createUpSubscriptions(deps:{
       catalogCards(data.items,append);element('upCatalogTotal').textContent=`已显示 ${pageItems.size} / ${data.total} 个投稿`;button('upCatalogMore').hidden=!catalogCursor;
       notice('upWorkspaceStatus',current.lastError??(current.historyComplete?'':`历史投稿继续分批扫描，目前已发现 ${current.discoveredCount} 个。`),Boolean(current.lastError));
     }catch(error){notice('upWorkspaceStatus',errorText(error),true);}finally{button('upCatalogMore').disabled=false;}}
-  function schedulePoll(){if(poll)clearTimeout(poll);if(!visible('upWorkspaceModal'))return;poll=setTimeout(()=>{poll=null;void refreshWorkspace().finally(schedulePoll);},operationId?2500:10_000);}
+  function pausePolling(){if(poll)clearTimeout(poll);poll=null;if(homePoll)clearTimeout(homePoll);homePoll=null;}
+  function schedulePoll(){if(poll)clearTimeout(poll);poll=null;if(!events||root.hidden||!visible('upWorkspaceModal'))return;poll=setTimeout(()=>{poll=null;if(root.hidden)return;void refreshWorkspace().finally(schedulePoll);},operationId?2500:10_000);}
   async function refreshWorkspace(){try{if(!await loadList()||!visible('upWorkspaceModal'))return;workspaceHeading(false);
     if(operationId){const response=await request('workspace-operation',`/api/up-subscriptions/operations/${encodeURIComponent(operationId)}`);if(response.kind==='ok'&&isRecord(response.data)){
       const status=response.data.status;if(status==='completed'){operationId=null;notice('upWorkspaceStatus','归档清理完成；排除规则继续生效。');await catalog();}
@@ -279,6 +301,11 @@ export function createUpSubscriptions(deps:{
     if(id==='upRemovalModal'){cancel('removal');removalSource=null;notice('upRemovalStatus');}
   }
   function init(){if(events)return;events=new AbortController();const signal=events.signal;
+    root.addEventListener('visibilitychange',()=>{
+      if(root.hidden){pausePolling();return;}
+      if(visible('upWorkspaceModal'))void refreshWorkspace().finally(schedulePoll);
+      else void loadList().catch(error=>notice('upHomeStatus',errorText(error),true));
+    },{signal});
     const on=(id:string,event:string,callback:(event:Event)=>void)=>element(id).addEventListener(event,callback,{signal});
     on('upHelpBtn','click',()=>deps.openModal('upHelpModal',button('upHelpBtn')));
     on('upAddBtn','click',()=>void openAdd(button('upAddBtn')).catch(error=>notice('upHomeStatus',errorText(error),true)));
@@ -325,5 +352,5 @@ export function createUpSubscriptions(deps:{
     const item=pageItems.get(bvid);
     if(item)openAction(item,trigger);
   }
-  return {init,deactivate,manageVideo,destroy(){events?.abort();events=null;generation++;for(const controller of requests.values())controller.abort();requests.clear();if(poll)clearTimeout(poll);poll=null;if(homePoll)clearTimeout(homePoll);homePoll=null;picked.clear();selected.clear();pageItems.clear();current=null;removalSource=null;}};
+  return {init,deactivate,manageVideo,destroy(){events?.abort();events=null;generation++;for(const controller of requests.values())controller.abort();requests.clear();pausePolling();picked.clear();selected.clear();pageItems.clear();homeCards.clear();current=null;removalSource=null;}};
 }

@@ -1,6 +1,21 @@
 import { expect, test } from '@playwright/test';
 
-test('slow application script preserves the board first paint without exposing logs', async ({page}) => {
+test('production scripts and styles arrive as gzip and initialize the existing UI', {tag:'@desktop-only'}, async ({page}) => {
+  await page.request.post('/__test/reset');
+  await page.route('https://fonts.googleapis.com/**',route => route.fulfill({body:''}));
+  const encodings = new Map<string,string|undefined>();
+  page.on('response', response => {
+    if (/\/assets\/app\/app-[A-Z0-9]+\.(js|css)$/.test(new URL(response.url()).pathname)) {
+      encodings.set(response.url().endsWith('.js') ? 'script' : 'style',response.headers()['content-encoding']);
+    }
+  });
+  await page.goto('/');
+  await expect(page.locator('#upHomeList .up-subscription-card')).toHaveCount(3);
+  await expect(page.locator('#appAssetError')).not.toBeVisible();
+  expect(encodings.get('script')).toBe('gzip');expect(encodings.get('style')).toBe('gzip');
+});
+
+test('slow application script preserves the board first paint without exposing logs', async ({page},testInfo) => {
   await page.request.post('/__test/reset');
   await page.route('https://fonts.googleapis.com/**',route => route.fulfill({body:''}));
   let release!: () => void;
@@ -15,6 +30,7 @@ test('slow application script preserves the board first paint without exposing l
   } finally { release(); }
   await expect(page.locator('.user-item')).toHaveCount(1);
   await expect(page.locator('#appAssetError')).not.toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('first-viewport.png')});
 });
 
 for (const extension of ['js','css']) {
