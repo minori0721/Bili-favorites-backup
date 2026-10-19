@@ -356,28 +356,44 @@ test('late manual archive submission cannot close a newly opened options dialog'
 test("archive reset disables stale cards and retains the last valid page on failed or duplicate responses", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   desktopOnly(testInfo);
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>(resolve => { releaseSlow = resolve; });
+  let slowStarted = false;
+  let slowFinished = false;
+  await page.route('**/api/archive-library/items?**', async route => {
+    if (new URL(route.request().url()).searchParams.get('q') !== 'slow') return route.continue();
+    slowStarted = true;
+    const response = await route.fetch();
+    await slowGate;
+    await route.fulfill({response});
+    slowFinished = true;
+  });
   await boot(page);
   await page.locator("#archiveLibraryBtn").click();
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
   const search = page.locator("#archiveLibrarySearchInput");
-  await search.fill("slow");
-  await page.waitForTimeout(340);
-  await expect(page.locator("#archiveLibraryResults")).toHaveAttribute("inert", "");
-  await search.fill("broken");
-  await page.waitForTimeout(340);
-  await expect(page.locator("#archiveLibraryResults")).toHaveAttribute("inert", "");
-  await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
-  await expect(page.locator("#archiveLibraryResults")).not.toHaveAttribute("inert", "");
-  await expect(search).toHaveValue("");
-  await expect(page.locator(".archive-library-card")).toHaveCount(2);
-  const requestCount = (await page.request.get("/__test/state").then((response) => response.json())).itemQueries.length;
-  await page.locator("#archiveLibraryResults").dispatchEvent("scroll");
-  await page.waitForTimeout(250);
-  const state = await page.request.get("/__test/state").then((response) => response.json());
-  expect(state.itemQueries).toHaveLength(requestCount);
+  try {
+    await search.fill("slow");
+    await expect.poll(() => slowStarted).toBe(true);
+    await expect(page.locator("#archiveLibraryResults")).toHaveAttribute("inert", "");
+    await search.fill("broken");
+    await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
+    await expect(page.locator("#archiveLibraryResults")).not.toHaveAttribute("inert", "");
+    await expect(search).toHaveValue("");
+    await expect(page.locator(".archive-library-card")).toHaveCount(2);
+    releaseSlow();
+    await expect.poll(() => slowFinished).toBe(true);
+    await expect(search).toHaveValue("");
+    await expect(page.locator(".archive-library-card")).toHaveCount(2);
+    const requestCount = (await page.request.get("/__test/state").then((response) => response.json())).itemQueries.length;
+    await page.locator("#archiveLibraryResults").dispatchEvent("scroll");
+    await page.waitForTimeout(250);
+    const state = await page.request.get("/__test/state").then((response) => response.json());
+    expect(state.itemQueries).toHaveLength(requestCount);
 
-  await search.fill("duplicates");
-  await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
-  await expect(search).toHaveValue("");
-  await expect(page.locator(".archive-library-card")).toHaveCount(2);
+    await search.fill("duplicates");
+    await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
+    await expect(search).toHaveValue("");
+    await expect(page.locator(".archive-library-card")).toHaveCount(2);
+  } finally { releaseSlow(); }
 });

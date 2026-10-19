@@ -143,7 +143,8 @@ test('direct and untrusted peers cannot rotate forwarded IPs to bypass login lim
   const warnings: unknown[][] = [];
   const warning = mock.method(console, 'error', (...args: unknown[]) => { warnings.push(args); });
   try {
-    for (const trustProxy of [undefined, '192.0.2.1']) {
+    // IPv6-only and underspecified mapped ranges must not trust an IPv4 peer.
+    for (const trustProxy of [undefined, '192.0.2.1', '::ffff:10.0.0.0/8', '::/1']) {
       const fixture = await createFixture({trustProxy});
       try {
         const results: number[] = [];

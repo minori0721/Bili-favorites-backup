@@ -1,6 +1,6 @@
 {
   "name": "bili-favorites-backup",
-  "version": "2.7.0-dev",
+  "version": "2.7.0",
   "private": true,
   "homepage": "https://github.com/minori0721/Bili-favorites-backup",
   "repository": {
@@ -53,14 +53,15 @@
   },
   "overrides": {
     "@renmu/bili-api": {
-      "axios": "1.18.0",
+      "axios": "1.20.0",
       "fast-xml-parser": "5.7.3"
     },
     "body-parser": "1.20.6",
     "qs": "6.16.0",
-    "brace-expansion@2": "2.1.4",
-    "brace-expansion@5": "5.0.9",
-    "ip-address": "10.7.0"
+    "brace-expansion@2": "2.1.7",
+    "brace-expansion@5": "5.0.12",
+    "ip-address": "10.7.4",
+    "proxy-addr": "2.0.8"
   },
   "devDependencies": {
     "esbuild": "0.28.1",

@@ -154,7 +154,7 @@ docker compose logs --tail=100 app
 
 顶部版本入口可查看正式版更新说明，**不会自动拉镜像或重启**。拉取失败时旧容器可能仍在运行，请以启动日志中的版本与提交确认更新结果。
 
-`v2.6.2`至`v2.6.5`保持SQLite schema 11、JSON状态schema 13和迁移包schema 3，不新增配置或数据迁移。从 `2.6.1` 升级无需新增配置或数据迁移；更早版本迁移和回滚前请先备份并阅读[升级说明](https://minori0721.github.io/Bili-favorites-backup/operations/update)与[数据迁移](https://minori0721.github.io/Bili-favorites-backup/operations/migration)。
+`v2.7.0` 增加 UP 订阅，首次启动自动将 SQLite schema 11 升级到 12，并在 `data/backups` 保留经校验的升级前快照。JSON 状态 schema 13 与迁移包清单 schema 3 不变；旧版不能直接读取 schema 12，回滚需恢复升级前的数据备份。宝塔 / Nginx 反代部署还需显式配置 `TRUST_PROXY`，HTTPS 同时配置 `COOKIE_SECURE=true`。更新前请阅读[升级说明](https://minori0721.github.io/Bili-favorites-backup/operations/update)与[数据迁移](https://minori0721.github.io/Bili-favorites-backup/operations/migration)。
 
 ## 常见问题
 
@@ -183,8 +183,8 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 | 镜像标签 | 用途 |
 | --- | --- |
 | `latest` | `main`稳定版 |
-| `v2.6.5` | 当前固定稳定版本，便于可控升级 |
-| `v2.6.3` | 上一固定稳定版本 |
+| `v2.7.0` | 当前固定稳定版本，便于可控升级 |
+| `v2.6.5` | 上一固定稳定版本 |
 | `dev` | 开发测试版，不保证与稳定版一致 |
 
 开发版使用下一目标版本的 `-dev` 标识，例如 `2.7.0-dev`，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
@@ -201,7 +201,7 @@ npm run build
 
 本地修改可按范围运行 `npm run test:release`、`npm run test:core` 或 `npm run test:files -- <文件...>`；大数据专项入口为 `npm run test:slow`。`npm test` 和 CI 继续执行全部回归，具体选择见[开发与验证](docs/development/architecture.md#开发与验证)。
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.6.5` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.0` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
 
 ## 鸣谢
 
