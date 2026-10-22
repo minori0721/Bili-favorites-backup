@@ -71,7 +71,7 @@ test('the candidate runtime must include the Node 24 security patch, without acc
 });
 
 test('the real workflow CLI emits only image rebuild outputs and checks the supplied candidate runtime', async () => {
-  const dir = await createTestDir();
+  const dir = await createTestDir('image-rebuild-cli');
   const output = path.join(dir, 'output');
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], {
     env: {...process.env, ...env, GITHUB_OUTPUT: output}, encoding: 'utf8', windowsHide: true, timeout: 10_000,
