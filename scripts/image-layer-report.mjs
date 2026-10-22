@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { imageRebuildPlan } from './image-rebuild.mjs';
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 
@@ -53,6 +54,13 @@ export function cacheDestinations(ref, image) {
   return ['type=gha,mode=max', ...(branch ? [`type=registry,ref=${image}:buildcache-${branch},mode=max`] : [])];
 }
 
+export function sameCommitLayerCheck(previous, current, rebuildOnly) {
+  if (previous === null) return { failed: false, message: 'No earlier image for this Git commit; cross-ref comparison will run on a later build.' };
+  if (compareLayers(previous, current).identical) return { failed: false, message: 'PASS: Earlier image for the same Git commit has identical filesystem layers.' };
+  if (rebuildOnly) return { failed: false, message: 'ALLOWED: Explicit manual image-only rebuild changed filesystem layers; original revision and version image tags remain unchanged.' };
+  return { failed: true, message: 'FAIL: An earlier image for the same Git commit has different filesystem layers.' };
+}
+
 function readLayers(reference, image) {
   const manifest = inspect(reference);
   if (manifest === null) return null;
@@ -70,6 +78,7 @@ function imageName() {
 }
 
 function prepare(output) {
+  imageRebuildPlan(); // Reject an invalid rebuild request before querying the registry.
   const image = imageName();
   const ref = process.env.GITHUB_REF;
   const sha = process.env.GITHUB_SHA;
@@ -88,6 +97,7 @@ function prepare(output) {
 }
 
 function report(snapshotPath) {
+  const plan = imageRebuildPlan();
   const image = imageName();
   const digest = process.env.IMAGE_DIGEST;
   if (!digestPattern.test(digest ?? '')) throw new Error('Invalid IMAGE_DIGEST');
@@ -103,19 +113,12 @@ function report(snapshotPath) {
   } else {
     lines.push('Previous branch image unavailable; no download estimate.');
   }
-  let mismatch = false;
-  if (previous.sameCommitLayers) {
-    mismatch = !compareLayers(previous.sameCommitLayers, current).identical;
-    lines.push(mismatch
-      ? 'FAIL: An earlier image for the same Git commit has different filesystem layers.'
-      : 'PASS: Earlier image for the same Git commit has identical filesystem layers.');
-  } else {
-    lines.push('No earlier image for this Git commit; cross-ref comparison will run on a later build.');
-  }
+  const check = sameCommitLayerCheck(previous.sameCommitLayers, current, plan.rebuildOnly);
+  lines.push(check.message);
   const summary = `${lines.join('\n\n')}\n`;
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
   console.log(summary);
-  if (mismatch) throw new Error('Same-commit image layer digests changed; investigate before release.');
+  if (check.failed) throw new Error('Same-commit image layer digests changed; investigate before release.');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

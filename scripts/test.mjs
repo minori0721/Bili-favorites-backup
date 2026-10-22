@@ -13,6 +13,7 @@ const scopeFiles = {
     'tests/dev-test-evidence.test.ts',
     'tests/promote-image.test.ts',
     'tests/image-layer-report.test.ts',
+    'tests/image-rebuild.test.ts',
     'tests/update-check.test.ts',
     'tests/update-channels.test.ts',
   ],
