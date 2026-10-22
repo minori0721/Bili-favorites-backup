@@ -13,6 +13,11 @@ on:
       - "DEV_NOTES.md"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
+    inputs:
+      rebuild_only:
+        description: '仅重建镜像：更新基础镜像，不改应用版本、Release 或原提交镜像标签（仅 dev/main）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,6 +44,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: Configure image publication mode
+        id: build-mode
+        env:
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
+        run: node scripts/image-rebuild.mjs configure
 
       - name: Find successful dev test evidence
         id: dev-tests
@@ -100,6 +111,8 @@ jobs:
       - name: Capture previous image layers and select caches
         id: layer_cache
         timeout-minutes: 3
+        env:
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
         run: node scripts/image-layer-report.mjs prepare "$RUNNER_TEMP/bfb-layer-baseline.json"
 
       - name: Build and push candidate by digest
@@ -109,6 +122,7 @@ jobs:
           SOURCE_DATE_EPOCH: "0"
         with:
           context: .
+          pull: ${{ steps.build-mode.outputs.rebuild_only == 'true' }}
           platforms: linux/amd64
           outputs: type=image,name=docker.io/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
@@ -137,6 +151,7 @@ jobs:
             test -x /usr/local/bin/ffprobe
             test -x /usr/local/bin/BBDown
           '
+          node scripts/image-rebuild.mjs verify-node "$(docker exec bfb-release-smoke node --version)"
           docker exec bfb-release-smoke node --input-type=module -e '
             import assert from "node:assert/strict";
             import { setTimeout } from "node:timers/promises";
@@ -158,25 +173,36 @@ jobs:
       - name: Report and verify image layer reuse
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
         run: node scripts/image-layer-report.mjs report "$RUNNER_TEMP/bfb-layer-baseline.json"
+
+      - name: Check that image-only rebuild is current
+        if: steps.build-mode.outputs.rebuild_only == 'true'
+        id: rebuild-current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
+        run: node scripts/image-rebuild.mjs check-current
 
       # Keep promotion and preview publication inside the same per-ref concurrency lock.
       - name: Check that dev publication is current
-        if: github.ref == 'refs/heads/dev'
+        if: github.ref == 'refs/heads/dev' && steps.build-mode.outputs.rebuild_only != 'true'
         id: dev-publication
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/publish-dev-preview.mjs check
 
       - name: Promote verified image tags
-        if: github.ref != 'refs/heads/dev' || steps.dev-publication.outputs.current == 'true'
+        if: >-
+          (steps.build-mode.outputs.rebuild_only == 'true' && steps.rebuild-current.outputs.current == 'true') ||
+          (steps.build-mode.outputs.rebuild_only != 'true' && (github.ref != 'refs/heads/dev' || steps.dev-publication.outputs.current == 'true'))
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
-          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_TAGS: ${{ steps.build-mode.outputs.rebuild_only == 'true' && steps.build-mode.outputs.tags || steps.meta.outputs.tags }}
         run: node scripts/promote-image.mjs
 
       - name: Publish development preview after verified image promotion
-        if: github.ref == 'refs/heads/dev' && steps.dev-publication.outputs.current == 'true'
+        if: github.ref == 'refs/heads/dev' && steps.dev-publication.outputs.current == 'true' && steps.build-mode.outputs.rebuild_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
@@ -184,7 +210,7 @@ jobs:
 
   release:
     needs: docker
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.rebuild_only != true
     runs-on: ubuntu-24.04
     permissions:
       contents: write

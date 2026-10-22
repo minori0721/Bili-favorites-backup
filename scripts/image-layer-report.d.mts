@@ -18,3 +18,7 @@ export function compareLayers(previous: ImageLayer[], current: ImageLayer[]): {
 };
 
 export function cacheDestinations(ref: string | undefined, image: string): string[];
+export function sameCommitLayerCheck(previous: ImageLayer[] | null, current: ImageLayer[], rebuildOnly: boolean): {
+  failed: boolean;
+  message: string;
+};

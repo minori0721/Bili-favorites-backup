@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cacheDestinations, compareLayers, platformLayers } from '../scripts/image-layer-report.mjs';
+import { cacheDestinations, compareLayers, platformLayers, sameCommitLayerCheck } from '../scripts/image-layer-report.mjs';
+import { imageRebuildPlan } from '../scripts/image-rebuild.mjs';
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const oldLayers = [{digest: digest('a'), size: 10}, {digest: digest('b'), size: 20}];
@@ -51,4 +52,18 @@ test('branches write separate registry caches while tag builds cannot replace th
     'type=gha,mode=max', `type=registry,ref=${image}:buildcache-main,mode=max`,
   ]);
   assert.deepEqual(cacheDestinations('refs/tags/v2.6.4', image), ['type=gha,mode=max']);
+});
+
+test('same-commit layer drift stays an error unless a validated manual image-only rebuild permits it', () => {
+  const current = [{digest: digest('c'), size: 10}, oldLayers[1]];
+  assert.equal(sameCommitLayerCheck(oldLayers, current, false).failed, true);
+  assert.equal(sameCommitLayerCheck(oldLayers, oldLayers, false).failed, false);
+  assert.equal(sameCommitLayerCheck(null, current, false).failed, false);
+  const plan = imageRebuildPlan({INPUT_REBUILD_ONLY: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_REF: 'refs/heads/dev', GITHUB_SHA: 'a'.repeat(40), IMAGE_NAME: 'owner/app',
+    GITHUB_RUN_ID: '1234', GITHUB_RUN_ATTEMPT: '1'});
+  const allowed = sameCommitLayerCheck(oldLayers, current, plan.rebuildOnly);
+  assert.equal(allowed.failed, false);
+  assert.match(allowed.message, /Explicit manual image-only rebuild/);
+  assert.match(allowed.message, /original revision and version image tags remain unchanged/);
 });

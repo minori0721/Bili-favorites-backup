@@ -211,6 +211,8 @@ dev 维护一个固定的 `dev-preview` Git 标签和同名 GitHub Pre-release�
 
 ## 最终收口与发布边界
 
+- `Docker Publish` 的 `workflow_dispatch.rebuild_only` 是仅更新运行环境的维护入口，只允许在 dev/main 显式手动启用。基础镜像主动刷新，完整测试和隔离镜像验收不跳过；`scripts/image-rebuild.mjs` 管理操作范围、重建镜像标签、当前分支复核与 Node 安全版本下限。该模式只推广所选部署通道和独立的重建标签，不覆盖原 SHA/版本镜像，不更新任何 GitHub Release；普通运行仍禁止同提交文件层漂移。操作步骤见[更新镜像](../operations/update#维护者-只更新镜像内的运行环境)。
+
 - 恢复动作按下载、上传续传、编码、画质、冲突选择和放弃处理分别提供入口，共用 `recovery-work` 的任务锁；远端检查后再次核验代次及任务证据。
 - `startup-recovery`、`startup-probes` 与 `legacy-quality-migration` 处理启动重建，`legacy-cache-recovery` 拥有异步缓存扫描。`transfer-recovery-projection` 拥有投影节流，数据库重绑定清空该节流。
 - `account-retirement` 拥有账号退役请求和取消标识，重复请求共享 Promise，忙碌状态参与维护及关闭排空；`retirement-transfers` 处理遗留本地成品，`source-deletion` 处理来源删除协调。来源删除通过 `StateManager.runAtomic` 提交关系、任务与清理授权，不把裸 SQLite 连接传入工作流。HTTP 入口位于 `http/account-removal`、`http/archive-deletion` 和 `http/recovery`，注册位置及统一认证、维护包装器不变。
