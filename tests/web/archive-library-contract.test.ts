@@ -4,10 +4,25 @@ import {
   parseArchiveLibraryPage,
   parseArchiveNavigation,
   parseLocalReleasePreview,
+  parseArchiveDeletion,
 } from '../../src/shared/api/archive-library.js';
 import { parsePlaybackQueuePage, parsePlaybackSearchPage } from '../../src/shared/api/playback-queue.js';
 
 const part = { fileId: 1, pageIndex: 1, label: '正片', fingerprint: '1:0:1', streamUrl: '/media/1' };
+
+test('deletion progress accepts persistent epoch timestamps and historical ISO projections', () => {
+  const operation = { id: 'cleanup', status: 'completed', fileCount: 1, completedCount: 1 };
+  for (const time of [0, 1792929600000, '2026-10-25T12:00:00.000Z']) {
+    const parsed = parseArchiveDeletion({ ...operation, updatedAt: time, completedAt: time });
+    assert.equal(parsed.updatedAt, time);
+    assert.equal(parsed.completedAt, time);
+  }
+  assert.equal(parseArchiveDeletion(operation).completedAt, undefined);
+  for (const time of [-1, 1.5, Infinity, 8.64e15 + 1, 'invalid', true, {}]) {
+    assert.throws(() => parseArchiveDeletion({ ...operation, updatedAt: time }), /时间/);
+    assert.throws(() => parseArchiveDeletion({ ...operation, completedAt: time }), /时间/);
+  }
+});
 
 test('archive navigation accepts numeric server UIDs and rejects invalid identifiers', () => {
   const account = { id: 'user', folders: [], inactiveFolders: [] };

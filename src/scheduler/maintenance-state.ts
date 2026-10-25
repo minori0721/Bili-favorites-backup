@@ -14,6 +14,7 @@ export interface ArchiveDeletionSummary {
   userId?: string;
   mediaId?: number;
   bvid?: string;
+  sources?: ReadonlyArray<{userId: string; mediaId: number}>;
 }
 
 interface Admission {

@@ -10,6 +10,7 @@ import type { OnlineCoverCache } from './online-cover-cache.js';
 import { backupsDir, coversDir, databasePath, dataDir, exportsDir, onlineCoversDir, tempDir } from './paths.js';
 import type { StateManager } from './state.js';
 import { clearDirectoryContents } from './storage.js';
+import { cleanupItemRequiresIdle } from './shared/storage-cleanup.js';
 import type { UserStore } from './users.js';
 export type CleanupItem = "memory-cache" | "temp" | "orphan-fragments" | "logs" | "debug-logs" | "covers" | "online-covers" | "exports" | "backups" | "state" | "users" | "config";
 interface CleanupAdmission {
@@ -45,7 +46,7 @@ export function createStorageCleanup(deps: Dependencies) {
     covers: { label: "归档封面（永久保存）", important: true, path: coversDir },
     "online-covers": { label: "在线缩略图缓存", important: false, path: onlineCoversDir },
     exports: { label: "导出压缩包", important: false, path: exportsDir },
-    backups: { label: "导入前备份", important: false, path: backupsDir },
+    backups: { label: "导入前备份（回滚副本）", important: true, path: backupsDir },
     state: { label: "备份状态与持久化任务", important: true, path: databasePath },
     users: { label: "账号登录信息", important: true, path: path.join(dataDir, "users.json") },
     config: { label: "全局配置", important: true, path: path.join(dataDir, "config.json") },
@@ -82,7 +83,7 @@ export function createStorageCleanup(deps: Dependencies) {
   }
 
   function cleanupRequiresIdle(items: CleanupItem[]) {
-    return items.some((item) => item !== "memory-cache" && item !== "logs" && item !== "debug-logs" && item !== "exports" && item !== "backups");
+    return items.some(cleanupItemRequiresIdle);
   }
 
   function cleanupConfirmationRequired(items: CleanupItem[]) {

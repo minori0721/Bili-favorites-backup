@@ -171,22 +171,20 @@ export class SqliteUpSubscriptionRepository {
     const changed=this.connection().prepare('UPDATE up_subscriptions SET removed=1,enabled=0,revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(now,id,revision).changes;
     if (!changed) throw Object.assign(new Error('订阅已发生变化，请刷新后重试'),{statusCode:409});
   }
-  removeAndExclude(id: string, revision: number, now: number) {
+  removeAndExclude(id: string, revision: number, now: number,bvids:ReadonlyArray<string>) {
     const source = this.get(id);
     if (!source || source.revision !== revision) throw Object.assign(new Error('订阅已发生变化，请刷新后重试'), {statusCode:409});
     this.connection().transaction(() => {
       this.remove(id, revision, now);
-      // Keep known candidates and archived relations excluded on re-add, including
-      // historical relations no longer present in the local submission catalog.
-      this.connection().prepare(`
-        INSERT INTO archive_video_decisions(source_id,bvid,decision,updated_at)
-        SELECT ?, bvid, 'exclude', ? FROM (
-          SELECT bvid FROM up_catalog WHERE source_id=?
-          UNION SELECT bvid FROM favorite_relations WHERE user_id=? AND media_id=?
-        ) WHERE 1
-        ON CONFLICT(source_id,bvid) DO UPDATE SET decision='exclude',updated_at=excluded.updated_at
-      `).run(id, now, id, source.userId, source.routingKey);
+      for(const bvid of bvids)this.setDecision(id,bvid,'exclude',now);
     })();
+  }
+  historyFromNow(id:string,revision:number,now:number,cutoff:number,bvids:ReadonlyArray<string>) {
+    const source=this.get(id);
+    if(!source||source.removed||source.revision!==revision)throw Object.assign(new Error('订阅已发生变化，请刷新后重试'),{statusCode:409});
+    this.update(id,revision,{userId:source.userId,enabled:true,mode:'from_now',since:cutoff,anchorBvid:null},now);
+    this.connection().prepare("DELETE FROM archive_video_decisions WHERE source_id=? AND decision='include' AND bvid IN (SELECT bvid FROM up_catalog WHERE source_id=? AND published_at<?)").run(id,id,cutoff);
+    for(const bvid of bvids)this.setDecision(id,bvid,'exclude',now);
   }
   decision(sourceId: string, bvid: string): UpVideoDecision {
     const row=this.connection().prepare<unknown[],{decision:string}>('SELECT decision FROM archive_video_decisions WHERE source_id=? AND bvid=?').get(sourceId,bvid);
@@ -275,5 +273,5 @@ export class SqliteUpSubscriptionRepository {
   }
 }
 export type UpSubscriptionRepository = Pick<SqliteUpSubscriptionRepository,
- 'list'|'get'|'getByUid'|'getByRoute'|'create'|'update'|'remove'|'removeAndExclude'|'decision'|'setDecision'|'globallyExcluded'|'setGlobalExclusion'|
+ 'list'|'get'|'getByUid'|'getByRoute'|'create'|'update'|'remove'|'removeAndExclude'|'historyFromNow'|'decision'|'setDecision'|'globallyExcluded'|'setGlobalExclusion'|
  'isBlocked'|'item'|'recordPage'|'saveScan'|'requestScan'|'bumpRevision'|'catalog'>;

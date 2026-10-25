@@ -1,12 +1,11 @@
-import crypto from 'node:crypto';
 import type { UpSubscriptionRepository, StoredUpSubscription } from '../repositories/up-subscriptions.js';
-import type { UpSubscriptionInput, UpSubmission, UpVideoActionPreview, UpVideoDecision, UpRemovalPreview, UpRemovalOperation } from '../shared/up-subscriptions.js';
+import type { UpSubscriptionInput, UpSubmission, UpRemovalPreview, UpRemovalOperation } from '../shared/up-subscriptions.js';
 import type { UserStore } from '../users.js';
-import type { FavoriteRelation } from '../state.js';
 import type { ArchiveDeletionService } from '../archive-deletion.js';
 import type { UpBiliPort } from './bili-adapter.js';
 import { isRecord } from '../shared/api/value.js';
 import { parseUpUid } from './policy.js';
+import type { ArchiveVideoActions } from '../archive-video-actions.js';
 
 function fail(message:string,statusCode=400):never {throw Object.assign(new Error(message),{statusCode});}
 function text(value:unknown,name:string) {if(typeof value!=='string'||!value.trim()) fail(`${name} 无效`);return value.trim();}
@@ -15,7 +14,6 @@ function revision(value:unknown) {return integer(value,'订阅版本');}
 function bvid(value:unknown) {const result=text(value,'BV号');if(!/^BV[0-9A-Za-z]+$/.test(result)) fail('BV号无效');return result;}
 function page(value:unknown) {if(value===undefined)return 1; const result=typeof value==='string'&&/^\d+$/.test(value)?Number(value):value;return integer(result,'页码');}
 function rule(value:unknown):UpSubscriptionInput['mode'] {if(value!=='all'&&value!=='from_now'&&value!=='from_date'&&value!=='from_video'&&value!=='selected') fail('归档范围无效');return value;}
-function decision(value:unknown):UpVideoDecision {if(value!=='inherit'&&value!=='include'&&value!=='exclude')fail('选择方式无效');return value;}
 export function createUpSubscriptionService(deps:{
   repository():UpSubscriptionRepository;
   users:Pick<UserStore,'list'|'getById'>;
@@ -27,17 +25,17 @@ export function createUpSubscriptionService(deps:{
   maintenance<T>(work:()=>Promise<T>):Promise<T>;
   canRebind():boolean;
   rebind(source:StoredUpSubscription,newUserId:string):void;
-  relations(bvid:string):FavoriteRelation[];
-  deletion:Pick<ArchiveDeletionService,'previewSource'|'previewVideo'|'start'|'get'|'retry'|'previewSubscription'|'startSubscriptionRemoval'|'hasUnfinishedSubscriptionRemoval'|'listSubscriptionRemovals'>;
+  videoActions: Pick<ArchiveVideoActions,'preview'|'commit'|'unblock'|'select'>;
+  deletion:Pick<ArchiveDeletionService,'previewSource'|'start'|'get'|'retry'|'repreview'|'previewSubscription'|'previewHistory'|'startSubscriptionRemoval'|'startHistoryCleanup'|'hasUnfinishedSubscriptionRemoval'|'hasUnfinishedSourceDeletion'|'listSubscriptionRemovals'>;
   now():number;
 }) {
   const previewItems=new Map<string,{items:UpSubmission[];expires:number}>();
-  const previews=new Map<string,{preview:UpVideoActionPreview;revision:number;expires:number;deletionId?:string}>();
+  const historyPreviews=new Map<string,{sourceId:string;revision:number;cutoff:number;expires:number}>();
   function ready(){if(deps.blocked())fail('维护期间暂时不能修改订阅',409);}
   function account(value:unknown) {const id=text(value,'账号');const user=deps.users.getById(id);if(!user?.enabled)fail('请选择启用的 B站账号');return id;}
   function source(id:unknown,includeRemoved=false) {const found=deps.repository().get(text(id,'订阅'));if(!found||(!includeRemoved&&found.removed))fail('订阅不存在',404);return found;}
   function expect(current:StoredUpSubscription,value:unknown) {if(current.revision!==revision(value))fail('订阅已变化，请刷新后重试',409);}
-  function prune(){for(const [key,value]of previewItems)if(value.expires<=deps.now())previewItems.delete(key);for(const[key,value]of previews)if(value.expires<=deps.now())previews.delete(key);}
+  function prune(){for(const [key,value]of previewItems)if(value.expires<=deps.now())previewItems.delete(key);for(const [key,value]of historyPreviews)if(value.expires<=deps.now())historyPreviews.delete(key);}
   function since(mode:UpSubscriptionInput['mode'],input:Record<string,unknown>,userId:string,uid:number,current?:StoredUpSubscription) {
     if(mode==='all'||mode==='selected')return null;
     if(mode==='from_now')return current?.mode===mode?current.since:deps.now();
@@ -52,19 +50,30 @@ export function createUpSubscriptionService(deps:{
   function publicSource(item:StoredUpSubscription) {const {routingKey:_,...dto}=item;return {...dto,accountAvailable:Boolean(deps.users.getById(item.userId)?.enabled)};}
   function removalOperation(operation:NonNullable<ReturnType<ArchiveDeletionService['get']>>,current:StoredUpSubscription):UpRemovalOperation {
     const {status}=operation;
-    if(status!=='pending'&&status!=='running'&&status!=='retry_wait'&&status!=='failed'&&status!=='completed')fail('订阅清理状态无效',409);
+    if(status!=='pending'&&status!=='running'&&status!=='retry_wait'&&status!=='failed'&&status!=='completed'&&status!=='stopped')fail('订阅清理状态无效',409);
     return {id:operation.id,sourceId:current.id,sourceName:current.name,status,fileCount:operation.fileCount,
-      completedCount:operation.completedCount,retainedCount:operation.retainedCount,lastError:operation.lastError??null};
+      completedCount:operation.completedCount,retainedCount:operation.retainedCount,lastError:operation.lastError??null,kind:operation.scope==='history'?'history':'removal'};
   }
-  function removalPreview(current:StoredUpSubscription):UpRemovalPreview {
+  function removalPreview(current:StoredUpSubscription,exceptId=''):UpRemovalPreview {
+    if(deps.deletion.hasUnfinishedSourceDeletion(current.userId,current.routingKey,exceptId))fail('请先完成或停止该订阅未结束的归档清理',409);
     const preview=deps.deletion.previewSubscription(current.userId,current.routingKey);
     return {previewId:preview.id,sourceId:current.id,revision:current.revision,videoCount:preview.sourceCount,
       fileCount:preview.fileCount,sharedCount:preview.sharedCount,totalBytes:preview.totalBytes,
-      reclaimableBytes:preview.reclaimableBytes,activeTasks:preview.activeTasks,confirmation:'DELETE ARCHIVE'};
+      reclaimableBytes:preview.reclaimableBytes,deleteCount:preview.deleteCount,activeTasks:preview.activeTasks,confirmation:'DELETE ARCHIVE'};
+  }
+  function historyPreview(current:StoredUpSubscription,previous?:NonNullable<ReturnType<ArchiveDeletionService['get']>>):UpRemovalPreview {
+    prune();
+    if(deps.deletion.hasUnfinishedSourceDeletion(current.userId,current.routingKey,previous?.id))fail('请先完成或停止该订阅未结束的归档清理',409);
+    const preview=previous?deps.deletion.repreview(previous.id):deps.deletion.previewHistory(current.userId,current.routingKey);
+    const cutoff=previous?(current.since??fail('历史清理起点已变化',409)):deps.now();
+    historyPreviews.set(preview.id,{sourceId:current.id,revision:current.revision,cutoff,expires:deps.now()+10*60_000});
+    return {previewId:preview.id,sourceId:current.id,revision:current.revision,videoCount:preview.sourceCount,fileCount:preview.fileCount,
+      sharedCount:preview.sharedCount,totalBytes:preview.totalBytes,reclaimableBytes:preview.reclaimableBytes,deleteCount:preview.deleteCount,
+      activeTasks:preview.activeTasks,confirmation:'DELETE ARCHIVE',kind:'history',cutoff};
   }
   function requireRemoval(id:unknown) {
     const operation=deps.deletion.get(text(id,'清理任务'))??fail('清理任务不存在',404);
-    if(operation.scope!=='source'||operation.bvid!==undefined||operation.mediaId===undefined)fail('不是整订阅清理任务',400);
+    if((operation.scope!=='source'&&operation.scope!=='history')||operation.bvid!==undefined||operation.mediaId===undefined)fail('不是整订阅清理任务',400);
     const current=deps.repository().getByRoute(operation.mediaId)??fail('订阅不存在',404);
     return {operation,current};
   }
@@ -93,7 +102,7 @@ export function createUpSubscriptionService(deps:{
       const profile=await deps.bili.profile(userId,uid);
       ready();account(userId);
       const previous=deps.repository().getByUid(uid);
-      if(previous&&deps.deletion.hasUnfinishedSubscriptionRemoval(previous.routingKey))fail('请先完成这个 UP 的归档清理，再重新添加订阅',409);
+      if(previous&&deps.deletion.hasUnfinishedSourceDeletion(previous.userId,previous.routingKey))fail('请先完成或停止这个 UP 的归档清理，再重新添加订阅',409);
       const commit=()=>deps.atomic(()=>{
         if(previous?.removed&&previous.userId!==userId)deps.rebind(previous,userId);
         return deps.repository().create(profile,{userId,uid,mode,anchorBvid:mode==='from_video'?bvid(value.anchorBvid):undefined},cutoff,deps.now());
@@ -105,6 +114,7 @@ export function createUpSubscriptionService(deps:{
     async update(id:unknown,value:unknown) {
       ready();if(!isRecord(value))fail('订阅参数无效');
       const current=source(id);expect(current,value.revision);
+      if(deps.deletion.hasUnfinishedSourceDeletion(current.userId,current.routingKey))fail('请先完成或停止该订阅未结束的归档清理，再修改订阅规则',409);
       const userId=account(value.userId??current.userId);const mode=value.mode===undefined?current.mode:rule(value.mode);
       if(value.enabled!==undefined&&typeof value.enabled!=='boolean')fail('订阅启用状态无效');
       const cutoff=mode===current.mode && value.since===undefined && value.anchorBvid===undefined ? current.since : since(mode,value,userId,current.uid,current);
@@ -132,58 +142,51 @@ export function createUpSubscriptionService(deps:{
       const effect=value.effect??'retain';if(effect!=='retain'&&effect!=='delete')fail('移除方式无效');
       if(effect==='retain'){
         if(current.removed)fail('订阅已经移除',409);
+        if(deps.deletion.hasUnfinishedSourceDeletion(current.userId,current.routingKey))fail('请先完成或停止该订阅未结束的归档清理',409);
         deps.repository().remove(current.id,current.revision,deps.now());return {retained:true,operation:null};
       }
       const preview=deps.deletion.get(text(value.previewId,'操作预览'));
       if(!preview||preview.scope!=='source'||preview.bvid!==undefined||preview.userId!==current.userId||preview.mediaId!==current.routingKey)fail('清理预览不属于该订阅',409);
-      const operation=deps.deletion.startSubscriptionRemoval(preview.id,text(value.confirmation,'确认文字'),()=>{
+      const operation=deps.deletion.startSubscriptionRemoval(preview.id,text(value.confirmation,'确认文字'),bvids=>{
         expect(source(id,true),value.revision);
-        deps.repository().removeAndExclude(current.id,current.revision,deps.now());
+        deps.repository().removeAndExclude(current.id,current.revision,deps.now(),bvids);
       });
       return {retained:false,operation:removalOperation(operation,source(id,true))};
     },
-    repreviewRemoval(id:unknown){ready();const {operation,current}=requireRemoval(id);if(operation.status!=='failed')fail('只有失败的清理任务可以重新核对',409);return removalPreview(current);},
+    repreviewRemoval(id:unknown){ready();const {operation,current}=requireRemoval(id);if(operation.status!=='failed')fail('只有失败的清理任务可以重新核对',409);return operation.scope==='history'?historyPreview(current,operation):removalPreview(current,operation.id);},
     retryRemoval(id:unknown){ready();const {operation,current}=requireRemoval(id);return removalOperation(deps.deletion.retry(operation.id),current);},
     catalog(id:unknown,input:Record<string,unknown>){const current=source(id,true);const filter=input.filter??'all';if(filter!=='all'&&filter!=='selected'&&filter!=='excluded')fail('投稿筛选无效');return deps.repository().catalog(current,{filter,query:typeof input.q==='string'?input.q.trim():'',cursor:typeof input.cursor==='string'?input.cursor:undefined});},
     select(id:unknown,value:unknown){
-      ready();if(!isRecord(value)||!Array.isArray(value.items)||value.items.length===0||value.items.length>300)fail('请选择 1–300 个投稿');
-      const current=source(id);expect(current,value.revision);
-      const changes=value.items.map(item=>{if(!isRecord(item))fail('选择条目无效');const bv=bvid(item.bvid);if(!deps.repository().item(current.id,bv))fail('投稿未在该订阅中');return {bvid:bv,decision:decision(item.decision)};});
-      deps.atomic(()=>{deps.repository().bumpRevision(current.id,current.revision,deps.now());for(const change of changes)deps.repository().setDecision(current.id,change.bvid,change.decision,deps.now());
-        const updated=source(id);for(const change of changes){const item=deps.repository().item(updated.id,change.bvid);if(item&&!deps.repository().isBlocked(updated.userId,updated.routingKey,item.bvid))deps.ingest(updated,item);}});
+      ready();const current=source(id);deps.videoActions.select(current.id,value);
       deps.scan();return publicSource(source(id));
+    },
+    previewHistory(id:unknown,value:unknown){ready();if(!isRecord(value))fail('参数无效');const current=source(id);expect(current,value.revision);account(current.userId);return historyPreview(current);},
+    historyCleanup(id:unknown,value:unknown){
+      ready();if(!isRecord(value))fail('参数无效');const current=source(id);expect(current,value.revision);
+      account(current.userId);
+      const previewId=text(value.previewId,'操作预览'),cached=historyPreviews.get(previewId);
+      if(!cached||cached.expires<=deps.now()||cached.sourceId!==current.id||cached.revision!==current.revision)fail('历史清理预览已失效，请重新核对',409);
+      const operation=deps.deletion.startHistoryCleanup(previewId,text(value.confirmation,'确认文字'),bvids=>
+        deps.repository().historyFromNow(current.id,current.revision,deps.now(),cached.cutoff,bvids));
+      historyPreviews.delete(previewId);deps.scan();
+      return {retained:false,operation:removalOperation(operation,source(id))};
     },
     scan(id:unknown){ready();const current=source(id);if(!current.enabled)fail('请先启用订阅');deps.repository().requestScan(current.id);return deps.scan();},
     previewAction(id:unknown,bv:unknown,value:unknown){
       ready();prune();if(!isRecord(value))fail('参数无效');const current=source(id,true);expect(current,value.revision);const video=bvid(bv);
       if(!deps.repository().item(current.id,video))fail('投稿不存在',404);
       if(value.scope!=='source'&&value.scope!=='global')fail('操作范围无效');if(value.effect!=='retain'&&value.effect!=='delete')fail('操作方式无效');
-      const relations=deps.relations(video).filter(relation=>value.scope==='global'||relation.sourceId===current.id);
-      const hasProof=relations.some(relation=>relation.remoteFiles?.some(file=>file.verificationStatus==='verified'));
-      const deletion=value.effect==='delete'&&hasProof ? (value.scope==='global'?deps.deletion.previewVideo(video):deps.deletion.previewSource(current.userId,current.routingKey,video,{allowActive:true})) : undefined;
-      const preview:UpVideoActionPreview={previewId:crypto.randomUUID(),sourceId:current.id,bvid:video,scope:value.scope,effect:value.effect,
-        sources:relations.map(relation=>({userId:relation.userId,mediaId:relation.mediaId,title:relation.folderTitle})),
-        fileCount:deletion?.fileCount??0,totalBytes:deletion?.totalBytes??0,sharedCount:deletion?.sharedCount??0,
-        confirmation:value.effect==='delete'?'DELETE ARCHIVE':'不再归档'};
-      previews.set(preview.previewId,{preview,revision:current.revision,expires:deps.now()+10*60_000,deletionId:deletion?.id});return preview;
+      return {...deps.videoActions.preview(video,{...value,sourceId:current.id}),sourceId:current.id};
     },
     action(id:unknown,bv:unknown,value:unknown){
-      ready();prune();if(!isRecord(value))fail('操作参数无效');const current=source(id,true);const video=bvid(bv);const cached=previews.get(text(value.previewId,'操作预览'));
-      if(!cached||cached.preview.sourceId!==current.id||cached.preview.bvid!==video||cached.revision!==current.revision)fail('预览已变化，请重新确认',409);
-      if(value.confirmation!==cached.preview.confirmation)fail('确认文字不匹配');
-      // Exclusion survives deletion failure; it is committed before scheduling destructive work.
-      deps.atomic(()=>{if(cached.preview.scope==='global')deps.repository().setGlobalExclusion(video,true,deps.now());else deps.repository().setDecision(current.id,video,'exclude',deps.now());deps.repository().bumpRevision(current.id,current.revision,deps.now());});
-      previews.delete(cached.preview.previewId);
-      const operation=cached.deletionId?deps.deletion.start(cached.deletionId,'DELETE ARCHIVE'):null;
-      return {subscription:publicSource(source(id,true)),operation,retained:cached.preview.effect==='retain'};
+      ready();if(!isRecord(value))fail('操作参数无效');const current=source(id,true);const video=bvid(bv);
+      return {...deps.videoActions.commit(video,{...value,sourceId:current.id}),subscription:publicSource(source(id,true))};
     },
     unblock(id:unknown,bv:unknown,value:unknown){ready();if(!isRecord(value))fail('参数无效');const current=source(id,true);expect(current,value.revision);const video=bvid(bv);
-      if(deps.deletion.hasUnfinishedSubscriptionRemoval(current.routingKey))fail('请先完成该订阅的归档清理，再解除排除',409);
-      if(value.scope!=='global'&&value.scope!=='source')fail('恢复范围无效');
-      deps.atomic(()=>{if(value.scope==='global')deps.repository().setGlobalExclusion(video,false,deps.now());else deps.repository().setDecision(current.id,video,'inherit',deps.now());deps.repository().bumpRevision(current.id,current.revision,deps.now());
-        const updated=source(id,true),item=deps.repository().item(current.id,video);if(item)deps.ingest(updated,item);});deps.scan();return publicSource(source(id,true));},
+      deps.videoActions.unblock(video,{...value,sourceId:current.id});
+      deps.scan();return publicSource(source(id,true));},
     operation(id:unknown){return deps.deletion.get(text(id,'清理任务'))??fail('清理任务不存在',404);},
     retry(id:unknown){ready();return deps.deletion.retry(text(id,'清理任务'));},
-    reset(){previewItems.clear();previews.clear();},
+    reset(){previewItems.clear();historyPreviews.clear();},
   };
 }

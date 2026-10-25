@@ -997,11 +997,27 @@
       "rebind": "仓储通过当前连接提供者读取；扫描排空后重置代次和 WBI 缓存，所有重绑定成功后才恢复准入；不长期缓存裸连接。"
     },
     {
+      "module": "archive-video-actions.ts",
+      "ownerSymbol": "createArchiveVideoActions",
+      "resourceSymbols": ["previews"],
+        "stop": "预览按十分钟失效；导入及其连接重绑定前 reset 清空；进程退出后随内存释放。仅保存来源身份、操作摘要及预览编号。",
+      "lateCallback": "提交前复核当前来源、订阅版本、所选来源及排除规则；所有来源预览不能静默扩大。远端删除由独立持久任务拥有。",
+      "rebind": "所有仓储读取通过当前连接提供者，预览不保存连接；恢复和重绑定后丢弃旧预览。"
+    },
+    {
+      "module": "web/client/shared/archive-video-actions.ts",
+      "ownerSymbol": "createArchiveVideoActionController",
+      "resourceSymbols": ["events", "read", "context", "identity", "epoch", "busy", "poll"],
+      "stop": "关闭取消读取和进度轮询，destroy 解除事件；已提交的持久删除不因关闭弹窗而取消。提交过程中阻止重复确认。",
+      "lateCallback": "epoch 防止旧读取或确认写入新弹窗；后台进度不抢占当前弹窗焦点。",
+      "rebind": "重新打开取得新来源上下文；旧预览在服务端复核，不缓存数据库连接。"
+    },
+    {
       "module": "up-subscriptions/service.ts",
       "ownerSymbol": "createUpSubscriptionService",
       "resourceSymbols": [
         "previewItems",
-        "previews"
+        "historyPreviews"
       ],
       "stop": "调度停止时停止扫描并取消适配器请求；前端关闭对应弹窗取消读取与轮询，destroy 幂等释放事件、请求、缓存和计时器。服务预览缓存按十分钟过期，导入时 reset 清除。",
       "lateCallback": "请求提交前检查账号授权身份、运行代次和订阅 revision；已关闭或已替换的前端请求不能修改新界面；停止后忙碌状态保留到 Promise 完成。",
@@ -1025,15 +1041,15 @@
         "catalogCursor",
         "filter",
         "current",
-        "actionItem",
         "anchorPage",
         "mutation",
         "poll",
         "operationId",
         "removalSource",
+        "removalIntent",
         "homePoll"
       ],
-      "stop": "destroy 取消所有请求、可见性监听、工作区轮询和首页清理轮询，释放首页卡片缓存；关闭移除弹窗取消未完成读取。页面隐藏时暂停两种轮询，返回前台补查一次。首页仅在有进行中清理任务时轮询，失败或完成后停止。",
+      "stop": "destroy 取消所有请求、可见性监听、工作区轮询和首页清理轮询，释放首页卡片缓存；关闭移除弹窗取消未完成读取。页面隐藏时暂停两种轮询，返回前台补查一次。首页仅在有进行中清理任务时轮询，失败、完成或停止后结束；历史清理和移除共用预览资源，由 removalIntent 标识。",
       "lateCallback": "代次、AbortController 和移除来源身份共同检查迟到响应；返回前台的新读取使旧快照失效，已提交的用户操作不因页面隐藏被取消。旧确认不能提交到新的订阅。持久删除任务由归档清理服务拥有，不随卡片或弹窗销毁。",
       "rebind": "仓储通过当前连接提供者读取；扫描排空后重置代次和 WBI 缓存，所有重绑定成功后才恢复准入；不长期缓存裸连接。"
     }

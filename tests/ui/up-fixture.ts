@@ -4,6 +4,7 @@ import { StateManager } from '../../src/state.js';
 import { PersistentJobStore } from '../../src/job-store.js';
 import { ArchiveDeletionService, type ArchiveDeletionDavClient } from '../../src/archive-deletion.js';
 import { createUpSubscriptionService } from '../../src/up-subscriptions/service.js';
+import { createArchiveVideoActions } from '../../src/archive-video-actions.js';
 import { createUpScan } from '../../src/up-subscriptions/scan.js';
 import { createUpArchive } from '../../src/scheduler/up-archive.js';
 import { getArchiveLibraryNavigation,queryArchiveLibraryItems,getArchiveLibraryItemDetail } from '../../src/archive-library.js';
@@ -48,9 +49,11 @@ export function createUpUiFixture() {
   let scan:Promise<void>|null=null;
   function requestScan(){if(!scan)scan=scanner.run({canRun:()=>true,enterUser(){},leaveUser(){},progress(){},counts(){}})
     .catch(error=>{console.error('[UI UP scan]',error);}).finally(()=>{scan=null;});return {started:true,queued:false};}
+  const videoActions=createArchiveVideoActions({repository:()=>manager.getDatabase().upSubscriptions,relations:bvid=>manager.listRelationsForBvid(bvid),ingest,
+    accountName:id=>users.getById(id)?.name??'',title:bvid=>manager.getDatabase().getVideo(bvid)?.title??bvid,atomic:work=>manager.runAtomic(work),restoreSource:(u,m,b,at)=>manager.getDatabase().restoreCompletedArchiveSource(u,m,b,at),blocked:()=>false,deletion,now:Date.now});
   const service=createUpSubscriptionService({repository:()=>manager.getDatabase().upSubscriptions,users,bili,atomic:work=>manager.runAtomic(work),ingest,scan:requestScan,
     blocked:()=>false,maintenance:work=>work(),canRebind:()=>true,rebind:(source,userId)=>manager.rebindUpSubscriptionRelations(source.id,source.userId,userId,source.routingKey),
-    relations:bv=>manager.listRelationsForBvid(bv),deletion,now:Date.now});
+    videoActions,deletion,now:Date.now});
   function seed(){
     const repository=manager.getDatabase().upSubscriptions;
     for(const profile of profiles.slice(0,3)) {
@@ -69,12 +72,28 @@ export function createUpUiFixture() {
     }
   }
   seed();
-  return {service,
+  function seedArchiveActions(){
+    const source=manager.getDatabase().upSubscriptions.getByUid(163637592)!;
+    const first=posts(source.uid)[0];
+    const shared=`/backup/up-${source.uid}/${first.bvid}/video.mp4`;
+    const proofs=[
+      {bvid:first.bvid,title:'共用示例：收藏夹 A、B 与 UP 共用一份视频',mediaId:11,folder:'收藏夹 A · 日常',file:shared,size:12*1024*1024},
+      {bvid:first.bvid,title:'共用示例：收藏夹 A、B 与 UP 共用一份视频',mediaId:12,folder:'收藏夹 B · 学习',file:shared,size:12*1024*1024},
+      {bvid:'BVARCHIVECOPIES',title:'独立副本示例：同一视频各存一份',mediaId:11,folder:'收藏夹 A · 日常',file:'/backup/a/independent.mp4',size:8*1024*1024},
+      {bvid:'BVARCHIVECOPIES',title:'独立副本示例：同一视频各存一份',mediaId:12,folder:'收藏夹 B · 学习',file:'/backup/b/independent.mp4',size:16*1024*1024},
+      {bvid:'BVARCHIVEHISTORY',title:'历史示例：已停用收藏夹的归档',mediaId:99,folder:'已停用的旧收藏夹',file:'/backup/history/video.mp4',size:2*1024*1024},
+    ];
+    users.upsert({...users.getById('u1')!,favorites:[{mediaId:11,title:'收藏夹 A · 日常'},{mediaId:12,title:'收藏夹 B · 学习'}]});
+    for(const item of proofs){manager.recordFavoriteItem('u1',item.mediaId,item.folder,{bvid:item.bvid,title:item.title,upperName:'隔离测试 UP'});remote.set(item.file,item.size);
+      manager.restoreExistingArchiveProof(item.bvid,'u1',item.mediaId,{status:'verified',remotePath:path.posix.dirname(item.file),files:[{name:path.posix.basename(item.file),path:item.file,size:item.size,verificationStatus:'verified'}]});}
+  }
+  return {service,videoActions,deletion,seedArchiveActions,
+    archiveNavigation:()=>getArchiveLibraryNavigation(manager.getDatabase(),users.list()),
     setDeletionFailure(value:boolean){deletionFailure=value;},
     navigation:()=>getArchiveLibraryNavigation(manager.getDatabase(),users.list()).upSubscriptions,
     items:(query:Parameters<typeof queryArchiveLibraryItems>[2])=>queryArchiveLibraryItems(manager.getDatabase(),users.list(),query),
     detail:(query:Parameters<typeof getArchiveLibraryItemDetail>[2],bvid:string)=>getArchiveLibraryItemDetail(manager.getDatabase(),users.list(),query,bvid),
-    async reset(){scanner.stop();if(scan)await scan;deletionFailure=false;service.reset();manager.getDatabase().db.exec(`DELETE FROM archive_deleted_sources;DELETE FROM archive_deletion_items;DELETE FROM archive_deletions;DELETE FROM archive_video_decisions;DELETE FROM archive_global_exclusions;DELETE FROM up_catalog;DELETE FROM up_subscriptions;DELETE FROM jobs;DELETE FROM remote_files;DELETE FROM favorite_relations;DELETE FROM videos;`);manager.reload();remote.clear();seed();scanner.start();},
+    async reset(){scanner.stop();if(scan)await scan;deletionFailure=false;service.reset();videoActions.reset();manager.getDatabase().db.exec(`DELETE FROM archive_deleted_sources;DELETE FROM archive_deletion_items;DELETE FROM archive_deletions;DELETE FROM archive_video_decisions;DELETE FROM archive_global_exclusions;DELETE FROM up_catalog;DELETE FROM up_subscriptions;DELETE FROM jobs;DELETE FROM remote_files;DELETE FROM favorite_relations;DELETE FROM videos;`);manager.reload();remote.clear();seed();scanner.start();},
     async close(){scanner.stop();if(scan)await scan;if(!await deletion.stop(5000))throw new Error('UI 清理未排空');manager.close();},
   };
 }

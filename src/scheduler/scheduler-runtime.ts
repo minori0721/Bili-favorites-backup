@@ -1263,6 +1263,7 @@ export class SchedulerRuntime implements SchedulerControl {
     userId?: string;
     mediaId?: number;
     bvid?: string;
+    sources?: ReadonlyArray<{userId: string; mediaId: number}>;
   }) {
     this.maintenance.setArchive(locked, summary);
   }

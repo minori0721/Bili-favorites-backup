@@ -116,6 +116,8 @@ import { createUpBiliAdapter } from './up-subscriptions/bili-adapter.js';
 import { createUpScan } from './up-subscriptions/scan.js';
 import { createUpSubscriptionService } from './up-subscriptions/service.js';
 import { createUpSubscriptionRouter } from './http/up-subscriptions.js';
+import { createArchiveVideoActions } from './archive-video-actions.js';
+import { createArchiveVideoActionsRouter } from './http/archive-video-actions.js';
 
 const trustedProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 readAssetManifest();
@@ -221,6 +223,16 @@ const archiveDeletion = new ArchiveDeletionService(stateManager, configStore, us
   },
 });
 
+const archiveVideoActions = createArchiveVideoActions({
+  repository:()=>stateManager.getDatabase().upSubscriptions,
+  relations:bvid=>stateManager.listRelationsForBvid(bvid),
+  accountName:id=>userStore.getById(id)?.name ?? '',title:bvid=>stateManager.getDatabase().getVideo(bvid)?.title ?? bvid,
+  atomic:work=>stateManager.runAtomic(work),
+  ingest:(source,item)=>scheduler.archiveUpSubmission(source,item),
+  restoreSource:(userId,mediaId,bvid,at)=>stateManager.getDatabase().restoreCompletedArchiveSource(userId,mediaId,bvid,at),
+  blocked:()=>importMaintenance.blocked || scheduler.isPathMigrationLocked() || stateManager.getDatabase().hasActiveArchiveDeletion(),
+  deletion:archiveDeletion,now:Date.now,
+});
 const upSubscriptions = createUpSubscriptionService({
   repository:()=>stateManager.getDatabase().upSubscriptions, users:userStore, bili:upBili,
   atomic:work=>stateManager.runAtomic(work), ingest:(source,item)=>scheduler.archiveUpSubmission(source,item),
@@ -229,7 +241,7 @@ const upSubscriptions = createUpSubscriptionService({
   maintenance:work=>scheduler.withCleanupLock(work),
   canRebind:()=>!scheduler.hasRunningTransferTasks() && !scheduler.hasPersistentTransferWork() && !scheduler.hasActiveOrQueuedSchedulerWork(),
   rebind:(source,userId)=>stateManager.rebindUpSubscriptionRelations(source.id,source.userId,userId,source.routingKey),
-  relations:bvid=>stateManager.listRelationsForBvid(bvid), deletion:archiveDeletion, now:Date.now,
+  videoActions:archiveVideoActions, deletion:archiveDeletion, now:Date.now,
 });
 const accountLogin = createAccountLogin({
   create() {
@@ -318,6 +330,7 @@ app.use("/api", requireAuth, requireSameOrigin);
 app.use("/api", createMaintenanceGuard(importMaintenance));
 app.use('/api', express.json({limit: '10mb'}), express.urlencoded({extended: true}));
 app.use(createUpSubscriptionRouter({service:upSubscriptions,boundary:asyncHandler}));
+app.use(createArchiveVideoActionsRouter({service:archiveVideoActions,boundary:asyncHandler}));
 
 app.use(authentication.logout);
 
@@ -426,6 +439,7 @@ async function reloadStoresAfterImport(restored: string[], previousMarkers: Lega
   try {
     accountLogin.invalidate();
     upSubscriptions.reset();
+    archiveVideoActions.reset();
     configStore.reload();
     onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
     favoriteFolderListCache.clear();

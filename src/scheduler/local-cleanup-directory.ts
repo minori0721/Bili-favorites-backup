@@ -3,8 +3,8 @@ import path from 'node:path';
 
 export interface CleanupRootIdentity {
   realPath: string;
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 }
 
 export type CleanupDirectoryInspection =
@@ -24,7 +24,9 @@ export function inspectLocalCleanupDirectory(tempRoot: string, localDir: string)
   }
   function readRoot(): CleanupRootIdentity {
     const realPath = fs.realpathSync(tempRoot);
-    const stat = fs.lstatSync(realPath);
+    // NTFS file IDs can exceed Number.MAX_SAFE_INTEGER; rounded IDs may match
+    // after a root replacement even though they refer to different directories.
+    const stat = fs.lstatSync(realPath, { bigint: true });
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Local cleanup root is not a directory');
     return { realPath, dev: stat.dev, ino: stat.ino };
   }

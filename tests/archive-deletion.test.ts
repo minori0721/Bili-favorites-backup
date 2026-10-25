@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { ArchiveDeletionService, type ArchiveDeletionDavClient, type ArchiveDeletionOptions } from "../src/archive-deletion.js";
-import { getArchiveLibraryNavigation, queryArchiveLibraryItems } from "../src/archive-library.js";
+import { getArchiveLibraryItemDetail, getArchiveLibraryNavigation, queryArchiveLibraryItems } from "../src/archive-library.js";
 import type { AppConfig } from "../src/config.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { StateManager, type FavoriteRelation, type RemoteFileRecord, type VideoArchiveEntry } from "../src/state.js";
@@ -704,6 +704,61 @@ test("archive deletion shutdown has a deadline and leaves the database open unti
     manager.close();
     await removeTestDir(runtime);
   }
+});
+
+test('stopping a failed partial cleanup keeps the remaining proof and never claims to restore deleted files',async()=>{
+  const runtime=await createTestDir('archive-stop-partial');const manager=new StateManager({dbPath:':memory:',statePath:path.join(runtime,'missing.json')});
+  const users=fakeUserStore([user('u1',[])]),dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+  try {
+    const paths=[{path:'/backup/a.mp4',size:10},{path:'/backup/b.mp4',size:20}];
+    insertSource(manager,{userId:'u1',mediaId:10,bvid:'BVSTOPPARTIAL',active:false,paths});
+    for(const item of paths)dav.files.set(item.path,{type:'file',size:item.size});
+    dav.deleteFailures.set(paths[1].path,Object.assign(new Error('denied'),{status:403}));
+    service=createService(manager,users,dav);const preview=service.previewSource('u1',10,'BVSTOPPARTIAL');service.start(preview.id,'DELETE ARCHIVE');
+    await waitForOperation(service,preview.id,['failed']);
+    assert.equal(dav.files.has(paths[0].path),false);assert.equal(dav.files.has(paths[1].path),true);
+    const requests=dav.deleteCalls.length;assert.equal((await service.stopRemaining(preview.id)).status,'stopped');
+    assert.equal(dav.deleteCalls.length,requests);assert.equal(manager.getDatabase().hasActiveArchiveDeletion(),false);
+    assert.equal(manager.getRelationStatus('u1',10,'BVSTOPPARTIAL')?.remoteFiles?.some(file=>file.path===paths[1].path),true);
+    const membership=getArchiveLibraryItemDetail(manager.getDatabase(),users.list(),{},'BVSTOPPARTIAL')?.memberships[0];
+    assert.equal(membership?.fileCount,1);assert.equal(membership?.totalBytes,20);
+    assert.throws(()=>service!.retry(preview.id),/不需要重试/);
+  }finally{await service?.stop();manager.close();await removeTestDir(runtime);}
+});
+
+test('stopping resolves a lost DELETE reply and never reuses proof for an already missing file',async()=>{
+  const runtime=await createTestDir('archive-stop-lost-reply');const manager=new StateManager({dbPath:':memory:',statePath:path.join(runtime,'missing.json')});
+  const users=fakeUserStore([user('u1',[])]),dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+  try {
+    const remotePath='/backup/lost-reply.mp4';insertSource(manager,{userId:'u1',mediaId:10,bvid:'BVSTOPLOST',active:false,paths:[{path:remotePath,size:10,globalProof:true}]});
+    dav.files.set(remotePath,{type:'file',size:10});const remove=dav.deleteFile.bind(dav);
+    dav.deleteFile=async file=>{await remove(file);throw Object.assign(new Error('reply lost'),{status:403});};
+    service=createService(manager,users,dav);const preview=service.previewSource('u1',10,'BVSTOPLOST');service.start(preview.id,'DELETE ARCHIVE');
+    await waitForOperation(service,preview.id,['failed']);
+    const forbidden=Object.assign(new Error('not authorized'),{status:403});dav.statFailures.set(remotePath,forbidden);
+    const list=dav.getDirectoryContents.bind(dav);dav.getDirectoryContents=async()=>{throw forbidden;};
+    await assert.rejects(()=>service!.stopRemaining(preview.id),/无法核实/);
+    assert.equal(service.get(preview.id)?.status,'failed');assert.equal(manager.getDatabase().isArchiveSourceDeletionBlocked('u1',10,'BVSTOPLOST'),true);
+    dav.statFailures.clear();dav.getDirectoryContents=list;
+    const requests=dav.deleteCalls.length,operation=await service.stopRemaining(preview.id);
+    assert.equal(operation.status,'stopped');assert.equal(operation.completedCount,1);assert.equal(dav.deleteCalls.length,requests);
+    assert.equal(manager.getDatabase().db.prepare("SELECT 1 FROM remote_files WHERE remote_path=?").get(remotePath),undefined);
+    assert.equal(manager.getRelationStatus('u1',10,'BVSTOPLOST')?.remoteFiles?.length??0,0);
+    assert.equal(getArchiveLibraryItemDetail(manager.getDatabase(),users.list(),{},'BVSTOPLOST')?.memberships[0]?.fileCount,0);
+  }finally{await service?.stop();manager.close();await removeTestDir(runtime);}
+});
+
+test('stop cannot release a running deletion or its lease before the remote request settles',async()=>{
+  const runtime=await createTestDir('archive-stop-live');const manager=new StateManager({dbPath:':memory:',statePath:path.join(runtime,'missing.json')});
+  const users=fakeUserStore([user('u1',[])]),dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+  let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});let started!:()=>void;const entered=new Promise<void>(resolve=>{started=resolve;});
+  try {
+    insertSource(manager,{userId:'u1',mediaId:10,bvid:'BVSTOPLIVE',active:false,paths:[{path:'/backup/live.mp4',size:10}]});dav.files.set('/backup/live.mp4',{type:'file',size:10});
+    const original=dav.deleteFile.bind(dav);dav.deleteFile=async file=>{started();await gate;return original(file);};
+    service=createService(manager,users,dav);const preview=service.previewSource('u1',10,'BVSTOPLIVE');service.start(preview.id,'DELETE ARCHIVE');await entered;
+    await assert.rejects(()=>service!.stopRemaining(preview.id),/失败且已退出/);assert.equal(manager.getDatabase().hasActiveArchiveDeletion(),true);
+    release();await waitForOperation(service,preview.id,['completed']);
+  }finally{release();await service?.stop();manager.close();await removeTestDir(runtime);}
 });
 
 test("account previews report active tasks, expire after thirty minutes, and source previews remain idle-only", async () => {

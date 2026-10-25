@@ -62,15 +62,19 @@ export function parseUpRemovalPreview(value:unknown):UpRemovalPreview {
   const fileCount=number(item.fileCount,'fileCount'),sharedCount=number(item.sharedCount,'sharedCount');
   const totalBytes=number(item.totalBytes,'totalBytes'),reclaimableBytes=number(item.reclaimableBytes,'reclaimableBytes');
   if(sharedCount>fileCount||reclaimableBytes>totalBytes)fail('清理数量');
+  const kind=item.kind??'removal';if(kind!=='removal'&&kind!=='history')fail('清理类型');
+  const cutoff=item.cutoff===undefined?undefined:number(item.cutoff,'cutoff');
+  if(kind==='history'&&cutoff===undefined)fail('历史清理起点');
   return {previewId:identityText(item.previewId,'previewId'),sourceId:identityText(item.sourceId,'sourceId'),revision:number(item.revision,'revision',1),
     videoCount:number(item.videoCount,'videoCount'),fileCount,sharedCount,totalBytes,reclaimableBytes,
-    activeTasks:number(item.activeTasks,'activeTasks'),confirmation:identityText(item.confirmation,'confirmation')};
+    activeTasks:number(item.activeTasks,'activeTasks'),deleteCount:item.deleteCount===undefined?undefined:number(item.deleteCount,'deleteCount'),confirmation:identityText(item.confirmation,'confirmation'),kind,cutoff};
 }
 export function parseUpRemovalOperation(value:unknown):UpRemovalOperation {
   const item=obj(value),status=item.status;
-  if(status!=='pending'&&status!=='running'&&status!=='retry_wait'&&status!=='failed'&&status!=='completed')fail('清理状态');
+  if(status!=='pending'&&status!=='running'&&status!=='retry_wait'&&status!=='failed'&&status!=='completed'&&status!=='stopped')fail('清理状态');
+  const kind=item.kind??'removal';if(kind!=='removal'&&kind!=='history')fail('清理类型');
   return {id:identityText(item.id,'id'),sourceId:identityText(item.sourceId,'sourceId'),sourceName:text(item.sourceName,'sourceName'),status,
-    fileCount:number(item.fileCount,'fileCount'),completedCount:number(item.completedCount,'completedCount'),retainedCount:number(item.retainedCount,'retainedCount'),lastError:nullableText(item.lastError,'lastError')};
+    fileCount:number(item.fileCount,'fileCount'),completedCount:number(item.completedCount,'completedCount'),retainedCount:number(item.retainedCount,'retainedCount'),lastError:nullableText(item.lastError,'lastError'),kind};
 }
 export function parseUpRemovalResult(value:unknown) {
   const item=obj(value);return {retained:flag(item.retained,'retained'),operation:item.operation===null?null:parseUpRemovalOperation(item.operation)};

@@ -8,6 +8,8 @@ export function createUpSubscriptionRouter(deps:{service:ReturnType<typeof creat
   router.get('/api/up-subscriptions/:id',deps.boundary((req,res)=>{res.json({success:true,data:service.get(req.params.id)});}));
   router.post('/api/up-subscriptions',deps.boundary(async(req,res)=>{res.json({success:true,data:await service.create(req.body)});}));
   router.patch('/api/up-subscriptions/:id',deps.boundary(async(req,res)=>{res.json({success:true,data:await service.update(req.params.id,req.body)});}));
+  router.post('/api/up-subscriptions/:id/history-preview',deps.boundary((req,res)=>{res.json({success:true,data:service.previewHistory(req.params.id,req.body)});}));
+  router.post('/api/up-subscriptions/:id/history-cleanup',deps.boundary((req,res)=>{res.json({success:true,data:service.historyCleanup(req.params.id,req.body)});}));
   router.delete('/api/up-subscriptions/:id',deps.boundary((req,res)=>{res.json({success:true,data:service.remove(req.params.id,req.body)});}));
   router.post('/api/up-subscriptions/:id/removal-preview',deps.boundary((req,res)=>{res.json({success:true,data:service.previewRemoval(req.params.id,req.body)});}));
   router.get('/api/up-subscriptions/:id/items',deps.boundary((req,res)=>{res.json({success:true,data:service.catalog(req.params.id,req.query)});}));

@@ -35,9 +35,13 @@ export interface UpRemovalPreview {
   previewId: string; sourceId: string; revision: number; videoCount: number;
   fileCount: number; sharedCount: number; totalBytes: number; reclaimableBytes: number;
   activeTasks: number; confirmation: string;
+  deleteCount?: number;
+  kind?: 'removal' | 'history';
+  cutoff?: number;
 }
 export interface UpRemovalOperation {
   id: string; sourceId: string; sourceName: string;
-  status: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed';
+  status: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'stopped';
+  kind?: 'removal' | 'history';
   fileCount: number; completedCount: number; retainedCount: number; lastError: string | null;
 }

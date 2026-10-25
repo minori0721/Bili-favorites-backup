@@ -8,8 +8,10 @@ export function parseRemovalPreview(value: unknown) {
     if (typeof field !== 'number' || !Number.isFinite(field) || field < 0) throw new Error('账号清理计数格式错误');
     return field;
   };
+  const impact=(key:string)=>{const field=value[key];if(field===undefined)return undefined;if(typeof field!=='number'||!Number.isSafeInteger(field)||field<0)throw new Error('账号清理影响范围格式错误');return field;};
   return {previewId:value.previewId,relationCount:count('relationCount'),sourceCount:count('sourceCount'),fileCount:count('fileCount'),
-    totalBytes:count('totalBytes'),sharedCount:count('sharedCount'),activeTasks:count('activeTasks')};
+    totalBytes:count('totalBytes'),sharedCount:count('sharedCount'),activeTasks:count('activeTasks'),
+    deleteCount:impact('deleteCount'),reclaimableBytes:impact('reclaimableBytes')};
 }
 
 export interface RemovalOperation extends Record<string, unknown> { id: string; status: string }

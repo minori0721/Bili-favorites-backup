@@ -3,7 +3,7 @@ import type { ArchiveDeletionService } from '../archive-deletion.js';
 import type { RouteBoundary } from './route-boundary.js';
 
 export function createArchiveDeletionRouter(deps: {
-  service: Pick<ArchiveDeletionService, 'previewSource' | 'get' | 'start' | 'retry' | 'repreview'>;
+  service: Pick<ArchiveDeletionService, 'previewSource' | 'get' | 'start' | 'retry' | 'repreview' | 'stopRemaining'>;
   boundary: RouteBoundary;
 }) {
   const router = Router();
@@ -48,5 +48,9 @@ export function createArchiveDeletionRouter(deps: {
   }));
 
 
+  router.post('/api/archive-deletions/:id/stop',deps.boundary(async(req,res)=>{
+    if(req.body?.confirmation!=='STOP ARCHIVE CLEANUP'){res.status(400).json({success:false,message:'请输入 STOP ARCHIVE CLEANUP 确认停止剩余清理'});return;}
+    res.setHeader('Cache-Control','private, no-store').json({success:true,data:await deps.service.stopRemaining(req.params.id)});
+  }));
   return router;
 }

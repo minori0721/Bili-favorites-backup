@@ -66,7 +66,7 @@ async function openAlphaDetail(page: Page) {
 }
 
 async function openSourceConfirmation(page: Page) {
-  const button = page.getByRole("button", { name: "删除此来源归档" });
+  const button = page.getByRole("button", { name: "删除本次归档" });
   await button.evaluate((element: HTMLButtonElement) => {
     element.click();
     element.click();

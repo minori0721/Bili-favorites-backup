@@ -688,7 +688,7 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
       FROM archive_deleted_sources ads
       JOIN source_keys keys
         ON keys.user_id=ads.user_id AND keys.media_id=ads.media_id AND keys.bvid=ads.bvid
-      WHERE ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
+      WHERE ads.status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed','stopped')
     ), latest_deletion AS (
       SELECT * FROM ranked_deletions WHERE rank=1
     ), completed_deletions AS (
@@ -709,9 +709,9 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
     )
     SELECT source.ord, source.relation_json, source.video_json,
       deletion.deletion_id, deletion.status AS deletion_status, completed.deleted_at,
-      CASE WHEN deletion.deletion_id IS NOT NULL THEN COALESCE(deletion.file_count,0)
+      CASE WHEN deletion.deletion_id IS NOT NULL AND deletion.status<>'stopped' THEN COALESCE(deletion.file_count,0)
         ELSE COALESCE(remote.file_count,0) END AS file_count,
-      CASE WHEN deletion.deletion_id IS NOT NULL THEN COALESCE(deletion.total_bytes,0)
+      CASE WHEN deletion.deletion_id IS NOT NULL AND deletion.status<>'stopped' THEN COALESCE(deletion.total_bytes,0)
         ELSE COALESCE(remote.total_bytes,0) END AS total_bytes
     FROM page_sources source
     LEFT JOIN latest_deletion deletion
@@ -818,12 +818,13 @@ function membershipFromRecord(record: HydratedRecord, users: Map<string, Library
   const sourceKind = relation.sourceKind ?? "favorite";
   const selectedFolder = sourceKind === "favorite" && selected.has(`${relation.userId}:${relation.mediaId}`);
   const ownerRemoved = Boolean(user?.archiveRemoved);
-  const deletionInProgress = Boolean(record.deletionStatus && record.deletionStatus !== "completed");
+  const deletionInProgress = Boolean(record.deletionStatus && !['completed','stopped'].includes(record.deletionStatus));
   const alreadyDeleted = record.deletionStatus === "completed";
   const eligibleRelationship = sourceKind === "manual" || ownerRemoved || !selectedFolder || !relation.activeInFavorite;
   const deletable = !record.deletionStatus && record.fileCount > 0 && eligibleRelationship;
   const deletionReason = alreadyDeleted
     ? "该来源的远端归档已删除"
+    : record.deletionStatus==='stopped' ? '剩余清理已停止，尚未删除的文件保留'
     : deletionInProgress
       ? "该来源正在清理或等待重试"
       : record.fileCount <= 0

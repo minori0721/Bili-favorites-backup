@@ -3,6 +3,7 @@ import type { ConfirmAction } from '../../shared/confirmation.js';
 import { repreviewArchiveDeletion } from '../../shared/archive-deletion-actions.js';
 import { requireElement } from '../../shared/dom.js';
 import { parseRemovalPreview, parseRemovalOperation, parseRemovalResult, type RemovalOperation } from './removal-contract.js';
+import { archiveDeletionImpactText } from '../../shared/archive-deletion-impact.js';
 
 interface Dependencies {
   root: Document;
@@ -92,8 +93,7 @@ export function createAccountRemoval(dependencies: Dependencies) {
         accountRemovalState.preview = preview;
         elements.accountRemovalPreview.textContent =
           Number(preview.relationCount || 0) + ' 条收藏关系 · ' + Number(preview.sourceCount || 0) + ' 个归档来源 · ' +
-          Number(preview.fileCount || 0) + ' 个已追踪文件 · ' + formatBytes(Number(preview.totalBytes || 0)) +
-          (preview.sharedCount ? ' · 共享保留 ' + Number(preview.sharedCount) : '') +
+          archiveDeletionImpactText(preview,formatBytes) +
           (preview.activeTasks ? ' · 将暂停或改派关联任务 ' + Number(preview.activeTasks) : '');
       } catch (error) {
         if ((error instanceof Error && error.name === 'AbortError') || accountRemovalState.token !== token || accountRemovalState.userId !== userId) return;

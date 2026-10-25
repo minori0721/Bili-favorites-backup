@@ -67,3 +67,9 @@
     .fav-content { flex:1; min-width:0; }
     .fav-title { font-weight:600; }
     .fav-count { font-size:12px; color:var(--muted); }
+    .archive-action-sources { display:grid; gap:8px; padding:12px; border:1px solid var(--glass-border); border-radius:var(--radius-legacy-control); background:var(--glass-surface); }
+    .archive-action-sources[hidden] { display:none; }
+    .archive-action-sources label { display:flex; align-items:flex-start; gap:10px; margin:0; padding:8px; font-weight:500; overflow-wrap:anywhere; }
+    .archive-action-sources input { flex:0 0 auto; margin-top:3px; }
+    .cleanup-group-heading { grid-column:1 / -1; font-size:15px; margin:12px 0 2px; color:var(--ink); }
+    #confirmActionMessage,#confirmActionDetail { white-space:pre-line; }

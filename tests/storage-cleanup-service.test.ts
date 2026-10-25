@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createStorageCleanup } from '../src/storage-cleanup-service.js';
 import { testConfig } from './helpers.js';
+import { cleanupItemRequiresIdle } from '../src/shared/storage-cleanup.js';
 
 function fixture() {
   const calls: string[] = [];
@@ -62,4 +63,16 @@ test('safe cache cleanup is deduplicated and remains available during transfers'
   const result = await f.service.execute({ items: ['memory-cache', 'logs', 'memory-cache'] });
   assert.equal(result.status, 200);
   assert.deepEqual(f.calls, ['memory', 'logs']);
+});
+
+test('archive covers use the same busy policy in the browser and execution boundary',async()=>{
+  const f=fixture();f.state.busy=true;
+  assert.equal(cleanupItemRequiresIdle('covers'),true);
+  await assert.rejects(f.service.execute({items:['covers'],confirmation:'DELETE ARCHIVE COVERS'}),/正在运行/);
+  assert.deepEqual(f.calls,[]);
+});
+test('rollback backups require explicit destructive confirmation even when selected alone',async()=>{
+  const f=fixture();
+  await assert.rejects(f.service.execute({items:['backups']}),/DELETE/);
+  assert.deepEqual(f.calls,[]);
 });

@@ -1170,7 +1170,7 @@ export class StateDatabase {
       SELECT EXISTS(
         SELECT 1 FROM archive_deleted_sources
         WHERE user_id=? AND media_id=? AND bvid=?
-          AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
+          AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed','stopped')
       ) AS blocked
     `).get(userId, mediaId, bvid) as ExistsSqlRow | undefined;
     return Boolean(row?.blocked);
@@ -1202,18 +1202,19 @@ export class StateDatabase {
     const candidate = this.db.prepare(`
       SELECT 1 FROM archive_deleted_sources s
       JOIN archive_deletions d ON d.id=s.deletion_id
-      WHERE d.scope='source' AND s.user_id=? AND s.media_id=? AND s.bvid=?
-        AND s.status IN ('preparing','config_removing','pending','running','retry_wait','completed','failed')
+      WHERE (d.scope='source' OR (d.scope IN ('video','history') AND d.status IN ('completed','stopped'))) AND s.user_id=? AND s.media_id=? AND s.bvid=?
+        AND s.status IN ('preparing','config_removing','pending','running','retry_wait','completed','failed','stopped')
       LIMIT 1
     `).get(userId, mediaId, bvid);
     if (!candidate) return 0;
+    if(this.upSubscriptions.isBlocked(userId,mediaId,bvid)) return 0;
     return this.db.transaction(() => {
       const restored = this.db.prepare(`
         UPDATE archive_deleted_sources AS s
         SET status='restored', restored_at=?
-        WHERE deletion_id IN (SELECT id FROM archive_deletions WHERE scope='source')
+        WHERE deletion_id IN (SELECT id FROM archive_deletions WHERE scope='source' OR (scope IN ('video','history') AND status IN ('completed','stopped')))
           AND user_id=? AND media_id=? AND bvid=?
-          AND s.status IN ('preparing','config_removing','pending','running','retry_wait','completed','failed')
+          AND s.status IN ('preparing','config_removing','pending','running','retry_wait','completed','failed','stopped')
       `).run(restoredAt, userId, mediaId, bvid).changes;
       if (restored > 0) {
         this.db.prepare(`

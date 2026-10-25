@@ -761,9 +761,9 @@ function getModals() {
         <h2 id="cleanupDataModalTitle">清理数据</h2>
         <button class="help-icon-btn" id="cleanupHelpBtn" type="button" title="看看清理后会发生什么" aria-label="查看清理项目说明">?</button>
       </div>
-      <p class="muted">勾选要清理的小抽屉。清理只会碰本项目的 <code>data</code> 和 <code>temp</code>，不会乱动别的地方。</p>
+      <p class="muted">只清理本项目的 <code>data</code> 和 <code>temp</code>，不会删除远端网盘视频。清空归档索引和恢复数据不可等同于清理缓存。</p>
       <div class="row preview-actions">
-        <button id="cleanupSelectAllBtn" class="ghost" type="button">全选：完全清除</button>
+        <button id="cleanupSelectAllBtn" class="ghost" type="button">选择全部本地数据（慎用）</button>
         <button id="cleanupSelectNoneBtn" class="ghost" type="button">取消全选</button>
         <button id="refreshCleanupBtn" class="ghost" type="button">刷新占用</button>
       </div>
@@ -848,7 +848,7 @@ function getModals() {
       <h2 id="cleanupHelpModalTitle">清理小贴士</h2>
       <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
       <div id="cleanupHelpContent" class="cleanup-help-list"></div>
-      <p class="muted help-note">如果你准备删容器，先在“清理数据”里全选并确认；如果还要连内置 AList 也清掉，请停容器后手动删除宿主机的 <code>alist</code> 目录。外接 OpenList 的数据目录由 OpenList 自己管理。</p>
+      <p class="muted help-note">升级、重建或删除容器本身，不需要先清理项目数据。请保留宿主机挂载的 <code>data</code> 和 <code>temp</code>。只有确定彻底卸载并销毁本地记录时，才使用“选择全部本地数据”；远端网盘视频仍会保留。内置 AList 和外接 OpenList 的数据需分别核对，不属于普通容器升级清理。</p>
       <div class="row modal-actions">
         <button id="closeCleanupHelpBtn" class="ghost full-width" type="button">知道啦</button>
       </div>

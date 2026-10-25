@@ -1,6 +1,7 @@
 import { ApiError, type ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
 import { parseCleanupState, parseCleanupResults } from './cleanup-contract.js';
+import { cleanupItemRequiresIdle } from '../../../../shared/storage-cleanup.js';
 export function createCleanup(dependencies: {
     root: Document;
     api: ApiClient;
@@ -30,8 +31,8 @@ export function createCleanup(dependencies: {
         covers: '清掉永久归档封面。视频下架后可能只能显示占位封面；不会自动清理，必须输入 DELETE ARCHIVE COVERS。',
         'online-covers': '清掉可重新下载的在线缩略图，不影响归档封面、视频和归档状态。',
         exports: '清掉已经生成过的数据迁移导出压缩包。不影响当前项目运行。',
-        backups: '清掉导入前自动保存的本地备份包。导入回滚余地会少一点。',
-        state: '清掉备份状态、收藏夹索引、远端文件记录和重试记录。项目会忘记自己备份过什么。',
+        backups: '永久删除导入前的回滚副本；清理后不能再用这些备份恢复旧数据。',
+        state: '清空归档索引、共享引用、订阅与排除规则、远端核验和恢复记录。远端视频仍保留，但重新扫描不能完整还原这些记录。',
         users: '清掉 B 站账号登录信息。下次需要重新扫码登录。',
         config: '清掉全局配置。远端存储地址、画质、并发等会回到默认值。',
     };
@@ -47,9 +48,6 @@ export function createCleanup(dependencies: {
     }
     function selectedCleanupItems() {
         return Array.from(document.querySelectorAll<HTMLInputElement>('.cleanup-check:checked')).map((item) => item.value);
-    }
-    function cleanupItemRequiresIdle(key: string) {
-        return key !== 'memory-cache' && key !== 'logs' && key !== 'debug-logs' && key !== 'covers' && key !== 'exports' && key !== 'backups';
     }
     function cleanupBusy() {
         return Boolean(cleanupState.runningTransfers || cleanupState.activeScheduler);
@@ -67,10 +65,12 @@ export function createCleanup(dependencies: {
         }
         setHidden(block, false);
         hint.textContent = required === 'DELETE ALL PROJECT DATA'
-            ? '你选择了完全清除。请输入 DELETE ALL PROJECT DATA，小扫帚才会认真开工。'
+            ? '将清空本项目的全部本地数据，包括归档索引、账号、配置和回滚备份；不会删除远端网盘视频。请输入 DELETE ALL PROJECT DATA 确认。'
             : required === 'DELETE ARCHIVE COVERS'
                 ? '你选择了永久归档封面。请输入 DELETE ARCHIVE COVERS，确认允许重新回填封面。'
-                : '你选择了重要数据。请输入 DELETE 确认，避免手滑把小仓库钥匙丢掉。';
+                : '所选项目包含不可重新生成的数据。请输入 DELETE 确认。';
+        if (selected.includes('state')) hint.textContent += ' 归档索引清空后会失去共享引用与恢复记录；需要保留时，请先在“数据迁移”中导出备份。';
+        if (selected.includes('backups')) hint.textContent += ' 选中的回滚备份也会永久删除。';
         if (selected.includes('temp') && selected.includes('orphan-fragments')) {
             hint.textContent += ' 无法续传的残片已包含在全部临时下载文件中，不会重复清理。';
         }
@@ -85,7 +85,14 @@ export function createCleanup(dependencies: {
         else {
             st.textContent = '选择要清理的内容。重要项目会要求二次确认。';
         }
-        cleanupState.items.forEach((item) => {
+        for (const important of [false,true]) {
+          const items = cleanupState.items.filter(item => item.important === important);
+          if(!items.length) continue;
+          const heading=document.createElement('h3');
+          heading.className='cleanup-group-heading';
+          heading.textContent=important ? '归档、恢复与本地数据（高风险）' : '日常清理';
+          list.appendChild(heading);
+          items.forEach((item) => {
             const disabled = cleanupBusy() && cleanupItemRequiresIdle(item.key);
             const label = document.createElement('label');
             label.className = 'cleanup-item' + (item.important ? ' important' : '') + (disabled ? ' disabled' : '');
@@ -111,7 +118,8 @@ export function createCleanup(dependencies: {
             label.appendChild(body);
             label.appendChild(size);
             list.appendChild(label);
-        });
+          });
+        }
         renderCleanupConfirm();
     }
     function renderCleanupHelp() {

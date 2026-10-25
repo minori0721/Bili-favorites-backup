@@ -1,6 +1,6 @@
 import {test,expect,type Page} from '@playwright/test';
 import {isRecord} from '../../src/shared/api/value.js';
-import {parseUpList,parseUpSubscription} from '../../src/shared/api/up-subscriptions.js';
+import {parseUpList,parseUpSubscription,parseUpCatalog} from '../../src/shared/api/up-subscriptions.js';
 async function data(page:Page,path:string){const value:unknown=await(await page.request.get(path)).json();if(!isRecord(value))throw new Error('Invalid test response');return value.data;}
 async function pageHidden(page:Page,hidden:boolean){await page.evaluate(value=>{Object.defineProperty(document,'hidden',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));},hidden);}
 test.beforeEach(async({page})=>{
@@ -75,6 +75,13 @@ test('subscription X opens the safe default, supports cancel and keeps archives 
   const trigger=card.getByRole('button',{name:'移除 老师好我叫何同学 的订阅'}),dialog=page.locator('#upRemovalModal');
   const before=parseUpList(await data(page,'/api/up-subscriptions')),source=before.items.find(item=>item.uid===163637592);expect(source).toBeDefined();if(!source)throw new Error('missing source');
   await trigger.click();await expect(dialog).toHaveClass(/active/);await expect(dialog.locator('input[value=retain]')).toBeChecked();
+  const buttons=await dialog.evaluate(element=>{
+    const read=(button:Element)=>{const style=getComputedStyle(button);return {height:button.getBoundingClientRect().height,fontSize:style.fontSize,padding:style.padding,borderRadius:style.borderRadius};};
+    return {cancel:read(element.querySelector('.modal-actions .ghost')!),review:read(element.querySelector('#upRemovalReviewBtn')!)};
+  });
+  const {height:reviewHeight,...reviewStyle}=buttons.review,{height:cancelHeight,...cancelStyle}=buttons.cancel;
+  expect(reviewStyle).toEqual(cancelStyle);
+  expect(reviewHeight).toBeCloseTo(cancelHeight,1);
   await page.keyboard.press('Escape');await expect(dialog).not.toHaveClass(/active/);await expect(trigger).toBeFocused();
   expect(parseUpList(await data(page,'/api/up-subscriptions')).items.length).toBe(3);
   await trigger.click();await dialog.getByRole('button',{name:'确认移除',exact:true}).click();
@@ -87,7 +94,8 @@ test('whole subscription deletion previews real counts, confirms once and keeps 
   let commits=0;page.on('request',request=>{if(request.method()==='DELETE'&&request.url().includes('/api/up-subscriptions/'))commits++;});
   await card.getByRole('button',{name:'移除 影视飓风 的订阅'}).click();
   await page.locator('input[name=upRemovalEffect][value=delete]').check();await page.locator('#upRemovalReviewBtn').dblclick();
-  await expect(page.locator('#confirmActionModal')).toHaveClass(/active/);await expect(page.locator('#confirmActionDetail')).toContainText('涉及 3 个视频、3 个远端文件');
+  await expect(page.locator('#confirmActionModal')).toHaveClass(/active/);await expect(page.locator('#confirmActionDetail')).toContainText('涉及 3 个视频');
+  await expect(page.locator('#confirmActionDetail')).toContainText('预计实际删除 3 个文件');
   await expect(page.locator('#confirmActionDetail')).toContainText('预计释放 36.0 MB');await expect(page.locator('#confirmActionOkBtn')).toBeDisabled();
   expect(commits).toBe(0);await page.locator('#confirmActionInput').fill('DELETE ARCHIVE');await page.locator('#confirmActionOkBtn').click();
   await expect(card).toHaveCount(0);await expect(page.locator('#upRemovalOperations')).toContainText('影视飓风');
@@ -132,7 +140,7 @@ test('an unsubscribed followed creator can be selected directly without a UID or
   await page.locator('#upAddBtn').click();await page.getByRole('checkbox',{name:'选择 山野观察员',exact:true}).check();
   await page.locator('#upToRulesBtn').click();await page.locator('input[name=upMode][value=from_now]').check();
   await page.locator('#upCreateBtn').click();await expect(page.locator('#upWorkspaceTitle')).toHaveText('山野观察员');
-  await expect(page.locator('#upWorkspaceMeta')).toContainText('从订阅时起');
+  await expect(page.locator('#upWorkspaceMeta')).toContainText('从设定时间起');
   await page.reload();await expect(page.locator('#upHomeList .up-subscription-card')).toHaveCount(4);
 });
 test('following search, global unfollowed discovery and selected-only creation work with the real backend',async({page})=>{
@@ -143,11 +151,11 @@ test('following search, global unfollowed discovery and selected-only creation w
   await page.getByRole('checkbox',{name:'选择 摄影师陈杰',exact:true}).check();await page.locator('#upToRulesBtn').click();
   await page.locator('input[name=upMode][value=selected]').check();await page.locator('#upCreateBtn').click();
   await expect(page.locator('#upWorkspaceModal')).toHaveClass(/active/);await expect(page.locator('#upWorkspaceTitle')).toHaveText('摄影师陈杰');
-  await expect(page.locator('#upCatalogList .up-video')).toHaveCount(30);await expect(page.locator('#upCatalogList')).toContainText('未选择');
+  await expect(page.locator('#upCatalogList .up-video')).toHaveCount(30);await expect(page.locator('#upCatalogList')).toContainText('不在归档范围');
   await page.locator('#upCatalogList input[data-up-video]').first().check();await page.locator('#upIncludeBtn').click();
-  await expect(page.locator('#upCatalogList .up-video')).toContainText(['将要归档']);
+  await expect(page.locator('#upCatalogList .up-video')).toContainText(['符合归档规则']);
   await page.reload();await page.locator('#upHomeList .up-subscription-card').filter({hasText:'摄影师陈杰'}).getByRole('button',{name:'投稿选择'}).click();
-  await expect(page.locator('#upCatalogList')).toContainText('将要归档');expect(errors).toEqual([]);
+  await expect(page.locator('#upCatalogList')).toContainText('符合归档规则');expect(errors).toEqual([]);
 });
 test('catalog selection survives pagination and source exclusion preserves archived playback',async({page})=>{
   await page.locator('#upHomeList .up-subscription-card').filter({hasText:'影视飓风'}).getByRole('button',{name:'投稿选择'}).click();
@@ -155,9 +163,12 @@ test('catalog selection survives pagination and source exclusion preserves archi
   const choice=page.locator('#upCatalogList input').first();await choice.press('Space');await expect(choice).toBeChecked();await expect(choice).toBeFocused();
   await expect(page.locator('#upCatalogPicked')).toHaveText('已选 1 个');
   await page.locator('#upCatalogMore').click();await expect(page.locator('#upCatalogList .up-video')).toHaveCount(42);await expect(page.locator('#upCatalogList input').first()).toBeChecked();
-  const first=page.locator('#upCatalogList .up-video').first();await first.getByRole('button',{name:'管理视频'}).click();
+  const first=page.locator('#upCatalogList .up-video').first();await first.getByRole('button',{name:'管理归档'}).click();
   await page.locator('#upActionPreviewBtn').click();await expect(page.locator('#confirmActionModal')).toHaveClass(/active/);await page.locator('#confirmActionOkBtn').click();
+  await expect(page.locator('#upActionStatus')).toContainText('已有文件保留');
+  await page.getByRole('button',{name:'关闭归档管理',exact:true}).click();
   await expect(first).toContainText('当前订阅已排除');await expect(first.getByRole('button',{name:'播放',exact:true})).toBeVisible();
+  await expect(first.getByRole('button',{name:'管理归档',exact:true})).toBeVisible();
   await page.locator('[data-up-filter=excluded]').click();await expect(page.locator('#upCatalogList')).toContainText('当前订阅已排除');
   await expect(page.locator('#upWorkspaceModal')).toBeVisible();
 });
@@ -167,12 +178,47 @@ test('UP help explains setup, selection and deletion without starting an operati
   await help.click();await expect(dialog).toHaveClass(/active/);
   await expect(dialog.getByRole('heading',{name:'UP 订阅怎么用？',exact:true})).toBeVisible();
   await expect(dialog).toContainText('搜索未关注的 UP');await expect(dialog).toContainText('新投稿不会自动下载');
-  await expect(dialog).toContainText('删除归档，并不再归档');await expect(dialog).toContainText('仅当前 UP 订阅');
+  await expect(dialog).toContainText('删除归档，并排除此视频');await expect(dialog).toContainText('仅当前来源');
   await expect(dialog).toContainText('所有来源');await expect(dialog).toContainText('其他来源仍使用的文件会保留');
   await expect(dialog).toContainText('暂停订阅不会删除已有归档');await expect(dialog).toContainText('默认保留归档');
   await page.keyboard.press('Escape');await expect(dialog).not.toHaveClass(/active/);await expect(help).toBeFocused();
   await help.click();await dialog.getByRole('button',{name:'知道了',exact:true}).click();
   await expect(dialog).not.toHaveClass(/active/);await expect(help).toBeFocused();expect(writes).toEqual([]);
+});
+
+test('excluded videos retain management and playback, and explicit restore resumes selected-only membership',async({page})=>{
+  const source=parseUpList(await data(page,'/api/up-subscriptions')).items.find(item=>item.uid===163637592)!;
+  const item=parseUpCatalog(await data(page,`/api/up-subscriptions/${source.id}/items`)).items.find(item=>item.decision==='include')!;
+  await page.locator('#upHomeList .up-subscription-card').filter({hasText:source.name}).getByRole('button',{name:'投稿选择',exact:true}).click();
+  const card=page.locator(`[data-up-card="${item.bvid}"]`);
+  await card.getByRole('button',{name:'管理归档',exact:true}).click();await page.locator('#upActionPreviewBtn').click();
+  await expect(page.locator('#confirmActionModal')).toHaveAttribute('aria-modal','true');await page.locator('#confirmActionOkBtn').click();
+  await expect(page.locator('#upActionStatus')).toContainText('已有文件保留');await page.getByRole('button',{name:'关闭归档管理',exact:true}).click();
+  await expect(card.getByText('当前订阅已排除',{exact:true})).toBeVisible();await expect(card.getByText('可播放',{exact:true})).toBeVisible();
+  await card.getByRole('button',{name:'管理归档',exact:true}).click();await page.locator('#archiveActionRestoreVideo').click();
+  await expect(page.locator('#confirmActionMessage')).toContainText('加入单独选择');await page.locator('#confirmActionOkBtn').click();
+  await expect(page.locator('#upActionStatus')).toContainText('已加入单独选择');
+  const restored=parseUpCatalog(await data(page,`/api/up-subscriptions/${source.id}/items`)).items.find(entry=>entry.bvid===item.bvid)!;
+  expect(restored.selected).toBe(true);expect(restored.playable).toBe(true);expect(restored.decision).toBe('include');
+});
+
+test('history cleanup confirms its new cutoff, keeps the subscription and leaves unarchived posts unexcluded',async({page})=>{
+  const source=parseUpList(await data(page,'/api/up-subscriptions')).items.find(item=>item.uid===946974)!;
+  const excludedBefore=parseUpCatalog(await data(page,`/api/up-subscriptions/${source.id}/items?filter=excluded`)).total;
+  const card=page.locator('#upHomeList .up-subscription-card').filter({hasText:source.name});
+  await card.getByRole('button',{name:'投稿选择',exact:true}).click();await page.locator('#upHistoryBtn').click();
+  await expect(page.locator('#upRemovalTitle')).toHaveText('清理历史归档，继续订阅新投稿');
+  await expect(page.locator('#upRemovalOptions')).toBeHidden();await expect(page.locator('#upHistoryHint')).toContainText('起点');
+  await page.locator('#upRemovalReviewBtn').click();await expect(page.locator('#confirmActionModal')).toHaveAttribute('aria-modal','true');
+  await page.locator('#confirmActionCancelBtn').click();await expect(page.locator('#upRemovalStatus')).toContainText('已取消本次提交');
+  expect(parseUpSubscription(await data(page,`/api/up-subscriptions/${source.id}`)).revision).toBe(source.revision);
+  await page.locator('#upRemovalReviewBtn').click();await expect(page.locator('#confirmActionModal')).toHaveAttribute('aria-modal','true');
+  await expect(page.locator('#confirmActionDetail')).toContainText('此前的单独选择会取消');
+  await page.locator('#confirmActionInput').fill('DELETE ARCHIVE');await page.locator('#confirmActionOkBtn').click();
+  await expect(card).toBeVisible();await expect(card).toContainText('从设定时间起');
+  await expect(page.locator('#upRemovalOperations')).toContainText('历史归档清理');await expect(page.locator('#upRemovalOperations')).toContainText('清理完成');
+  const updated=parseUpSubscription(await data(page,`/api/up-subscriptions/${source.id}`));expect(updated.enabled).toBe(true);expect(updated.removed).toBe(false);expect(updated.mode).toBe('from_now');expect(updated.archivedCount).toBe(0);
+  expect(parseUpCatalog(await data(page,`/api/up-subscriptions/${source.id}/items?filter=excluded`)).total).toBe(excludedBefore+3);
 });
 test('archive has an UP source directory and phone layout stays contained',async({page})=>{
   await page.locator('#upHomeList .up-subscription-card').filter({hasText:'影视飓风'}).getByRole('button',{name:'归档库 ↗'}).click();

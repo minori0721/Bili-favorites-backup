@@ -7,6 +7,7 @@ import { ArchiveDeletionService, type ArchiveDeletionDavClient, type ArchiveDele
 import { createUpArchive } from '../src/scheduler/up-archive.js';
 import { createUpScan, type UpScanContext } from '../src/up-subscriptions/scan.js';
 import { createUpSubscriptionService } from '../src/up-subscriptions/service.js';
+import { createArchiveVideoActions } from '../src/archive-video-actions.js';
 import { createUpSubscriptionRouter } from '../src/http/up-subscriptions.js';
 import { createHttpErrorHandler } from '../src/http/request-boundary.js';
 import { createUpBiliAdapter,signUpWbi,type UpBiliPort } from '../src/up-subscriptions/bili-adapter.js';
@@ -43,9 +44,11 @@ async function fixture(options:Pick<ArchiveDeletionOptions,'prepareSourceDeletio
     blocked:(u,m,b)=>state.getDatabase().isArchiveSourceDeletionBlocked(u,m,b),enqueue(value,route,title,bvid){enqueued.push(bvid);state.markQueued(bvid,'/backup/'+bvid,value.id,route);return true;}});
   const bili:UpBiliPort={async profile(_id,uid){return {...identity,uid};},async search(_id,_q,page){return {items:[identity],page,pageSize:20,total:1,hasMore:false};},
     async followings(_id,page){return {items:[{...identity,followed:true}],page,pageSize:50,total:1,hasMore:false};},async submissions(){return {items:[video],total:1,hasMore:false};}};
+  const videoActions=createArchiveVideoActions({repository,relations:bvid=>state.listRelationsForBvid(bvid),accountName:id=>users.getById(id)?.name??'',ingest,
+    title:bvid=>state.getDatabase().getVideo(bvid)?.title??bvid,atomic:work=>state.runAtomic(work),restoreSource:(u,m,b,at)=>state.getDatabase().restoreCompletedArchiveSource(u,m,b,at),blocked:()=>blocked,deletion,now:()=>5000});
   const service=createUpSubscriptionService({repository,users,bili,atomic:work=>state.runAtomic(work),ingest,scan(){scans++;return {started:true,queued:false};},
     blocked:()=>blocked,maintenance:work=>work(),canRebind:()=>true,rebind:(source,userId)=>state.rebindUpSubscriptionRelations(source.id,source.userId,userId,source.routingKey),
-    relations:bvid=>state.listRelationsForBvid(bvid),deletion,now:()=>5000});
+    videoActions,deletion,now:()=>5000});
   const source=repository().create(identity,{uid:42,userId:'u1',mode:'selected'},null,1000);
   repository().recordPage(source.id,[video]);
   function proof(mediaId:number,bvid=video.bvid,sourceId?:string,file='/backup/shared/video.mp4') {
@@ -88,7 +91,8 @@ test('whole UP removal counts actual memberships, deletes unique files and prese
     const list=parseUpList(f.service.list());assert.equal(list.items.length,0);assert.equal(list.operations[0].status,'completed');
     const restored=await f.service.create({uid:42,userId:'u1',mode:'all'});
     assert.equal(restored.id,f.source.id);
-    for(const item of [video,second,candidate])assert.equal(f.repository().decision(restored.id,item.bvid),'exclude');
+    for(const item of [video,second])assert.equal(f.repository().decision(restored.id,item.bvid),'exclude');
+    assert.equal(f.repository().decision(restored.id,candidate.bvid),'inherit');
     assert.equal(f.enqueued.length,0);assert.equal(f.repository().globallyExcluded(video.bvid),false);
   }finally{await f.close();}
 });
@@ -98,7 +102,7 @@ test('removal with discovered posts but no archives is a valid zero-file cleanup
     assert.equal(preview.videoCount,0);assert.equal(preview.fileCount,0);assert.equal(preview.reclaimableBytes,0);
     const result=f.service.remove(f.source.id,{revision:1,effect:'delete',previewId:preview.previewId,confirmation:preview.confirmation});
     assert.ok(result.operation);await completed(f.deletion,result.operation.id);
-    assert.equal(f.repository().decision(f.source.id,video.bvid),'exclude');assert.equal(f.remote.size,0);
+    assert.equal(f.repository().decision(f.source.id,video.bvid),'inherit');assert.equal(f.remote.size,0);
   }finally{await f.close();}
 });
 test('invalid confirmation, stale revision and another source preview do not remove or exclude',async()=>{
@@ -246,6 +250,22 @@ test('exclusions survive remove/readd and expanding the rule; global unblock ret
     assert.throws(()=>f.service.select(restored.id,{revision:restored.revision,items:[{bvid:video.bvid,decision:'include'}]}));assert.ok(unblocked.revision>restored.revision);
   }finally{await f.close();}
 });
+
+test('the legacy UP unblock endpoint cannot bypass an unfinished video cleanup',async()=>{
+  const f=await fixture();try{
+    f.repository().setDecision(f.source.id,video.bvid,'include',1000);
+    f.proof(f.source.routingKey,video.bvid,f.source.id);f.setDeleteFailure();
+    const preview=f.service.previewAction(f.source.id,video.bvid,{revision:f.source.revision,scope:'source',effect:'delete'});
+    const result=f.service.action(f.source.id,video.bvid,{previewId:preview.previewId,confirmation:preview.confirmation});
+    assert.ok(result.operation);await completed(f.deletion,result.operation.id,'failed');
+    const revision=f.repository().get(f.source.id)!.revision;
+    assert.throws(()=>f.service.unblock(f.source.id,video.bvid,{revision,scope:'source'}),/先完成/);
+    assert.equal(f.repository().decision(f.source.id,video.bvid),'exclude');
+    f.setDeleteFailure(false);f.deletion.retry(result.operation.id);await completed(f.deletion,result.operation.id);
+    f.service.unblock(f.source.id,video.bvid,{revision,scope:'source'});
+    assert.equal(f.repository().decision(f.source.id,video.bvid),'inherit');
+  }finally{await f.close();}
+});
 test('credential rebind preserves canonical source and archive proof; old account admission is blocked',async()=>{
   const f=await fixture();try{
     f.repository().setDecision(f.source.id,video.bvid,'include',1000);f.proof(f.source.routingKey,video.bvid,f.source.id);
@@ -253,6 +273,49 @@ test('credential rebind preserves canonical source and archive proof; old accoun
     assert.equal(updated.id,f.source.id);assert.equal(f.state.getRelationStatus('u2',f.source.routingKey,video.bvid)?.backupStatus,'verified');assert.equal(f.state.getRelationStatus('u1',f.source.routingKey,video.bvid),null);
     assert.equal(f.repository().isBlocked('u1',f.source.routingKey,video.bvid),true);assert.equal(f.repository().isBlocked('u2',f.source.routingKey,video.bvid),false);
     assert.equal(f.repository().catalog(f.repository().get(f.source.id)!,{}).items[0].playable,true);
+  }finally{await f.close();}
+});
+
+test('history cleanup keeps the subscription, freezes its cutoff and never excludes unarchived discovered posts',async()=>{
+  const f=await fixture();try{
+    const candidate={...video,bvid:'BVUNARCHIVEDOLD',publishedAt:3000};
+    const future={...video,bvid:'BVFUTUREPOST',publishedAt:6000};
+    f.repository().recordPage(f.source.id,[candidate,future]);
+    for(const item of [video,candidate])f.repository().setDecision(f.source.id,item.bvid,'include',1000);
+    f.proof(11);f.proof(f.source.routingKey,video.bvid,f.source.id);
+    const preview=parseUpRemovalPreview(f.service.previewHistory(f.source.id,{revision:1}));
+    assert.equal(preview.kind,'history');assert.equal(preview.cutoff,5000);assert.equal(preview.videoCount,1);
+    assert.equal(preview.deleteCount,0);assert.equal(preview.sharedCount,1);
+    const result=parseUpRemovalResult(f.service.historyCleanup(f.source.id,{revision:1,previewId:preview.previewId,confirmation:preview.confirmation}));
+    assert.ok(result.operation);await completed(f.deletion,result.operation.id);
+    const source=f.repository().get(f.source.id)!;
+    assert.equal(source.removed,false);assert.equal(source.enabled,true);assert.equal(source.mode,'from_now');assert.equal(source.since,5000);
+    assert.equal(f.repository().decision(source.id,video.bvid),'exclude');
+    assert.equal(f.repository().decision(source.id,candidate.bvid),'inherit');
+    assert.equal(f.repository().decision(source.id,future.bvid),'inherit');
+    assert.equal(f.repository().isBlocked(source.userId,source.routingKey,candidate.bvid),true);
+    assert.equal(f.repository().isBlocked(source.userId,source.routingKey,future.bvid),false);
+    assert.equal(f.remote.size,1);assert.equal(f.state.getRelationStatus('u1',11,video.bvid)?.backupStatus,'verified');
+    f.ingest(source,future);assert.deepEqual(f.enqueued,[future.bvid]);
+    assert.equal(parseUpList(f.service.list()).operations[0].kind,'history');
+  }finally{await f.close();}
+});
+
+test('history cleanup requires a current preview and failed cleanup can stop without restoring deleted media',async()=>{
+  const f=await fixture();try{
+    f.repository().setDecision(f.source.id,video.bvid,'include',1000);f.proof(f.source.routingKey,video.bvid,f.source.id);
+    const preview=f.service.previewHistory(f.source.id,{revision:1});
+    assert.throws(()=>f.service.historyCleanup(f.source.id,{revision:1,previewId:preview.previewId,confirmation:'WRONG'}),/确认/);
+    assert.equal(f.repository().get(f.source.id)?.mode,'selected');assert.equal(f.repository().decision(f.source.id,video.bvid),'include');
+    f.setDeleteFailure();const result=f.service.historyCleanup(f.source.id,{revision:1,previewId:preview.previewId,confirmation:preview.confirmation});
+    await completed(f.deletion,result.operation.id,'failed');
+    const revision=f.repository().get(f.source.id)!.revision;
+    await assert.rejects(f.service.update(f.source.id,{revision,mode:'all'}),/完成或停止/);
+    assert.throws(()=>f.service.select(f.source.id,{revision,items:[{bvid:video.bvid,decision:'include'}]}),/完成或停止/);
+    await f.deletion.stopRemaining(result.operation.id);
+    assert.equal(parseUpList(f.service.list()).operations[0].status,'stopped');assert.equal(f.remote.size,1);
+    await f.service.update(f.source.id,{revision,enabled:false});
+    assert.equal(f.repository().get(f.source.id)?.enabled,false);
   }finally{await f.close();}
 });
 test('source-only deletion keeps shared files and the other source; global deletion removes both',async()=>{

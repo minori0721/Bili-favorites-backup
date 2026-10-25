@@ -4,6 +4,8 @@ import { renderAppPage } from "../../src/web.js";
 import { serveAppAsset } from "../../src/web/server/assets.js";
 import {createUpUiFixture} from './up-fixture.js';
 import {createUpSubscriptionRouter} from '../../src/http/up-subscriptions.js';
+import {createArchiveVideoActionsRouter} from '../../src/http/archive-video-actions.js';
+import {cleanupItemRequiresIdle} from '../../src/shared/storage-cleanup.js';
 import {createHttpErrorHandler} from '../../src/http/request-boundary.js';
 import { updatesFixture, isUpdateScenario, type UpdateScenario } from '../fixtures/updates.js';
 
@@ -12,6 +14,8 @@ const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
 const detailPreviewDelay = process.env.BFB_DETAILS_PREVIEW === '1' ? 650 : 0;
 
 type TestState = {
+  archiveActionPreview: boolean;
+  cleanupBusy: boolean;
   updatesMode: UpdateScenario;
   updateRequests: number;
   previewCount: number;
@@ -65,6 +69,8 @@ type TestState = {
 
 function initialState(): TestState {
   return {
+    archiveActionPreview: process.env.BFB_ARCHIVE_ACTION_PREVIEW === '1',
+    cleanupBusy: false,
     updatesMode: process.env.BFB_UPDATE_PREVIEW === '1' ? 'dev-update' : 'current',
     updateRequests: 0,
     previewCount: 0,
@@ -225,6 +231,22 @@ function detailItem(bvid: string) {
 
 app.use(express.json());
 const upFixture=createUpUiFixture();
+if(state.archiveActionPreview)upFixture.seedArchiveActions();
+app.use(createArchiveVideoActionsRouter({service:upFixture.videoActions,boundary:handler=>(req,res,next)=>{Promise.resolve(handler(req,res,next)).catch(next);}}));
+app.get('/api/archive-deletions/:id',(req,res,next)=>{const operation=upFixture.deletion.get(req.params.id);if(!operation)return next();res.json(ok(operation));});
+app.post('/api/archive-deletions/:id/:action',async(req,res,next)=>{
+  if(!upFixture.deletion.get(req.params.id))return next();
+  try {const action=req.params.action;
+    if(action==='start')res.status(202).json(ok(upFixture.deletion.start(req.params.id,req.body.confirmation)));
+    else if(action==='retry')res.status(202).json(ok(upFixture.deletion.retry(req.params.id)));
+    else if(action==='repreview')res.json(ok(upFixture.deletion.repreview(req.params.id)));
+    else if(action==='stop'){
+      if(req.body.confirmation!=='STOP ARCHIVE CLEANUP')throw Object.assign(new Error('停止确认文字不匹配'),{statusCode:400});
+      res.json(ok(await upFixture.deletion.stopRemaining(req.params.id)));
+    }
+    else next();
+  }catch(error){next(error);}
+});
   app.post('/__test/up-deletion-failure',(req,res)=>{upFixture.setDeletionFailure(req.body.enabled===true);res.json({success:true});});
 app.use(createUpSubscriptionRouter({service:upFixture.service,boundary:handler=>(req,res,next)=>{Promise.resolve(handler(req,res,next)).catch(next);}}));
 app.get('/__up/:kind/:id.svg',(req,res)=>{
@@ -238,6 +260,9 @@ app.post("/__test/reset", async (request, response) => {
   const updatesMode: unknown = request.body?.updatesMode;
   await upFixture.reset();
   state = initialState();
+  if(request.body?.archiveActionPreview===true)state.archiveActionPreview=true;
+  if(state.archiveActionPreview)upFixture.seedArchiveActions();
+  state.cleanupBusy=request.body?.cleanupBusy===true;
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
   state.retainedArchivePreview = request.body?.retainedArchivePreview === true;
   state.accountDeleteDelayMs = Math.max(0, Number(request.body?.accountDeleteDelayMs || 0));
@@ -265,9 +290,13 @@ app.post("/__test/reset", async (request, response) => {
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
+app.post('/__test/cleanup-busy',(req,res)=>{state.cleanupBusy=req.body.busy===true;res.json(ok({busy:state.cleanupBusy}));});
 
 app.get('/assets/app/:name', serveAppAsset);
-app.get("/", (_request, response) => response.set('Cache-Control','no-store').type("html").send(renderAppPage()));
+app.get("/", (_request, response) => {
+  const controls=process.env.BFB_ARCHIVE_ACTION_PREVIEW==='1' ? `<aside style="position:fixed;bottom:8px;left:8px;z-index:20;background:#f9fdfd;border:1px solid #a7ded8;border-radius:12px;padding:10px;max-width:min(460px,94vw);font:12px sans-serif;color:#21403b"><strong>隔离假数据 · 不连接 B站或网盘</strong><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"><button onclick="fetch('/__test/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archiveActionPreview:true})}).then(()=>location.reload())">重置示例</button><button onclick="fetch('/__test/cleanup-busy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({busy:true})}).then(()=>alert('已模拟任务忙碌，请重新打开清理数据'))">模拟忙碌</button><button onclick="fetch('/__test/cleanup-busy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({busy:false})}).then(()=>alert('已恢复空闲，请重新打开清理数据'))">恢复空闲</button><button onclick="fetch('/__test/up-deletion-failure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true})}).then(()=>alert('后续远端删除将模拟失败，重置示例可恢复'))">模拟删除失败</button></div></aside>` : '';
+  response.set('Cache-Control','no-store').type('html').send(renderAppPage().replace('</body>',controls+'</body>'));
+});
 app.get('/api/updates', (request, response) => {
   state.updateRequests++;
   if (isUpdateScenario(request.query.scenario)) state.updatesMode = request.query.scenario;
@@ -418,6 +447,34 @@ app.post("/api/sync/now", async (_request, response) => {
 app.post("/api/sync/reconcile-remote", (_request, response) => response.json(ok({ queued:true })));
 app.post("/api/sync/reconcile", (_request, response) => response.json(ok({ queued:true })));
 app.get("/api/quality-upgrade/state", (_request, response) => response.json(ok({ running: [], completed: [] })));
+app.post('/api/quality-upgrade/preview',(_request,response)=>response.json(ok({
+  candidates:state.archiveActionPreview ? [11,12].map((mediaId,index)=>({key:`u1:${mediaId}:BVARCHIVECOPIES`,userId:'u1',bvid:'BVARCHIVECOPIES',title:'独立副本示例：同一视频各存一份',ownerName:'隔离测试 UP',folderTitle:index?'收藏夹 B · 学习':'收藏夹 A · 日常',remotePath:index?'/backup/b':'/backup/a',reason:'720P → 自动最高可用画质',oldFiles:[{name:'independent.mp4',path:index?'/backup/b/independent.mp4':'/backup/a/independent.mp4'}]})) : [],
+  uncertain:[],skipped:[],skippedTotal:0,target:{quality:'',encoding:'',hiRes:false,dolby:false},
+})));
+app.post('/api/quality-upgrade/start',(_request,response)=>response.json(ok({queued:[{bvid:'BVARCHIVECOPIES'}],skipped:[],downloadGroups:1})));
+const previewCleanupItems=[
+  {key:'memory-cache',label:'页面缓存',important:false,bytes:0},
+  {key:'logs',label:'网页日志',important:false,bytes:12000},
+  {key:'debug-logs',label:'Debug 日志',important:false,bytes:24000},
+  {key:'online-covers',label:'在线缩略图缓存',important:false,bytes:3*1024*1024},
+  {key:'exports',label:'导出压缩包',important:false,bytes:2*1024*1024},
+  {key:'temp',label:'全部临时下载文件',important:true,bytes:32*1024*1024},
+  {key:'orphan-fragments',label:'无法续传的下载残片',important:true,bytes:1024},
+  {key:'covers',label:'归档封面（永久保存）',important:true,bytes:4*1024*1024},
+  {key:'backups',label:'导入前备份（回滚副本）',important:true,bytes:2*1024*1024},
+  {key:'state',label:'备份状态与持久化任务',important:true,bytes:200000},
+  {key:'users',label:'账号登录信息',important:true,bytes:1000},
+  {key:'config',label:'全局配置',important:true,bytes:1000},
+];
+app.get('/api/storage/cleanup',(_request,response)=>response.json(ok({items:previewCleanupItems,runningTransfers:state.cleanupBusy,activeScheduler:state.cleanupBusy})));
+app.post('/api/storage/cleanup',(request,response)=>{
+  const items=Array.isArray(request.body.items)?previewCleanupItems.filter(item=>request.body.items.includes(item.key)):[];
+  if(!items.length){response.status(400).json({success:false,message:'请选择要清理的内容'});return;}
+  if(state.cleanupBusy && items.some(item=>cleanupItemRequiresIdle(item.key))){response.status(409).json({success:false,message:'当前有任务运行，请等待后再清理重要数据'});return;}
+  const expected=items.length===previewCleanupItems.length?'DELETE ALL PROJECT DATA':items.length===1 && items[0].key==='covers'?'DELETE ARCHIVE COVERS':items.some(item=>item.important)?'DELETE':'';
+  if(expected && request.body.confirmation!==expected){response.status(400).json({success:false,message:'确认文字不匹配'});return;}
+  response.json(ok({results:items.map(item=>({key:item.key,label:item.label,ok:true,note:'仅模拟；未删除任何真实文件'}))}));
+});
 app.get("/api/queue/state", (_request, response) => {
   const manualWaitQueue = state.queueBoardMode === "manual_wait";
   const mediaRetryQueue = state.queueBoardMode === "media_retry";
@@ -663,9 +720,9 @@ app.get("/api/logs/stream", (request, response) => {
   request.on("close", () => clearInterval(heartbeat));
 });
 
-app.get("/api/archive-library/navigation", (_request, response) => response.json(ok({...navigation(),upSubscriptions:upFixture.navigation()})));
+app.get("/api/archive-library/navigation", (_request, response) => response.json(ok(state.archiveActionPreview ? upFixture.archiveNavigation() : {...navigation(),upSubscriptions:upFixture.navigation()})));
 app.get("/api/archive-library/items", async (request, response) => {
-  if(Number(request.query.mediaId)<=-2){response.json(ok(upFixture.items(request.query)));return;}
+  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.items(request.query)));return;}
   if (detailPreviewDelay) await wait(detailPreviewDelay);
   const query = String(request.query.q || "");
   state.itemQueries.push(query);
@@ -696,13 +753,14 @@ app.get("/api/archive-library/items", async (request, response) => {
   }));
 });
 app.get("/api/archive-library/items/:bvid", (request, response) => {
-  if(Number(request.query.mediaId)<=-2){response.json(ok(upFixture.detail(request.query,request.params.bvid)));return;}
+  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.detail(request.query,request.params.bvid)));return;}
   state.detailQueries.push(String(request.query.q || ""));
   response.json(ok(detailItem(request.params.bvid)));
 });
-app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, response) => {
+app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, response,next) => {
+  if(state.archiveActionPreview){try{response.json(ok(upFixture.deletion.previewSource(_request.body.userId,_request.body.mediaId,_request.params.bvid)));}catch(error){next(error);}return;}
   state.previewCount += 1;
-  response.json(ok({ previewId: "source-preview", fileCount: 2, totalBytes: 15 * 1024 * 1024, sharedCount: 0 }));
+  response.json(ok({ previewId: "source-preview", fileCount: 2, totalBytes: 15 * 1024 * 1024, sharedCount: 0,deleteCount:2,reclaimableBytes:15*1024*1024 }));
 });
 app.get("/api/archive-library/playback-queue", (_request, response) => response.json(ok({
   mode: "library" as const, page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [],
@@ -806,7 +864,7 @@ app.post("/api/online-content/manual-archive", (_request, response) => {
 
 app.post("/api/users/:id/removal-preview", (_request, response) => response.json(ok({
   previewId: "account-preview", relationCount: 2, sourceCount: 1, fileCount: 2,
-  totalBytes: 15 * 1024 * 1024, sharedCount: 0, activeTasks: 0,
+  totalBytes: 15 * 1024 * 1024, sharedCount: 0, activeTasks: 0,deleteCount:2,reclaimableBytes:15*1024*1024,
 })));
 app.delete("/api/users/:id", async (_request, response) => {
   state.accountDeleteCount += 1;

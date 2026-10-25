@@ -1,4 +1,4 @@
-import { repreviewArchiveDeletion } from '../../shared/archive-deletion-actions.js';
+import { repreviewArchiveDeletion,stopArchiveDeletion } from '../../shared/archive-deletion-actions.js';
 import { parseArchiveLibraryDetail, parseArchiveLibraryPage, parseArchiveNavigation, parseArchiveDeletion, parseArchiveDeletionPreview, parseLocalReleasePreview } from '../../../../shared/api/archive-library.js';
 import { isRecord } from '../../../../shared/api/value.js';
 import { ApiError, type ApiClient } from '../../shared/api.js';
@@ -13,6 +13,7 @@ type ArchiveItem = ReturnType<typeof parseArchiveLibraryDetail>;
 type Membership = ArchiveItem['memberships'][number];
 type Deletion = ReturnType<typeof parseArchiveDeletion>;
 import type { ArchiveContext } from '../../../../shared/api/archive-context.js';
+import { archiveDeletionImpactText } from '../../shared/archive-deletion-impact.js';
 interface Directory {scope: string; userId?: string | null; mediaId?: number | null; title: string}
 interface Preference {version: number; scope: string; userId: string | null; mediaId: number | null; filter: string; sort: string; scrollPositions: Record<string, number>}
 interface ArchiveState extends ArchiveContext {
@@ -26,14 +27,14 @@ interface ArchiveState extends ArchiveContext {
   scrollPositions: Record<string,number>; trigger: HTMLElement | null; pageSize?: number;
 }
 interface Options {
-  manageUpVideo?(sourceId:string,bvid:string,trigger:HTMLElement):void;
+  manageVideo(bvid:string,source:{userId:string;mediaId:number},trigger:HTMLElement):void;
   root: Document; api: ApiClient; confirmAction: ConfirmAction; layout: MediaQueryList;
   formatBytes(value: number): string; formatDateTime(value: string | number): string;
   openModal(id: string, trigger?: HTMLElement | null): void; closeModal(id: string, options?: {restoreFocus?: boolean}): unknown;
   showToast(message: string, kind?: 'success' | 'error'): void;
   play(bvid: string, trigger: HTMLElement, context: ArchiveContext): void;
 }
-export function createArchiveLibrary({root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play,manageUpVideo}: Options) {
+export function createArchiveLibrary({root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play,manageVideo}: Options) {
   const requests = new Set<AbortController>();
   async function request(url: string, options: RequestInit = {}, silent = false) {
     const controller = new AbortController(); requests.add(controller);
@@ -931,8 +932,8 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (token !== archiveLibraryState.detailToken || !host.isConnected) return;
         const confirmed = await confirmAction({
           title:'删除此来源的远端归档',
-          message:'将删除 ' + Number(preview.fileCount || 0) + ' 个已追踪文件，共 ' + formatBytes(Number(preview.totalBytes || 0)) + '。',
-          detail:(preview.sharedCount ? Number(preview.sharedCount) + ' 个共享文件只解除当前来源，不删除物理文件。' : '删除前会重新核验全部文件，未知文件不会被删除。'),
+          message:'仅删除此来源归档。以后重新加入同步来源时，仍可能按正常规则重新归档。',
+          detail:archiveDeletionImpactText(preview,formatBytes),
           requiredText:'DELETE ARCHIVE', confirmText:'开始清理', trigger
         });
         if (!confirmed) return;
@@ -991,7 +992,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (trigger.isConnected) trigger.disabled = false;
       }
     }
-    async function openArchiveLibraryDetail(bvid: string, trigger: HTMLElement | null) {
+    async function openArchiveLibraryDetail(bvid: string, trigger: HTMLElement | null, focus = true) {
       const detail = elements.archiveLibraryDetail;
       const body = elements.archiveLibraryDetailBody;
       if (archiveLibraryState.detailController) archiveLibraryState.detailController.abort();
@@ -1005,7 +1006,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       syncArchiveLibraryDetailLayer();
       elements.archiveLibraryDetailTitle.textContent = '归档详情';
       body.textContent = '正在读取...';
-      later(() => {
+      if(focus) later(() => {
         if (token === archiveLibraryState.detailToken && detail.classList.contains('open')) {
           elements.archiveLibraryDetailCloseBtn.focus({ preventScroll:true });
         }
@@ -1062,6 +1063,11 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           remove.className = 'danger-action';
           const retryExisting = membership.deletionStatus === 'failed' && membership.deletionId;
           const deletionRunning = ['preparing','config_removing','pending','running','retry_wait'].includes(membership.deletionStatus || '');
+          if(!deletionRunning && !retryExisting) {
+            const manage=document.createElement('button');manage.type='button';manage.className='ghost';manage.textContent='管理归档';
+            manage.addEventListener('click',()=>manageVideo(data.bvid,{userId:membership.userId,mediaId:membership.mediaId},manage));
+            actions.appendChild(manage);
+          }
           remove.textContent = membership.deletionStatus === 'completed'
             ? '已删除'
             : retryExisting
@@ -1074,6 +1080,13 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           const progress = document.createElement('div');
           progress.className = 'archive-deletion-progress is-hidden';
           if (retryExisting) {
+            const stop=document.createElement('button');stop.type='button';stop.className='ghost';stop.textContent='停止剩余清理';
+            stop.addEventListener('click',async()=>{
+              stop.disabled=true;
+              try {const operation=await stopArchiveDeletion({id:membership.deletionId!,trigger:stop,request:api.silent,confirm:confirmAction,current:()=>token===archiveLibraryState.detailToken});
+                if(operation && token===archiveLibraryState.detailToken)await openArchiveLibraryDetail(data.bvid,stop,false);
+              }catch(error){showToast(error instanceof Error?error.message:String(error));}finally{stop.disabled=false;}
+            });actions.appendChild(stop);
             remove.addEventListener('click', async () => {
               remove.disabled = true;
               try {
@@ -1105,11 +1118,11 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
               }
             });
             actions.appendChild(repreview);
-          } else if(membership.sourceKind==='up' && membership.sourceId && manageUpVideo && !deletionRunning) {
-            remove.textContent='管理视频与排除';remove.disabled=false;
-            remove.addEventListener('click',()=>manageUpVideo?.(membership.sourceId!,data.bvid,remove));
-          } else if (membership.deletable) {
+          } else if (membership.deletable && membership.sourceKind!=='up') {
+            remove.textContent='删除本次归档';
             remove.addEventListener('click', () => deleteArchiveLibrarySource(data.bvid, membership, remove, progress, token));
+          } else if(!deletionRunning && membership.deletionStatus!=='completed') {
+            remove.hidden=true;
           }
           actions.appendChild(remove);
           source.appendChild(actions);
@@ -1321,6 +1334,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     for(const id of frames)cancelAnimationFrame(id);frames.clear();
   }
   return {init, destroy, deactivate: cleanupArchiveLibrary, open: openArchiveLibrary, context: archiveLibraryContextSnapshot,
+    refresh:async()=>{if(!elements.archiveLibraryModal.classList.contains('active'))return;await loadArchiveLibraryItems(true);if(archiveLibraryState.detailBvid && elements.archiveLibraryDetail.classList.contains('open'))await openArchiveLibraryDetail(archiveLibraryState.detailBvid,archiveLibraryState.detailTrigger,false);},
     openUpSource:(id:string,trigger:HTMLElement|null)=>openArchiveLibrary(trigger,id),
     closeDetail: closeArchiveLibraryDetail, get detailOpen() { return elements.archiveLibraryDetail.classList.contains('open'); }};
 }

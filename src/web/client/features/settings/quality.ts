@@ -132,7 +132,7 @@ export function createQualityUpgrade(dependencies: {
             title.textContent = safeText(item.title || item.bvid, '未知视频') + ' · ' + safeText(item.ownerName, '未知UP');
             const folder = document.createElement('div');
             folder.className = 'rename-path';
-            folder.textContent = '收藏夹：' + safeText(item.folderTitle, 'favorites') + '；目录：' + safeText(item.remotePath, '-');
+            folder.textContent = '归档来源：' + safeText(item.folderTitle, '未知来源') + '；目录：' + safeText(item.remotePath, '-');
             const files = document.createElement('div');
             files.className = 'rename-path';
             files.textContent = '将替换旧文件：' + (item.oldFiles || []).map((file) => file.name || file.path).join('，');
@@ -212,7 +212,9 @@ export function createQualityUpgrade(dependencies: {
         confirming = true;
         let confirmed = false;
         try {
-            confirmed = await dependencies.confirm({ title: '确认画质重调', message: '将为 ' + selected.length + ' 个视频重新下载并上传新版文件。', detail: '新版文件上传并验证成功后，才会删除旧远端文件。运行期间会占用下载和上传队列。', confirmText: '确认重调', trigger: submit });
+            const videos = new Set(selected.map(item=>item.bvid)).size;
+            const sources = selected.map(item=>item.folderTitle || item.remotePath).join('、');
+            confirmed = await dependencies.confirm({ title: '确认画质重调', message: `将为 ${videos} 个视频、${selected.length} 个归档来源重调画质。`, detail: `涉及来源：${sources}。符合共享条件的来源共用下载，新版上传和核验成功后才清理不再被引用的旧文件。运行期间会占用下载和上传队列。`, confirmText: '确认重调', danger:true, trigger: submit });
         }
         finally {
             if (token === generation)

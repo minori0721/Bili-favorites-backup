@@ -35,6 +35,14 @@ function optionalString(value: unknown, message: string) {
   return text(value, message, true);
 }
 
+function deletionTime(value: unknown): string | number | undefined {
+  if (value == null) return undefined;
+  // Persistent deletion operations use epoch milliseconds; older projections use ISO strings.
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 8.64e15) return value;
+  if (typeof value === 'string' && Number.isFinite(Date.parse(value))) return value;
+  throw new ResponseFormatError('归档清理时间字段格式错误');
+}
+
 function optionalUid(value: unknown): number | undefined {
   if (value == null) return undefined;
   // The server uses numeric UIDs, including 0 for historical accounts without a UID.
@@ -109,8 +117,8 @@ function parseDeletion(value: unknown) {
     conflictCount: count(data.conflictCount, '归档清理计数字段格式错误') ?? 0,
     failedCount: count(data.failedCount, '归档清理计数字段格式错误') ?? 0,
     lastError: optionalString(data.lastError, '归档清理错误字段格式错误'),
-    updatedAt: optionalString(data.updatedAt, '归档清理时间字段格式错误'),
-    completedAt: optionalString(data.completedAt, '归档清理时间字段格式错误'),
+    updatedAt: deletionTime(data.updatedAt),
+    completedAt: deletionTime(data.completedAt),
   };
 }
 
@@ -247,10 +255,16 @@ export function parseArchiveDeletionPreview(value: unknown) {
   const data = record(value, '归档清理预览格式错误');
   const previewId = text(data.previewId, '归档清理预览标识格式错误', false)!;
   if (!previewId) throw new ResponseFormatError('归档清理预览缺少标识');
+  const fileCount=count(data.fileCount,'归档清理文件数格式错误',false)!;
+  const totalBytes=count(data.totalBytes,'归档清理大小格式错误',false)!;
+  const sharedCount=count(data.sharedCount,'归档清理共享数格式错误') ?? 0;
+  const deleteCount=data.deleteCount===undefined?undefined:count(data.deleteCount,'归档清理实际删除数格式错误',false)!;
+  const reclaimableBytes=data.reclaimableBytes===undefined?undefined:count(data.reclaimableBytes,'归档清理释放大小格式错误',false)!;
+  if([fileCount,totalBytes,sharedCount,deleteCount,reclaimableBytes].some(value=>value!==undefined && !Number.isSafeInteger(value))
+    || sharedCount>fileCount || (deleteCount!==undefined && deleteCount+sharedCount>fileCount)
+    || (reclaimableBytes!==undefined && reclaimableBytes>totalBytes)) throw new ResponseFormatError('归档清理预览数量不一致');
   return { previewId, scope: text(data.scope, '归档清理范围格式错误'),
-    fileCount: count(data.fileCount, '归档清理文件数格式错误', false)!,
-    totalBytes: count(data.totalBytes, '归档清理大小格式错误', false)!,
-    sharedCount: count(data.sharedCount, '归档清理共享数格式错误') ?? 0 };
+    fileCount,totalBytes,sharedCount,deleteCount,reclaimableBytes };
 }
 
 export function parseLocalReleasePreview(value: unknown) {

@@ -56,6 +56,7 @@ export function createMaintenanceCoordinator(deps: MaintenanceCoordinatorDepende
       userId?: string;
       mediaId?: number;
       bvid?: string;
+      sources?: ReadonlyArray<{userId: string; mediaId: number}>;
     },
   ) {
     const normalized: ArchiveDeletionSummary | undefined = summary && {
@@ -65,6 +66,7 @@ export function createMaintenanceCoordinator(deps: MaintenanceCoordinatorDepende
       userId: summary.userId,
       mediaId: summary.mediaId,
       bvid: summary.bvid,
+      sources: summary.sources,
     };
     const shouldWake = state.setArchive(locked, normalized);
     if (shouldWake) deps.wakeBlockedWork();
