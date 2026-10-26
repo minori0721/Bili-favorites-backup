@@ -430,7 +430,7 @@ function getModals() {
       <p id="updatesReleaseDate" class="muted"></p>
       <div id="updatesNotes"></div>
       <p id="updatesTruncated" class="muted" hidden>内容已截取，可前往发布页面阅读完整说明。</p>
-      <p><a id="updatesChangelogLink" class="version-link" href="${escapeHtml(appInfo.repositoryUrl)}/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">查看版本记录 ↗</a></p>
+      <p><a id="updatesChangelogLink" class="version-link" href="${escapeHtml(appInfo.repositoryUrl)}/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">查看版本记录 ↗</a> · <a id="updatesLicenseLink" class="version-link" href="${escapeHtml(appInfo.repositoryUrl)}/blob/${encodeURIComponent(appInfo.revision || 'dev')}/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">开源许可 ↗</a></p>
       </section>
       </div>
       <div class="row modal-actions">

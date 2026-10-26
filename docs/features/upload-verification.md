@@ -2,7 +2,7 @@
 
 网盘驱动常在WebDAV PUT返回成功后过几秒或几分钟才显示文件。BFB使用两阶段确认，普通新归档直接写入正式路径，不创建暂存目录，也不依赖MOVE；同时使用条件PUT避免在竞态中覆盖已有文件。
 
-![上传完成后仍等待远端确认的收藏夹状态](/screenshots/upload-confirming.png){.doc-shot}
+![新版队列中等待远端确认的任务，使用隔离演示数据](/screenshots/upload-confirming.jpg){.doc-shot}
 
 ## 两阶段状态
 

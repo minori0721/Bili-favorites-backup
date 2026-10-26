@@ -159,7 +159,7 @@ export default defineConfig({
       linkText: "返回首页",
     },
     footer: {
-      message: "面向AList云盘的B站收藏夹持续备份系统",
+      message: `<a href="${repository}/blob/main/LICENSE">GPLv3</a> · <a href="${repository}/blob/main/THIRD_PARTY_NOTICES.md">第三方声明</a> · <a href="${siteBase}licenses.txt">文档站组件与字体许可</a>`,
       copyright: "Bili-favorites-backup",
     },
   },

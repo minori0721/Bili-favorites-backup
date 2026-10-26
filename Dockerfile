@@ -86,6 +86,8 @@ COPY --link --from=bbdown /out/BBDown /usr/local/bin/BBDown
 COPY --link --from=prod-deps /app/node_modules ./node_modules
 COPY package*.json ./
 COPY --link --from=builder /app/dist ./dist
+COPY --link LICENSE THIRD_PARTY_NOTICES.md ./
+COPY --link licenses ./licenses
 # Per-build metadata must follow the reusable filesystem layers.
 ARG BBDOWN_RELEASE
 ARG BBDOWN_COMMIT
@@ -103,6 +105,7 @@ LABEL org.opencontainers.image.bbdown.release=${BBDOWN_RELEASE}
 LABEL org.opencontainers.image.bbdown.revision=${BBDOWN_COMMIT}
 LABEL org.opencontainers.image.ffmpeg.release=${FFMPEG_RELEASE}
 LABEL org.opencontainers.image.ffmpeg.version=${FFMPEG_VERSION}
+LABEL org.opencontainers.image.licenses="GPL-3.0-only"
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]

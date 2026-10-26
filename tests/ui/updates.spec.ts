@@ -14,6 +14,8 @@ test('updates announce once, retain a badge, switch notes and channels, and rest
   await expect(page.locator('#updateAvailableBtn')).toBeVisible();
   await expect(page.locator('.toast-message')).toContainText('有新的版本');
   await page.locator('#versionInfoBtn').click();
+  await expect(page.locator('#updatesLicenseLink')).toHaveAttribute('href', /^https:\/\/github\.com\/minori0721\/Bili-favorites-backup\/blob\/(?:dev|[a-f0-9]{7,40})\/THIRD_PARTY_NOTICES\.md$/);
+  await expect(page.locator('#updatesLicenseLink')).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(page.locator('#updatesNotes')).toContainText('更新提示仅出现一次');
   await expect(page.locator('#updatesNotes')).toContainText('累计范围：v2.6.5');
   await expect(page.locator('#updatesNotes')).toContainText('只归档选中的视频');

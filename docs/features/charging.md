@@ -2,7 +2,7 @@
 
 充电专属视频不等同于普通失败，也不等同于下架。BFB在启动BBDown前检查`is_upower_exclusive`和`is_upower_play`，明确无完整权限时标记为“充电视频”。
 
-![充电视频状态、下次权限检查时间与待清理试看残片](/screenshots/charging-video.png){.doc-shot}
+![充电待检查数量、下次权限检查时间与保留残片，使用隔离演示数据](/screenshots/charging-video.jpg){.doc-shot}
 
 ## 判断规则
 

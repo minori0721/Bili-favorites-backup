@@ -101,6 +101,8 @@ jobs:
         with:
           images: docker.io/${{ env.IMAGE_NAME }}
           flavor: latest=false
+          labels: |
+            org.opencontainers.image.licenses=GPL-3.0-only
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
@@ -154,8 +156,13 @@ jobs:
           node scripts/image-rebuild.mjs verify-node "$(docker exec bfb-release-smoke node --version)"
           docker exec bfb-release-smoke node --input-type=module -e '
             import assert from "node:assert/strict";
+            import fs from "node:fs";
             import { setTimeout } from "node:timers/promises";
             assert.equal(process.env.BFB_BUILD_REVISION, process.env.EXPECTED_REVISION);
+            assert.equal(JSON.parse(fs.readFileSync("/app/package.json", "utf8")).license, "GPL-3.0-only");
+            for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/SOURCES.md", "licenses/BBDown-MIT.txt", "licenses/FFmpeg-LGPL-3.0.txt"]) {
+              assert.ok(fs.statSync("/app/" + file).size > 0, "Missing packaged license material: " + file);
+            }
             let ready = false;
             for (let attempt = 0; attempt < 30; attempt++) {
               try {

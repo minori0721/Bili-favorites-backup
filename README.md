@@ -6,7 +6,9 @@
 
 [快速部署](#快速部署) · [完整文档](https://minori0721.github.io/Bili-favorites-backup/) · [最新版本](https://github.com/minori0721/Bili-favorites-backup/releases/latest) · [更新记录](CHANGELOG.md)
 
-![BFB主界面](docs/public/screenshots/dashboard-desktop.png)
+![当前开发版首页：账号同步与 UP 订阅入口](docs/public/screenshots/dashboard-desktop.jpg)
+
+> 界面截图来自当前开发版，使用隔离演示数据；正式版界面以对应版本为准。
 
 Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它定时检查收藏、下载视频、上传网盘并核验归档结果；你可以在自己的归档库中搜索和播放，不必依赖视频仍在B站可见。
 
@@ -17,6 +19,7 @@ Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它�
 | 能力 | 使用体验 |
 | --- | --- |
 | 自动归档 | 多账号、多收藏夹定时同步，通过标准WebDAV连接 AList / OpenList |
+| UP 订阅 | 从关注、搜索或 UID 添加 UP，按全部投稿、指定起点或单独选择持续归档 |
 | 旧档保护 | 保留收藏历史与归档封面，新尝试失败不会替换已有归档 |
 | 断点与恢复 | 下载断点、上传确认和恢复任务持久保存；可自动处理的异常在后台复核，需要决定的事项集中到“待处理” |
 | 归档播放 | 搜索、筛选和连续播放已验证归档；浏览归档库不请求B站或扫描网盘目录 |
@@ -24,6 +27,19 @@ Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它�
 | 画质与编码 | 设置HEVC / AVC / AV1偏好；手动归档和换规格重试可探测可用组合、预计大小，并严格选择已有源 |
 
 播放优先使用合适的网盘直链，不可用时回退BFB代理。**不提供转码**，选择HEVC或AV1不会把AVC重新编码；播放能力也取决于浏览器。
+
+<details>
+<summary>查看 UP 订阅与归档库界面</summary>
+
+**UP 投稿选择**：查看已发现投稿，选择归档范围，并分别管理排除与播放。
+
+![UP 投稿工作区：归档规则、筛选与投稿卡片](docs/public/screenshots/up-subscriptions.jpg)
+
+**本地归档库**：按来源浏览已保存的视频；UP 目录按发布时间排序。
+
+![归档库：UP 目录、搜索筛选与已验证视频](docs/public/screenshots/archive-library.jpg)
+
+</details>
 
 ## 快速部署
 
@@ -204,6 +220,12 @@ npm run build
 本地修改可按范围运行 `npm run test:release`、`npm run test:core` 或 `npm run test:files -- <文件...>`；大数据专项入口为 `npm run test:slow`。`npm test` 和 CI 继续执行全部回归，具体选择见[开发与验证](docs/development/architecture.md#开发与验证)。
 
 项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.0` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
+
+## 许可证
+
+BFB 自有代码按 [GNU GPLv3（仅第 3 版）](LICENSE)发行，允许使用、修改及商业分发；分发受该许可覆盖的版本时，应保留许可并向接收者提供对应源码。软件不提供担保。账号凭据、个人配置与归档媒体不属于需要公开的程序源码。
+
+第三方组件保留各自许可证，详见[第三方声明](THIRD_PARTY_NOTICES.md)及[固定源码与构建来源](licenses/SOURCES.md)。新镜像在 `/app/LICENSE`、`/app/THIRD_PARTY_NOTICES.md` 和 `/app/licenses/` 保留这些材料；npm 依赖自带的版权文件仍在 `/app/node_modules/`。FFmpeg 静态依赖的完整对应源码链及旧工具包的随包声明仍需补齐，已在来源说明中列出，不将本次文档补充视为全部分发材料已完成。
 
 ## 鸣谢
 

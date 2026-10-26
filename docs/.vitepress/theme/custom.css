@@ -25,6 +25,10 @@
   border-radius: 8px;
 }
 
+.doc-shot.doc-shot-mobile {
+  max-width: 390px;
+}
+
 .status-good {
   color: #18794e;
 }
