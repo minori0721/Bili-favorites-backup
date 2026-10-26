@@ -81,6 +81,7 @@ interface NormalizedContext extends Omit<ArchiveLibraryQuery, "cursor"> {
   effectiveScope: ArchiveLibraryScope;
   effectiveUserId?: string;
   effectiveMediaId?: number;
+  upPublicationSourceId?: string;
 }
 
 interface CandidateKeyRow {
@@ -296,7 +297,7 @@ function safeLibraryError(value: unknown) {
   return sanitized || undefined;
 }
 
-function normalizeQuery(users: BiliUser[], input: Partial<ArchiveLibraryQuery>): NormalizedContext {
+function normalizeQuery(database: StateDatabase, users: BiliUser[], input: Partial<ArchiveLibraryQuery>): NormalizedContext {
   const allowedUserIds = users.map((user) => user.id);
   const rawScope = String(input.scope || "global");
   if (!(["global", "account", "folder"] as string[]).includes(rawScope)) {
@@ -341,6 +342,9 @@ function normalizeQuery(users: BiliUser[], input: Partial<ArchiveLibraryQuery>):
     throw new ArchiveLibraryQueryError("Invalid archive page size");
   }
   const globalSearch = Boolean(query) && searchScope === "global";
+  const upSource = !globalSearch && scope === "folder" && sort === "context" && mediaId !== undefined && mediaId <= -2
+    ? database.upSubscriptions.getByRoute(mediaId)
+    : null;
   return {
     scope,
     userId,
@@ -354,6 +358,7 @@ function normalizeQuery(users: BiliUser[], input: Partial<ArchiveLibraryQuery>):
     effectiveScope: globalSearch ? "global" : scope,
     effectiveUserId: globalSearch ? undefined : userId,
     effectiveMediaId: globalSearch ? undefined : mediaId,
+    upPublicationSourceId: upSource && upSource.userId === userId ? upSource.id : undefined,
   };
 }
 
@@ -427,6 +432,7 @@ function contextHash(context: NormalizedContext, extraQuery = "") {
     filter: context.filter,
     sort: context.sort,
     users: context.allowedUserIds,
+    upPublication: context.upPublicationSourceId ? { sourceId: context.upPublicationSourceId, version: 1 } : undefined,
   })).digest("base64url").slice(0, 20);
 }
 
@@ -447,7 +453,13 @@ function decodeCursor(context: NormalizedContext, cursor: string | undefined, ex
   if (!cursor) return null;
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (![1, 2].includes(Number(parsed?.v)) || parsed?.h !== contextHash(context, extraQuery) || !parsed?.b) {
+    if (![1, 2].includes(Number(parsed?.v)) || !parsed?.b) {
+      throw new Error("mismatch");
+    }
+    if (parsed.h !== contextHash(context, extraQuery)) {
+      if (context.upPublicationSourceId) {
+        throw new ArchiveLibraryQueryError("Archive cursor is stale", "ARCHIVE_CURSOR_STALE");
+      }
       throw new Error("mismatch");
     }
     const order = Number(parsed.o || 0);
@@ -553,21 +565,30 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
     const scope = addScopeSql(context, "r", params);
     const search = searchSql(context, params, extraQuery);
     const deletion = context.filter === "deleted" ? deletionExistsSql("r") : `NOT (${deletionExistsSql("r")})`;
+    const publicationOrder = Boolean(context.upPublicationSourceId);
+    if (publicationOrder) params.upPublicationSourceId = context.upPublicationSourceId;
+    // Reuse the existing keyset tuple: dated entries first, newest publication next,
+    // and BVID for ties. Scan time and favorite position never reorder an UP archive.
+    const recentKey = publicationOrder ? "CASE WHEN c.bvid IS NULL THEN 0 ELSE c.published_at END" : "r.last_seen_at";
+    const activeKey = publicationOrder ? "0" : "r.active_in_favorite";
+    const orderKnownKey = publicationOrder ? "CASE WHEN c.bvid IS NULL THEN 1 ELSE 0 END"
+      : "CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer' AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN 0 ELSE 1 END";
+    const orderKey = publicationOrder ? "0"
+      : "CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer' AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN r.fav_order ELSE 0 END";
     return `
       WITH candidates AS (
         SELECT r.bvid,
-          r.last_seen_at AS recent_key,
+          ${recentKey} AS recent_key,
           ${displayTitleSql} AS title_key,
-          r.active_in_favorite AS active_key,
-          CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer'
-            AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN 0 ELSE 1 END AS order_known_key,
-          CASE WHEN r.active_in_favorite=1 AND typeof(r.fav_order)='integer'
-            AND r.fav_order BETWEEN 0 AND 9007199254740991 THEN r.fav_order ELSE 0 END AS order_key,
+          ${activeKey} AS active_key,
+          ${orderKnownKey} AS order_known_key,
+          ${orderKey} AS order_key,
           CASE WHEN ${playableFileSql("r")} THEN 1 ELSE 0 END AS playable,
           CASE WHEN r.backup_status IN ('discovered','queued','downloading','downloaded','uploading','uploaded') THEN 1 ELSE 0 END AS pending,
           ${checkSource ? `CASE WHEN ${archivedSourceUnavailableSql("r", "v")} THEN 1 ELSE 0 END` : "0"} AS source_unavailable
         FROM favorite_relations r
         JOIN videos v ON v.bvid=r.bvid
+        ${publicationOrder ? "LEFT JOIN up_catalog c ON c.source_id=@upPublicationSourceId AND c.bvid=r.bvid" : ""}
         WHERE ${scope} AND ${search} AND ${deletion}
       ), filtered AS (
         SELECT * FROM candidates WHERE ${filterSql(context.filter)}
@@ -600,6 +621,12 @@ function candidateCte(context: NormalizedContext, params: Record<string, unknown
       SELECT * FROM candidates WHERE ${filterSql(context.filter)}
     )
   `;
+}
+
+function validateUpPublicationKeys(context: NormalizedContext, rows: readonly CandidateKeyRow[]) {
+  if (context.upPublicationSourceId && rows.some(row => !Number.isSafeInteger(row.recent_key) || row.recent_key < 0)) {
+    throw new Error("UP 归档发布时间字段损坏");
+  }
 }
 
 function queryCandidatePage(
@@ -647,6 +674,7 @@ function queryCandidatePage(
       LIMIT @limit
     `).all(params) as CandidateKeyRow[];
   }
+  validateUpPublicationKeys(context, rows);
   const hasMore = rows.length > context.pageSize;
   const pageRows = rows.slice(0, context.pageSize);
   return {
@@ -929,7 +957,7 @@ export function queryArchiveLibraryItems(
   options: { extraQuery?: string; includeSummary?: boolean } = {}
 ) {
   const libraryUsers = archiveLibraryUsers(database, users);
-  const context = normalizeQuery(libraryUsers, input);
+  const context = normalizeQuery(database, libraryUsers, input);
   const page = queryCandidatePage(database, context, input.cursor, options.extraQuery || "", options.includeSummary !== false);
   const records = hydrateRecords(database, context, page.rows.map((row) => row.bvid));
   const userMap = new Map(libraryUsers.map((user) => [user.id, user]));
@@ -968,7 +996,7 @@ export function getArchiveLibraryItemDetail(
   bvid: string
 ) {
   const libraryUsers = archiveLibraryUsers(database, users);
-  const context = normalizeQuery(libraryUsers, input);
+  const context = normalizeQuery(database, libraryUsers, input);
   const params: Record<string, unknown> = {};
   const cte = candidateCte(context, params);
   params.detailBvid = bvid;
@@ -993,7 +1021,7 @@ function playbackPageFromItems(
   }
 ): PlaybackQueuePage | null {
   const libraryUsers = archiveLibraryUsers(database, users);
-  const context = normalizeQuery(libraryUsers, { ...input, filter: "playable", pageSize: options.pageSize || 50 });
+  const context = normalizeQuery(database, libraryUsers, { ...input, filter: "playable", pageSize: options.pageSize || 50 });
   const focusBvid = String(options.focusBvid || "").trim();
   const extraQuery = options.extraQuery || "";
   const pageSize = context.pageSize;
@@ -1015,11 +1043,13 @@ function playbackPageFromItems(
   ) => {
     const queryParams = { ...baseParams, relativeLimit: limit };
     const relative = orderAndCursorSql(context, cursor, queryParams, direction);
-    return database.db.prepare(`
+    const rows = database.db.prepare(`
       ${cte}
       SELECT * FROM filtered WHERE ${relative.cursorSql}
       ORDER BY ${relative.orderSql} LIMIT @relativeLimit
     `).all(queryParams) as CandidateKeyRow[];
+    validateUpPublicationKeys(context, rows);
+    return rows;
   };
 
   let focusIndex = -1;
@@ -1032,6 +1062,7 @@ function playbackPageFromItems(
     const focus = database.db.prepare(`${cte} SELECT * FROM filtered WHERE bvid=@focusBvid`)
       .get({ ...baseParams, focusBvid }) as CandidateKeyRow | undefined;
     if (!focus) return null;
+    validateUpPublicationKeys(context, [focus]);
     const focusCursor = rowCursor(focus);
     const countParams = { ...baseParams };
     const before = orderAndCursorSql(context, focusCursor, countParams, "before");
@@ -1066,6 +1097,7 @@ function playbackPageFromItems(
       ${cte}
       SELECT * FROM filtered ORDER BY ${archiveOrderSql(context)} LIMIT @limit OFFSET @offset
     `).all(queryParams) as CandidateKeyRow[];
+    validateUpPublicationKeys(context, keys);
     hasPrevious = keys.length > 0;
     hasMore = page * pageSize < total;
   } else {

@@ -547,6 +547,11 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       elements.archiveLibraryTitle.textContent = archiveLibraryState.title || '全部归档';
       elements.archiveLibrarySummary.textContent = archiveSummaryText(archiveLibraryState.summary);
       elements.archiveLibrarySort.value = archiveLibraryState.sort;
+      const defaultSort = elements.archiveLibrarySort.querySelector<HTMLOptionElement>('option[value="context"]');
+      const upDirectory = archiveLibraryState.scope === 'folder'
+        && !(archiveLibraryState.query && archiveLibraryState.searchScope === 'global')
+        && archiveLibraryState.navigation?.upSubscriptions.some(source => source.userId === archiveLibraryState.userId && source.mediaId === archiveLibraryState.mediaId);
+      if (defaultSort) defaultSort.textContent = upDirectory ? '发布时间：新到旧' : '默认顺序';
       elements.archiveSearchCurrentBtn.classList.toggle('active', archiveLibraryState.searchScope === 'current');
       elements.archiveSearchGlobalBtn.classList.toggle('active', archiveLibraryState.searchScope === 'global');
       elements.archiveSearchCurrentBtn.setAttribute('aria-pressed', String(archiveLibraryState.searchScope === 'current'));
@@ -1216,7 +1221,11 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (!navigation || !archiveLibrarySessionCurrent(token)) return;
         if(sourceId) {
           const source=navigation.upSubscriptions.find(item=>item.sourceId===sourceId);
-          if(source?.userId) {archiveLibraryState.scope='folder';archiveLibraryState.userId=source.userId;archiveLibraryState.mediaId=source.mediaId;archiveLibraryState.filter='all';}
+          if(source?.userId) {
+            archiveLibraryState.scope='folder';archiveLibraryState.userId=source.userId;archiveLibraryState.mediaId=source.mediaId;archiveLibraryState.filter='all';
+            document.querySelector<HTMLElement>('.archive-library-shell')?.classList.add('show-content');
+            syncArchiveLibraryPanels();
+          }
         }
         if (!archiveDirectoryExists(navigation, archiveLibraryState.scope, archiveLibraryState.userId, archiveLibraryState.mediaId)) {
           archiveLibraryState.scope = 'global';

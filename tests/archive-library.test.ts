@@ -11,6 +11,8 @@ import {
   queryArchiveLibraryItems,
 } from "../src/archive-library.js";
 import { StateDatabase } from "../src/database.js";
+import { createHash } from "node:crypto";
+import type { UpSubmission } from "../src/shared/up-subscriptions.js";
 import type { BackupStatus, FavoriteRelation, RemoteFileRecord, SourceAvailability, VideoArchiveEntry } from "../src/state.js";
 import type { BiliUser } from "../src/users.js";
 import { parseArchiveNavigation, parseArchiveLibraryPage } from "../src/shared/api/archive-library.js";
@@ -49,6 +51,7 @@ function insertArchive(
     userId: string;
     mediaId: number;
     folderTitle: string;
+    sourceId?: string;
     bvid: string;
     title: string;
     upperName?: string;
@@ -145,6 +148,8 @@ function insertArchive(
     mediaId: options.mediaId,
     bvid: options.bvid,
     folderTitle: options.folderTitle,
+    sourceKind: options.sourceId ? 'up' : 'favorite',
+    sourceId: options.sourceId,
     firstSeenAt: new Date(seen).toISOString(),
     lastSeenAt: new Date(seen).toISOString(),
     favOrder: options.order,
@@ -159,8 +164,8 @@ function insertArchive(
   database.db.prepare(`
     INSERT INTO favorite_relations(
       user_id,media_id,bvid,backup_status,active_in_favorite,folder_title,fav_order,last_seen_at,
-      favorite_unavailable,self_visible,payload_json,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      favorite_unavailable,self_visible,payload_json,updated_at,source_kind
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     relation.userId,
     relation.mediaId,
@@ -173,7 +178,8 @@ function insertArchive(
     relation.favoriteUnavailable ? 1 : 0,
     relation.selfVisible ? 1 : 0,
     JSON.stringify(relation),
-    seen
+    seen,
+    relation.sourceKind
   );
 }
 
@@ -205,6 +211,109 @@ function fixture() {
   database.rebuildArchiveLibraryProjection();
   return database;
 }
+
+function upSource(database: StateDatabase, uid = 42, userId = 'u1') {
+  return database.upSubscriptions.create({uid,name:`UP ${uid}`,avatar:'',signature:''},
+    {uid,userId,mode:'all'},null,now);
+}
+
+function submission(bvid: string, publishedAt: number): UpSubmission {
+  return {bvid,publishedAt,title:`UP 排序视频 ${bvid}`,cover:'',ownerUid:42,ownerName:'排序 UP',duration:60,joint:false};
+}
+
+test('UP archive default order uses its own publication dates without changing favorite, global or title order', () => {
+  const database = new StateDatabase(':memory:');
+  try {
+    const source = upSource(database);
+    const otherSource = upSource(database,43,'u2');
+    const dated = [submission('BVUPORDERB',3000),submission('BVUPORDERE',3000),submission('BVUPORDERC',2000),submission('BVUPORDERA',1000)];
+    database.upSubscriptions.recordPage(source.id,dated);
+    database.upSubscriptions.recordPage(otherSource.id,[submission('BVUPORDERA',9000)]);
+    for (const [index,item] of [...dated,submission('BVUPORDERD',0)].entries()) {
+      insertArchive(database,{userId:'u1',mediaId:source.routingKey,folderTitle:'UP 归档',sourceId:source.id,
+        bvid:item.bvid,title:item.title,status:'verified',order:index+1,active:index!==0,
+        seenOffset:index*1000,playable:{parts:1}});
+    }
+    database.rebuildArchiveLibraryProjection();
+    const context = {scope:'folder' as const,userId:'u1',mediaId:source.routingKey};
+    const expected = ['BVUPORDERB','BVUPORDERE','BVUPORDERC','BVUPORDERA','BVUPORDERD'];
+    assert.deepEqual(queryArchiveLibraryItems(database,users(),context).items.map(item=>item.bvid),expected);
+    database.db.prepare('UPDATE favorite_relations SET last_seen_at=? WHERE bvid=?').run(now+900_000,'BVUPORDERA');
+    database.refreshArchiveLibraryProjection(['BVUPORDERA']);
+    assert.deepEqual(queryArchiveLibraryItems(database,users(),context).items.map(item=>item.bvid),expected);
+    assert.deepEqual(getArchiveLibraryPlaybackQueue(database,users(),context,{pageSize:50})?.items.map(item=>item.bvid),expected);
+    assert.deepEqual(queryArchiveLibraryItems(database,users(),{...context,sort:'title_asc'}).items.map(item=>item.bvid),
+      ['BVUPORDERA','BVUPORDERB','BVUPORDERC','BVUPORDERD','BVUPORDERE']);
+    assert.deepEqual(queryArchiveLibraryItems(database,users(),{...context,userId:'u2'}).items,[]);
+    assert.deepEqual(queryArchiveLibraryItems(database,users(),{...context,query:'UP 排序',searchScope:'current'}).items.map(item=>item.bvid),expected);
+    // Account/global views retain their recent-observation order, including global search from an UP directory.
+    const recent = ['BVUPORDERA','BVUPORDERD','BVUPORDERC','BVUPORDERE','BVUPORDERB'];
+    for (const query of [{scope:'global' as const},{scope:'account' as const,userId:'u1'},
+      {...context,query:'UP 排序',searchScope:'global' as const}]) {
+      assert.deepEqual(queryArchiveLibraryItems(database,users(),query).items.map(item=>item.bvid),recent);
+    }
+    const first = queryArchiveLibraryItems(database,users(),{...context,pageSize:1});
+    const oldCursor = JSON.parse(Buffer.from(first.nextCursor!,'base64url').toString('utf8'));
+    oldCursor.h=createHash('sha256').update(JSON.stringify({scope:'folder',userId:'u1',mediaId:source.routingKey,
+      query:'',extraQuery:'',filter:'all',sort:'context',users:['u1','u2']})).digest('base64url').slice(0,20);
+    assert.throws(()=>queryArchiveLibraryItems(database,users(),{...context,cursor:Buffer.from(JSON.stringify(oldCursor)).toString('base64url')}),
+      (error:unknown)=>error instanceof ArchiveLibraryQueryError&&error.code==='ARCHIVE_CURSOR_STALE');
+    // A removed subscription still has an archive and keeps the same date order.
+    database.upSubscriptions.remove(source.id,source.revision,now+1000);
+    assert.deepEqual(queryArchiveLibraryItems(database,users(),context).items.map(item=>item.bvid),expected);
+  } finally { database.close(); }
+});
+
+test('UP publication order keeps every tied date across library pages, focused playback and both cursor directions', () => {
+  const database = new StateDatabase(':memory:');
+  try {
+    const source=upSource(database);
+    const posts=Array.from({length:125},(_,index)=>submission(`BVUPPAGE${String(index).padStart(4,'0')}`,1000+Math.floor(index/3)));
+    database.upSubscriptions.recordPage(source.id,posts);
+    for(const [index,item] of posts.entries()) {
+      insertArchive(database,{userId:'u1',mediaId:source.routingKey,sourceId:source.id,folderTitle:'UP 归档',bvid:item.bvid,
+        title:item.title,status:'verified',order:index,active:index%2===0,seenOffset:index%7*1000,playable:{parts:index===62?2:1}});
+    }
+    const expected=[...posts].sort((left,right)=>right.publishedAt-left.publishedAt||left.bvid.localeCompare(right.bvid)).map(item=>item.bvid);
+    const context={scope:'folder' as const,userId:'u1',mediaId:source.routingKey};
+    const seen:string[]=[];let cursor:string|undefined;
+    for(let page=0;page<20;page++) {
+      const result=queryArchiveLibraryItems(database,users(),{...context,pageSize:17,cursor});
+      seen.push(...result.items.map(item=>item.bvid));
+      if(!result.hasMore)break;
+      assert.ok(result.nextCursor);cursor=result.nextCursor;
+    }
+    assert.deepEqual(seen,expected);assert.equal(new Set(seen).size,125);
+    const focus=getArchiveLibraryPlaybackQueue(database,users(),context,{focusBvid:expected[62],pageSize:25})!;
+    assert.equal(focus.page,3);assert.equal(focus.focusIndex,62);
+    assert.deepEqual(focus.items.map(item=>item.bvid),expected.slice(50,75));
+    assert.deepEqual([focus.items[0].queuePosition,focus.items.at(-1)?.queuePosition],[51,75]);
+    const previous=getArchiveLibraryPlaybackQueue(database,users(),context,{page:2,pageSize:25,cursor:focus.previousCursor!,direction:'before'})!;
+    const next=getArchiveLibraryPlaybackQueue(database,users(),context,{page:4,pageSize:25,cursor:focus.nextCursor!,direction:'after'})!;
+    assert.deepEqual(previous.items.map(item=>item.bvid),expected.slice(25,50));
+    assert.deepEqual(next.items.map(item=>item.bvid),expected.slice(75,100));
+    const offset=getArchiveLibraryPlaybackQueue(database,users(),context,{page:5,pageSize:25})!;
+    assert.deepEqual(offset.items.map(item=>item.bvid),expected.slice(100));assert.equal(offset.hasMore,false);
+    const search=getArchiveLibraryPlaybackSearch(database,users(),context,{query:'排序',pageSize:25});
+    assert.deepEqual(search.items.map(item=>item.bvid),expected.slice(0,25));
+  } finally { database.close(); }
+});
+
+test('UP publication sorting reports damaged stored dates instead of silently replacing them with scan time', () => {
+  const database=new StateDatabase(':memory:');
+  try {
+    const source=upSource(database),item=submission('BVUPBROKENDATE',1000);
+    database.upSubscriptions.recordPage(source.id,[item]);
+    insertArchive(database,{userId:'u1',mediaId:source.routingKey,sourceId:source.id,folderTitle:'UP 归档',bvid:item.bvid,
+      title:item.title,status:'verified',playable:{parts:1}});
+    const context={scope:'folder' as const,userId:'u1',mediaId:source.routingKey};
+    for(const broken of ['bad',-1,Number.MAX_SAFE_INTEGER+1]) {
+      database.db.prepare('UPDATE up_catalog SET published_at=? WHERE source_id=?').run(broken,source.id);
+      assert.throws(()=>queryArchiveLibraryItems(database,users(),context),/UP 归档发布时间字段损坏/);
+      assert.throws(()=>getArchiveLibraryPlaybackQueue(database,users(),context,{focusBvid:item.bvid}),/UP 归档发布时间字段损坏/);
+    }
+  } finally { database.close(); }
+});
 
 test("「留存」按归档可播放和收藏夹失效证据筛选，保留账号与来源边界", () => {
   const database = new StateDatabase(":memory:");

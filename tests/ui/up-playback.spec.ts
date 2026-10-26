@@ -1,6 +1,6 @@
 import { expect,test,type APIResponse,type Page } from '@playwright/test';
 import { isRecord } from '../../src/shared/api/value.js';
-import { parseUpList } from '../../src/shared/api/up-subscriptions.js';
+import { parseUpList,parseUpCatalog } from '../../src/shared/api/up-subscriptions.js';
 import { parseArchiveNavigation,parseArchiveDeletion } from '../../src/shared/api/archive-library.js';
 import { parseArchiveVideoPreview } from '../../src/shared/api/archive-video-actions.js';
 
@@ -17,6 +17,32 @@ test.beforeEach(async({page})=>{
   await page.route('https://fonts.googleapis.com/**',route=>route.fulfill({body:''}));
   await page.route('**/assets/vendor/artplayer-5.4.0.js',route=>route.fulfill({contentType:'application/javascript',body:playerAdapter}));
   await page.goto('/');
+});
+
+test('UP archive cards and playback queue follow publication order and label the default sort',async({page})=>{
+  const source=parseUpList(await body(await page.request.get('/api/up-subscriptions'))).items.find(item=>item.uid===946974)!;
+  const catalog=parseUpCatalog(await body(await page.request.get(`/api/up-subscriptions/${source.id}/items`)));
+  const expected=catalog.items.filter(item=>item.playable).map(item=>item.bvid);
+  expect(expected).toHaveLength(3);
+  await page.locator('#upHomeList .up-subscription-card').filter({hasText:'影视飓风'}).getByRole('button',{name:/^归档库/}).click();
+  await expect(page.locator('#archiveLibraryModal')).toHaveClass(/active/);
+  await expect(page.locator('#archiveLibraryModal .archive-library-shell')).toHaveClass(/show-content/);
+  await expect(page.locator('#archiveLibraryModal .archive-library-main')).not.toHaveAttribute('inert');
+  await expect(page.locator('#archiveLibrarySort option[value="context"]')).toHaveText('发布时间：新到旧');
+  const cards=page.locator('#archiveLibraryGrid [data-archive-bvid]');
+  await expect(cards).toHaveCount(3);
+  expect(await cards.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-archive-bvid')))).toEqual(expected);
+  await page.locator(`[data-archive-bvid="${expected[1]}"] .archive-library-card-main`).click();
+  await expect(page.locator('#playbackModal')).toHaveClass(/active/);
+  const queue=page.locator('#playbackQueueList [data-playback-queue-bvid]');
+  await expect(queue).toHaveCount(3);
+  expect(await queue.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-playback-queue-bvid')))).toEqual(expected);
+  await expect(page.locator('#playbackNowTitle')).toContainText(catalog.items[1].title);
+  await page.locator('#playbackModal').getByRole('button',{name:'关闭播放器',exact:true}).filter({visible:true}).click();
+  const back=page.locator('#archiveLibraryModal .archive-library-mobile-back');
+  if(await back.isVisible())await back.click();
+  await page.locator('.archive-nav-item[data-archive-scope="global"]').click();
+  await expect(page.locator('#archiveLibrarySort option[value="context"]')).toHaveText('默认顺序');
 });
 
 for(const previousFavorite of [false,true])test(`UP playback uses its own real SQLite queue: previous favorite=${previousFavorite}`,async({page})=>{
