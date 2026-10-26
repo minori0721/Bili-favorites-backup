@@ -8,7 +8,7 @@
 
 ![当前开发版首页：账号同步与 UP 订阅入口](docs/public/screenshots/dashboard-desktop.jpg)
 
-> 界面截图来自当前开发版，使用隔离演示数据；正式版界面以对应版本为准。
+> 界面截图拍摄于 2.7.1 开发期，使用隔离演示数据；正式版界面以对应版本为准。
 
 Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它定时检查收藏、下载视频、上传网盘并核验归档结果；你可以在自己的归档库中搜索和播放，不必依赖视频仍在B站可见。
 
@@ -201,11 +201,11 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 | 镜像标签 | 用途 |
 | --- | --- |
 | `latest` | `main`稳定版 |
-| `v2.7.0` | 当前固定稳定版本，便于可控升级 |
-| `v2.6.5` | 上一固定稳定版本 |
+| `v2.7.1` | 当前固定稳定版本，便于可控升级 |
+| `v2.7.0` | 上一固定稳定版本 |
 | `dev` | 开发测试版，不保证与稳定版一致 |
 
-开发版使用下一目标版本的 `-dev` 标识，当前为 `2.7.1-dev`，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
+开发版使用下一目标版本的 `-dev` 标识，当前版本见 [dev 分支包信息](https://github.com/minori0721/Bili-favorites-backup/blob/dev/package.json)，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
 
 [开发预览与更新说明](https://github.com/minori0721/Bili-favorites-backup/releases/tag/dev-preview)标记为 Pre-release，在 dev 镜像验收并发布成功后更新同一个页面，包含本次提交、更新时间和固定镜像摘要。开发预览不代表正式版本，不会替代正式 Latest；使用 `:dev` 的用户继续按原方式拉取镜像。
 
@@ -219,7 +219,7 @@ npm run build
 
 本地修改可按范围运行 `npm run test:release`、`npm run test:core` 或 `npm run test:files -- <文件...>`；大数据专项入口为 `npm run test:slow`。`npm test` 和 CI 继续执行全部回归，具体选择见[开发与验证](docs/development/architecture.md#开发与验证)。
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.0` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.1` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
 
 ## 许可证
 
