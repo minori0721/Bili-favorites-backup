@@ -1,5 +1,7 @@
 # BFB · B站收藏夹归档
 
+[![Release](https://img.shields.io/github/v/release/minori0721/Bili-favorites-backup?filter=v*&sort=semver&style=flat&logo=github&logoColor=white&label=Release&labelColor=47505A&color=2AA99B)](https://github.com/minori0721/Bili-favorites-backup/releases/latest) [![Docker linux/amd64](https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?style=flat&logo=docker&logoColor=white&labelColor=47505A)](https://hub.docker.com/r/minori0721/bili-favorites-backup) [![Node.js 24](https://img.shields.io/badge/Node.js-24-5FA04E?style=flat&logo=nodedotjs&logoColor=white&labelColor=47505A)](https://nodejs.org/)
+
 将B站收藏持续备份到 AList / OpenList，让已经保存的视频、封面和收藏记录，在源视频失效后仍可查看。
 
 [快速部署](#快速部署) · [完整文档](https://minori0721.github.io/Bili-favorites-backup/) · [最新版本](https://github.com/minori0721/Bili-favorites-backup/releases/latest) · [更新记录](CHANGELOG.md)

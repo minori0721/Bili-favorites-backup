@@ -146,7 +146,7 @@ export function createApplication() {
     const manageVideo=(bvid:string,source:{sourceId:string}|{userId:string;mediaId:number},trigger:HTMLElement)=>{void archiveVideoActions.open(bvid,source,trigger);};
     const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context),manageVideo });
     const upSubscriptions = createUpSubscriptions({root:document,api,confirm:confirmAction,openModal,closeModal,notify:showToast,
-      openArchive:(id,trigger)=>{void archiveLibrary.openUpSource(id,trigger);},play:(bvid,trigger)=>playback.open(bvid,trigger),manageVideo});
+      openArchive:(id,trigger)=>{void archiveLibrary.openUpSource(id,trigger);},play:(bvid,trigger,context)=>playback.openLibrary(bvid,trigger,context),manageVideo});
     const videoCards = createVideoCards({ root: document, api, formatDateTime, notify: (message, kind = 'error') => showToast(message, kind) });
     const videoDetail = createVideoDetail({ root: document, api, cards: videoCards, formatDateTime, open: modal => openModal(modal.id), close: closeModal, play: (bvid, trigger) => playback.open(bvid, trigger), notify: message => showToast(message, 'error') });
     const unavailable = createUnavailable({ root: document, api, renderItem: item => videoCards.render(item, requireElement(document, '#unavailableGrid', HTMLElement)), releaseItems: videoCards.release, open: modal => openModal(modal.id), close: closeModal, notify: message => showToast(message, 'error') });

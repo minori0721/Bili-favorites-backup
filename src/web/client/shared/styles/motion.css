@@ -36,6 +36,24 @@ header button:not(:disabled):active,
 .row button:disabled,
 .row button:disabled:hover { transform: none; }
 
+/* Selection, cards and dialog actions share the same response without moving layout. */
+.up-tabs button,
+.updates-tabs button,
+.panel button.up-primary,
+.up-video,
+.up-subscription-card,
+.archive-library-card {
+  transition: background-color var(--motion-hover) var(--motion-ease),
+    border-color var(--motion-hover) var(--motion-ease),
+    color var(--motion-hover) var(--motion-ease),
+    box-shadow var(--motion-hover) var(--motion-ease);
+}
+.panel button.up-primary { transition-property:background-color,border-color,color,box-shadow,transform; }
+.panel button.up-primary:not(:disabled):active { transform:scale(.975); transition-duration:var(--motion-press); }
+.up-video:focus-within { border-color:var(--accent); }
+@media (hover:hover) and (pointer:fine) {
+  .up-video:hover { border-color:rgba(57,197,187,.55); box-shadow:0 5px 16px rgba(36,88,79,.06); }
+}
 /* Disclosure has one visual grammar: a growing edge and a turning chevron. */
 .settings-fold > summary,
 .scheduler-status {

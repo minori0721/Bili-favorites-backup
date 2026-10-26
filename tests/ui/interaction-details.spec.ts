@@ -18,6 +18,8 @@ async function openArchive(page: Page) {
   // On phones the directory layer is the entry point; desktop already exposes the list.
   if (await directory.isVisible()) await directory.click();
   await expect(page.locator('#archiveLibraryGrid .archive-library-card')).toHaveCount(2);
+  // Measure touch targets after the workspace entrance has reached its final scale.
+  await expect(page.locator('#archiveLibraryModal .archive-library-shell')).toHaveCSS('transform', 'none');
 }
 
 test('settings keep dirty state accurate for fields, template tags and encoding order', async ({ page }) => {

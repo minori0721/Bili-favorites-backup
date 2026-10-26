@@ -2,6 +2,8 @@ import type { ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
 import { isRecord } from '../../../../shared/api/value.js';
+import { parseArchiveNavigation } from '../../../../shared/api/archive-library.js';
+import type { ArchiveContext } from '../../../../shared/api/archive-context.js';
 import { parseUpList,parseUpIdentity,parseUpDiscovery,parseUpSubscription,parseUpCatalog,parseUpPosts,parseUpRemovalPreview,parseUpRemovalResult } from '../../../../shared/api/up-subscriptions.js';
 import type { UpSubscription,UpIdentity,UpCatalogItem,UpSubscriptionMode,UpVideoDecision,UpRemovalPreview } from '../../../../shared/up-subscriptions.js';
 import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
@@ -19,7 +21,7 @@ export function createUpSubscriptions(deps:{
   openModal(id:string,trigger?:HTMLElement|null):void;closeModal(id:string):unknown;
   notify(message:string,kind?:'success'|'error'):void;
   openArchive(sourceId:string,trigger:HTMLElement|null):void;
-  play(bvid:string,trigger:HTMLElement):void;
+  play(bvid:string,trigger:HTMLElement,context:ArchiveContext):void;
   manageVideo(bvid:string,source:{sourceId:string},trigger:HTMLElement):void;
 }) {
   const root=deps.root;
@@ -214,11 +216,35 @@ export function createUpSubscriptions(deps:{
       if(excluded&&(item.playable||item.otherArchiveAvailable))badges.append(node('span',item.playable?'可播放':'其他来源有归档','up-badge up-playback'));
       cover.append(badges);
       const copy=node('div',undefined,'up-video-copy');copy.append(node('h4',item.title),node('p',`${day(item.publishedAt)} · ${item.joint?'联合投稿 · ':''}${item.ownerName}\n${item.bvid}`));
-      const actions=node('div',undefined,'up-video-actions');if(item.playable||item.otherArchiveAvailable){const play=node('button',item.playable?'播放':'已有归档','ghost');play.type='button';play.dataset.upPlay=item.bvid;actions.append(play);}
-      const manage=node('button','管理归档','ghost');manage.type='button';manage.dataset.upAction=item.bvid;actions.append(manage);copy.append(actions);card.append(cover,copy);host.append(card);
+      const actions=node('div',undefined,'up-video-actions');
+      const manage=node('button','管理归档','ghost');manage.type='button';manage.dataset.upAction=item.bvid;actions.append(manage);
+      if(item.playable||item.otherArchiveAvailable){const play=node('button',item.playable?'播放':'已有归档','ghost');play.type='button';play.dataset.upPlay=item.bvid;actions.append(play);}
+      copy.append(actions);card.append(cover,copy);host.append(card);
     }
     if(!host.children.length)host.append(node('div',filter==='excluded'?'这个订阅还没有排除的视频。':'暂无投稿。点击“刷新投稿”安排扫描；浏览列表不会向 B站发请求。','up-empty'));
     syncSelection();updateRuleFields();
+  }
+  async function playArchive(bvid:string,trigger:HTMLButtonElement){
+    if(!current||trigger.disabled)return;
+    const sourceId=current.id,item=pageItems.get(bvid);
+    if(!item||(!item.playable&&!item.otherArchiveAvailable))return;
+    trigger.disabled=true;
+    try {
+      let context:ArchiveContext;
+      if(item.playable){
+        const response=await request('workspace-playback','/api/archive-library/navigation');
+        if(response.kind==='cancelled'||current?.id!==sourceId||!visible('upWorkspaceModal'))return;
+        const source=parseArchiveNavigation(response.data).upSubscriptions.find(source=>source.sourceId===sourceId);
+        if(!source?.userId)throw new Error('UP 归档来源已变化，请刷新投稿目录后重试。');
+        context={scope:'folder',userId:source.userId,mediaId:source.mediaId,title:source.title+' · UP 归档',
+          query:'',searchScope:'current',filter:'all',sort:'context'};
+      }else{
+        context={scope:'global',userId:null,mediaId:null,title:'此视频的已有归档',
+          query:bvid,searchScope:'global',filter:'playable',sort:'context'};
+      }
+      deps.play(bvid,trigger,context);
+    }catch(error){if(current?.id===sourceId&&visible('upWorkspaceModal'))notice('upWorkspaceStatus',errorText(error),true);}
+    finally{trigger.disabled=false;}
   }
   async function catalog(append=false){if(!current)return;const sourceId=current.id;notice('upWorkspaceStatus','正在读取投稿目录…');button('upCatalogMore').disabled=true;
     try{const params=new URLSearchParams({filter,q:input('upCatalogQuery').value.trim()});if(append&&catalogCursor)params.set('cursor',catalogCursor);
@@ -340,7 +366,7 @@ export function createUpSubscriptions(deps:{
       else if(target instanceof HTMLButtonElement&&target.dataset.upRemovalReview)void retryRemoval(target.dataset.upRemovalReview,target,true);
       else if(target instanceof HTMLButtonElement&&target.dataset.upRemovalStop)void stopRemoval(target.dataset.upRemovalStop,target);
       else if(target.dataset.upFilter){filter=target.dataset.upFilter;root.querySelectorAll<HTMLElement>('[data-up-filter]').forEach(item=>item.setAttribute('aria-pressed',String(item.dataset.upFilter===filter)));void catalog();}
-      else if(target.dataset.upPlay)deps.play(target.dataset.upPlay,target);
+      else if(target instanceof HTMLButtonElement&&target.dataset.upPlay)void playArchive(target.dataset.upPlay,target);
       else if(target.dataset.upAction){const item=pageItems.get(target.dataset.upAction);if(item)openAction(item,target);}
       else if(target.dataset.upRetry)void request('workspace-retry',`/api/up-subscriptions/operations/${encodeURIComponent(target.dataset.upRetry)}/retry`,json({})).then(refreshWorkspace).catch(error=>notice('upWorkspaceStatus',errorText(error),true));
     },{signal});

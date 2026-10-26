@@ -762,9 +762,15 @@ app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, respons
   state.previewCount += 1;
   response.json(ok({ previewId: "source-preview", fileCount: 2, totalBytes: 15 * 1024 * 1024, sharedCount: 0,deleteCount:2,reclaimableBytes:15*1024*1024 }));
 });
-app.get("/api/archive-library/playback-queue", (_request, response) => response.json(ok({
+app.get("/api/archive-library/playback-queue", (_request, response) => {
+  if(state.archiveActionPreview||Number(_request.query.mediaId)<=-2){
+    const result=upFixture.playbackQueue(_request.query,{focusBvid:String(_request.query.focusBvid||'')||undefined,pageSize:50});
+    if(!result){response.status(404).json({success:false,message:'该归档当前不可播放'});return;}
+    response.json(ok(result));return;
+  }
+  response.json(ok({
   mode: "library" as const, page: 1, pageSize: 50, total: 0, focusIndex: -1, hasMore: false, items: [],
-})));
+}));});
 
 app.get("/api/online-content/navigation", (_request, response) => {
   state.onlineNavigationCount += 1;
