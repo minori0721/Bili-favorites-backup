@@ -250,6 +250,7 @@ function getAppHeader() {
       <button type="button" id="updateAvailableBtn" class="update-available" hidden><span id="updateAvailableText"></span><span class="update-available-compact" aria-hidden="true">有更新</span></button>
     </div>
     <div class="header-actions">
+      <button type="button" id="onboardingHelpBtn" class="ghost" aria-label="使用引导" title="使用引导"><span class="onboarding-help-full">使用引导</span><span class="onboarding-help-compact" aria-hidden="true">引导</span></button>
       ${getGithubLink("header-meta")}
       <button id="logoutBtn">退出系统</button>
     </div>

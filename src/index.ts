@@ -6,6 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 import { createAccountLogin } from './account-login-service.js';
+import { createOnboardingService, isNewInstallation } from './onboarding-service.js';
+import { createOnboardingRouter } from './http/onboarding.js';
+import { ONBOARDING_MARKER } from './shared/api/onboarding.js';
+import { createInstalledReleaseNotice, INSTALLED_RELEASE_MARKER } from './installed-release-notice.js';
 import { createAccountRefresh } from './account-refresh-service.js';
 import { executeAccountRemoval } from "./account-removal.js";
 import { createAccountService } from './account-service.js';
@@ -83,7 +87,7 @@ import { createOnlineArchiveProjection } from './online-archive-projection.js';
 import { OnlineContentService } from "./online-content.js";
 import { OnlineCoverCache } from "./online-cover-cache.js";
 import { PathMigrationService } from "./path-migration.js";
-import { authSessionDatabasePath,coversDir,ensureAppDirs,onlineCoversDir,tempDir } from "./paths.js";
+import { authSessionDatabasePath,coversDir,dataDir,ensureAppDirs,onlineCoversDir,tempDir } from "./paths.js";
 import { createPlaybackService } from './playback-service.js';
 import { closePlaybackDeliveryTracker } from './playback.js';
 import { previewDetailLimit } from './preview-options.js';
@@ -123,12 +127,25 @@ const trustedProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 readAssetManifest();
 ensureAppDirs();
 recoverImportTransaction();
+const newInstallation = isNewInstallation(dataDir);
 logManager.reload();
 const importMaintenance = new ImportMaintenance();
 
 const configStore = new ConfigStore();
 const userStore = new UserStore();
 const stateManager = new StateManager();
+const onboardingService = createOnboardingService({newInstallation,
+  read:()=>stateManager.getDatabase().getMeta(ONBOARDING_MARKER),
+  write:value=>stateManager.getDatabase().setMeta(ONBOARDING_MARKER,value),
+});
+onboardingService.initialize();
+const installedReleaseNotice = createInstalledReleaseNotice({current:appInfo,newInstallation,
+  firstRun:()=>onboardingService.status().autoStart,
+  read:()=>stateManager.getDatabase().getMeta(INSTALLED_RELEASE_MARKER),
+  write:build=>stateManager.getDatabase().setMeta(INSTALLED_RELEASE_MARKER,build),
+});
+try { installedReleaseNotice.initialize(); }
+catch(error) { console.warn(`[Updates] 初始化版本提示标记失败：${safeErrorSummary(error)}`); }
 const archiveLibrary = createArchiveLibraryService({database: () => stateManager.getDatabase(), users: () => userStore.list()});
 let stopFailedApplication: ((error: Error) => void) | undefined;
 // Only the application owns authorization refresh. Callbacks run after assembly.
@@ -335,7 +352,10 @@ app.use(createArchiveVideoActionsRouter({service:archiveVideoActions,boundary:as
 app.use(authentication.logout);
 
 const updateCheckService = new UpdateCheckService();
-app.use(createUpdatesRouter({ boundary: asyncHandler, check: refresh => updateCheckService.check(refresh) }));
+app.use(createUpdatesRouter({ boundary: asyncHandler,
+  check: async refresh => ({...await updateCheckService.check(refresh),installedNotice:installedReleaseNotice.pending()}),
+  seenInstalled:installedReleaseNotice.acknowledge,
+}));
 
 app.use(createConfigurationRouter({boundary: asyncHandler, service: createConfigurationService({
   config: configStore, users: () => userStore.list(),
@@ -361,6 +381,7 @@ app.use(createAccountRouter({boundary: asyncHandler, service: createAccountServi
 })}));
 
 app.use(createAccountLoginRouter({service: accountLogin, boundary: asyncHandler}));
+app.use(createOnboardingRouter({status:onboardingService.status,finish:onboardingService.finish,boundary:asyncHandler}));
 
 app.use(createOnlineContentRouter({content:onlineContent,users:userStore,archiveStates:createOnlineArchiveProjection(stateManager),boundary:asyncHandler}));
 
@@ -451,6 +472,8 @@ async function reloadStoresAfterImport(restored: string[], previousMarkers: Lega
     archiveDeletion.rebind(stateManager.getDatabase());
     logManager.reload();
     await scheduler.recheckLegacyRecoveryAfterImport(restored, previousMarkers);
+    try { onboardingService.finish(); installedReleaseNotice.acknowledge(); }
+    catch (error) { console.warn(`[Onboarding] 导入后未能更新界面提示标记：${safeErrorSummary(error)}`); }
   } catch (error) {
     scheduler.beginShutdown();
     throw Object.assign(new Error(`导入后恢复失败：${safeErrorSummary(error)}`), { cause: error, recoveryRequired: true });

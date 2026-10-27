@@ -37,6 +37,7 @@ export interface UpdatesResponse {
   nextRefreshAt: string;
   checkAfter: string;
   releasesUrl: string;
+  installedNotice?: string | null;
 }
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -67,6 +68,7 @@ function isUpdatesResponse(value: unknown): value is UpdatesResponse {
     || !(value.currentRelease === null || isReleaseNotes(value.currentRelease))
     || !isChannel(value.channels.stable) || !(value.channels.dev === null || isChannel(value.channels.dev))
     || !date(value.nextRefreshAt) || !date(value.checkAfter) || !link(value.releasesUrl)
+    || !(value.installedNotice === undefined || value.installedNotice === null || typeof value.installedNotice === 'string' && value.installedNotice.length > 0 && value.installedNotice.length < 200)
     || !(notification === null || object(notification) && typeof notification.id === 'string'
       && typeof notification.label === 'string' && (notification.channel === 'stable' || notification.channel === 'dev')
       && (notification.kind === 'update' || notification.kind === 'stable_available'))) return false;

@@ -94,7 +94,7 @@ export function createUpUiFixture() {
     items:(query:Parameters<typeof queryArchiveLibraryItems>[2])=>queryArchiveLibraryItems(manager.getDatabase(),users.list(),query),
     detail:(query:Parameters<typeof getArchiveLibraryItemDetail>[2],bvid:string)=>getArchiveLibraryItemDetail(manager.getDatabase(),users.list(),query,bvid),
     playbackQueue:(query:Parameters<typeof getArchiveLibraryPlaybackQueue>[2],options:Parameters<typeof getArchiveLibraryPlaybackQueue>[3])=>getArchiveLibraryPlaybackQueue(manager.getDatabase(),users.list(),query,options),
-    async reset(){scanner.stop();if(scan)await scan;deletionFailure=false;service.reset();videoActions.reset();manager.getDatabase().db.exec(`DELETE FROM archive_deleted_sources;DELETE FROM archive_deletion_items;DELETE FROM archive_deletions;DELETE FROM archive_video_decisions;DELETE FROM archive_global_exclusions;DELETE FROM up_catalog;DELETE FROM up_subscriptions;DELETE FROM jobs;DELETE FROM remote_files;DELETE FROM favorite_relations;DELETE FROM videos;`);manager.reload();remote.clear();seed();scanner.start();},
+    async reset(empty=false){scanner.stop();if(scan)await scan;deletionFailure=false;service.reset();videoActions.reset();manager.getDatabase().db.exec(`DELETE FROM archive_deleted_sources;DELETE FROM archive_deletion_items;DELETE FROM archive_deletions;DELETE FROM archive_video_decisions;DELETE FROM archive_global_exclusions;DELETE FROM up_catalog;DELETE FROM up_subscriptions;DELETE FROM jobs;DELETE FROM remote_files;DELETE FROM favorite_relations;DELETE FROM videos;`);manager.reload();remote.clear();if(!empty)seed();scanner.start();},
     async close(){scanner.stop();if(scan)await scan;if(!await deletion.stop(5000))throw new Error('UI 清理未排空');manager.close();},
   };
 }

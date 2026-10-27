@@ -203,7 +203,7 @@ export function createWorkspace(dependencies:{root:Document;active():HTMLElement
     if(focus)get('workspacePageTitle').focus({preventScroll:true});
   }
   function activeWorkspaces(){return workspaceIds.map(id=>get(id)).filter(modal=>modal.classList.contains('active')&&!modal.classList.contains('is-closing'));}
-  async function go(key:string,trigger:HTMLElement|null=null) {
+  async function go(key:string,trigger:HTMLElement|null=null,options:{preserveScroll?:boolean}={}) {
     if(navigating||!events)return false;
     const lifetime=events;
     navigating=true;
@@ -216,7 +216,7 @@ export function createWorkspace(dependencies:{root:Document;active():HTMLElement
       if(key==='library'){
         void dependencies.openLibrary(trigger&&main.contains(trigger)?trigger:requireElement(main,'[data-workspace-page=library]',HTMLElement));
         updateWorkspace(get('archiveLibraryModal'));
-      }else{showPanel(key,{focus:true});window.scrollTo({top:0,behavior:'instant'});}
+      }else{showPanel(key,{focus:true});if(!options.preserveScroll)window.scrollTo({top:0,behavior:'instant'});}
       return true;
     }finally{navigating=false;}
   }
@@ -441,10 +441,11 @@ export function createWorkspace(dependencies:{root:Document;active():HTMLElement
   }
   function destroy(){events?.abort();events=null;contentObserver.disconnect();workspaceObservers.forEach(({observer})=>observer.disconnect());headerHome.after(appHeader);workspaceContexts.clear();queued=false;}
   return {init,destroy,
-    async openStorageSettings(){
+    navigate:go,
+    async openStorageSettings(options:{startAtFields?:boolean}={}){
       if(!await go('settings'))return;
       chooseSetting(settingsGroups.indexOf(get('storageSettings')));
-      const check=get('storageCheckBtn');check.scrollIntoView({block:'center',behavior:'instant'});check.focus({preventScroll:true});
+      const target=get(options.startAtFields?'alistUrl':'storageCheckBtn');target.scrollIntoView({block:'center',behavior:'instant'});target.focus({preventScroll:true});
     },
     receiveQueue(state:WorkspaceQueueState){queueState=state;refresh();},
     receiveSubscriptions(state:WorkspaceSubscriptionState){subscriptionState=state;if(state.status==='ready')subscriptionCounts={total:state.total,enabled:state.enabled};refresh();},

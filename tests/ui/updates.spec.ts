@@ -1,4 +1,4 @@
-import {revealControl} from './workspace-navigation.js';
+import {chooseSetting,revealControl} from './workspace-navigation.js';
 import { test, expect } from '@playwright/test';
 import { renderReleaseNotes } from '../../src/release-notes.js';
 import { updatesFixture } from '../fixtures/updates.js';
@@ -25,6 +25,7 @@ test('updates announce once, retain a badge, switch notes and channels, and rest
   await expect(page.locator('#updatesLatestVersion')).toContainText('bbbbbbb');
   await (await revealControl(page,page.locator('#updatesCurrentTab'))).click();
   await expect(page.locator('#updatesNotes')).toContainText('当前镜像保留自己的说明');
+  await expect(page.locator('#updatesStatus')).not.toContainText('正在检查');
   await page.keyboard.press('Home');
   await expect(page.locator('#updatesLatestTab')).toBeFocused();
   await expect(page.locator('#updatesLatestTab')).toHaveAttribute('aria-selected', 'true');
@@ -218,4 +219,56 @@ test('formal availability is distinct from stable updates and checking never ins
   const state = await response.json();
   expect(state.syncNowCount).toBe(0);
   expect(state.manualArchiveCount).toBe(0);
+});
+
+test('after an installed update current notes open once and newer-release controls remain available', async ({ page }) => {
+  await page.request.post('/__test/reset',{data:{installedVersionChanged:true,updatesMode:'both'}});
+  await fonts(page);await page.goto('/?page=overview');await page.bringToFront();
+  await expect(page.locator('#updatesModal')).toBeVisible();
+  await expect(page.locator('#updatesCurrentTab')).toHaveAttribute('aria-selected','true');
+  await expect(page.locator('#updatesNotes')).toContainText('当前镜像保留自己的说明');
+  await expect(page.locator('#updatesStatus')).not.toContainText('正在检查');
+  await expect(page.locator('#updateAvailableBtn')).toBeVisible();
+  await expect.poll(async()=>(await(await page.request.get('/__test/state')).json()).installedNoticeSeenCount).toBe(1);
+  await page.locator('#closeUpdatesBtn').click();await expect(page.locator('#updatesModal')).toBeHidden();
+  await page.reload();await expect(page.locator('#updatesRunning')).toContainText(updatesFixture().current.version);
+  await expect(page.locator('#updatesModal')).toBeHidden();
+  await page.locator('#versionInfoBtn').click();await expect(page.locator('#updatesModal')).toBeVisible();
+  expect((await(await page.request.get('/__test/state')).json()).installedNoticeSeenCount).toBe(1);
+});
+
+test('first installation gets the interface guide without an installed-version popup', async ({ page }) => {
+  await page.request.post('/__test/reset',{data:{onboardingNewInstall:true,installedVersionChanged:true}});
+  await fonts(page);await page.goto('/?page=overview');await page.bringToFront();
+  await expect(page.locator('.driver-popover-title')).toHaveText('账号与收藏夹');
+  await expect(page.locator('#updatesModal')).toBeHidden();
+  await page.getByRole('button',{name:'退出引导',exact:true}).click();
+  await expect.poll(async()=>(await(await page.request.get('/__test/state')).json()).onboardingSeenCount).toBe(1);
+  await page.reload();await expect(page.locator('#updatesRunning')).toContainText(updatesFixture().current.version);
+  await expect(page.locator('#updatesModal')).toBeHidden();
+  expect((await(await page.request.get('/__test/state')).json()).installedNoticeSeenCount).toBe(0);
+});
+
+test('a slow update response does not interrupt an existing settings draft and manual reading acknowledges it', async ({ page }) => {
+  await page.request.post('/__test/reset',{data:{installedVersionChanged:true}});
+  let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/api/updates',async route=>{await gate;await route.continue();});
+  await fonts(page);await page.goto('/?page=overview');
+  await chooseSetting(page,'同步节奏');await page.locator('#pollInterval').fill('19');
+  const response=page.waitForResponse('**/api/updates');release();await(await response).finished();
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await expect(page.locator('#updatesModal')).toBeHidden();
+  expect((await(await page.request.get('/__test/state')).json()).installedNoticeSeenCount).toBe(0);
+  await page.locator('#versionInfoBtn').click();await expect(page.locator('#updatesCurrentTab')).toHaveAttribute('aria-selected','true');
+  await expect.poll(async()=>(await(await page.request.get('/__test/state')).json()).installedNoticeSeenCount).toBe(1);
+  await page.locator('#closeUpdatesBtn').click();await expect(page.locator('#pollInterval')).toHaveValue('19');
+});
+
+test('opening the version window before its data arrives still acknowledges displayed current notes', async ({ page }) => {
+  await page.request.post('/__test/reset',{data:{installedVersionChanged:true}});
+  let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/api/updates',async route=>{await gate;await route.continue();});
+  await fonts(page);await page.goto('/?view=updates');await expect(page.locator('#updatesModal')).toBeVisible();
+  release();await expect(page.locator('#updatesNotes')).toContainText('当前镜像保留自己的说明');
+  await expect.poll(async()=>(await(await page.request.get('/__test/state')).json()).installedNoticeSeenCount).toBe(1);
 });

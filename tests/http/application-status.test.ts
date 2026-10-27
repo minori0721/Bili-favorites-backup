@@ -16,6 +16,7 @@ test('application status routes preserve update, availability and queue contract
       Promise.resolve(handler(request, response, next)).catch(next);
     },
     async check(refresh) { refreshes.push(refresh); return { version: '2.6.1' }; },
+    seenInstalled: () => true,
   }));
   app.use(createAvailabilityRecheckRouter({
     request(bvid) {

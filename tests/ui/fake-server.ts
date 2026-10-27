@@ -15,10 +15,15 @@ const port = Number(process.env.BFB_FAKE_UI_PORT || 43197);
 const detailPreviewDelay = process.env.BFB_DETAILS_PREVIEW === '1' ? 650 : 0;
 
 type TestState = {
+  onboardingPending: boolean;
+  onboardingEmpty: boolean;
+  onboardingSeenCount: number;
   archiveActionPreview: boolean;
   cleanupBusy: boolean;
   updatesMode: UpdateScenario;
   updateRequests: number;
+  installedNotice: string | null;
+  installedNoticeSeenCount: number;
   previewCount: number;
   startCount: number;
   accountStartCount: number;
@@ -72,10 +77,13 @@ type TestState = {
 
 function initialState(): TestState {
   return {
+    onboardingPending: false, onboardingEmpty: false, onboardingSeenCount: 0,
     archiveActionPreview: process.env.BFB_ARCHIVE_ACTION_PREVIEW === '1',
     cleanupBusy: false,
     updatesMode: process.env.BFB_UPDATE_PREVIEW === '1' ? 'dev-update' : 'current',
     updateRequests: 0,
+    installedNotice: null,
+    installedNoticeSeenCount: 0,
     previewCount: 0,
     startCount: 0,
     accountStartCount: 0,
@@ -253,6 +261,7 @@ app.post('/api/archive-deletions/:id/:action',async(req,res,next)=>{
   }catch(error){next(error);}
 });
   app.post('/__test/up-deletion-failure',(req,res)=>{upFixture.setDeletionFailure(req.body.enabled===true);res.json({success:true});});
+app.get('/api/up-subscriptions',(_req,res,next)=>{if(state.onboardingEmpty)res.json(ok({items:[],accounts:[],operations:[]}));else next();});
 app.use(createUpSubscriptionRouter({service:upFixture.service,boundary:handler=>(req,res,next)=>{Promise.resolve(handler(req,res,next)).catch(next);}}));
 app.get('/__up/:kind/:id.svg',(req,res)=>{
   const colors=['#247f76','#568ca1','#aa8561','#6e8274','#836c91','#658f87','#91766c','#5f7d8b'];const index=Number.parseInt(req.params.id,10)%colors.length;
@@ -263,10 +272,13 @@ app.get('/__up/:kind/:id.svg',(req,res)=>{
 app.get("/__test/ready", (_request, response) => response.json({ ready: true }));
 app.post("/__test/reset", async (request, response) => {
   const updatesMode: unknown = request.body?.updatesMode;
-  await upFixture.reset();
+  await upFixture.reset(request.body?.onboardingNewInstall === true);
   state = initialState();
+  state.onboardingPending = request.body?.onboardingNewInstall === true;
+  state.onboardingEmpty = state.onboardingPending;
+  if(request.body?.installedVersionChanged===true&&!state.onboardingPending)state.installedNotice='preview-installed-build';
   if(request.body?.archiveActionPreview===true)state.archiveActionPreview=true;
-  if(state.archiveActionPreview)upFixture.seedArchiveActions();
+  if(state.archiveActionPreview&&!state.onboardingEmpty)upFixture.seedArchiveActions();
   state.cleanupBusy=request.body?.cleanupBusy===true;
   if (request.body?.sourceCompletionMode === "complete") state.sourceCompletionMode = "complete";
   state.retainedArchivePreview = request.body?.retainedArchivePreview === true;
@@ -295,6 +307,8 @@ app.post("/__test/reset", async (request, response) => {
   response.json(state);
 });
 app.get("/__test/state", (_request, response) => response.json(state));
+app.get('/api/onboarding', (_request,response)=>response.json(ok({autoStart:state.onboardingPending})));
+app.post('/api/onboarding/seen', (_request,response)=>{state.onboardingSeenCount++;state.onboardingPending=false;response.json(ok({}));});
 app.post('/__test/cleanup-busy',(req,res)=>{state.cleanupBusy=req.body.busy===true;res.json(ok({busy:state.cleanupBusy}));});
 
 app.get('/assets/app/:name', serveAppAsset);
@@ -308,7 +322,11 @@ app.get("/", (_request, response) => {
 app.get('/api/updates', (request, response) => {
   state.updateRequests++;
   if (isUpdateScenario(request.query.scenario)) state.updatesMode = request.query.scenario;
-  response.json({ success: true, data: updatesFixture(state.updatesMode) });
+  response.json({ success: true, data: {...updatesFixture(state.updatesMode),installedNotice:state.installedNotice} });
+});
+app.post('/api/updates/installed/seen', (request,response)=>{
+  if(request.body?.build!==state.installedNotice){response.status(409).json({success:false,message:'运行版本已变化'});return;}
+  state.installedNoticeSeenCount++;state.installedNotice=null;response.json(ok({}));
 });
 app.get("/api/config", async (_request, response) => {
   state.configRequests += 1;
@@ -381,6 +399,7 @@ app.post("/api/storage/check", (request, response) => {
 });
 app.get("/api/users", (_request, response) => {
   state.userRequests += 1;
+  if(state.onboardingEmpty){response.json(ok([]));return;}
   if (state.userFailuresRemaining > 0) {
     state.userFailuresRemaining -= 1;
     response.json({ success: false, message: "隔离账号读取失败" });
@@ -445,6 +464,7 @@ app.get("/api/users/login/status", (request, response) => {
   const loginId = String(request.query.loginId || "");
   state.loginStatusQueries.push(loginId);
   const completed = state.loginMode === "first_complete_then_pending" && loginId === "login-1";
+  if(completed)state.onboardingEmpty=false;
   response.json(ok({ status:completed ? "completed" : "pending" }));
 });
 app.post("/api/sync/now", async (_request, response) => {

@@ -14,6 +14,7 @@ Bili-favorites-backup 自有代码按 **GPL-3.0-only** 发行。完整条款见 
 | archiver | 8.0.0 | MIT | [node-archiver](https://github.com/archiverjs/node-archiver) |
 | artplayer | 5.4.0 | MIT | [ArtPlayer](https://github.com/zhw2590582/ArtPlayer)；[许可原文](licenses/Artplayer-MIT.txt)；所用脚本还保留其版本、Harvey Zhao 的版权头及 MIT 标记 |
 | better-sqlite3 | 12.11.1 | MIT | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)；内置 SQLite 的来源声明由该包保留 |
+| driver.js | 1.10.2 | MIT | [Driver.js](https://github.com/nilbuild/driver.js)；[许可原文](licenses/Driverjs-MIT.txt) |
 | express | 4.22.2 | MIT | [Express](https://github.com/expressjs/express) |
 | express-rate-limit | 8.5.2 | MIT | [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) |
 | express-session | 1.19.0 | MIT | [express-session](https://github.com/expressjs/session) |
@@ -35,6 +36,7 @@ Bili-favorites-backup 自有代码按 **GPL-3.0-only** 发行。完整条款见 
 ## 浏览器、文档与字体
 
 - 浏览器播放器 Artplayer 的原始版权头保留，完整 MIT 文本同时随镜像与仓库提供。
+- 界面引导 Driver.js 随前端本地打包，完整 MIT 文本随镜像与仓库提供。
 - 应用通过 Google Fonts 加载 **Noto Sans SC**，未在应用镜像中另行打包字体二进制；其 [SIL OFL 1.1 原文及保留字体名称](licenses/NotoSansSC-OFL.txt)随附。
 - 文档站使用 **VitePress 1.6.4 / Vue 3.5.42（MIT）**，以及 VitePress 随附的 **Inter（SIL OFL 1.1）**。作者声明与许可全文随静态站点的 [licenses.txt](docs/public/licenses.txt) 提供；[Inter 原许可](licenses/Inter-OFL.txt)亦保留在仓库。文档构建依赖的具体版本见 `docs/package-lock.json`。
 

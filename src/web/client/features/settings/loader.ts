@@ -15,6 +15,7 @@ export function createSettingsLoader(dependencies: {
     templateChanged(): void;
     loading(value: boolean): void;
     loaded(): void;
+    failed?(): void;
 }) {
     const input = (id: string) => requireElement(dependencies.root, '#' + id, HTMLInputElement);
     function field(id: string): HTMLInputElement | HTMLSelectElement {
@@ -92,6 +93,7 @@ export function createSettingsLoader(dependencies: {
             if ((error instanceof Error && error.name === 'AbortError') || token !== configLoadState.token)
                 return;
             const prefix = configLoadState.loaded ? '设置刷新失败，已保留当前内容：' : '设置加载失败：';
+            dependencies.failed?.();
             dependencies.status(prefix + (error instanceof Error ? error.message : String(error)), 'error', () => void loadConfig());
         }
         finally {

@@ -1,5 +1,6 @@
 import { isRecord, type ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
+import type { OnboardingStorageState } from '../../shared/onboarding-state.js';
 export function parseStorageCheck(value: unknown) {
     if (!isRecord(value) || typeof value.ok !== 'boolean' || typeof value.title !== 'string'
         || typeof value.message !== 'string' || (value.field !== undefined && typeof value.field !== 'string')) {
@@ -12,6 +13,7 @@ export function createStorageCheck(dependencies: {
     api: ApiClient;
     status(element: HTMLElement, message: string, kind?: string): void;
     notify(message: string): void;
+    storageState?(state: OnboardingStorageState): void;
 }) {
     const { root, api, status, notify } = dependencies;
     const button = requireElement(root, '#storageCheckBtn', HTMLButtonElement);
@@ -21,6 +23,17 @@ export function createStorageCheck(dependencies: {
     let initialized = false;
     let controller: AbortController | null = null;
     let focusTimer: ReturnType<typeof setTimeout> | null = null;
+    function reset(available = true) {
+        controller?.abort(); controller = null;
+        if (focusTimer !== null) clearTimeout(focusTimer);
+        focusTimer = null;
+        button.disabled = false; button.textContent = original;
+        dependencies.storageState?.(available ? (fields.get('alistUrl')!.value.trim() && fields.get('alistDest')!.value.trim() ? 'unchecked' : 'missing') : 'loading');
+    }
+    function edited() {
+        reset();
+        status(output, '连接设置已更改，请重新执行只读检查。');
+    }
     async function check() {
         if (!initialized || controller)
             return;
@@ -33,6 +46,7 @@ export function createStorageCheck(dependencies: {
         button.disabled = true;
         button.textContent = '检查中...';
         status(output, '正在执行只读 WebDAV 检查，不会写入远端。');
+        dependencies.storageState?.('checking');
         try {
             const result = parseStorageCheck(await api.silent('/api/storage/check', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: request.signal,
@@ -41,6 +55,7 @@ export function createStorageCheck(dependencies: {
             if (!current())
                 return;
             status(output, result.title + '：' + result.message, result.ok ? 'success' : 'error');
+            dependencies.storageState?.(result.ok ? 'passed' : 'failed');
             const field = result.field ? fields.get(result.field) : undefined;
             if (!result.ok && field) {
                 const fold = field.closest('.settings-fold');
@@ -59,6 +74,7 @@ export function createStorageCheck(dependencies: {
                 return;
             const message = error instanceof Error ? error.message : '只读存储检查失败。';
             status(output, message, 'error');
+            dependencies.storageState?.('failed');
             notify(message);
         }
         finally {
@@ -71,17 +87,27 @@ export function createStorageCheck(dependencies: {
     }
     const onClick = () => { void check(); };
     return {
+        reset,
+        unavailable() { reset(false); dependencies.storageState?.('unavailable'); },
         init() {
             if (initialized)
                 return;
             initialized = true;
             button.addEventListener('click', onClick);
+            for (const field of fields.values()) {
+                field.addEventListener('input', edited);
+                field.addEventListener('change', edited);
+            }
         },
         destroy() {
             if (!initialized)
                 return;
             initialized = false;
             button.removeEventListener('click', onClick);
+            for (const field of fields.values()) {
+                field.removeEventListener('input', edited);
+                field.removeEventListener('change', edited);
+            }
             controller?.abort();
             controller = null;
             if (focusTimer !== null)

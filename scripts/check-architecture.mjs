@@ -200,6 +200,10 @@ for (const file of paths) {
     if (!specifier.startsWith('.')) {
       // Only the installed player's type declarations are consumed; vendor delivery stays unchanged.
       if (specifier === 'artplayer' && !runtime) return;
+      // Reviewed MIT, dependency-free UI library; only the onboarding owner imports it.
+      // It is bundled locally, and does not load a remote CDN script.
+      if (specifier === 'driver.js' && relative(file) === 'web/client/features/onboarding/controller.ts') return;
+      if (specifier === 'driver.js' && !runtime && relative(file) === 'web/client/features/onboarding/steps.ts') return;
       if (client(file)) fail(file,`external client dependency must be reviewed: ${specifier}`);
       return;
     }

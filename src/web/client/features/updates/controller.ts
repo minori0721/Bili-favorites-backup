@@ -7,6 +7,7 @@ type UpdatesDependencies = {
   openModal: (id: string, trigger: HTMLElement) => unknown;
   closeModal: (id: string) => unknown;
   notify: (message: string) => void;
+  activeModal: () => HTMLElement | null;
 };
 
 export function createUpdatesController(dependencies: UpdatesDependencies) {
@@ -24,6 +25,9 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
   const window = document.defaultView;
   if (!window) throw new Error('Updates require a browser document');
   const notified = new Set<string>();
+  const installedSeen = new Set<string>();
+  let installedAck: AbortController | null = null;
+  let startupAllowed = true;
   let active: AbortController | null = null;
   let listeners: AbortController | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -48,6 +52,12 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
     updateButton();
   }
   function announce() {
+    const installed = snapshot?.installedNotice;
+    if (installed && listeners && startupAllowed && !installedSeen.has(installed) && !document.hidden && document.hasFocus()
+      && !dependencies.activeModal() && !document.querySelector('.driver-overlay,.modal.is-closing')) {
+      view = 'current'; selected = snapshot!.channel === 'dev' ? 'dev' : 'stable';
+      show(opener); return;
+    }
     const notice = snapshot?.notification;
     if (!notice || !listeners || document.hidden || !document.hasFocus() || notified.has(notice.id)) return;
     const key = 'bfb:update-seen:v1:' + notice.channel;
@@ -57,6 +67,22 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
     } catch (error) { console.debug('[Update] Reminder storage unavailable', error instanceof Error ? error.name : 'storage'); }
     notified.add(notice.id);
     notify(notice.label + '，点击版本旁的提示查看说明。');
+  }
+  async function rememberInstalled(build: string) {
+    installedSeen.add(build);
+    installedAck?.abort();
+    const controller = new AbortController(); installedAck = controller;
+    try {
+      const response = await request('/api/updates/installed/seen', {method:'POST',signal:controller.signal,
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({build})});
+      if (!response.ok) throw new Error('request');
+    } catch (error) {
+      if (!controller.signal.aborted) console.warn('[Updates] Could not remember displayed notes', error instanceof Error ? error.name : 'request');
+    } finally { if (installedAck === controller) installedAck = null; }
+  }
+  function rememberDisplayed() {
+    if (view === 'current' && modal.classList.contains('active') && snapshot?.installedNotice && !installedSeen.has(snapshot.installedNotice))
+      void rememberInstalled(snapshot.installedNotice);
   }
   function schedule() {
     if (autoTimer !== null) clearTimeout(autoTimer);
@@ -117,6 +143,7 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
       badge.setAttribute('aria-label', data.notification.label + '，查看发布说明');
       badge.dataset.kind = data.notification.kind;
     }
+    rememberDisplayed();
   }
   async function load(refresh = false, foreground = false) {
     if (!listeners || active || (refresh && Date.now() < refreshAfter)) return;
@@ -138,10 +165,9 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
       autoDue = Date.parse(data.checkAfter) || Date.now() + 60000;
       if (first) {
         selected = data.channel === 'dev' ? data.notification?.channel || 'dev' : 'stable';
-        view = data.notification ? 'latest' : 'current';
+        view = data.installedNotice ? 'current' : data.notification ? 'latest' : 'current';
       }
       render();
-      announce();
     } catch {
       if (!controller.signal.aborted && active === controller) {
         failure = '暂时无法连接更新源，请稍后重试';
@@ -153,6 +179,7 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
         active = null;
         countdown();
         schedule();
+        if (!failure) announce();
       }
     }
   }
@@ -160,6 +187,7 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
     if (preferUpdate && snapshot?.notification) { selected = snapshot.notification.channel; view = 'latest'; }
     render();
     openModal('updatesModal', trigger);
+    rememberDisplayed();
     countdown();
     if (active) status.textContent = '正在检查更新…';
     if (!snapshot || Date.now() >= autoDue) void load(false, true);
@@ -174,6 +202,7 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
       if (listeners) return;
       listeners = new AbortController();
       const options = { signal: listeners.signal };
+      for (const event of ['pointerdown','keydown','input']) document.addEventListener(event, () => { startupAllowed = false; }, {...options,capture:true});
       opener.addEventListener('click', () => show(opener), options);
       badge.addEventListener('click', () => show(badge, true), options);
       button.addEventListener('click', () => { void load(true, true); }, options);
@@ -199,6 +228,7 @@ export function createUpdatesController(dependencies: UpdatesDependencies) {
     deactivate,
     destroy() {
       listeners?.abort(); listeners = null;
+      installedAck?.abort(); installedAck = null;
       deactivate();
       if (autoTimer !== null) clearTimeout(autoTimer);
       autoTimer = null;

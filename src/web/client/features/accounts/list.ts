@@ -2,12 +2,14 @@ import type { ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
 import { parsePublicAccounts } from '../../../../shared/api/accounts.js';
 import { renderAccountList } from './list-view.js';
+import type { OnboardingAccountsState } from '../../shared/onboarding-state.js';
 
 export function createAccountList(dependencies: {
   root: Document;
   api: ApiClient;
   formatDateTime(value: string): string;
   status(message: string, type: string, retry?: () => void): void;
+  state?(state: OnboardingAccountsState): void;
 }) {
   const host = requireElement(dependencies.root, '#userList', HTMLElement);
   let controller: AbortController | null = null;
@@ -20,15 +22,20 @@ export function createAccountList(dependencies: {
     const request = new AbortController();
     const current = ++generation;
     controller = request;
+    dependencies.state?.({status:'loading'});
     if (!loaded) dependencies.status('正在读取账号...', 'muted');
     try {
       const accounts = parsePublicAccounts(await dependencies.api.silent('/api/users', {signal:request.signal}));
       if (generation !== current) return;
       renderAccountList(dependencies.root, host, accounts, dependencies.formatDateTime, trigger);
       loaded = true;
+      const usable = accounts.filter(account => account.enabled && !account.authHealth.needsManualLogin);
+      dependencies.state?.({status:'ready',total:accounts.length,usable:usable.length,folders:usable.reduce((count,account)=>count+account.favorites.length,0),
+        needsLogin:accounts.filter(account=>account.authHealth.needsManualLogin).length});
       dependencies.status(accounts.length ? '' : '暂无账号，请先添加 B站账号。', accounts.length ? '' : 'muted');
     } catch (error) {
       if ((error instanceof Error && error.name === 'AbortError') || current !== generation) return;
+      dependencies.state?.({status:'error'});
       const prefix = loaded ? '账号刷新失败，已保留当前列表：' : '账号加载失败：';
       dependencies.status(prefix + (error instanceof Error ? error.message : String(error)), 'error', () => { void load(); });
     } finally { if (controller === request) controller = null; }

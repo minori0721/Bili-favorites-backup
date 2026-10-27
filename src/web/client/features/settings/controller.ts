@@ -11,6 +11,7 @@ import { createSettingsHelp } from './help.js';
 import { createCleanup } from './cleanup.js';
 import { createMigration } from './migration.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
+import type { OnboardingStorageState } from '../../shared/onboarding-state.js';
 export function createSettings(dependencies: {
     fetch: typeof fetch;
     confirm: ConfirmAction;
@@ -29,6 +30,7 @@ export function createSettings(dependencies: {
         alistBrowserConfigured: boolean;
     }): void;
     migrationRequired(destination: string, signal: AbortSignal): Promise<void>;
+    storageState?(state: OnboardingStorageState): void;
 }) {
     const { root } = dependencies;
     const hiRes = requireElement(root, '#bbdownHiRes', HTMLInputElement);
@@ -62,7 +64,11 @@ export function createSettings(dependencies: {
     }
     const saver = createSettingsSaver({ ...dependencies, priority: () => priority.slice(), apiMode: getMode });
     const template = createTemplateEditor(root, saver.changed);
-    const loader = createSettingsLoader({ ...dependencies, encoding: setPriority, apiMode: setMode, templateChanged: template.refresh, loading: saver.setLoading, loaded: saver.loaded });
+    const loader = createSettingsLoader({ ...dependencies, encoding: setPriority, apiMode: setMode, templateChanged: template.refresh,
+        loading(value) { saver.setLoading(value); if (value) storage.reset(false); },
+        loaded() { saver.loaded(); storage.reset(); },
+        failed() { storage.unavailable(); },
+    });
     const storage = createStorageCheck({ ...dependencies, status: dependencies.storageStatus });
     const help = createSettingsHelp({ root, priority: () => priority.slice(), apiMode: getMode, open: dependencies.open });
     const cleanup = createCleanup(dependencies);

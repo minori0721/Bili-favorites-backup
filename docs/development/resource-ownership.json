@@ -1,6 +1,14 @@
 {
   "resources": [
     {
+      "module": "web/client/features/onboarding/controller.ts",
+      "ownerSymbol": "createOnboarding",
+      "resourceSymbols": ["slots", "events", "tour", "kind", "pendingGuide", "opening", "focusFrame", "resumeFrame", "seen", "reopenHintSeen", "autoAllowed", "firstRun", "statusRequest", "ackRequest", "acknowledgementWanted", "manualSource", "accounts", "storage", "subscriptions", "modalObserver"],
+      "stop": "destroy aborts event listeners, status and acknowledgement requests, cancels animation frames, disconnects the modal observer and destroys the Driver.js instance; reveal slots and checklist DOM are constructed once",
+      "lateCallback": "navigation, focus and continuation callbacks check the active lifecycle; real dialogs pause the guide until they close; pending continuations stop on other navigation; prerequisite states reuse validated feature reads without additional Bilibili polling",
+      "rebind": "page restore reattaches listeners without duplicating controls; browser storage contains only versioned dismissal and reopen-hint flags; first-run completion uses installation-owned SQLite metadata through the current database provider; configuration and authorization remain owned by their existing features"
+    },
+    {
       "module": "web/client/features/workspace/controller.ts",
       "ownerSymbol": "createWorkspace",
       "resourceSymbols": ["events", "invalidSetting", "currentPage", "syncingHistory", "navigating", "workspaceContexts", "taskKey", "subscriptionKey", "queueState", "subscriptionState", "subscriptionCounts", "queued", "contentObserver", "workspaceObservers"],
@@ -833,6 +841,9 @@
       "ownerSymbol": "createUpdatesController",
       "resourceSymbols": [
         "notified",
+          "installedSeen",
+          "installedAck",
+          "startupAllowed",
         "active",
         "listeners",
         "timer",
@@ -845,7 +856,7 @@
         "failure"
       ],
       "stop": "关闭弹窗取消其请求与冷却计时器；页面隐藏暂停自动检查；destroy 解绑全部事件并取消请求、自动检查和倒计时。",
-      "lateCallback": "请求控制器身份检查阻止关闭或销毁后的响应回写；仅前台聚焦页面可提示，按通道持久记录已提醒的发布身份。",
+        "lateCallback": "请求控制器身份检查阻止关闭或销毁后的响应回写；仅前台聚焦页面可提示，按通道持久记录已提醒的发布身份。已安装版本说明由实例元数据判重；首次安装跳过，用户已开始操作或存在弹窗、导览时不自动打断，手动打开同样确认已展示。",
       "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
     },
     {

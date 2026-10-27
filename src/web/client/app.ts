@@ -26,6 +26,7 @@ import { createArchiveLibrary } from './features/archive/library.js';
 import { createUpSubscriptions } from './features/up-subscriptions/controller.js';
 import { createArchiveVideoActionController } from './shared/archive-video-actions.js';
 import { createWorkspace } from './features/workspace/controller.js';
+import { createOnboarding } from './features/onboarding/controller.js';
 export function createApplication() {
     const presentation = createPresentation(document, navigator);
     const { setHidden, setStatus, renderRequestStatus, copyTextToClipboard, formatDateTime, formatBytes, escapeHtml } = presentation;
@@ -107,10 +108,11 @@ export function createApplication() {
     const stopPathMigrationPolling = pathMigrationFeature.deactivate;
     // ---- Event Bindings ----
     const updatesFeature = createUpdatesController({ root: document, request: transport.request, openModal, closeModal,
-        notify: message => showToast(message, 'info'),
+        notify: message => showToast(message, 'info'), activeModal,
     });
     // Rename and quality upgrade buttons
     const accountList = createAccountList({ root: document, api, formatDateTime,
+        state:state=>onboarding.receiveAccounts(state),
         status: (message, type, retry) => renderRequestStatus('userListStatus', message, type, retry),
     });
     const loadUsers = accountList.load;
@@ -133,6 +135,7 @@ export function createApplication() {
         reload: loadUsers, copy: copyTextToClipboard, notify: showToast,
     });
     const settings = createSettings({ root: document, api, close: closeModal, formatBytes, formatDateTime, fetch: transport.request, confirm: confirmAction, restored: async () => { await Promise.all([settings.load(), loadUsers()]); }, open: (modal, trigger) => openModal(modal.id, trigger),
+        storageState:state=>onboarding.receiveStorage(state),
         status: (message, kind, retry) => renderRequestStatus('configStatus', message, kind, retry),
         storageStatus: setStatus, notify: (message, kind = 'error') => showToast(message, kind),
         playback: value => playback.configure(value),
@@ -152,13 +155,16 @@ export function createApplication() {
     const manageVideo=(bvid:string,source:{sourceId:string}|{userId:string;mediaId:number},trigger:HTMLElement)=>{void archiveVideoActions.open(bvid,source,trigger);};
     const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context),manageVideo });
     const upSubscriptions = createUpSubscriptions({root:document,api,confirm:confirmAction,openModal,closeModal,notify:showToast,
-      summary:state=>workspace.receiveSubscriptions(state),
+      summary:state=>{workspace.receiveSubscriptions(state);onboarding.receiveSubscriptions(state);},
       openArchive:(id,trigger)=>{void archiveLibrary.openUpSource(id,trigger);},play:(bvid,trigger,context)=>playback.openLibrary(bvid,trigger,context),manageVideo});
     const videoCards = createVideoCards({ root: document, api, formatDateTime, notify: (message, kind = 'error') => showToast(message, kind) });
     const videoDetail = createVideoDetail({ root: document, api, cards: videoCards, formatDateTime, open: modal => openModal(modal.id), close: closeModal, play: (bvid, trigger) => playback.open(bvid, trigger), notify: message => showToast(message, 'error') });
     const unavailable = createUnavailable({ root: document, api, renderItem: item => videoCards.render(item, requireElement(document, '#unavailableGrid', HTMLElement)), releaseItems: videoCards.release, open: modal => openModal(modal.id), close: closeModal, notify: message => showToast(message, 'error') });
     const taskCenter = createTaskCenter({ root: document, api, confirmAction, openModal, closeModal, formatDateTime, formatBytes, copyTextToClipboard, showToast,queueState:state=>workspace.receiveQueue(state),openStorageSettings:()=>workspace.openStorageSettings() });
     const workspace=createWorkspace({root:document,active:modals.active,requestClose:modals.requestClose,openLibrary:trigger=>archiveLibrary.open(trigger),openOnline:trigger=>onlineContent.open(trigger)});
+    const onboarding=createOnboarding({root:document,api,active:modals.active,
+      navigate:(page,options)=>workspace.navigate(page,null,options),
+      openStorage:()=>workspace.openStorageSettings({startAtFields:true}),notify:message=>showToast(message,'info')});
     const shellEvents = createShell({
         root: document, api, closeHelp: closeModal, loggedOut: () => { window.location.href = '/login'; },
         escape: () => {
@@ -179,6 +185,7 @@ export function createApplication() {
     const applicationLifecycle = createApplicationLifecycle(window, [
         presentation, shellEvents, taskCenter, playback, archiveLibrary, upSubscriptions, archiveVideoActions, settings, modals, confirmation, notifications, updatesFeature, pathMigrationFeature, accountList, favorites, accountRemoval, accountLogin, accountActions, onlineContent, videoCards, videoDetail, unavailable,
         workspace,
+        onboarding,
         {
             init() {
                 void Promise.allSettled([loadConfig(), loadUsers()]);
