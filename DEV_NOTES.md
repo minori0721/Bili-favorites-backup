@@ -29,6 +29,12 @@ git diff --check
 
 发布构建的结果以对应提交的 [GitHub Actions](https://github.com/minori0721/Bili-favorites-backup/actions) 为准。
 
+### CI 媒体工具安装
+
+Ubuntu 24.04 测试机缺少 FFmpeg 或 ffprobe 时，使用临时 Ubuntu 源配置，先从官方主源下载，失败后仅切换一次 Kernel.org 镜像。每个源的索引与软件包下载共限时 180 秒，保留 Ubuntu 签名校验，并跳过额外推荐包；全部下载成功后再离线安装，安装失败直接终止，不通过中断 dpkg 换源。
+
+此配置仅用于 CI 测试机，不修改 Docker 镜像内工具或服务器软件源。`tests/ci-media-tools.test.ts` 在 Linux 隔离模拟外部命令，验证实际工作流脚本的超时、回退、安装失败和已有工具路径；真实下载速度仍以 Actions 运行结果为准。
+
 ## 相关文档
 
 - [开发与架构指南](docs/development/architecture.md)

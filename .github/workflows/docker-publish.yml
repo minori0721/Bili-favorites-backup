@@ -63,12 +63,42 @@ jobs:
         run: |
           command -v aria2c
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            ubuntu_sources=$(mktemp --suffix=.sources "$RUNNER_TEMP/bfb-media-tools.XXXXXX")
+            trap 'rm -f -- "$ubuntu_sources"' EXIT
+            apt_options=(
+              -o "Dir::Etc::sourcelist=$ubuntu_sources"
+              -o "Dir::Etc::sourceparts=-"
+              -o Acquire::Retries=1
+              -o Acquire::http::Timeout=15
+              -o Acquire::https::Timeout=15
+            )
+            downloaded=false
+            download_status=1
+            for mirror in https://archive.ubuntu.com/ubuntu/ https://mirrors.edge.kernel.org/ubuntu/; do
+              # Match ubuntu-24.04 and retain Ubuntu's archive signature verification.
+              printf 'Types: deb\nURIs: %s\nSuites: noble noble-updates noble-backports noble-security\nComponents: main restricted universe multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' "$mirror" > "$ubuntu_sources"
+              echo "Downloading media tools from $mirror (180-second limit)"
+              # Bound network work only: never interrupt dpkg to retry another mirror.
+              if sudo timeout --kill-after=15s 180s bash -e -c '
+                apt-get "$@" update --error-on=any
+                apt-get "$@" install -y --download-only --no-install-recommends ffmpeg
+              ' _ "${apt_options[@]}"; then
+                downloaded=true
+                break
+              else
+                download_status=$?
+                echo "::warning::Media tool download failed from $mirror (exit $download_status)"
+              fi
+            done
+            if [[ "$downloaded" != true ]]; then
+              echo "::error::Both Ubuntu mirrors failed; media tests cannot run."
+              exit "$download_status"
+            fi
+            sudo apt-get "${apt_options[@]}" install -y --no-download --no-install-recommends ffmpeg
           fi
-          ffmpeg -version | head -n 1
-          ffprobe -version | head -n 1
-          aria2c --version | head -n 1
+          ffmpeg -version | sed -n '1p'
+          ffprobe -version | sed -n '1p'
+          aria2c --version | sed -n '1p'
 
       - name: Validate release notes before publishing images
         env:
