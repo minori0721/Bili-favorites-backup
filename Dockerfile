@@ -63,7 +63,9 @@ RUN apt-get update \
   && unzip -q /tmp/BBDown_linux-x64.zip -d /out \
   && chmod +x /out/BBDown
 
-FROM ${NODE_IMAGE} AS runner
+# Refresh this stage explicitly for image-only security rebuilds; application
+# dependencies and the pinned media tools keep their own build caches.
+FROM ${NODE_IMAGE} AS runtime-tools
 WORKDIR /app
 ARG APT_MIRROR=official
 RUN if [ "$APT_MIRROR" = "tuna" ]; then \
@@ -75,8 +77,12 @@ RUN if [ "$APT_MIRROR" = "tuna" ]; then \
       fi; \
     fi \
   && apt-get update \
-  && apt-get install -y --no-install-recommends aria2 ca-certificates tini \
-  && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends aria2 ca-certificates tini libssl3 openssl \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -rf /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx
+
+FROM runtime-tools AS runner
 COPY --link --from=ffmpeg /out/ffmpeg /usr/local/bin/ffmpeg
 COPY --link --from=ffmpeg /out/ffprobe /usr/local/bin/ffprobe
 RUN ffmpeg -hide_banner -version | head -n 1 \

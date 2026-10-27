@@ -111,7 +111,7 @@ npm audit
 
 构建先执行架构约束，再分别检查服务端、浏览器和测试 TypeScript，构建浏览器资源，编译服务端，最后验证清单和资源摘要。输出都在 `dist`；现有 Docker 构建复制完整 `dist`。测试假服务共用真实应用的资源响应实现。
 
-运行镜像使用 Tini 作为 PID 1，转发停止信号并回收下载器留下的孤儿进程，Node 继续负责业务停止顺序。构建阶段已改为复用已通过构建的 `node_modules` 并执行 `npm prune --omit=dev`，避免在无 Python 的精简运行镜像中重新编译 `better-sqlite3`。媒体测试需要准备运行镜像中的媒体工具。
+运行镜像使用 Tini 作为 PID 1，转发停止信号并回收下载器留下的孤儿进程，Node 继续负责业务停止顺序。构建阶段复用已通过构建的 `node_modules` 并执行 `npm prune --omit=dev`，避免在无 Python 的精简运行镜像中重新编译 `better-sqlite3`。`runtime-tools` 阶段安装系统运行包并移除 npm/npx；npm 只保留在独立构建阶段，应用直接由 Node 启动。媒体测试需要准备运行镜像中的媒体工具。
 
 `npm test` 递归发现 `tests` 内所有 `.test.ts`，浏览器行为测试由 Playwright 独立运行。新增模块测试应测试公开接口和可观察行为，不通过 `window` 或源文件文本访问实现。
 
@@ -218,7 +218,7 @@ dev 维护一个固定的 `dev-preview` Git 标签和同名 GitHub Pre-release�
 - `archive-video-actions.ts` 拥有收藏夹、手动归档和 UP 单视频的来源选择、短期预览、持久排除及解除排除。HTTP 入口位于 `http/archive-video-actions.ts`，既有 UP 操作端点委托同一窄接口；浏览器由 `shared/archive-video-actions.ts` 持有请求、确认和后台清理进度。指定来源通过既有来源身份和排除记录实现，不修改数据库 schema。删除任务持久记录明确来源，重启、重新预览和调度准入均使用这份范围，不扩展到未确认来源。
 - `ArchiveDeletionService` 统一计算涉及文件与预计实际删除/释放空间，继续按物理路径保护其他来源引用；影响统计只在生成预览时查询，不增加清理进度轮询的聚合查询。`shared/storage-cleanup.ts` 是浏览器与后端共用的忙碌准入规则。回滚备份属于需要明确确认的恢复数据，容器升级与销毁本地数据必须分别说明。
 
-- `Docker Publish` 的 `workflow_dispatch.rebuild_only` 是仅更新运行环境的维护入口，只允许在 dev/main 显式手动启用。基础镜像主动刷新，完整测试和隔离镜像验收不跳过；`scripts/image-rebuild.mjs` 管理操作范围、重建镜像标签、当前分支复核与 Node 安全版本下限。该模式只推广所选部署通道和独立的重建标签，不覆盖原 SHA/版本镜像，不更新任何 GitHub Release；普通运行仍禁止同提交文件层漂移。操作步骤见[更新镜像](../operations/update#维护者-只更新镜像内的运行环境)。
+- `Docker Publish` 的 `workflow_dispatch.rebuild_only` 是仅更新运行环境的维护入口，只允许在 dev/main 显式手动启用。基础镜像主动刷新，并仅对 `runtime-tools` 阶段禁用缓存以获取系统补丁；完整测试和隔离镜像验收不跳过。`scripts/image-rebuild.mjs` 管理操作范围、重建镜像标签、当前分支复核与 Node 安全版本下限，`scripts/check-image-runtime.sh` 在候选容器内核对 OpenSSL 系统包下限、运行工具与 npm 移除结果。该模式只推广所选部署通道和独立的重建标签，不覆盖原 SHA/版本镜像，不更新任何 GitHub Release；普通运行仍禁止同提交文件层漂移。操作步骤见[更新镜像](../operations/update#维护者-只更新镜像内的运行环境)。
 
 - 恢复动作按下载、上传续传、编码、画质、冲突选择和放弃处理分别提供入口，共用 `recovery-work` 的任务锁；远端检查后再次核验代次及任务证据。
 - `startup-recovery`、`startup-probes` 与 `legacy-quality-migration` 处理启动重建，`legacy-cache-recovery` 拥有异步缓存扫描。`transfer-recovery-projection` 拥有投影节流，数据库重绑定清空该节流。

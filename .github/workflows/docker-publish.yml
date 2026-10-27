@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       rebuild_only:
-        description: '仅重建镜像：更新基础镜像，不改应用版本、Release 或原提交镜像标签（仅 dev/main）'
+        description: '仅重建镜像：刷新基础镜像和系统补丁，不改应用版本、Release 或原提交镜像标签（仅 dev/main）'
         type: boolean
         default: false
 
@@ -155,6 +155,7 @@ jobs:
         with:
           context: .
           pull: ${{ steps.build-mode.outputs.rebuild_only == 'true' }}
+          no-cache-filters: ${{ steps.build-mode.outputs.rebuild_only == 'true' && 'runtime-tools' || '' }}
           platforms: linux/amd64
           outputs: type=image,name=docker.io/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
@@ -177,12 +178,7 @@ jobs:
             --tmpfs /app/data --tmpfs /app/temp \
             -e EXPECTED_REVISION="$GITHUB_SHA" \
             "docker.io/$IMAGE_NAME@$IMAGE_DIGEST"
-          docker exec bfb-release-smoke sh -ec '
-            test -x /usr/bin/aria2c
-            test -x /usr/local/bin/ffmpeg
-            test -x /usr/local/bin/ffprobe
-            test -x /usr/local/bin/BBDown
-          '
+          docker exec -i bfb-release-smoke sh -es < scripts/check-image-runtime.sh
           node scripts/image-rebuild.mjs verify-node "$(docker exec bfb-release-smoke node --version)"
           docker exec bfb-release-smoke node --input-type=module -e '
             import assert from "node:assert/strict";
