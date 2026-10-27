@@ -9,6 +9,7 @@ import type { UpSubscription,UpIdentity,UpCatalogItem,UpSubscriptionMode,UpVideo
 import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
 import { archiveDeletionImpactText } from '../../shared/archive-deletion-impact.js';
 import { stopArchiveDeletion } from '../../shared/archive-deletion-actions.js';
+import type {WorkspaceSubscriptionState} from '../../shared/workspace-state.js';
 
 const modeText:Record<UpSubscriptionMode,string>={all:'全部投稿',from_now:'从设定时间起',from_date:'从日期开始',from_video:'从视频开始',selected:'只归档选中的'};
 const date=(time:number|null)=>time===null?'尚未扫描':new Date(time).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
@@ -23,6 +24,7 @@ export function createUpSubscriptions(deps:{
   openArchive(sourceId:string,trigger:HTMLElement|null):void;
   play(bvid:string,trigger:HTMLElement,context:ArchiveContext):void;
   manageVideo(bvid:string,source:{sourceId:string},trigger:HTMLElement):void;
+  summary(state:WorkspaceSubscriptionState):void;
 }) {
   const root=deps.root;
   const element=(id:string)=>requireElement(root,'#'+id,HTMLElement);
@@ -32,6 +34,7 @@ export function createUpSubscriptions(deps:{
   const requests=new Map<string,AbortController>();
   const picked=new Map<number,UpIdentity>();
   const selected=new Set<string>();
+  const draftSelections=new Map<string,Set<string>>();
   const pageItems=new Map<string,UpCatalogItem>();
   const homeCards=new Map<string,{element:HTMLElement;update(source:UpSubscription):void}>();
   let events:AbortController|null=null;
@@ -60,7 +63,7 @@ export function createUpSubscriptions(deps:{
     let safe:string;try{const parsed=new URL(url,location.origin);if(!['http:','https:'].includes(parsed.protocol))return;safe=parsed.href;}catch{return;}
     const image=node('img');image.src=safe;image.alt='';image.loading='lazy';image.referrerPolicy='no-referrer';image.addEventListener('error',()=>{image.remove();host.textContent=name.slice(0,1)||'UP';},{once:true});host.replaceChildren(image);
   }
-  function notice(id:string,message='',error=false){const host=element(id);host.textContent=message;host.classList.toggle('error',error);}
+  function notice(id:string,message='',error=false){const host=element(id);host.textContent=message;host.classList.toggle('error',error);if(id==='upHomeStatus'&&error)deps.summary({status:'error'});}
   function visible(id:string){return element(id).classList.contains('active');}
   function cancel(prefix:string){for(const [key,controller]of requests)if(key.startsWith(prefix)){controller.abort();requests.delete(key);}}
   async function request(channel:string,url:string,options:RequestInit={}):Promise<{kind:'ok';data:unknown}|{kind:'cancelled'}> {
@@ -98,6 +101,7 @@ export function createUpSubscriptions(deps:{
     }};
   }
   function home() {
+    deps.summary({status:'ready',total:list.items.length,enabled:list.items.filter(source=>source.enabled).length});
     const host=element('upHomeList');
     if(!list.items.length){if(homeCards.size||!host.querySelector('.up-empty')){homeCards.clear();host.replaceChildren(node('div','还没有订阅。添加一位 UP，让新投稿自动归档。','up-empty'));}return;}
     if(!homeCards.size)host.replaceChildren();
@@ -128,7 +132,9 @@ export function createUpSubscriptions(deps:{
   }
   async function loadList() {
     const response=await request('home','/api/up-subscriptions');if(response.kind==='cancelled')return false;
-    list=parseUpList(response.data);home();removalOperations();scheduleHomePoll();notice('upHomeStatus');
+    list=parseUpList(response.data);
+    for(const id of draftSelections.keys())if(!list.items.some(item=>item.id===id))draftSelections.delete(id);
+    home();removalOperations();scheduleHomePoll();notice('upHomeStatus');
     if(current){const latest=list.items.find(item=>item.id===current?.id);if(latest)current=latest;}
     return true;
   }
@@ -204,7 +210,7 @@ export function createUpSubscriptions(deps:{
     const values=[...pageItems.values()].map(item=>({value:item.bvid,label:`${day(item.publishedAt)} · ${item.title}`}));
     if(chosen&&!values.some(item=>item.value===chosen))values.unshift({value:chosen,label:[...anchor.options].find(item=>item.value===chosen)?.textContent||`当前起点 · ${chosen}`});
     options(anchor,values,chosen);}
-  function syncSelection(){element('upCatalogPicked').textContent=`已选 ${selected.size} 个`;button('upIncludeBtn').disabled=selected.size===0||mutation;button('upClearChoiceBtn').disabled=selected.size===0||mutation;
+  function syncSelection(){retainSelection();element('upCatalogPicked').textContent=`已选 ${selected.size} 个`;button('upIncludeBtn').disabled=selected.size===0||mutation;button('upClearChoiceBtn').disabled=selected.size===0||mutation;
     const boxes=[...element('upCatalogList').querySelectorAll<HTMLInputElement>('input[data-up-video]')];const checked=boxes.filter(item=>selected.has(item.dataset.upVideo??''));input('upSelectPage').checked=boxes.length>0&&checked.length===boxes.length;input('upSelectPage').indeterminate=checked.length>0&&checked.length<boxes.length;
     boxes.forEach(item=>{item.checked=selected.has(item.dataset.upVideo??'');item.closest('.up-video')?.classList.toggle('up-video-selected',item.checked);});}
   function catalogCards(items:UpCatalogItem[],append:boolean){const host=element('upCatalogList');if(!append)host.replaceChildren();
@@ -262,7 +268,8 @@ export function createUpSubscriptions(deps:{
         const retry=node('button','重试清理','ghost');retry.type='button';retry.dataset.upRetry=operationId;element('upWorkspaceStatus').append(retry);}
       else notice('upWorkspaceStatus','归档清理正在执行，排除规则已经保存。');}}
   }catch(error){if(visible('upWorkspaceModal'))notice('upWorkspaceStatus',errorText(error),true);}}
-  async function openWorkspace(id:string,trigger:HTMLElement){cancel('workspace');selected.clear();pageItems.clear();filter='all';operationId=null;input('upCatalogQuery').value='';
+  function retainSelection(){if(current&&selected.size)draftSelections.set(current.id,new Set(selected));else if(current)draftSelections.delete(current.id);}
+  async function openWorkspace(id:string,trigger:HTMLElement){retainSelection();cancel('workspace');selected.clear();for(const bvid of draftSelections.get(id)||[])selected.add(bvid);pageItems.clear();filter='all';operationId=null;input('upCatalogQuery').value='';
     current=list.items.find(item=>item.id===id)??null;if(!current){const response=await request('workspace-source',`/api/up-subscriptions/${encodeURIComponent(id)}`);if(response.kind==='ok')current=parseUpSubscription(response.data);}if(!current)return;
     root.querySelectorAll<HTMLElement>('[data-up-filter]').forEach(item=>item.setAttribute('aria-pressed',String(item.dataset.upFilter===filter)));
     deps.openModal('upWorkspaceModal',trigger);scheduleHomePoll();workspaceHeading();await catalog();schedulePoll();}
@@ -272,7 +279,7 @@ export function createUpSubscriptions(deps:{
     if(response.kind==='ok'){current=parseUpSubscription(response.data);workspaceHeading();await loadList();await catalog();deps.notify('订阅规则已保存','success');}});}
   async function selections(value:UpVideoDecision,id:string){if(!current||!selected.size)return;await mutate(id,async()=>{
     const response=await request('workspace-selection',`/api/up-subscriptions/${encodeURIComponent(current!.id)}/selection`,json({revision:current!.revision,items:[...selected].map(bvid=>({bvid,decision:value}))}));
-    if(response.kind==='ok'){current=parseUpSubscription(response.data);selected.clear();await loadList();workspaceHeading();await catalog();deps.notify(value==='include'?(current.enabled?'已保存选择，符合条件的缺失归档会安排处理':'已保存选择，启用订阅后会按规则归档'):'已取消单独选择，现有文件和排除规则保留','success');}});}
+    if(response.kind==='ok'){current=parseUpSubscription(response.data);selected.clear();draftSelections.delete(current.id);await loadList();workspaceHeading();await catalog();deps.notify(value==='include'?(current.enabled?'已保存选择，符合条件的缺失归档会安排处理':'已保存选择，启用订阅后会按规则归档'):'已取消单独选择，现有文件和排除规则保留','success');}});}
   function openAction(item:UpCatalogItem,trigger:HTMLElement){if(current)deps.manageVideo(item.bvid,{sourceId:current.id},trigger);}
   function openRemoval(source:UpSubscription,trigger:HTMLElement,intent:'remove'|'history'='remove'){
     cancel('removal');removalSource=source;removalIntent=intent;element('upRemovalName').textContent=`${source.name} · UID ${source.uid}`;
@@ -309,6 +316,7 @@ export function createUpSubscriptions(deps:{
       }else{
         const response=await request('removal-commit',`/api/up-subscriptions/${encodeURIComponent(source.id)}`,json({revision:source.revision,effect:'retain'},'DELETE'));if(response.kind==='cancelled')return;parseUpRemovalResult(response.data);
       }
+      if(!history){draftSelections.delete(source.id);if(current?.id===source.id)selected.clear();}
       deps.closeModal('upRemovalModal');if(current?.id===source.id)deps.closeModal('upWorkspaceModal');await loadList();
       deps.notify(history?'历史清理已安排；订阅保留，新投稿按新起点归档':effect==='delete'?'订阅已移除，归档清理进度显示在首页':'订阅已移除，已有归档保留','success');
     },'upRemovalStatus');
@@ -325,10 +333,15 @@ export function createUpSubscriptions(deps:{
   function deactivate(id:string){
     if(id==='upAddModal'){cancel('add');picked.clear();}
 
-    if(id==='upWorkspaceModal'){cancel('workspace');if(poll)clearTimeout(poll);poll=null;current=null;selected.clear();pageItems.clear();scheduleHomePoll();}
+    if(id==='upWorkspaceModal'){retainSelection();cancel('workspace');if(poll)clearTimeout(poll);poll=null;current=null;selected.clear();pageItems.clear();scheduleHomePoll();}
     if(id==='upRemovalModal'){cancel('removal');removalSource=null;notice('upRemovalStatus');}
   }
   function init(){if(events)return;events=new AbortController();const signal=events.signal;
+    deps.summary({status:'loading'});
+    root.defaultView?.addEventListener('beforeunload',event=>{
+      if(!picked.size&&!selected.size&&!draftSelections.size)return;
+      event.preventDefault();event.returnValue='';
+    },{signal});
     root.addEventListener('visibilitychange',()=>{
       if(root.hidden){pausePolling();return;}
       if(visible('upWorkspaceModal'))void refreshWorkspace().finally(schedulePoll);
@@ -346,7 +359,7 @@ export function createUpSubscriptions(deps:{
     on('upAnchorMore','click',()=>{anchorPage++;void anchors(true).catch(error=>notice('upRulesStatus',errorText(error),true));});
     on('upCatalogSearchForm','submit',event=>{event.preventDefault();void catalog();});on('upCatalogMore','click',()=>void catalog(true));
     on('upSelectPage','change',()=>{for(const bv of pageItems.keys()){if(input('upSelectPage').checked)selected.add(bv);else selected.delete(bv);}syncSelection();});
-    on('upIncludeBtn','click',()=>void selections('include','upIncludeBtn'));on('upClearChoiceBtn','click',()=>void selections('inherit','upClearChoiceBtn'));on('upClearPickedBtn','click',()=>{selected.clear();syncSelection();});
+    on('upIncludeBtn','click',()=>void selections('include','upIncludeBtn'));on('upClearChoiceBtn','click',()=>void selections('inherit','upClearChoiceBtn'));on('upClearPickedBtn','click',()=>{selected.clear();if(current)draftSelections.delete(current.id);syncSelection();});
     on('upUpdateForm','submit',event=>{event.preventDefault();void saveRule();});on('upUpdateMode','change',updateRuleFields);
     on('upOpenArchiveBtn','click',()=>{if(current)deps.openArchive(current.id,button('upOpenArchiveBtn'));});
     on('upScanBtn','click',()=>void mutate('upScanBtn',async()=>{if(!current)return;await request('workspace-scan',`/api/up-subscriptions/${encodeURIComponent(current.id)}/scan`,json({}));notice('upWorkspaceStatus','已安排投稿扫描。B站请求串行执行，结果会分批出现。');}));
@@ -373,5 +386,5 @@ export function createUpSubscriptions(deps:{
     root.addEventListener('change',event=>{const target=event.target;if(target instanceof HTMLInputElement&&target.dataset.upVideo){if(target.checked)selected.add(target.dataset.upVideo);else selected.delete(target.dataset.upVideo);syncSelection();}},{signal});
     void loadList().catch(error=>notice('upHomeStatus',errorText(error),true));
   }
-  return {init,deactivate,refresh:async(operation?:string)=>{if(operation)operationId=operation;await loadList();if(current){const response=await request('workspace-source',`/api/up-subscriptions/${encodeURIComponent(current.id)}`);if(response.kind==='ok')current=parseUpSubscription(response.data);workspaceHeading();await catalog();schedulePoll();}},destroy(){events?.abort();events=null;generation++;for(const controller of requests.values())controller.abort();requests.clear();pausePolling();picked.clear();selected.clear();pageItems.clear();homeCards.clear();current=null;removalSource=null;}};
+  return {init,deactivate,hasPendingSelection:()=>picked.size>0,refresh:async(operation?:string)=>{if(operation)operationId=operation;await loadList();if(current){const response=await request('workspace-source',`/api/up-subscriptions/${encodeURIComponent(current.id)}`);if(response.kind==='ok')current=parseUpSubscription(response.data);workspaceHeading();await catalog();schedulePoll();}},destroy(){events?.abort();events=null;generation++;for(const controller of requests.values())controller.abort();requests.clear();pausePolling();picked.clear();selected.clear();draftSelections.clear();pageItems.clear();homeCards.clear();current=null;removalSource=null;}};
 }

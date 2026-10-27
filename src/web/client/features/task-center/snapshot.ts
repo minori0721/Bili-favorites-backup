@@ -10,7 +10,7 @@ interface Flight {controller:AbortController; consumers:Set<Consumer>}
 const aborted = () => new DOMException('The operation was aborted','AbortError');
 
 /** Board and issue panel share one request; closing either releases only its own subscription. */
-export function createQueueSnapshotResource(dependencies:{api:ApiClient; receive(snapshot:QueueSnapshot):void}) {
+export function createQueueSnapshotResource(dependencies:{api:ApiClient; receive(snapshot:QueueSnapshot):void;failed?():void}) {
   let active:Flight | null = null;
   let snapshot:QueueSnapshot | null = null;
   async function execute(flight:Flight) {
@@ -22,6 +22,7 @@ export function createQueueSnapshotResource(dependencies:{api:ApiClient; receive
       for (const consumer of flight.consumers) { consumer.detach(); consumer.resolve(next); }
     } catch (error) {
       if (active !== flight) return;
+      if(!flight.controller.signal.aborted)dependencies.failed?.();
       for (const consumer of flight.consumers) { consumer.detach(); consumer.reject(error); }
     } finally {
       flight.consumers.clear();

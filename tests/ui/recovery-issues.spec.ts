@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -20,15 +21,15 @@ type RecoveryFixtureKind = "visibility" | "reprobe_exhausted" | "candidate" | "c
 test("polished recovery and media picker keep compact layout and hidden legacy controls", async ({ page, browserProblems }) => {
   void browserProblems;
   await openRecoveryCenter(page, "quality");
-  await page.locator('.recovery-issue-row').click();
+  await (await revealControl(page,page.locator('.recovery-issue-row'))).click();
   await expect(page.locator('#recoveryIssuesDetail')).toHaveCSS('display', 'block');
-  await page.getByRole('button', { name: '重新选择画质与编码' }).click();
+  await (await revealControl(page,page.getByRole('button', { name: '重新选择画质与编码' }))).click();
   await expect(page.locator('#encodingRetryPriorityEditor')).toBeHidden();
   await expect(page.locator('#encodingRetryStatus')).toBeHidden();
   await expect(page.locator('#encodingRetryProbeBtn')).toHaveCSS('border-radius', '12px');
   await expect(page.locator('#encodingRetryCombinations button').first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-  await page.locator('#encodingRetryCancelBtn').click();
+  await (await revealControl(page,page.locator('#encodingRetryCancelBtn'))).click();
   await expect(page.locator('#recoveryIssuesModal')).toHaveClass(/active/);
 });
 
@@ -39,10 +40,10 @@ async function openRecoveryCenter(
 ) {
   await page.request.post("/__test/reset", { data: { ...resetData, recoveryIssueKind } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
-  await page.goto("/");
+  await page.goto('/?page=tasks');
   const expectedBadge = recoveryIssueKind === "candidate" ? "待处理 0 · 待确认 1" : "待处理 1";
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText(expectedBadge);
-  await page.locator("#recoveryIssuesBtn").click();
+  await (await revealControl(page,page.locator("#recoveryIssuesBtn"))).click();
   await expect(page.locator("#recoveryIssuesModal")).toHaveClass(/active/);
   await expect(page.locator(".recovery-issue-row")).toHaveCount(1);
 }
@@ -51,8 +52,8 @@ test("problem center explains protection and resolves one action without duplica
   void browserProblems;
   await openRecoveryCenter(page);
   const row = page.locator(".recovery-issue-row");
-  if (testInfo.project.name !== "desktop") await row.tap();
-  else await row.click();
+  if (testInfo.project.name !== "desktop") await (await revealControl(page,row)).tap();
+  else await (await revealControl(page,row)).click();
   await expect(row).toContainText("测试归档视频：新候选待确认");
   await expect(page.locator("#recoveryIssuesSummary")).toContainText("待确认 1");
   await expect(page.locator("#recoveryIssuesListCount")).toHaveText("1 项");
@@ -79,7 +80,7 @@ test("problem center keeps focus contained and uses a two-level mobile flow", as
   const modal = page.locator("#recoveryIssuesModal");
   await expect(page.locator("body > main")).toHaveAttribute("inert", "");
   await page.evaluate(() => document.getElementById("logDebugBtn")!.focus());
-  await expect(page.locator("#closeRecoveryIssuesBtn")).toBeFocused();
+  await expect.poll(()=>page.locator('#recoveryIssuesModal').evaluate(modal=>modal.contains(document.activeElement))).toBe(true);
 
   if (testInfo.project.name === "desktop") {
     await expect(page.locator(".recovery-issues-layout")).toBeVisible();
@@ -89,7 +90,7 @@ test("problem center keeps focus contained and uses a two-level mobile flow", as
     return;
   }
 
-  await page.locator(".recovery-issue-row").tap();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).tap();
   await expect(page.locator(".recovery-issues-shell")).toHaveClass(/show-detail/);
   await page.keyboard.press("Escape");
   await expect(page.locator(".recovery-issues-shell")).not.toHaveClass(/show-detail/);
@@ -103,9 +104,9 @@ test("problem center uses one compact empty state when no issues exist", async (
   void browserProblems;
   await page.request.post("/__test/reset", { data: { recoveryIssueEmpty: true } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
-  await page.goto("/");
+  await page.goto('/?page=tasks');
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
-  await page.locator("#recoveryIssuesBtn").click();
+  await (await revealControl(page,page.locator("#recoveryIssuesBtn"))).click();
   await expect(page.locator("#recoveryIssuesModal")).toHaveClass(/active/);
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
@@ -139,7 +140,7 @@ test("problem center uses one compact empty state when no issues exist", async (
     expect(metrics.emptyHeight).toBeGreaterThan(metrics.layoutHeight - 1);
     expect(Math.abs(metrics.emptyBottom - metrics.layoutBottom)).toBeLessThan(1);
   }
-  await expect(page.locator("#closeRecoveryIssuesBtn")).toBeFocused();
+  await expect.poll(()=>page.locator('#recoveryIssuesModal').evaluate(modal=>modal.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Escape");
   await expect(page.locator("#recoveryIssuesModal")).not.toHaveClass(/active/);
   await expect(page.locator("#recoveryIssuesBtn")).toBeFocused();
@@ -149,9 +150,9 @@ test("background remote visibility recovery does not ask for manual action", asy
   void browserProblems;
   await page.request.post("/__test/reset", { data: { recoveryIssueKind: "visibility" } });
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
-  await page.goto("/");
+  await page.goto('/?page=tasks');
   await expect(page.locator("#recoveryIssuesBtn")).toHaveText("待处理 0");
-  await page.locator("#recoveryIssuesBtn").click();
+  await (await revealControl(page,page.locator("#recoveryIssuesBtn"))).click();
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   await expect(page.locator("#recoveryIssuesEmptyTitle")).toHaveText("当前没有需要处理的问题");
 });
@@ -161,9 +162,9 @@ for (const kind of ['source_wait', 'evidence_wait']) {
     void browserProblems;
     await page.request.post('/__test/reset', { data: { recoveryIssueKind: kind } });
     await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
-    await page.goto('/');
+    await page.goto('/?page=tasks');
     await expect(page.locator('#recoveryIssuesBtn')).toHaveText('待处理 0');
-    await page.locator('#recoveryIssuesBtn').click();
+    await (await revealControl(page,page.locator('#recoveryIssuesBtn'))).click();
     await expect(page.locator('#recoveryIssuesEmptyState')).toBeVisible();
     await expect(page.locator('#recoveryIssuesEmptyTitle')).toHaveText('当前没有需要处理的问题');
     await expect(page.locator('.recovery-issue-row')).toHaveCount(0);
@@ -186,15 +187,15 @@ test("problem center shows a visible retry state and preserves the last list", a
     }
     await route.continue();
   });
-  await page.locator("#closeRecoveryIssuesBtn").click();
-  await page.locator("#recoveryIssuesBtn").click();
+  await (await revealControl(page,page.locator("#closeRecoveryIssuesBtn"))).click();
+  await (await revealControl(page,page.locator("#recoveryIssuesBtn"))).click();
   await expect(page.locator("#recoveryIssuesStatus")).toBeVisible();
   await expect(page.locator("#recoveryIssuesStatus")).toContainText("已有列表会保留");
   await expect(page.locator("#recoveryIssuesList .recovery-issue-row")).toHaveCount(1);
   await expect(page.locator("#recoveryIssuesList")).not.toContainText("当前没有需要你处理的问题");
 
   fail = false;
-  await page.locator("#recoveryIssuesRetryBtn").click();
+  await (await revealControl(page,page.locator("#recoveryIssuesRetryBtn"))).click();
   await expect(page.locator("#recoveryIssuesStatus")).toBeHidden();
   await expect(page.locator("#recoveryIssuesList .recovery-issue-row")).toHaveCount(1);
 });
@@ -203,10 +204,10 @@ test("conflict candidate confirmation explains both retained copies and sends on
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop candidate decision coverage");
   await openRecoveryCenter(page, "candidate");
-  await page.locator(".recovery-issue-row").click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
   await expect(page.locator("#recoveryIssuesDetail")).toContainText("正式旧路径保持不变");
   const action = page.getByRole("button", { name: "采用新候选" });
-  await action.click();
+  await (await revealControl(page,action)).click();
   await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
   await expect(page.locator("#confirmActionMessage")).toContainText("当前可播放归档");
   await expect(page.locator("#confirmActionDetail")).toContainText("正式旧路径不会移动或删除");
@@ -224,9 +225,9 @@ test("abandon candidate requires confirmation and is sent only once", async ({ p
   void browserProblems;
   await openRecoveryCenter(page, "candidate");
   const row = page.locator(".recovery-issue-row");
-  if (testInfo.project.name === "desktop") await row.click();
-  else await row.tap();
-  await page.getByRole("button", { name: "停止本次尝试" }).click();
+  if (testInfo.project.name === "desktop") await (await revealControl(page,row)).click();
+  else await (await revealControl(page,row)).tap();
+  await (await revealControl(page,page.getByRole("button", { name: "停止本次尝试" }))).click();
   await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
   await expect(page.locator("#confirmActionDetail")).toContainText("不删除本地文件或远端文件");
   await page.locator("#confirmActionOkBtn").evaluate((element: HTMLButtonElement) => {
@@ -243,10 +244,10 @@ test("exhausted automatic recovery allows one confirmed independent download wit
   void browserProblems;
   await openRecoveryCenter(page, 'reprobe_exhausted');
   const row = page.locator('.recovery-issue-row');
-  if (testInfo.project.name === 'desktop') await row.click();
-  else await row.tap();
+  if (testInfo.project.name === 'desktop') await (await revealControl(page,row)).click();
+  else await (await revealControl(page,row)).tap();
   await expect(page.locator('#recoveryIssuesDetail')).toContainText('下载重试次数已用完');
-  await page.getByRole('button', { name: '重新下载', exact: true }).click();
+  await (await revealControl(page,page.getByRole('button', { name: '重新下载', exact: true }))).click();
   await expect(page.locator('#confirmActionModal')).toHaveClass(/active/);
   await expect(page.locator('#confirmActionMessage')).toContainText('独立目录');
   await expect(page.locator('#confirmActionDetail')).toContainText('原本地文件和远端归档继续保留');
@@ -266,8 +267,8 @@ test("complete local groups can create one isolated candidate without touching t
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop nested confirmation coverage");
   await openRecoveryCenter(page, "create_candidate");
-  await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "生成隔离候选" }).click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "生成隔离候选" }))).click();
   await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
   await expect(page.locator("#confirmActionTitle")).toHaveText("生成隔离候选");
   await expect(page.locator("#confirmActionDetail")).toContainText("正式旧路径不会覆盖、移动或删除");
@@ -287,13 +288,13 @@ test("alternate-account download recovery submits only the selected account", as
   void browserProblems;
   await openRecoveryCenter(page, "download");
   const row = page.locator(".recovery-issue-row");
-  if (testInfo.project.name === "desktop") await row.click();
-  else await row.tap();
-  await page.getByRole("button", { name: "换账号下载" }).click();
+  if (testInfo.project.name === "desktop") await (await revealControl(page,row)).click();
+  else await (await revealControl(page,row)).tap();
+  await (await revealControl(page,page.getByRole("button", { name: "换账号下载" }))).click();
   await expect(page.locator("#recoveryChoiceModal")).toHaveClass(/active/);
   await expect(page.locator("#recoveryChoiceSelect")).toHaveValue("user-2");
   await expect(page.locator("#recoveryChoiceSelect")).toContainText("备用账号（UID 20002）");
-  await page.locator("#recoveryChoiceSubmitBtn").click();
+  await (await revealControl(page,page.locator("#recoveryChoiceSubmitBtn"))).click();
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
@@ -305,8 +306,8 @@ test("quality recovery probes Bili23-style media combinations, refines size, and
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop encoding dialog coverage");
   await openRecoveryCenter(page, "quality");
-  await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "重新选择画质与编码" }))).click();
   await expect(page.locator("#encodingRetryModal")).toHaveClass(/active/);
   await expect(page.locator("#encodingRetryTitle")).toHaveText("重新选择画质与编码");
   await expect(page.locator("#encodingRetryCopy")).toContainText("可用媒体组合和大小");
@@ -314,11 +315,11 @@ test("quality recovery probes Bili23-style media combinations, refines size, and
   const hevc1080 = page.getByRole("radio", { name: /1080P · HEVC/ });
   await expect(hevc1080).toBeEnabled();
   await expect(hevc1080).toContainText("15.0 MB");
-  await hevc1080.click();
+  await (await revealControl(page,hevc1080)).click();
   await expect(page.locator("#encodingRetryProbeSummary")).toContainText("已更新所选组合的大小信息");
   await expect(page.locator("#encodingRetryEstimate")).toContainText("预计成品 15.0 MB");
   await expect(page.locator("#encodingRetryEstimate")).toContainText("Range 精确大小");
-  await page.locator("#encodingRetrySubmitBtn").click();
+  await (await revealControl(page,page.locator("#encodingRetrySubmitBtn"))).click();
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.recoveryActionCount).toBe(1);
@@ -335,8 +336,8 @@ test("an unavailable Bilibili item exposes an explicit unknown-size strict fallb
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop media fallback coverage");
   await openRecoveryCenter(page, "quality", { mediaProbeMode: "failed" });
-  await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "重新选择画质与编码" }))).click();
   await expect(page.locator("#encodingRetryProbeSummary")).toContainText("稿件不可见");
   await expect(page.locator("#encodingRetryManual")).toBeVisible();
   await expect(page.locator("#encodingRetryQuality").locator("option").first()).toHaveText("不限定画质（沿用任务设置）");
@@ -348,10 +349,10 @@ test("an unavailable Bilibili item exposes an explicit unknown-size strict fallb
   await page.locator("#encodingRetryQuality").selectOption("1080P");
   await page.locator("#encodingRetryEncoding").selectOption("AV1");
   await expect(page.locator("#encodingRetryEstimate")).toContainText("可用性和大小尚未确认");
-  await page.locator("#encodingRetrySubmitBtn").click();
+  await (await revealControl(page,page.locator("#encodingRetrySubmitBtn"))).click();
   await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
   await expect(page.locator("#confirmActionMessage")).toContainText("只能提供估算");
-  await page.locator("#confirmActionOkBtn").click();
+  await (await revealControl(page,page.locator("#confirmActionOkBtn"))).click();
   await expect(page.locator("#recoveryIssuesEmptyState")).toBeVisible();
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.lastRecoveryBody).toEqual({ quality: "1080P", encodingPriority: ["AV1", "HEVC", "AVC"], strict: true });
@@ -362,8 +363,8 @@ test("strict retry cannot submit while the selected combination is being refined
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop media refinement timing coverage");
   await openRecoveryCenter(page, "quality");
-  await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "重新选择画质与编码" }))).click();
   await expect(page.getByRole("radio", { name: /1080P · HEVC/ })).toBeEnabled();
 
   let delayedRefinement = false;
@@ -375,7 +376,7 @@ test("strict retry cannot submit while the selected combination is being refined
     await route.continue();
   });
 
-  await page.getByRole("radio", { name: /1080P · HEVC/ }).click();
+  await (await revealControl(page,page.getByRole("radio", { name: /1080P · HEVC/ }))).click();
   await expect(page.locator("#encodingRetrySubmitBtn")).toBeDisabled();
   await expect(page.locator("#encodingRetrySubmitBtn")).toHaveText("正在读取大小...");
   await expect(page.locator("#encodingRetryProbeSummary")).toContainText("已更新所选组合的大小信息");
@@ -386,10 +387,10 @@ test("size refinement never substitutes a different media combination", async ({
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop media refinement coverage");
   await openRecoveryCenter(page, "quality", { mediaProbeMode: "refine_mismatch" });
-  await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "重新选择画质与编码" }).click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "重新选择画质与编码" }))).click();
   const selected = page.getByRole("radio", { name: /1080P · HEVC/ });
-  await selected.click();
+  await (await revealControl(page,selected)).click();
   await expect(page.locator("#encodingRetryProbeSummary")).toContainText("所选组合没有覆盖全部分P");
   await expect(selected).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("radio", { name: /4K · AV1/ })).toHaveAttribute("aria-checked", "false");
@@ -399,11 +400,11 @@ test("storage recovery opens settings and performs exactly one read-only draft c
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop settings focus coverage");
   await openRecoveryCenter(page, "storage", { storageCheckMode: "path_error" });
-  await page.locator(".recovery-issue-row").click();
-  await page.getByRole("button", { name: "检查存储配置" }).click();
+  await (await revealControl(page,page.locator(".recovery-issue-row"))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "检查存储配置" }))).click();
   await expect(page.locator("#recoveryIssuesModal")).not.toHaveClass(/active/);
   await expect(page.locator("#storageCheckBtn")).toBeFocused();
-  await page.locator("#storageCheckBtn").click();
+  await (await revealControl(page,page.locator("#storageCheckBtn"))).click();
   await expect(page.locator("#storageCheckStatus")).toContainText("归档目录不可访问");
   await expect(page.locator("#storageCheckStatus")).toContainText("目标目录不存在");
   await expect(page.locator("#alistDest")).toBeFocused();

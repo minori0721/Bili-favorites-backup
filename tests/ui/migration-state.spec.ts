@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { test,expect } from '@playwright/test';
 
 test('migration imports only the latest successfully previewed file',async({page})=>{
@@ -15,8 +16,8 @@ test('migration imports only the latest successfully previewed file',async({page
     imports++;imported=route.request().postData()||'';
     await route.fulfill({json:{success:true,data:{restored:['config'],backupPath:'fixture-backup'}}});
   });
-  await page.goto('/');
-  await page.locator('#migrationBtn').click();
+  await page.goto('/?page=settings');
+  await (await revealControl(page,page.locator('#migrationBtn'))).click();
   await expect(page.locator('#migrationModal')).toHaveClass(/active/);
   await page.locator('#migrationFileInput').setInputFiles({name:'first.zip',mimeType:'application/zip',buffer:Buffer.from('first fixture')});
   await expect.poll(()=>previews).toBe(1);
@@ -25,11 +26,11 @@ test('migration imports only the latest successfully previewed file',async({page
   await expect(page.locator('#migrationPreviewText')).toContainText('fixture-2');
   await page.waitForTimeout(750);
   await expect(page.locator('#migrationPreviewText')).toContainText('fixture-2');
-  await page.locator('#executeImportBtn').click();
+  await (await revealControl(page,page.locator('#executeImportBtn'))).click();
   await expect(page.locator('#confirmActionModal')).toHaveClass(/active/);
   expect(imports).toBe(0);
-  await page.locator('#confirmActionInput').fill('IMPORT DATA');
-  await page.locator('#confirmActionOkBtn').click();
+  await (await revealControl(page,page.locator('#confirmActionInput'))).fill('IMPORT DATA');
+  await (await revealControl(page,page.locator('#confirmActionOkBtn'))).click();
   await expect(page.locator('#migrationStatus')).toContainText('导入完成');
   expect(imports).toBe(1);expect(imported).toBe('second fixture');
 });
@@ -43,10 +44,10 @@ test('closing migration aborts a slow preview and leaves reopening unselected',a
     previews++;await new Promise(resolve=>setTimeout(resolve,650));
     await route.fulfill({json:{success:true,data:{manifest:{version:'old',counts:{}},conflicts:{}}}});
   });
-  await page.goto('/');await page.locator('#migrationBtn').click();
+  await page.goto('/?page=settings');await (await revealControl(page,page.locator('#migrationBtn'))).click();
   await page.locator('#migrationFileInput').setInputFiles({name:'old.zip',mimeType:'application/zip',buffer:Buffer.from('fixture')});
   await expect.poll(()=>previews).toBe(1);
-  await page.locator('#closeMigrationBtn').click();await page.locator('#migrationBtn').click();
+  await (await revealControl(page,page.locator('#closeMigrationBtn'))).click();await (await revealControl(page,page.locator('#migrationBtn'))).click();
   await page.waitForTimeout(750);
   await expect(page.locator('#migrationPreviewBlock')).toBeHidden();
   await expect(page.locator('#executeImportBtn')).toBeDisabled();

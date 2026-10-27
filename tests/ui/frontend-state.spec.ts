@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -22,7 +23,7 @@ async function boot(page: Page, data: Record<string, unknown> = {}) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
+  await page.goto('/?page=accounts');
 }
 
 function desktopOnly(testInfo: TestInfo) {
@@ -56,10 +57,10 @@ test('logout deduplicates clicks, reports failure and cancels on page suspension
   release();
   await expect(logout).toBeEnabled();
   await expect(page.getByText('退出暂时失败', { exact: true })).toBeVisible();
-  await logout.click();
+  await (await revealControl(page,logout)).click();
   await expect.poll(() => calls).toBe(2);
   await expect(logout).toBeEnabled();
-  await logout.click();
+  await (await revealControl(page,logout)).click();
   await expect.poll(() => calls).toBe(3);
   await page.evaluate(() => {
     window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
@@ -67,7 +68,7 @@ test('logout deduplicates clicks, reports failure and cancels on page suspension
   });
   releaseSuspended();
   await expect(logout).toBeEnabled();
-  await logout.click();
+  await (await revealControl(page,logout)).click();
   await expect.poll(() => calls).toBe(4);
   await expect(logout).toBeEnabled();
   expect(new URL(page.url()).pathname).toBe('/');
@@ -79,14 +80,14 @@ test('settings and sync help open through the modal boundary and release focus',
   desktopOnly(testInfo);
   await boot(page);
   await expect(page.locator('#saveConfigBtn')).toBeEnabled();
-  await page.locator('#settingsHelpBtn').click();
+  await (await revealControl(page,page.locator('#settingsHelpBtn'))).click();
   await expect(page.locator('#settingsHelpModal')).toHaveClass(/active/);
   await expect(page.locator('#settingsFlowContent')).toContainText('自动轮询');
   await page.keyboard.press('Escape');
   await expect(page.locator('#settingsHelpBtn')).toBeFocused();
-  await page.locator('#syncHelpBtn').click();
+  await (await revealControl(page,page.locator('#syncHelpBtn'))).click();
   await expect(page.locator('#syncHelpModal')).toHaveClass(/active/);
-  await page.locator('#syncHelpDetailBtn').click();
+  await (await revealControl(page,page.locator('#syncHelpDetailBtn'))).click();
   await expect(page.locator('#syncHelpContent')).toContainText('SQLite');
   await page.keyboard.press('Escape');
   await expect(page.locator('#syncHelpBtn')).toBeFocused();
@@ -103,21 +104,21 @@ test('settings template follows loaded order and restores a single editor after 
   });
   await boot(page);
   await expect(page.locator('#filenameTemplate')).toHaveValue('<bvid>_<ownerName>');
-  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['BV号×', 'UP主×']);
+  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['BV号↑↓×', 'UP主↑↓×']);
   await expect(page.locator('#templatePreview')).toHaveText('BV1xxxxx_UP主名.mp4');
   await expect(page.locator('#alistBrowserUrlHint')).not.toHaveClass(/status-error/);
   await page.locator('#filenameTemplate').evaluate((element: HTMLInputElement) => {
     element.closest('details')?.setAttribute('open','');
   });
-  await page.locator('#filenameTemplate').fill('<dfn>-<bvid>');
-  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['清晰度×', 'BV号×']);
+  await (await revealControl(page,page.locator('#filenameTemplate'))).fill('<dfn>-<bvid>');
+  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['清晰度↑↓×', 'BV号↑↓×']);
   await page.evaluate(() => {
     window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true}));
     window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
   });
   await expect(page.locator('#templateTags .template-tag')).toHaveCount(7);
   await expect(page.locator('#filenameTemplate')).toHaveValue('<bvid>_<ownerName>');
-  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['BV号×', 'UP主×']);
+  await expect(page.locator('#selectedTags .template-tag')).toHaveText(['BV号↑↓×', 'UP主↑↓×']);
 });
 
 test('settings save cancels a suspended request and does not duplicate handlers on resume', async ({ page, browserProblems }, testInfo) => {
@@ -144,7 +145,7 @@ test('settings save cancels a suspended request and does not duplicate handlers 
   await expect(page.locator('#saveConfigBtn')).toBeEnabled();
   await page.waitForTimeout(700);
   await expect(page.locator('#configStatus')).not.toContainText('设置已保存');
-  await page.locator('#saveConfigBtn').click();
+  await (await revealControl(page,page.locator('#saveConfigBtn'))).click();
   await expect.poll(() => writes).toBe(2);
   await expect(page.locator('#configStatus')).toContainText('设置已保存');
 });
@@ -156,8 +157,8 @@ test("initial failures are visible and retry without unhandled page errors", asy
 
   await expect(page.locator("#configStatus")).toContainText("设置加载失败");
   await expect(page.locator("#userListStatus")).toContainText("账号加载失败");
-  await page.locator("#configStatus .retry-button").click();
-  await page.locator("#userListStatus .retry-button").click();
+  await (await revealControl(page,page.locator("#configStatus .retry-button"))).click();
+  await (await revealControl(page,page.locator("#userListStatus .retry-button"))).click();
   await expect(page.locator("#pollInterval")).toHaveValue("5");
   await expect(page.locator(".user-item")).toHaveCount(1);
   await expect(page.locator("#saveConfigBtn")).toBeEnabled();
@@ -176,10 +177,10 @@ test("closing one favorites request prevents it from overwriting another account
   await boot(page, { usersMode: "double", favoriteRace: true });
   await expect(page.locator(".user-item")).toHaveCount(2);
 
-  await page.locator('.user-item').nth(0).getByRole("button", { name: "选择同步收藏夹" }).click();
+  await (await revealControl(page,page.locator('.user-item').nth(0).getByRole("button", { name: "选择同步收藏夹" }))).click();
   await expect(page.locator("#favoritesModal")).toHaveClass(/active/);
-  await page.locator("#closeFavoritesBtn").click();
-  await page.locator('.user-item').nth(1).getByRole("button", { name: "选择同步收藏夹" }).click();
+  await (await revealControl(page,page.locator("#closeFavoritesBtn"))).click();
+  await (await revealControl(page,page.locator('.user-item').nth(1).getByRole("button", { name: "选择同步收藏夹" }))).click();
   await expect(page.locator("#favoritesList")).toContainText("第二账号收藏夹");
   await page.waitForTimeout(750);
   await expect(page.locator("#favoritesList")).toContainText("第二账号收藏夹");
@@ -191,7 +192,7 @@ test("favorite folder covers use the cached same-origin image endpoint", async (
   desktopOnly(testInfo);
   await boot(page);
   await expect(page.locator(".user-item")).toHaveCount(1);
-  await page.getByRole("button", { name: "选择同步收藏夹" }).click();
+  await (await revealControl(page,page.getByRole("button", { name: "选择同步收藏夹" }))).click();
   await expect(page.locator("#favoritesList")).toContainText("第一账号收藏夹");
   await expect.poll(async () => (await page.request.get("/__test/state").then((response) => response.json())).favoriteCoverQueries)
     .toEqual(["user-1:101"]);
@@ -204,7 +205,7 @@ test("favorite dialog title stays readable at a narrow mobile width", async ({ p
   test.skip(testInfo.project.name === "desktop", "narrow mobile dialog coverage");
   await page.setViewportSize({ width: 320, height: 640 });
   await boot(page);
-  await page.getByRole("button", { name: "选择同步收藏夹" }).click();
+  await (await revealControl(page,page.getByRole("button", { name: "选择同步收藏夹" }))).click();
   await expect(page.locator("#favoritesModal")).toHaveClass(/active/);
 
   const metrics = await page.locator("#favoritesModalTitle").evaluate((title) => {
@@ -229,14 +230,14 @@ test("favorites save failure keeps the dialog usable and a retry succeeds", asyn
   desktopOnly(testInfo);
   await boot(page, { favoriteSaveErrorOnce: true });
   await expect(page.locator(".user-item")).toHaveCount(1);
-  await page.getByRole("button", { name: "选择同步收藏夹" }).click();
+  await (await revealControl(page,page.getByRole("button", { name: "选择同步收藏夹" }))).click();
   await expect(page.locator("#favoritesList")).toContainText("第一账号收藏夹");
 
-  await page.locator("#saveFavoritesBtn").click();
+  await (await revealControl(page,page.locator("#saveFavoritesBtn"))).click();
   await expect(page.locator("#favoritesModal")).toHaveClass(/active/);
   await expect(page.locator("#favoritesStatus")).toContainText("保存失败");
   await expect(page.locator("#saveFavoritesBtn")).toBeEnabled();
-  await page.locator("#saveFavoritesBtn").click();
+  await (await revealControl(page,page.locator("#saveFavoritesBtn"))).click();
   await expect(page.locator("#favoritesModal")).not.toHaveClass(/active/);
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.favoriteSaveCount).toBe(2);
@@ -245,7 +246,7 @@ test("favorites save failure keeps the dialog usable and a retry succeeds", asyn
 test("page lifecycle closes login and restores one set of event handlers", async ({ page, browserProblems }) => {
   void browserProblems;
   await boot(page);
-  await page.locator('#addUserBtn').click();
+  await (await revealControl(page,page.locator('#addUserBtn'))).click();
   await expect(page.locator('#loginStatus')).toContainText('等待扫码中');
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true})));
   await expect(page.locator('#loginModal')).toBeHidden();
@@ -253,7 +254,7 @@ test("page lifecycle closes login and restores one set of event handlers", async
     window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
     window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
   });
-  await page.locator('#addUserBtn').click();
+  await (await revealControl(page,page.locator('#addUserBtn'))).click();
   await expect(page.locator('#loginStatus')).toContainText('等待扫码中');
   const state = await page.request.get('/__test/state').then(response => response.json());
   expect(state.loginStartCount).toBe(2);
@@ -263,10 +264,10 @@ test("an old login completion timer cannot close a newly opened login", async ({
   void browserProblems;
   desktopOnly(testInfo);
   await boot(page, { loginMode: "first_complete_then_pending" });
-  await page.locator("#addUserBtn").click();
+  await (await revealControl(page,page.locator("#addUserBtn"))).click();
   await expect(page.locator("#loginStatus")).toContainText("登录成功");
-  await page.locator("#closeLoginBtn").click();
-  await page.locator("#addUserBtn").click();
+  await (await revealControl(page,page.locator("#closeLoginBtn"))).click();
+  await (await revealControl(page,page.locator("#addUserBtn"))).click();
   await expect(page.locator("#loginStatus")).toContainText("等待扫码中");
   await page.waitForTimeout(1_150);
   await expect(page.locator("#loginModal")).toHaveClass(/active/);
@@ -300,9 +301,9 @@ test("online replacement cancels the slow context and deduplicates cards", async
   void browserProblems;
   desktopOnly(testInfo);
   await boot(page, { onlineSourceRace: true, onlineDuplicateMode: true });
-  await page.locator("#onlineContentBtn").click();
+  await (await revealControl(page,page.getByRole('button',{name:'浏览在线内容 ↗',exact:true,includeHidden:true}))).click();
   await expect(page.locator("#onlineContentModal")).toHaveClass(/active/);
-  await page.locator("#onlineContentSearchInput").fill("fast");
+  await (await revealControl(page,page.locator("#onlineContentSearchInput"))).fill("fast");
   await expect(page.locator(".online-content-card")).toContainText("在线搜索 fast");
   await page.waitForTimeout(750);
   await expect(page.locator(".online-content-card")).toHaveCount(1);
@@ -313,14 +314,14 @@ test("manual archive controls reset when the reusable dialog opens again", async
   void browserProblems;
   desktopOnly(testInfo);
   await boot(page);
-  await page.locator("#onlineContentBtn").click();
-  await page.getByRole("button", { name: "手动归档" }).click();
-  await page.locator("#manualArchiveStartBtn").click();
+  await (await revealControl(page,page.getByRole('button',{name:'浏览在线内容 ↗',exact:true,includeHidden:true}))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "手动归档" }))).click();
+  await (await revealControl(page,page.locator("#manualArchiveStartBtn"))).click();
   await expect(page.locator("#manualArchiveOptionsModal")).not.toHaveClass(/active/);
 
-  await page.locator("#onlineContentCloseMainBtn").click();
-  await page.locator("#onlineContentBtn").click();
-  await page.getByRole("button", { name: "手动归档" }).click();
+  await (await revealControl(page,page.locator("#onlineContentCloseMainBtn"))).click();
+  await (await revealControl(page,page.getByRole('button',{name:'浏览在线内容 ↗',exact:true,includeHidden:true}))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "手动归档" }))).click();
   await expect(page.locator("#manualArchiveProbeBtn")).toBeEnabled();
   await expect(page.locator("#manualArchiveStartBtn")).toBeEnabled();
 });
@@ -337,15 +338,15 @@ test('late manual archive submission cannot close a newly opened options dialog'
     await route.fulfill({json:{success:true,data:{status:'queued' as const}}});
   });
   await boot(page);
-  await page.locator('#onlineContentBtn').click();
-  await page.getByRole('button',{name:'手动归档'}).click();
+  await (await revealControl(page,page.getByRole('button',{name:'浏览在线内容 ↗',exact:true,includeHidden:true}))).click();
+  await (await revealControl(page,page.getByRole('button',{name:'手动归档'}))).click();
   await page.locator('#manualArchiveStartBtn').evaluate(button=>{
     button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
     button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
   });
   await expect.poll(()=>submissions).toBe(1);
-  await page.locator('#manualArchiveCancelBtn').click();
-  await page.getByRole('button',{name:'手动归档'}).click();
+  await (await revealControl(page,page.locator('#manualArchiveCancelBtn'))).click();
+  await (await revealControl(page,page.getByRole('button',{name:'手动归档'}))).click();
   releaseResponse();
   await page.waitForTimeout(100);
   await expect(page.locator('#manualArchiveOptionsModal')).toHaveClass(/active/);
@@ -369,14 +370,14 @@ test("archive reset disables stale cards and retains the last valid page on fail
     slowFinished = true;
   });
   await boot(page);
-  await page.locator("#archiveLibraryBtn").click();
+  await (await revealControl(page,page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true}))).click();
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
   const search = page.locator("#archiveLibrarySearchInput");
   try {
-    await search.fill("slow");
+    await (await revealControl(page,search)).fill("slow");
     await expect.poll(() => slowStarted).toBe(true);
     await expect(page.locator("#archiveLibraryResults")).toHaveAttribute("inert", "");
-    await search.fill("broken");
+    await (await revealControl(page,search)).fill("broken");
     await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
     await expect(page.locator("#archiveLibraryResults")).not.toHaveAttribute("inert", "");
     await expect(search).toHaveValue("");
@@ -391,7 +392,7 @@ test("archive reset disables stale cards and retains the last valid page on fail
     const state = await page.request.get("/__test/state").then((response) => response.json());
     expect(state.itemQueries).toHaveLength(requestCount);
 
-    await search.fill("duplicates");
+    await (await revealControl(page,search)).fill("duplicates");
     await expect(page.locator("#archiveLibraryNotice")).toContainText("加载失败");
     await expect(search).toHaveValue("");
     await expect(page.locator(".archive-library-card")).toHaveCount(2);

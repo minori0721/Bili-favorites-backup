@@ -29,6 +29,12 @@ export function createSettingsSaver(dependencies: {
     let controller: AbortController | null = null;
     let loading = false;
     let savedSnapshot: string | null = null;
+    const view = section.ownerDocument.defaultView;
+    function readDraft() {
+        return JSON.stringify({fields:Array.from(section.querySelectorAll<HTMLInputElement | HTMLSelectElement>('.settings-fold input,.settings-fold select')).map(field=>({
+            id:field.id,value:field.value,checked:field instanceof HTMLInputElement ? field.checked : undefined
+        })),priority:dependencies.priority(),apiMode:dependencies.apiMode()});
+    }
     function readPayload() {
         return {
             pollIntervalMinutes: Number(field('pollInterval').value),
@@ -63,7 +69,7 @@ export function createSettingsSaver(dependencies: {
     }
     function refreshDraft() {
         if (!initialized) return;
-        const dirty = savedSnapshot !== null && JSON.stringify(readPayload()) !== savedSnapshot;
+        const dirty = savedSnapshot !== null && readDraft() !== savedSnapshot;
         const state = controller ? 'saving' : loading ? 'loading' : savedSnapshot === null ? 'unavailable' : dirty ? 'dirty' : 'saved';
         draftStatus.dataset.state = state;
         draftStatus.textContent = state === 'saving' ? '保存中…' : state === 'loading' ? '正在读取…' : state === 'unavailable' ? '设置尚未读取' : dirty ? '有未保存修改' : '已保存';
@@ -76,10 +82,11 @@ export function createSettingsSaver(dependencies: {
         refreshDraft();
     }
     function loaded() {
-        savedSnapshot = JSON.stringify(readPayload());
+        savedSnapshot = readDraft();
         refreshDraft();
     }
     function changed() {
+        section.querySelectorAll('.validation-reveal').forEach(fold=>fold.classList.remove('validation-reveal'));
         if (st.classList.contains('status-success')) dependencies.status('');
         refreshDraft();
     }
@@ -89,8 +96,10 @@ export function createSettingsSaver(dependencies: {
         const invalid = Array.from(root.querySelectorAll<HTMLInputElement | HTMLSelectElement>('#settingsSection input, #settingsSection select')).find((field) => field.willValidate && !field.validity.valid);
         if (invalid) {
             const fold = invalid.closest('.settings-fold');
-            if (fold instanceof HTMLDetailsElement)
+            if (fold instanceof HTMLDetailsElement) {
+                fold.classList.add('validation-reveal');
                 fold.open = true;
+            }
             invalid.scrollIntoView({ block: 'center' });
             invalid.reportValidity();
             invalid.focus({ preventScroll: true });
@@ -105,13 +114,14 @@ export function createSettingsSaver(dependencies: {
         refreshDraft();
         st.textContent = '';
         const payload = readPayload();
+        const submittedDraft = readDraft();
         try {
             await dependencies.api.silent('/api/config', { signal: request.signal, method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             if (!current())
                 return;
             dependencies.playback({ deliveryMode: payload.playbackDeliveryMode === 'proxy' ? 'proxy' : 'auto', alistBrowserConfigured: Boolean(payload.alistBrowserUrl) });
-            savedSnapshot = JSON.stringify(payload);
-            dependencies.status(JSON.stringify(readPayload()) === savedSnapshot ? '设置已保存。' : '本次设置已保存；还有新的修改未保存。', 'success');
+            savedSnapshot = submittedDraft;
+            dependencies.status(readDraft() === savedSnapshot ? '设置已保存。' : '本次设置已保存；还有新的修改未保存。', 'success');
         }
         catch (e) {
             if (!current())
@@ -135,8 +145,12 @@ export function createSettingsSaver(dependencies: {
         }
     }
     const onClick = () => { void saveConfig(); };
+    const onBeforeUnload = (event:BeforeUnloadEvent) => {
+        if (!initialized || savedSnapshot === null || readDraft() === savedSnapshot) return;
+        event.preventDefault();event.returnValue='';
+    };
     return { setLoading, loaded, changed, init() { if (initialized)
-            return; initialized = true; btn.addEventListener('click', onClick); section.addEventListener('input', changed); section.addEventListener('change', changed); refreshDraft(); },
+            return; initialized = true;section.querySelectorAll<HTMLInputElement>('input[type=number]').forEach(field=>{field.required=true;}); btn.addEventListener('click', onClick); section.addEventListener('input', changed); section.addEventListener('change', changed); view?.addEventListener('beforeunload',onBeforeUnload);refreshDraft(); },
         destroy() {
             if (!initialized)
                 return;
@@ -144,6 +158,7 @@ export function createSettingsSaver(dependencies: {
             btn.removeEventListener('click', onClick);
             section.removeEventListener('input', changed);
             section.removeEventListener('change', changed);
+            view?.removeEventListener('beforeunload',onBeforeUnload);
             if (controller) {
                 controller.abort();
                 controller = null;

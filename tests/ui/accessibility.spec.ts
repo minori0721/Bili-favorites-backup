@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -22,17 +23,17 @@ async function resetFixture(page: Page) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
-  await expect(page.locator("#archiveLibraryBtn")).toBeVisible();
+  await page.goto('/?page=accounts');
+  await expect(page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true})).toBeVisible();
   await expect(page.locator(".user-item")).toHaveCount(1);
 }
 
 async function openArchiveLibrary(page: Page, testInfo: TestInfo) {
-  await page.locator("#archiveLibraryBtn").click();
+  await (await revealControl(page,page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true}))).click();
   await expect(page.locator("#archiveLibraryModal")).toHaveClass(/active/);
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
   if (testInfo.project.name !== "desktop") {
-    await page.locator('.archive-nav-item[data-archive-scope="global"]').tap();
+    await (await revealControl(page,page.locator('.archive-nav-item[data-archive-scope="global"]'))).tap();
     await expect(page.locator(".archive-library-shell")).toHaveClass(/show-content/);
   }
 }
@@ -81,10 +82,10 @@ test("settings, dialogs, scroll lock and modal toasts expose one accessible laye
   });
   expect(documentReferenceProblems).toEqual([]);
 
-  const removeAccount = page.getByRole("button", { name: "删除账号" });
-  await removeAccount.scrollIntoViewIfNeeded();
+  const removeAccount = page.locator('#userList').getByRole("button", {includeHidden:true,name: "删除账号" });
+  await (await revealControl(page,removeAccount)).scrollIntoViewIfNeeded();
   const beforeScroll = await page.evaluate(() => window.scrollY);
-  await removeAccount.click();
+  await (await revealControl(page,removeAccount)).click();
   await expect(page.getByRole("dialog", { name: /删除账号/ })).toBeVisible();
   await expect(page.locator("html")).toHaveClass(/modal-open/);
   await expect(page.locator("body")).toHaveClass(/modal-open/);
@@ -97,16 +98,17 @@ test("settings, dialogs, scroll lock and modal toasts expose one accessible laye
 
   await page.route('**/api/users/user-1', route => route.request().method() === 'DELETE'
     ? route.fulfill({json:{success:false,message:'模拟错误'}}) : route.continue());
-  await page.locator('#accountRemovalSubmitBtn').click();
+  await (await revealControl(page,page.locator('#accountRemovalSubmitBtn'))).click();
   await expect(page.locator("#accountRemovalModal [role=alert]")).toContainText("模拟错误");
   await expect(page.locator("#toastContainer .toast")).toHaveCount(0);
-  await page.locator("#accountRemovalModal .toast-close").click();
+  await (await revealControl(page,page.locator("#accountRemovalModal .toast-close"))).click();
   await expect(page.locator("#accountRemovalModal [role=alert]")).toHaveCount(0);
 
-  await page.locator("#accountRemovalCancelBtn").click();
+  await (await revealControl(page,page.locator("#accountRemovalCancelBtn"))).click();
   await expect(page.locator("html")).not.toHaveClass(/modal-open/);
   await expect(page.locator("body")).not.toHaveClass(/modal-open/);
   await expect(page.locator("body > main")).not.toHaveAttribute("inert", "");
+  await expect(page.locator('#userList .workspace-more > summary')).toBeFocused();
   expect(await page.evaluate(() => window.scrollY)).toBe(beforeScroll);
 });
 
@@ -115,7 +117,7 @@ test("archive nested dialogs keep a single modal owner and readable metadata", a
   test.skip(testInfo.project.name !== "desktop", "desktop archive semantics coverage");
   await resetFixture(page);
   await openArchiveLibrary(page, testInfo);
-  await page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-more').click();
+  await (await revealControl(page,page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-more'))).click();
   await expect(page.getByRole("dialog", { name: /Alpha/ })).toBeVisible();
   await expect(page.locator("#archiveLibraryDetail")).not.toHaveAttribute("aria-modal", "true");
   await expect(page.locator('[aria-modal="true"]')).toHaveCount(1);
@@ -142,12 +144,13 @@ test("archive nested dialogs keep a single modal owner and readable metadata", a
     };
     const background = (element: Element) => {
       let current: Element | null = element;
+      const layers:Rgb[]=[];
       while (current) {
         const color = parse(getComputedStyle(current).backgroundColor);
-        if (color && color.a > 0) return color;
+        if(color&&color.a>0){layers.push(color);if(color.a===1)break;}
         current = current.parentElement;
       }
-      return { r: 255, g: 255, b: 255, a: 1 };
+      return layers.reverse().reduce((back,front)=>blend(front,back),{r:255,g:255,b:255,a:1});
     };
     return elements
       .filter((element) => (element as HTMLElement).getClientRects().length > 0 && element.textContent?.trim())
@@ -167,7 +170,7 @@ test("mobile archive panels expose only the visible page and keep touch targets 
   void browserProblems;
   test.skip(testInfo.project.name === "desktop", "mobile panel coverage");
   await resetFixture(page);
-  await page.locator("#archiveLibraryBtn").tap();
+  await (await revealControl(page,page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true}))).tap();
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
   await expect(page.locator(".archive-library-sidebar")).not.toHaveAttribute("inert", "");
   await expect(page.locator(".archive-library-main")).toHaveAttribute("inert", "");
@@ -177,7 +180,7 @@ test("mobile archive panels expose only the visible page and keep touch targets 
   });
   expect(focusWhileHidden).toBe(false);
 
-  await page.locator('.archive-nav-item[data-archive-scope="global"]').tap();
+  await (await revealControl(page,page.locator('.archive-nav-item[data-archive-scope="global"]'))).tap();
   await expect(page.locator(".archive-library-shell")).toHaveClass(/show-content/);
   await expect(page.locator(".archive-library-sidebar")).toHaveAttribute("inert", "");
   await expect(page.locator(".archive-library-main")).not.toHaveAttribute("inert", "");
@@ -187,7 +190,7 @@ test("mobile archive panels expose only the visible page and keep touch targets 
     return rect.width >= 44 && rect.height >= 44;
   }))).toBe(true);
 
-  await page.locator("#archiveLibraryMobileBackBtn").tap();
+  await (await revealControl(page,page.locator("#archiveLibraryMobileBackBtn"))).tap();
   await expect(page.locator(".archive-library-sidebar")).not.toHaveAttribute("inert", "");
   await expect(page.locator(".archive-library-main")).toHaveAttribute("inert", "");
   await expect(page.locator('.archive-nav-item[data-archive-scope="global"]')).toBeFocused();

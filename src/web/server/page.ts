@@ -291,7 +291,7 @@ function getSettingsSection() {
         <div class="field-full"><label for="alistBrowserUrl">远端网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://openlist.example.com" autocomplete="off" aria-describedby="alistBrowserUrlHint" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在网盘中查看”入口；留空则不显示。支持 AList 和 OpenList 的网页地址。</p></div>
         <div><label for="alistUsername">远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
         <div><label for="alistPassword">远端密码（WebDAV 密码）</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
-        <div class="field-full"><label for="alistDest">目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" aria-describedby="alistDestHint" /><p class="muted field-hint" id="alistDestHint">已有归档时请使用“迁移归档路径”，系统会先探测 COPY/MOVE 能力、复制并确认新目录，旧目录不会自动删除。</p></div>
+        <div class="field-full"><label for="alistDest">目标存储路径</label><input id="alistDest" type="text" placeholder="例如: /阿里云盘/bili-backup/videos" aria-describedby="alistDestHint" /><p class="muted field-hint" id="alistDestHint">已有归档时请使用“迁移归档路径”，系统会复核路径与存储身份、复制并确认新目录，旧目录不会自动删除。</p></div>
         <div class="field-full storage-check-row">
           <button id="storageCheckBtn" class="ghost" type="button" aria-describedby="storageCheckHint storageCheckStatus">只读检查存储连接</button>
           <p class="muted field-hint" id="storageCheckHint">只检查 WebDAV 地址、认证和归档目录读取；不会上传、创建、移动或删除文件，也不代表写入能力已验证。</p>
@@ -353,7 +353,7 @@ function getSettingsSection() {
       </div></details>
       <details class="settings-fold" id="namingSettings"><summary>视频命名</summary><div class="settings-grid">
         <div class="field-full">
-          <p class="muted template-note">点击下方标签添加，拖拽已选标签可调整顺序，点击已选标签可移除。</p>
+          <p class="muted template-note">点击下方标签添加；使用箭头或拖拽调整顺序，点击 × 移除。</p>
           <label>可用变量</label>
           <div class="template-tags" id="templateTags"></div>
           <label class="template-label">已选变量（可拖拽排序）</label>
@@ -457,7 +457,7 @@ function getModals() {
   <div class="modal" id="favoritesModal" aria-labelledby="favoritesModalTitle">
     <div class="panel panel-md">
       <h2 id="favoritesModalTitle">选择同步收藏夹</h2>
-      <p class="muted">勾选你需要自动备份的收藏夹。点击收藏夹名称可查看内部视频详情。</p>
+      <p class="muted">勾选需要同步的收藏夹，点击“查看详情”可查看视频。</p>
       <div class="favorites-list" id="favoritesList"></div>
       <div class="muted status-line center-status" id="favoritesStatus"></div>
       <div class="row modal-actions split-actions">
@@ -821,7 +821,7 @@ function getModals() {
     <div class="panel panel-lg">
       <h2 id="pathMigrationModalTitle">迁移归档路径</h2>
       <div class="path-migration-body">
-      <p class="muted">系统会在同一 AList / OpenList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。开始前会用隔离临时文件探测 COPY 和 MOVE；复制使用 COPY，不覆盖目标；切换后旧目录仍保留。</p>
+      <p class="muted">系统会在同一 AList / OpenList 挂载存储内复制整个旧目录，包括空目录、<code>_history</code> 和未登记文件。开始前复核路径与存储身份，复制实际文件时核实 COPY 结果，不覆盖目标；切换后旧目录仍保留。</p>
       <div class="settings-grid">
         <div><label for="pathMigrationSource">当前归档路径</label><input id="pathMigrationSource" type="text" readonly /></div>
         <div><label for="pathMigrationDestination">新归档路径</label><input id="pathMigrationDestination" type="text" placeholder="例如: /阿里云盘/bili-backup-2" /></div>
@@ -845,12 +845,12 @@ function getModals() {
 
   <div class="modal" id="cleanupHelpModal" aria-labelledby="cleanupHelpModalTitle">
     <div class="panel panel-md">
-      <h2 id="cleanupHelpModalTitle">清理小贴士</h2>
-      <p class="muted">这里是小扫帚的说明书：有些灰尘可以放心扫，有些是小仓库的钥匙，要确认后再动。</p>
+      <h2 id="cleanupHelpModalTitle">清理说明</h2>
+      <p class="muted">清理前，先看看各项目的作用和影响。</p>
       <div id="cleanupHelpContent" class="cleanup-help-list"></div>
       <p class="muted help-note">升级、重建或删除容器本身，不需要先清理项目数据。请保留宿主机挂载的 <code>data</code> 和 <code>temp</code>。只有确定彻底卸载并销毁本地记录时，才使用“选择全部本地数据”；远端网盘视频仍会保留。内置 AList 和外接 OpenList 的数据需分别核对，不属于普通容器升级清理。</p>
       <div class="row modal-actions">
-        <button id="closeCleanupHelpBtn" class="ghost full-width" type="button">知道啦</button>
+        <button id="closeCleanupHelpBtn" class="ghost full-width" type="button">知道了</button>
       </div>
     </div>
   </div>

@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -26,17 +27,17 @@ async function resetFixture(
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
-  await expect(page.locator("#archiveLibraryBtn")).toBeVisible();
+  await page.goto('/?page=accounts');
+  await expect(page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true})).toBeVisible();
   await expect(page.locator(".user-item")).toHaveCount(1);
 }
 
 async function openLibrary(page: Page, testInfo: TestInfo, expectedCount = 2) {
-  await page.locator("#archiveLibraryBtn").click();
+  await (await revealControl(page,page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true}))).click();
   await expect(page.locator("#archiveLibraryModal")).toHaveClass(/active/);
   await expect(page.locator(".archive-library-card")).toHaveCount(expectedCount);
   if (testInfo.project.name !== "desktop") {
-    await page.locator('.archive-nav-item[data-archive-scope="global"]').tap();
+    await (await revealControl(page,page.locator('.archive-nav-item[data-archive-scope="global"]'))).tap();
     await expect(page.locator(".archive-library-shell")).toHaveClass(/show-content/);
     await page.waitForTimeout(220);
   }
@@ -60,7 +61,7 @@ async function openLibrary(page: Page, testInfo: TestInfo, expectedCount = 2) {
 
 async function openAlphaDetail(page: Page) {
   const card = page.locator('[data-archive-bvid="BV1ALPHA001"]');
-  await card.locator(".archive-library-card-more").click();
+  await (await revealControl(page,card.locator(".archive-library-card-more"))).click();
   await expect(page.locator("#archiveLibraryDetail")).toHaveClass(/open/);
   await expect(page.locator("#archiveLibraryDetailTitle")).toContainText("Alpha");
 }
@@ -90,13 +91,13 @@ test("「留存」显示收藏夹失效但归档仍可播放的视频", async ({
   const sourceFilter = page.locator('[data-archive-filter="retained"]');
   await expect(sourceFilter).toHaveText('「留存」');
   await expect(sourceFilter).not.toHaveAttribute('title');
-  await sourceFilter.click();
+  await (await revealControl(page,sourceFilter)).click();
   await expect(sourceFilter).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.archive-library-card')).toHaveCount(1);
   await expect(page.locator('[data-archive-bvid="BV1GAMMA003"]')).toBeVisible();
   await expect(page.locator('[data-archive-bvid="BV1BETA0002"]')).toHaveCount(0);
   await expect(page.locator('#archiveLibrarySummary')).toContainText('1 个「留存」归档');
-  await page.locator('[data-archive-filter="all"]').click();
+  await (await revealControl(page,page.locator('[data-archive-filter="all"]'))).click();
   await expect(page.locator('.archive-library-card')).toHaveCount(3);
 });
 
@@ -119,8 +120,8 @@ test("desktop modal stack traps focus and restores each interaction layer", asyn
   await expect(page.locator("#archiveLibraryModal")).toHaveAttribute("inert", "");
   await expect(page.locator("#archiveLibraryModal")).toHaveAttribute("aria-hidden", "true");
 
-  await page.locator("#confirmActionInput").fill("DELETE ARCHIVE");
-  await page.locator("#confirmActionCancelBtn").focus();
+  await (await revealControl(page,page.locator("#confirmActionInput"))).fill("DELETE ARCHIVE");
+  await (await revealControl(page,page.locator("#confirmActionCancelBtn"))).focus();
   await page.keyboard.press("Tab");
   await expect(page.locator("#confirmActionInput")).toBeFocused();
   await page.keyboard.press("Shift+Tab");
@@ -139,7 +140,7 @@ test("desktop modal stack traps focus and restores each interaction layer", asyn
   await expect(page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-more')).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.locator("#archiveLibraryModal")).not.toHaveClass(/active/);
-  await expect(page.locator("#archiveLibraryBtn")).toBeFocused();
+  await expect(page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true})).toBeFocused();
 });
 
 test("rapid source deletion clicks create one preview and one start", async ({ page, browserProblems }, testInfo) => {
@@ -149,8 +150,8 @@ test("rapid source deletion clicks create one preview and one start", async ({ p
   await openLibrary(page, testInfo);
   await openAlphaDetail(page);
   await openSourceConfirmation(page);
-  await page.locator("#confirmActionInput").fill("DELETE ARCHIVE");
-  await page.locator("#confirmActionOkBtn").click();
+  await (await revealControl(page,page.locator("#confirmActionInput"))).fill("DELETE ARCHIVE");
+  await (await revealControl(page,page.locator("#confirmActionOkBtn"))).click();
   await expect(page.locator(".archive-deletion-progress").filter({ hasText: /正在清理|等待清理/ })).toBeVisible();
   const state = await page.request.get("/__test/state").then((response) => response.json());
   expect(state.previewCount).toBe(1);
@@ -164,8 +165,8 @@ test("completed deletion closes stale detail and focuses the results region", as
   await openLibrary(page, testInfo);
   await openAlphaDetail(page);
   await openSourceConfirmation(page);
-  await page.locator("#confirmActionInput").fill("DELETE ARCHIVE");
-  await page.locator("#confirmActionOkBtn").click();
+  await (await revealControl(page,page.locator("#confirmActionInput"))).fill("DELETE ARCHIVE");
+  await (await revealControl(page,page.locator("#confirmActionOkBtn"))).click();
   await expect(page.locator("#archiveLibraryDetail")).not.toHaveClass(/open/, { timeout: 8_000 });
   await expect(page.locator('[data-archive-bvid="BV1ALPHA001"]')).toHaveCount(0);
   await expect(page.locator("#archiveLibraryResults")).toBeFocused();
@@ -175,15 +176,15 @@ test("failed account cleanup reconfirmation stays above its parent modal", async
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop account cleanup coverage");
   await resetFixture(page);
-  const removeAccount = page.getByRole("button", { name: "删除账号" });
-  await removeAccount.click();
-  await page.locator("#accountRemovalRemote").check();
+  const removeAccount = page.locator('#userList').getByRole("button", {includeHidden:true,name: "删除账号" });
+  await (await revealControl(page,removeAccount)).click();
+  await (await revealControl(page,page.locator("#accountRemovalRemote"))).check();
   await expect(page.locator("#accountRemovalPreview")).toContainText("2 个已追踪文件");
-  await page.locator("#accountRemovalConfirmInput").fill("DELETE REMOTE ARCHIVE");
-  await page.locator("#accountRemovalSubmitBtn").click();
+  await (await revealControl(page,page.locator("#accountRemovalConfirmInput"))).fill("DELETE REMOTE ARCHIVE");
+  await (await revealControl(page,page.locator("#accountRemovalSubmitBtn"))).click();
   const reconfirm = page.getByRole("button", { name: "重新预览并确认" });
   await expect(reconfirm).toBeVisible();
-  await reconfirm.click();
+  await (await revealControl(page,reconfirm)).click();
   await expect(page.locator("#confirmActionModal")).toHaveClass(/active/);
   const layers = await page.evaluate(() => ({
     account: Number(getComputedStyle(document.getElementById("accountRemovalModal")!).zIndex),
@@ -199,14 +200,14 @@ test("a delayed account deletion response cannot overwrite a reopened dialog", a
   void browserProblems;
   test.skip(testInfo.project.name !== "desktop", "desktop account request isolation coverage");
   await resetFixture(page, "pending", { accountDeleteDelayMs: 650 });
-  const removeAccount = page.getByRole("button", { name: "删除账号" });
-  await removeAccount.click();
-  await page.locator("#accountRemovalRemote").check();
+  const removeAccount = page.locator('#userList').getByRole("button", {includeHidden:true,name: "删除账号" });
+  await (await revealControl(page,removeAccount)).click();
+  await (await revealControl(page,page.locator("#accountRemovalRemote"))).check();
   await expect(page.locator("#accountRemovalPreview")).toContainText("2 个已追踪文件");
-  await page.locator("#accountRemovalConfirmInput").fill("DELETE REMOTE ARCHIVE");
-  await page.locator("#accountRemovalSubmitBtn").click();
-  await page.locator("#accountRemovalCancelBtn").click();
-  await removeAccount.click();
+  await (await revealControl(page,page.locator("#accountRemovalConfirmInput"))).fill("DELETE REMOTE ARCHIVE");
+  await (await revealControl(page,page.locator("#accountRemovalSubmitBtn"))).click();
+  await (await revealControl(page,page.locator("#accountRemovalCancelBtn"))).click();
+  await (await revealControl(page,removeAccount)).click();
   await expect(page.locator("#accountRemovalOnly")).toBeChecked();
   await expect(page.locator("#accountRemovalPreview")).toContainText("仅移除账号登录");
   await page.waitForTimeout(850);
@@ -225,10 +226,10 @@ test("a delayed source start response cannot write progress into a new detail", 
   await openLibrary(page, testInfo);
   await openAlphaDetail(page);
   await openSourceConfirmation(page);
-  await page.locator("#confirmActionInput").fill("DELETE ARCHIVE");
-  await page.locator("#confirmActionOkBtn").click();
+  await (await revealControl(page,page.locator("#confirmActionInput"))).fill("DELETE ARCHIVE");
+  await (await revealControl(page,page.locator("#confirmActionOkBtn"))).click();
   await page.keyboard.press("Escape");
-  await page.locator('[data-archive-bvid="BV1BETA0002"] .archive-library-card-more').click();
+  await (await revealControl(page,page.locator('[data-archive-bvid="BV1BETA0002"] .archive-library-card-more'))).click();
   await expect(page.locator("#archiveLibraryDetailTitle")).toContainText("Beta");
   await page.waitForTimeout(850);
   await expect(page.locator("#archiveLibraryDetailTitle")).toContainText("Beta");
@@ -257,13 +258,13 @@ test("archive search applies atomically and ignores slow obsolete responses", as
   await expect(page.locator('[data-archive-bvid="BV1ALPHA001"]')).toBeVisible();
   await expect(page.locator('[data-archive-bvid="BV1BETA0002"]')).toHaveCount(0);
 
-  await search.fill("slow");
+  await (await revealControl(page,search)).fill("slow");
   await page.waitForTimeout(360);
-  await search.fill("fast");
+  await (await revealControl(page,search)).fill("fast");
   await expect(page.locator('[data-archive-bvid="BV1FAST0003"]')).toBeVisible();
   await page.waitForTimeout(800);
   await expect(page.locator('[data-archive-bvid="BV1SLOW0004"]')).toHaveCount(0);
-  await page.locator("#archiveLibrarySearchClearBtn").click();
+  await (await revealControl(page,page.locator("#archiveLibrarySearchClearBtn"))).click();
   await expect(page.locator(".archive-library-card")).toHaveCount(2);
 
   // Dispatch both events in one browser turn: locator actionability can take
@@ -287,30 +288,30 @@ test("mobile detail and directory return preserve viewport and avoid overflow", 
   await openLibrary(page, testInfo);
   await openAlphaDetail(page);
   const more = page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-more');
-  await page.locator("#archiveLibraryDetailCloseBtn").tap();
+  await (await revealControl(page,page.locator("#archiveLibraryDetailCloseBtn"))).tap();
   await expect(more).toBeFocused();
   expect(await page.evaluate(() => window.scrollY)).toBe(initialScroll);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-  await page.locator("#archiveLibraryMobileBackBtn").tap();
+  await (await revealControl(page,page.locator("#archiveLibraryMobileBackBtn"))).tap();
   await expect(page.locator(".archive-library-shell")).not.toHaveClass(/show-content/);
   await expect(page.locator('.archive-nav-item[data-archive-scope="global"]')).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await expect.poll(() => page.locator(".archive-library-shell").evaluate((shell) => {
-    const sidebar = shell.querySelector<HTMLElement>(".archive-library-sidebar")!;
+  await expect.poll(()=>page.locator('.archive-library-shell').evaluate(shell=>shell.scrollLeft)).toBe(0);
+  const geometry=await page.locator(".archive-library-shell").evaluate((shell) => {
     const modal = document.getElementById("archiveLibraryModal")!;
+    const style=getComputedStyle(modal),box=shell.getBoundingClientRect();
     return {
-      modalPadding: getComputedStyle(modal).padding,
-      scrollLeft: shell.scrollLeft,
-      shellLeft: Math.round(shell.getBoundingClientRect().left),
-      sidebarLeft: Math.round(sidebar.getBoundingClientRect().left),
+      paddingLeft:parseFloat(style.paddingLeft),paddingRight:parseFloat(style.paddingRight),
+      shellLeft:box.left,shellRight:box.right,viewport:innerWidth,
     };
-  })).toEqual({
-    modalPadding: "0px",
-    scrollLeft: 0,
-    shellLeft: 0,
-    sidebarLeft: 0,
   });
+  expect(geometry.shellLeft).toBeCloseTo(geometry.paddingLeft,0);
+  await expect.poll(()=>page.locator('.archive-library-shell').evaluate(shell=>{
+    const sidebar=shell.querySelector<HTMLElement>('.archive-library-sidebar')!;
+    return Math.abs(sidebar.getBoundingClientRect().left-shell.getBoundingClientRect().left-parseFloat(getComputedStyle(shell).borderLeftWidth));
+  })).toBeLessThan(1);
+  expect(geometry.shellRight).toBeLessThanOrEqual(geometry.viewport-geometry.paddingRight+1);
 });
 
 test("mobile Escape closes the playback drawer before the player", async ({ page, browserProblems }, testInfo) => {
@@ -318,7 +319,7 @@ test("mobile Escape closes the playback drawer before the player", async ({ page
   test.skip(testInfo.project.name === "desktop", "mobile playback drawer coverage");
   await resetFixture(page);
   await openLibrary(page, testInfo);
-  await page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-main').tap();
+  await (await revealControl(page,page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-main'))).tap();
   await expect(page.locator("#playbackModal")).toHaveClass(/active/);
   if (testInfo.project.name === "mobile-landscape") {
     await expect(page.locator("#playbackImmersiveQueueBtn")).not.toBeVisible();
@@ -327,7 +328,7 @@ test("mobile Escape closes the playback drawer before the player", async ({ page
     await expect(page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-main')).toBeFocused();
     return;
   }
-  await page.locator("#playbackImmersiveQueueBtn").tap();
+  await (await revealControl(page,page.locator("#playbackImmersiveQueueBtn"))).tap();
   await expect(page.locator(".playback-shell")).toHaveClass(/queue-open/);
   await page.keyboard.press("Escape");
   await expect(page.locator(".playback-shell")).not.toHaveClass(/queue-open/);

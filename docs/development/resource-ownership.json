@@ -1,6 +1,14 @@
 {
   "resources": [
     {
+      "module": "web/client/features/workspace/controller.ts",
+      "ownerSymbol": "createWorkspace",
+      "resourceSymbols": ["events", "invalidSetting", "currentPage", "syncingHistory", "navigating", "workspaceContexts", "taskKey", "subscriptionKey", "queueState", "subscriptionState", "subscriptionCounts", "queued", "contentObserver", "workspaceObservers"],
+      "stop": "destroy aborts navigation, keyboard, resize and disclosure listeners, disconnects DOM observers, restores the app header and releases return contexts; construction organizes existing controls once",
+      "lateCallback": "queued refresh checks the active lifecycle; navigation awaits the existing modal manager and stops on cancellation; controllers supply validated queue and subscription state through narrow callbacks",
+      "rebind": "page restore reattaches listeners and observers without duplicating menus or moving controls again; actual API calls remain owned by their existing features"
+    },
+    {
       "module": "media-probe.ts",
       "ownerSymbol": "MediaProbeService",
       "resourceSymbols": ["jobs", "activeByUser", "ttlMs", "previewCache", "nextPreviewAt"],
@@ -527,6 +535,14 @@
       "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
     },
     {
+      "module": "web/client/features/playback/accessibility.ts",
+      "ownerSymbol": "bindPlaybackAccessibility",
+      "resourceSymbols": ["listeners", "observer"],
+      "stop": "Artplayer destroy aborts keyboard and focus listeners and disconnects the settings observer",
+      "lateCallback": "the queued focus checks isDestroy before touching the player's settings",
+      "rebind": "each new player receives its own adapter; no player state or document listener is shared"
+    },
+    {
       "module": "web/client/features/playback/controller.ts",
       "ownerSymbol": "createPlayback",
       "resourceSymbols": [
@@ -869,6 +885,8 @@
       "ownerSymbol": "createModalManager",
       "resourceSymbols": [
         "modalAnimationState",
+        "pendingClose",
+        "backgroundRoots",
         "modalBackgroundState",
         "modalScrollState",
         "timers",
@@ -889,6 +907,18 @@
       "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
       "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
       "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+    },
+    {
+      "module": "web/client/shared/presentation.ts",
+      "ownerSymbol": "createPresentation",
+      "resourceSymbols": [
+        "copyFeedback",
+        "generation",
+        "active"
+      ],
+      "stop": "页面挂起或销毁时清除复制反馈计时器，并恢复仍处于成功反馈中的按钮。",
+      "lateCallback": "复制完成前捕获代次；旧页面代次或未激活实例不会再显示对勾。重复成功复制更新当前按钮的恢复时限。",
+      "rebind": "恢复页面时重新激活展示能力，不复用上一代次的反馈计时器。"
     },
     {
       "module": "web/client/shared/session.ts",
@@ -1030,6 +1060,7 @@
         "requests",
         "picked",
         "selected",
+        "draftSelections",
         "pageItems",
         "homeCards",
         "events",

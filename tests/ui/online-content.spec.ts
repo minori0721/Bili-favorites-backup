@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test as base, type Page } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -22,9 +23,9 @@ async function openOnlineContent(page: Page) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
-  await expect(page.locator("#onlineContentBtn")).toBeVisible();
-  await page.locator("#onlineContentBtn").click();
+  await page.goto('/?page=overview');
+  await expect(page.getByRole('button',{name:'浏览在线内容 ↗',exact:true,includeHidden:true})).toBeVisible();
+  await (await revealControl(page,page.getByRole('button',{name:'浏览在线内容 ↗',exact:true,includeHidden:true}))).click();
   await expect(page.locator("#onlineContentModal")).toHaveClass(/active/);
   await expect(page.locator(".online-content-card")).toHaveCount(1);
   await expect(page.locator(".online-content-card")).toContainText("在线待归档视频");
@@ -80,7 +81,7 @@ test("mobile online content exposes the directory close only after returning to 
   void browserProblems;
   test.skip(testInfo.project.name === "desktop", "mobile directory controls coverage");
   await openOnlineContent(page);
-  await page.locator("#onlineContentMobileBackBtn").tap();
+  await (await revealControl(page,page.locator("#onlineContentMobileBackBtn"))).tap();
   await expect(page.locator(".online-content-shell")).not.toHaveClass(/show-content/);
   const controls = await page.evaluate(() => ({
     sidebarDisplay: getComputedStyle(document.getElementById("closeOnlineContentBtn")!).display,
@@ -95,16 +96,16 @@ test("mobile online content exposes the directory close only after returning to 
 test("online manual archive probes a strict target before queueing it", async ({ page, browserProblems }) => {
   void browserProblems;
   await openOnlineContent(page);
-  await page.getByRole("button", { name: "手动归档" }).click();
+  await (await revealControl(page,page.getByRole("button", { name: "手动归档" }))).click();
   await expect(page.locator("#manualArchiveOptionsModal")).toHaveClass(/active/);
   await page.locator("#manualArchiveQuality").selectOption("4K");
   await page.locator("#manualArchiveEncoding").selectOption("AV1");
-  await page.locator("#manualArchiveProbeBtn").click();
+  await (await revealControl(page,page.locator("#manualArchiveProbeBtn"))).click();
   await expect(page.locator("#manualArchiveProbeResult")).toContainText("已探测 1 个分P");
   await expect(page.locator("#manualArchiveProbeResult")).toContainText("预计成品");
   await expect(page.locator("#manualArchiveProbeResult")).toContainText("本地峰值约");
   await expect(page.locator("#manualArchiveProbeResult")).toContainText("缓存可用");
-  await page.locator("#manualArchiveStartBtn").click();
+  await (await revealControl(page,page.locator("#manualArchiveStartBtn"))).click();
   await expect(page.locator("#manualArchiveOptionsModal")).not.toHaveClass(/active/);
   await expect(page.locator("#onlineContentFooter")).toContainText("已进入手动归档队列");
   const state = await page.request.get("/__test/state").then((response) => response.json());
@@ -115,7 +116,7 @@ test("online manual archive probes a strict target before queueing it", async ({
 test("closing online content cancels its debounced search", async ({ page, browserProblems }) => {
   void browserProblems;
   await openOnlineContent(page);
-  await page.locator("#onlineContentSearchInput").fill("late");
+  await (await revealControl(page,page.locator("#onlineContentSearchInput"))).fill("late");
   await page.locator("#onlineContentCloseMainBtn").evaluate((element) => (element as HTMLElement).click());
   await page.waitForTimeout(450);
   const state = await page.request.get("/__test/state").then((response) => response.json());
@@ -125,10 +126,10 @@ test("closing online content cancels its debounced search", async ({ page, brows
 test("online content distinguishes request failure from an empty result", async ({ page, browserProblems }) => {
   void browserProblems;
   await openOnlineContent(page);
-  await page.locator("#onlineContentSearchInput").fill("broken");
+  await (await revealControl(page,page.locator("#onlineContentSearchInput"))).fill("broken");
   await expect(page.locator("#onlineContentNotice")).toContainText("在线内容读取失败");
   await expect(page.locator(".online-content-card")).toHaveCount(1);
-  await page.locator("#onlineContentSearchInput").fill("empty");
+  await (await revealControl(page,page.locator("#onlineContentSearchInput"))).fill("empty");
   await expect(page.locator(".online-content-card")).toHaveCount(0);
   await expect(page.locator("#onlineContentFooter")).toContainText("当前分类没有内容");
 });

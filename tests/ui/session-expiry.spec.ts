@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import {test, expect} from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
@@ -8,13 +9,13 @@ test('update requests share session expiry while 503 remains a retryable failure
   await page.request.post('/__test/reset');
   let status = 503;
   await page.route('**/api/updates*',route=>route.fulfill({status,contentType:'text/html',body:'unavailable'}));
-  await page.goto('/');
-  await page.locator('#versionInfoBtn').click();
+  await page.goto('/?page=tasks');
+  await (await revealControl(page,page.locator('#versionInfoBtn'))).click();
   await expect(page.locator('#updatesStatus')).toContainText('暂时无法');
   await expect(page.locator('#sessionExpiredDialog')).toHaveCount(0);
   status = 401;
-  await page.locator('#closeUpdatesBtn').click();
-  await page.locator('#versionInfoBtn').click();
+  await (await revealControl(page,page.locator('#closeUpdatesBtn'))).click();
+  await (await revealControl(page,page.locator('#versionInfoBtn'))).click();
   await expect(page.locator('#sessionExpiredDialog')).toBeVisible();
   await expect(page.locator('#updatesModal')).not.toBeVisible();
 });
@@ -37,9 +38,9 @@ test('log stream reconnects after an interrupted connection and a 503 session ch
     await route.fulfill({status: 200, contentType: 'text/event-stream',
       body: `data: ${JSON.stringify({level: 'info', timestamp: '', summary: '隔离日志连接已恢复', raw: 'isolated reconnect', simpleVisible: true})}\n\n`});
   });
-  await page.goto('/');
+  await page.goto('/?page=tasks');
   await expect(page.locator('.user-item')).toHaveCount(1);
-  await page.locator('#logSimpleBtn').click();
+  await (await revealControl(page,page.locator('#logSimpleBtn'))).click();
   // Board polling is stopped, so this is the log feed's protected session check.
   await page.route('**/api/queue/state', async route => {
     checks++;
@@ -69,9 +70,9 @@ test('revoked log stream shows login and stops reconnecting after a confirmed 40
     await route.fulfill({status: 200, contentType: 'text/event-stream',
       body: `data: ${JSON.stringify({level: 'info', timestamp: '', summary: '隔离会话日志', raw: 'isolated session log', simpleVisible: true})}\n\n`});
   });
-  await page.goto('/');
+  await page.goto('/?page=tasks');
   await expect(page.locator('.user-item')).toHaveCount(1);
-  await page.locator('#logSimpleBtn').click();
+  await (await revealControl(page,page.locator('#logSimpleBtn'))).click();
   // Stop board polling before isolating the stream's session check.
   await page.route('**/api/queue/state', async route => {
     checks++;
@@ -89,7 +90,7 @@ test('revoked log stream shows login and stops reconnecting after a confirmed 40
 
 test('expired session stops application work and shows one accessible login entry', async ({page}) => {
   await page.request.post('/__test/reset');
-  await page.goto('/');
+  await page.goto('/?page=tasks');
   await expect(page.locator('.user-item')).toHaveCount(1);
   let requests = 0;
   await page.route('**/api/**', async route => {
@@ -97,8 +98,8 @@ test('expired session stops application work and shows one accessible login entr
     await route.fulfill({status:401,contentType:'text/html',body:'expired'});
   });
   // Start another protected request using existing page controls.
-  await page.locator('#logSimpleBtn').click();
-  await page.locator('#logQueueBtn').click();
+  await (await revealControl(page,page.locator('#logSimpleBtn'))).click();
+  await (await revealControl(page,page.locator('#logQueueBtn'))).click();
   const dialog = page.locator('#sessionExpiredDialog');
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveCount(1);

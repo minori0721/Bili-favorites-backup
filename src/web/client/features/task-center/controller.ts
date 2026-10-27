@@ -12,14 +12,17 @@ import { requireElement } from '../../shared/dom.js';
 import { getQueueLoadingMarkup } from '../../../shared/queue-markup.js';
 import type { ApiClient } from '../../shared/api.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
+import type { WorkspaceQueueState } from '../../shared/workspace-state.js';
 
 interface Options {
   root: Document; api: ApiClient; confirmAction: ConfirmAction;
   openModal(id:string, trigger?:HTMLElement|null):void;
   closeModal(id:string, options?:{restoreFocus?:boolean}):unknown;
   formatDateTime(value:number):string; formatBytes(value:number):string;
-  copyTextToClipboard(value:string):Promise<boolean>;
+  copyTextToClipboard(value:string,trigger?:HTMLButtonElement):Promise<boolean>;
   showToast(message:string, kind?:'success'|'error'):void;
+  queueState(state:WorkspaceQueueState):void;
+  openStorageSettings():Promise<void>;
 }
 export function createTaskCenter(options: Options) {
   const {root:document, api, confirmAction, openModal, closeModal, formatDateTime, formatBytes, copyTextToClipboard, showToast} = options;
@@ -29,7 +32,7 @@ export function createTaskCenter(options: Options) {
   const buttons = modes.map(mode => ({mode, button:requireElement(document, '#log' + mode[0].toUpperCase() + mode.slice(1) + 'Btn', HTMLButtonElement)}));
   let logMode: LogMode = 'queue';
   let events: AbortController | null = null;
-  const snapshots = createQueueSnapshotResource({api, receive:snapshot=>recovery.receive(snapshot.issues,snapshot.issueSummary)});
+  const snapshots = createQueueSnapshotResource({api,receive:snapshot=>{recovery.receive(snapshot.issues,snapshot.issueSummary);options.queueState({status:'ready',snapshot});},failed:()=>options.queueState({status:'error'})});
   const logs = createLogController(logRoot, signal => api.silent('/api/queue/state', { signal }));
   const media = createMediaRetryDialog({root:requireElement(document,'#encodingRetryModal',HTMLElement),api,confirmAction,formatBytes,openModal,closeModal});
   const recovery = createRecoveryCenter({...options,queueSnapshots:snapshots,mediaRetry:media,boardActive:()=>logMode === 'queue'});
@@ -49,6 +52,7 @@ export function createTaskCenter(options: Options) {
   }
   function init() {
     if(events)return;
+    options.queueState({status:'loading'});
     events=new AbortController();const signal=events.signal;
     media.init();recovery.init();logs.init();sync.init();help.init();
     for(const item of buttons)item.button.addEventListener('click',()=>setMode(item.mode),{signal});

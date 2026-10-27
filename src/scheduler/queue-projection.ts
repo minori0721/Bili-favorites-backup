@@ -20,10 +20,13 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
     const uploadPending: QueueBoardItem[] = [];
     const uploadRunning: QueueBoardItem[] = [];
     const seenPersistentJobIds = new Set<string>();
+    const liveTasks = new Map<string,Task['status']>();
 
     const addTask = (task: Task, stage: QueueBoardItem["stage"]) => {
       const item = dependencies.mapTask(task, stage);
       if (item.persistentJobId) seenPersistentJobIds.add(item.persistentJobId);
+      const identity=task.persistentJobId ? 'job:'+task.persistentJobId : 'task:'+task.id;
+      if(liveTasks.get(identity)!=='running')liveTasks.set(identity,task.status);
       const target = stage === "download_pending"
         ? downloadPending
         : stage === "download_running"
@@ -89,6 +92,13 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
     uploadRunning.sort(byStartedAt);
 
     const persistentCounts = dependencies.jobs.counts();
+    const waitingPersisted=dependencies.jobs.countRecoverable(
+      ['download','quality_download','upload','history_upload','quality_upload','quality_replace','quality_cleanup','verify_upload'],
+      [...seenPersistentJobIds]);
+    const summary={
+      running:[...liveTasks.values()].filter(status=>status==='running').length,
+      waiting:waitingPersisted+[...liveTasks.values()].filter(status=>status==='pending'||status==='retry_wait').length,
+    };
     const countRecoverable = (kinds: PersistentJobKind[]) => dependencies.jobs.countRecoverable(kinds);
     const leasedJobs = Object.values(persistentCounts).reduce((total, statuses) =>
       total + Number(statuses.leased || 0) + Number(statuses.running || 0), 0);
@@ -99,7 +109,7 @@ export function projectQueueSnapshot<Extra extends object>(dependencies: Depende
     const chargingRestrictions = dependencies.chargingRestrictions;
     const lastChargingCheckAt = Date.parse(chargingRestrictions.lastCheckedAt || "");
     return {
-      ...extra, downloadPending,downloadRunning,uploadPending,uploadRunning,
+      ...extra, downloadPending,downloadRunning,uploadPending,uploadRunning,summary,
       chargingAccess:{pending:chargingSchedule.count,nextCheckAt:chargingSchedule.nextAt,lastCheckedAt:Number.isFinite(lastChargingCheckAt)?lastChargingCheckAt:undefined},
       recovery:{pendingUploads:countRecoverable(['upload','history_upload','quality_upload']),pendingDownloads:countRecoverable(['download','quality_download']),
         pendingVerifications:countRecoverable(['verify_upload']),pendingQualityMaintenance:countRecoverable(['quality_replace','quality_cleanup']),chargingRestricted:chargingSchedule.count,availabilityChecks:availabilitySchedule.count,

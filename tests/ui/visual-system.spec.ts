@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -22,7 +23,7 @@ async function boot(page: Page) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
+  await page.goto('/?page=settings');
   await expect(page.locator(".user-item")).toHaveCount(1);
 }
 
@@ -37,7 +38,7 @@ test("main workspace and every standard dialog use the shared visual system", as
 
   const audit = await page.evaluate(() => {
     const root = getComputedStyle(document.documentElement);
-    const cards = [...document.querySelectorAll<HTMLElement>("body > main > .card")];
+    const cards = [...document.querySelectorAll<HTMLElement>(".workspace-stage > .card")];
     const panels = [...document.querySelectorAll<HTMLElement>(".modal > .panel")];
     const style = (element: Element) => getComputedStyle(element);
     return {
@@ -89,12 +90,12 @@ test("main workspace and every standard dialog use the shared visual system", as
       controls: {
         primaryRadius: style(document.getElementById("addUserBtn")!).borderRadius,
         secondaryRadius: style(document.getElementById("syncNowBtn")!).borderRadius,
-        helpRadius: style(document.getElementById("syncHelpBtn")!).borderRadius,
-        helpWidth: document.getElementById("syncHelpBtn")!.getBoundingClientRect().width,
+        helpRadius: style(document.getElementById("settingsHelpBtn")!).borderRadius,
+        helpWidth: document.getElementById("settingsHelpBtn")!.getBoundingClientRect().width,
         primaryBackground: style(document.getElementById("addUserBtn")!).backgroundColor,
         secondaryBackground: style(document.getElementById("syncNowBtn")!).backgroundColor,
       },
-      emptySettingsStatusDisplay: [...document.querySelectorAll<HTMLElement>(".settings-actions ~ .status-line")]
+      emptySettingsStatusDisplay: [...document.querySelectorAll<HTMLElement>("#configStatus, #renameStatus, #qualityUpgradeStatus")]
         .map((element) => getComputedStyle(element).display),
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         mainGap: style(document.querySelector("body > main")!).rowGap,
@@ -116,7 +117,7 @@ test("main workspace and every standard dialog use the shared visual system", as
   });
   expect(audit.cards).toHaveLength(4);
   expect(audit.cards.every((card) => card.radius === "20px" && card.bottomBorder === "1px")).toBe(true);
-  expect(audit.mainGap).toBe("22px");
+  expect(audit.mainGap).toBe("30px");
   expect(audit.cards.every((card) => card.background.startsWith("rgba(") && card.backdrop.includes("blur") && card.shadow !== "none")).toBe(true);
   expect(audit.dialogs.length).toBeGreaterThanOrEqual(16);
   expect(audit.dialogs.every((dialog) => dialog.sizeClass && dialog.radius === "24px")).toBe(true);
@@ -136,10 +137,10 @@ test("main workspace and every standard dialog use the shared visual system", as
   expect(audit.controls.primaryRadius).toBe("14px");
   expect(audit.controls.secondaryRadius).toBe("14px");
   expect(audit.controls.helpRadius).toBe("50%");
-  expect(audit.controls.helpWidth).toBe(32);
+  expect(audit.controls.helpWidth).toBe(28);
   expect(audit.controls.primaryBackground).not.toBe(audit.controls.secondaryBackground);
   expect(audit.emptySettingsStatusDisplay).toEqual(["none", "none", "none"]);
-  expect(audit.overflow).toBe(0);
+  expect(audit.overflow).toBeLessThanOrEqual(0);
 });
 
 test("dangerous dialogs keep the safe action on the left and the destructive action on the right", async ({ page, browserProblems }, testInfo) => {
@@ -147,9 +148,9 @@ test("dangerous dialogs keep the safe action on the left and the destructive act
   desktopOnly(testInfo);
   await boot(page);
 
-  const removeButton = page.getByRole("button", { name: "删除账号" });
-  await removeButton.scrollIntoViewIfNeeded();
-  await removeButton.click();
+  const removeButton = page.locator('#userList').getByRole("button", {includeHidden:true,name: "删除账号" });
+  await (await revealControl(page,removeButton)).scrollIntoViewIfNeeded();
+  await (await revealControl(page,removeButton)).click();
   await expect(page.locator("#accountRemovalModal")).toHaveClass(/active/);
   const positions = await page.locator("#accountRemovalModal .modal-actions").evaluate((footer) => {
     const cancel = footer.querySelector<HTMLElement>("#accountRemovalCancelBtn")!.getBoundingClientRect();
@@ -164,7 +165,7 @@ test("dangerous dialogs keep the safe action on the left and the destructive act
 test("mobile standard dialogs stay inside the viewport with a reachable sticky footer", async ({ page, browserProblems }) => {
   void browserProblems;
   await boot(page);
-  await page.locator("#settingsHelpBtn").click();
+  await (await revealControl(page,page.locator("#settingsHelpBtn"))).click();
   await expect(page.locator("#settingsHelpModal")).toHaveClass(/active/);
 
   const metrics = await page.locator("#settingsHelpModal .panel").evaluate((panel) => {
@@ -188,7 +189,7 @@ test("mobile standard dialogs stay inside the viewport with a reachable sticky f
     };
   });
 
-  expect(metrics.documentOverflow).toBe(0);
+  expect(metrics.documentOverflow).toBeLessThanOrEqual(0);
   expect(metrics.panelLeft).toBeGreaterThanOrEqual(0);
   expect(metrics.panelRight).toBeLessThanOrEqual(metrics.viewportWidth);
   expect(metrics.panelTop).toBeGreaterThanOrEqual(0);
@@ -204,7 +205,7 @@ test("full-screen workspaces share soft white chrome while the player keeps its 
   desktopOnly(testInfo);
   await boot(page);
 
-  await page.locator("#archiveLibraryBtn").click();
+  await (await revealControl(page,page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true}))).click();
   await expect(page.locator("#archiveLibraryModal")).toHaveClass(/active/);
   const archiveChrome = await page.locator("#archiveLibraryModal").evaluate((modal) => {
     const close = modal.querySelector<HTMLElement>("#closeArchiveLibraryBtn")!;
@@ -214,9 +215,9 @@ test("full-screen workspaces share soft white chrome while the player keeps its 
       topbarBackground: getComputedStyle(topbar).backgroundColor,
     };
   });
-  await page.locator("#closeArchiveLibraryBtn").click();
+  await (await revealControl(page,page.locator("#closeArchiveLibraryBtn"))).click();
 
-  await page.locator("#recoveryIssuesBtn").click();
+  await (await revealControl(page,page.locator("#recoveryIssuesBtn"))).click();
   await expect(page.locator("#recoveryIssuesModal")).toHaveClass(/active/);
   const recoveryChrome = await page.locator("#recoveryIssuesModal").evaluate((modal) => {
     const close = modal.querySelector<HTMLElement>("#closeRecoveryIssuesBtn")!;
@@ -227,8 +228,8 @@ test("full-screen workspaces share soft white chrome while the player keeps its 
     };
   });
 
-  expect(archiveChrome.closeRadius).toBe("6px");
-  expect(recoveryChrome.closeRadius).toBe("6px");
+  expect(archiveChrome.closeRadius).toBe("12px");
+  expect(recoveryChrome.closeRadius).toBe("12px");
   expect(archiveChrome.topbarBackground).toBe('rgb(249, 253, 253)');
   expect(archiveChrome.topbarBackground).toBe(recoveryChrome.headerBackground);
   expect(await page.locator(".playback-shell").evaluate((player) => getComputedStyle(player).backgroundColor)).not.toBe(archiveChrome.topbarBackground);

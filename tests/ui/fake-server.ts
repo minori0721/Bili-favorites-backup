@@ -1,5 +1,6 @@
 import express from "express";
 import type { Socket } from "node:net";
+import path from 'node:path';
 import { renderAppPage } from "../../src/web.js";
 import { serveAppAsset } from "../../src/web/server/assets.js";
 import {createUpUiFixture} from './up-fixture.js';
@@ -44,6 +45,7 @@ type TestState = {
   onlineItemQueries: string[];
   mediaProbeStartCount: number;
   mediaProbeBodies: unknown[];
+  mediaProbeBvid: string;
   mediaProbeMode: "complete" | "failed" | "refine_mismatch";
   manualArchiveCount: number;
   configRequests: number;
@@ -65,6 +67,7 @@ type TestState = {
   loginMode: "pending" | "first_complete_then_pending";
   onlineSourceRace: boolean;
   onlineDuplicateMode: boolean;
+  pathMigration: {id:string;status:string;sourceRoot:string;destinationRoot:string;entryCount:number;fileCount:number;totalBytes:number;conflictCount:number;failedCount:number} | null;
 };
 
 function initialState(): TestState {
@@ -99,6 +102,7 @@ function initialState(): TestState {
     onlineItemQueries: [],
     mediaProbeStartCount: 0,
     mediaProbeBodies: [],
+    mediaProbeBvid: 'BV1ONLINE001',
     mediaProbeMode: "complete",
     manualArchiveCount: 0,
     configRequests: 0,
@@ -120,6 +124,7 @@ function initialState(): TestState {
     loginMode: "pending",
     onlineSourceRace: false,
     onlineDuplicateMode: false,
+    pathMigration:null,
   };
 }
 
@@ -293,6 +298,9 @@ app.get("/__test/state", (_request, response) => response.json(state));
 app.post('/__test/cleanup-busy',(req,res)=>{state.cleanupBusy=req.body.busy===true;res.json(ok({busy:state.cleanupBusy}));});
 
 app.get('/assets/app/:name', serveAppAsset);
+app.get('/assets/vendor/artplayer-5.4.0.js',(_request,response)=>response.sendFile(path.resolve('node_modules/artplayer/dist/artplayer.js')));
+app.get('/api/users/:id/favorites/:mediaId/playback/files/:file',(_request,response)=>response.sendFile(path.resolve('tests/fixtures/playback-demo.mp4')));
+app.get('/api/users/:id/favorites/:mediaId/playback/delivery/:file',(_request,response)=>response.json(ok({status:'proxy'})));
 app.get("/", (_request, response) => {
   const controls=process.env.BFB_ARCHIVE_ACTION_PREVIEW==='1' ? `<aside style="position:fixed;bottom:8px;left:8px;z-index:20;background:#f9fdfd;border:1px solid #a7ded8;border-radius:12px;padding:10px;max-width:min(460px,94vw);font:12px sans-serif;color:#21403b"><strong>隔离假数据 · 不连接 B站或网盘</strong><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"><button onclick="fetch('/__test/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archiveActionPreview:true})}).then(()=>location.reload())">重置示例</button><button onclick="fetch('/__test/cleanup-busy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({busy:true})}).then(()=>alert('已模拟任务忙碌，请重新打开清理数据'))">模拟忙碌</button><button onclick="fetch('/__test/cleanup-busy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({busy:false})}).then(()=>alert('已恢复空闲，请重新打开清理数据'))">恢复空闲</button><button onclick="fetch('/__test/up-deletion-failure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true})}).then(()=>alert('后续远端删除将模拟失败，重置示例可恢复'))">模拟删除失败</button></div></aside>` : '';
   response.set('Cache-Control','no-store').type('html').send(renderAppPage().replace('</body>',controls+'</body>'));
@@ -680,6 +688,7 @@ app.get("/api/queue/state", (_request, response) => {
   const visibleIssues = disposition === "background" ? [] : issues.map((issue) => ({ ...issue, disposition }));
   response.json(ok({
     downloadPending: [], downloadRunning: [], uploadPending: queueItems, uploadRunning: [],
+    summary:{running:0,waiting:queueItems.length},
     scheduler: {
       status: "idle" as const,
       title: manualWaitQueue ? "同步空闲，后台队列待处理" : "当前调度空闲",
@@ -722,7 +731,7 @@ app.get("/api/logs/stream", (request, response) => {
 
 app.get("/api/archive-library/navigation", (_request, response) => response.json(ok(state.archiveActionPreview ? upFixture.archiveNavigation() : {...navigation(),upSubscriptions:upFixture.navigation()})));
 app.get("/api/archive-library/items", async (request, response) => {
-  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.items(request.query)));return;}
+  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.items({...request.query,query:String(request.query.q||'')})));return;}
   if (detailPreviewDelay) await wait(detailPreviewDelay);
   const query = String(request.query.q || "");
   state.itemQueries.push(query);
@@ -753,7 +762,7 @@ app.get("/api/archive-library/items", async (request, response) => {
   }));
 });
 app.get("/api/archive-library/items/:bvid", (request, response) => {
-  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.detail(request.query,request.params.bvid)));return;}
+  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.detail({...request.query,query:String(request.query.q||'')},request.params.bvid)));return;}
   state.detailQueries.push(String(request.query.q || ""));
   response.json(ok(detailItem(request.params.bvid)));
 });
@@ -764,7 +773,7 @@ app.post("/api/archive-library/items/:bvid/deletion-preview", (_request, respons
 });
 app.get("/api/archive-library/playback-queue", (_request, response) => {
   if(state.archiveActionPreview||Number(_request.query.mediaId)<=-2){
-    const result=upFixture.playbackQueue(_request.query,{focusBvid:String(_request.query.focusBvid||'')||undefined,pageSize:50});
+    const result=upFixture.playbackQueue({..._request.query,query:String(_request.query.q||'')},{focusBvid:String(_request.query.focusBvid||'')||undefined,pageSize:50});
     if(!result){response.status(404).json({success:false,message:'该归档当前不可播放'});return;}
     response.json(ok(result));return;
   }
@@ -818,13 +827,14 @@ app.get("/api/online-content/items", async (request, response) => {
 app.post("/api/media-probe", (request, response) => {
   state.mediaProbeStartCount += 1;
   state.mediaProbeBodies.push(request.body ?? null);
-  response.status(202).json(ok({ probeId: "probe-online-1", status: "running" as const, bvid: "BV1ONLINE001" }));
+  state.mediaProbeBvid=typeof request.body?.bvid==='string'?request.body.bvid:'BV1ONLINE001';
+  response.status(202).json(ok({ probeId: "probe-online-1", status: "running" as const, bvid: state.mediaProbeBvid }));
 });
 app.get("/api/media-probe/:id", (_request, response) => {
   if (state.mediaProbeMode === "failed") {
     response.json(ok({
       probeId: "probe-online-1",
-      bvid: "BV1RECOVERY1",
+      bvid: state.mediaProbeBvid,
       status: "failed" as const,
       error: "B站当前返回稿件不可见，暂时无法确认可用画质、编码和大小",
     }));
@@ -833,7 +843,7 @@ app.get("/api/media-probe/:id", (_request, response) => {
   if (state.mediaProbeMode === "refine_mismatch" && state.mediaProbeStartCount > 1) {
     response.json(ok({
       probeId: "probe-online-1",
-      bvid: "BV1RECOVERY1",
+      bvid: state.mediaProbeBvid,
       status: "complete" as const,
       pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [
         { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true },
@@ -846,7 +856,7 @@ app.get("/api/media-probe/:id", (_request, response) => {
   }
   response.json(ok({
   probeId: "probe-online-1",
-  bvid: "BV1ONLINE001",
+  bvid: state.mediaProbeBvid,
   status: "complete" as const,
   pages: [{ pageIndex: 1, cid: "cid-online-1", tracks: [
     { bilibiliQuality: "4K", quality: "4K", codec: "av01", encoding: "AV1", resolution: "2160x3840", frameRate: 60, duration: 120, estimatedBytes: 24 * 1024 * 1024, sizeSource: "api", available: true },
@@ -908,6 +918,38 @@ app.get("/api/archive-deletions/:id", (request, response) => {
   }));
 });
 app.post("/api/archive-deletions/:id/retry", (_request, response) => response.json(ok({ accepted: true })));
+
+app.get('/api/users/:id/favorites/:mediaId/detail-items',(request,response)=>{
+  const items=[
+    {bvid:'BV1ALPHA001',title:'Alpha 归档视频',upperName:'测试UP主',backupStatus:'verified',processed:true,activeInFavorite:true,playback:{available:true,partCount:1}},
+    {bvid:'BV1BETA0002',title:'Beta 历史归档',upperName:'另一位UP主',backupStatus:'pending',processed:false,activeInFavorite:false,unavailable:true},
+  ];
+  const filter=String(request.query.filter||'all');
+  const filtered=filter==='uploaded'?items.filter(item=>item.processed):filter==='pending'?items.filter(item=>!item.processed):items;
+  response.json(ok({items:Number(request.query.page||1)>1?[]:filtered,page:Number(request.query.page||1),hasMore:false,
+    summary:{total:2,uploaded:1,pending:1,pendingUnavailable:1,uploadedUnavailable:0,activeTotal:1,historicalTotal:1},source:'local',coverage:'complete'}));
+});
+app.get('/api/users/:id/unavailable',(_request,response)=>response.json(ok({items:[{bvid:'BV1BETA0002',title:'Beta 历史归档',upperName:'另一位UP主',unavailable:true,backupStatus:'pending'}],hasMore:false,nextCursor:null})));
+app.post('/api/migration/estimate',(request,response)=>response.json(ok({mode:request.body.mode==='complete'?'complete':'lightweight',resumableItems:1,retainedBytes:1048576,pendingUploadItems:1,files:5,expandedBytes:2097152})));
+app.post('/api/rename/preview',(_request,response)=>response.json(ok({previewId:'ui-rename',revision:1,expiresAt:Date.now()+600000,
+  candidates:[{candidateId:'ui-rename-file',bvid:'BV1ALPHA001',title:'Alpha 归档视频',oldPath:'/归档/旧文件.mp4',newPath:'/归档/Alpha.mp4',oldName:'旧文件.mp4',newName:'Alpha.mp4'}],skipped:[],remoteScan:{status:'ready',complete:true}})));
+app.get('/api/rename/preview/status',(_request,response)=>response.json(ok({unchanged:true,remoteScan:{status:'ready',complete:true}})));
+app.post('/api/rename/execute',(_request,response)=>response.json(ok({success:1,failed:0,results:[{ok:true,status:'renamed',oldPath:'/归档/旧文件.mp4',newPath:'/归档/Alpha.mp4'}]})));
+
+if (process.env.BFB_REVIEW_PREVIEW !== '1') {
+  app.get('/api/path-migration/state',(_request,response)=>response.json(ok(state.pathMigration)));
+  app.get('/api/path-migration/items',(_request,response)=>response.json(ok([])));
+  app.post('/api/path-migration/preview',(request,response)=>{
+    state.pathMigration={id:'ui-migration',status:'ready',sourceRoot:'/测试旧归档',destinationRoot:String(request.body.destinationRoot||'/测试新归档'),entryCount:1,fileCount:1,totalBytes:1048576,conflictCount:0,failedCount:0};
+    response.json(ok(state.pathMigration));
+  });
+  for(const [action,status] of [['start','copying'],['pause','paused'],['resume','copying'],['cancel','cancelled'],['cleanup-old','completed']]){
+    app.post('/api/path-migration/'+action,(_request,response)=>{
+      if(!state.pathMigration){response.status(409).json({success:false,message:'请先生成迁移预览'});return;}
+      state.pathMigration.status=status;response.json(ok(state.pathMigration));
+    });
+  }
+}
 
 if (process.env.BFB_REVIEW_PREVIEW === "1") {
   const migration: { id: string; status: "ready" | "cancelled"; sourceRoot: string; destinationRoot: string; entryCount: number; fileCount: number; directoryCount: number; totalBytes: number; conflictCount: number; failedCount: number } = {

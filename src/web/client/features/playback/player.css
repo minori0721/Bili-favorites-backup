@@ -68,6 +68,8 @@
     .playback-queue-sentinel { min-height:1px; overflow-anchor:none; }
     .playback-queue-feedback { display:flex; justify-content:center; align-items:center; min-height:28px; padding:4px 8px; color:#82908D; font-size:11px; text-align:center; overflow-anchor:none; }
     .playback-queue-feedback button { border:0; background:transparent; color:#69D9D0; padding:4px 6px; cursor:pointer; font:inherit; font-weight:650; }
+    .playback-art [tabindex="0"]:focus-visible { outline:2px solid #69d9d0; outline-offset:-2px; }
+    .playback-art .art-video-player:focus-within .art-bottom { opacity:1; transform:translateY(0); }
     @keyframes playbackEnter { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
     .filter-toggle { display:flex; gap:8px; width:auto; max-width:100%; margin-bottom:12px; padding:0; border:0; border-radius:0; background:transparent; flex-wrap:wrap; }
     .filter-toggle button { padding:6px 16px; border-radius:999px; border:1px solid var(--glass-border-strong); background:rgba(255,255,255,0.74); color:var(--ink); cursor:pointer; font-weight:600; font-size:13px; transition:background .2s,border-color .2s,color .2s,box-shadow .2s; }

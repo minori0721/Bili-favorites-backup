@@ -219,7 +219,7 @@ npm run build
 
 本地修改可按范围运行 `npm run test:release`、`npm run test:core` 或 `npm run test:files -- <文件...>`；大数据专项入口为 `npm run test:slow`。`npm test` 和 CI 继续执行全部回归，具体选择见[开发与验证](docs/development/architecture.md#开发与验证)。
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.1` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发验证记录见 [DEV_NOTES](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.1` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发与验证方式见 [开发说明](DEV_NOTES.md)。
 
 ## 许可证
 

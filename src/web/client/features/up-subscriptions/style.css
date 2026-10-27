@@ -9,8 +9,8 @@
 .modal .panel:is(.up-dialog,.up-action-dialog,.up-removal-dialog)>div.up-dialog-body{min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;margin:8px 6px 14px 0;padding:10px calc(var(--dialog-inline) - 6px) 10px var(--dialog-inline)}
 .modal .panel.up-help>div.up-help-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px 0;font-size:14px;line-height:1.8}
 .up-help-body h3{margin:22px 0 8px;font-size:15px;color:var(--ink)}.up-help-body h3:first-child{margin-top:0}.up-help-body p{margin:10px 0}.up-help-body ol,.up-help-body ul{margin:8px 0;padding-left:22px}.up-help-body li{margin:6px 0}
-.up-subscription-card{border:1px solid var(--border);border-radius:14px;padding:18px;background:var(--surface);min-width:0;transition:border-color .2s,box-shadow .2s}
-.up-subscription-card:hover{border-color:var(--accent);box-shadow:0 6px 18px rgba(57,197,187,.08)}
+.up-subscription-card{border:1px solid transparent;border-radius:14px;padding:18px;background:var(--surface-inset);min-width:0;transition:background-color .2s,border-color .2s,box-shadow .2s}
+.up-subscription-card:hover{background:rgba(235,246,243,.86);box-shadow:0 6px 18px rgba(57,197,187,.06)}
 .up-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.up-card-heading>.up-profile-heading{flex:1}
 .up-card-remove{flex:0 0 36px;display:grid;place-items:center;width:36px;min-height:36px!important;padding:0!important;border:0!important;background:transparent!important;color:var(--muted)!important;box-shadow:none!important;font-size:23px!important;border-radius:9px;cursor:pointer}
 .up-card-remove:hover,.up-card-remove:focus-visible{color:var(--danger)!important;background:#fff0ee!important}.up-card-remove:focus-visible{outline:2px solid var(--danger);outline-offset:1px}

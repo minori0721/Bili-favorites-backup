@@ -8,6 +8,16 @@ export interface ArchiveStatusInput {
   statusGroup?: string;
 }
 
+/** A source membership reports its own archive progress, without inventing playback evidence. */
+export function archiveMembershipStatusLabel(item: {backupStatus?: string; deletionStatus?: string}): string {
+  if (item.deletionStatus === 'completed') return '已手动删除';
+  if (item.deletionStatus === 'failed') return '清理失败';
+  if (item.deletionStatus && ['preparing','config_removing','pending','running','retry_wait'].includes(item.deletionStatus)) return '清理中';
+  if (item.backupStatus === 'verified') return '归档已确认';
+  if (item.backupStatus === 'partial_verified') return '归档部分已确认';
+  return archiveStatusLabel({backupStatus:item.backupStatus});
+}
+
 export function sourceAvailabilityReasonLabel(source: ArchiveStatusInput['sourceAvailability'], compact = false): string {
   const labels: Record<string, string> = {
     under_review:'B站稿件审核中',

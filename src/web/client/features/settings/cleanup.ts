@@ -23,10 +23,10 @@ export function createCleanup(dependencies: {
     let action: AbortController | null = null;
     function deactivate() { generation++; read?.abort(); action?.abort(); read = null; action = null; loaded = false; cleanupState = { items: [], runningTransfers: false, activeScheduler: false }; element('cleanupList').replaceChildren(); element('cleanupHelpContent').replaceChildren(); confirmationInput.value = ''; submitButton.disabled = true; submitButton.textContent = '确认清理'; }
     const cleanupDescriptions: Record<string, string> = {
-        'memory-cache': '只清掉页面临时记住的收藏夹分页，刷新一下就会重新拿，像擦掉便签纸。',
+        'memory-cache': '清除页面缓存的收藏夹分页，刷新后会重新获取。',
         temp: '清掉全部临时下载目录，包括可续传会话和已验证旧成品，需要输入 DELETE。',
         'orphan-fragments': '清掉会话中已确认无效的 _invalid/_incompatible 内容，以及没有会话清单、无法确认来源的 aria2/tmp/vclip/aclip 等残片；不会删除已验证成品或可续传轨道。此项已包含在“全部临时下载文件”中。',
-        logs: '清掉网页任务日志。不会影响备份，只是小本本翻到空白页。',
+        logs: '清除网页任务日志，不影响备份。',
         'debug-logs': '清掉 BBDown 调试日志。排查线索会少一点，但备份状态不受影响。',
         covers: '清掉永久归档封面。视频下架后可能只能显示占位封面；不会自动清理，必须输入 DELETE ARCHIVE COVERS。',
         'online-covers': '清掉可重新下载的在线缩略图，不影响归档封面、视频和归档状态。',
@@ -108,7 +108,7 @@ export function createCleanup(dependencies: {
             title.textContent = item.label + (item.important ? '（重要）' : '');
             const desc = document.createElement('div');
             desc.className = 'cleanup-item-desc';
-            desc.textContent = (cleanupDescriptions[item.key] || '') + (disabled ? ' 现在有任务在忙，这个小抽屉先上锁。' : '');
+            desc.textContent = (cleanupDescriptions[item.key] || '') + (disabled ? ' 当前有任务运行，此项暂时不能清理。' : '');
             body.appendChild(title);
             body.appendChild(desc);
             const size = document.createElement('div');
@@ -129,7 +129,7 @@ export function createCleanup(dependencies: {
             const div = document.createElement('div');
             div.className = 'cleanup-help-item';
             const title = document.createElement('strong');
-            title.textContent = item.label + (item.important ? '：这是重要小抽屉' : '：这是普通小灰尘');
+            title.textContent = item.label + (item.important ? '：重要项目' : '：普通项目');
             const text = document.createElement('div');
             text.textContent = cleanupDescriptions[item.key] || '';
             div.appendChild(title);
@@ -184,13 +184,13 @@ export function createCleanup(dependencies: {
         const selected = selectedCleanupItems();
         const resultBlock = element('cleanupResultBlock');
         if (!selected.length) {
-            showToast('先勾选要清理的小抽屉', 'info');
+            showToast('请先选择要清理的项目。', 'info');
             return;
         }
         const required = cleanupRequiredConfirmation(selected);
         const confirmation = confirmationInput.value.trim();
         if (required && confirmation !== required) {
-            showToast('确认文字不对，小扫帚先不动。', 'error');
+            showToast('确认文字不正确，暂未清理。', 'error');
             return;
         }
         const btn = submitButton;
@@ -216,7 +216,7 @@ export function createCleanup(dependencies: {
                 ? '已包含：' + item.label + (item.note ? '（' + item.note + '）' : '')
                 : '已清理：' + item.label));
             resultBlock.textContent = lines.join('\n');
-            showToast('清理完成，小扫帚收工啦', 'success');
+            showToast('清理完成。', 'success');
             await loadCleanupState();
         }
         catch (e) {

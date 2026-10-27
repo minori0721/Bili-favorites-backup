@@ -4,6 +4,7 @@ import type { createModalManager } from './modals.js';
 export interface ConfirmationOptions {
   title?: string; message?: string; detail?: string; requiredText?: string; inputLabel?: string;
   confirmText?: string; cancelText?: string; danger?: boolean; trigger?: HTMLElement | null;
+  initialFocus?: 'confirm' | 'cancel';
 }
 export type ConfirmAction = (options: ConfirmationOptions) => Promise<boolean>;
 
@@ -53,7 +54,7 @@ export function createConfirmation(document: Document, modals: Pick<ReturnType<t
       ok.disabled = Boolean(requiredText);
       pending = {resolve, requiredText};
       modals.open('confirmActionModal', options.trigger);
-      modals.focusWhenReady(modal, requiredText ? input : ok);
+      modals.focusWhenReady(modal, requiredText ? input : options.initialFocus === 'cancel' ? cancel : ok);
     });
   };
   return {

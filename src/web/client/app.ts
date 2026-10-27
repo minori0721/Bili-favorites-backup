@@ -1,7 +1,7 @@
 import { createShell } from './shared/shell.js';
 import { createProtectedTransport, showSessionExpired } from './shared/session.js';
 import { createPresentation } from './shared/presentation.js';
-import { createTaskCenter } from './features/task-center/controller.js';
+import { createTaskCenter } from './features/task-center/index.js';
 import { requireElement } from './shared/dom.js';
 import { archiveDeletionProgressText } from './shared/archive-deletion.js';
 import { createVideoDetail } from './features/archive/video-detail.js';
@@ -25,10 +25,16 @@ import { createPlayback } from './features/playback/controller.js';
 import { createArchiveLibrary } from './features/archive/library.js';
 import { createUpSubscriptions } from './features/up-subscriptions/controller.js';
 import { createArchiveVideoActionController } from './shared/archive-video-actions.js';
+import { createWorkspace } from './features/workspace/controller.js';
 export function createApplication() {
-    const { setHidden, setStatus, renderRequestStatus, copyTextToClipboard, formatDateTime, formatBytes, escapeHtml } = createPresentation(document, navigator);
+    const presentation = createPresentation(document, navigator);
+    const { setHidden, setStatus, renderRequestStatus, copyTextToClipboard, formatDateTime, formatBytes, escapeHtml } = presentation;
     const archiveLibraryLayoutMedia = window.matchMedia('(max-width:720px), (max-height:480px) and (pointer:coarse)');
     const modals = createModalManager(document, (modal, options) => {
+        if (modal.id === 'upAddModal' && !options.skipConfirm && upSubscriptions.hasPendingSelection()) {
+            return confirmation.ask({title:'放弃添加订阅？',message:'已选择的 UP 和归档范围尚未提交。',detail:'关闭后，本次选择不会保留。',confirmText:'放弃选择',cancelText:'继续选择',danger:false,initialFocus:'cancel'})
+                .then(confirmed => {if (confirmed) upSubscriptions.deactivate(modal.id);return confirmed;});
+        }
         if(modal.id==='upActionModal') {if(!archiveVideoActions.canClose())return false;archiveVideoActions.deactivate();}
         if(['upAddModal','upWorkspaceModal','upRemovalModal'].includes(modal.id)) upSubscriptions.deactivate(modal.id);
         if (modal.id === 'updatesModal') {
@@ -146,11 +152,13 @@ export function createApplication() {
     const manageVideo=(bvid:string,source:{sourceId:string}|{userId:string;mediaId:number},trigger:HTMLElement)=>{void archiveVideoActions.open(bvid,source,trigger);};
     const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context),manageVideo });
     const upSubscriptions = createUpSubscriptions({root:document,api,confirm:confirmAction,openModal,closeModal,notify:showToast,
+      summary:state=>workspace.receiveSubscriptions(state),
       openArchive:(id,trigger)=>{void archiveLibrary.openUpSource(id,trigger);},play:(bvid,trigger,context)=>playback.openLibrary(bvid,trigger,context),manageVideo});
     const videoCards = createVideoCards({ root: document, api, formatDateTime, notify: (message, kind = 'error') => showToast(message, kind) });
     const videoDetail = createVideoDetail({ root: document, api, cards: videoCards, formatDateTime, open: modal => openModal(modal.id), close: closeModal, play: (bvid, trigger) => playback.open(bvid, trigger), notify: message => showToast(message, 'error') });
     const unavailable = createUnavailable({ root: document, api, renderItem: item => videoCards.render(item, requireElement(document, '#unavailableGrid', HTMLElement)), releaseItems: videoCards.release, open: modal => openModal(modal.id), close: closeModal, notify: message => showToast(message, 'error') });
-    const taskCenter = createTaskCenter({ root: document, api, confirmAction, openModal, closeModal, formatDateTime, formatBytes, copyTextToClipboard, showToast });
+    const taskCenter = createTaskCenter({ root: document, api, confirmAction, openModal, closeModal, formatDateTime, formatBytes, copyTextToClipboard, showToast,queueState:state=>workspace.receiveQueue(state),openStorageSettings:()=>workspace.openStorageSettings() });
+    const workspace=createWorkspace({root:document,active:modals.active,requestClose:modals.requestClose,openLibrary:trigger=>archiveLibrary.open(trigger),openOnline:trigger=>onlineContent.open(trigger)});
     const shellEvents = createShell({
         root: document, api, closeHelp: closeModal, loggedOut: () => { window.location.href = '/login'; },
         escape: () => {
@@ -169,7 +177,8 @@ export function createApplication() {
         },
     });
     const applicationLifecycle = createApplicationLifecycle(window, [
-        shellEvents, taskCenter, playback, archiveLibrary, upSubscriptions, archiveVideoActions, settings, modals, confirmation, notifications, updatesFeature, pathMigrationFeature, accountList, favorites, accountRemoval, accountLogin, accountActions, onlineContent, videoCards, videoDetail, unavailable,
+        presentation, shellEvents, taskCenter, playback, archiveLibrary, upSubscriptions, archiveVideoActions, settings, modals, confirmation, notifications, updatesFeature, pathMigrationFeature, accountList, favorites, accountRemoval, accountLogin, accountActions, onlineContent, videoCards, videoDetail, unavailable,
+        workspace,
         {
             init() {
                 void Promise.allSettled([loadConfig(), loadUsers()]);

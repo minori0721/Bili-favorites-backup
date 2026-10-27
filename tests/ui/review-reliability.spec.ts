@@ -1,18 +1,19 @@
+import {revealControl,toggleSetting} from './workspace-navigation.js';
 import { readField } from '../contract-values.js';
 import { expect, test, type Page } from "@playwright/test";
 
 async function showVideo(page: Page, item: Record<string, unknown>) {
   await page.route('**/api/users/*/favorites/*/detail-items?**', route => route.fulfill({json:{success:true,data:{items:[item],page:1,hasMore:false}}}));
   const modal = page.locator('#videoDetailModal');
-  if (await modal.evaluate(element => element.classList.contains('active'))) await page.locator('#closeVideoDetailBtn').click();
-  await page.locator('[data-action="favorite_detail"]').first().click();
+  if (await modal.evaluate(element => element.classList.contains('active'))) await (await revealControl(page,page.locator('#closeVideoDetailBtn'))).click();
+  await (await revealControl(page,page.locator('[data-action="favorite_detail"]').first())).click();
   await expect(page.locator('#videoGrid [data-playback-bvid]')).toBeVisible();
 }
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/__test/reset");
   await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({ status: 200, body: "" }));
-  await page.goto("/");
+  await page.goto('/?page=accounts');
   await expect(page.locator(".user-item")).toHaveCount(1);
 });
 
@@ -35,13 +36,13 @@ test("archived unavailable cards do not claim background work and nested control
   const button = page.locator(".video-source-availability button");
   for (const key of ["Enter", " "]) {
     await button.evaluate((el: HTMLButtonElement) => { el.disabled = false; });
-    await button.focus();
-    await button.press(key);
+    await (await revealControl(page,button)).focus();
+    await (await revealControl(page,button)).press(key);
     await expect(button).toHaveText("已加入复核");
   }
   expect(requests).toBe(2);
   expect(playbackRequests).toBe(0);
-  await page.locator("#videoGrid [data-playback-bvid]").focus();
+  await (await revealControl(page,page.locator("#videoGrid [data-playback-bvid]"))).focus();
   await page.keyboard.press("Enter");
   await expect.poll(() => playbackRequests).toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
@@ -83,7 +84,7 @@ test('archived favorite-only evidence is visible without changing unavailable or
 
 test("settings folds preserve unified save and reveal invalid hidden controls", async ({ page }) => {
   await expect(page.locator('#saveConfigBtn')).toBeEnabled();
-    expect(await page.locator('body > main > .card h2').allTextContents()).toEqual(['账号与同步', 'UP 订阅', '任务中心', '全局设置']);
+  expect(await page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button').allTextContents()).toEqual(['概览','归档库','UP 订阅','任务','账号','设置']);
   await expect(page.locator('.settings-fold')).toHaveCount(6);
   await expect(page.locator('#storageSettings')).not.toHaveAttribute('open');
   let writes = 0;
@@ -95,13 +96,13 @@ test("settings folds preserve unified save and reveal invalid hidden controls", 
     await route.fulfill({ json: { success: true, data: {} } });
   });
   await page.locator('#concurrentDownloads').evaluate((el: HTMLInputElement) => { el.value = '0'; });
-  await page.locator('#saveConfigBtn').click();
+  await (await revealControl(page,page.locator('#saveConfigBtn'))).click();
   await expect(page.locator('#queueSettings')).toHaveAttribute('open');
   await expect(page.locator('#concurrentDownloads')).toBeFocused();
   expect(writes).toBe(0);
-  await page.locator('#concurrentDownloads').fill('2');
-  await page.locator('#queueSettings > summary').click();
-  await page.locator('#saveConfigBtn').click();
+  await (await revealControl(page,page.locator('#concurrentDownloads'))).fill('2');
+  await toggleSetting(page,'queueSettings');
+  await (await revealControl(page,page.locator('#saveConfigBtn'))).click();
   await expect.poll(() => writes).toBe(1);
   expect(readField(saved, 'concurrentDownloads')).toBe(2);
   expect(readField(saved, 'alistUrl')).toBe('http://alist:5244');
@@ -118,10 +119,10 @@ test("a late migration response cannot restart polling after close", async ({ pa
     await pending;
     await route.fulfill({json:{success:true,data:{id:'migration',status:'copying' as const,entryCount:2}}}).catch(() => {});
   });
-  await page.locator('#storageSettings > summary').click();
-  await page.locator('#pathMigrationBtn').click();
+  await toggleSetting(page,'storageSettings');
+  await (await revealControl(page,page.locator('#pathMigrationBtn'))).click();
   await expect.poll(() => requests).toBe(1);
-  await page.locator('#closePathMigrationBtn').click();
+  await (await revealControl(page,page.locator('#closePathMigrationBtn'))).click();
   await expect(page.locator('#pathMigrationModal')).not.toHaveClass(/active/);
   release();
   await page.waitForTimeout(1700);
@@ -141,14 +142,14 @@ test('migration preview deduplicates repeated clicks and ignores completion afte
     await pending;
     await route.fulfill({json:{success:true,data:{}}}).catch(() => {});
   });
-  await page.locator('#storageSettings > summary').click();
-  await page.locator('#pathMigrationBtn').click();
+  await toggleSetting(page,'storageSettings');
+  await (await revealControl(page,page.locator('#pathMigrationBtn'))).click();
   await expect(page.locator('#pathMigrationSummary')).toContainText('还没有路径预览');
-  await page.locator('#pathMigrationDestination').fill('/new');
+  await (await revealControl(page,page.locator('#pathMigrationDestination'))).fill('/new');
   await page.locator('#pathMigrationPreviewBtn').dispatchEvent('click');
   await page.locator('#pathMigrationPreviewBtn').dispatchEvent('click');
   await expect.poll(() => writes).toBe(1);
-  await page.locator('#closePathMigrationBtn').click();
+  await (await revealControl(page,page.locator('#closePathMigrationBtn'))).click();
   release();
   await page.waitForTimeout(1700);
   expect(reads).toBe(1);
@@ -174,9 +175,9 @@ test("migration conflict details are paginated and recover from a failed page", 
   await page.route('**/api/path-migration/state', route => route.fulfill({json:{success:true,data:{
     id:'migration',status:'ready' as const,conflictCount:21,sourceRoot:'/old',destinationRoot:'/new',
   }}}));
-  await page.locator('#storageSettings > summary').click();
-  await page.locator('#pathMigrationBtn').click();
-  await page.getByRole("button", { name: "查看冲突与失败项目" }).click();
+  await toggleSetting(page,'storageSettings');
+  await (await revealControl(page,page.locator('#pathMigrationBtn'))).click();
+  await (await revealControl(page,page.getByRole("button", { name: "查看冲突与失败项目" }))).click();
   await expect(page.locator("#pathMigrationItems .cleanup-item")).toHaveCount(20);
   expect(offsets).toEqual([0]);
   const bounds = await page.evaluate(() => {
@@ -185,13 +186,13 @@ test("migration conflict details are paginated and recover from a failed page", 
     return { bodyBottom: body.bottom, footerTop: footer.top };
   });
   expect(bounds.bodyBottom).toBeLessThanOrEqual(bounds.footerTop + 1);
-  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  await (await revealControl(page,page.getByRole("button", { name: "下一页", exact: true }))).click();
   await expect(page.locator("#pathMigrationItems")).toContainText("暂时无法读取");
-  await page.locator("#pathMigrationItems").getByRole("button", { name: "重试", exact: true }).click();
+  await (await revealControl(page,page.locator("#pathMigrationItems").getByRole("button", { name: "重试", exact: true }))).click();
   await expect(page.locator("#pathMigrationItems .cleanup-item")).toHaveCount(1);
   await expect(page.locator("#pathMigrationItems")).toContainText("第 2 页");
   await expect(page.getByRole("button", { name: "下一页", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "上一页", exact: true }).click();
+  await (await revealControl(page,page.getByRole("button", { name: "上一页", exact: true }))).click();
   await expect(page.locator("#pathMigrationItems .cleanup-item")).toHaveCount(20);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 });

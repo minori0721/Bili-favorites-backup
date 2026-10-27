@@ -1,3 +1,4 @@
+import {revealControl,toggleSetting} from './workspace-navigation.js';
 import { expect, test as base, type Page } from "@playwright/test";
 
 const test = base.extend<{ browserProblems: string[] }>({
@@ -22,7 +23,7 @@ async function openBoard(page: Page) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
+  await page.goto('/?page=tasks');
   await expect(page.locator("#logQueueBtn")).toHaveClass(/active/);
   await expect(page.locator("#queueBoard")).toBeVisible();
   await expect(page.locator(".queue-card")).toHaveCount(1);
@@ -41,19 +42,19 @@ test('opening and closing pending issues shares the in-flight board request', as
     await pending;
     await route.fulfill({response});
   });
-  await page.goto('/');
+  await page.goto('/?page=tasks');
   try {
     await expect.poll(() => requests).toBe(1);
-    await page.locator('#recoveryIssuesBtn').click();
+    await (await revealControl(page,page.locator('#recoveryIssuesBtn'))).click();
     await expect(page.locator('#recoveryIssuesModal')).toHaveClass(/active/);
-    await page.locator('#closeRecoveryIssuesBtn').click();
+    await (await revealControl(page,page.locator('#closeRecoveryIssuesBtn'))).click();
     expect(requests).toBe(1);
   } finally { release(); }
   await expect(page.locator('.queue-card')).toHaveCount(1);
   expect(requests).toBe(1);
-  await page.locator('#recoveryIssuesBtn').click();
+  await (await revealControl(page,page.locator('#recoveryIssuesBtn'))).click();
   await expect.poll(() => requests).toBe(2);
-  await page.locator('#closeRecoveryIssuesBtn').click();
+  await (await revealControl(page,page.locator('#closeRecoveryIssuesBtn'))).click();
 });
 
 test('queue covers prefer local files, fall back once, and do not reset on polling', async ({ page }) => {
@@ -104,7 +105,7 @@ async function openMediaRetryBoard(page: Page) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
+  await page.goto('/?page=tasks');
   await expect(page.locator("#queueBoard")).toBeVisible();
   await expect(page.locator(".queue-card")).toHaveCount(1);
 }
@@ -116,7 +117,7 @@ async function openPartialUploadBoard(page: Page) {
     contentType: "text/css",
     body: "",
   }));
-  await page.goto("/");
+  await page.goto('/?page=tasks');
   await expect(page.locator("#queueBoard")).toBeVisible();
   await expect(page.locator(".queue-card")).toHaveCount(1);
 }
@@ -154,7 +155,7 @@ test('scheduler shows polling time and account cooldown as separate values', asy
   await openBoard(page);
   const box = page.locator('#schedulerStatusBox');
   await expect(box.locator('summary')).toContainText('下次自动同步');
-  await box.locator('summary').click();
+  await (await revealControl(page,box.locator('summary'))).click();
   await expect(box).toContainText('账号冷却：2 个账号');
   await expect(box).toContainText('画质收尾 1');
   const times = await box.locator('.scheduler-status-grid > div').allTextContents();
@@ -165,15 +166,15 @@ test("codec preference editor supports a stable three-item reorder", async ({ pa
   void browserProblems;
   await openBoard(page);
   const editor = page.locator("#bbdownEncodingPriorityEditor");
-  await page.locator('#downloadSettings > summary').click();
-  await editor.scrollIntoViewIfNeeded();
+  await toggleSetting(page,'downloadSettings');
+  await (await revealControl(page,editor)).scrollIntoViewIfNeeded();
   const items = editor.locator(".encoding-priority-item");
   await expect(items).toHaveCount(3);
   await expect(items.nth(0)).toContainText("HEVC");
   await expect(items.nth(1)).toContainText("AVC");
   await expect(items.nth(2)).toContainText("AV1");
 
-  await items.nth(0).getByRole("button", { name: "下移 HEVC" }).click();
+  await (await revealControl(page,items.nth(0).getByRole("button", { name: "下移 HEVC" }))).click();
   await expect(items.nth(0)).toContainText("AVC");
   await expect(items.nth(1)).toContainText("HEVC");
   await expect(items.nth(2)).toContainText("AV1");
@@ -183,9 +184,9 @@ test("codec preference editor supports a stable three-item reorder", async ({ pa
   } else {
     // The touch UI uses explicit move controls. A mouse drag between rows
     // outside a short landscape viewport does not exercise that interaction.
-    await items.nth(2).getByRole('button', {name: '上移 AV1'}).click();
+    await (await revealControl(page,items.nth(2).getByRole('button', {name: '上移 AV1'}))).click();
     await expect(items.nth(1)).toContainText('AV1');
-    await items.nth(1).getByRole('button', {name: '上移 AV1'}).click();
+    await (await revealControl(page,items.nth(1).getByRole('button', {name: '上移 AV1'}))).click();
   }
   await expect(items.nth(0)).toContainText("AV1");
   await expect(items.nth(1)).toContainText("AVC");
@@ -195,10 +196,10 @@ test("codec preference editor supports a stable three-item reorder", async ({ pa
 test("switching to logs and back preserves the board mode and card state", async ({ page, browserProblems }) => {
   void browserProblems;
   await openBoard(page);
-  await page.locator("#logSimpleBtn").click();
+  await (await revealControl(page,page.locator("#logSimpleBtn"))).click();
   await expect(page.locator("#logConsole")).toBeVisible();
   await expect(page.locator("#queueBoard")).toBeHidden();
-  await page.locator("#logQueueBtn").click();
+  await (await revealControl(page,page.locator("#logQueueBtn"))).click();
   await expect(page.locator("#logQueueBtn")).toHaveClass(/active/);
   await expect(page.locator("#queueBoard")).toBeVisible();
   await expect(page.locator(".queue-card")).toContainText("远端文件暂不可见");
@@ -233,7 +234,7 @@ test('queue recovery deduplicates rapid actions and restores controls after fail
   await expect(recheck).toBeDisabled();
   release();
   await expect(recheck).toBeEnabled();
-  await recheck.click();
+  await (await revealControl(page,recheck)).click();
   await expect.poll(() => calls).toBe(2);
   await expect(recheck).toBeEnabled();
 });

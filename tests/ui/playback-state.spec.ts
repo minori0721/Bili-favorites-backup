@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { expect, test } from '@playwright/test';
 
 // Exercise the application through the vendor and DOM boundaries; no internal app functions are exposed.
@@ -6,10 +7,13 @@ const playerAdapter = `window.Artplayer = class {
     this.video = document.createElement('video');
     this.video.dataset.url = options.url;
     options.container.appendChild(this.video);
+    this.template={$player:options.container,$setting:document.createElement('div')};
+    this.setting={show:false};this.controls={show:true};
     this.currentTime = 15; this.duration = 120; this.volume = 0.5; this.muted = false; this.playbackRate = 1;
   }
   on(name, callback) { this.video.addEventListener('fixture:' + name, callback); return this; }
-  destroy() { this.video.dataset.destroyed = 'true'; this.video.remove(); }
+  once(name,callback){this.video.addEventListener('fixture:'+name,callback,{once:true});return this;}
+  destroy() { this.video.dispatchEvent(new Event('fixture:destroy'));this.video.dataset.destroyed = 'true'; this.video.remove(); }
   play() { return Promise.resolve(); }
   pause() {}
 };`;
@@ -29,11 +33,11 @@ test('player falls back once and ignores events from a released instance', async
     mode: 'library' as const, page: 1, pageSize: 50, total: 2, focusIndex: 0, hasMore: false, items,
   } } }));
   await page.route('**/playback/delivery/**', route => route.fulfill({ json: { success: true, data: { status: 'direct' as const } } }));
-  await page.goto('/');
-  await page.locator('#archiveLibraryBtn').click();
-  if (info.project.name !== 'desktop') await page.locator('.archive-nav-item[data-archive-scope="global"]').click();
+  await page.goto('/?page=accounts');
+  await (await revealControl(page,page.getByRole('navigation',{name:'主导航',exact:true}).getByRole('button',{name:'归档库',exact:true}))).click();
+  if (info.project.name !== 'desktop') await (await revealControl(page,page.locator('.archive-nav-item[data-archive-scope="global"]'))).click();
   const open = page.locator('[data-archive-bvid="BV1ALPHA001"] .archive-library-card-main');
-  await open.click();
+  await (await revealControl(page,open)).click();
   const video = page.locator('#playbackArt video');
   await expect(video).toHaveCount(1);
   const original = await video.elementHandle();
@@ -47,7 +51,7 @@ test('player falls back once and ignores events from a released instance', async
   expect(await original!.getAttribute('data-destroyed')).toBe('true');
   await page.keyboard.press('Escape');
   await expect(page.locator('#playbackModal')).not.toHaveClass(/active/);
-  await open.click();
+  await (await revealControl(page,open)).click();
   await expect(video).toHaveCount(1);
   const currentUrl = await video.getAttribute('data-url');
   await original!.evaluate(element => {

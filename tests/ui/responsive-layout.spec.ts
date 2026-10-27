@@ -1,19 +1,19 @@
 import { expect, test } from '@playwright/test';
+import {navigate} from './workspace-navigation.js';
 
 test('home layout follows available width without horizontal queues or empty account spacing', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'Explicit viewport matrix covers this layout.');
   await page.request.post('/__test/reset', { data: { usersMode: 'double' } });
   await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ body: '' }));
-  await page.goto('/');
+  await page.goto('/?page=tasks');
   await expect(page.locator('.queue-board')).toHaveClass(/is-empty/);
   await expect(page.locator('#userList > .user-item')).toHaveCount(2);
   for (const width of [320, 390, 600, 602, 617, 1045, 1188, 1190, 1280]) {
     await page.setViewportSize({ width, height: width === 1045 ? 792 : 620 });
+    await navigate(page,'tasks');
     const layout = await page.evaluate(() => {
       const board = document.querySelector<HTMLElement>('.queue-board')!;
       const columns = [...board.querySelectorAll<HTMLElement>('.queue-col')];
-      const actions = document.querySelector('.account-actions')!.getBoundingClientRect();
-      const users = document.querySelector('#userList')!.getBoundingClientRect();
       const brand = document.querySelector('.app-brand')!.getBoundingClientRect();
       const headerActions = document.querySelector('.header-actions')!.getBoundingClientRect();
       return {
@@ -23,7 +23,6 @@ test('home layout follows available width without horizontal queues or empty acc
         pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         heights: columns.map(col => col.getBoundingClientRect().height),
         emptyListOverflows: [...board.querySelectorAll('.queue-list')].some(list => list.scrollHeight > list.clientHeight),
-        gap: users.top - actions.bottom,
         singleHeaderRow: Math.abs(brand.top + brand.height / 2 - headerActions.top - headerActions.height / 2) < 2,
       };
     });
@@ -32,8 +31,10 @@ test('home layout follows available width without horizontal queues or empty acc
     expect(layout.pageOverflow).toBeLessThanOrEqual(1);
     expect(layout.heights.every(height => height <= 112)).toBe(true);
     expect(layout.emptyListOverflows).toBe(false);
-    expect(layout.gap).toBeCloseTo(16, 0);
     if (width >= 617) expect(layout.singleHeaderRow, `header at ${width}`).toBe(true);
+    await navigate(page,'accounts');
+    const gap=await page.evaluate(()=>document.querySelector('#userList')!.getBoundingClientRect().top-document.querySelector('.account-actions')!.getBoundingClientRect().bottom);
+    expect(gap).toBeCloseTo(16,0);
   }
 });
 
@@ -47,7 +48,7 @@ test('populated queue keeps bounded vertical lists and equal columns', async ({ 
     json.data.uploadPending = Array.from({ length: 20 }, (_, index) => ({ ...item, id: `layout-${index}`, bvid: `BVlayout${index}` }));
     await route.fulfill({ json });
   });
-  await page.goto('/');
+  await page.goto('/?page=tasks');
   await expect(page.locator('.queue-card')).toHaveCount(20);
   await expect(page.locator('.queue-board')).not.toHaveClass(/is-empty/);
   const layout = await page.locator('.queue-board').evaluate(board => {
@@ -69,12 +70,12 @@ test('populated queue keeps bounded vertical lists and equal columns', async ({ 
 test('long version labels stay contained and account errors remain visible', async ({ page }) => {
   await page.request.post('/__test/reset', { data: { usersErrorOnce: true } });
   await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ body: '' }));
-  await page.route('**/', async route => {
+  await page.route('**/?page=*', async route => {
     const response = await route.fetch();
     const body = (await response.text()).replace(/(id="versionInfoBtn"[^>]*>)[^<]*/, '$1v2.5.6-dev-very-long-build-version-123456789');
     await route.fulfill({ response, body });
   });
-  await page.goto('/');
+  await page.goto('/?page=accounts');
   await expect(page.locator('#userListStatus')).toBeVisible();
   await expect(page.locator('#userListStatus')).not.toBeEmpty();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { test, expect } from '@playwright/test';
 
 test('unavailable filters ignore late pages and retain each filter cache',async({page})=>{
@@ -12,12 +13,12 @@ test('unavailable filters ignore late pages and retain each filter cache',async(
     else uploaded++;
     return route.fulfill({json:{success:true,data:{items:[{bvid:'BV'+filter,title:filter+' fixture',mediaId:1}],hasMore:false,nextCursor:null}}});
   });
-  await page.goto('/');await page.locator('[data-action="unavailable"]').click();await expect.poll(()=>missing).toBe(1);
-  await page.locator('#filterUploadedBtn').click();await expect(page.locator('#unavailableGrid')).toContainText('uploaded fixture');
+  await page.goto('/?page=accounts');await (await revealControl(page,page.locator('[data-action="unavailable"]'))).click();await expect.poll(()=>missing).toBe(1);
+  await (await revealControl(page,page.locator('#filterUploadedBtn'))).click();await expect(page.locator('#unavailableGrid')).toContainText('uploaded fixture');
   releaseFirstMissing();
   await page.waitForTimeout(600);await expect(page.locator('#unavailableGrid')).not.toContainText('missing fixture');
-  await page.locator('#filterMissingBtn').click();await expect(page.locator('#unavailableGrid')).toContainText('missing fixture');
-  await page.locator('#filterUploadedBtn').click();await expect(page.locator('#unavailableGrid')).toContainText('uploaded fixture');
+  await (await revealControl(page,page.locator('#filterMissingBtn'))).click();await expect(page.locator('#unavailableGrid')).toContainText('missing fixture');
+  await (await revealControl(page,page.locator('#filterUploadedBtn'))).click();await expect(page.locator('#unavailableGrid')).toContainText('uploaded fixture');
   expect(uploaded).toBe(1);expect(missing).toBe(2);
 });
 
@@ -31,10 +32,10 @@ test('unavailable request failure is retryable and close invalidates old results
     if(current===2)await new Promise(resolve=>setTimeout(resolve,550));
     return route.fulfill({json:{success:true,data:{items:[{bvid:'BV'+current,title:'request '+current}],hasMore:false}}});
   });
-  await page.goto('/');await page.locator('[data-action="unavailable"]').click();
+  await page.goto('/?page=accounts');await (await revealControl(page,page.locator('[data-action="unavailable"]'))).click();
   await expect(page.locator('#unavailableGrid')).toContainText('fixture unavailable');
-  await page.locator('#unavailableGrid .retry-button').click();await expect.poll(()=>requests).toBe(2);
-  await page.locator('#closeUnavailableBtn').click();await page.locator('[data-action="unavailable"]').click();
+  await (await revealControl(page,page.locator('#unavailableGrid .retry-button'))).click();await expect.poll(()=>requests).toBe(2);
+  await (await revealControl(page,page.locator('#closeUnavailableBtn'))).click();await (await revealControl(page,page.locator('[data-action="unavailable"]'))).click();
   await expect(page.locator('#unavailableGrid')).toContainText('request 3');await page.waitForTimeout(650);
   await expect(page.locator('#unavailableGrid')).not.toContainText('request 2');
 });

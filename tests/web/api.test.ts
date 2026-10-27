@@ -41,3 +41,11 @@ test('API client returns unknown data and rejects malformed envelopes', async ()
   const unavailable = createApiClient({fetch:async () => Response.json({success:true, data:{}}, {status:503}), notifyError:() => {}});
   await assert.rejects(unavailable.silent('/api/example'), error => error instanceof ApiError && error.status === 503);
 });
+
+test('non-JSON responses report a safe format error with the original HTTP status',async()=>{
+  const api=createApiClient({fetch:async()=>new Response('<html>Bad gateway</html>',{status:502}),notifyError:()=>{}});
+  await assert.rejects(api.silent('/api/example'),error=>error instanceof ApiError&&error.code==='RESPONSE_FORMAT_INVALID'&&error.status===502&&!error.message.includes('<html>'));
+  const abort=new DOMException('Cancelled','AbortError');
+  const cancelled=createApiClient({fetch:async()=>{throw abort;},notifyError:()=>{}});
+  await assert.rejects(cancelled.silent('/api/example'),error=>error===abort);
+});

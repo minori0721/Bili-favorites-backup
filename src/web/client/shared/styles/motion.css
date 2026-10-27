@@ -5,10 +5,54 @@
   --motion-reveal: 260ms;
   --motion-exit: 190ms;
   --motion-ease: cubic-bezier(.22, .8, .24, 1);
-  --motion-ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --motion-ease-enter: cubic-bezier(.215, .61, .355, 1);
   --motion-ease-exit: cubic-bezier(.4, 0, 1, 1);
   --motion-outline: 0 0 0 3px rgba(57, 197, 187, .14);
   --motion-lift-shadow: 0 9px 24px rgba(29, 101, 94, .14);
+  --motion-ease-feedback: cubic-bezier(.34, 1.45, .64, 1);
+}
+
+/* Keep the entire two-ring focus treatment inside clipped disclosure groups. */
+:root body input:is([type="text"], [type="search"], [type="url"], [type="number"], [type="password"], [type="date"]):not(.playback-search-input):focus,
+:root body select:focus,
+:root body textarea:focus {
+  border-color: var(--accent-hover);
+  outline: none;
+  box-shadow: var(--field-focus-ring);
+  background-color: rgba(255,255,255,.96);
+}
+
+/* Changing values retain their rhythm without animating the numbers themselves. */
+#queueBoard, .up-card-stats, .up-pagination, .archive-library-toolbar,
+.archive-nav-count, .scheduler-status-grid, .recovery-issues-summary, .updates-versions {
+  font-variant-numeric: tabular-nums;
+}
+.queue-col-title > span:last-child { min-inline-size: 3ch; text-align: end; }
+.up-card-stats strong { min-inline-size: 3ch; }
+.field-hint, .up-help-body p, .up-help-body li, .help-card li,
+.up-notice, .confirm-action-message, .confirm-action-detail { text-wrap: pretty; }
+
+/* Preserve the accessible label and button dimensions during copy confirmation. */
+button.copy-feedback { position: relative; }
+button.copy-feedback::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 13px;
+  border: solid var(--accent-hover);
+  border-width: 0 2px 2px 0;
+  opacity: 0;
+  transform: translate(-50%, -65%) rotate(45deg) scale(.65);
+  transition: opacity var(--motion-hover) var(--motion-ease),
+    transform 300ms var(--motion-ease-feedback);
+  pointer-events: none;
+}
+button.copy-confirmed { color: transparent !important; }
+button.copy-confirmed::after {
+  opacity: 1;
+  transform: translate(-50%, -65%) rotate(45deg) scale(1);
 }
 
 /* Buttons feel responsive without floating away from the pointer. */
@@ -96,21 +140,34 @@ header button:not(:disabled):active,
     color var(--motion-hover) var(--motion-ease);
 }
 .settings-fold[open] > summary::after { content: ''; transform: translateY(4px) rotate(225deg); }
+.settings-fold.validation-reveal[open]::details-content {
+  content-visibility:visible;
+  block-size:auto;
+  opacity:1;
+  transition:none;
+}
 .settings-fold > summary:hover::after,
 .settings-fold > summary:focus-visible::after { color: var(--accent-hover); }
-@supports (interpolate-size: allow-keywords) {
+@supports (interpolate-size: allow-keywords) and selector(::details-content) {
   .settings-fold,
-  .scheduler-status { interpolate-size: allow-keywords; }
+  .scheduler-status,
+  .up-settings,
+  .recovery-technical { interpolate-size: allow-keywords; }
   .settings-fold::details-content,
-  .scheduler-status::details-content {
+  .scheduler-status::details-content,
+  .up-settings::details-content,
+  .recovery-technical::details-content {
     block-size: 0;
     opacity: 0;
     overflow: hidden;
     transition: block-size var(--motion-reveal) var(--motion-ease-enter),
-      opacity var(--motion-hover) var(--motion-ease);
+      opacity var(--motion-hover) var(--motion-ease),
+      content-visibility var(--motion-reveal) allow-discrete;
   }
   .settings-fold[open]::details-content,
-  .scheduler-status[open]::details-content { block-size: auto; opacity: 1; }
+  .scheduler-status[open]::details-content,
+  .up-settings[open]::details-content,
+  .recovery-technical[open]::details-content { block-size: auto; opacity: 1; }
 }
 .scheduler-status:has(> .scheduler-status-main:hover),
 .scheduler-status:has(> .scheduler-status-main:focus-visible) {
@@ -206,6 +263,8 @@ header button:not(:disabled):active,
 
 @media (prefers-reduced-motion: reduce) {
   .scheduler-status.running .scheduler-status-title::before { animation: none; }
+  .settings-fold::details-content, .scheduler-status::details-content,
+  .up-settings::details-content, .recovery-technical::details-content { transition: none; }
 }
 button[aria-busy="true"], .row button[aria-busy="true"] {
   cursor: progress;
@@ -216,3 +275,11 @@ button[aria-busy="true"], .row button[aria-busy="true"] {
 }
 @keyframes buttonWorking { from { background-position: 130% 0; } to { background-position: -30% 0; } }
 @media (prefers-reduced-motion: reduce) { button[aria-busy="true"] { animation: none; } }
+
+@media (forced-colors: active) {
+  .user-item, .up-subscription-card { border-color: CanvasText; }
+  :root body input:is([type="text"], [type="search"], [type="url"], [type="number"], [type="password"], [type="date"]):focus,
+  :root body select:focus, :root body textarea:focus { outline: 2px solid Highlight; outline-offset: -3px; }
+  button.copy-confirmed { color: ButtonText !important; }
+  button.copy-confirmed::after { display: none; }
+}

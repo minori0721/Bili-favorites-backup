@@ -188,8 +188,8 @@
       .playback-shell.is-mobile-immersive .playback-queue-close { display:inline-flex; width:30px; height:30px; align-items:center; justify-content:center; border:0; border-radius:50%; background:#27312F; color:#DDE5E3; padding:0; font-size:19px; cursor:pointer; }
     }
     @media (max-height:480px) and (pointer:coarse) {
-      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) { align-items:flex-end; padding:8px; }
-      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal) .panel { --dialog-inline:16px; max-height:calc(100dvh - 8px); border-radius:20px; }
+      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal):not(.workspace-full-workspace) { align-items:flex-end; padding:8px; }
+      .modal:not(.archive-library-modal):not(.playback-modal):not(.recovery-issues-modal):not(.workspace-full-workspace) .panel { --dialog-inline:16px; max-height:calc(100dvh - 8px); border-radius:20px; }
     }
     @media (max-width: 420px) {
       .playback-art .art-video-player { --art-control-icon-size:28px; --art-control-height:34px; --art-padding:10px; }

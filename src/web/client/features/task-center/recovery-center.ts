@@ -9,11 +9,12 @@ interface Options {
   root: Document; api: ApiClient; queueSnapshots: Pick<ReturnType<typeof createQueueSnapshotResource>, 'request' | 'applyIssueUpdate'>;
   mediaRetry: Pick<ReturnType<typeof createMediaRetryDialog>, 'open' | 'encodingPriority'>;
   confirmAction: ConfirmAction; formatBytes(value: number): string; formatDateTime(value: number): string;
-  copyTextToClipboard(text: string): Promise<boolean>; showToast(message: string, kind: 'success' | 'error'): void;
+  copyTextToClipboard(text: string, trigger?: HTMLButtonElement): Promise<boolean>; showToast(message: string, kind: 'success' | 'error'): void;
   openModal(id: string, trigger?: HTMLElement | null): void; closeModal(id: string, options?: {restoreFocus?: boolean}): unknown;
   boardActive(): boolean;
+  openStorageSettings():Promise<void>;
 }
-export function createRecoveryCenter({root: document, api, queueSnapshots, mediaRetry, confirmAction, formatBytes, formatDateTime, copyTextToClipboard, showToast, openModal, closeModal, boardActive}: Options) {
+export function createRecoveryCenter({root: document, api, queueSnapshots, mediaRetry, confirmAction, formatBytes, formatDateTime, copyTextToClipboard, showToast, openModal, closeModal, boardActive,openStorageSettings}: Options) {
   const elements = {
     recoveryIssuesBtn: requireElement(document, '#recoveryIssuesBtn', HTMLButtonElement),
     recoveryIssuesDetail: requireElement(document, '#recoveryIssuesDetail', HTMLElement),
@@ -32,8 +33,6 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
     recoveryChoiceCopy: requireElement(document, '#recoveryChoiceCopy', HTMLElement),
     recoveryChoiceSelect: requireElement(document, '#recoveryChoiceSelect', HTMLSelectElement),
     recoveryChoiceStatus: requireElement(document, '#recoveryChoiceStatus', HTMLElement),
-    storageCheckBtn: requireElement(document, '#storageCheckBtn', HTMLButtonElement),
-    storageSettings: requireElement(document, '#storageSettings', HTMLDetailsElement),
     recoveryIssuesLive: requireElement(document, '#recoveryIssuesLive', HTMLElement),
     closeRecoveryIssuesBtn: requireElement(document, '#closeRecoveryIssuesBtn', HTMLButtonElement),
     recoveryIssuesBackBtn: requireElement(document, '#recoveryIssuesBackBtn', HTMLButtonElement),
@@ -305,11 +304,7 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
     async function performRecoveryIssueAction(issue: RecoveryIssue, action: RecoveryAction | undefined, trigger: HTMLElement) {
       if (!issue || !action) return;
       if (action.id === 'open_settings') {
-        closeModal('recoveryIssuesModal');
-        const checkButton = elements.storageCheckBtn;
-        elements.storageSettings.open = true;
-        checkButton?.scrollIntoView({ behavior:'smooth', block:'center' });
-        later(() => checkButton?.focus({ preventScroll:true }), 260);
+        await openStorageSettings();
         return;
       }
       const actionToken = lifecycleGeneration;
@@ -545,7 +540,7 @@ export function createRecoveryCenter({root: document, api, queueSnapshots, media
       copy.className = 'recovery-copy-diagnostic';
       copy.textContent = '复制诊断摘要';
       copy.addEventListener('click', async () => {
-        const copied = await copyTextToClipboard(issue.safeDiagnostic || '');
+        const copied = await copyTextToClipboard(issue.safeDiagnostic || '', copy);
         showToast(copied ? '诊断摘要已复制' : '复制失败', copied ? 'success' : 'error');
       });
       technical.append(technicalSummary, grid, copy);

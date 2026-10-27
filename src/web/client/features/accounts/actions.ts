@@ -9,7 +9,7 @@ export function createAccountActions(dependencies: {
   unavailable(id: string): Promise<void>;
   remove(id: string, name: string, trigger: HTMLElement): void;
   reload(trigger?: HTMLButtonElement): Promise<void>;
-  copy(value: string): Promise<boolean>;
+  copy(value: string, trigger?: HTMLButtonElement): Promise<boolean>;
   notify(message: string, type?: string): void;
 }) {
   let generation = 0;
@@ -62,7 +62,7 @@ export function createAccountActions(dependencies: {
         const response = await request('/cookie/export', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'EXPORT_COOKIE'})});
         if (!alive()) return;
         if (!isRecord(response) || typeof response.cookie !== 'string') throw new Error('Cookie 导出响应格式错误');
-        const copied = await dependencies.copy(response.cookie);
+        const copied = await dependencies.copy(response.cookie, button);
         if (!alive()) return;
         dependencies.notify(copied ? 'Cookie 已复制' : 'Cookie 导出成功，但浏览器阻止了自动复制',copied ? 'success' : 'info');
       }

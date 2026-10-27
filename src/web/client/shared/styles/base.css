@@ -10,6 +10,7 @@
       --dialog-heading-color: #24766F;
       --surface: rgba(250,253,252,0.72);
       --surface-strong: rgba(238,245,243,0.88);
+      --surface-inset: rgba(235,246,243,0.62);
       --accent: #39C5BB;
       --accent-hover: #2BA9A0;
       --accent-soft: rgba(57,197,187,0.10);
@@ -18,7 +19,7 @@
       --border: #D6F0ED;
       --border-strong: rgba(214,240,237,0.95);
       --focus-ring: 0 0 0 3px rgba(57,197,187,0.22);
-      --field-focus-ring: inset 0 0 0 2px rgba(57,197,187,0.22);
+      --field-focus-ring: inset 0 0 0 1px #24766F, inset 0 0 0 4px rgba(57,197,187,0.12);
       --danger: #B94747;
       --danger-hover: #9F3939;
       --warning: #A9681F;
@@ -104,7 +105,7 @@
     .account-section { display:grid; gap:16px; }
     .account-section > h2,.account-section > p,.account-section > .account-actions,.account-section > #userListStatus { margin:0; }
     #userListStatus:empty { display:none; }
-    .user-item { border:1px solid var(--border); border-radius:var(--radius-legacy-panel); padding:15px; display:grid; gap:12px; background:var(--glass-surface); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); }
+    .user-item { border:1px solid transparent; border-radius:var(--radius-legacy-panel); padding:15px; display:grid; gap:12px; background:var(--surface-inset); box-shadow:inset 0 1px 0 rgba(255,255,255,0.72); backdrop-filter:var(--glass-blur); }
     .user-name { font-size:16px; color:var(--accent); }
     .user-meta { margin:0; }
     .user-actions { margin-top:4px; }

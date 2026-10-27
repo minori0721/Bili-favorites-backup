@@ -1,3 +1,4 @@
+import {revealControl} from './workspace-navigation.js';
 import { test,expect } from '@playwright/test';
 
 test('cleanup keeps partial failure evidence and sends one request for repeated clicks',async({page})=>{
@@ -14,15 +15,15 @@ test('cleanup keeps partial failure evidence and sends one request for repeated 
       {label:'日志',ok:true},{label:'临时下载',ok:false,error:'隔离故障'},
     ]}}});
   });
-  await page.goto('/');
-  await page.locator('#cleanupDataBtn').click();
+  await page.goto('/?page=settings');
+  await (await revealControl(page,page.locator('#cleanupDataBtn'))).click();
   await expect(page.locator('.cleanup-check')).toHaveCount(2);
-  await page.locator('.cleanup-check[value="logs"]').check();
-  await page.locator('.cleanup-check[value="temp"]').check();
-  await page.locator('#cleanupConfirmInput').fill('DELETE');
-  await page.locator('#executeCleanupBtn').click();
+  await (await revealControl(page,page.locator('.cleanup-check[value="logs"]'))).check();
+  await (await revealControl(page,page.locator('.cleanup-check[value="temp"]'))).check();
+  await (await revealControl(page,page.locator('#cleanupConfirmInput'))).fill('DELETE');
+  await (await revealControl(page,page.locator('#executeCleanupBtn'))).click();
   expect(writes).toBe(0);
-  await page.locator('#cleanupConfirmInput').fill('DELETE ALL PROJECT DATA');
+  await (await revealControl(page,page.locator('#cleanupConfirmInput'))).fill('DELETE ALL PROJECT DATA');
   await page.locator('#executeCleanupBtn').evaluate(button=>{
     button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
     button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
@@ -31,8 +32,8 @@ test('cleanup keeps partial failure evidence and sends one request for repeated 
   await expect(page.locator('#cleanupResultBlock')).toContainText('失败：临时下载 - 隔离故障');
   expect(writes).toBe(1);
   await expect(page.locator('#executeCleanupBtn')).toBeEnabled();
-  await page.locator('#closeCleanupDataBtn').click();
-  await page.locator('#cleanupDataBtn').click();
+  await (await revealControl(page,page.locator('#closeCleanupDataBtn'))).click();
+  await (await revealControl(page,page.locator('#cleanupDataBtn'))).click();
   await expect(page.locator('.cleanup-check:checked')).toHaveCount(0);
   await expect(page.locator('#cleanupResultBlock')).toBeHidden();
 });
@@ -48,14 +49,14 @@ test('cleanup protects busy data and ignores a late state response after closing
       {key:'logs',label:'日志',important:false,bytes:10},{key:'temp',label:'临时下载',important:true,bytes:50},
     ]}}});
   });
-  await page.goto('/');
-  await page.locator('#cleanupDataBtn').click();
+  await page.goto('/?page=settings');
+  await (await revealControl(page,page.locator('#cleanupDataBtn'))).click();
   await expect.poll(()=>reads).toBe(1);
-  await page.locator('#closeCleanupDataBtn').click();
-  await page.locator('#cleanupDataBtn').click();
+  await (await revealControl(page,page.locator('#closeCleanupDataBtn'))).click();
+  await (await revealControl(page,page.locator('#cleanupDataBtn'))).click();
   await expect(page.locator('.cleanup-check[value="temp"]')).toBeDisabled();
   await page.waitForTimeout(750);
   await expect(page.locator('.cleanup-check[value="temp"]')).toBeDisabled();
-  await page.locator('#cleanupSelectAllBtn').click();
+  await (await revealControl(page,page.locator('#cleanupSelectAllBtn'))).click();
   await expect(page.locator('.cleanup-check:checked')).toHaveCount(1);
 });

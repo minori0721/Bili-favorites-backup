@@ -1,4 +1,23 @@
 export function createPresentation(document: Document, navigator: Navigator) {
+    const copyFeedback = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>();
+    let generation = 0;
+    let active = false;
+    function finishCopy(copied: boolean, trigger: HTMLButtonElement | undefined, current: number) {
+        if (active && current === generation && trigger?.isConnected) {
+            const previous = copyFeedback.get(trigger);
+            if (previous !== undefined) clearTimeout(previous);
+            trigger.classList.remove('copy-confirmed');
+            copyFeedback.delete(trigger);
+            if (copied) {
+                trigger.classList.add('copy-feedback', 'copy-confirmed');
+                copyFeedback.set(trigger, setTimeout(() => {
+                    trigger.classList.remove('copy-confirmed');
+                    copyFeedback.delete(trigger);
+                }, 2500));
+            }
+        }
+        return copied;
+    }
     function setHidden(elOrId: string | HTMLElement | null, hidden: boolean) {
         const el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
         if (!el)
@@ -31,11 +50,12 @@ export function createPresentation(document: Document, navigator: Navigator) {
             el.appendChild(button);
         }
     }
-    async function copyTextToClipboard(text: string) {
+    async function copyTextToClipboard(text: string, trigger?: HTMLButtonElement) {
+        const current = generation;
         if (navigator.clipboard && navigator.clipboard.writeText) {
             try {
                 await navigator.clipboard.writeText(text);
-                return true;
+                return finishCopy(true, trigger, current);
             }
             catch (error) {
                 console.debug('[Clipboard] navigator clipboard failed; using the textarea fallback', error);
@@ -49,7 +69,7 @@ export function createPresentation(document: Document, navigator: Navigator) {
         input.select();
         const copied = document.execCommand('copy');
         document.body.removeChild(input);
-        return copied;
+        return finishCopy(copied, trigger, current);
     }
     function formatDateTime(value: string | number) {
         if (!value)
@@ -76,5 +96,17 @@ export function createPresentation(document: Document, navigator: Navigator) {
     function escapeHtml(value: unknown) {
         return String(value ?? '').replace(/[&<>"']/g, (ch) => (entities[ch] || ch));
     }
-    return { setHidden, setStatus, renderRequestStatus, copyTextToClipboard, formatDateTime, formatBytes, escapeHtml };
+    return {
+        setHidden, setStatus, renderRequestStatus, copyTextToClipboard, formatDateTime, formatBytes, escapeHtml,
+        init() { active = true; },
+        destroy() {
+            active = false;
+            generation++;
+            for (const [trigger, timer] of copyFeedback) {
+                clearTimeout(timer);
+                trigger.classList.remove('copy-confirmed');
+            }
+            copyFeedback.clear();
+        },
+    };
 }

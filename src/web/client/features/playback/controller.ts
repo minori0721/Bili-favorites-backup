@@ -5,6 +5,7 @@ import { isRecord } from '../../../../shared/api/value.js';
 import { decidePlaybackMediaError, resolvePlaybackDeliveryViewStatus, type PlaybackDeliveryViewStatus } from '../../../../shared/playback-policy.js';
 import type { ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
+import { bindPlaybackAccessibility } from './accessibility.js';
 declare global { interface Window { Artplayer?: typeof ArtplayerInstance } }
 type QueuePage = ReturnType<typeof parsePlaybackQueuePage>;
 type Item = QueuePage['items'][number];
@@ -328,7 +329,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
         }, { once:true });
         script.addEventListener('error', () => {
           script.remove();
-          reject(new Error('播放器脚本加载失败，请重新登录后再试'));
+          reject(new Error('播放器资源加载失败，请重试；如果仍无法打开，请检查网络或服务状态。'));
         }, { once:true });
         document.head.appendChild(script);
       }).catch((error) => {
@@ -1279,6 +1280,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
         };
         const art = new Artplayer(playerOptions);
         playbackState.art = art;
+        bindPlaybackAccessibility(art);
         function listenToPlayer(event: string, handler: () => void) {
           art.on(event, () => {
             if (token === playbackState.loadingToken && playbackState.art === art) handler();

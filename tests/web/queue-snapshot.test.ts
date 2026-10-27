@@ -5,6 +5,24 @@ import test from 'node:test';
 import { createQueueSnapshotResource } from '../../src/web/client/features/task-center/snapshot.js';
 import { parseQueueSnapshot, type QueueSnapshot } from '../../src/shared/api/queue-snapshot.js';
 
+test('snapshot failure notifications distinguish a failed response from cancellation',async()=>{
+  let failures=0;let rejectRead!:(reason:unknown)=>void;let success=false;
+  const read=async()=>success?queueResponse({summary:{running:0,waiting:60}}):new Promise((_,reject)=>{rejectRead=reject;});
+  const resource=createQueueSnapshotResource({api:{request:read,silent:read},receive:()=>{},failed:()=>{failures++;}});
+  const cancelled=resource.request();resource.cancel();await assert.rejects(cancelled,{name:'AbortError'});
+  rejectRead(new Error('late cancelled response'));await Promise.resolve();assert.equal(failures,0);
+  const failed=resource.request();rejectRead(new Error('unavailable'));await assert.rejects(failed,/unavailable/);assert.equal(failures,1);
+  success=true;assert.equal((await resource.request()).summary?.waiting,60);assert.equal(failures,1);
+});
+
+test('queue totals are optional for old responses and strictly validated when present',()=>{
+  assert.equal(parseQueueFixture().summary,undefined);
+  assert.deepEqual(parseQueueFixture({summary:{running:2,waiting:60}}).summary,{running:2,waiting:60});
+  for(const summary of [{running:-1,waiting:0},{running:0,waiting:1.2},{running:'1',waiting:0},{running:0},null]){
+    assert.throws(()=>parseQueueFixture({summary}));
+  }
+});
+
 test('missing queue fields cannot be presented as an empty or idle queue', () => {
   for (const field of ['scheduler', 'recovery', 'downloadPending', 'downloadRunning', 'uploadPending', 'uploadRunning']) {
     assert.throws(() => parseQueueSnapshot({...queueResponse(), [field]: undefined}));

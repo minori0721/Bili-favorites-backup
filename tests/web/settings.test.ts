@@ -6,7 +6,7 @@ import { parseStorageCheck } from '../../src/web/client/features/settings/storag
 import { parseSettings } from '../../src/web/client/features/settings/contract.js';
 
 test('template rules preserve custom separators, repeated tokens and configured order', () => {
-  assert.deepEqual(templateKeys('<bvid>_<ownerName>_<bvid>'), ['<bvid>', '<ownerName>']);
+  assert.deepEqual(templateKeys('<bvid>_<ownerName>_<bvid>'), ['<bvid>', '<ownerName>', '<bvid>']);
   assert.equal(templatePreview('<bvid>_<videoTitle>_<bvid>'), 'BV1xxxxx_视频标题示例_BV1xxxxx.mp4');
   assert.equal(templatePreview(''), '视频标题示例-BV1xxxxx.mp4');
   assert.equal(templatePreview('custom.<unknown>'), 'custom.<unknown>.mp4');

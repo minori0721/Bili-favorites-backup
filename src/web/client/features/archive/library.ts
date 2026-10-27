@@ -6,7 +6,7 @@ import type { ConfirmAction } from '../../shared/confirmation.js';
 import { requireElement } from '../../shared/dom.js';
 import { renderContentNotice, showContentSkeleton } from '../../shared/content-feedback.js';
 import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
-import { archiveStatusLabel, sourceAvailabilityReasonLabel } from './status.js';
+import { archiveMembershipStatusLabel, archiveStatusLabel, sourceAvailabilityReasonLabel } from './status.js';
 type Navigation = ReturnType<typeof parseArchiveNavigation>;
 type Summary = Navigation['summary'];
 type ArchiveItem = ReturnType<typeof parseArchiveLibraryDetail>;
@@ -760,7 +760,21 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (!archiveLibraryState.items.length) {
           const empty = document.createElement('div');
           empty.className = 'archive-library-empty';
-          empty.textContent = archiveLibraryState.query ? '没有匹配的本地归档' : '当前目录暂无本地归档';
+          const hint = document.createElement('p');
+          hint.textContent = archiveLibraryState.query ? '没有找到匹配的归档' : archiveLibraryState.filter !== 'all' ? '没有符合当前筛选条件的归档' : '当前目录还没有归档';
+          empty.appendChild(hint);
+          if (archiveLibraryState.filter !== 'all') {
+            const clear = document.createElement('button');
+            clear.type = 'button';clear.className = 'workspace-button';
+            clear.textContent = archiveLibraryState.query ? '清除状态筛选' : '查看全部';
+            clear.addEventListener('click', () => document.querySelector<HTMLButtonElement>('[data-archive-filter="all"]')?.click());
+            empty.appendChild(clear);
+          } else if (archiveLibraryState.query) {
+            const clear = document.createElement('button');
+            clear.type = 'button';clear.className = 'workspace-button';clear.textContent = '清除搜索';
+            clear.addEventListener('click', () => elements.archiveLibrarySearchClearBtn.click());
+            empty.appendChild(clear);
+          }
           grid.appendChild(empty);
         }
         setArchiveLibraryHeading();
@@ -1046,7 +1060,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           const title = document.createElement('strong');
           title.textContent = safeText(membership.userName, '未知账号') + ' · ' + safeText(membership.folderTitle, '收藏夹');
           const state = document.createElement('span');
-          state.textContent = archiveStatusLabel({ backupStatus:membership.backupStatus, statusGroup:data.statusGroup, playback:{ available:false } }) +
+          state.textContent = archiveMembershipStatusLabel(membership) +
             (membership.activeInFavorite ? ' · 当前关系' : ' · 历史记录') +
             (membership.sourceKind==='up' ? ' · UP 订阅' : membership.selectedFolder ? '' : ' · 已停用') +
             (membership.ownerRemoved ? ' · 已移除账号' : '') +

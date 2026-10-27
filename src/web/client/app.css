@@ -14,3 +14,4 @@
 @import './shared/styles/interactions-responsive.css';
 @import './shared/styles/motion.css';
 @import './shared/styles/scrollbars.css';
+@import './features/workspace/style.css';

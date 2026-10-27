@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { archiveStatusLabel, sourceAvailabilityReasonLabel } from '../../src/web/client/features/archive/status.js';
+import { archiveStatusLabel, archiveMembershipStatusLabel, sourceAvailabilityReasonLabel } from '../../src/web/client/features/archive/status.js';
+
+test('source archive evidence is independent of the selected playback source',()=>{
+  assert.equal(archiveMembershipStatusLabel({backupStatus:'verified'}),'归档已确认');
+  assert.equal(archiveMembershipStatusLabel({backupStatus:'partial_verified'}),'归档部分已确认');
+  assert.equal(archiveMembershipStatusLabel({backupStatus:'verified',deletionStatus:'completed'}),'已手动删除');
+});
 
 test('source diagnosis reports only explicit evidence and preserves usable archive priority', () => {
   for (const [reason,label,state] of [

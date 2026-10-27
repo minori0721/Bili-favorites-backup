@@ -1,14 +1,16 @@
 export interface ModalCloseOptions {restoreFocus?:boolean; skipConfirm?:boolean}
 interface ModalEntry {modal:HTMLElement; trigger:HTMLElement | null; previousFocus:HTMLElement | null; openedAt:number}
-export function createModalManager(document:Document, beforeClose:(modal:HTMLElement,options:ModalCloseOptions) => boolean) {
+export function createModalManager(document:Document, beforeClose:(modal:HTMLElement,options:ModalCloseOptions) => boolean | Promise<boolean>) {
   const window = (() => {
     const view = document.defaultView;
     if (!view) throw new Error('Modal document must have a browser window');
     return view;
   })();
   const modalStack:ModalEntry[] = [];
-  const modalAnimationState = new Map<HTMLElement,{timer:number | null}>();
+  const modalAnimationState = new Map<HTMLElement,{timer:number | null; completion:Promise<boolean>; settle(closed:boolean):void}>();
+  const pendingClose = new Map<HTMLElement,Promise<boolean>>();
   const modalBackgroundState = new Map<HTMLElement,{inert:boolean; ariaHidden:string | null}>();
+  const backgroundRoots:HTMLElement[] = [];
   let modalScrollState:{rootHadClass:boolean; bodyHadClass:boolean; bodyPaddingRight:string} | null = null;
   const MODAL_ENTER_FOCUS_DELAY_MS = 260;
   const timers = new Set<number>();
@@ -17,6 +19,7 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
   function backdropClick(event: MouseEvent) {
     const entry = modalStack[modalStack.length - 1];
     const modal = entry?.modal;
+    if(modal?.id==='upAddModal')return;
     // The second click that opened a dialog must not dismiss its new backdrop.
     // Touch browsers may report both clicks with detail=1 while it is entering.
     if (event.detail > 1 || !modal || event.target !== modal
@@ -60,7 +63,9 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
         const candidates = [entry?.trigger, entry?.previousFocus];
         for (const candidate of candidates) {
           if (!(candidate instanceof HTMLElement) || !candidate.isConnected || candidate.closest('[inert]') || candidate.matches(':disabled')) continue;
-          candidate.focus({ preventScroll:true });
+          const visible=candidate.closest('details:not([open])')?.querySelector('summary')||candidate;
+          if(!(visible instanceof HTMLElement)||!visible.getClientRects().length)continue;
+          visible.focus({ preventScroll:true });
           return;
         }
         const parent = activeModal();
@@ -111,13 +116,15 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
 
     function syncModalBackground(hidden:boolean) {
       syncModalScrollLock(hidden);
-      const roots = [
-        document.querySelector('header'),
-        document.querySelector('main'),
-        document.getElementById('toastContainer')
-      ].filter((element): element is HTMLElement => element instanceof HTMLElement);
-      roots.forEach((root) => {
-        if (hidden) {
+      const targets = new Set(hidden ? backgroundRoots.filter(root => !root.closest('.modal')) : []);
+      for (const [root, previous] of modalBackgroundState) {
+        if (targets.has(root)) continue;
+        root.inert = previous.inert;
+        if (previous.ariaHidden === null) root.removeAttribute('aria-hidden');
+        else root.setAttribute('aria-hidden', previous.ariaHidden);
+        modalBackgroundState.delete(root);
+      }
+      targets.forEach((root) => {
           if (!modalBackgroundState.has(root)) {
             modalBackgroundState.set(root, {
               inert:Boolean(root.inert),
@@ -126,14 +133,6 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
           }
           root.inert = true;
           root.setAttribute('aria-hidden', 'true');
-          return;
-        }
-        const previous = modalBackgroundState.get(root);
-        if (!previous) return;
-        root.inert = previous.inert;
-        if (previous.ariaHidden === null) root.removeAttribute('aria-hidden');
-        else root.setAttribute('aria-hidden', previous.ariaHidden);
-        modalBackgroundState.delete(root);
       });
     }
 
@@ -167,18 +166,42 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
       });
     }
 
-    function closeModal(modalOrId:HTMLElement | string, options:ModalCloseOptions = {}):boolean {
-      if (disposed) return false;
+    function requestClose(modalOrId:HTMLElement | string, options:ModalCloseOptions = {}):Promise<boolean> {
+      if (disposed) return Promise.resolve(false);
       const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
-      if (!modal) return false;
+      if (!modal) return Promise.resolve(false);
+      const pending = pendingClose.get(modal) || modalAnimationState.get(modal)?.completion;
+      if (pending) return pending;
       const index = modalStack.findIndex((entry) => entry.modal === modal);
-      if (index < 0 || index !== modalStack.length - 1) return false;
-      if (beforeClose(modal,options) === false) return true;
-      const [entry] = modalStack.splice(index, 1);
+      if (index < 0 || index !== modalStack.length - 1) return Promise.resolve(false);
+      const entry = modalStack[index];
+      const allowed = beforeClose(modal,options);
+      if (typeof allowed === 'boolean') return allowed ? beginClose(entry, options) : Promise.resolve(false);
+      const completion = allowed.then(confirmed => {
+        if (!confirmed || disposed || modalStack[modalStack.length - 1] !== entry) return false;
+        return beginClose(entry, options);
+      }).finally(() => { if (pendingClose.get(modal) === completion) pendingClose.delete(modal); });
+      pendingClose.set(modal, completion);
+      return completion;
+    }
+
+    function closeModal(modalOrId:HTMLElement | string, options:ModalCloseOptions = {}):boolean {
+      const modal = typeof modalOrId === 'string' ? document.getElementById(modalOrId) : modalOrId;
+      if (!modal || activeModal() !== modal) return false;
+      void requestClose(modal, options);
+      return activeModal() !== modal;
+    }
+
+    function beginClose(entry:ModalEntry, options:ModalCloseOptions):Promise<boolean> {
+      const modal = entry.modal;
+      const index = modalStack.indexOf(entry);
+      modalStack.splice(index, 1);
       const closingZIndex = modal.style.zIndex || String(100 + index * 20);
       const motionReduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
       const closeDuration = motionReduced ? 0 : 190;
-      const closingState: {timer:number | null} = {timer:null};
+      let settle!:(closed:boolean)=>void;
+      const completion = new Promise<boolean>(resolve => {settle = resolve;});
+      const closingState = {timer:null as number | null, completion, settle};
       modalAnimationState.set(modal, closingState);
       modal.classList.add('is-closing');
       modal.style.zIndex = closingZIndex;
@@ -196,9 +219,10 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
         modal.style.removeProperty('z-index');
         syncModalStack();
         if (options.restoreFocus !== false) restoreFocusAfterModal(entry);
+        settle(true);
       };
       closingState.timer = schedule(finishClose, closeDuration);
-      return true;
+      return completion;
     }
 
     function openModal(modalId:string, trigger?:HTMLElement | null) {
@@ -209,6 +233,7 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
       if (closingState) {
         if (closingState.timer !== null) { window.clearTimeout(closingState.timer); timers.delete(closingState.timer); }
         modalAnimationState.delete(modal);
+        closingState.settle(false);
         modal.classList.remove('is-closing', 'active');
         void modal.offsetWidth;
       }
@@ -234,11 +259,14 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
     }
 
   return {
-    open:openModal,close:closeModal,active:activeModal,focusableElements,focusWhenReady:focusModalControlWhenReady,
+    open:openModal,close:closeModal,requestClose,active:activeModal,focusableElements,focusWhenReady:focusModalControlWhenReady,
     init() {
       if (initialized) return;
       initialized = true;
       disposed = false;
+      backgroundRoots.splice(0, backgroundRoots.length, ...[
+        document.querySelector('body > header'), document.querySelector('body > main'), document.getElementById('toastContainer')
+      ].filter((element):element is HTMLElement=>element instanceof HTMLElement));
       document.querySelectorAll<HTMLElement>('.modal').forEach(modal => {
         modal.hidden = true; modal.inert = true;
         modal.setAttribute('aria-hidden', 'true'); modal.setAttribute('aria-modal', 'false');
@@ -262,8 +290,11 @@ export function createModalManager(document:Document, beforeClose:(modal:HTMLEle
         modal.setAttribute('aria-modal','false');
       }
       modalStack.length = 0;
+      for (const state of modalAnimationState.values()) state.settle(false);
       modalAnimationState.clear();
+      pendingClose.clear();
       syncModalBackground(false);
+      backgroundRoots.length = 0;
     },
   };
 }

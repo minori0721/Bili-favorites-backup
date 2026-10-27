@@ -90,6 +90,29 @@ test('queue projection fills the bounded board after excluding in-memory duplica
   } finally { state.close(); await removeTestDir(directory); }
 });
 
+test('full queue totals exceed board limits and deduplicate running and pending memory tasks',()=>{
+  const database=new StateDatabase(':memory:'),jobs=new PersistentJobStore(database);
+  class ShownTask extends Task {async run(){}}
+  const empty={getTasks:()=>[]};
+  try{
+    const persisted=Array.from({length:60},(_,index)=>jobs.enqueue({kind:'upload',dedupeKey:'total-'+index}));
+    jobs.enqueue({kind:'access_probe',dedupeKey:'periodic-check'});
+    const failed=jobs.enqueue({kind:'upload',dedupeKey:'terminal-failure'});
+    database.db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(failed.id);
+    jobs.enqueue({kind:'upload',dedupeKey:'abandoned',payload:{userDisposition:'abandoned'}});
+    const running=new ShownTask('running');running.persistentJobId=persisted[0].id;running.status='running';
+    const pending=new ShownTask('pending');pending.persistentJobId=persisted[1].id;
+    const retry=new ShownTask('unpersisted-retry');retry.status='retry_wait';
+    const verification=new ShownTask('verifying');verification.status='running';
+    const snapshot=projectQueueSnapshot({downloadQueue:empty,uploadQueue:{getTasks:()=>[running,pending,retry]},verificationQueue:{getTasks:()=>[verification,pending]},
+      jobs,config:{queuePrefetchLimit:25},chargingRestrictions:{},mapTask:(task,stage)=>mapQueueBoardTask(task,stage),
+      mapJob:job=>mapQueueBoardTask({id:job.id,persistentJobId:job.id,status:job.status},'upload_pending'),enrich:()=>{}},{});
+    assert.equal(snapshot.uploadPending.length,25);
+    assert.deepEqual(snapshot.summary,{running:2,waiting:60});
+    assert.equal(jobs.countRecoverable(['upload'],persisted.slice(0,2).map(job=>job.id)),58);
+  }finally{database.close();}
+});
+
 test('recoverable summary excludes an encoding-retry parent already replaced by its child', () => {
   const database = new StateDatabase(':memory:');
   const jobs = new PersistentJobStore(database);

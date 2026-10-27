@@ -21,7 +21,12 @@ export function createApiClient(dependencies: {
   const request = dependencies.fetch;
   async function silent(url: string, options?: RequestInit): Promise<unknown> {
     const response = await request(url, options);
-    const body: unknown = await response.json();
+    let body: unknown;
+    try { body = await response.json(); }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new ApiError('服务器响应异常，请稍后重试', 'RESPONSE_FORMAT_INVALID', undefined, response.status);
+    }
     if (!isRecord(body) || typeof body.success !== 'boolean') {
       throw new ApiError('服务器返回数据格式错误', undefined, undefined, response.status);
     }

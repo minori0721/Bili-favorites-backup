@@ -11,6 +11,11 @@
     .template-tag.drag-over { border-color:var(--accent); transform:scale(1.05); }
     .template-tag .remove-x { margin-left:4px; font-size:14px; opacity:0.7; }
     .template-tag .remove-x:hover { opacity:1; }
+    .template-tag:is(button) { font-family:inherit; }
+    .template-tag.selected > button { padding:2px 4px; min-width:24px; min-height:24px; border:0; border-radius:6px; background:transparent; color:inherit; cursor:pointer; font:inherit; }
+    .template-tag.selected > button:disabled { opacity:.35; cursor:default; }
+    .template-tag.selected > button:focus-visible { outline:2px solid currentColor; outline-offset:1px; }
+    @media (pointer:coarse) { .template-tag.selected > button { min-width:44px; min-height:44px; } }
     .template-preview { padding:11px 12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-legacy-control); font-family:monospace; font-size:13px; color:var(--ink); margin:8px 0; min-height:36px; word-break:break-all; }
     .segmented-control { display:inline-grid; grid-template-columns:repeat(2,minmax(110px,1fr)); gap:3px; padding:3px; border:1px solid var(--border); border-radius:10px; background:var(--surface-strong); }
     .segmented-control label { margin:0; cursor:pointer; }

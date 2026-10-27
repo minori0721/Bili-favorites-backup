@@ -25,6 +25,14 @@ export function createPathMigrationController(dependencies: {
   let pathMigrationCurrentId: string | null = null;
   let listeners: AbortController | null = null;
   let operationController: AbortController | null = null;
+  function showStatus(message:string, kind:string, retry?:()=>void) {
+    const status=element('pathMigrationStatus',HTMLElement);
+    setHidden(status,false);setStatus(status.id,message,kind);
+    if(retry){const button=document.createElement('button');button.type='button';button.className='ghost';button.textContent='重试读取';button.addEventListener('click',retry,{once:true});status.append(' ',button);}
+  }
+  function disableMigrationActions() {
+    for(const id of ['Start','Pause','Resume','Cancel','Cleanup','Keep'])element('pathMigration'+id+'Btn',HTMLButtonElement).disabled=true;
+  }
     function stopPathMigrationPolling() {
       pathMigrationGeneration += 1;
       operationController?.abort();
@@ -115,6 +123,8 @@ export function createPathMigrationController(dependencies: {
       const destination = element('pathMigrationDestination', HTMLInputElement);
       const status = element('pathMigrationStatus', HTMLElement);
       const items = element('pathMigrationItems', HTMLElement);
+      disableMigrationActions();
+      element('pathMigrationPreviewBtn',HTMLButtonElement).disabled=false;
       if (!summary || !status) return;
       if (pathMigrationCurrentId !== (state?.id || null)) {
         pathMigrationItemsController?.abort();
@@ -172,7 +182,8 @@ export function createPathMigrationController(dependencies: {
         if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) renderPathMigrationState(state);
       } catch (error) {
         if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) {
-          setStatus('pathMigrationStatus', '状态读取失败：' + (error instanceof Error ? error.message : String(error)), 'error');
+          disableMigrationActions();element('pathMigrationPreviewBtn',HTMLButtonElement).disabled=true;
+          showStatus('状态读取失败：' + (error instanceof Error ? error.message : String(error)), 'error',()=>void refreshPathMigrationState());
           startPathMigrationPolling();
         }
       } finally {
@@ -193,6 +204,8 @@ export function createPathMigrationController(dependencies: {
       stopPathMigrationPolling();
       pathMigrationItemsVisible = false;
       pathMigrationCurrentId = null;
+      disableMigrationActions();element('pathMigrationPreviewBtn',HTMLButtonElement).disabled=true;
+      showStatus('正在读取迁移状态…','muted');
       element('pathMigrationItems', HTMLElement).replaceChildren();
       const generation = pathMigrationGeneration;
       const controller = new AbortController();
@@ -204,7 +217,7 @@ export function createPathMigrationController(dependencies: {
         element('pathMigrationSource', HTMLInputElement).value = config.alistDest || '';
         element('pathMigrationDestination', HTMLInputElement).value = '';
       } catch (error) {
-        if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) setStatus('pathMigrationStatus', '配置读取失败：' + (error instanceof Error ? error.message : String(error)), 'error');
+        if (!controller.signal.aborted && generation === pathMigrationGeneration && isPathMigrationOpen()) showStatus('配置读取失败：' + (error instanceof Error ? error.message : String(error)), 'error',()=>void openPathMigration());
         return;
       } finally {
         if (pathMigrationController === controller) pathMigrationController = null;
@@ -216,7 +229,7 @@ export function createPathMigrationController(dependencies: {
       if (operationController || !isPathMigrationOpen()) return;
       const generation = pathMigrationGeneration;
       const destinationRoot = element('pathMigrationDestination', HTMLInputElement).value.trim();
-      if (!destinationRoot) { setStatus('pathMigrationStatus', '请填写新归档路径。', 'error'); return; }
+      if (!destinationRoot) { showStatus('请填写新归档路径。', 'error');element('pathMigrationDestination',HTMLInputElement).focus();return; }
       const controller = new AbortController();
       operationController = controller;
       try {
@@ -224,7 +237,7 @@ export function createPathMigrationController(dependencies: {
         if (generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
         startPathMigrationPolling();
         await refreshPathMigrationState();
-      } catch (error) { if (generation === pathMigrationGeneration && isPathMigrationOpen()) setStatus('pathMigrationStatus', '预览失败：' + (error instanceof Error ? error.message : String(error)), 'error'); }
+      } catch (error) { if (generation === pathMigrationGeneration && isPathMigrationOpen()) showStatus('预览失败：' + (error instanceof Error ? error.message : String(error)), 'error'); }
       finally { if (operationController === controller) operationController = null; }
     }
 
@@ -237,7 +250,7 @@ export function createPathMigrationController(dependencies: {
         await fetchJson('/api/path-migration/' + action, { signal:controller.signal, method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
         if (generation !== pathMigrationGeneration || !isPathMigrationOpen()) return;
         await refreshPathMigrationState();
-      } catch (error) { if (generation === pathMigrationGeneration && isPathMigrationOpen()) setStatus('pathMigrationStatus', '操作失败：' + (error instanceof Error ? error.message : String(error)), 'error'); }
+      } catch (error) { if (generation === pathMigrationGeneration && isPathMigrationOpen()) showStatus('操作失败：' + (error instanceof Error ? error.message : String(error)), 'error'); }
       finally { if (operationController === controller) operationController = null; }
     }
 

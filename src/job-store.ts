@@ -947,16 +947,18 @@ export class PersistentJobStore implements JobRepository {
     return result;
   }
 
-  countRecoverable(kinds: PersistentJobKind[]) {
+  countRecoverable(kinds: PersistentJobKind[], excludeIds:readonly string[] = []) {
     if (kinds.length === 0) return 0;
     const placeholders = kinds.map(() => "?").join(",");
+    const excluded = excludeIds.length ? `AND id NOT IN (${excludeIds.map(()=>'?').join(',')})` : '';
     const row = this.stateDatabase.db.prepare<unknown[], { count: number }>(`
       SELECT COUNT(*) AS count FROM jobs
       WHERE kind IN (${placeholders})
         AND ${RECOVERY_NOT_STOPPED_SQL}
         AND ${RECOVERABLE_STATUS_SQL}
         AND ${BOARD_NOT_REPLACED_BY_RETRY_SQL}
-    `).get(...kinds);
+        ${excluded}
+    `).get(...kinds,...excludeIds);
     return decodeCountRow(row, "recoverable job count").count;
   }
 
