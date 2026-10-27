@@ -17,6 +17,7 @@ async function exitGuide(page:Page){
   await expect(page.locator('.bfb-onboarding-popover')).toBeVisible();
   await page.getByRole('button',{name:'退出引导',exact:true}).click();
   await expect(page.locator('.driver-overlay')).toHaveCount(0);
+  await expect(page.locator('#onboardingHelpBtn')).toBeFocused();
 }
 async function assertPopoverFits(page: Page) {
   await expect.poll(async () => page.locator('.bfb-onboarding-popover').evaluate(node => {

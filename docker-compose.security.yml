@@ -1,0 +1,9 @@
+# Optional runtime restrictions. Check bind-mount permissions before enabling:
+# docker compose -f docker-compose.yml -f docker-compose.security.yml up -d
+# Does not change the container UID or the ownership of existing data.
+services:
+  app:
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

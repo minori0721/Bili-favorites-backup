@@ -51,14 +51,14 @@ jobs:
           INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
         run: node scripts/image-rebuild.mjs configure
 
-      - name: Find successful dev test evidence
-        id: dev-tests
+      - name: Find successful test evidence
+        id: test-evidence
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/dev-test-evidence.mjs
 
       - name: Check media and resume tools
-        if: steps.dev-tests.outputs.reuse != 'true'
+        if: steps.test-evidence.outputs.reuse != 'true'
         timeout-minutes: 10
         run: |
           command -v aria2c
@@ -109,13 +109,15 @@ jobs:
       - name: Install application dependencies
         run: npm ci
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Test application
-        if: steps.dev-tests.outputs.reuse != 'true'
+        if: steps.test-evidence.outputs.reuse != 'true'
         run: npm test
 
-      - name: Build application
-        run: npm run build
-
+      # Dockerfile's builder performs the full build, including type and
+      # architecture checks. A host dist would be excluded from the context.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -174,19 +176,23 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           trap 'docker rm -f bfb-release-smoke >/dev/null 2>&1 || true' EXIT
+          mkdir -p work/candidate-security
           docker run -d --name bfb-release-smoke --network none \
+            --cap-drop ALL --security-opt no-new-privileges:true \
             --tmpfs /app/data --tmpfs /app/temp \
             -e EXPECTED_REVISION="$GITHUB_SHA" \
             "docker.io/$IMAGE_NAME@$IMAGE_DIGEST"
           docker exec -i bfb-release-smoke sh -es < scripts/check-image-runtime.sh
           node scripts/image-rebuild.mjs verify-node "$(docker exec bfb-release-smoke node --version)"
+          docker cp scripts/image-security-inventory.mjs bfb-release-smoke:/tmp/bfb-image-security.mjs
+          docker exec bfb-release-smoke node /tmp/bfb-image-security.mjs > work/candidate-security/runtime.json
           docker exec bfb-release-smoke node --input-type=module -e '
             import assert from "node:assert/strict";
             import fs from "node:fs";
             import { setTimeout } from "node:timers/promises";
             assert.equal(process.env.BFB_BUILD_REVISION, process.env.EXPECTED_REVISION);
             assert.equal(JSON.parse(fs.readFileSync("/app/package.json", "utf8")).license, "GPL-3.0-only");
-            for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/SOURCES.md", "licenses/BBDown-MIT.txt", "licenses/FFmpeg-LGPL-3.0.txt"]) {
+            for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_SOURCES.md", "licenses/BBDown-MIT.txt", "licenses/FFmpeg-LGPL-3.0.txt"]) {
               assert.ok(fs.statSync("/app/" + file).size > 0, "Missing packaged license material: " + file);
             }
             let ready = false;
@@ -202,6 +208,43 @@ jobs:
             assert.equal(response.status, 401);
             console.log("Image revision, startup, SQLite initialization and authentication smoke check passed");
           '
+
+      - name: Record all candidate image vulnerabilities
+        timeout-minutes: 10
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: registry://docker.io/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          platform: linux/amd64
+          sarif-file: work/candidate-security/scout.sarif.json
+          ignore-base: false
+          ignore-suppressed: false
+          only-vex-affected: false
+          write-comment: false
+
+      - name: Reject fixable critical and high image vulnerabilities
+        timeout-minutes: 10
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: registry://docker.io/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          platform: linux/amd64
+          only-fixed: true
+          only-severities: critical,high
+          ignore-base: false
+          ignore-suppressed: false
+          only-vex-affected: false
+          exit-code: true
+          write-comment: false
+
+      - name: Retain candidate security evidence
+        if: ${{ always() && steps.image.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-security-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work/candidate-security/
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Report and verify image layer reuse
         env:

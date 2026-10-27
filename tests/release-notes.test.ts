@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import { renderReleaseNotes } from '../src/release-notes.js';
 import { buildReleaseNotes } from '../scripts/release-notes.mjs';
 import { shouldMakeLatest, publishRelease } from '../scripts/publish-release.mjs';
+import { spawnSync } from 'node:child_process';
+
+test('malformed multi-line references do not block release Markdown rendering', () => {
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import MarkdownIt from 'markdown-it';
+    const markdown = new MarkdownIt({html: false, linkify: false, typographer: false, maxNesting: 12});
+    const source = '[a]: /url "title\\n' + 'x\\n'.repeat(200000);
+    markdown.render(source);
+    console.log('reference rendering completed');
+  `], {encoding: 'utf8', timeout: 8000});
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /reference rendering completed/);
+  assert.ok(renderReleaseNotes('[a]: /url "title\n' + 'x\n'.repeat(200000)).length < 100_000);
+});
 
 test('release markdown formats content but forbids raw HTML, images and unsafe links', () => {
   const html = renderReleaseNotes('# 标题\n\n- **修复**\n- `代码`\n\n[安全](https://example.com)\n\n' +

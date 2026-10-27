@@ -5,7 +5,7 @@ for executable in /usr/local/bin/node /usr/bin/aria2c /usr/local/bin/ffmpeg /usr
   test -x "$executable"
 done
 
-for tool in npm npx; do
+for tool in npm npx yarn yarnpkg corepack; do
   if command -v "$tool" >/dev/null 2>&1; then
     printf 'Unexpected build tool in runtime image: %s\n' "$tool" >&2
     exit 1

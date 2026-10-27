@@ -13,7 +13,7 @@
     "docs:preview": "vitepress preview ."
   },
   "overrides": {
-    "vite": "6.4.3",
+    "vite": "6.4.5",
     "esbuild": "0.25.0",
     "nanoid": "3.3.18",
     "postcss": "8.5.23",

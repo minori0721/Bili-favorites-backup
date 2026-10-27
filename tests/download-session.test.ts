@@ -1238,7 +1238,8 @@ test("strict encoding retry uses ffprobe as the final gate and allows a matching
   const fakeScript = path.join(runtime, "fake-bbdown-no-diagnostic.mjs");
   const previousFfprobe = process.env.FFPROBE_PATH;
   try {
-    await createVideo(fixture, 2, "libx264");
+    // Use FFmpeg's H.264 codec selection: the shipped LGPL build uses OpenH264.
+    await createVideo(fixture, 2, "h264");
     await fs.promises.writeFile(fakeScript, `
       import fs from 'node:fs';
       import path from 'node:path';

@@ -1,4 +1,4 @@
-export interface DevEvidenceOptions {
+export interface TestEvidenceOptions {
   ref?: string;
   event?: string;
   sha?: string;
@@ -10,4 +10,4 @@ export interface DevEvidenceOptions {
   report?: (...values: unknown[]) => void;
 }
 
-export function findDevTestEvidence(options: DevEvidenceOptions): Promise<number | null>;
+export function findTestEvidence(options: TestEvidenceOptions): Promise<number | null>;

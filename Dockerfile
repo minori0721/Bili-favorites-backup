@@ -79,8 +79,8 @@ RUN if [ "$APT_MIRROR" = "tuna" ]; then \
   && apt-get update \
   && apt-get install -y --no-install-recommends aria2 ca-certificates tini libssl3 openssl \
   && rm -rf /var/lib/apt/lists/* \
-  && rm -rf /usr/local/lib/node_modules/npm \
-  && rm -f /usr/local/bin/npm /usr/local/bin/npx
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 FROM runtime-tools AS runner
 COPY --link --from=ffmpeg /out/ffmpeg /usr/local/bin/ffmpeg
@@ -92,7 +92,7 @@ COPY --link --from=bbdown /out/BBDown /usr/local/bin/BBDown
 COPY --link --from=prod-deps /app/node_modules ./node_modules
 COPY package*.json ./
 COPY --link --from=builder /app/dist ./dist
-COPY --link LICENSE THIRD_PARTY_NOTICES.md ./
+COPY --link LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_SOURCES.md ./
 COPY --link licenses ./licenses
 # Per-build metadata must follow the reusable filesystem layers.
 ARG BBDOWN_RELEASE

@@ -194,6 +194,8 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 
 ## 安全与开发
 
+- 镜像完整漏洞核验与剩余问题见 [镜像安全说明](docs/development/image-security.md)。需要进一步限制容器权限时，可在核对挂载权限后叠加仓库中的 `docker-compose.security.yml`；该文件不会自动修改现有部署或数据所有者。
+
 - 使用独立强密码，妥善保管 `.env`、`data` 和迁移包，其中可能含账号凭据。不要直接公开日志或备份。
 - 不需要导出B站Cookie时保持 `ALLOW_COOKIE_EXPORT=false`。反向代理只信任明确配置的 `TRUST_PROXY` 来源；HTTPS设置 `COOKIE_SECURE=true`，纯HTTP不要开启。
 - 仅备份你有权访问和保存的内容；BFB不绕过隐私、付费权限或审核限制。
@@ -225,7 +227,7 @@ npm run build
 
 BFB 自有代码按 [GNU GPLv3（仅第 3 版）](LICENSE)发行，允许使用、修改及商业分发；分发受该许可覆盖的版本时，应保留许可并向接收者提供对应源码。软件不提供担保。账号凭据、个人配置与归档媒体不属于需要公开的程序源码。
 
-第三方组件保留各自许可证，详见[第三方声明](THIRD_PARTY_NOTICES.md)及[固定源码与构建来源](licenses/SOURCES.md)。新镜像在 `/app/LICENSE`、`/app/THIRD_PARTY_NOTICES.md` 和 `/app/licenses/` 保留这些材料；npm 依赖自带的版权文件仍在 `/app/node_modules/`。FFmpeg 静态依赖的完整对应源码链及旧工具包的随包声明仍需补齐，已在来源说明中列出，不将本次文档补充视为全部分发材料已完成。
+第三方组件保留各自许可证，详见[第三方声明](THIRD_PARTY_NOTICES.md)及[固定源码与构建来源](THIRD_PARTY_SOURCES.md)。新镜像在 `/app/LICENSE`、`/app/THIRD_PARTY_NOTICES.md`、`/app/THIRD_PARTY_SOURCES.md` 和 `/app/licenses/` 保留这些材料；npm 依赖自带的版权文件仍在 `/app/node_modules/`。FFmpeg 静态依赖的完整对应源码链及旧工具包的随包声明仍需补齐，已在来源说明中列出，不将本次文档补充视为全部分发材料已完成。
 
 ## 鸣谢
 

@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { ARIA2_DOWNLOAD_ARGS } from "./aria2-options.js";
 import { tempDir } from "./paths.js";
 import { createBBDownCredentialDirectory } from "./credential-temp.js";
 import { buildCookieString, BiliCookie } from "./users.js";
@@ -730,7 +731,7 @@ export async function downloadWithBBDown(
       `${filePattern}_P<pageNumberWithZero>`,
       "--use-aria2c",
       "--aria2c-args",
-      "--continue=true --always-resume=true --max-resume-failure-tries=0 --auto-save-interval=5 --auto-file-renaming=false --allow-overwrite=true --file-allocation=none --connect-timeout=10 --timeout=30 --max-tries=5 --retry-wait=3",
+      ARIA2_DOWNLOAD_ARGS.join(' '),
     ];
 
     const selectedPages = buildSelectPageArgument(prepared.missingPages);

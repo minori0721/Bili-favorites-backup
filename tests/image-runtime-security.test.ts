@@ -84,7 +84,7 @@ test('an old or missing OpenSSL package prevents image acceptance', linuxOnly, a
 
 test('remaining npm or npx, leftover npm modules and missing runtime tools prevent acceptance', linuxOnly, async () => {
   const cases: Record<string, string>[] = [
-    { MOCK_BUILD_TOOL: 'npm' }, { MOCK_BUILD_TOOL: 'npx' }, { MOCK_NPM_DIRECTORY: 'true' },
+    ...['npm', 'npx', 'yarn', 'yarnpkg', 'corepack'].map(tool => ({MOCK_BUILD_TOOL: tool})), { MOCK_NPM_DIRECTORY: 'true' },
     ...['node', 'ffmpeg', 'ffprobe', 'BBDown'].map(tool => ({ MOCK_MISSING_EXECUTABLE: `/usr/local/bin/${tool}` })),
     { MOCK_MISSING_EXECUTABLE: '/usr/bin/aria2c' },
   ];

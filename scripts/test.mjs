@@ -15,6 +15,7 @@ const scopeFiles = {
     'tests/image-layer-report.test.ts',
     'tests/image-rebuild.test.ts',
     'tests/image-runtime-security.test.ts',
+    'tests/image-security-inventory.test.ts',
     'tests/ci-media-tools.test.ts',
     'tests/update-check.test.ts',
     'tests/update-channels.test.ts',
