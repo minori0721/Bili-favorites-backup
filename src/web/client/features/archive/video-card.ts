@@ -1,4 +1,5 @@
 import type { ApiClient } from '../../shared/api.js';
+import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
 import { parseVideoDetailItem, type VideoDetailItem } from '../../../../shared/api/video-detail.js';
 import { sourceAvailabilityReasonLabel } from './status.js';
 
@@ -161,7 +162,7 @@ export function createVideoCards(dependencies: {root:Document;api:ApiClient;form
         ? ' | 下次检查：' + formatDateTime(item.accessRestriction.nextCheckAt)
         : '';
       const playbackMeta = canPlay ? ' | 可播放 ' + Number(item.playback?.partCount || 1) + ' 个分P' : '';
-      meta.textContent = 'UP: ' + safeText(item.upperName || item.ownerName, '未知UP') + ' | ' + safeText(item.bvid, '-') + chargingCheck + playbackMeta;
+      meta.append(document.createTextNode('UP: '), createBilibiliProfileReference(document, safeText(item.upperName || item.ownerName, '未知UP'), item.upperMid), document.createTextNode(' | '), createBilibiliVideoReference(document, item.bvid || ''), document.createTextNode(chargingCheck + playbackMeta));
       info.appendChild(titleEl);
       info.appendChild(meta);
       if (!canPlay && item.playback && item.playback.reason) {

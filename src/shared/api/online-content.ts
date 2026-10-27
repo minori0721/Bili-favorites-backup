@@ -1,7 +1,7 @@
-import { isRecord } from './value.js';
+import { isRecord, optionalBilibiliUid } from './value.js';
 
 export interface OnlineItem {
-  id:string; bvid?:string; title?:string; upperName?:string; coverUrl?:string; coverToken?:string;
+  id:string; bvid?:string; title?:string; upperName?:string; upperMid?:number; coverUrl?:string; coverToken?:string;
   openUrl?:string; archiveState:'archived'|'processing'|'unarchived'|'unavailable';
 }
 export interface OnlineNavigationDTO {
@@ -30,7 +30,7 @@ export function parseOnlineItem(value:unknown):OnlineItem {
   if(!isRecord(value)||typeof value.id!=='string'||!value.id)throw new Error('在线条目格式错误');
   const archiveState=(['archived','processing','unarchived','unavailable'] as const).find(state=>state===value.archiveState);
   if(!archiveState)throw new Error('在线归档状态格式错误');
-  return {id:value.id,bvid:text(value,'bvid'),title:text(value,'title'),upperName:text(value,'upperName'),
+  return {id:value.id,bvid:text(value,'bvid'),title:text(value,'title'),upperName:text(value,'upperName'),upperMid:optionalBilibiliUid(value.upperMid),
     coverUrl:link(text(value,'coverUrl'),true),coverToken:text(value,'coverToken'),openUrl:link(text(value,'openUrl')),archiveState};
 }
 export function parseOnlinePage(value:unknown) {

@@ -41,6 +41,14 @@ test("online content loads on demand and keeps its layers isolated from archive 
   await expect(page.locator(".archive-library-sidebar")).toHaveCount(1);
   await expect(page.locator(".online-content-sidebar")).toHaveCount(1);
   await expect(page.locator("#onlineContentNav .archive-nav-item").first()).toContainText("11 个视频");
+  if (testInfo.project.name === 'desktop') {
+    const rows = await page.locator('#onlineContentNav .archive-nav-item').first().evaluate(button => {
+      const title = button.querySelector('strong')!.getBoundingClientRect();
+      const count = button.querySelector('span')!.getBoundingClientRect();
+      return {titleTop:title.top,countTop:count.top};
+    });
+    expect(Math.abs(rows.titleTop - rows.countTop)).toBeLessThan(5);
+  }
   await expect(page.locator("#onlineContentSummary")).toHaveText("共 1 项");
   const closeButtons = await page.evaluate(() => ({
     sidebarDisplay: getComputedStyle(document.getElementById("closeOnlineContentBtn")!).display,

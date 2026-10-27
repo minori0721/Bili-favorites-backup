@@ -55,6 +55,7 @@ function insertArchive(
     bvid: string;
     title: string;
     upperName?: string;
+    upperMid?: number;
     status: BackupStatus;
     active?: boolean;
     order?: number;
@@ -73,6 +74,7 @@ function insertArchive(
     bvid: options.bvid,
     title: options.title,
     upperName: options.upperName || "测试UP",
+    upperMid: options.upperMid,
     cover: `https://i0.hdslb.com/bfs/archive/${options.bvid}.jpg`,
     originalMeta: {
       title: options.title,
@@ -187,7 +189,7 @@ function fixture() {
   const database = new StateDatabase(":memory:");
   insertArchive(database, {
     userId: "u1", mediaId: 10, folderTitle: "正在同步", bvid: "BVSHARED", title: "共享归档 100%_测试",
-    upperName: "UP甲", status: "verified" as const, order: 2, playable: { width: 1920, height: 1080, fps: 30, parts: 1 },
+    upperName: "UP甲", upperMid:163637592, status: "verified" as const, order: 2, playable: { width: 1920, height: 1080, fps: 30, parts: 1 },
   });
   insertArchive(database, {
     userId: "u2", mediaId: 20, folderTitle: "另一个收藏夹", bvid: "BVSHARED", title: "共享归档 100%_测试",
@@ -434,6 +436,11 @@ test("「留存」按归档可播放和收藏夹失效证据筛选，保留账�
 test("real archive responses survive JSON transport and browser boundary validation", () => {
   const database = fixture();
   try {
+    const detail = getArchiveLibraryItemDetail(database, users(), {scope:'global'}, 'BVSHARED');
+    assert.equal(detail?.upperMid, 163637592);
+    const page = parseArchiveLibraryPage(JSON.parse(JSON.stringify(queryArchiveLibraryItems(database, users(), {scope:'global',pageSize:50}))));
+    assert.equal(page.items.find(item => item.bvid === 'BVSHARED')?.upperMid, 163637592);
+    assert.equal(page.items.find(item => item.bvid === 'BVCURRENT')?.upperMid, undefined);
     database.db.prepare('INSERT INTO archive_accounts(user_id,uid,name,avatar,removed_at,updated_at) VALUES(?,?,?,?,?,?)')
       .run('removed-user', 0, '历史账号', '', now, now);
     const navigation = parseArchiveNavigation(JSON.parse(JSON.stringify(getArchiveLibraryNavigation(database, users()))));

@@ -7,6 +7,8 @@ import { requireElement } from '../../shared/dom.js';
 import { renderContentNotice, showContentSkeleton } from '../../shared/content-feedback.js';
 import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
 import { archiveMembershipStatusLabel, archiveStatusLabel, sourceAvailabilityReasonLabel } from './status.js';
+import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
+import { archiveIndexUpdateLabel } from './navigation-meta.js';
 type Navigation = ReturnType<typeof parseArchiveNavigation>;
 type Summary = Navigation['summary'];
 type ArchiveItem = ReturnType<typeof parseArchiveLibraryDetail>;
@@ -52,6 +54,8 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     archiveLibraryNav: requireElement(document, '#archiveLibraryNav', HTMLElement),
     archiveLibraryTitle: requireElement(document, '#archiveLibraryTitle', HTMLElement),
     archiveLibrarySummary: requireElement(document, '#archiveLibrarySummary', HTMLElement),
+    archiveLibraryStats: requireElement(document, '#archiveLibraryStats', HTMLDetailsElement),
+    archiveLibraryStatsBody: requireElement(document, '#archiveLibraryStatsBody', HTMLElement),
     archiveLibrarySort: requireElement(document, '#archiveLibrarySort', HTMLSelectElement),
     archiveSearchCurrentBtn: requireElement(document, '#archiveSearchCurrentBtn', HTMLButtonElement),
     archiveSearchGlobalBtn: requireElement(document, '#archiveSearchGlobalBtn', HTMLButtonElement),
@@ -305,18 +309,13 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     }
 
     function archiveNavMeta(entry: Partial<Summary>) {
-      const sync = entry.lastSyncedAt ? ' · 最近同步 ' + formatDateTime(entry.lastSyncedAt) : '';
-      if (!Number(entry.total || 0)) return '暂无本地索引' + sync;
-      const remote = entry.sourceReferenceCount === undefined ? '' :
-        ' · 来源引用 ' + entry.sourceReferenceCount + ' · 唯一路径 ' + entry.uniqueRemotePathCount;
-      return Number(entry.total || 0) + ' 个视频 · 可播 ' + Number(entry.playable || 0) + remote + sync;
+      return Number(entry.total || 0) + ' 个视频 · ' + Number(entry.playable || 0) + ' 可播放';
     }
 
     function createArchiveNavItem(entry: Partial<Summary>, context: Directory) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'archive-nav-item';
-      button.title = '当前目录的本地索引统计；来源引用不含视频级副本，唯一路径不代表实时远端文件数。';
       button.dataset.archiveScope = context.scope;
       button.dataset.archiveUserId = context.userId || '';
       button.dataset.archiveMediaId = String(context.mediaId || '');
@@ -333,12 +332,15 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       meta.textContent = archiveNavMeta(entry);
       copy.appendChild(title);
       copy.appendChild(meta);
-      const count = document.createElement('span');
-      count.className = 'archive-nav-count';
-      count.textContent = String(Number(entry.total || 0));
+      const updatedLabel = entry.lastSyncedAt && archiveIndexUpdateLabel(entry.lastSyncedAt);
+      if (updatedLabel) {
+        const updated = document.createElement('span');
+        updated.className = 'archive-nav-updated';
+        updated.textContent = updatedLabel;
+        copy.appendChild(updated);
+      }
       button.appendChild(preview);
       button.appendChild(copy);
-      button.appendChild(count);
       button.addEventListener('click', () => selectArchiveLibraryDirectory(context, button));
       return button;
     }
@@ -463,6 +465,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         host.appendChild(group);
       });
       syncArchiveLibraryNavigationSelection();
+      renderArchiveDirectoryStats();
       if (activeDeletions.length && elements.archiveLibraryModal.classList.contains('active')) {
         archiveLibraryState.navigationTimer = setTimeout(
           () => pollArchiveLibraryNavigationDeletions(activeDeletions),
@@ -546,6 +549,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     function setArchiveLibraryHeading() {
       elements.archiveLibraryTitle.textContent = archiveLibraryState.title || '全部归档';
       elements.archiveLibrarySummary.textContent = archiveSummaryText(archiveLibraryState.summary);
+      renderArchiveDirectoryStats();
       elements.archiveLibrarySort.value = archiveLibraryState.sort;
       const defaultSort = elements.archiveLibrarySort.querySelector<HTMLOptionElement>('option[value="context"]');
       const upDirectory = archiveLibraryState.scope === 'folder'
@@ -561,6 +565,41 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         button.setAttribute('aria-pressed', String(button.dataset.archiveFilter === archiveLibraryState.filter));
       });
       setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.draftQuery);
+    }
+
+    function renderArchiveDirectoryStats() {
+      const navigation = archiveLibraryState.navigation;
+      const {scope, userId, mediaId} = archiveLibraryState;
+      const account = navigation?.accounts.find(account => account.id === userId);
+      const entry = scope === 'global' ? navigation?.summary
+        : scope === 'account' ? account?.summary
+        : navigation?.upSubscriptions.find(source => source.userId === userId && source.mediaId === mediaId)
+          ?? [...(account?.folders ?? []), ...(account?.inactiveFolders ?? [])].find(folder => folder.mediaId === mediaId);
+      const details = elements.archiveLibraryStats;
+      const key = [scope,userId,mediaId].join(':');
+      if (details.dataset.directory !== key) details.open = false;
+      details.dataset.directory = key;
+      details.hidden = !entry;
+      const body = elements.archiveLibraryStatsBody;
+      body.replaceChildren();
+      if (!entry) return;
+      const title = document.createElement('strong');
+      title.textContent = archiveLibraryState.title;
+      const list = document.createElement('dl');
+      const row = (label: string, value: string) => {
+        const term = document.createElement('dt'), description = document.createElement('dd');
+        term.textContent = label; description.textContent = value; list.append(term,description);
+      };
+      row('视频', String(entry.total));
+      row('可播放', String(entry.playable));
+      if (entry.sourceReferenceCount !== undefined && entry.uniqueRemotePathCount !== undefined) {
+        row('来源文件引用', String(entry.sourceReferenceCount));
+        row('不同存储路径', String(entry.uniqueRemotePathCount));
+      }
+      if (entry.lastSyncedAt && archiveIndexUpdateLabel(entry.lastSyncedAt)) row('索引更新', formatDateTime(entry.lastSyncedAt));
+      const note = document.createElement('p');
+      note.textContent = '同一视频可能有多个分P或文件；同一文件被多个来源使用时，会分别计入引用。这里是本地索引统计，不是实时远端文件数或备份完成时间。';
+      body.append(title,list,note);
     }
 
     async function selectArchiveLibraryDirectory(context: Directory, trigger?: HTMLElement | null) {
@@ -653,16 +692,18 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       title.textContent = safeText(item.title || item.bvid, '未知视频');
       const meta = document.createElement('span');
       meta.className = 'archive-library-meta';
-      meta.textContent = safeText(item.upperName, '未知UP') + ' · ' + safeText(item.bvid, '-');
+      meta.append(createBilibiliProfileReference(document, safeText(item.upperName, '未知UP'), item.upperMid), document.createTextNode(' · '), createBilibiliVideoReference(document, item.bvid));
       const memberships = document.createElement('span');
       memberships.className = 'archive-library-memberships';
       memberships.textContent = archiveMembershipText(item);
       copy.appendChild(title);
-      copy.appendChild(meta);
-      copy.appendChild(memberships);
       main.appendChild(cover);
       main.appendChild(copy);
       card.appendChild(main);
+      const metadata = document.createElement('div');
+      metadata.className = 'archive-library-card-copy archive-library-card-metadata';
+      metadata.append(meta,memberships);
+      card.appendChild(metadata);
       const more = document.createElement('button');
       more.type = 'button';
       more.className = 'archive-library-card-more';
@@ -1042,7 +1083,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         body.appendChild(cover);
         const meta = document.createElement('div');
         meta.className = 'archive-library-detail-meta';
-        meta.textContent = safeText(data.upperName, '未知UP') + ' · ' + safeText(data.bvid, '-') + ' · ' + archiveStatusLabel(data);
+        meta.append(createBilibiliProfileReference(document, safeText(data.upperName, '未知UP'), data.upperMid), document.createTextNode(' · '), createBilibiliVideoReference(document, data.bvid), document.createTextNode(' · ' + archiveStatusLabel(data)));
         body.appendChild(meta);
         const localActions = document.createElement('div');
         localActions.className = 'archive-library-source-actions';
@@ -1275,6 +1316,18 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     if (events) return;
     events=new AbortController(); const signal=events.signal;
     function listen(element: EventTarget, type: string, callback: (event: Event)=>void) { element.addEventListener(type, callback, {signal}); }
+    const closeStatsOutside = (event: Event) => {
+      if (event.target instanceof Node && !elements.archiveLibraryStats.contains(event.target)) elements.archiveLibraryStats.open = false;
+    };
+    listen(document, 'click', closeStatsOutside);
+    listen(document, 'focusin', closeStatsOutside);
+    listen(elements.archiveLibraryStats, 'keydown', event => {
+      if (event instanceof KeyboardEvent && event.key === 'Escape' && elements.archiveLibraryStats.open) {
+        event.preventDefault(); event.stopPropagation();
+        elements.archiveLibraryStats.open = false;
+        elements.archiveLibraryStats.querySelector('summary')?.focus({preventScroll:true});
+      }
+    });
     listen(elements.archiveLibraryBtn, 'click', (event) => openArchiveLibrary(elements.archiveLibraryBtn));
     listen(elements.closeArchiveLibraryBtn, 'click', () => closeModal('archiveLibraryModal'));
     listen(elements.archiveLibraryMobileBackBtn, 'click', () => {

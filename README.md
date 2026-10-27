@@ -6,9 +6,9 @@
 
 [快速部署](#快速部署) · [完整文档](https://minori0721.github.io/Bili-favorites-backup/) · [最新版本](https://github.com/minori0721/Bili-favorites-backup/releases/latest) · [更新记录](CHANGELOG.md)
 
-![当前开发版首页：账号同步与 UP 订阅入口](docs/public/screenshots/dashboard-desktop.jpg)
+![当前开发版备份概览：侧栏导航、任务统计与 UP 订阅](docs/public/screenshots/dashboard-desktop.jpg)
 
-> 界面截图拍摄于 2.7.1 开发期，使用隔离演示数据；正式版界面以对应版本为准。
+> 界面截图更新于 2026-10-28，基于 2.7.2-dev，使用隔离演示数据；正式版界面以对应版本为准。
 
 Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它定时检查收藏、下载视频、上传网盘并核验归档结果；你可以在自己的归档库中搜索和播放，不必依赖视频仍在B站可见。
 
@@ -37,7 +37,7 @@ Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它�
 
 **本地归档库**：按来源浏览已保存的视频；UP 目录按发布时间排序。
 
-![归档库：UP 目录、搜索筛选与已验证视频](docs/public/screenshots/archive-library.jpg)
+![归档库：来源目录、搜索筛选与可播放视频](docs/public/screenshots/archive-library.jpg)
 
 </details>
 

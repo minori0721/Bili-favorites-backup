@@ -340,6 +340,7 @@ export interface FolderDetailItem {
   bvid: string;
   title: string;
   upperName: string;
+  upperMid?: number;
   cover?: string;
   coverLocalPath?: string;
   description?: string;
@@ -3163,6 +3164,7 @@ export class StateManager {
         bvid: video.bvid,
         title: displayTitle(video),
         upperName: displayUpperName(video),
+        upperMid: video.upperMid,
         cover: displayCover(video),
         coverLocalPath: displayCoverLocalPath(video),
         description: displayDescription(video),
@@ -3214,6 +3216,7 @@ export class StateManager {
       bvid: video.bvid,
       title: displayTitle(video),
       upperName: displayUpperName(video),
+      upperMid: video.upperMid,
       cover: displayCover(video),
       coverLocalPath: displayCoverLocalPath(video),
       description: displayDescription(video),

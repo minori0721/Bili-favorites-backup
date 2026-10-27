@@ -34,6 +34,7 @@ export function mergeLiveFavoriteDetailItem(
     bvid: live.bvid,
     title: useStoredTitle ? stored?.title || (liveTitleUsable ? live.title : live.bvid) : live.title,
     upperName: useStoredUpper ? stored?.upperName || (liveUpperUsable ? live.upperName : "Unknown") : live.upperName,
+    upperMid: useStoredUpper ? stored?.upperMid ?? live.upperMid : live.upperMid ?? stored?.upperMid,
     cover: liveUnavailable || !live.cover ? stored?.cover || live.cover : live.cover,
     coverLocalPath: stored?.coverLocalPath,
     description: live.description || stored?.description,

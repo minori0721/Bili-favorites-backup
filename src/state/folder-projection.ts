@@ -9,6 +9,7 @@ export function projectFolderDetailItem(relation: FavoriteRelation, video: Video
     bvid: video.bvid,
     title: displayTitle(video),
     upperName: displayUpperName(video),
+    upperMid: video.upperMid,
     cover: displayCover(video),
     coverLocalPath: displayCoverLocalPath(video),
     description: displayDescription(video),

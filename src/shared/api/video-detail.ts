@@ -1,4 +1,4 @@
-import { isRecord } from './value.js';
+import { isRecord, optionalBilibiliUid } from './value.js';
 
 function record(value: unknown) {
   if (!isRecord(value)) throw new Error('视频列表响应格式错误');
@@ -25,7 +25,7 @@ export function parseVideoDetailItem(value: unknown) {
   const source=item.sourceAvailability == null ? undefined : record(item.sourceAvailability);
   const access=item.accessRestriction == null ? undefined : record(item.accessRestriction);
   const playback=item.playback == null ? undefined : record(item.playback);
-  return {bvid,mediaId:count(item.mediaId),title:text(item.title),folderTitle:text(item.folderTitle),upperName:text(item.upperName),ownerName:text(item.ownerName),
+  return {bvid,mediaId:count(item.mediaId),title:text(item.title),folderTitle:text(item.folderTitle),upperName:text(item.upperName),upperMid:optionalBilibiliUid(item.upperMid),ownerName:text(item.ownerName),
     cover:text(item.cover),coverLocalPath:text(item.coverLocalPath),backupStatus:text(item.backupStatus),processed:flag(item.processed),unavailable:flag(item.unavailable),
     archivedSourceUnavailable:flag(item.archivedSourceUnavailable),failed:flag(item.failed),activeInFavorite:flag(item.activeInFavorite),
     sourceAvailability:source ? {state:text(source.state),reason:text(source.reason)} : undefined,

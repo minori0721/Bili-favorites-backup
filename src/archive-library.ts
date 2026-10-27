@@ -56,6 +56,7 @@ export interface ArchiveLibraryItem {
   bvid: string;
   title: string;
   upperName: string;
+  upperMid?: number;
   cover?: string;
   coverLocalPath?: string;
   backupStatus: BackupStatus;
@@ -925,6 +926,7 @@ function itemFromRecords(
     bvid: video.bvid,
     title: displayTitle(video),
     upperName: displayUpperName(video),
+    upperMid: video.upperMid,
     cover: displayCover(video),
     coverLocalPath: displayCoverLocalPath(video),
     backupStatus: chooseStatus(records, best),

@@ -15,12 +15,14 @@ test("live favorite metadata falls back to the stored archive snapshot", () => {
     bvid: "BVDETAILLOST",
     title: "已失效视频",
     upperName: "Unknown",
+    upperMid: 946974,
     cover: undefined,
     unavailable: true,
   }, {
     bvid: "BVDETAILLOST",
     title: "归档前标题",
     upperName: "归档 UP",
+    upperMid: 163637592,
     cover: "https://example.invalid/original.jpg",
     coverLocalPath: "covers/BVDETAILLOST.jpg",
     unavailable: true,
@@ -36,6 +38,7 @@ test("live favorite metadata falls back to the stored archive snapshot", () => {
 
   assert.equal(merged.title, "归档前标题");
   assert.equal(merged.upperName, "归档 UP");
+  assert.equal(merged.upperMid, 163637592);
   assert.equal(merged.cover, "https://example.invalid/original.jpg");
   assert.equal(merged.coverLocalPath, "covers/BVDETAILLOST.jpg");
   assert.equal(merged.backupStatus, "verified");
@@ -70,6 +73,7 @@ test("tracked favorite detail is served from SQLite with history and original me
           bvid: "BVDETAILLOST",
           title: "已失效视频",
           upperName: "Unknown",
+          upperMid: 163637592,
           firstSeenAt: "2026-07-10T00:00:00.000Z",
           lastSeenAt: now,
           biliStatus: "unavailable" as const,
@@ -171,6 +175,7 @@ test("tracked favorite detail is served from SQLite with history and original me
     );
     assert.equal(libraryItemsResponse.status, 200);
     const libraryItems: unknown = await libraryItemsResponse.json();
+    assert.equal(readField(libraryItems, 'data', 'items', 0, 'upperMid'), 163637592);
     assert.deepEqual(readArray(readField(readField(libraryItems, 'data'), 'items')).map((item: unknown) => readField(item, 'bvid')), ["BVDETAILLOST", "BVDETAILACTIVE"]);
     assert.equal(readField(readField(libraryItems, 'data'), 'hasMore'), true);
     assert.equal(JSON.stringify(libraryItems).includes("/archive/"), false);
@@ -227,6 +232,7 @@ test("tracked favorite detail is served from SQLite with history and original me
     assert.equal(detailResponse.status, 200);
     const detailJson: unknown = await detailResponse.json();
     const detail = readField(detailJson, 'data');
+    assert.equal(readField(detail, 'items', 0, 'upperMid'), 163637592);
     assert.equal(readField(detail, 'source'), "state");
     assert.equal(readField(detail, 'tracked'), true);
     assert.equal(readField(detail, 'coverage'), "complete");
@@ -322,6 +328,7 @@ test("tracked favorite detail is served from SQLite with history and original me
       headers: { Cookie: cookie },
     });
     const unavailableJson: unknown = await unavailableResponse.json();
+    assert.equal(readField(unavailableJson, 'data', 'items', 0, 'upperMid'), 163637592);
     assert.equal(unavailableResponse.status, 200);
     assert.deepEqual(readArray(readField(readField(unavailableJson, 'data'), 'items')).map((item: unknown) => readField(item, 'bvid')), ["BVDETAILLOST"]);
 

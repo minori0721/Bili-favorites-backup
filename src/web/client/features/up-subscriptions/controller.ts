@@ -3,6 +3,7 @@ import { requireElement } from '../../shared/dom.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
 import { isRecord } from '../../../../shared/api/value.js';
 import { parseArchiveNavigation } from '../../../../shared/api/archive-library.js';
+import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
 import type { ArchiveContext } from '../../../../shared/api/archive-context.js';
 import { parseUpList,parseUpIdentity,parseUpDiscovery,parseUpSubscription,parseUpCatalog,parseUpPosts,parseUpRemovalPreview,parseUpRemovalResult } from '../../../../shared/api/up-subscriptions.js';
 import type { UpSubscription,UpIdentity,UpCatalogItem,UpSubscriptionMode,UpVideoDecision,UpRemovalPreview } from '../../../../shared/up-subscriptions.js';
@@ -90,7 +91,8 @@ export function createUpSubscriptions(deps:{
     const text=(host:HTMLElement,value:string)=>{if(host.textContent!==value)host.textContent=value;};
     return {element:card,update(source:UpSubscription){
       if(!previous||previous.name!==source.name||previous.avatar!==source.avatar||(source.avatar&&!picture.querySelector('img')))avatar(picture,source.name,source.avatar);
-      text(name,source.name);text(meta,`UID ${source.uid} · ${modeDescription(source)}`);
+      if(!previous||previous.name!==source.name||previous.uid!==source.uid)name.replaceChildren(createBilibiliProfileReference(root,source.name,source.uid));
+      text(meta,`UID ${source.uid} · ${modeDescription(source)}`);
       const label=`移除 ${source.name} 的订阅`;if(remove.getAttribute('aria-label')!==label)remove.setAttribute('aria-label',label);
       [source.archivedCount,source.discoveredCount,source.excludedCount].forEach((count,index)=>text(counts[index],String(count)));
       const unavailable=source.accountAvailable===false;
@@ -152,7 +154,8 @@ export function createUpSubscriptions(deps:{
       for(const identity of data.items){
         const existing=list.items.find(item=>item.uid===identity.uid);const row=node('label',undefined,'up-person'),check=node('input');check.type='checkbox';check.checked=picked.has(identity.uid);check.disabled=Boolean(existing);check.setAttribute('aria-label',`选择 ${identity.name}`);
         check.addEventListener('change',()=>{if(check.checked)picked.set(identity.uid,identity);else picked.delete(identity.uid);syncPicked();});
-        const picture=node('span',undefined,'up-avatar');avatar(picture,identity.name,identity.avatar);const copy=node('span',undefined,'up-person-copy');copy.append(node('strong',identity.name),node('small',identity.signature||`UID ${identity.uid}`));row.append(check,picture,copy);
+        const picture=node('span',undefined,'up-avatar');avatar(picture,identity.name,identity.avatar);const copy=node('span',undefined,'up-person-copy');
+        const name=node('strong');name.append(createBilibiliProfileReference(root,identity.name,identity.uid));copy.append(name,node('small',identity.signature||`UID ${identity.uid}`));row.append(check,picture,copy);
         if(existing){const manage=node('button','已订阅','ghost');manage.type='button';manage.dataset.upManage=existing.id;row.append(manage);}
         else if(identity.followed===true)row.append(node('span','已关注','up-badge'));
         host.append(row);
@@ -198,7 +201,9 @@ export function createUpSubscriptions(deps:{
     await loadList();deps.closeModal('upAddModal');deps.notify(`已建立 ${completed.length} 个订阅`,'success');
     if(completed.length===1)await openWorkspace(completed[0].id,button('upAddBtn'));
   },'upRulesStatus');}
-  function workspaceHeading(syncForm=true){if(!current)return;avatar(element('upWorkspaceAvatar'),current.name,current.avatar);element('upWorkspaceTitle').textContent=current.name;
+  function workspaceHeading(syncForm=true){if(!current)return;avatar(element('upWorkspaceAvatar'),current.name,current.avatar);
+    const title=element('upWorkspaceTitle'),profile=`${current.uid}:${current.name}`;
+    if(title.dataset.profile!==profile){title.replaceChildren(createBilibiliProfileReference(root,current.name,current.uid));title.dataset.profile=profile;}
     element('upWorkspaceMeta').textContent=`UID ${current.uid} · ${modeDescription(current)} · 已归档 ${current.archivedCount} · ${current.enabled?'订阅中':'已暂停'}`;
     button('upPauseBtn').textContent=current.enabled?'暂停订阅':'恢复订阅';
     for(const id of ['upPauseBtn','upScanBtn','upUpdateBtn','upRemoveBtn','upHistoryBtn'])button(id).disabled=current.removed;
@@ -221,7 +226,10 @@ export function createUpSubscriptions(deps:{
       const badges=node('div',undefined,'up-video-badges');badges.append(badge);
       if(excluded&&(item.playable||item.otherArchiveAvailable))badges.append(node('span',item.playable?'可播放':'其他来源有归档','up-badge up-playback'));
       cover.append(badges);
-      const copy=node('div',undefined,'up-video-copy');copy.append(node('h4',item.title),node('p',`${day(item.publishedAt)} · ${item.joint?'联合投稿 · ':''}${item.ownerName}\n${item.bvid}`));
+      const copy=node('div',undefined,'up-video-copy');
+      const meta=node('p',`${day(item.publishedAt)} · ${item.joint?'联合投稿 · ':''}`);
+      meta.append(createBilibiliProfileReference(root,item.ownerName,item.ownerUid),root.createTextNode('\n'),createBilibiliVideoReference(root,item.bvid));
+      copy.append(node('h4',item.title),meta);
       const actions=node('div',undefined,'up-video-actions');
       const manage=node('button','管理归档','ghost');manage.type='button';manage.dataset.upAction=item.bvid;actions.append(manage);
       if(item.playable||item.otherArchiveAvailable){const play=node('button',item.playable?'播放':'已有归档','ghost');play.type='button';play.dataset.upPlay=item.bvid;actions.append(play);}

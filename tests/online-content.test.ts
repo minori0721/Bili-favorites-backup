@@ -58,6 +58,7 @@ test("online content keeps a short-lived BVID reference even when the cover is g
       bvid: "BV1NOIMAGE01",
       title: "封面已失效但仍可归档",
       upperName: "测试UP",
+      upperMid: 163637592,
       playable: true,
     }],
   };
@@ -66,6 +67,7 @@ test("online content keeps a short-lived BVID reference even when the cover is g
   });
   const result = await service.list(user(), { kind: "history" as const }, (items) => new Map(items.filter((item) => item.bvid).map((item) => [item.bvid!, "unarchived"])));
   const item = result.items[0];
+  assert.equal(item.upperMid, 163637592);
   assert.ok(item.coverToken);
   assert.ok(item.coverUrl);
   const reference = service.getItem(item.coverToken!);

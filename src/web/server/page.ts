@@ -481,7 +481,13 @@ function getModals() {
         <div class="archive-library-topbar">
           <button id="archiveLibraryMobileBackBtn" class="archive-library-mobile-back" type="button" aria-label="返回归档目录" title="返回">←</button>
           <div class="archive-library-heading">
-            <h2 id="archiveLibraryTitle">全部归档</h2>
+            <div class="archive-library-heading-row">
+              <h2 id="archiveLibraryTitle">全部归档</h2>
+              <details id="archiveLibraryStats" class="archive-library-stats" hidden>
+                <summary>目录统计</summary>
+                <div id="archiveLibraryStatsBody" class="archive-library-stats-body"></div>
+              </details>
+            </div>
             <span id="archiveLibrarySummary">0 个视频</span>
           </div>
         </div>

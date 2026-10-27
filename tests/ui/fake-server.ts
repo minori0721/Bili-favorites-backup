@@ -146,6 +146,7 @@ const baseItems = [
     bvid: "BV1ALPHA001",
     title: "Alpha 归档视频",
     upperName: "测试UP主",
+    upperMid: 163637592,
     statusGroup: "playable",
     backupStatus: "verified" as const,
     unavailable: false,
@@ -836,6 +837,7 @@ app.get("/api/online-content/items", async (request, response) => {
     bvid: mediaId === 202 ? "BV1ONLINE002" : "BV1ONLINE001",
     title,
     upperName: "在线UP主",
+    upperMid: 163637592,
     archiveState: "unarchived",
     openUrl: mediaId === 202 ? "https://www.bilibili.com/video/BV1ONLINE002" : "https://www.bilibili.com/video/BV1ONLINE001",
   };

@@ -291,13 +291,16 @@ export function createWorkspace(dependencies:{root:Document;active():HTMLElement
     const glance=get('workspaceRecentSubscriptions');glance.replaceChildren();
     if(!sources.length){const empty=document.createElement('p');empty.className='workspace-empty';empty.textContent=subscriptionPhase==='loading'?'正在读取订阅…':subscriptionPhase==='error'?'暂时无法读取订阅，可到 UP 订阅页面重试。':'还没有订阅，可以先添加一位 UP。';glance.append(empty);}
     for(const source of sources.slice(0,3)){
-      const row=document.createElement('button');row.type='button';row.className='workspace-source-row';
+      const row=document.createElement('div');row.className='workspace-source-row';
+      const profile=source.querySelector('h3 .bilibili-profile-link');
+      const sourceName=profile?.firstChild?.textContent||source.querySelector<HTMLElement>('h3')?.textContent||'UP 订阅';
+      const manage=document.createElement('button');manage.type='button';manage.className='workspace-source-open';manage.setAttribute('aria-label',`管理 ${sourceName} 的订阅`);row.append(manage);
       const avatar=source.querySelector<HTMLElement>('.up-avatar');if(avatar)row.append(avatar.cloneNode(true));
-      const copy=document.createElement('span');const name=document.createElement('strong');name.textContent=source.querySelector<HTMLElement>('h3')?.textContent||'UP 订阅';
+      const copy=document.createElement('span');const name=document.createElement('strong');name.append(profile?.cloneNode(true)||document.createTextNode(sourceName));
       const hint=document.createElement('small');hint.textContent=source.querySelector<HTMLElement>('.up-profile-heading p')?.textContent||'';copy.append(name,hint);
       const status=document.createElement('small');status.className='workspace-source-status';status.textContent=source.querySelector<HTMLElement>('.up-badge')?.textContent||'';
       const sourceId=source.querySelector<HTMLElement>('[data-up-manage]')?.dataset.upManage;
-      row.append(copy,status);if(sourceId)row.dataset.workspaceSource=sourceId;glance.append(row);
+      row.append(copy,status);if(sourceId)manage.dataset.workspaceSource=sourceId;glance.append(row);
     }
     }
   }

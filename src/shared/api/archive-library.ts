@@ -1,4 +1,4 @@
-import { isRecord, ResponseFormatError, requireUnique } from './value.js';
+import { isRecord, ResponseFormatError, requireUnique, optionalBilibiliUid } from './value.js';
 import { parseArchiveSourceIdentity } from './archive-source.js';
 export { parsePlaybackQueuePage, parsePlaybackSearchPage } from './playback-queue.js';
 
@@ -211,6 +211,7 @@ export function parseArchiveLibraryItem(value: unknown) {
     bvid: text(data.bvid, '归档项目缺少标识', false)!,
     title: optionalString(data.title, '归档项目标题格式错误'),
     upperName: optionalString(data.upperName, '归档项目 UP 格式错误'),
+    upperMid: optionalBilibiliUid(data.upperMid),
     cover: optionalString(data.cover, '归档项目封面格式错误'),
     coverLocalPath: optionalString(data.coverLocalPath, '归档项目本地封面格式错误'),
     backupStatus: optionalString(data.backupStatus, '归档项目备份状态格式错误'),

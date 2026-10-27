@@ -1,4 +1,5 @@
 import { requireElement } from '../../shared/dom.js';
+import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
 import { renderContentNotice, showContentSkeleton } from '../../shared/content-feedback.js';
 import type { ApiClient } from '../../shared/api.js';
 import { parseOnlinePage, parseOnlineNavigation, type OnlineItem } from '../../../../shared/api/online-content.js';
@@ -214,7 +215,7 @@ export function createOnlineContent(dependencies:{root:Document;api:ApiClient;la
         copy.appendChild(title);
         const meta = document.createElement('div');
         meta.className = 'archive-library-meta';
-        meta.textContent = [item.upperName || '未知UP主', item.bvid || '非视频条目'].join(' · ');
+        meta.append(createBilibiliProfileReference(document, item.upperName || '未知UP主', item.upperMid), document.createTextNode(' · '), createBilibiliVideoReference(document, item.bvid || '非视频条目'));
         copy.appendChild(meta);
         const status = document.createElement('span');
         status.className = 'archive-library-status ' + (item.archiveState === 'archived' ? 'playable' : item.archiveState === 'processing' ? 'pending' : 'issue');
