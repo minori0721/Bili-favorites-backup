@@ -14,6 +14,21 @@ function user(id: string, uid: number) {
   };
 }
 
+test('归档封面仅使用缓存和已知列表提示，冷缓存不查询收藏夹详情', async () => {
+  const files=new Map<string,string>();let metadata=0;let downloads=0;
+  const service=new FavoriteFolderCoverService({
+    async get(key){const path=files.get(key);return path?{path,relativePath:path,bytes:1}:null;},
+    async getOrFetch(key){downloads++;const path='/cache/folder.webp';files.set(key,path);return {path,relativePath:path,bytes:1};},
+  },async()=>{metadata++;return 'https://i0.hdslb.com/bfs/archive/unneeded.jpg';});
+  assert.equal(await service.cached(1,10),null);
+  assert.equal(downloads,0);assert.equal(metadata,0);
+  service.prime(user('account',1),10,'https://i0.hdslb.com/bfs/archive/known.jpg');
+  assert.equal(await service.cached(1,10),'/cache/folder.webp');
+  assert.equal(await service.cached(1,10),'/cache/folder.webp');
+  assert.equal(downloads,1);assert.equal(metadata,0);
+  assert.equal(await service.cached(2,10),null);
+});
+
 test("收藏夹封面命中在线缓存时不重复查询B站", async () => {
   const files = new Map<string, string>();
   let metadataCalls = 0;

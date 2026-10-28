@@ -15,4 +15,5 @@
 @import './shared/styles/motion.css';
 @import './shared/styles/scrollbars.css';
 @import './features/workspace/style.css';
+@import './features/archive/directory.css';
 @import './features/onboarding/style.css';

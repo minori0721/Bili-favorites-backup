@@ -214,8 +214,8 @@ function navigation() {
       name: "测试账号",
       removed: false,
       summary,
-      folders: [{ mediaId: 101, title: "当前收藏夹", ...summary }],
-      inactiveFolders: [{ mediaId: 202, title: "历史收藏夹", ...summary }],
+      folders: [{ mediaId: 101, title: "当前收藏夹", artworkUrl:'/api/archive-library/artwork?userId=user-1&mediaId=101', ...summary }],
+      inactiveFolders: [{ mediaId: 202, title: "历史收藏夹", artworkUrl:'/api/archive-library/artwork?userId=user-1&mediaId=202', ...summary }],
     }],
   };
 }
@@ -245,6 +245,12 @@ function detailItem(bvid: string) {
 
 app.use(express.json());
 const upFixture=createUpUiFixture();
+app.get('/api/archive-library/artwork',(_request,response)=>{
+  response.type('image/svg+xml').send('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100" viewBox="0 0 160 100"><rect width="160" height="100" fill="#75a89b"/><path d="M0 100L60 25L110 75L160 40V100" fill="#397b70"/></svg>');
+});
+app.post('/api/archive-library/folders/deletion-preview',(request,response,next)=>{
+  try{response.json(ok(upFixture.deletion.previewInactiveFolder(request.body.userId,request.body.mediaId)));}catch(error){next(error);}
+});
 if(state.archiveActionPreview)upFixture.seedArchiveActions();
 app.use(createArchiveVideoActionsRouter({service:upFixture.videoActions,boundary:handler=>(req,res,next)=>{Promise.resolve(handler(req,res,next)).catch(next);}}));
 app.get('/api/archive-deletions/:id',(req,res,next)=>{const operation=upFixture.deletion.get(req.params.id);if(!operation)return next();res.json(ok(operation));});

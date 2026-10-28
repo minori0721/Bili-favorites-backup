@@ -9,8 +9,10 @@ import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
 import { archiveMembershipStatusLabel, archiveStatusLabel, sourceAvailabilityReasonLabel } from './status.js';
 import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
 import { archiveIndexUpdateLabel } from './navigation-meta.js';
+import { createDirectoryMenu, directoryIcon, type DirectoryAction } from './directory-menu.js';
 type Navigation = ReturnType<typeof parseArchiveNavigation>;
 type Summary = Navigation['summary'];
+type NavEntry = Partial<Summary> & {artworkUrl?:string; uid?:number; inactive?:boolean; deletion?:Navigation['accounts'][number]['deletion']};
 type ArchiveItem = ReturnType<typeof parseArchiveLibraryDetail>;
 type Membership = ArchiveItem['memberships'][number];
 type Deletion = ReturnType<typeof parseArchiveDeletion>;
@@ -72,6 +74,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     archiveLibrarySearchClearBtn: requireElement(document, '#archiveLibrarySearchClearBtn', HTMLButtonElement),
   };
   const ARCHIVE_LIBRARY_STORAGE_KEY = 'bfb-archive-library-v1';
+  const directoryMenu = createDirectoryMenu(document);
     const archiveLibraryState: ArchiveState = {
       navigation: null,
       scope: 'global',
@@ -169,6 +172,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     }
 
     function cleanupArchiveLibrary() {
+      directoryMenu.close();
       for (const controller of requests) controller.abort(); requests.clear();
       for (const timer of timers) clearTimeout(timer); timers.clear();
       for (const id of frames) cancelAnimationFrame(id); frames.clear();
@@ -312,7 +316,9 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       return Number(entry.total || 0) + ' 个视频 · ' + Number(entry.playable || 0) + ' 可播放';
     }
 
-    function createArchiveNavItem(entry: Partial<Summary>, context: Directory) {
+    function createArchiveNavItem(entry: NavEntry, context: Directory) {
+      const kind = context.scope === 'folder' ? (context.mediaId! <= -2 ? 'up' : 'folder') : context.scope === 'account' ? 'account' : 'global';
+      const row=document.createElement('div');row.className='archive-nav-row archive-nav-'+kind;
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'archive-nav-item';
@@ -321,17 +327,25 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       button.dataset.archiveMediaId = String(context.mediaId || '');
       const preview = document.createElement('span');
       preview.className = 'archive-nav-preview';
-      appendArchiveCover(preview, entry);
+      if(context.scope==='folder') {
+        appendArchiveCover(preview, entry);
+        preview.querySelector('.archive-library-placeholder')?.replaceChildren(directoryIcon(document,kind));
+      } else {row.classList.add('archive-nav-aggregate');preview.append(directoryIcon(document,kind));}
       const copy = document.createElement('span');
       copy.className = 'archive-nav-copy';
       const title = document.createElement('span');
       title.className = 'archive-nav-title';
       title.textContent = safeText(context.title, '归档目录');
+      title.title=title.textContent;
       const meta = document.createElement('span');
       meta.className = 'archive-nav-meta';
       meta.textContent = archiveNavMeta(entry);
       copy.appendChild(title);
       copy.appendChild(meta);
+      if(entry.deletion && !['completed','stopped'].includes(entry.deletion.status)) {
+        const progress=document.createElement('span');progress.className='archive-nav-cleanup';
+        progress.textContent=archiveDeletionProgressText(entry.deletion);copy.append(progress);
+      }
       const updatedLabel = entry.lastSyncedAt && archiveIndexUpdateLabel(entry.lastSyncedAt);
       if (updatedLabel) {
         const updated = document.createElement('span');
@@ -342,13 +356,81 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       button.appendChild(preview);
       button.appendChild(copy);
       button.addEventListener('click', () => selectArchiveLibraryDirectory(context, button));
-      return button;
+      row.append(button);
+      if(context.scope==='folder') {
+        const more=document.createElement('button');more.type='button';more.className='archive-nav-more';more.textContent='⋯';
+        more.setAttribute('aria-label',context.title+'的更多操作');more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');
+        more.addEventListener('click',()=>{
+          const session=archiveLibraryState.sessionToken;
+          const actions:DirectoryAction[]=[{label:'目录统计',run:()=>{void selectArchiveLibraryDirectory(context,button).then(()=>{
+            if(archiveLibrarySessionCurrent(session)) elements.archiveLibraryStats.open=true;
+          });}}];
+          const account=archiveLibraryState.navigation?.accounts.find(item=>item.id===context.userId);
+          const uid=kind==='up'?entry.uid:account?.uid;
+          if(uid && context.mediaId! > 0) actions.push({label:'在 B站打开收藏夹 ↗',href:'https://space.bilibili.com/'+uid+'/favlist?fid='+context.mediaId});
+          else if(uid && kind==='up') actions.push({label:'在 B站打开 UP 主页 ↗',href:'https://space.bilibili.com/'+uid});
+          if(entry.inactive && context.mediaId! > 0) {
+            if(entry.deletion?.status==='failed') {
+              actions.push({label:'重试清理',run:()=>{void cleanupArchiveDirectory(entry,context,more,'retry');}},
+                {label:'重新核对范围',run:()=>{void cleanupArchiveDirectory(entry,context,more,'repreview');}},
+                {label:'停止剩余清理',run:()=>{void cleanupArchiveDirectory(entry,context,more,'stop');}});
+            } else if(!entry.deletion || ['completed','stopped'].includes(entry.deletion.status)) {
+              actions.push({label:'清理此来源归档',danger:true,run:()=>{void cleanupArchiveDirectory(entry,context,more,'preview');}});
+            }
+          }
+          directoryMenu.open(more,context.title,actions);
+        });row.append(more);
+      }
+      return row;
+    }
+
+    async function refreshDirectoryCleanup() {
+      const session=archiveLibraryState.sessionToken;
+      const navigation=await requestArchiveLibraryNavigation(session);
+      if(!navigation || !archiveLibrarySessionCurrent(session)) return;
+      if(!archiveDirectoryExists(navigation,archiveLibraryState.scope,archiveLibraryState.userId,archiveLibraryState.mediaId)) {
+        archiveLibraryState.scope='global';archiveLibraryState.userId=null;archiveLibraryState.mediaId=null;archiveLibraryState.title='全部归档';
+      }
+      persistArchiveLibraryPreference();renderArchiveLibraryNavigation();setArchiveLibraryHeading();await loadArchiveLibraryItems(true);
+    }
+
+    async function cleanupArchiveDirectory(entry:NavEntry,context:Directory,trigger:HTMLButtonElement,action:'preview'|'retry'|'repreview'|'stop') {
+      const session=archiveLibraryState.sessionToken;
+      const current=()=>archiveLibrarySessionCurrent(session);
+      trigger.disabled=true;
+      try {
+        if(action==='stop' && entry.deletion) {
+          if(!await stopArchiveDeletion({id:entry.deletion.id,trigger,request:fetchJson,confirm:confirmAction,current}))return;
+        } else if(action==='repreview' && entry.deletion) {
+          if(!await repreviewArchiveDeletion({id:entry.deletion.id,trigger,request:fetchJson,confirm:confirmAction,formatBytes,current}))return;
+        } else if(action==='retry' && entry.deletion) {
+          parseArchiveDeletion(await fetchJson('/api/archive-deletions/'+encodeURIComponent(entry.deletion.id)+'/retry',{method:'POST'}));
+        } else {
+          const preview=parseArchiveDeletionPreview(await fetchJson('/api/archive-library/folders/deletion-preview',{
+            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:context.userId,mediaId:context.mediaId}),
+          }));
+          if(!current())return;
+          if(preview.scope!=='source'||preview.userId!==context.userId||preview.mediaId!==context.mediaId||preview.bvid)throw new Error('清理范围与当前目录不一致，请重新打开目录');
+          const confirmed=await confirmAction({title:'清理停用收藏夹的归档',message:context.title,
+            detail:archiveDeletionImpactText(preview,formatBytes)+'\n其他来源仍在使用的文件会保留。清理完成后，此目录才会从列表移除。重新启用收藏夹后可再次归档。',
+            requiredText:'DELETE ARCHIVE',confirmText:'开始清理',trigger});
+          if(!confirmed||!current())return;
+          parseArchiveDeletion(await fetchJson('/api/archive-deletions/'+encodeURIComponent(preview.previewId)+'/start',{
+            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'DELETE ARCHIVE'}),
+          }));
+        }
+        if(current())await refreshDirectoryCleanup();
+      } catch(error) {
+        if(current() && !(error instanceof Error && error.name==='AbortError')) showToast(error instanceof Error?error.message:'清理请求失败','error');
+      } finally {if(trigger.isConnected)trigger.disabled=false;}
     }
 
     function renderArchiveLibraryNavigation() {
+      directoryMenu.close();
       if (archiveLibraryState.navigationTimer) clearTimeout(archiveLibraryState.navigationTimer);
       archiveLibraryState.navigationTimer = null;
       const host = elements.archiveLibraryNav;
+      const expanded=new Set(Array.from(host.querySelectorAll<HTMLDetailsElement>('details[data-archive-inactive-owner][open]')).map(group=>group.dataset.archiveInactiveOwner));
       host.replaceChildren();
       const navigation = archiveLibraryState.navigation;
       if (!navigation) {
@@ -377,7 +459,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         group.appendChild(list);host.appendChild(group);
       }
 
-      const activeDeletions: {id:string;userId:string}[] = [];
+      const activeDeletions: {id:string;userId:string;mediaId?:number}[] = [];
       (navigation.accounts || []).forEach((account) => {
         const group = document.createElement(account.removed ? 'details' : 'section');
         group.className = 'archive-nav-account' + (account.removed ? ' archive-nav-inactive' : '');
@@ -451,14 +533,19 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (Array.isArray(account.inactiveFolders) && account.inactiveFolders.length) {
           const inactive = document.createElement('details');
           inactive.className = 'archive-nav-inactive';
+          inactive.dataset.archiveInactiveOwner=account.id;
+          inactive.open=expanded.has(account.id);
           const summary = document.createElement('summary');
           summary.textContent = '已停用归档 · ' + account.inactiveFolders.length;
           inactive.appendChild(summary);
           const inactiveList = document.createElement('div');
           inactiveList.className = 'archive-nav-list';
-          account.inactiveFolders.forEach((folder) => inactiveList.appendChild(createArchiveNavItem(folder, {
-            scope:'folder', userId:account.id, mediaId:folder.mediaId, title:folder.title + ' · 已停用'
-          })));
+          account.inactiveFolders.forEach((folder) => {
+            inactiveList.appendChild(createArchiveNavItem({...folder,inactive:true}, {
+              scope:'folder', userId:account.id, mediaId:folder.mediaId, title:folder.title
+            }));
+            if(folder.deletion && ['pending','running','retry_wait'].includes(folder.deletion.status))activeDeletions.push({id:folder.deletion.id,userId:account.id,mediaId:folder.mediaId});
+          });
           inactive.appendChild(inactiveList);
           group.appendChild(inactive);
         }
@@ -474,7 +561,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       }
     }
 
-    async function pollArchiveLibraryNavigationDeletions(activeDeletions: {id: string; userId: string}[]) {
+    async function pollArchiveLibraryNavigationDeletions(activeDeletions: {id: string; userId: string;mediaId?:number}[]) {
       archiveLibraryState.navigationTimer = null;
       const sessionToken = archiveLibraryState.sessionToken;
       if (!archiveLibrarySessionCurrent(sessionToken)) return;
@@ -493,12 +580,14 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         activeDeletions.forEach((entry, index) => {
           const operation = operations[index];
           const account = (archiveLibraryState.navigation?.accounts || []).find((candidate) => candidate.id === entry.userId);
-          if (!account || account.deletion?.id !== entry.id) return;
-          account.deletion = operation;
+          const owner=entry.mediaId===undefined?account:account?.inactiveFolders.find(folder=>folder.mediaId===entry.mediaId);
+          if (!owner || owner.deletion?.id !== entry.id) return;
+          owner.deletion = operation;
           if (['completed','failed'].includes(operation.status)) reachedTerminal = true;
           if (operation.status === 'completed') completed = true;
         });
         if (reachedTerminal) {
+          if(completed && activeDeletions.some(entry=>entry.mediaId!==undefined)){await refreshDirectoryCleanup();return;}
           saveArchiveLibraryScroll();
           const navigation = await requestArchiveLibraryNavigation(sessionToken);
           if (!navigation || !archiveLibrarySessionCurrent(sessionToken)) return;
@@ -531,6 +620,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           && String(button.dataset.archiveUserId || '') === String(archiveLibraryState.userId || '')
           && String(button.dataset.archiveMediaId || '') === String(archiveLibraryState.mediaId || '');
         button.classList.toggle('active', active);
+        button.closest('.archive-nav-row')?.classList.toggle('is-active',active);
         if (active) button.setAttribute('aria-current', 'page');
         else button.removeAttribute('aria-current');
       });
@@ -634,10 +724,10 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       return labels.join(' · ') + (more ? ' · +' + more : '');
     }
 
-    function appendArchiveCover(container: HTMLElement, item: {title?: string; bvid?: string; cover?: string; coverLocalPath?: string}, className?: string) {
+    function appendArchiveCover(container: HTMLElement, item: {title?: string; bvid?: string; cover?: string; coverLocalPath?: string;artworkUrl?:string}, className?: string) {
       const local = localCoverUrl(item);
       const remote = item && item.cover ? String(item.cover).replace('http://', 'https://') : '';
-      const sources = [...new Set([local, remote].filter(Boolean))];
+      const sources = [...new Set([item.artworkUrl||'',local, remote].filter(Boolean))];
       const placeholder = document.createElement('span');
       placeholder.className = 'archive-library-placeholder';
       placeholder.textContent = 'B';

@@ -503,7 +503,7 @@ test('library controls retain filtering sorting shared-source review and context
   await page.locator('#archiveLibraryDetailCloseBtn').click();
   await expect(page.locator('#archiveLibraryDetail')).not.toHaveClass(/open/);
   const back=page.locator('#archiveLibraryMobileBackBtn');if(await back.isVisible())await back.click();
-  await page.locator('#archiveLibraryNav').getByRole('button',{name:/^影视飓风/}).click();
+  await page.locator('#archiveLibraryNav .archive-nav-item').filter({hasText:'影视飓风'}).click();
   await expect(page.locator('#archiveLibraryTitle')).toContainText('影视飓风');
   await expect(page.locator('.archive-library-card')).toHaveCount(3);
   if(info.project.name==='desktop'){

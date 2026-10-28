@@ -18,7 +18,7 @@ export type FavoriteFolderCoverLoader = (
   mediaId: number,
 ) => Promise<string | undefined>;
 
-function cacheKey(user: BiliUser, mediaId: number) {
+function cacheKey(user: Pick<BiliUser,'uid'>, mediaId: number) {
   return `favorite-folder:${user.uid}:${mediaId}`;
 }
 
@@ -33,6 +33,16 @@ export class FavoriteFolderCoverService {
     private readonly coverCache: Pick<OnlineContentCoverPort, "get" | "getOrFetch">,
     private readonly loadCover: FavoriteFolderCoverLoader = getFavoriteFolderCover,
   ) {}
+
+  /** Archive browsing uses cached artwork and known URLs, never folder metadata requests. */
+  async cached(uid: number, mediaId: number) {
+    const key=cacheKey({uid},mediaId);
+    const file=await this.coverCache.get(key);
+    if(file)return file.path;
+    const cover=this.urls.get(key)?.cover;
+    if(!cover)return null;
+    return (await this.coverCache.getOrFetch(key,cover))?.path??null;
+  }
 
   /** Seed the short-lived source URL cache from an already loaded folder list. */
   prime(user: BiliUser, mediaId: number, cover: string | undefined) {

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { ArchiveDeletionService, type ArchiveDeletionDavClient, type ArchiveDeletionOptions } from "../src/archive-deletion.js";
 import { getArchiveLibraryItemDetail, getArchiveLibraryNavigation, queryArchiveLibraryItems } from "../src/archive-library.js";
+import { parseArchiveNavigation } from '../src/shared/api/archive-library.js';
 import type { AppConfig } from "../src/config.js";
 import { PersistentJobStore } from "../src/job-store.js";
 import { StateManager, type FavoriteRelation, type RemoteFileRecord, type VideoArchiveEntry } from "../src/state.js";
@@ -175,6 +176,90 @@ function createService(
     },
     prepareSourceDeletion: options.prepareSourceDeletion,
     onAccountPreparationRecovery: options.preparationRecovery,
+  });
+}
+
+test('整目录清理保留其他收藏夹共用文件，完成后隐藏停用目录，再次加入可以恢复归档',async()=>{
+  const runtime=await createTestDir('inactive-folder-shared');
+  const manager=new StateManager({dbPath:path.join(runtime,'bfb.sqlite'),statePath:path.join(runtime,'missing.json')});
+  const users=fakeUserStore([user()]);const dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+  try{
+    insertSource(manager,{userId:'u1',mediaId:11,bvid:'BVONE',paths:[{path:'/backup/shared.mp4',size:10}]});
+    insertSource(manager,{userId:'u1',mediaId:10,bvid:'BVONE',paths:[{path:'/backup/shared.mp4',size:10}]});
+    insertSource(manager,{userId:'u1',mediaId:11,bvid:'BVTWO',paths:[{path:'/backup/only.mp4',size:20}]});
+    dav.files.set('/backup/shared.mp4',{type:'file',size:10});dav.files.set('/backup/only.mp4',{type:'file',size:20});
+    service=createService(manager,users,dav);
+    const preview=service.previewInactiveFolder('u1',11);
+    assert.equal(preview.sourceCount,2);assert.equal(preview.sharedCount,1);
+    service.start(preview.id,'DELETE ARCHIVE');assert.equal(service.hasUnfinishedFolderCleanup('u1',11),true);
+    await waitForOperation(service,preview.id,['completed']);
+    assert.deepEqual(dav.deleteCalls,['/backup/only.mp4']);assert.equal(dav.files.has('/backup/shared.mp4'),true);
+    assert.equal(service.hasUnfinishedFolderCleanup('u1',11),false);
+    assert.equal(getArchiveLibraryNavigation(manager.getDatabase(),users.list()).accounts[0].inactiveFolders.some(folder=>folder.mediaId===11),false);
+    const sharedSummary=queryArchiveLibraryItems(manager.getDatabase(),users.list(),{scope:'folder',userId:'u1',mediaId:10}).summary;
+    assert.ok(sharedSummary);assert.equal(sharedSummary.playable,1);
+    users.set([user('u1',[{mediaId:10,title:'当前收藏夹'},{mediaId:11,title:'重新加入'}])]);
+    manager.recordFavoriteItem('u1',11,'重新加入',{bvid:'BVONE',title:'BVONE',upperName:'测试UP'});
+    const restored=getArchiveLibraryNavigation(manager.getDatabase(),users.list()).accounts[0].folders.find(folder=>folder.mediaId===11);
+    assert.equal(restored?.total,1);
+  }finally{if(service)await service.stop();manager.close();await removeTestDir(runtime);}
+});
+
+test('无远端文件的停用目录只清理索引，既不创建 DAV 连接也不影响其他目录',async()=>{
+  const runtime=await createTestDir('inactive-folder-index');
+  const manager=new StateManager({dbPath:path.join(runtime,'bfb.sqlite'),statePath:path.join(runtime,'missing.json')});
+  const users=fakeUserStore([user()]);let service:ArchiveDeletionService|undefined;let clients=0;
+  try{
+    manager.recordFavoriteItem('u1',11,'旧目录',{bvid:'BVINDEX',title:'Index',upperName:'UP'});
+    service=new ArchiveDeletionService(manager,fakeConfigStore(testConfig()),users,{clientFactory:()=>{clients++;throw new Error('must not connect');},isSchedulerIdle:()=>true});
+    const preview=service.previewInactiveFolder('u1',11);assert.equal(preview.fileCount,0);
+    service.start(preview.id,'DELETE ARCHIVE');await waitForOperation(service,preview.id,['completed']);
+    assert.equal(clients,0);
+    assert.equal(getArchiveLibraryNavigation(manager.getDatabase(),users.list()).accounts[0].inactiveFolders.length,0);
+  }finally{if(service)await service.stop();manager.close();await removeTestDir(runtime);}
+});
+
+test('整目录清理重新核对范围和启用状态，失败目录保留并支持重新预览',async()=>{
+  const runtime=await createTestDir('inactive-folder-race');
+  const manager=new StateManager({dbPath:path.join(runtime,'bfb.sqlite'),statePath:path.join(runtime,'missing.json')});
+  const users=fakeUserStore([user()]);const dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+  try{
+    insertSource(manager,{userId:'u1',mediaId:11,bvid:'BVFAILED',paths:[{path:'/backup/failed.mp4',size:10}]});
+    dav.files.set('/backup/failed.mp4',{type:'file',size:10});dav.deleteFailures.set('/backup/failed.mp4',Object.assign(new Error('forbidden'),{status:403}));
+    service=createService(manager,users,dav);
+    assert.throws(()=>service!.previewInactiveFolder('u1',10),/停止同步/);
+    const preview=service.previewInactiveFolder('u1',11);
+    users.set([user('u1',[{mediaId:11,title:'重新启用'}])]);
+    assert.throws(()=>service!.start(preview.id,'DELETE ARCHIVE'),/停止同步/);assert.equal(dav.deleteCalls.length,0);
+    users.set([user()]);service.start(preview.id,'DELETE ARCHIVE');await waitForOperation(service,preview.id,['failed']);
+    assert.equal(service.hasUnfinishedFolderCleanup('u1',11),true);
+    const directory=getArchiveLibraryNavigation(manager.getDatabase(),users.list()).accounts[0].inactiveFolders.find(folder=>folder.mediaId===11);
+    assert.equal(directory?.deletion?.status,'failed');
+    const decoded=parseArchiveNavigation(getArchiveLibraryNavigation(manager.getDatabase(),users.list()));
+    assert.equal(decoded.accounts[0].inactiveFolders.find(folder=>folder.mediaId===11)?.deletion?.status,'failed');
+    const next=service.repreview(preview.id);assert.equal(next.mediaId,11);assert.equal(next.bvid,undefined);
+    dav.deleteFailures.clear();service.start(next.id,'DELETE ARCHIVE');await waitForOperation(service,next.id,['completed']);
+    assert.equal(dav.files.has('/backup/failed.mp4'),false);
+  }finally{if(service)await service.stop();manager.close();await removeTestDir(runtime);}
+});
+
+for(const change of ['selection','range'] as const){
+  test(`整目录清理等待任务排空时发生 ${change} 变化，不能按旧范围删除`,async()=>{
+    const runtime=await createTestDir('inactive-folder-drain');
+    const manager=new StateManager({dbPath:path.join(runtime,'bfb.sqlite'),statePath:path.join(runtime,'missing.json')});
+    const users=fakeUserStore([user()]);const dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+    let enter!:()=>void;let release!:()=>void;
+    const entered=new Promise<void>(resolve=>{enter=resolve;});const draining=new Promise<void>(resolve=>{release=resolve;});
+    try{
+      insertSource(manager,{userId:'u1',mediaId:11,bvid:'BVDRAIN',paths:[{path:'/backup/drain.mp4',size:10}]});
+      dav.files.set('/backup/drain.mp4',{type:'file',size:10});
+      service=createService(manager,users,dav,{prepareSourceDeletion:async()=>{enter();await draining;}});
+      const preview=service.previewInactiveFolder('u1',11);service.start(preview.id,'DELETE ARCHIVE');await entered;
+      if(change==='selection')users.set([user('u1',[{mediaId:11,title:'New choice'}])]);
+      else insertSource(manager,{userId:'u1',mediaId:11,bvid:'BVLATE',paths:[]});
+      release();await waitForOperation(service,preview.id,['failed']);assert.equal(dav.deleteCalls.length,0);
+      assert.equal(dav.files.has('/backup/drain.mp4'),true);
+    }finally{release();if(service)await service.stop();manager.close();await removeTestDir(runtime);}
   });
 }
 

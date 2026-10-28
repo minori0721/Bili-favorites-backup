@@ -100,6 +100,9 @@ function parseNavigationFolder(value: unknown) {
     lastSyncedAt: optionalString(data.lastSyncedAt, '归档目录时间字段格式错误'),
     coverLocalPath: optionalString(data.coverLocalPath, '归档目录封面字段格式错误'),
     cover: optionalString(data.cover, '归档目录封面字段格式错误'),
+    artworkUrl: optionalString(data.artworkUrl, '归档目录图片地址格式错误'),
+    uid: optionalUid(data.uid),
+    deletion: parseDeletion(data.deletion),
     userId: optionalString(data.userId, '归档来源账号格式错误'),
   };
 }
@@ -265,6 +268,7 @@ export function parseArchiveDeletionPreview(value: unknown) {
     || sharedCount>fileCount || (deleteCount!==undefined && deleteCount+sharedCount>fileCount)
     || (reclaimableBytes!==undefined && reclaimableBytes>totalBytes)) throw new ResponseFormatError('归档清理预览数量不一致');
   return { previewId, scope: text(data.scope, '归档清理范围格式错误'),
+    userId:text(data.userId,'归档清理账号格式错误'),mediaId:integer(data.mediaId,'归档清理目录格式错误'),bvid:text(data.bvid,'归档清理视频格式错误'),
     fileCount,totalBytes,sharedCount,deleteCount,reclaimableBytes };
 }
 

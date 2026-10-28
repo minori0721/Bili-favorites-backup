@@ -146,7 +146,6 @@ const installedReleaseNotice = createInstalledReleaseNotice({current:appInfo,new
 });
 try { installedReleaseNotice.initialize(); }
 catch(error) { console.warn(`[Updates] 初始化版本提示标记失败：${safeErrorSummary(error)}`); }
-const archiveLibrary = createArchiveLibraryService({database: () => stateManager.getDatabase(), users: () => userStore.list()});
 let stopFailedApplication: ((error: Error) => void) | undefined;
 // Only the application owns authorization refresh. Callbacks run after assembly.
 const accountRefresh = createAccountRefresh({
@@ -198,7 +197,13 @@ const favoriteFolderListCache = new FavoriteFolderListCache(
     for (const folder of folders) favoriteFolderCover.prime(user, folder.mediaId, folder.cover);
   },
 );
-const favoriteBrowsing = createFavoriteBrowsing({folders: favoriteFolderListCache, covers: favoriteFolderCover, users: userStore, load: listFavoriteFolders});
+const archiveLibrary = createArchiveLibraryService({database:()=>stateManager.getDatabase(),users:()=>userStore.list(),artwork:{
+  folder:(uid,mediaId)=>favoriteFolderCover.cached(uid,mediaId),
+  avatar:async(uid,url)=>(await onlineCoverCache.getOrFetch(`up-avatar:${uid}:${url}`,url))?.path??null,
+}});
+const favoriteBrowsing = createFavoriteBrowsing({folders: favoriteFolderListCache, covers: favoriteFolderCover, users: userStore, load: listFavoriteFolders,
+  selectionBlocked:(userId,mediaId)=>archiveDeletion.hasUnfinishedFolderCleanup(userId,mediaId),
+});
 const memoryObservation = createRuntimeMemoryObservation({
   resources: () => ({
     stateCache: stateManager.getLazyCacheStats(),

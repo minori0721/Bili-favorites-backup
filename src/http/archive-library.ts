@@ -32,6 +32,20 @@ function sendArchiveLibraryError(res: express.Response, error: unknown) {
 
 export function createArchiveLibraryRouter(service: ArchiveLibraryPort) {
   const router = Router();
+  router.get('/api/archive-library/artwork',async(req,res,next)=>{
+    try{
+      const userId=typeof req.query.userId==='string'?req.query.userId:'';
+      const mediaId=typeof req.query.mediaId==='string'?Number(req.query.mediaId):NaN;
+      if(!userId||!Number.isSafeInteger(mediaId)||mediaId===0||mediaId===-1)throw new ArchiveLibraryQueryError('归档图片参数无效');
+      const file=await service.artwork(userId,mediaId);
+      if(!file){res.status(404).setHeader('Cache-Control','private, no-store');res.end();return;}
+      res.setHeader('Cache-Control','private, max-age=300');
+      res.sendFile(file,error=>{if(error)next(error);});
+    }catch(error){
+      if(error instanceof ArchiveLibraryQueryError){sendArchiveLibraryError(res,error);return;}
+      next(error);
+    }
+  });
   router.get("/api/archive-library/navigation", (req, res) => {
     res.setHeader("Cache-Control", "private, no-store");
     res.json({

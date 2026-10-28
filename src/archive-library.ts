@@ -153,6 +153,12 @@ interface AccountDeletionSummary {
   completedAt?: string;
 }
 
+interface NavigationDeletionRow {
+  id:string;user_id:string;scope:'account'|'source';media_id:number|null;status:string;
+  file_count:number;total_bytes:number;completed_count:number;retained_count:number;
+  conflict_count:number;failed_count:number;last_error:string|null;updated_at:number;completed_at:number|null;
+}
+
 interface HydratedRecord {
   relation: FavoriteRelation;
   video: VideoArchiveEntry;
@@ -1291,18 +1297,21 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
     .map((row) => [String(row.user_id), navigationSummaryFromRow(row, remoteReferenceStats.get(`account:${row.user_id}`))]));
   const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"), remoteReferenceStats.get("global"));
   const indexedFolders = new Map(folderRows.map((row) => [`${row.user_id}:${row.media_id}`, row]));
-  const accountDeletionRows = userIds.length ? database.db.prepare<unknown[], ArchiveSqlRow>(`
-    SELECT id, user_id, status, file_count, total_bytes, completed_count, retained_count,
+  const accountDeletionRows = userIds.length ? database.db.prepare<unknown[], NavigationDeletionRow>(`
+    SELECT id, user_id, scope, media_id, status, file_count, total_bytes, completed_count, retained_count,
       conflict_count, failed_count, last_error, updated_at, completed_at
     FROM archive_deletions
-    WHERE scope='account' AND user_id IN (${userIds.map(() => "?").join(",")})
+    WHERE (scope='account' OR (scope='source' AND bvid IS NULL AND media_id>0)) AND user_id IN (${userIds.map(() => "?").join(",")})
       AND status IN ('preparing','config_removing','pending','running','retry_wait','failed','completed')
     ORDER BY user_id, COALESCE(started_at, created_at) DESC, created_at DESC
   `).all(...userIds) : [];
   const accountDeletions = new Map<string, AccountDeletionSummary>();
+  const folderDeletions = new Map<string, AccountDeletionSummary>();
   for (const row of accountDeletionRows) {
-    if (accountDeletions.has(String(row.user_id))) continue;
-    accountDeletions.set(String(row.user_id), {
+    const target=row.scope==='account'?accountDeletions:folderDeletions;
+    const key=row.scope==='account'?row.user_id:`${row.user_id}:${row.media_id}`;
+    if (target.has(key)) continue;
+    target.set(key, {
       id: String(row.id),
       status: String(row.status),
       fileCount: Number(row.file_count || 0),
@@ -1313,7 +1322,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       failedCount: Number(row.failed_count || 0),
       lastError: row.last_error ? safeLibraryError(row.last_error) : undefined,
       updatedAt: isoFromMs(row.updated_at),
-      completedAt: isoFromMs(row.completed_at),
+      completedAt: row.completed_at == null ? undefined : isoFromMs(row.completed_at),
     });
   }
   const accountData = libraryUsers.map((user) => {
@@ -1335,6 +1344,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         lastSyncedAt: isoFromMs(row?.last_synced_at),
         coverLocalPath: row?.cover_local_path || undefined,
         cover: row?.cover || undefined,
+        artworkUrl:folder.mediaId>0?'/api/archive-library/artwork?'+new URLSearchParams({userId:user.id,mediaId:String(folder.mediaId)}).toString():undefined,
         sourceKind: "favorite" as "favorite" | "manual",
       };
     });
@@ -1355,11 +1365,13 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         lastSyncedAt: isoFromMs(manualRow.last_synced_at || manualRow.last_seen_at),
         coverLocalPath: manualRow.cover_local_path || undefined,
         cover: manualRow.cover || undefined,
+        artworkUrl:undefined,
         sourceKind: "manual" as const,
       });
     }
     const inactiveFolders = folderRows
       .filter((row) => row.user_id === user.id && Number(row.media_id) > 0 && !selected.has(`${user.id}:${row.media_id}`))
+      .filter(row=>!(Number(row.total)===0&&folderDeletions.get(`${row.user_id}:${row.media_id}`)?.status==='completed'))
       .map((row) => ({
         mediaId: Number(row.media_id),
         title: String(row.folder_title || `收藏夹 ${row.media_id}`),
@@ -1375,6 +1387,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         lastSyncedAt: isoFromMs(row.last_synced_at || row.last_seen_at),
         coverLocalPath: row.cover_local_path || undefined,
         cover: row.cover || undefined,
+        artworkUrl:'/api/archive-library/artwork?'+new URLSearchParams({userId:user.id,mediaId:String(row.media_id)}).toString(),
+        deletion:folderDeletions.get(`${row.user_id}:${row.media_id}`),
         sourceKind: "favorite" as const,
       }));
     return {
@@ -1399,7 +1413,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       return {sourceId:source.id,userId:source.userId,mediaId:source.routingKey,title:source.name,
         enabled:source.enabled,removed:source.removed,total:Number(row?.total||0),playable:Number(row?.playable||0),
         pending:Number(row?.pending||0),issue:Number(row?.issue||0),deleted:Number(row?.deleted||0),sourceKind:'up',
-        cover:source.avatar};
+        cover:source.avatar,uid:source.uid,
+        artworkUrl:'/api/archive-library/artwork?'+new URLSearchParams({userId:source.userId,mediaId:String(source.routingKey)}).toString()};
     }),
   };
 }

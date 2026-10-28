@@ -10,6 +10,18 @@ import { parsePlaybackQueuePage, parsePlaybackSearchPage } from '../../src/share
 
 const part = { fileId: 1, pageIndex: 1, label: '正片', fingerprint: '1:0:1', streamUrl: '/media/1' };
 
+test('directory artwork and cleanup fields remain optional for older responses and reject malformed values',()=>{
+  const summary={total:0,playable:0,pending:0,issue:0};
+  const folder={...summary,mediaId:10,title:'Folder'};
+  const nav=(entry:unknown)=>({summary,accounts:[{id:'owner',name:'Account',uid:1,summary,folders:[entry],inactiveFolders:[]}]});
+  assert.equal(parseArchiveNavigation(nav(folder)).accounts[0].folders[0].artworkUrl,undefined);
+  const current={...folder,artworkUrl:'/api/archive-library/artwork?userId=owner&mediaId=10',deletion:{id:'op',status:'running',fileCount:2,completedCount:1}};
+  assert.equal(parseArchiveNavigation(nav(current)).accounts[0].folders[0].deletion?.completedCount,1);
+  assert.throws(()=>parseArchiveNavigation(nav({...folder,artworkUrl:123})));
+  assert.throws(()=>parseArchiveNavigation(nav({...folder,uid:'1'})));
+  assert.throws(()=>parseArchiveNavigation(nav({...current,deletion:{...current.deletion,fileCount:-1}})));
+});
+
 test('deletion progress accepts persistent epoch timestamps and historical ISO projections', () => {
   const operation = { id: 'cleanup', status: 'completed', fileCount: 1, completedCount: 1 };
   for (const time of [0, 1792929600000, '2026-10-25T12:00:00.000Z']) {

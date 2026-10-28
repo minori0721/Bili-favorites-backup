@@ -8,6 +8,7 @@ export function createFavoriteBrowsing(deps: {
   users: Pick<UserStore, 'getById' | 'updateFavorites' | 'captureAccount' | 'isAuthorizationCurrent' | 'isSelectionCurrent'>;
   load: typeof listFavoriteFolders;
   covers: Pick<FavoriteFolderCoverService, 'resolve'>;
+  selectionBlocked?(userId: string, mediaId: number): boolean;
 }) {
   return {
     async select(userId: string, input: unknown) {
@@ -33,6 +34,9 @@ export function createFavoriteBrowsing(deps: {
   }
   assertCurrent();
   const selected = folders.filter((folder) => mediaIds.includes(folder.mediaId));
+  if(selected.some(folder=>deps.selectionBlocked?.(userId,folder.mediaId))) {
+    return {status:409,body:{success:false,message:'该收藏夹的归档清理尚未结束，请等待完成或停止剩余清理后再启用'}};
+  }
   const updated = deps.users.updateFavorites(user.id, selected.map((folder) => ({ mediaId: folder.mediaId, title: folder.title })));
   deps.folders.set(updated!, folders);
   return {status: 200, body: { success: true, data: selected }};

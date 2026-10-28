@@ -3,10 +3,17 @@ import type { ArchiveDeletionService } from '../archive-deletion.js';
 import type { RouteBoundary } from './route-boundary.js';
 
 export function createArchiveDeletionRouter(deps: {
-  service: Pick<ArchiveDeletionService, 'previewSource' | 'get' | 'start' | 'retry' | 'repreview' | 'stopRemaining'>;
+  service: Pick<ArchiveDeletionService, 'previewSource' | 'previewInactiveFolder' | 'get' | 'start' | 'retry' | 'repreview' | 'stopRemaining'>;
   boundary: RouteBoundary;
 }) {
   const router = Router();
+  router.post('/api/archive-library/folders/deletion-preview',deps.boundary(async(req,res)=>{
+    const {userId,mediaId}=req.body??{};
+    if(typeof userId!=='string'||!userId.trim()||!Number.isSafeInteger(mediaId)||mediaId<1){
+      res.status(400).json({success:false,message:'归档目录参数无效'});return;
+    }
+    res.setHeader('Cache-Control','private, no-store').json({success:true,data:deps.service.previewInactiveFolder(userId.trim(),mediaId)});
+  }));
   router.post("/api/archive-library/items/:bvid/deletion-preview", deps.boundary(async (req, res) => {
     const bvid = String(req.params.bvid || "").trim();
     const userId = String(req.body?.userId || "").trim();

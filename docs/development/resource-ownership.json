@@ -1,6 +1,14 @@
 {
   "resources": [
     {
+      "module": "web/client/features/archive/directory-menu.ts",
+      "ownerSymbol": "createDirectoryMenu",
+      "resourceSymbols": ["current"],
+      "stop": "close removes the portal and aborts its pointer, scroll, resize and keyboard listeners; the archive controller closes it before rendering navigation and during deactivation or destroy",
+      "lateCallback": "only the currently open menu owns listeners; archive actions use the archive session token and abortable requests before applying results or confirming cleanup",
+      "rebind": "menu actions capture the current validated directory and deletion identity; reopening creates a new portal without retaining database or account objects"
+    },
+    {
       "module": "web/client/features/onboarding/controller.ts",
       "ownerSymbol": "createOnboarding",
       "resourceSymbols": ["slots", "events", "tour", "kind", "pendingGuide", "opening", "focusFrame", "resumeFrame", "seen", "reopenHintSeen", "autoAllowed", "firstRun", "statusRequest", "ackRequest", "acknowledgementWanted", "manualSource", "accounts", "storage", "subscriptions", "modalObserver"],

@@ -11,7 +11,9 @@ import { performance } from 'node:perf_hooks';
 import type Database from 'better-sqlite3';
 
 /** Resolve storage on each call so import rebind never leaves a stale connection in a route. */
-export function createArchiveLibraryService(dependencies: { database(): StateDatabase; users(): BiliUser[]; now?(): number }) {
+export function createArchiveLibraryService(dependencies: { database(): StateDatabase; users(): BiliUser[]; now?(): number;
+  artwork?: {folder(uid:number,mediaId:number):Promise<string|null>;avatar(uid:number,url:string):Promise<string|null>};
+}) {
   type Navigation = ReturnType<typeof getArchiveLibraryNavigation>;
   type Stamp = { changes: number; data_version: number };
   const now = dependencies.now ?? (() => performance.now());
@@ -46,6 +48,22 @@ export function createArchiveLibraryService(dependencies: { database(): StateDat
   }
   return {
     navigation,
+    async artwork(userId:string,mediaId:number) {
+      const database=dependencies.database();
+      if(mediaId<=-2){
+        const source=database.upSubscriptions.getByRoute(mediaId);
+        if(!source||source.userId!==userId)return null;
+        return source.avatar&&dependencies.artwork?dependencies.artwork.avatar(source.uid,source.avatar):null;
+      }
+      const users=dependencies.users();
+      const user=users.find(candidate=>candidate.id===userId);
+      const source=database.db.prepare<[string,number],{present:number}>(
+        'SELECT EXISTS(SELECT 1 FROM favorite_relations WHERE user_id=? AND media_id=?) AS present'
+      ).get(userId,mediaId);
+      if(!source?.present&&!user?.favorites.some(folder=>folder.mediaId===mediaId))return null;
+      const uid=user?.uid??database.db.prepare<[string],{uid:number}>('SELECT uid FROM archive_accounts WHERE user_id=?').get(userId)?.uid;
+      return uid&&dependencies.artwork?dependencies.artwork.folder(uid,mediaId):null;
+    },
     items: (query: Partial<ArchiveLibraryQuery>) => queryArchiveLibraryItems(dependencies.database(), dependencies.users(), query),
     detail: (query: Partial<ArchiveLibraryQuery>, bvid: string) => getArchiveLibraryItemDetail(dependencies.database(), dependencies.users(), query, bvid),
     playbackQueue: (query: Partial<ArchiveLibraryQuery>, options: Parameters<typeof getArchiveLibraryPlaybackQueue>[3]) =>

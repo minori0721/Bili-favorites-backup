@@ -385,6 +385,24 @@ export class ArchiveDeletionService {
     return preview;
   }
 
+  previewInactiveFolder(userId: string, mediaId: number) {
+    if (!userId || !Number.isSafeInteger(mediaId) || mediaId < 1) throw archiveDeletionError('归档目录参数无效',400);
+    if (!this.isKnownOwner(userId)) throw archiveDeletionError('归档账号不存在',404);
+    this.assertSourceStillDeletable(userId,mediaId);
+    const present=this.db.db.prepare<[string,number],{present:number}>(
+      'SELECT EXISTS(SELECT 1 FROM favorite_relations WHERE user_id=? AND media_id=?) AS present'
+    ).get(userId,mediaId);
+    if (!present?.present) throw archiveDeletionError('归档目录不存在',404);
+    return this.createPreview('source',userId,mediaId,undefined,true);
+  }
+
+  hasUnfinishedFolderCleanup(userId: string, mediaId: number) {
+    return Boolean(this.db.db.prepare<[string,number],{present:number}>(`
+      SELECT EXISTS(SELECT 1 FROM archive_deletions WHERE scope='source' AND bvid IS NULL
+        AND user_id=? AND media_id=? AND status IN ('pending','running','retry_wait','failed')) AS present
+    `).get(userId,mediaId)?.present);
+  }
+
   previewHistory(userId:string,mediaId:number,bvids?:ReadonlySet<string>) {
     const source=this.db.upSubscriptions.getByRoute(mediaId);
     if(!source||source.userId!==userId||source.removed)throw archiveDeletionError('UP 订阅不存在',404);
@@ -446,7 +464,7 @@ export class ArchiveDeletionService {
       return this.previewHistory(operation.userId,operation.mediaId!,new Set(rows.map(row=>row.bvid)));
     }
     if (operation.scope === 'source' && operation.bvid === undefined) {
-      return this.previewSubscription(operation.userId, operation.mediaId!);
+      return operation.mediaId!>0?this.previewInactiveFolder(operation.userId,operation.mediaId!):this.previewSubscription(operation.userId, operation.mediaId!);
     }
     return operation.scope === "account"
       ? this.createPreview("account", operation.userId)
@@ -1124,6 +1142,17 @@ export class ArchiveDeletionService {
   private assertSourceStillDeletable(userId: string, mediaId: number, bvid?: string,historyId?:string) {
     const upSource=mediaId<=-2?this.db.upSubscriptions.getByRoute(mediaId):null;
     if (bvid === undefined) {
+      if (mediaId > 0) {
+        if (this.userStore.getById(userId)?.favorites.some(folder=>folder.mediaId===mediaId)) {
+          throw archiveDeletionError('该收藏夹已启用同步，请先停止同步后再清理',409);
+        }
+        const uncertain=this.db.db.prepare<[string,number],{present:number}>(`
+          SELECT EXISTS(SELECT 1 FROM remote_files WHERE user_id=? AND media_id=?
+            AND status NOT IN ('verified','missing')) AS present
+        `).get(userId,mediaId);
+        if (uncertain?.present) throw archiveDeletionError('该目录仍有待核验文件，请先处理相关任务',409);
+        return;
+      }
       if(historyId && upSource && upSource.userId===userId && !upSource.removed && upSource.enabled && upSource.mode==='from_now') {
         const rows=this.db.db.prepare<[string],{bvid:string}>('SELECT bvid FROM archive_deleted_sources WHERE deletion_id=?').all(historyId);
         if(rows.every(row=>this.db.upSubscriptions.isBlocked(userId,mediaId,row.bvid)))return;
@@ -1152,7 +1181,7 @@ export class ArchiveDeletionService {
         AND NOT EXISTS(SELECT 1 FROM favorite_relations r
           WHERE r.user_id=s.user_id AND r.media_id=s.media_id AND r.bvid=s.bvid)) AS changed
     `).get(userId, mediaId,archivedOnly?1:0, id, id);
-    if (!row || row.changed) throw archiveDeletionError('订阅归档范围已变化，请重新核对', 409);
+    if (!row || row.changed) throw archiveDeletionError('来源归档范围已变化，请重新核对', 409);
   }
 
   private currentProofs(id: string) {
@@ -1389,6 +1418,9 @@ export class ArchiveDeletionService {
     `).run(now, id).changes;
     if (claimed !== 1) return;
     this.db.db.prepare("UPDATE archive_deleted_sources SET status='running' WHERE deletion_id=? AND status<>'completed'").run(id);
+    if(operation.scope==='source'&&operation.mediaId!>0&&operation.bvid===undefined&&operation.fileCount===0){
+      this.finalizeOperation(id);return;
+    }
     const client = this.clientFactory(config);
     const resolver = createRemoteFileResolver(client, getRemoteBackendProfile(config));
     const sharedPaths = this.externalReferencePaths(id);
@@ -1460,6 +1492,10 @@ export class ArchiveDeletionService {
     }
     if (preflightConflict) throw archiveDeletionError("远端文件与预览证明不一致，未开始删除", 409, false);
     if (!this.isOperationRunnable(id)) return;
+    if (operation.scope==='source' && operation.mediaId!>0 && operation.bvid===undefined) {
+      this.assertSubscriptionSourcesStillCurrent(id,operation.userId,operation.mediaId!);
+      this.assertSourceStillDeletable(operation.userId,operation.mediaId!);
+    }
     const terminalize = (status: "observed_missing" | "shared_verified", terminal: "missing" | "retained") => {
       while (true) {
         const rows = this.db.db.prepare<unknown[], { "remote_path": string }>(`
@@ -1487,6 +1523,9 @@ export class ArchiveDeletionService {
           return;
         }
          const remotePath = normalizeRemotePath(String(item.remote_path));
+        if (operation.scope==='source' && operation.mediaId!>0 && operation.bvid===undefined) {
+          this.assertSourceStillDeletable(operation.userId,operation.mediaId!);
+        }
         const accessPath = resolvedRemotePaths.get(remotePath) || remotePath;
         this.updateItem(id, remotePath, "deleting", undefined, true);
         try {

@@ -10,6 +10,17 @@ const user = (): BiliUser => ({id: '1', uid: 1, name: 'Current', favorites: [{me
   cookie: {SESSDATA: 'fixture', bili_jct: 'fixture', DedeUserID: '1'}, enabled: true, lastLoginAt: ''});
 const folders: FavoriteFolderInfo[] = [{mediaId: 20, title: 'New', mediaCount: 1}];
 
+test('收藏夹清理在列表请求等待期间开始时，提交前拒绝重新启用；结束后可以启用',async()=>{
+  const users=memoryUsers([user()]);let blocked=false;let cached=0;
+  let release!:()=>void;const waiting=new Promise<void>(resolve=>{release=resolve;});
+  const service=createFavoriteBrowsing({users,folders:{get:async()=>[],peek:()=>undefined,set(){cached++;}},
+    load:async()=>{await waiting;return folders;},covers:{resolve:async()=>null},selectionBlocked:()=>blocked});
+  const pending=service.select('1',[20]);blocked=true;release();
+  assert.equal((await pending).status,409);assert.equal(cached,0);
+  assert.deepEqual(users.getById('1')?.favorites,[{mediaId:10,title:'Old'}]);
+  blocked=false;assert.equal((await service.select('1',[20])).status,200);
+});
+
 for (const failure of [false, true]) {
   for (const change of ['login', 'readd'] as const) {
     test(`profile ${failure ? 'failure' : 'success'} after ${change} cannot affect the current account`, async () => {
