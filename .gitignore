@@ -6,6 +6,8 @@ node_modules
 !/data/.gitkeep
 *.log
 .env
+.env.*
+!.env.example
 test-anti-risk.mjs
 /test-results
 /playwright-report
@@ -17,3 +19,7 @@ test-anti-risk.mjs
 /.preview-root/
 /.playwright-cli/
 /.review-*
+
+# Private maintainer instructions and release records
+/AGENTS.md
+/.local-maintainer/
