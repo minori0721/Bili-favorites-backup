@@ -42,6 +42,8 @@ test('favorite and UP share a safe management flow; a shared source deletion kee
   await expect(page.locator('#upActionStatus')).toContainText('尚未提交');
   await (await revealControl(page,page.locator('#upActionPreviewBtn'))).click();await confirmDeletion(page);
   await expect(page.locator('#upActionStatus')).toContainText('清理完成');
+  await expect(page.locator('#upActionStatus')).toContainText('已删除 0 个文件');
+  await expect(page.locator('#upActionStatus')).toContainText('共享保留 1 个文件');
   await expect(page.locator('#archiveActionUnblock')).toBeVisible();
   const response=await page.request.get(`/api/archive-library/items/${shared}?scope=global`);const data=(await response.json()).data;
   expect(data.memberships.filter((source:{backupStatus:string})=>source.backupStatus==='verified')).toHaveLength(2);
@@ -94,7 +96,46 @@ test('failed cleanup reports failure while retaining the source exclusion',async
   await manage(page,'BVARCHIVECOPIES');await (await revealControl(page,page.locator('input[name=upEffect][value=delete]'))).check();
   await (await revealControl(page,page.locator('#upActionPreviewBtn'))).click();await confirmDeletion(page);
   await expect(page.locator('#upActionStatus')).toContainText('清理未完成');
+  await expect(page.locator('#upActionStatus')).toBeInViewport();
+  await expect(page.locator('#archiveActionRetry')).toBeInViewport();
+  await expect(page.locator('#archiveActionStop')).toBeInViewport();
   await expect(page.locator('#archiveActionRule')).toContainText('此视频已在当前来源中排除');
+});
+
+test('manager refreshes directory counts after deleting all copies without changing the selected filter',async({page})=>{
+  await manage(page,'BVARCHIVECOPIES');
+  await (await revealControl(page,page.locator('input[name=upScope][value=global]'))).check();
+  await (await revealControl(page,page.locator('input[name=upEffect][value=delete]'))).check();
+  await (await revealControl(page,page.locator('#upActionPreviewBtn'))).click();await confirmDeletion(page);
+  await expect(page.locator('#upActionStatus')).toContainText('已删除 2 个文件');
+  await expect.poll(async()=>{
+    const expected=(await(await page.request.get('/api/archive-library/navigation?includeReferenceStats=false')).json()).data.summary.playable;
+    const label=await page.locator('.archive-nav-item[data-archive-scope="global"] .archive-nav-meta').textContent();
+    return label?.replace(/\s+/g,'').includes(`${expected}可播放`)===true;
+  }).toBe(true);
+  await expect(page.locator('[data-archive-filter="all"]')).toHaveAttribute('aria-pressed','true');
+});
+
+test('empty selected scope is rejected before creating a preview',async({page})=>{
+  await manage(page);await (await revealControl(page,page.locator('input[name=upScope][value=selected]'))).check();
+  const choices=page.locator('[data-archive-action-source]');
+  for(const choice of await choices.all())await (await revealControl(page,choice)).uncheck();
+  let previews=0;page.on('request',request=>{if(request.url().endsWith('/actions/preview'))previews++;});
+  await (await revealControl(page,page.locator('#upActionPreviewBtn'))).click();
+  await expect(page.locator('#upActionStatus')).toHaveText('请选择至少一个来源，再核对确认。');
+  expect(previews).toBe(0);
+});
+
+test('unique local copy is explicitly deleted rather than described as safe space recovery',async({page})=>{
+  await page.route('**/api/videos/*/local-release-preview',route=>route.fulfill({json:{success:true,data:{fileCount:1,totalBytes:5000,candidates:[{
+    releaseId:'unique-copy',fileCount:1,totalBytes:5000,requiresExplicitDeletion:true,hasVerifiedArchive:false,
+  }]}}}));
+  await manage(page);await (await revealControl(page,page.locator('[data-archive-action-close]'))).click();
+  await (await revealControl(page,page.getByRole('button',{name:'释放本地空间',exact:true}))).click();
+  await expect(page.locator('#confirmActionTitle')).toHaveText('删除本地文件');
+  await expect(page.locator('#confirmActionDetail')).toContainText('可能是唯一副本');
+  await expect(page.locator('#confirmActionMessage')).not.toContainText('安全释放');
+  await expect(page.locator('#confirmActionOkBtn')).toHaveText('删除本地文件');
 });
 test('cleanup separates rollback data, blocks busy cover deletion, and does not suggest wiping data for a container update',async({page})=>{
   await page.request.post('/__test/cleanup-busy',{data:{busy:true}});

@@ -2,7 +2,7 @@ import { isRecord, type ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
 import { parseItems, parseState, type MigrationState } from './contract.js';
 
-interface ConfirmOptions {title:string; message:string; detail?:string; requiredText?:string; confirmText:string; trigger:HTMLElement}
+interface ConfirmOptions {title:string; message:string; detail?:string; requiredText?:string; confirmText:string; cancelText?:string; trigger:HTMLElement}
 export function createPathMigrationController(dependencies: {
   root: Document;
   api: ApiClient;
@@ -274,7 +274,7 @@ export function createPathMigrationController(dependencies: {
     element('pathMigrationResumeBtn', HTMLButtonElement).addEventListener('click', () => pathMigrationAction('resume', {}), {signal:listeners.signal});
     element('pathMigrationCancelBtn', HTMLButtonElement).addEventListener('click', async () => {
       const generation = pathMigrationGeneration;
-      const ok = await confirmAction({ title:'取消路径迁移', message:'会保留已经复制到新目录的文件，但不会切换配置；下次可重新预览。', confirmText:'确认取消', trigger:element('pathMigrationCancelBtn', HTMLButtonElement) });
+      const ok = await confirmAction({ title:'取消路径迁移', message:'会保留已经复制到新目录的文件，但不会切换配置；下次可重新预览。', confirmText:'取消迁移', cancelText:'继续迁移', trigger:element('pathMigrationCancelBtn', HTMLButtonElement) });
       if (ok && generation === pathMigrationGeneration) await pathMigrationAction('cancel', {});
     }, {signal:listeners.signal});
     element('pathMigrationKeepBtn', HTMLButtonElement).addEventListener('click', () => pathMigrationAction('cleanup-old', { keepOld:true }), {signal:listeners.signal});

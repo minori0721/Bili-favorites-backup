@@ -2305,6 +2305,10 @@ export class StateDatabase {
   clearStateAndJobs() {
     const transaction = this.db.transaction(() => {
       this.db.exec(`
+        DELETE FROM up_catalog;
+        DELETE FROM archive_video_decisions;
+        DELETE FROM archive_global_exclusions;
+        DELETE FROM up_subscriptions;
         DELETE FROM jobs;
         DELETE FROM transfer_session_files;
         DELETE FROM transfer_sessions;

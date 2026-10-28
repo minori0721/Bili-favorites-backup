@@ -52,7 +52,7 @@ export function createUpSubscriptionService(deps:{
     const {status}=operation;
     if(status!=='pending'&&status!=='running'&&status!=='retry_wait'&&status!=='failed'&&status!=='completed'&&status!=='stopped')fail('订阅清理状态无效',409);
     return {id:operation.id,sourceId:current.id,sourceName:current.name,status,fileCount:operation.fileCount,
-      completedCount:operation.completedCount,retainedCount:operation.retainedCount,lastError:operation.lastError??null,kind:operation.scope==='history'?'history':'removal'};
+      completedCount:operation.completedCount,retainedCount:operation.retainedCount,deletedCount:operation.deletedCount,missingCount:operation.missingCount,lastError:operation.lastError??null,kind:operation.scope==='history'?'history':'removal'};
   }
   function removalPreview(current:StoredUpSubscription,exceptId=''):UpRemovalPreview {
     if(deps.deletion.hasUnfinishedSourceDeletion(current.userId,current.routingKey,exceptId))fail('请先完成或停止该订阅未结束的归档清理',409);

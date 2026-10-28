@@ -502,13 +502,17 @@ const previewCleanupItems=[
   {key:'config',label:'全局配置',important:true,bytes:1000},
 ];
 app.get('/api/storage/cleanup',(_request,response)=>response.json(ok({items:previewCleanupItems,runningTransfers:state.cleanupBusy,activeScheduler:state.cleanupBusy})));
-app.post('/api/storage/cleanup',(request,response)=>{
+app.post('/api/storage/cleanup',async(request,response,next)=>{
   const items=Array.isArray(request.body.items)?previewCleanupItems.filter(item=>request.body.items.includes(item.key)):[];
   if(!items.length){response.status(400).json({success:false,message:'请选择要清理的内容'});return;}
   if(state.cleanupBusy && items.some(item=>cleanupItemRequiresIdle(item.key))){response.status(409).json({success:false,message:'当前有任务运行，请等待后再清理重要数据'});return;}
   const expected=items.length===previewCleanupItems.length?'DELETE ALL PROJECT DATA':items.length===1 && items[0].key==='covers'?'DELETE ARCHIVE COVERS':items.some(item=>item.important)?'DELETE':'';
   if(expected && request.body.confirmation!==expected){response.status(400).json({success:false,message:'确认文字不匹配'});return;}
-  response.json(ok({results:items.map(item=>({key:item.key,label:item.label,ok:true,note:'仅模拟；未删除任何真实文件'}))}));
+  try {
+    if(items.some(item=>item.key==='state'))await upFixture.clearState();
+    if(items.some(item=>item.key==='users'))state.onboardingEmpty=true;
+    response.json(ok({results:items.map(item=>({key:item.key,label:item.label,ok:true,note:item.key==='state'?'隔离 SQLite 业务状态已清空':'磁盘文件仅模拟；未访问用户数据'}))}));
+  }catch(error){next(error);}
 });
 app.get("/api/queue/state", (_request, response) => {
   const manualWaitQueue = state.queueBoardMode === "manual_wait";

@@ -45,4 +45,5 @@ export interface UpRemovalOperation {
   status: 'pending' | 'running' | 'retry_wait' | 'failed' | 'completed' | 'stopped';
   kind?: 'removal' | 'history';
   fileCount: number; completedCount: number; retainedCount: number; lastError: string | null;
+  deletedCount?: number; missingCount?: number;
 }

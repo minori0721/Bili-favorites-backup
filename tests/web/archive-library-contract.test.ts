@@ -8,8 +8,24 @@ import {
   parseArchiveDeletion,
 } from '../../src/shared/api/archive-library.js';
 import { parsePlaybackQueuePage, parsePlaybackSearchPage } from '../../src/shared/api/playback-queue.js';
+import {archiveDeletionProgressText} from '../../src/web/client/shared/archive-deletion.js';
 
 const part = { fileId: 1, pageIndex: 1, label: '正片', fingerprint: '1:0:1', streamUrl: '/media/1' };
+
+test('cleanup outcome distinguishes deleted, already absent and shared files and keeps old responses honest',()=>{
+  const operation={id:'cleanup',status:'completed',fileCount:3,completedCount:3,retainedCount:1};
+  const old=parseArchiveDeletion(operation);
+  assert.equal(old.deletedCount,undefined);assert.equal(old.missingCount,undefined);
+  assert.doesNotMatch(archiveDeletionProgressText(old),/已删除/);
+  const current=parseArchiveDeletion({...operation,deletedCount:1,missingCount:1});
+  assert.match(archiveDeletionProgressText(current),/已删除 1 个文件/);
+  assert.match(archiveDeletionProgressText(current),/原本不存在 1 个/);
+  assert.match(archiveDeletionProgressText(current),/共享保留 1 个文件/);
+  for(const invalid of [-1,1.5,'1',Infinity,Number.MAX_SAFE_INTEGER+1]){
+    assert.throws(()=>parseArchiveDeletion({...operation,deletedCount:invalid,missingCount:0}));
+    assert.throws(()=>parseArchiveDeletion({...operation,deletedCount:0,missingCount:invalid}));
+  }
+});
 
 test('on-demand statistics require a complete, consistent integer pair including valid zero',()=>{
   assert.deepEqual(parseArchiveReferenceStats({sourceReferenceCount:0,uniqueRemotePathCount:0}),{sourceReferenceCount:0,uniqueRemotePathCount:0});

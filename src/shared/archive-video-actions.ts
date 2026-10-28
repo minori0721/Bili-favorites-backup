@@ -13,7 +13,7 @@ export interface ArchiveVideoActionContext {
   current: ArchiveVideoSource;
   sources: ArchiveVideoSource[];
   globalExcluded: boolean;
-  cleanup?: {id:string;status:string;fileCount:number;completedCount:number;retainedCount:number;lastError?:string};
+  cleanup?: {id:string;status:string;fileCount:number;completedCount:number;retainedCount:number;deletedCount?:number;missingCount?:number;lastError?:string};
 }
 export interface ArchiveVideoActionPreview {
   previewId: string;

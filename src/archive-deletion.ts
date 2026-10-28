@@ -718,6 +718,7 @@ export class ArchiveDeletionService {
         `).get(...PERSISTENT_JOB_MAINTENANCE_BLOCKING_STATUSES, row.user_id) as ArchiveDeletionRow | undefined)?.count || 0);
       }
     }
+    const outcome = ["completed", "stopped", "failed", "superseded"].includes(row.status) ? this.itemCounts(id) : undefined;
     return {
       id: String(row.id),
       previewId: String(row.id),
@@ -733,6 +734,8 @@ export class ArchiveDeletionService {
       sharedCount: Number(row.shared_count || 0),
       completedCount: Number(row.completed_count || 0),
       retainedCount: Number(row.retained_count || 0),
+      deletedCount: outcome?.deleted,
+      missingCount: outcome?.missing,
       conflictCount: Number(row.conflict_count || 0),
       failedCount: Number(row.failed_count || 0),
       activeTasks,
@@ -1368,6 +1371,8 @@ export class ArchiveDeletionService {
     const counts = Object.fromEntries(rows.map((row) => [String(row.status), Number(row.count || 0)]));
     return {
       completed: Number(counts.deleted || 0) + Number(counts.missing || 0) + Number(counts.retained || 0),
+      deleted: Number(counts.deleted || 0),
+      missing: Number(counts.missing || 0),
       retained: Number(counts.retained || 0),
       conflict: Number(counts.conflict || 0),
       failed: Number(counts.failed || 0),

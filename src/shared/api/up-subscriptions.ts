@@ -80,7 +80,8 @@ export function parseUpRemovalOperation(value:unknown):UpRemovalOperation {
   if(status!=='pending'&&status!=='running'&&status!=='retry_wait'&&status!=='failed'&&status!=='completed'&&status!=='stopped')fail('清理状态');
   const kind=item.kind??'removal';if(kind!=='removal'&&kind!=='history')fail('清理类型');
   return {id:identityText(item.id,'id'),sourceId:identityText(item.sourceId,'sourceId'),sourceName:text(item.sourceName,'sourceName'),status,
-    fileCount:number(item.fileCount,'fileCount'),completedCount:number(item.completedCount,'completedCount'),retainedCount:number(item.retainedCount,'retainedCount'),lastError:nullableText(item.lastError,'lastError'),kind};
+    fileCount:number(item.fileCount,'fileCount'),completedCount:number(item.completedCount,'completedCount'),retainedCount:number(item.retainedCount,'retainedCount'),
+    deletedCount:item.deletedCount===undefined?undefined:number(item.deletedCount,'deletedCount'),missingCount:item.missingCount===undefined?undefined:number(item.missingCount,'missingCount'),lastError:nullableText(item.lastError,'lastError'),kind};
 }
 export function parseUpRemovalResult(value:unknown) {
   const item=obj(value);return {retained:flag(item.retained,'retained'),operation:item.operation===null?null:parseUpRemovalOperation(item.operation)};

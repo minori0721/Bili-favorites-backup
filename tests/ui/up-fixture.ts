@@ -88,6 +88,7 @@ export function createUpUiFixture() {
       manager.restoreExistingArchiveProof(item.bvid,'u1',item.mediaId,{status:'verified',remotePath:path.posix.dirname(item.file),files:[{name:path.posix.basename(item.file),path:item.file,size:item.size,verificationStatus:'verified'}]});}
   }
   return {service,videoActions,deletion,seedArchiveActions,
+    async clearState(){scanner.stop();if(scan)await scan;try{if(deletion.hasUnfinishedOperation())throw Object.assign(new Error('仍有未完成的归档清理'),{statusCode:409});manager.clear();service.reset();videoActions.reset();}finally{scanner.start();}},
     archiveNavigation:(options:{includeReferenceStats?:boolean}={})=>getArchiveLibraryNavigation(manager.getDatabase(),users.list(),options),
     referenceStats:(input:Parameters<typeof getArchiveLibraryReferenceStats>[2])=>getArchiveLibraryReferenceStats(manager.getDatabase(),users.list(),input),
     setDeletionFailure(value:boolean){deletionFailure=value;},

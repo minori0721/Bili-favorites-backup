@@ -19,7 +19,8 @@ export function parseArchiveVideoContext(value: unknown): ArchiveVideoActionCont
   const item=record(value),current=source(item.current),list=sources(item.sources),bvid=text(item.bvid);
   if(!/^BV[0-9A-Za-z]+$/.test(bvid) || !list.some(source=>source.userId===current.userId && source.mediaId===current.mediaId)) throw new ResponseFormatError('当前归档来源不存在');
   const row=item.cleanup===undefined?undefined:record(item.cleanup);
-  const cleanup=row?{id:text(row.id),status:text(row.status),fileCount:count(row.fileCount),completedCount:count(row.completedCount),retainedCount:count(row.retainedCount),lastError:row.lastError===undefined?undefined:text(row.lastError)}:undefined;
+  const cleanup=row?{id:text(row.id),status:text(row.status),fileCount:count(row.fileCount),completedCount:count(row.completedCount),retainedCount:count(row.retainedCount),
+    deletedCount:row.deletedCount===undefined?undefined:count(row.deletedCount),missingCount:row.missingCount===undefined?undefined:count(row.missingCount),lastError:row.lastError===undefined?undefined:text(row.lastError)}:undefined;
   if(cleanup && !['preparing','config_removing','pending','running','retry_wait','failed','completed','stopped'].includes(cleanup.status))throw new ResponseFormatError('清理状态错误');
   return {bvid,title:text(item.title),current,sources:list,globalExcluded:flag(item.globalExcluded),cleanup};
 }

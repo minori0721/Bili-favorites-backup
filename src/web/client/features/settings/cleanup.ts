@@ -32,7 +32,7 @@ export function createCleanup(dependencies: {
         'online-covers': '清掉可重新下载的在线缩略图，不影响归档封面、视频和归档状态。',
         exports: '清掉已经生成过的数据迁移导出压缩包。不影响当前项目运行。',
         backups: '永久删除导入前的回滚副本；清理后不能再用这些备份恢复旧数据。',
-        state: '清空归档索引、共享引用、订阅与排除规则、远端核验和恢复记录。远端视频仍保留，但重新扫描不能完整还原这些记录。',
+        state: '清空归档索引、共享引用、UP 订阅、投稿目录、单独选择、排除规则及恢复记录。远端视频仍保留；保留账号并再次同步时，可能重新归档，重新扫描不能完整还原旧记录。',
         users: '清掉 B 站账号登录信息。下次需要重新扫码登录。',
         config: '清掉全局配置。远端存储地址、画质、并发等会回到默认值。',
     };
@@ -65,11 +65,12 @@ export function createCleanup(dependencies: {
         }
         setHidden(block, false);
         hint.textContent = required === 'DELETE ALL PROJECT DATA'
-            ? '将清空本项目的全部本地数据，包括归档索引、账号、配置和回滚备份；不会删除远端网盘视频。请输入 DELETE ALL PROJECT DATA 确认。'
+            ? '将清空本应用的本地数据，包括归档索引、订阅、排除规则、B站登录信息、配置和回滚备份；不会删除远端网盘视频，也不会修改部署时的管理登录配置。请输入 DELETE ALL PROJECT DATA 确认。'
             : required === 'DELETE ARCHIVE COVERS'
                 ? '你选择了永久归档封面。请输入 DELETE ARCHIVE COVERS，确认允许重新回填封面。'
                 : '所选项目包含不可重新生成的数据。请输入 DELETE 确认。';
         if (selected.includes('state')) hint.textContent += ' 归档索引清空后会失去共享引用与恢复记录；需要保留时，请先在“数据迁移”中导出备份。';
+        if (selected.includes('state')) hint.textContent += ' 如果还想删除远端归档，请先完成远端归档清理，再清空本地记录。';
         if (selected.includes('backups')) hint.textContent += ' 选中的回滚备份也会永久删除。';
         if (selected.includes('temp') && selected.includes('orphan-fragments')) {
             hint.textContent += ' 无法续传的残片已包含在全部临时下载文件中，不会重复清理。';

@@ -1,6 +1,21 @@
 import {revealControl} from './workspace-navigation.js';
 import { test,expect } from '@playwright/test';
 
+test('clearing state removes UP directories using the isolated SQLite while leaving account selection alone',async({page})=>{
+  await page.request.post('/__test/reset',{data:{archiveActionPreview:true}});
+  await page.route('https://fonts.googleapis.com/**',route=>route.fulfill({body:''}));
+  await page.goto('/?page=settings');await (await revealControl(page,page.locator('#cleanupDataBtn'))).click();
+  await (await revealControl(page,page.locator('.cleanup-check[value="state"]'))).check();
+  await expect(page.locator('#cleanupConfirmHint')).toContainText('先完成远端归档清理');
+  await (await revealControl(page,page.locator('#cleanupDataModal').getByLabel('确认文字',{exact:true}))).fill('DELETE');
+  await (await revealControl(page,page.locator('#executeCleanupBtn'))).click();
+  await expect(page.locator('#cleanupResultBlock')).toContainText('已清理：备份状态');
+  const navigation=(await(await page.request.get('/api/archive-library/navigation')).json()).data;
+  expect(navigation.upSubscriptions).toHaveLength(0);expect(navigation.summary.total).toBe(0);
+  const users=(await(await page.request.get('/api/users')).json()).data;
+  expect(users).toHaveLength(1);
+});
+
 test('cleanup keeps partial failure evidence and sends one request for repeated clicks',async({page})=>{
   await page.request.post('/__test/reset',{data:{}});
   await page.route('https://fonts.googleapis.com/**',route=>route.fulfill({contentType:'text/css',body:''}));

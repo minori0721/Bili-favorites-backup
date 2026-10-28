@@ -267,6 +267,21 @@ function deletionRowCount(manager: StateManager, table: "archive_deletion_items"
   return Number(readField((manager.getDatabase().db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE deletion_id=?`).get(deletionId)), 'count') || 0);
 }
 
+test('cleanup reports an already absent remote file without counting it as deleted',async()=>{
+  const runtime=await createTestDir('archive-delete-already-missing');
+  const manager=new StateManager({dbPath:path.join(runtime,'state.sqlite'),statePath:path.join(runtime,'missing.json')});
+  const dav=new FakeDav();let service:ArchiveDeletionService|undefined;
+  try {
+    insertSource(manager,{userId:'u1',mediaId:10,bvid:'BVALREADYMISSING',active:false,paths:[{path:'/backup/missing.mp4',size:12}]});
+    service=createService(manager,fakeUserStore([user('u1',[])]),dav);
+    const preview=service.previewSource('u1',10,'BVALREADYMISSING');
+    service.start(preview.id,'DELETE ARCHIVE');
+    const completed=await waitForOperation(service,preview.id,['completed']);
+    assert.equal(completed.completedCount,1);assert.equal(completed.deletedCount,0);assert.equal(completed.missingCount,1);
+    assert.equal(dav.deleteCalls.length,0);
+  }finally{await service?.stop(5000);manager.close();await removeTestDir(runtime);}
+});
+
 async function waitForOperation(service: ArchiveDeletionService, id: string, statuses: string[], ready: () => boolean = () => true) {
   for (let attempt = 0; attempt < 300; attempt += 1) {
     const operation = service.get(id);
@@ -310,6 +325,8 @@ test("archive deletion rejects active sources and keeps all remote files when an
     service.retry(preview.id);
     const completed = await waitForOperation(service, preview.id, ["completed"]);
     assert.equal(completed.completedCount, 2);
+    assert.equal(completed.deletedCount, 2);
+    assert.equal(completed.missingCount, 0);
     assert.equal(dav.files.has("/backup/history/a.mp4"), false);
     assert.equal(dav.files.has("/backup/history/b.mp4"), false);
   } finally {
@@ -336,6 +353,8 @@ test("archive deletion retains a shared physical file and only removes the selec
     service.start(preview.id, "DELETE ARCHIVE");
     const completed = await waitForOperation(service, preview.id, ["completed"]);
     assert.equal(completed.retainedCount, 1);
+    assert.equal(completed.deletedCount, 0);
+    assert.equal(completed.missingCount, 0);
     assert.deepEqual(dav.statCalls, [remotePath]);
     assert.equal(dav.deleteCalls.length, 0);
     assert.equal(dav.files.has(remotePath), true);

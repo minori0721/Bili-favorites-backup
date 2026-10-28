@@ -288,7 +288,7 @@ function getSettingsSection() {
 
       </div></details>
       <details class="settings-fold" id="storageSettings"><summary>远端存储与播放</summary><div class="settings-grid">
-        <div class="field-full"><label for="alistUrl">远端内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244 或 http://openlist:5244" autocomplete="off" aria-describedby="alistUrlHint" /><p class="muted field-hint" id="alistUrlHint">兼容字段名保持为 alistUrl；这里可以填写 AList 或 OpenList 的 WebDAV 服务地址。</p></div>
+        <div class="field-full"><label for="alistUrl">远端内部通信地址</label><input id="alistUrl" type="text" placeholder="例如: http://alist:5244 或 http://openlist:5244" autocomplete="off" aria-describedby="alistUrlHint" /><p class="muted field-hint" id="alistUrlHint">填写 BFB 能访问的 AList 或 OpenList 服务地址，用于连接远端存储。</p></div>
         <div class="field-full"><label for="alistBrowserUrl">远端网页访问地址</label><input id="alistBrowserUrl" type="url" placeholder="例如: https://alist.example.com 或 https://openlist.example.com" autocomplete="off" aria-describedby="alistBrowserUrlHint" /><p class="muted field-hint" id="alistBrowserUrlHint">用于播放器中的“在网盘中查看”入口；留空则不显示。支持 AList 和 OpenList 的网页地址。</p></div>
         <div><label for="alistUsername">远端账号（WebDAV 用户名）</label><input id="alistUsername" type="text" placeholder="例如: admin" autocomplete="off" /></div>
         <div><label for="alistPassword">远端密码（WebDAV 密码）</label><input id="alistPassword" type="password" placeholder="密码" autocomplete="new-password" /></div>
@@ -778,7 +778,7 @@ function getModals() {
       <div class="cleanup-list" id="cleanupList"></div>
       <div id="cleanupConfirmBlock" class="cleanup-confirm is-hidden">
         <div class="muted confirm-hint" id="cleanupConfirmHint"></div>
-        <input id="cleanupConfirmInput" type="text" autocomplete="off" placeholder="按提示输入确认文字" />
+        <label for="cleanupConfirmInput">确认文字</label><input id="cleanupConfirmInput" type="text" autocomplete="off" placeholder="按提示输入确认文字" aria-describedby="cleanupConfirmHint" />
       </div>
       <div id="cleanupResultBlock" class="rename-result result-block is-hidden"></div>
       <div class="row modal-actions split-actions">

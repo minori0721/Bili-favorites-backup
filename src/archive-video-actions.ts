@@ -76,7 +76,7 @@ export function createArchiveVideoActions(deps: {
     if(!sources.includes(found)) sources.push(found);
     sources.sort((a,b) => sourceKey(a).localeCompare(sourceKey(b)));
     const operation=deps.deletion.sourceOperation(current.userId,current.mediaId,bvid);
-    const cleanup=operation?{id:operation.id,status:operation.status,fileCount:operation.fileCount,completedCount:operation.completedCount,retainedCount:operation.retainedCount,lastError:operation.lastError}:undefined;
+    const cleanup=operation?{id:operation.id,status:operation.status,fileCount:operation.fileCount,completedCount:operation.completedCount,retainedCount:operation.retainedCount,deletedCount:operation.deletedCount,missingCount:operation.missingCount,lastError:operation.lastError}:undefined;
     return {bvid,title:deps.title(bvid) || bvid,current:found,sources,globalExcluded:deps.repository().globallyExcluded(bvid),cleanup};
   }
   function signature(ctx: ArchiveVideoActionContext,sources: ArchiveVideoSource[],global: boolean) {

@@ -26,8 +26,17 @@ export function createArchiveVideoActionController(deps: {
   const json=(body:unknown,signal?:AbortSignal):RequestInit=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal});
   const url=(bvid:string,action:string)=>`/api/archive-library/items/${encodeURIComponent(bvid)}/actions/${action}`;
   const choice=(name:string)=>deps.root.querySelector<HTMLInputElement>(`input[name=${name}]:checked`)?.value;
-  function notice(text:string,error=false) {status.textContent=text;status.classList.toggle('error',error);}
+  function notice(text:string,error=false,detail?:string) {
+    if(status.textContent!==text)status.textContent=text;
+    status.classList.toggle('error',error);
+    const disclosure=requireElement(deps.root,'#archiveActionError',HTMLDetailsElement);
+    disclosure.hidden=!detail;disclosure.open=false;element('archiveActionErrorDetails').textContent=detail??'';
+  }
   function stopPoll() {if(poll)clearTimeout(poll);poll=undefined;}
+  function showCleanup(operation:NonNullable<ArchiveVideoActionContext['cleanup']>) {
+    if(operation.status==='failed')notice(`归档清理未完成，已处理 ${operation.completedCount}/${operation.fileCount}。排除规则仍然有效。`,true,operation.lastError);
+    else notice(archiveDeletionProgressText(operation));
+  }
   function cleanupBlocked() {return Boolean(context?.cleanup && !['completed','stopped'].includes(context.cleanup.status));}
   function syncActions() {
     review.disabled=busy||!context||cleanupBlocked();
@@ -61,6 +70,7 @@ export function createArchiveVideoActionController(deps: {
     element('archiveActionScopeHint').textContent=scope==='global'
       ? '此视频会在所有来源（包括以后新发现的来源）中排除；其他视频不受影响。需要主动解除全局排除后才恢复。'
       : scope==='selected' ? '只在勾选的来源中排除此视频；其他视频和未勾选的来源不受影响。' : '只在当前来源中排除此视频，其他视频和来源不受影响。';
+    review.hidden=Boolean(context?.cleanup && !['completed','stopped'].includes(context.cleanup.status));
   }
   async function refreshChanged(operationId?:string) {
     try {await deps.changed(operationId);} catch {deps.notify('操作已提交，列表暂时刷新失败，请稍后刷新。','error');}
@@ -71,9 +81,9 @@ export function createArchiveVideoActionController(deps: {
       const operation=parseArchiveDeletion(await deps.api.silent('/api/archive-deletions/'+encodeURIComponent(id)));
       if(token!==epoch)return;
       context.cleanup=operation;render();
-      notice(archiveDeletionProgressText(operation));
+      showCleanup(operation);
       if(operation.status==='completed') {await refreshChanged();return;}
-      if(operation.status==='failed') {notice('归档清理未完成，排除规则仍然有效。'+(operation.lastError?`原因：${operation.lastError}。`:'')+'可以重试，或停止剩余清理后再恢复归档。',true);return;}
+      if(operation.status==='failed')return;
       if(operation.status==='stopped')return;
     } catch {if(token===epoch)notice('清理已提交，暂时无法读取进度。关闭窗口不会取消后台清理。',true);}
     if(token===epoch)poll=setTimeout(()=>void progress(id,token),1500);
@@ -87,6 +97,7 @@ export function createArchiveVideoActionController(deps: {
       notice('正在核对来源、共享文件和预计释放空间…');
       const selectedKeys=new Set(Array.from(deps.root.querySelectorAll<HTMLInputElement>('[data-archive-action-source]:checked')).map(input=>input.dataset.archiveActionSource));
       const selected=ctx.sources.filter(source=>selectedKeys.has(key(source))).map(source=>({userId:source.userId,mediaId:source.mediaId}));
+      if(choice('upScope')==='selected' && selected.length===0){notice('请选择至少一个来源，再核对确认。',true);return;}
       const preview=parseArchiveVideoPreview(await deps.api.silent(url(ctx.bvid,'preview'),json({...selectedIdentity,scope:choice('upScope'),effect:choice('upEffect'),sources:selected})));
       if(token!==epoch)return;
       const names=preview.sources.map(source=>`${source.accountName} · ${source.title}`).join('；');
@@ -108,7 +119,7 @@ export function createArchiveVideoActionController(deps: {
       if(token!==epoch)return;
       if(operationId){notice('排除规则已保存，后台归档清理已安排。关闭窗口不会取消清理。');void progress(operationId,token);}
       else notice(preview.effect==='delete'?'排除规则已保存，当前没有需要删除的已验证归档文件。':'此视频已从所选来源的自动归档中排除，已有文件保留。');
-    }catch(error){if(token===epoch)notice(error instanceof Error?error.message:String(error),true);}
+    }catch(error){if(token===epoch)notice('本次操作未能确认完成，请查看详情；也可以重新打开此视频核对状态。',true,error instanceof Error?error.message:String(error));}
     finally{busy=false;if(token===epoch)syncActions();}
   }
   async function unblock(scope:'source'|'global',trigger:HTMLElement,mode:'rule'|'include'='rule') {
@@ -129,7 +140,7 @@ export function createArchiveVideoActionController(deps: {
         : parseArchiveDeletion(await deps.api.silent('/api/archive-deletions/'+encodeURIComponent(id)+'/retry',json({})));
       if(!operation||token!==epoch)return;
       const refreshed=parseArchiveVideoContext(await deps.api.silent(url(bvid,'context'),json(source)));
-      if(token!==epoch)return;context=refreshed;render();notice(archiveDeletionProgressText(operation));
+      if(token!==epoch)return;context=refreshed;render();showCleanup(operation);
       await refreshChanged(kind==='retry'?id:undefined);if(token!==epoch)return;
       if(kind==='retry')void progress(id,token);
     }catch(error){if(token===epoch)notice(error instanceof Error?error.message:String(error),true);}
@@ -143,7 +154,7 @@ export function createArchiveVideoActionController(deps: {
       element('upActionTitle').textContent='管理归档';notice('正在读取归档来源…');review.disabled=true;
       for(const [name,value] of [['upScope','source'],['upEffect','retain']]) {const input=deps.root.querySelector<HTMLInputElement>(`input[name=${name}][value=${value}]`);if(input)input.checked=true;}
       deps.open('upActionModal',trigger);
-      try{const ctx=parseArchiveVideoContext(await deps.api.silent(url(bvid,'context'),json(source,read.signal)));if(token!==epoch)return;context=ctx;render();notice(ctx.cleanup?archiveDeletionProgressText(ctx.cleanup):'先选择操作方式和影响范围，再核对确认。');if(ctx.cleanup&&!['failed','completed','stopped'].includes(ctx.cleanup.status))void progress(ctx.cleanup.id,token);}
+      try{const ctx=parseArchiveVideoContext(await deps.api.silent(url(bvid,'context'),json(source,read.signal)));if(token!==epoch)return;context=ctx;render();if(ctx.cleanup)showCleanup(ctx.cleanup);else notice('先选择操作方式和影响范围，再核对确认。');if(ctx.cleanup&&!['failed','completed','stopped'].includes(ctx.cleanup.status))void progress(ctx.cleanup.id,token);}
       catch(error){if(token===epoch)notice(error instanceof Error?error.message:String(error),true);}
     },
     canClose(){if(busy){deps.notify('正在核对或提交操作，请稍候。','error');return false;}return true;},

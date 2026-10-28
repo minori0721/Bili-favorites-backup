@@ -117,6 +117,10 @@ function parseNavigationFolder(value: unknown) {
 function parseDeletion(value: unknown) {
   if (value == null) return undefined;
   const data = record(value, '归档清理状态格式错误');
+  const deletedCount = count(data.deletedCount, '归档清理删除数量格式错误');
+  const missingCount = count(data.missingCount, '归档清理缺失数量格式错误');
+  if ([deletedCount, missingCount].some(value => value !== undefined && !Number.isSafeInteger(value)))
+    throw new ResponseFormatError('归档清理结果数量必须为整数');
   return {
     id: text(data.id, '归档清理标识格式错误', false)!,
     status: text(data.status, '归档清理状态格式错误', false)!,
@@ -124,6 +128,8 @@ function parseDeletion(value: unknown) {
     totalBytes: count(data.totalBytes, '归档清理大小字段格式错误') ?? 0,
     completedCount: count(data.completedCount, '归档清理计数字段格式错误') ?? 0,
     retainedCount: count(data.retainedCount, '归档清理计数字段格式错误') ?? 0,
+    deletedCount,
+    missingCount,
     conflictCount: count(data.conflictCount, '归档清理计数字段格式错误') ?? 0,
     failedCount: count(data.failedCount, '归档清理计数字段格式错误') ?? 0,
     lastError: optionalString(data.lastError, '归档清理错误字段格式错误'),

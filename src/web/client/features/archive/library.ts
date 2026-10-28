@@ -394,12 +394,16 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
 
     async function refreshDirectoryCleanup() {
       const session=archiveLibraryState.sessionToken;
+      const context=archiveContextKey();
+      saveArchiveLibraryScroll();
       const navigation=await requestArchiveLibraryNavigation(session);
-      if(!navigation || !archiveLibrarySessionCurrent(session)) return;
+      if(!navigation || !archiveLibrarySessionCurrent(session) || context!==archiveContextKey()) return false;
       if(!archiveDirectoryExists(navigation,archiveLibraryState.scope,archiveLibraryState.userId,archiveLibraryState.mediaId)) {
-        archiveLibraryState.scope='global';archiveLibraryState.userId=null;archiveLibraryState.mediaId=null;archiveLibraryState.title='全部归档';
+        const account=navigation.accounts.find(account=>account.id===archiveLibraryState.userId);
+        archiveLibraryState.scope=account?'account':'global';archiveLibraryState.userId=account?.id??null;archiveLibraryState.mediaId=null;archiveLibraryState.title=account?(account.name||'该账号')+'的归档':'全部归档';
       }
       persistArchiveLibraryPreference();renderArchiveLibraryNavigation();setArchiveLibraryHeading();await loadArchiveLibraryItems(true);
+      return archiveLibrarySessionCurrent(session);
     }
 
     async function cleanupArchiveDirectory(entry:NavEntry,context:Directory,trigger:HTMLButtonElement,action:'preview'|'retry'|'repreview'|'stop') {
@@ -1085,7 +1089,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (operation.status === 'completed') {
           if (!await refreshArchiveLibraryAfterDeletion(token)) return;
           closeArchiveLibraryDetail();
-          showToast('远端归档已安全清理', 'success');
+          showToast(archiveDeletionProgressText(operation), 'success');
           return;
         }
         if (operation.status === 'failed') {
@@ -1145,8 +1149,8 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         if (token !== archiveLibraryState.detailToken || !host.isConnected) return;
         const confirmed = await confirmAction({
           title:'删除此来源的远端归档',
-          message:'仅删除此来源归档。以后重新加入同步来源时，仍可能按正常规则重新归档。',
-          detail:archiveDeletionImpactText(preview,formatBytes),
+          message:`${elements.archiveLibraryDetailTitle.textContent || bvid} · ${bvid}\n来源：${membership.userName} · ${membership.folderTitle}`,
+          detail:archiveDeletionImpactText(preview,formatBytes)+'\n仅处理此来源。以后重新加入同步来源时，仍可能按正常规则重新归档。',
           requiredText:'DELETE ARCHIVE', confirmText:'开始清理', trigger
         });
         if (!confirmed) return;
@@ -1182,12 +1186,12 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         const candidate = candidates[0];
         const extraGroups = Math.max(0, candidates.length - 1);
         const confirmed = await confirmAction({
-          title:'释放本地空间',
-          message:'本次将安全释放 ' + Number(candidate.fileCount || 0) + ' 个本地文件，共 ' + formatBytes(Number(candidate.totalBytes || 0)) + '。',
+          title:candidate.requiresExplicitDeletion?'删除本地文件':'释放本地空间',
+          message:'本次将删除 ' + candidate.fileCount + ' 个本地文件，共 ' + formatBytes(candidate.totalBytes) + '。',
           detail:(candidate.requiresExplicitDeletion
             ? (candidate.hasVerifiedArchive ? '存在已验证归档，但不能保证与这些本地文件是同一版本。' : '没有已验证归档，这可能是唯一副本。') + ' 删除后无法从本机恢复；请先停止本次尝试。'
             : '只删除已完成远端确认且具有清理授权的文件；执行前会再次核对远端大小。') + ' 文件或会话有变化时停止删除。' + (extraGroups ? ' 另有 ' + extraGroups + ' 组文件可在完成后再次检查。' : ''),
-          requiredText:'DELETE LOCAL', confirmText:'释放本地空间', danger:true, trigger
+          requiredText:'DELETE LOCAL', confirmText:candidate.requiresExplicitDeletion?'删除本地文件':'释放本地空间', danger:true, trigger
         });
         if (!confirmed) return;
         if (token !== archiveLibraryState.detailToken || !trigger.isConnected) return;
@@ -1195,7 +1199,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
           method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ releaseId:candidate.releaseId, confirmation:'DELETE LOCAL' })
         });
-        if (token === archiveLibraryState.detailToken && trigger.isConnected) showToast('已开始安全释放本地文件', 'success');
+        if (token === archiveLibraryState.detailToken && trigger.isConnected) showToast(candidate.requiresExplicitDeletion?'本地文件删除已提交。':'本地空间释放已提交。', 'success');
       } catch (error) {
         if (token === archiveLibraryState.detailToken && trigger.isConnected) {
           showToast(error instanceof Error ? error.message : String(error));
@@ -1248,6 +1252,10 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         releaseLocal.addEventListener('click', () => void releaseArchiveLocalFiles(data.bvid, releaseLocal, token));
         localActions.appendChild(releaseLocal);
         body.appendChild(localActions);
+        if(data.memberships.length>1 || data.memberships.some(source=>source.deletionStatus==='completed')) {
+          const sourceHint=document.createElement('p');sourceHint.className='muted';
+          sourceHint.textContent='以下状态分别对应各个来源；一个来源已清理，不代表其他来源的文件也被删除。';body.appendChild(sourceHint);
+        }
         (data.memberships || []).forEach((membership) => {
           const source = document.createElement('div');
           source.className = 'archive-library-source';
@@ -1568,7 +1576,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     for(const id of frames)cancelAnimationFrame(id);frames.clear();
   }
   return {init, destroy, deactivate: cleanupArchiveLibrary, open: openArchiveLibrary, context: archiveLibraryContextSnapshot,
-    refresh:async()=>{if(!elements.archiveLibraryModal.classList.contains('active'))return;await loadArchiveLibraryItems(true);if(archiveLibraryState.detailBvid && elements.archiveLibraryDetail.classList.contains('open'))await openArchiveLibraryDetail(archiveLibraryState.detailBvid,archiveLibraryState.detailTrigger,false);},
+    refresh:async()=>{if(!elements.archiveLibraryModal.classList.contains('active'))return;const detail=archiveLibraryState.detailToken;if(!await refreshDirectoryCleanup())return;if(detail===archiveLibraryState.detailToken && archiveLibraryState.detailBvid && elements.archiveLibraryDetail.classList.contains('open'))await openArchiveLibraryDetail(archiveLibraryState.detailBvid,archiveLibraryState.detailTrigger,false);},
     openUpSource:(id:string,trigger:HTMLElement|null)=>openArchiveLibrary(trigger,id),
     closeDetail: closeArchiveLibraryDetail, get detailOpen() { return elements.archiveLibraryDetail.classList.contains('open'); }};
 }
