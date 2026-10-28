@@ -3,12 +3,20 @@ import test from 'node:test';
 import {
   parseArchiveLibraryPage,
   parseArchiveNavigation,
+  parseArchiveReferenceStats,
   parseLocalReleasePreview,
   parseArchiveDeletion,
 } from '../../src/shared/api/archive-library.js';
 import { parsePlaybackQueuePage, parsePlaybackSearchPage } from '../../src/shared/api/playback-queue.js';
 
 const part = { fileId: 1, pageIndex: 1, label: '正片', fingerprint: '1:0:1', streamUrl: '/media/1' };
+
+test('on-demand statistics require a complete, consistent integer pair including valid zero',()=>{
+  assert.deepEqual(parseArchiveReferenceStats({sourceReferenceCount:0,uniqueRemotePathCount:0}),{sourceReferenceCount:0,uniqueRemotePathCount:0});
+  for(const value of [null,{}, {sourceReferenceCount:1}, {sourceReferenceCount:1,uniqueRemotePathCount:2},
+    {sourceReferenceCount:-1,uniqueRemotePathCount:0},{sourceReferenceCount:'1',uniqueRemotePathCount:1},
+    {sourceReferenceCount:1.5,uniqueRemotePathCount:1},{sourceReferenceCount:Infinity,uniqueRemotePathCount:1}])assert.throws(()=>parseArchiveReferenceStats(value));
+});
 
 test('directory artwork and cleanup fields remain optional for older responses and reject malformed values',()=>{
   const summary={total:0,playable:0,pending:0,issue:0};

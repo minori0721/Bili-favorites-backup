@@ -69,6 +69,13 @@ function parseReferenceStats(data: Record<string, unknown>) {
   return { sourceReferenceCount, uniqueRemotePathCount };
 }
 
+export function parseArchiveReferenceStats(value: unknown) {
+  const data=record(value,'归档文件统计格式错误');
+  const stats=parseReferenceStats(data);
+  if (stats.sourceReferenceCount===undefined || stats.uniqueRemotePathCount===undefined) throw new ResponseFormatError('归档文件统计缺失');
+  return {sourceReferenceCount:stats.sourceReferenceCount,uniqueRemotePathCount:stats.uniqueRemotePathCount};
+}
+
 function parseSummary(value: unknown) {
   const data = record(value, '归档导航汇总格式错误');
   return {

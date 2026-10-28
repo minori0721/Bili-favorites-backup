@@ -1,5 +1,5 @@
 import { repreviewArchiveDeletion,stopArchiveDeletion } from '../../shared/archive-deletion-actions.js';
-import { parseArchiveLibraryDetail, parseArchiveLibraryPage, parseArchiveNavigation, parseArchiveDeletion, parseArchiveDeletionPreview, parseLocalReleasePreview } from '../../../../shared/api/archive-library.js';
+import { parseArchiveLibraryDetail, parseArchiveLibraryPage, parseArchiveNavigation, parseArchiveReferenceStats, parseArchiveDeletion, parseArchiveDeletionPreview, parseLocalReleasePreview } from '../../../../shared/api/archive-library.js';
 import { isRecord } from '../../../../shared/api/value.js';
 import { ApiError, type ApiClient } from '../../shared/api.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
@@ -12,6 +12,10 @@ import { archiveIndexUpdateLabel } from './navigation-meta.js';
 import { createDirectoryMenu, directoryIcon, type DirectoryAction } from './directory-menu.js';
 type Navigation = ReturnType<typeof parseArchiveNavigation>;
 type Summary = Navigation['summary'];
+type ReferenceStats = ReturnType<typeof parseArchiveReferenceStats>;
+type DirectoryStatistics = {key:string;status:'loading';controller:AbortController}
+  | {key:string;status:'ready';value:ReferenceStats}
+  | {key:string;status:'error'};
 type NavEntry = Partial<Summary> & {artworkUrl?:string; uid?:number; inactive?:boolean; deletion?:Navigation['accounts'][number]['deletion']};
 type ArchiveItem = ReturnType<typeof parseArchiveLibraryDetail>;
 type Membership = ArchiveItem['memberships'][number];
@@ -29,6 +33,7 @@ interface ArchiveState extends ArchiveContext {
   appliedContext: ArchiveContext | null; pendingContext: ArchiveContext | null;
   pendingViewState: {nextCursor: string | null; hasMore: boolean; summary: Summary | null; error: string | null} | null;
   scrollPositions: Record<string,number>; trigger: HTMLElement | null; pageSize?: number;
+  statistics: DirectoryStatistics | null;
 }
 interface Options {
   manageVideo(bvid:string,source:{userId:string;mediaId:number},trigger:HTMLElement):void;
@@ -110,7 +115,8 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       pendingContext: null,
       pendingViewState: null,
       scrollPositions: {},
-      trigger: null
+      trigger: null,
+      statistics: null
     };
 
   let events: AbortController | null = null;
@@ -173,6 +179,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
 
     function cleanupArchiveLibrary() {
       directoryMenu.close();
+      resetDirectoryStatistics();
       for (const controller of requests) controller.abort(); requests.clear();
       for (const timer of timers) clearTimeout(timer); timers.clear();
       for (const id of frames) cancelAnimationFrame(id); frames.clear();
@@ -212,8 +219,9 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       const requestToken = ++archiveLibraryState.navigationToken;
       archiveLibraryState.navigationController = controller;
       try {
-        const navigation = parseArchiveNavigation(await fetchJson('/api/archive-library/navigation', { signal:controller.signal }));
+        const navigation = parseArchiveNavigation(await fetchJson('/api/archive-library/navigation?includeReferenceStats=false', { signal:controller.signal }));
         if (!archiveLibrarySessionCurrent(sessionToken) || requestToken !== archiveLibraryState.navigationToken) return null;
+        resetDirectoryStatistics();
         archiveLibraryState.navigation = navigation;
         return navigation;
       } finally {
@@ -657,16 +665,56 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       setHidden('archiveLibrarySearchClearBtn', !archiveLibraryState.draftQuery);
     }
 
-    function renderArchiveDirectoryStats() {
+    function directoryStatisticsKey() {
+      const {scope,userId,mediaId}=archiveLibraryState;
+      return [scope,userId,mediaId].join(':');
+    }
+
+    function resetDirectoryStatistics() {
+      if(archiveLibraryState.statistics?.status==='loading')archiveLibraryState.statistics.controller.abort();
+      archiveLibraryState.statistics=null;
+    }
+
+    function directoryStatisticsEntry() {
       const navigation = archiveLibraryState.navigation;
       const {scope, userId, mediaId} = archiveLibraryState;
       const account = navigation?.accounts.find(account => account.id === userId);
-      const entry = scope === 'global' ? navigation?.summary
+      return scope === 'global' ? navigation?.summary
         : scope === 'account' ? account?.summary
         : navigation?.upSubscriptions.find(source => source.userId === userId && source.mediaId === mediaId)
           ?? [...(account?.folders ?? []), ...(account?.inactiveFolders ?? [])].find(folder => folder.mediaId === mediaId);
+    }
+
+    async function loadDirectoryStatistics(retry=false) {
+      const session=archiveLibraryState.sessionToken;
+      if(!elements.archiveLibraryStats.open || !archiveLibrarySessionCurrent(session))return;
+      const entry=directoryStatisticsEntry();
+      if(!entry || (entry.sourceReferenceCount!==undefined && entry.uniqueRemotePathCount!==undefined))return;
+      const key=directoryStatisticsKey(),previous=archiveLibraryState.statistics;
+      if(previous?.key===key && (!retry || previous.status!=='error'))return;
+      resetDirectoryStatistics();
+      const pending:DirectoryStatistics={key,status:'loading',controller:new AbortController()};
+      archiveLibraryState.statistics=pending;
+      renderArchiveDirectoryStats();
+      const current=()=>archiveLibrarySessionCurrent(session) && archiveLibraryState.statistics===pending && directoryStatisticsKey()===key;
+      const {scope,userId,mediaId}=archiveLibraryState;
+      const params=new URLSearchParams({scope});
+      if(userId)params.set('userId',userId);
+      if(mediaId!==null)params.set('mediaId',String(mediaId));
+      try {
+        const value=parseArchiveReferenceStats(await fetchJsonSilent('/api/archive-library/reference-stats?'+params.toString(),{signal:pending.controller.signal}));
+        if(!current())return;
+        archiveLibraryState.statistics={key,status:'ready',value};renderArchiveDirectoryStats();
+      }catch(error){
+        if(!current() || (error instanceof Error && error.name==='AbortError'))return;
+        archiveLibraryState.statistics={key,status:'error'};renderArchiveDirectoryStats();
+      }
+    }
+
+    function renderArchiveDirectoryStats() {
+      const entry=directoryStatisticsEntry();
       const details = elements.archiveLibraryStats;
-      const key = [scope,userId,mediaId].join(':');
+      const key = directoryStatisticsKey();
       if (details.dataset.directory !== key) details.open = false;
       details.dataset.directory = key;
       details.hidden = !entry;
@@ -682,17 +730,32 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       };
       row('视频', String(entry.total));
       row('可播放', String(entry.playable));
-      if (entry.sourceReferenceCount !== undefined && entry.uniqueRemotePathCount !== undefined) {
-        row('来源文件引用', String(entry.sourceReferenceCount));
-        row('不同存储路径', String(entry.uniqueRemotePathCount));
+      const state=archiveLibraryState.statistics?.key===key ? archiveLibraryState.statistics : null;
+      const stats=entry.sourceReferenceCount!==undefined && entry.uniqueRemotePathCount!==undefined ? entry
+        : state?.status==='ready' ? state.value : undefined;
+      if (stats) {
+        row('来源文件引用', String(stats.sourceReferenceCount));
+        row('不同存储路径', String(stats.uniqueRemotePathCount));
       }
       if (entry.lastSyncedAt && archiveIndexUpdateLabel(entry.lastSyncedAt)) row('索引更新', formatDateTime(entry.lastSyncedAt));
       const note = document.createElement('p');
       note.textContent = '同一视频可能有多个分P或文件；同一文件被多个来源使用时，会分别计入引用。这里是本地索引统计，不是实时远端文件数或备份完成时间。';
       body.append(title,list,note);
+      if(!stats) {
+        const status=document.createElement('p');status.className='archive-library-statistics-status';
+        status.setAttribute('role',state?.status==='error'?'alert':'status');
+        status.textContent=state?.status==='error'?'文件统计读取失败，请重试。':'正在计算文件统计…';
+        if(state?.status==='error') {
+          const retry=document.createElement('button');retry.type='button';retry.className='workspace-button';retry.textContent='重试文件统计';
+          retry.addEventListener('click',()=>{details.querySelector('summary')?.focus();void loadDirectoryStatistics(true);});status.append(retry);
+        }
+        body.append(status);
+        if(details.open)void loadDirectoryStatistics();
+      }
     }
 
     async function selectArchiveLibraryDirectory(context: Directory, trigger?: HTMLElement | null) {
+      if([context.scope,context.userId??null,context.mediaId??null].join(':')!==directoryStatisticsKey())resetDirectoryStatistics();
       const shouldFocusMobileBack = Boolean(trigger && isArchiveLibraryMobileLayout());
       saveArchiveLibraryScroll();
       if (archiveLibraryState.searchTimer) clearTimeout(archiveLibraryState.searchTimer);
@@ -1407,7 +1470,8 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     events=new AbortController(); const signal=events.signal;
     function listen(element: EventTarget, type: string, callback: (event: Event)=>void) { element.addEventListener(type, callback, {signal}); }
     const closeStatsOutside = (event: Event) => {
-      if (event.target instanceof Node && !elements.archiveLibraryStats.contains(event.target)) elements.archiveLibraryStats.open = false;
+      // A retry replaces its button before the click bubbles to document.
+      if (!event.composedPath().includes(elements.archiveLibraryStats)) elements.archiveLibraryStats.open = false;
     };
     listen(document, 'click', closeStatsOutside);
     listen(document, 'focusin', closeStatsOutside);
@@ -1417,6 +1481,10 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         elements.archiveLibraryStats.open = false;
         elements.archiveLibraryStats.querySelector('summary')?.focus({preventScroll:true});
       }
+    });
+    listen(elements.archiveLibraryStats,'toggle',()=>{
+      if(elements.archiveLibraryStats.open)void loadDirectoryStatistics();
+      else if(archiveLibraryState.statistics?.status==='loading')resetDirectoryStatistics();
     });
     listen(elements.archiveLibraryBtn, 'click', (event) => openArchiveLibrary(elements.archiveLibraryBtn));
     listen(elements.closeArchiveLibraryBtn, 'click', () => closeModal('archiveLibraryModal'));

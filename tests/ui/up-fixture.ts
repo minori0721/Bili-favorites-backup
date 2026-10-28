@@ -7,7 +7,7 @@ import { createUpSubscriptionService } from '../../src/up-subscriptions/service.
 import { createArchiveVideoActions } from '../../src/archive-video-actions.js';
 import { createUpScan } from '../../src/up-subscriptions/scan.js';
 import { createUpArchive } from '../../src/scheduler/up-archive.js';
-import { getArchiveLibraryNavigation,queryArchiveLibraryItems,getArchiveLibraryItemDetail,getArchiveLibraryPlaybackQueue } from '../../src/archive-library.js';
+import { getArchiveLibraryNavigation,getArchiveLibraryReferenceStats,queryArchiveLibraryItems,getArchiveLibraryItemDetail,getArchiveLibraryPlaybackQueue } from '../../src/archive-library.js';
 import type { UpIdentity,UpSubmission } from '../../src/shared/up-subscriptions.js';
 import type { UpBiliPort } from '../../src/up-subscriptions/bili-adapter.js';
 import { memoryUsers } from '../fixtures/memory-users.js';
@@ -88,7 +88,8 @@ export function createUpUiFixture() {
       manager.restoreExistingArchiveProof(item.bvid,'u1',item.mediaId,{status:'verified',remotePath:path.posix.dirname(item.file),files:[{name:path.posix.basename(item.file),path:item.file,size:item.size,verificationStatus:'verified'}]});}
   }
   return {service,videoActions,deletion,seedArchiveActions,
-    archiveNavigation:()=>getArchiveLibraryNavigation(manager.getDatabase(),users.list()),
+    archiveNavigation:(options:{includeReferenceStats?:boolean}={})=>getArchiveLibraryNavigation(manager.getDatabase(),users.list(),options),
+    referenceStats:(input:Parameters<typeof getArchiveLibraryReferenceStats>[2])=>getArchiveLibraryReferenceStats(manager.getDatabase(),users.list(),input),
     setDeletionFailure(value:boolean){deletionFailure=value;},
     navigation:()=>getArchiveLibraryNavigation(manager.getDatabase(),users.list()).upSubscriptions,
     items:(query:Parameters<typeof queryArchiveLibraryItems>[2])=>queryArchiveLibraryItems(manager.getDatabase(),users.list(),query),

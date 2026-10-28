@@ -47,11 +47,22 @@ export function createArchiveLibraryRouter(service: ArchiveLibraryPort) {
     }
   });
   router.get("/api/archive-library/navigation", (req, res) => {
+    const include=req.query.includeReferenceStats;
+    if (include!==undefined && include!=='true' && include!=='false') {
+      res.status(400).json({success:false,message:'Invalid reference statistics option'});return;
+    }
     res.setHeader("Cache-Control", "private, no-store");
     res.json({
       success: true,
-      data: service.navigation(),
+      data: service.navigation({includeReferenceStats:include!=='false'}),
     });
+  });
+
+  router.get('/api/archive-library/reference-stats',(req,res)=>{
+    try {
+      const data=service.referenceStats(parseArchiveLibraryQuery(req.query as Record<string,unknown>));
+      res.setHeader('Cache-Control','private, no-store');res.json({success:true,data});
+    } catch(error) {sendArchiveLibraryError(res,error);}
   });
 
   router.get("/api/archive-library/items", (req, res) => {

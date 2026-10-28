@@ -1,5 +1,27 @@
 import type { StateDatabase } from "./database.js";
 
+export interface RemoteReferenceStats {sourceReferenceCount: number; uniqueRemotePathCount: number}
+
+/** One directory at a time; keep the same source/deletion boundary as navigation. */
+export function readDirectoryReferenceStats(database: StateDatabase, userIds: string[], mediaId?: number): RemoteReferenceStats {
+  if (userIds.length === 0) return {sourceReferenceCount:0,uniqueRemotePathCount:0};
+  const row=database.db.prepare<unknown[],{source_reference_count:number;unique_remote_path_count:number}>(`
+    SELECT COUNT(*) AS source_reference_count, COUNT(DISTINCT rf.remote_path) AS unique_remote_path_count
+    FROM remote_files rf
+    JOIN favorite_relations r ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
+    WHERE rf.user_id<>'' AND rf.user_id IN (${userIds.map(()=>'?').join(',')})
+      ${mediaId === undefined ? '' : 'AND rf.media_id=?'}
+      AND NOT EXISTS (
+        SELECT 1 FROM archive_deleted_sources ads
+        WHERE ads.user_id=r.user_id AND ads.media_id=r.media_id AND ads.bvid=r.bvid AND ads.status='completed'
+      )
+  `).get(...userIds,...(mediaId === undefined ? [] : [mediaId]));
+  if (!row || !Number.isSafeInteger(row.source_reference_count) || row.source_reference_count<0
+    || !Number.isSafeInteger(row.unique_remote_path_count) || row.unique_remote_path_count<0
+    || row.unique_remote_path_count>row.source_reference_count) throw new Error('Invalid directory reference counts');
+  return {sourceReferenceCount:row.source_reference_count,uniqueRemotePathCount:row.unique_remote_path_count};
+}
+
 // Current source references only; video-level copies and completed deletions
 // are not extra files. Counts describe the local index, not a remote scan.
 export function readRemoteReferenceStats(database: StateDatabase, userIds: string[]) {

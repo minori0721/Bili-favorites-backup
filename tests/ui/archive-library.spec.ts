@@ -342,7 +342,9 @@ test("mobile Escape closes the playback drawer before the player", async ({ page
 test("directory reference counts remain separate from search results", async ({ page, browserProblems }, testInfo) => {
   void browserProblems;
   await resetFixture(page);
-  await page.route('**/api/archive-library/navigation', async route => {
+  let statisticsRequests=0;
+  page.on('request',request=>{if(new URL(request.url()).pathname==='/api/archive-library/reference-stats')statisticsRequests++;});
+  await page.route('**/api/archive-library/navigation*', async route => {
     const response = await route.fetch();
     const body = await response.json();
     body.data.summary.sourceReferenceCount = 4;
@@ -379,6 +381,7 @@ test("directory reference counts remain separate from search results", async ({ 
   await expect(stats).not.toHaveAttribute('open');
   await stats.locator('summary').click();
   await expect(stats.locator('dt:has-text("来源文件引用") + dd')).toHaveText('5');
+  expect(statisticsRequests).toBe(0);
   await page.locator('#archiveLibrarySearchInput').fill('Alpha');
   await expect(stats).not.toHaveAttribute('open');
   // The navigation remains in the DOM on mobile; inspect intrinsic containment too.

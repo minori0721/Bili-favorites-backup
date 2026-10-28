@@ -756,7 +756,13 @@ app.get("/api/logs/stream", (request, response) => {
   request.on("close", () => clearInterval(heartbeat));
 });
 
-app.get("/api/archive-library/navigation", (_request, response) => response.json(ok(state.archiveActionPreview ? upFixture.archiveNavigation() : {...navigation(),upSubscriptions:upFixture.navigation()})));
+app.get("/api/archive-library/navigation", (request, response) => response.json(ok(state.archiveActionPreview ? upFixture.archiveNavigation({includeReferenceStats:request.query.includeReferenceStats!=='false'}) : {...navigation(),upSubscriptions:upFixture.navigation()})));
+app.get('/api/archive-library/reference-stats',(request,response,next)=>{
+  if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){
+    try{response.json(ok(upFixture.referenceStats({scope:String(request.query.scope||'global') as 'global'|'account'|'folder',userId:String(request.query.userId||''),mediaId:request.query.mediaId===undefined?undefined:Number(request.query.mediaId)})));}catch(error){next(error);}return;
+  }
+  response.json(ok({sourceReferenceCount:4,uniqueRemotePathCount:3}));
+});
 app.get("/api/archive-library/items", async (request, response) => {
   if(state.archiveActionPreview || Number(request.query.mediaId)<=-2){response.json(ok(upFixture.items({...request.query,query:String(request.query.q||'')})));return;}
   if (detailPreviewDelay) await wait(detailPreviewDelay);

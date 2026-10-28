@@ -162,6 +162,7 @@ test("tracked favorite detail is served from SQLite with history and original me
 
     const unauthorizedLibrary = await fetch(`${base}/api/archive-library/navigation`);
     assert.equal(unauthorizedLibrary.status, 401);
+    assert.equal((await fetch(`${base}/api/archive-library/reference-stats?scope=global`)).status,401);
     const libraryNavigationResponse = await fetch(`${base}/api/archive-library/navigation`, { headers: { Cookie: cookie } });
     assert.equal(libraryNavigationResponse.status, 200);
     const libraryNavigation: unknown = await libraryNavigationResponse.json();

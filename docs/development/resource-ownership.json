@@ -455,9 +455,9 @@
         "timers",
         "frames"
       ],
-      "stop": "the feature destroy or stop path removes listeners, aborts owned requests and clears timers before its DOM root is released",
-      "lateCallback": "active and generation state prevents responses, timers and animation callbacks from updating a replaced controller",
-      "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
+      "stop": "destroy removes listeners and timers; closing statistics, changing directory, navigation refresh or feature cleanup aborts pending directory statistics",
+      "lateCallback": "session generation, directory identity and pending request identity prevent stale statistics and other responses from updating a replaced controller",
+      "rebind": "destroy releases requests and the current directory snapshot; a new controller receives fresh DOM and transport dependencies"
     },
     {
       "module": "web/client/features/archive/unavailable.ts",

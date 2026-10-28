@@ -6,6 +6,7 @@ import {
   ArchiveLibraryQueryError,
   getArchiveLibraryItemDetail,
   getArchiveLibraryNavigation,
+  getArchiveLibraryReferenceStats,
   getArchiveLibraryPlaybackQueue,
   getArchiveLibraryPlaybackSearch,
   queryArchiveLibraryItems,
@@ -794,7 +795,57 @@ test("completed source deletion excludes its references while retaining other so
     assert.equal(nav.summary.sourceReferenceCount, 3);
     assert.equal(nav.accounts[0].summary.sourceReferenceCount, 1);
     assert.equal(nav.accounts[1].summary.sourceReferenceCount, 2);
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'global'}),{sourceReferenceCount:3,uniqueRemotePathCount:3});
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'folder',userId:'u1',mediaId:10}),{sourceReferenceCount:1,uniqueRemotePathCount:1});
     database.db.prepare("UPDATE archive_deleted_sources SET status='failed'").run();
     assert.equal(getArchiveLibraryNavigation(database, users()).summary.sourceReferenceCount, 4);
+    assert.equal(getArchiveLibraryReferenceStats(database,users(),{}).sourceReferenceCount,4);
   } finally { database.close(); }
+});
+
+test('on-demand reference counts preserve source, shared path, historical and empty directory boundaries without writes',()=>{
+  const database=fixture();
+  try {
+    const source=upSource(database);
+    for(const [mediaId,bvid,sourceId] of [[-1,'BVMANUAL',undefined],[source.routingKey,'BVUPREF',source.id]] as const) {
+      insertArchive(database,{userId:'u1',mediaId,bvid,sourceId,folderTitle:'Extra',title:bvid,status:'verified',playable:{parts:1}});
+    }
+    // Different source proofs can refer to the same physical path, including a missing file.
+    database.db.prepare("UPDATE remote_files SET remote_path='/shared.mp4',status='missing' WHERE bvid='BVSHARED' AND name LIKE '%_P1.mp4'").run();
+    database.rebuildArchiveLibraryProjection();
+    const changes=database.db.prepare<[],{n:number}>('SELECT total_changes() AS n').get()!.n;
+    const nav=getArchiveLibraryNavigation(database,users());
+    const references=(entry:{sourceReferenceCount?:number;uniqueRemotePathCount?:number})=>({sourceReferenceCount:entry.sourceReferenceCount,uniqueRemotePathCount:entry.uniqueRemotePathCount});
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{}),references(nav.summary));
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'account',userId:'u1'}),references(nav.accounts[0].summary));
+    for(const mediaId of [10,11,12,-1]) {
+      const folder=[...nav.accounts[0].folders,...nav.accounts[0].inactiveFolders].find(f=>f.mediaId===mediaId)!;
+      assert.ok(folder);
+      assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'folder',userId:'u1',mediaId}),references(folder));
+    }
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'folder',userId:'u1',mediaId:source.routingKey}),{sourceReferenceCount:1,uniqueRemotePathCount:1});
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'global',query:'no matches',filter:'issue'}),references(nav.summary));
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,users(),{scope:'folder',userId:'u1',mediaId:11}),{sourceReferenceCount:0,uniqueRemotePathCount:0});
+    assert.deepEqual(getArchiveLibraryReferenceStats(database,[],{}),{sourceReferenceCount:0,uniqueRemotePathCount:0});
+    for(const query of [{scope:'unknown'},{scope:'account',userId:'missing'},{scope:'folder',userId:'u1',mediaId:NaN},{scope:'folder',userId:'u1',mediaId:1.5}]) {
+      assert.throws(()=>getArchiveLibraryReferenceStats(database,users(),query as Partial<ArchiveLibraryQuery>),ArchiveLibraryQueryError);
+    }
+    const light=getArchiveLibraryNavigation(database,users(),{includeReferenceStats:false});
+    assert.equal(light.summary.sourceReferenceCount,undefined);
+    assert.equal(light.accounts[0].summary.uniqueRemotePathCount,undefined);
+    assert.equal(database.db.prepare<[],{n:number}>('SELECT total_changes() AS n').get()!.n,changes);
+  } finally {database.close();}
+});
+
+test('fallback directory cover uses BVID to break timestamp ties across planner statistics',()=>{
+  const database=new StateDatabase(':memory:');
+  try {
+    for(const bvid of ['BVCOVERZ','BVCOVERA'])insertArchive(database,{userId:'u1',mediaId:10,folderTitle:'Folder',bvid,title:bvid,status:'queued'});
+    const cover=()=>getArchiveLibraryNavigation(database,users(),{includeReferenceStats:false}).accounts[0].folders[0].coverLocalPath;
+    assert.equal(cover(),'covers/BVCOVERA.webp');
+    database.db.exec('ANALYZE; PRAGMA reverse_unordered_selects=ON');
+    assert.equal(cover(),'covers/BVCOVERA.webp');
+    database.db.prepare("UPDATE favorite_relations SET last_seen_at=last_seen_at+1 WHERE bvid='BVCOVERZ'").run();
+    assert.equal(cover(),'covers/BVCOVERZ.webp');
+  } finally {database.close();}
 });

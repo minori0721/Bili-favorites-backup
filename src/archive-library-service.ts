@@ -1,6 +1,7 @@
 import {
   getArchiveLibraryItemDetail,
   getArchiveLibraryNavigation,
+  getArchiveLibraryReferenceStats,
   getArchiveLibraryPlaybackQueue, getArchiveLibraryPlaybackSearch,
   queryArchiveLibraryItems,
   type ArchiveLibraryQuery
@@ -18,14 +19,15 @@ export function createArchiveLibraryService(dependencies: { database(): StateDat
   type Stamp = { changes: number; data_version: number };
   const now = dependencies.now ?? (() => performance.now());
   let counters: { database: StateDatabase; statement: Database.Statement<[], Stamp> } | undefined;
-  let cached: { database: StateDatabase; stamp: Stamp; users: string; at: number; value: Navigation } | undefined;
-  function navigation() {
+  const cached = new Map<boolean,{ database: StateDatabase; stamp: Stamp; users: string; at: number; value: Navigation }>();
+  function navigation(options: {includeReferenceStats?: boolean} = {}) {
+    const includeReferenceStats = options.includeReferenceStats !== false;
     const database = dependencies.database();
     const users = dependencies.users();
-    if (database.db.inTransaction) return getArchiveLibraryNavigation(database, users);
+    if (database.db.inTransaction) return getArchiveLibraryNavigation(database, users,options);
     if (counters?.database !== database) {
       counters = { database, statement: database.db.prepare<[], Stamp>('SELECT total_changes() AS changes, data_version FROM pragma_data_version') };
-      cached = undefined;
+      cached.clear();
     }
     const statement = counters.statement;
     const stamp = (): Stamp => {
@@ -37,17 +39,20 @@ export function createArchiveLibraryService(dependencies: { database(): StateDat
     const selection = JSON.stringify(users.map(({ id, uid, name, avatar, enabled, favorites }) =>
       ({ id, uid, name, avatar, enabled, favorites: favorites.map(({mediaId, title}) => ({mediaId, title})) })));
     const before = stamp();
-    const age = cached ? now() - cached.at : Infinity;
-    if (cached?.database === database && cached.users === selection && same(cached.stamp, before) && age >= 0 && age < 30_000) {
-      return structuredClone(cached.value);
+    const entry = cached.get(includeReferenceStats);
+    const age = entry ? now() - entry.at : Infinity;
+    if (entry?.database === database && entry.users === selection && same(entry.stamp, before) && age >= 0 && age < 30_000) {
+      return structuredClone(entry.value);
     }
-    const value = getArchiveLibraryNavigation(database, users);
+    const value = getArchiveLibraryNavigation(database, users,options);
     const after = stamp();
-    cached = same(before, after) ? { database, users: selection, stamp: after, at: now(), value: structuredClone(value) } : undefined;
+    if (same(before,after)) cached.set(includeReferenceStats,{database,users:selection,stamp:after,at:now(),value:structuredClone(value)});
+    else cached.delete(includeReferenceStats);
     return value;
   }
   return {
     navigation,
+    referenceStats: (query: Partial<ArchiveLibraryQuery>) => getArchiveLibraryReferenceStats(dependencies.database(),dependencies.users(),query),
     async artwork(userId:string,mediaId:number) {
       const database=dependencies.database();
       if(mediaId<=-2){

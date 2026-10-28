@@ -8,6 +8,31 @@ import { StateManager } from '../src/state.js';
 import type { BiliUser } from '../src/users.js';
 import { createTestDir, removeTestDir } from './helpers.js';
 
+test('light navigation skips file reference aggregation and keeps both cache modes independent',()=>{
+  const state=new StateManager({dbPath:':memory:',statePath:'unused.json'});
+  const users:BiliUser[]=[{id:'u',uid:1,name:'Account',enabled:true,lastLoginAt:'',cookie:{SESSDATA:'',bili_jct:'',DedeUserID:''},favorites:[{mediaId:10,title:'Folder'}]}];
+  state.recordFavoriteItem('u',10,'Folder',{bvid:'BVLIGHT',title:'Video',upperName:'UP'});
+  const db=state.getDatabase().db,prepare=db.prepare.bind(db);
+  let aggregates=0,summaries=0;
+  const original=db.prepare;
+  db.prepare=function(...args:Parameters<typeof db.prepare>) {
+    if(String(args[0]).includes('FROM scoped GROUP BY user_id, media_id'))aggregates++;
+    if(String(args[0]).includes('relation_base AS MATERIALIZED'))summaries++;
+    return prepare(...args);
+  };
+  try {
+    const service=createArchiveLibraryService({database:()=>state.getDatabase(),users:()=>users});
+    const light=service.navigation({includeReferenceStats:false});
+    assert.equal(aggregates,0);assert.equal(light.summary.sourceReferenceCount,undefined);
+    assert.equal(service.navigation().summary.sourceReferenceCount,0);assert.equal(aggregates,1);
+    assert.deepEqual(service.navigation({includeReferenceStats:false}),light);
+    service.navigation();assert.equal(summaries,2);assert.equal(aggregates,1);
+    state.recordFavoriteItem('u',10,'Folder',{bvid:'BVLIGHTMORE',title:'More',upperName:'UP'});
+    assert.equal(service.navigation({includeReferenceStats:false}).summary.total,2);
+    assert.equal(service.navigation().summary.total,2);assert.equal(summaries,4);assert.equal(aggregates,2);
+  } finally {db.prepare=original;state.close();}
+});
+
 test('navigation reuses a bounded snapshot and invalidates across writes, rollback, selection and rebind', async t => {
   const root = await createTestDir('navigation-cache');
   const first = new StateManager({dbPath:path.join(root,'first.sqlite'),statePath:path.join(root,'first.json')});

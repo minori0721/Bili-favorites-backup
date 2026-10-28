@@ -48,6 +48,8 @@
     .archive-library-stats-body dt { color:var(--archive-muted); }
     .archive-library-stats-body dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
     .archive-library-stats-body p { margin:0; color:var(--archive-muted); }
+    .archive-library-stats-body .archive-library-statistics-status { margin-top:12px; }
+    .archive-library-statistics-status .workspace-button { margin-top:8px; min-height:36px; font-size:12px; }
     @media (max-height:520px) {
       .archive-library-stats-body { max-height:max(80px,calc(100dvh - 225px)); }
     }

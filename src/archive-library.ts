@@ -1,4 +1,4 @@
-import { readRemoteReferenceStats } from "./remote-reference-query.js";
+import { readRemoteReferenceStats, readDirectoryReferenceStats, type RemoteReferenceStats } from "./remote-reference-query.js";
 import crypto from "node:crypto";
 import type { StateDatabase } from "./database.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
@@ -736,10 +736,11 @@ function hydrateRecords(database: StateDatabase, context: NormalizedContext, bvi
     ), remote_stats AS (
       SELECT rf.user_id, rf.media_id, rf.bvid, COUNT(*) AS file_count,
         COALESCE(SUM(rf.expected_size),0) AS total_bytes
-      FROM remote_files rf
-      JOIN source_keys keys
-        ON keys.user_id=rf.user_id AND keys.media_id=rf.media_id AND keys.bvid=rf.bvid
-      WHERE rf.status='verified'
+      -- Drive lookups from this page; status-first plans otherwise scan all verified files.
+      FROM source_keys keys
+      CROSS JOIN remote_files rf
+      WHERE rf.user_id=keys.user_id AND rf.media_id=keys.media_id AND rf.bvid=keys.bvid
+        AND rf.status='verified'
       GROUP BY rf.user_id, rf.media_id, rf.bvid
     )
     SELECT source.ord, source.relation_json, source.video_json,
@@ -1174,8 +1175,11 @@ export function getArchiveLibraryPlaybackSearch(
 
 const emptyNavigationSummary = () => ({
   total: 0, playable: 0, pending: 0, issue: 0, deleted: 0,
-  sourceReferenceCount: 0, uniqueRemotePathCount: 0,
 });
+
+function navigationReferenceFields(stats: RemoteReferenceStats | undefined, include: boolean) {
+  return include ? {sourceReferenceCount:stats?.sourceReferenceCount ?? 0,uniqueRemotePathCount:stats?.uniqueRemotePathCount ?? 0} : {};
+}
 
 function readNavigationRows(database: StateDatabase, userIds: string[]) {
   if (userIds.length === 0) return [] as ArchiveSqlRow[];
@@ -1234,11 +1238,11 @@ function readNavigationRows(database: StateDatabase, userIds: string[]) {
        FROM favorite_relations rc JOIN videos vv ON vv.bvid=rc.bvid
        WHERE rc.user_id=fs.user_id AND rc.media_id=fs.media_id
          AND json_extract(vv.payload_json, '$.originalMeta.coverLocalPath') IS NOT NULL
-       ORDER BY rc.last_seen_at DESC LIMIT 1) AS cover_local_path,
+       ORDER BY rc.last_seen_at DESC, rc.bvid ASC LIMIT 1) AS cover_local_path,
       (SELECT COALESCE(json_extract(vv.payload_json, '$.originalMeta.cover'), json_extract(vv.payload_json, '$.cover'))
        FROM favorite_relations rc JOIN videos vv ON vv.bvid=rc.bvid
        WHERE rc.user_id=fs.user_id AND rc.media_id=fs.media_id
-       ORDER BY rc.last_seen_at DESC LIMIT 1) AS cover
+       ORDER BY rc.last_seen_at DESC, rc.bvid ASC LIMIT 1) AS cover
     FROM folder_summary fs
     UNION ALL
     SELECT 'account', user_id, NULL, NULL, total, playable, pending, issue, deleted,
@@ -1249,23 +1253,25 @@ function readNavigationRows(database: StateDatabase, userIds: string[]) {
   `).all(...userIds);
 }
 
-function navigationSummaryFromRow(row: ArchiveSqlRow | undefined, remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number }) {
-  return row ? {
+function navigationSummaryFromRow(row: ArchiveSqlRow | undefined, remoteStats: RemoteReferenceStats | undefined, includeReferences: boolean) {
+  return {
+    ...(row ? {
     total: Number(row.total || 0),
     playable: Number(row.playable || 0),
     pending: Number(row.pending || 0),
     issue: Number(row.issue || 0),
     deleted: Number(row.deleted || 0),
-    sourceReferenceCount: remoteStats?.sourceReferenceCount ?? 0,
-    uniqueRemotePathCount: remoteStats?.uniqueRemotePathCount ?? 0,
-  } : emptyNavigationSummary();
+    } : emptyNavigationSummary()),
+    ...navigationReferenceFields(remoteStats,includeReferences),
+  };
 }
 
 
 function decorateNavigationSummary(
   summary: ReturnType<typeof navigationSummaryFromRow>,
   rows: ArchiveSqlRow[],
-  remoteStats?: { sourceReferenceCount: number; uniqueRemotePathCount: number },
+  remoteStats: RemoteReferenceStats | undefined,
+  includeReferences: boolean,
 ) {
   const latestSync = Math.max(0, ...rows.map((row) => Number(row.last_synced_at || 0)));
   const coverRow = [...rows]
@@ -1273,20 +1279,20 @@ function decorateNavigationSummary(
     .sort((left, right) => Number(right.last_seen_at || 0) - Number(left.last_seen_at || 0))[0];
   return {
     ...summary,
-    sourceReferenceCount: remoteStats?.sourceReferenceCount ?? summary.sourceReferenceCount,
-    uniqueRemotePathCount: remoteStats?.uniqueRemotePathCount ?? summary.uniqueRemotePathCount,
+    ...navigationReferenceFields(remoteStats,includeReferences),
     lastSyncedAt: isoFromMs(latestSync),
     coverLocalPath: coverRow?.cover_local_path || undefined,
     cover: coverRow?.cover || undefined,
   };
 }
 
-export function getArchiveLibraryNavigation(database: StateDatabase, users: BiliUser[]) {
+export function getArchiveLibraryNavigation(database: StateDatabase, users: BiliUser[], options: {includeReferenceStats?: boolean} = {}) {
   const libraryUsers = archiveLibraryUsers(database, users);
   const userIds = libraryUsers.map((user) => user.id);
   const selected = selectionSet(libraryUsers);
   const navigationRows = readNavigationRows(database, userIds);
-  const remoteReferenceStats = readRemoteReferenceStats(database, userIds);
+  const includeReferences = options.includeReferenceStats !== false;
+  const remoteReferenceStats = includeReferences ? readRemoteReferenceStats(database, userIds) : new Map<string,RemoteReferenceStats>();
   const folderRows = navigationRows
     .filter((row) => row.row_kind === "folder")
     .sort((left, right) => String(left.user_id).localeCompare(String(right.user_id))
@@ -1294,8 +1300,8 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       || Number(left.media_id || 0) - Number(right.media_id || 0));
   const accountSummaries = new Map(navigationRows
     .filter((row) => row.row_kind === "account")
-    .map((row) => [String(row.user_id), navigationSummaryFromRow(row, remoteReferenceStats.get(`account:${row.user_id}`))]));
-  const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"), remoteReferenceStats.get("global"));
+    .map((row) => [String(row.user_id), navigationSummaryFromRow(row, remoteReferenceStats.get(`account:${row.user_id}`),includeReferences)]));
+  const globalSummary = navigationSummaryFromRow(navigationRows.find((row) => row.row_kind === "global"), remoteReferenceStats.get("global"),includeReferences);
   const indexedFolders = new Map(folderRows.map((row) => [`${row.user_id}:${row.media_id}`, row]));
   const accountDeletionRows = userIds.length ? database.db.prepare<unknown[], NavigationDeletionRow>(`
     SELECT id, user_id, scope, media_id, status, file_count, total_bytes, completed_count, retained_count,
@@ -1339,8 +1345,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         pending: Number(row?.pending || 0),
         issue: Number(row?.issue || 0),
         deleted: Number(row?.deleted || 0),
-        sourceReferenceCount: remoteReferenceStats.get(`folder:${user.id}:${folder.mediaId}`)?.sourceReferenceCount || 0,
-        uniqueRemotePathCount: remoteReferenceStats.get(`folder:${user.id}:${folder.mediaId}`)?.uniqueRemotePathCount || 0,
+        ...navigationReferenceFields(remoteReferenceStats.get(`folder:${user.id}:${folder.mediaId}`),includeReferences),
         lastSyncedAt: isoFromMs(row?.last_synced_at),
         coverLocalPath: row?.cover_local_path || undefined,
         cover: row?.cover || undefined,
@@ -1360,8 +1365,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         pending: Number(manualRow.pending || 0),
         issue: Number(manualRow.issue || 0),
         deleted: Number(manualRow.deleted || 0),
-        sourceReferenceCount: remoteReferenceStats.get(`folder:${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`)?.sourceReferenceCount || 0,
-        uniqueRemotePathCount: remoteReferenceStats.get(`folder:${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`)?.uniqueRemotePathCount || 0,
+        ...navigationReferenceFields(remoteReferenceStats.get(`folder:${user.id}:${MANUAL_ARCHIVE_MEDIA_ID}`),includeReferences),
         lastSyncedAt: isoFromMs(manualRow.last_synced_at || manualRow.last_seen_at),
         coverLocalPath: manualRow.cover_local_path || undefined,
         cover: manualRow.cover || undefined,
@@ -1382,8 +1386,7 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         pending: Number(row.pending || 0),
         issue: Number(row.issue || 0),
         deleted: Number(row.deleted || 0),
-        sourceReferenceCount: remoteReferenceStats.get(`folder:${row.user_id}:${row.media_id}`)?.sourceReferenceCount || 0,
-        uniqueRemotePathCount: remoteReferenceStats.get(`folder:${row.user_id}:${row.media_id}`)?.uniqueRemotePathCount || 0,
+        ...navigationReferenceFields(remoteReferenceStats.get(`folder:${row.user_id}:${row.media_id}`),includeReferences),
         lastSyncedAt: isoFromMs(row.last_synced_at || row.last_seen_at),
         coverLocalPath: row.cover_local_path || undefined,
         cover: row.cover || undefined,
@@ -1400,13 +1403,13 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
       removed: Boolean(user.archiveRemoved),
       removedAt: user.removedAt,
       deletion: accountDeletions.get(user.id),
-      summary: decorateNavigationSummary(accountSummaries.get(user.id) || emptyNavigationSummary(), accountRows, remoteReferenceStats.get(`account:${user.id}`)),
+      summary: decorateNavigationSummary(accountSummaries.get(user.id) || emptyNavigationSummary(), accountRows, remoteReferenceStats.get(`account:${user.id}`),includeReferences),
       folders: activeFolders,
       inactiveFolders,
     };
   });
   return {
-    summary: decorateNavigationSummary(globalSummary, folderRows, remoteReferenceStats.get("global")),
+    summary: decorateNavigationSummary(globalSummary, folderRows, remoteReferenceStats.get("global"),includeReferences),
     accounts: accountData,
     upSubscriptions: database.upSubscriptions.list(true).map(source => {
       const row=indexedFolders.get(`${source.userId}:${source.routingKey}`);
@@ -1417,4 +1420,12 @@ export function getArchiveLibraryNavigation(database: StateDatabase, users: Bili
         artworkUrl:'/api/archive-library/artwork?'+new URLSearchParams({userId:source.userId,mediaId:String(source.routingKey)}).toString()};
     }),
   };
+}
+
+/** Counts for the selected directory, independent of list search, sort and paging. */
+export function getArchiveLibraryReferenceStats(database: StateDatabase, users: BiliUser[], input: Partial<ArchiveLibraryQuery>) {
+  if(input.mediaId!==undefined && !Number.isSafeInteger(input.mediaId))throw new ArchiveLibraryQueryError('Invalid archive folder');
+  const context = normalizeQuery(database,archiveLibraryUsers(database,users),{scope:input.scope,userId:input.userId,mediaId:input.mediaId});
+  const userIds = context.scope === 'global' ? context.allowedUserIds : [context.userId!];
+  return readDirectoryReferenceStats(database,userIds,context.scope === 'folder' ? context.mediaId : undefined);
 }

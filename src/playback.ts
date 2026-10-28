@@ -361,9 +361,11 @@ function rowsForSources(database: StateDatabase, sources: PlaybackQueueSource[])
     SELECT rf.id, rf.bvid, rf.user_id, rf.media_id, rf.name, rf.remote_path, rf.expected_size, rf.quality_json,
       rf.actual_width, rf.actual_height, rf.actual_fps, rf.actual_duration, rf.actual_codec,
       rf.actual_metadata_source, rf.put_completed_at
+    -- Keep the requested page outside the indexed file lookup.
     FROM requested q
-    JOIN remote_files rf ON rf.user_id=q.user_id AND rf.media_id=q.media_id AND rf.bvid=q.bvid
-    WHERE rf.status='verified' AND (
+    CROSS JOIN remote_files rf
+    WHERE rf.user_id=q.user_id AND rf.media_id=q.media_id AND rf.bvid=q.bvid
+      AND rf.status='verified' AND (
       lower(rf.name) LIKE '%.mp4'
       OR lower(rf.name) LIKE '%.m4v'
       OR lower(rf.name) LIKE '%.webm'
