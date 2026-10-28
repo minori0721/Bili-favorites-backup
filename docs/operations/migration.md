@@ -55,7 +55,7 @@ v2.5.6在切换配置、账号、封面、临时文件和SQLite前记录共同�
 
 ## 回滚旧镜像
 
-`v2.7.0` 与 `v2.7.1` 均使用 SQLite schema 12，JSON 状态仍为 schema 13、迁移包清单仍为 schema 3。由 schema 11 升级前，会在数据库旁的 `backups` 目录保存并校验 SQLite 快照和 SHA256 文件，默认位置为 `data/backups/bfb-before-schema-12-v11-*.sqlite`；已使用 schema 12 的版本不会再次执行该次结构升级。
+`v2.7.0` 至 `v2.7.2` 均使用 SQLite schema 12，JSON 状态仍为 schema 13、迁移包清单仍为 schema 3。由 schema 11 升级前，会在数据库旁的 `backups` 目录保存并校验 SQLite 快照和 SHA256 文件，默认位置为 `data/backups/bfb-before-schema-12-v11-*.sqlite`；已使用 schema 12 的版本不会再次执行该次结构升级。
 
 需要回退 `v2.6.5` 或更早版本时，先停止应用、保留当前 `data` 和 `temp`，再恢复升级前的匹配数据备份。旧版不能直接打开 schema 12，也不能因为迁移包清单仍是 schema 3 就直接导入新版数据库。完整的升级前数据备份包含匹配的配置、账号和状态；自动生成的 SQLite 快照不等于完整备份。不要让新旧版本同时访问同一份数据。回滚不会撤销新版本已经完成的远端上传、替换或删除操作。
 

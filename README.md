@@ -203,8 +203,8 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 | 镜像标签 | 用途 |
 | --- | --- |
 | `latest` | `main`稳定版 |
-| `v2.7.1` | 当前固定稳定版本，便于可控升级 |
-| `v2.7.0` | 上一固定稳定版本 |
+| `v2.7.2` | 当前固定稳定版本，便于可控升级 |
+| `v2.7.1` | 上一固定稳定版本 |
 | `dev` | 开发测试版，不保证与稳定版一致 |
 
 开发版使用下一目标版本的 `-dev` 标识，当前版本见 [dev 分支包信息](https://github.com/minori0721/Bili-favorites-backup/blob/dev/package.json)，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
@@ -221,7 +221,7 @@ npm run build
 
 本地修改可按范围运行 `npm run test:release`、`npm run test:core` 或 `npm run test:files -- <文件...>`；大数据专项入口为 `npm run test:slow`。`npm test` 和 CI 继续执行全部回归，具体选择见[开发与验证](docs/development/architecture.md#开发与验证)。
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.1` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发与验证方式见 [开发说明](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.2` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发与验证方式见 [开发说明](DEV_NOTES.md)。
 
 ## 许可证
 
