@@ -13,7 +13,7 @@ import { createHttpErrorHandler } from '../src/http/request-boundary.js';
 import { createUpBiliAdapter,signUpWbi,type UpBiliPort } from '../src/up-subscriptions/bili-adapter.js';
 import { decodeUpSubmissions,decodeUpSearch,decodeUpFollowings } from '../src/up-subscriptions/bili-decoders.js';
 import { parseUpUid,shouldArchiveUpVideo } from '../src/up-subscriptions/policy.js';
-import { parseUpList,parseUpCatalog,parseUpSubscription,parseUpRemovalPreview,parseUpRemovalResult } from '../src/shared/api/up-subscriptions.js';
+import { parseUpList,parseUpCatalog,parseUpSubscription,parseUpRemovalPreview,parseUpRemovalResult,parseUpArchiveContext } from '../src/shared/api/up-subscriptions.js';
 import { matchesDeletedSource,sourceAdmissionBlocked } from '../src/scheduler/source-admission.js';
 import { parseArchiveNavigation,parseArchiveLibraryItem } from '../src/shared/api/archive-library.js';
 import { getArchiveLibraryNavigation,queryArchiveLibraryItems } from '../src/archive-library.js';
@@ -64,6 +64,18 @@ async function completed(deletion:ArchiveDeletionService,id:string,expected='com
   for(let index=0;index<200;index++){const result=deletion.get(id);if(result?.status===expected)return result;await new Promise(resolve=>setTimeout(resolve,10));}
   assert.fail(`删除任务未到达 ${expected}`);
 }
+
+test('UP archive context resolves only the requested source and retains playback after removal',async()=>{
+  const f=await fixture();try {
+    const expected={sourceId:f.source.id,userId:'u1',mediaId:f.source.routingKey,title:f.source.name};
+    assert.deepEqual(parseUpArchiveContext(f.service.archiveContext(f.source.id)),expected);
+    f.repository().remove(f.source.id,f.source.revision,5000);
+    assert.deepEqual(f.service.archiveContext(f.source.id),expected);
+    assert.throws(()=>f.service.archiveContext('missing-source'),/订阅不存在/);
+    for(const mediaId of [0,-1,1,NaN,-2.5])assert.throws(()=>parseUpArchiveContext({...expected,mediaId}));
+    assert.throws(()=>parseUpArchiveContext({...expected,userId:''}));
+  } finally {await f.close();}
+});
 test('removing a subscription with retain preserves proof and choices for re-add',async()=>{
   const f=await fixture();try{
     f.repository().setDecision(f.source.id,video.bvid,'include',1000);f.proof(f.source.routingKey,video.bvid,f.source.id);
@@ -403,6 +415,11 @@ test('UP API routes return validated DTOs, reject stale decisions and do not sca
   const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));const address=server.address();assert.ok(address&&typeof address==='object');const base=`http://127.0.0.1:${address.port}`;
   try{
     const body:unknown=await(await fetch(base+'/api/up-subscriptions')).json();assert.ok(body&&typeof body==='object'&&'data'in body);assert.equal(parseUpList(body.data).items.length,1);
+    const contextResponse=await fetch(`${base}/api/up-subscriptions/${f.source.id}/archive-context`);
+    assert.equal(contextResponse.status,200);assert.equal(contextResponse.headers.get('cache-control'),'private, no-store');
+    const context:unknown=await contextResponse.json();assert.ok(context&&typeof context==='object'&&'data'in context);
+    assert.equal(parseUpArchiveContext(context.data).sourceId,f.source.id);
+    assert.equal((await fetch(base+'/api/up-subscriptions/missing/archive-context')).status,404);
     await fetch(`${base}/api/up-subscriptions/${f.source.id}/items`);assert.equal(f.scans,0);
     const response=await fetch(`${base}/api/up-subscriptions/${f.source.id}/selection`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:9,items:[{bvid:video.bvid,decision:'include'}]})});assert.equal(response.status,409);
     const request=async(path:string,method:string,value:unknown)=>{

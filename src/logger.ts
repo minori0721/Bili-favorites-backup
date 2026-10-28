@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from 'node:crypto';
 import { dataDir } from "./paths.js";
 import { JsonFileDecodeError, readJsonFileDecoded, writeJsonFile } from "./storage.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
@@ -80,6 +81,12 @@ export class LogManager extends EventEmitter {
   private persistTimer: NodeJS.Timeout | null = null;
   private readonly filePath: string;
   private persistenceAllowed: boolean;
+  private epoch = 0;
+  private dirty = false;
+  private suspended = 0;
+  private pending: Promise<void> | null = null;
+  private closing: Promise<void> | null = null;
+  private closed = false;
 
   constructor(filePath = logsPath) {
     super();
@@ -95,6 +102,7 @@ export class LogManager extends EventEmitter {
     if (this.entries.length > MAX_LOG_ENTRIES) {
       this.entries.splice(0, this.entries.length - MAX_LOG_ENTRIES);
     }
+    this.dirty = true;
     this.schedulePersist();
     this.emit("log", sanitizedEntry);
   }
@@ -108,10 +116,8 @@ export class LogManager extends EventEmitter {
   }
 
   reload() {
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
+    this.cancelPendingCommit();
+    this.dirty = false;
     const stored = readStoredLogEntries(this.filePath);
     this.entries = this.sanitizeEntries(stored.entries);
     this.persistenceAllowed = stored.persistenceAllowed;
@@ -119,11 +125,9 @@ export class LogManager extends EventEmitter {
   }
 
   clear() {
+    this.cancelPendingCommit();
+    this.dirty = false;
     this.entries = [];
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
     try {
       fs.rmSync(this.filePath, { force: true });
       this.persistenceAllowed = true;
@@ -134,26 +138,91 @@ export class LogManager extends EventEmitter {
   }
 
   flush() {
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
+    this.cancelPendingCommit();
+    if (this.suspended) return;
+    this.dirty = false;
     this.persist();
   }
 
   close() {
+    if (this.closing) return this.closing;
+    this.closed = true;
     this.flush();
     this.removeAllListeners();
+    this.closing = this.pending ?? Promise.resolve();
+    return this.closing;
+  }
+
+  /** Quiesce the old writer before an import can replace its file. */
+  async pausePersistence() {
+    this.suspended++;
+    this.cancelPendingCommit();
+    this.dirty = true;
+    await this.pending;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.suspended--;
+      this.schedulePersist();
+    };
+  }
+
+  private cancelPendingCommit() {
+    this.epoch++;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
   }
 
   private schedulePersist() {
-    if (!this.persistenceAllowed || this.persistTimer) {
+    if (!this.persistenceAllowed || !this.dirty || this.persistTimer || this.pending || this.suspended || this.closed) {
       return;
     }
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      this.persist();
+      this.dirty = false;
+      const work = this.persistAsync(this.epoch).finally(() => {
+        if (this.pending !== work) return;
+        this.pending = null;
+        this.schedulePersist();
+      });
+      this.pending = work;
     }, 300);
+  }
+
+  private async persistAsync(epoch: number) {
+    const tempPath = `${this.filePath}.${randomUUID()}.tmp`;
+    let handle: fs.promises.FileHandle | undefined;
+    let created = false;
+    try {
+      const contents = JSON.stringify(this.entries, null, 2);
+      await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true });
+      let mode = 0o600;
+      try { mode = (await fs.promises.stat(this.filePath)).mode & 0o777; }
+      catch (error) { if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error; }
+      handle = await fs.promises.open(tempPath, 'wx', mode);
+      created = true;
+      await handle.chmod(mode);
+      await handle.writeFile(contents, 'utf8');
+      await handle.close();
+      handle = undefined;
+      if (epoch !== this.epoch || this.suspended || this.closed) return;
+      // The epoch check and atomic commit share one turn: clear/reload cannot
+      // interleave a rename after they have invalidated this writer.
+      fs.renameSync(tempPath, this.filePath);
+      created = false;
+    } catch (error) {
+      if (epoch === this.epoch) this.persistenceFailed(error);
+    } finally {
+      if (handle) await handle.close().catch(error => console.warn('[Logger] temporary log close failed', error));
+      if (created) await fs.promises.rm(tempPath, { force: true }).catch(error => console.warn('[Logger] temporary log cleanup failed', error));
+    }
+  }
+
+  private persistenceFailed(error: unknown) {
+    this.persistenceAllowed = false;
+    const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 500);
+    console.warn(`[Logger] log persistence failed; continuing in memory without overwriting history: ${message}`);
   }
 
   private persist() {
@@ -161,9 +230,7 @@ export class LogManager extends EventEmitter {
     try {
       writeJsonFile(this.filePath, this.entries);
     } catch (error) {
-      this.persistenceAllowed = false;
-      const message = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 500);
-      console.warn(`[Logger] log persistence failed; continuing in memory without overwriting history: ${message}`);
+      this.persistenceFailed(error);
     }
   }
 
@@ -176,7 +243,7 @@ export class LogManager extends EventEmitter {
   }
 
   private sanitizeEntries(entries: LogEntry[]) {
-    return entries.map((entry) => this.sanitizeEntry(entry));
+    return entries.slice(-MAX_LOG_ENTRIES).map((entry) => this.sanitizeEntry(entry));
   }
 }
 

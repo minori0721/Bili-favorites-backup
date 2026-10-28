@@ -750,7 +750,7 @@
         "retryAttempt"
       ],
       "stop": "stop detaches the EventSource handlers, closes the connection, aborts session checks and clears timeout and backoff timers",
-      "lateCallback": "connection and session-check identity prevent old events or rejected checks from stopping a restarted feed",
+      "lateCallback": "connection and session-check identity prevent old events or rejected checks from stopping a restarted feed; a current open replaces the replay snapshot and rendered log rows",
       "rebind": "destroy releases the old controller resources; a new controller receives fresh DOM and transport dependencies"
     },
     {

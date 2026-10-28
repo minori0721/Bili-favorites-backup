@@ -81,6 +81,10 @@ export function createUpSubscriptionService(deps:{
     list(){return {accounts:deps.users.list().filter(user=>user.enabled).map(user=>({id:user.id,name:user.name})),items:deps.repository().list().map(publicSource),
       operations:deps.deletion.listSubscriptionRemovals().map(operation=>removalOperation(operation,source(operation.sourceId,true)))};},
     get(id:unknown){return publicSource(source(id,true));},
+    archiveContext(id: unknown) {
+      const current = source(id, true);
+      return { sourceId: current.id, userId: current.userId, mediaId: current.routingKey, title: current.name };
+    },
     async discover(kind:unknown,input:Record<string,unknown>) {
       ready();const userId=account(input.userId);const number=page(input.page);const query=typeof input.q==='string'?input.q.trim():'';
       if(query.length>100)fail('搜索词过长');

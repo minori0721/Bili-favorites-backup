@@ -43,6 +43,29 @@ function retryFixture(checkSession?: (signal: AbortSignal) => Promise<unknown>) 
 }
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+test('a fresh stream replaces replayed history and ignores stale open callbacks', () => {
+  const connections: LogConnection[] = [];
+  let retry: (()=>void) | undefined;
+  let resets = 0;
+  const visible: string[] = [];
+  const feed = createLogFeed({
+    connect:()=>{const source:LogConnection={onmessage:null,onerror:null,close(){}};connections.push(source);return source;},
+    receive:entry=>visible.push(entry.summary),reset:()=>{resets++;visible.length=0;},
+    schedule:callback=>{retry=callback;return 1;},cancel(){},random:()=>0.5,
+  });
+  feed.start();
+  const oldOpen=connections[0].onopen;
+  connections[0].onopen?.();
+  for(const summary of ['first','second','second']) connections[0].onmessage?.({data:JSON.stringify({summary})});
+  connections[0].onerror?.();retry?.();
+  oldOpen?.();assert.equal(resets,1);
+  connections[1].onopen?.();
+  for(const summary of ['first','second','second']) connections[1].onmessage?.({data:JSON.stringify({summary})});
+  assert.equal(resets,2);assert.equal(feed.recent().length,3);
+  assert.deepEqual(visible,['first','second','second']);
+  feed.stop();
+});
+
 for (const error of [new ApiError('unavailable', undefined, undefined, 503), new TypeError('network unavailable'), new DOMException('timeout', 'TimeoutError')]) {
   test(`log session ${error.name} remains retryable and recovers without page refresh`, async () => {
     let checks = 0;

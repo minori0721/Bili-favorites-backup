@@ -2,10 +2,9 @@ import type { ApiClient } from '../../shared/api.js';
 import { requireElement } from '../../shared/dom.js';
 import type { ConfirmAction } from '../../shared/confirmation.js';
 import { isRecord } from '../../../../shared/api/value.js';
-import { parseArchiveNavigation } from '../../../../shared/api/archive-library.js';
 import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
 import type { ArchiveContext } from '../../../../shared/api/archive-context.js';
-import { parseUpList,parseUpIdentity,parseUpDiscovery,parseUpSubscription,parseUpCatalog,parseUpPosts,parseUpRemovalPreview,parseUpRemovalResult } from '../../../../shared/api/up-subscriptions.js';
+import { parseUpList,parseUpIdentity,parseUpDiscovery,parseUpSubscription,parseUpCatalog,parseUpPosts,parseUpRemovalPreview,parseUpRemovalResult,parseUpArchiveContext } from '../../../../shared/api/up-subscriptions.js';
 import type { UpSubscription,UpIdentity,UpCatalogItem,UpSubscriptionMode,UpVideoDecision,UpRemovalPreview } from '../../../../shared/up-subscriptions.js';
 import { archiveDeletionProgressText } from '../../shared/archive-deletion.js';
 import { archiveDeletionImpactText } from '../../shared/archive-deletion-impact.js';
@@ -246,10 +245,10 @@ export function createUpSubscriptions(deps:{
     try {
       let context:ArchiveContext;
       if(item.playable){
-        const response=await request('workspace-playback','/api/archive-library/navigation');
+        const response=await request('workspace-playback','/api/up-subscriptions/'+encodeURIComponent(sourceId)+'/archive-context');
         if(response.kind==='cancelled'||current?.id!==sourceId||!visible('upWorkspaceModal'))return;
-        const source=parseArchiveNavigation(response.data).upSubscriptions.find(source=>source.sourceId===sourceId);
-        if(!source?.userId)throw new Error('UP 归档来源已变化，请刷新投稿目录后重试。');
+        const source=parseUpArchiveContext(response.data);
+        if(source.sourceId!==sourceId)throw new Error('UP 归档来源已变化，请刷新投稿目录后重试。');
         context={scope:'folder',userId:source.userId,mediaId:source.mediaId,title:source.title+' · UP 归档',
           query:'',searchScope:'current',filter:'all',sort:'context'};
       }else{

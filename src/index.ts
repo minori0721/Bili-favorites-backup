@@ -501,7 +501,15 @@ app.use(createMigrationRouter({boundary:asyncHandler,service:createMigrationServ
   reload:reloadStoresAfterImport,resume:resumeStoresAfterImport,
   exportArchive: options => createMigrationExport(options,stateManager),
   estimate: options => estimateMigrationExport(options,stateManager), preview: previewMigrationPackageFile,
-  apply: (archive,options) => applyMigrationPackageFile(archive,options,stateManager),
+  apply: async (archive,options) => {
+    const resumeLogs = await logManager.pausePersistence();
+    let recoveryRequired = false;
+    try { return await applyMigrationPackageFile(archive,options,stateManager); }
+    catch (error) {
+      recoveryRequired = error instanceof Error && 'recoveryRequired' in error && error.recoveryRequired === true;
+      throw error;
+    } finally { if (!recoveryRequired) resumeLogs(); }
+  },
 })}));
 
 const qualityMaintenance = createQualityMaintenance({
@@ -541,7 +549,7 @@ export async function closeAppResources() {
   closePlaybackDeliveryTracker();
   adminSessionStore.close();
   stateManager.close();
-  logManager.close();
+  await logManager.close();
 }
 
 export { app };
@@ -615,7 +623,7 @@ if (process.env.NODE_ENV !== "test") {
     } else {
       console.warn("[Shutdown] Skipped explicit state database close because background work did not quiesce");
     }
-    logManager.close();
+    await logManager.close();
     process.exit(quiesced ? exitCode : 1);
   };
   stopFailedApplication = () => {

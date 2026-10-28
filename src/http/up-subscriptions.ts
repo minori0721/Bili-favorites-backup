@@ -6,6 +6,10 @@ export function createUpSubscriptionRouter(deps:{service:ReturnType<typeof creat
   router.get('/api/up-discovery/:kind',deps.boundary(async(req,res)=>{res.json({success:true,data:await service.discover(req.params.kind,req.query)});}));
   router.get('/api/up-subscriptions',deps.boundary((_req,res)=>{res.json({success:true,data:service.list()});}));
   router.get('/api/up-subscriptions/:id',deps.boundary((req,res)=>{res.json({success:true,data:service.get(req.params.id)});}));
+  router.get('/api/up-subscriptions/:id/archive-context',deps.boundary((req,res)=>{
+    res.setHeader('Cache-Control','private, no-store');
+    res.json({success:true,data:service.archiveContext(req.params.id)});
+  }));
   router.post('/api/up-subscriptions',deps.boundary(async(req,res)=>{res.json({success:true,data:await service.create(req.body)});}));
   router.patch('/api/up-subscriptions/:id',deps.boundary(async(req,res)=>{res.json({success:true,data:await service.update(req.params.id,req.body)});}));
   router.post('/api/up-subscriptions/:id/history-preview',deps.boundary((req,res)=>{res.json({success:true,data:service.previewHistory(req.params.id,req.body)});}));

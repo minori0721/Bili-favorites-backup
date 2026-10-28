@@ -20,6 +20,7 @@ export interface UpCatalogItem extends UpSubmission {
   archiveStatus: string | null; playable: boolean; otherArchiveAvailable: boolean;
 }
 export interface UpCatalogPage { items: UpCatalogItem[]; nextCursor: string | null; total: number; }
+export interface UpArchiveContext { sourceId: string; userId: string; mediaId: number; title: string; }
 export interface UpSubscriptionInput {
   uid: number; userId: string; mode: UpSubscriptionMode; since?: number; anchorBvid?: string;
 }

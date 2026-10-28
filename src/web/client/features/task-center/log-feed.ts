@@ -19,6 +19,7 @@ export function parseLogEntry(value:unknown):LogEntry | null {
 export function createLogFeed(dependencies: {
   connect():LogConnection;
   receive(entry:LogEntry):void;
+  reset?():void;
   schedule?(callback:() => void, ms:number):number;
   cancel?(handle:number):void;
   checkSession?(signal: AbortSignal): Promise<unknown>;
@@ -43,7 +44,12 @@ export function createLogFeed(dependencies: {
     if (!running || connection) return;
     const source = dependencies.connect();
     connection = source;
-    source.onopen = () => { if (running && connection === source) retryAttempt = 0; };
+    source.onopen = () => {
+      if (!running || connection !== source) return;
+      retryAttempt = 0;
+      entries.length = 0;
+      dependencies.reset?.();
+    };
     source.onmessage = event => {
       if (!running || connection !== source) return;
       retryAttempt = 0;

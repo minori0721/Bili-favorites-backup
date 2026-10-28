@@ -24,7 +24,7 @@ export function createLogController(root:HTMLElement, checkSession: (signal: Abo
     source.onmessage = event => connection.onmessage?.({data:String(event.data)});
     source.onerror = () => connection.onerror?.();
     return connection;
-  },receive:append,checkSession});
+  },receive:append,reset:()=>root.replaceChildren(),checkSession});
   return {
     init:feed.start,
     destroy:feed.stop,

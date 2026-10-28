@@ -1,5 +1,5 @@
 import { isRecord, ResponseFormatError, requireUnique } from './value.js';
-import type { UpSubscription, UpSubmission, UpIdentity, UpDiscoveryPage, UpCatalogItem, UpCatalogPage, UpVideoActionPreview, UpRemovalPreview, UpRemovalOperation } from '../up-subscriptions.js';
+import type { UpSubscription, UpSubmission, UpIdentity, UpDiscoveryPage, UpCatalogItem, UpCatalogPage, UpVideoActionPreview, UpRemovalPreview, UpRemovalOperation, UpArchiveContext } from '../up-subscriptions.js';
 function fail(field:string):never {throw new ResponseFormatError(`UP 响应格式错误：${field}`);}
 function obj(value:unknown){return isRecord(value)?value:fail('对象');}
 function text(value:unknown,field:string){return typeof value==='string'?value:fail(field);}
@@ -8,6 +8,12 @@ function number(value:unknown,field:string,min=0){return typeof value==='number'
 function flag(value:unknown,field:string){return typeof value==='boolean'?value:fail(field);}
 function nullableNumber(value:unknown,field:string){return value===null?null:number(value,field);}
 function nullableText(value:unknown,field:string){return value===null?null:text(value,field);}
+export function parseUpArchiveContext(value: unknown): UpArchiveContext {
+  const item = obj(value);
+  if (typeof item.mediaId !== 'number' || !Number.isSafeInteger(item.mediaId) || item.mediaId > -2) fail('mediaId');
+  return { sourceId: identityText(item.sourceId, 'sourceId'), userId: identityText(item.userId, 'userId'),
+    mediaId: item.mediaId, title: text(item.title, 'title') };
+}
 export function parseUpIdentity(value:unknown):UpIdentity {
   const item=obj(value);return {uid:number(item.uid,'uid',1),name:text(item.name,'name'),avatar:text(item.avatar,'avatar'),signature:text(item.signature,'signature'),
     ...(item.followed===undefined?{}:{followed:flag(item.followed,'followed')})};

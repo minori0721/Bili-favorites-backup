@@ -56,6 +56,19 @@ test('log stream reconnects after an interrupted connection and a 503 session ch
   expect(errors).toEqual([]);
 });
 
+test('reconnecting log history replaces old rows while retaining genuinely repeated messages', async ({page}) => {
+  await page.request.post('/__test/reset');await page.clock.install();
+  let streams=0;
+  const history=['第一条日志','重复日志','重复日志'].map((summary,index)=>`data: ${JSON.stringify({level:'info',timestamp:`2026-10-28T00:00:0${index}Z`,summary,raw:summary,simpleVisible:true})}\n\n`).join('');
+  await page.route('**/api/logs/stream',route=>{streams++;return route.fulfill({status:200,contentType:'text/event-stream',body:history});});
+  await page.goto('/?page=tasks');await (await revealControl(page,page.locator('#logSimpleBtn'))).click();
+  await expect(page.locator('#logConsole > div')).toHaveCount(3);
+  await expect.poll(()=>page.evaluate(()=>document.querySelector('#logConsole')?.textContent)).toContain('第一条日志');
+  await expect.poll(async()=>{await page.clock.fastForward(4000);return streams;}).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('#logConsole > div')).toHaveCount(3);
+  await expect(page.locator('#logConsole > div').filter({hasText:'重复日志'})).toHaveCount(2);
+});
+
 test('revoked log stream shows login and stops reconnecting after a confirmed 401', async ({page}) => {
   await page.request.post('/__test/reset');
   await page.clock.install();
