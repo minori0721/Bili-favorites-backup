@@ -99,10 +99,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const build = { ref: process.env.GITHUB_REF, repository: process.env.GITHUB_REPOSITORY, revision: process.env.GITHUB_SHA };
   const mode = process.argv[2];
   let message;
+  let translation;
   if (process.argv.length === 3 && mode === 'check') {
     const current = isCurrentDevBuild(build);
     fs.appendFileSync(process.env.GITHUB_OUTPUT, `current=${current}\n`);
     message = current ? 'Current dev build may publish its verified image and preview.' : 'Skipped outdated dev build: deployment tags and preview remain unchanged.';
+    translation = current ? '本次构建仍对应 dev 的最新代码，允许发布已验证的镜像并更新开发预览。'
+      : '本次构建对应的 dev 代码已过时，跳过发布，镜像标签和开发预览保持不变。';
   } else if (process.argv.length === 3 && mode === 'publish') {
     const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
     const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
@@ -110,7 +113,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     message = publishDevPreview({ ...build, image: `docker.io/${process.env.IMAGE_NAME}`, digest: process.env.IMAGE_DIGEST,
       runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, updatedAt: new Date().toISOString(),
     }, fs.readFileSync('CHANGELOG.md', 'utf8'), pkg.version, path.join(process.env.RUNNER_TEMP, 'bfb-dev-preview-notes.md'));
+    translation = `开发预览页面已更新，并已核对其版本、说明和对应提交：https://github.com/${build.repository}/releases/tag/${tag}`;
   } else throw new Error('Usage: node scripts/publish-dev-preview.mjs check | publish');
   console.log(message);
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n\n${translation}\n`);
 }

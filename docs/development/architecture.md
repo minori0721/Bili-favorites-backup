@@ -10,7 +10,9 @@
 
 直链仅缓存带有明确 `Expires` 的已校验地址，容量为 256 条，到期前一分钟不再复用。每次命中仍核对文件身份、来源可播放状态与重定向安全；数据库重绑定或存储配置变化清空缓存，迟到结果不能写回新代次。代理响应正文不共享，准备过程不改变上传、核验或清理证据。缓存连接失败只换链一次，然后沿用既有代理与解码错误策略。
 
-回归入口为 `tests/playback-preparation.test.ts`、`tests/http/playback-preparation.test.ts`、`tests/ui/playback-state.spec.ts` 和 `tests/ui/playback-autoplay.spec.ts`，覆盖真实 SQLite 接线、取消与请求合并、过期与文件失效、迟到响应、位置恢复及桌面和手机手动播放。
+原生 HTTPS 代理连接显式使用已验证 IP 的地址族，同时保留原域名的 TLS / SNI 校验；只连接已经选定的地址，不再次解析目标域名。
+
+回归入口为 `tests/playback-preparation.test.ts`、`tests/http/playback-preparation.test.ts`、`tests/ui/playback-state.spec.ts` 和 `tests/ui/playback-autoplay.spec.ts`，覆盖真实 SQLite 接线、取消与请求合并、过期与文件失效、迟到响应、位置恢复及桌面和手机手动播放。`tests/playback-https.test.ts` 通过隔离 HTTPS 服务验证真实 Node 连接、IPv4 / IPv6、证书、Range / HEAD 与取消释放；专用测试证书只加入客户端子进程的信任列表，不修改系统或父进程的证书配置。
 
 ## 账号操作与对账提交
 

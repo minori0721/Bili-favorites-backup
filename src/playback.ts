@@ -887,7 +887,7 @@ export interface PlaybackTransportOptions {
   resolveRemotePath?: (remotePath: string) => Promise<string | undefined>;
 }
 
-function fetchPinnedHttps(url: URL, init: RequestInit, address: PinnedPlaybackAddress) {
+export function fetchPinnedHttps(url: URL, init: RequestInit, address: PinnedPlaybackAddress) {
   return new Promise<Response>((resolve, reject) => {
     const headers = new Headers(init.headers);
     const request = https.request(url, {
@@ -897,6 +897,9 @@ function fetchPinnedHttps(url: URL, init: RequestInit, address: PinnedPlaybackAd
       port: url.port ? Number(url.port) : 443,
       servername: url.hostname.replace(/^\[|\]$/g, ""),
       signal: init.signal || undefined,
+      // One validated address is already selected. Keep Node on its family
+      // so lookup retains the single-address callback contract.
+      family: address.family,
       // Keep the validated hostname for TLS/SNI while pinning the socket to
       // the address that passed the private-network check.
       lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),

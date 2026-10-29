@@ -59,6 +59,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const message = runId === null
     ? 'No matching successful test evidence; running the full test suite.'
     : `Reusing executed tests for commit/workflow ${process.env.GITHUB_SHA}: https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}. Image build, architecture, smoke and security checks still run.`;
+  const translation = runId === null
+    ? '没有找到同一份代码及工作流可复用的成功测试记录，因此本次重新运行全部测试。'
+    : `复用同一份代码及工作流已经实际通过的测试记录：https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId} 。镜像构建、架构检查、启动检查和安全扫描仍会执行。`;
   console.log(message);
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n\n${translation}\n`);
 }
