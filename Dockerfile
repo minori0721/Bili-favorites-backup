@@ -114,4 +114,4 @@ LABEL org.opencontainers.image.ffmpeg.version=${FFMPEG_VERSION}
 LABEL org.opencontainers.image.licenses="GPL-3.0-only"
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "dist/index.js"]
+CMD ["node", "--max-semi-space-size=8", "dist/index.js"]

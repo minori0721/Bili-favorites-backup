@@ -21,8 +21,8 @@ volumes:
 
 Compose 通过 `ALIST_ADMIN_PASSWORD` 传入初始密码。部署后请确认能登录 AList，并根据 AList 版本行为完成管理员密码设置。
 
-::: warning 版本边界
-项目 Compose 固定 `xhofe/alist:v3.61.0`，不使用 `latest`；内置 Compose 仍只提供 AList，不会自动替换为 OpenList。该版本仍需按你的具体网盘驱动验证 PUT、MOVE、列出、下载和删除。
+::: info 内置版本
+项目 Compose 固定 `xhofe/alist:v3.61.0`。使用 OpenList 时可连接已有实例；接入后先用一个小视频确认上传、播放和清理正常。
 :::
 
 下一步：[添加网盘与WebDAV路径](./storage)。

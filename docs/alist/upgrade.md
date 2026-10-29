@@ -15,12 +15,10 @@ docker compose stop app alist
 - 登录 AList / OpenList 后台。
 - 列出BFB目标目录。
 - 上传一个测试文件并读取准确大小。
-- 同目录MOVE重命名。
+- 使用画质替换或重命名时，验证 MOVE 或 COPY+DELETE；使用路径迁移时，验证 COPY。
 - 下载并比对文件。
 - 删除测试文件。
 
 确认以上动作后再启动 BFB 批量任务。外接 AList / OpenList 的升级完全由你管理，BFB 不会改动其镜像或数据。
 
-::: info 当前边界
-Compose 中的 AList `v3.61.0`以及外接 OpenList beta 都不代表所有网盘驱动已由本项目验证。驱动兼容性取决于服务版本、存储提供方、WebDAV 权限与反向代理配置。
-:::
+具体网盘驱动所需的方法和权限见[兼容范围](../reference/compatibility#alist-openlist-webdav)。

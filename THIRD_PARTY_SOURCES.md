@@ -1,6 +1,6 @@
 # 对应源码与构建材料
 
-本文件与 `Dockerfile`、`package-lock.json`、`docs/package-lock.json` 一起用于定位实际构建。许可证原文的副本保留原作者声明；本项目不声称拥有第三方代码。仅添加本文件不会原地修复已经发布的旧镜像和工具压缩包。
+本文件与 `Dockerfile`、`package-lock.json`、`docs/package-lock.json` 一起用于定位实际构建。第三方代码及许可副本保留原作者声明。历史镜像和工具包缺少的材料在下文列为待补齐项。
 
 ## BFB 与 biliAPI
 
@@ -12,14 +12,14 @@
 
 - 固定工具：[bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)。对应源码提交 [`35a26fab051528532e126af7271dc1ca1be1746c`](https://github.com/minori0721/BBDown/tree/35a26fab051528532e126af7271dc1ca1be1746c)；[下载该提交源码](https://github.com/minori0721/BBDown/archive/35a26fab051528532e126af7271dc1ca1be1746c.tar.gz)。项目文件包含 NuGet 版本，`.github/workflows/bfb-release.yml` 记录 Native AOT 构建过程。
 - 上游为 nilaoda/BBDown（MIT）；本仓库随附其版权原文。PlayerUnite 子集的来源标注为 `aaa1115910/bv`（MIT），也附带该项目许可。
-- **待补齐**：旧 `BBDown_linux-x64.zip` 仅含可执行文件；本轮不覆盖它，也不改变 SHA256。后续工具包应带入主程序及实际编入的 .NET / NuGet 完整第三方声明，历史发布需另补配套材料。当前 BFB 新镜像先保留已核实的 BBDown、bv 许可，不能据此宣称旧 ZIP 或 Native AOT 的全部组件材料已经齐全。
+- **待补齐**：旧 `BBDown_linux-x64.zip` 仅含可执行文件，原文件和 SHA256 保持不变。其 .NET / NuGet Native AOT 组件的完整第三方声明需另补配套材料，后续工具包应一并提供。当前 BFB 镜像已保留 BBDown、bv 许可。
 
 ## FFmpeg / ffprobe
 
 - 固定资产：[ffmpeg-bfb-8.1.2-20260711.1](https://github.com/minori0721/Bili-favorites-backup/releases/tag/ffmpeg-bfb-8.1.2-20260711.1)。文件为 `ffmpeg-n8.1.2-22-g94138f6973-linux64-lgpl-8.1.tar.xz`，SHA256 为 `0102dad4a83b266f740a50db7cd5131a8e5266cde8f0937ec3f3cb4a8c3641fa`；未修改原压缩包。
 - FFmpeg 本体对应提交 [`94138f6973dd1ac6208ace92148ac0d172455d65`](https://github.com/FFmpeg/FFmpeg/tree/94138f6973dd1ac6208ace92148ac0d172455d65)；[下载本体源码](https://github.com/FFmpeg/FFmpeg/archive/94138f6973dd1ac6208ace92148ac0d172455d65.tar.gz)。许可副本取自该提交的 `COPYING.LGPLv3`，并与 GPLv3 全文一起提供。
 - 上游构建来自 BtbN/FFmpeg-Builds 的 `autobuild-2026-07-11-13-13`。核对时该自动 Release 已返回 404；不能将其当作仍然可靠的完整源码获取地址。
-- **待补齐**：该非 shared 构建静态包含其他库。FFmpeg 本体源码链接不足以覆盖所有对应材料；还需准确追溯此构建的配方、补丁、第三方库版本及其源码和许可，再作为可长期取得的配套材料提供。本轮未取得这套完整材料，不声称已完成 FFmpeg 二进制的全部分发义务。
+- **待补齐**：该非 shared 构建静态包含其他库。除 FFmpeg 本体源码外，还需提供对应构建的配方、补丁、第三方库版本及其源码和许可，并保持这些材料可长期获取。
 
 ## 许可文本来源
 
@@ -36,4 +36,4 @@
 | `NotoSansSC-OFL.txt` | `google/fonts/ofl/notosanssc/OFL.txt`，Git blob `1c9f43281b8f216c5461fe9ac729afbade7724e4` |
 | `Inter-OFL.txt` | `rsms/inter/LICENSE.txt`，Git blob `9b2ca37b3ffc77391d8b2ebef4a974ef32bf46ea` |
 
-MIT 许可不以提供源码为分发条件，但仍须保留版权和许可声明。`byte-length 1.0.2` 的元数据声明 MIT，本次未在包或上游找到独立许可文本，未自行编造作者版权年份；该项原始声明仍需向上游核对。其他依赖若将完整许可写在 README、源文件头或 `LICENSE-MIT.txt` 中，这些文件同样保留，不能仅因缺少名为 LICENSE 的文件就判断为无许可。
+MIT 许可不以提供源码为分发条件，但仍须保留版权和许可声明。`byte-length 1.0.2` 的元数据声明 MIT，独立许可文本及原始版权声明仍待向上游核对。其他依赖写在 README、源文件头或 `LICENSE-MIT.txt` 中的完整许可同样保留。

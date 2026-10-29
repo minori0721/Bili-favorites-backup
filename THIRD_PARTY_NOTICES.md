@@ -2,7 +2,7 @@
 
 Bili-favorites-backup 自有代码按 **GPL-3.0-only** 发行。完整条款见 [LICENSE](LICENSE)。允许使用、修改和商业分发；分发受 GPL 覆盖的版本时须遵守许可与对应源码义务。软件按现状提供，不作担保。第三方组件的原有版权与许可不因本项目声明而改变。
 
-本页记录当前锁定依赖和工具的许可来源，不是“全部历史发布物已完成合规”的保证。固定源码获取方法及尚未补齐的材料见[对应源码与构建材料](THIRD_PARTY_SOURCES.md)。后续改变依赖或工具版本时，应同步核对本页与许可原文。
+本页记录当前锁定依赖和工具的许可来源。固定源码获取方法及尚未补齐的材料见[对应源码与构建材料](THIRD_PARTY_SOURCES.md)。依赖或工具版本变化时，同步更新本页与许可原文。
 
 ## 应用运行依赖
 
@@ -18,7 +18,7 @@ Bili-favorites-backup 自有代码按 **GPL-3.0-only** 发行。完整条款见 
 | express | 4.22.2 | MIT | [Express](https://github.com/expressjs/express) |
 | express-rate-limit | 8.5.2 | MIT | [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) |
 | express-session | 1.19.0 | MIT | [express-session](https://github.com/expressjs/session) |
-| markdown-it | 15.0.1 | MIT | [markdown-it](https://github.com/markdown-it/markdown-it) |
+| markdown-it | 15.0.3 | MIT | [markdown-it](https://github.com/markdown-it/markdown-it) |
 | qrcode | 1.5.4 | MIT | [node-qrcode](https://github.com/soldair/node-qrcode) |
 | qrcode-terminal | 0.12.0 | Apache-2.0 | [qrcode-terminal](https://github.com/gtanner/qrcode-terminal)；[许可全文](licenses/Apache-2.0.txt) |
 | webdav | 5.10.0 | MIT | [webdav-client](https://github.com/perry-mitchell/webdav-client) |
@@ -43,5 +43,5 @@ Bili-favorites-backup 自有代码按 **GPL-3.0-only** 发行。完整条款见 
 ## 外部服务及参考资料
 
 - AList / OpenList 作为独立服务，通过 WebDAV 与 BFB 通信；采用它们自己的许可。Compose 中独立拉取的 AList 镜像不被重新授权为 BFB 的代码。
-- Bili23 的源码采用 GPLv3；API Collect 文档声明 CC BY-NC 4.0。接口资料与实现参考不等同于复制许可；复制或改编其受保护源码、文档表达时，应保留相应权利声明并单独核对许可。本页不作逐行代码来源鉴定。
+- Bili23 的源码采用 GPLv3；API Collect 文档声明 CC BY-NC 4.0。复制或改编其受保护源码、文档表达时，应保留相应权利声明并核对许可。
 - 软件许可证不授予视频、封面、账号或商标的其他权利。

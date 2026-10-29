@@ -45,6 +45,8 @@ Bili-favorites-backup（BFB）是一个自托管的收藏夹备份工具。它�
 
 当前镜像支持 **Linux amd64**。下面两种方式任选一种，保存为 `docker-compose.yml`。
 
+仅运行 BFB 时，可从 **1 核 CPU、512 MB 内存**起步，下载、上传建议各设为 1 个并发；主进程空闲时约 **200 MB**。本地一般建议剩余 **10 GB**，按视频大小和待上传文件调整，详见[配置参考](https://minori0721.github.io/Bili-favorites-backup/guide/docker#配置参考)。
+
 ### 已有 AList / OpenList
 
 只运行BFB，不会创建或修改你的存储服务：
@@ -178,19 +180,19 @@ docker compose logs --tail=100 app
 
 **为什么上传后还在等待确认？**
 
-网盘可能延迟显示文件，上传响应也不等于归档已经可靠完成。BFB按远端证据复核；`405`、超时等异常不会直接被当成“文件不存在”，也不会因此盲目重复上传。需要你决定时会显示在“待处理”。[恢复说明](https://minori0721.github.io/Bili-favorites-backup/features/recovery)
+网盘可能延迟显示文件。BFB会在后台核对远端文件，等待期间保留本地成品；确认完成后自动收尾，需要你决定时会显示在“待处理”。[恢复说明](https://minori0721.github.io/Bili-favorites-backup/features/recovery)
 
 **视频在B站失效了怎么办？**
 
-已有归档不受源站失效影响。尚未保存的内容会停止无意义下载，并持续低频复核；重新取得有效详情和分P后可恢复归档。复核不能让源视频重新出现，也不能保证恢复后立即发现。
+已有归档继续保留和播放。尚未保存的内容会暂停下载并定期复核；源恢复可访问后，系统会在后续复核中自动补档。
 
 **HEVC视频为什么不能播放？**
 
-浏览器或设备可能不支持该编码，切换代理不能解决解码问题。可用支持该格式的播放器打开；换编码重试只选择B站仍提供的源，不转码，也不保证源仍可下载。
+需要使用支持 HEVC 的浏览器或播放器。切换代理只改变传输路径；如 B站仍提供其他编码，也可在待处理中换编码重试。BFB不提供转码。
 
 **AList / OpenList之外的WebDAV能用吗？**
 
-BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网盘驱动支持的方法不同，不能保证所有后端兼容。普通上传不依赖MOVE，路径迁移等操作还有额外能力要求。[兼容范围](https://minori0721.github.io/Bili-favorites-backup/reference/compatibility)
+BFB通过标准 WebDAV 接入存储服务。普通归档需要目录读取、创建目录、上传、删除和准确文件大小；播放需要 Range，路径迁移需要 COPY。接入后先用一个小视频确认上传、播放和清理正常。[兼容范围](https://minori0721.github.io/Bili-favorites-backup/reference/compatibility)
 
 ## 安全与开发
 
@@ -205,11 +207,11 @@ BFB使用通用WebDAV，不调用两者的私有REST API。但不同服务与网
 | `latest` | `main`稳定版 |
 | `v2.7.2` | 当前固定稳定版本，便于可控升级 |
 | `v2.7.1` | 上一固定稳定版本 |
-| `dev` | 开发测试版，不保证与稳定版一致 |
+| `dev` | 持续更新的开发测试版 |
 
 开发版使用下一目标版本的 `-dev` 标识，当前版本见 [dev 分支包信息](https://github.com/minori0721/Bili-favorites-backup/blob/dev/package.json)，同一周期的具体构建由提交 SHA 区分；镜像地址仍使用 `:dev`。[版本切换与发布流程](docs/development/architecture.md#开发版本与发布周期)。
 
-[开发预览与更新说明](https://github.com/minori0721/Bili-favorites-backup/releases/tag/dev-preview)标记为 Pre-release，在 dev 镜像验收并发布成功后更新同一个页面，包含本次提交、更新时间和固定镜像摘要。开发预览不代表正式版本，不会替代正式 Latest；使用 `:dev` 的用户继续按原方式拉取镜像。
+[开发预览与更新说明](https://github.com/minori0721/Bili-favorites-backup/releases/tag/dev-preview)标记为 Pre-release，在 dev 镜像验收并发布成功后更新同一个页面，包含本次提交、更新时间和固定镜像摘要。使用 `:dev` 测试新改动，使用 `:latest` 跟随稳定版。
 
 镜像仓库为 `minori0721/bili-favorites-backup`，当前仅发布 `linux/amd64`。源码使用Node.js 24：
 
@@ -227,7 +229,7 @@ npm run build
 
 BFB 自有代码按 [GNU GPLv3（仅第 3 版）](LICENSE)发行，允许使用、修改及商业分发；分发受该许可覆盖的版本时，应保留许可并向接收者提供对应源码。软件不提供担保。账号凭据、个人配置与归档媒体不属于需要公开的程序源码。
 
-第三方组件保留各自许可证，详见[第三方声明](THIRD_PARTY_NOTICES.md)及[固定源码与构建来源](THIRD_PARTY_SOURCES.md)。新镜像在 `/app/LICENSE`、`/app/THIRD_PARTY_NOTICES.md`、`/app/THIRD_PARTY_SOURCES.md` 和 `/app/licenses/` 保留这些材料；npm 依赖自带的版权文件仍在 `/app/node_modules/`。FFmpeg 静态依赖的完整对应源码链及旧工具包的随包声明仍需补齐，已在来源说明中列出，不将本次文档补充视为全部分发材料已完成。
+第三方组件保留各自许可证，详见[第三方声明](THIRD_PARTY_NOTICES.md)及[固定源码与构建来源](THIRD_PARTY_SOURCES.md)。新镜像在 `/app/LICENSE`、`/app/THIRD_PARTY_NOTICES.md`、`/app/THIRD_PARTY_SOURCES.md` 和 `/app/licenses/` 保留这些材料；npm 依赖自带的版权文件仍在 `/app/node_modules/`。FFmpeg 静态依赖的完整对应源码链及旧工具包的随包声明仍需补齐，具体项目列在来源说明中。
 
 ## 鸣谢
 
