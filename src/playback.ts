@@ -14,6 +14,7 @@ import { buildDavClient } from "./uploader.js";
 import { getRemoteBackendProfile } from "./remote-storage.js";
 import { isRemotePathWithin, normalizeStoredRemoteFilePath } from "./remote-path.js";
 import { playbackFileFingerprint } from './playback-file-identity.js';
+import type { PlaybackDirectLinks, PlaybackUpstreamResult } from './playback-preparation.js';
 import { buildStorageDavFileUrl, parseStorageBaseUrl } from "./storage-url.js";
 import {
   createRemoteFileResolver,
@@ -147,6 +148,7 @@ interface PlaybackDeliveryRecord {
   attemptId: string;
   status: PlaybackDeliveryStatus;
   updatedAt: number;
+  cachedDirect?: boolean;
 }
 
 const playbackDeliveryTtlMs = 5 * 60 * 1000;
@@ -177,7 +179,8 @@ playbackDeliveryCleanupTimer.unref?.();
 
 function markPlaybackDelivery(
   input: { ownerKey: string; userId: string; mediaId: number; fileId: number; attemptId?: string },
-  status: PlaybackDeliveryStatus
+  status: PlaybackDeliveryStatus,
+  cachedDirect = false,
 ) {
   if (!input.attemptId) return;
   const key = playbackDeliveryKey(input.ownerKey, input.userId, input.mediaId, input.attemptId);
@@ -193,6 +196,7 @@ function markPlaybackDelivery(
     attemptId: input.attemptId,
     status,
     updatedAt: Date.now(),
+    cachedDirect,
   });
   prunePlaybackDeliveries();
 }
@@ -205,7 +209,7 @@ export function getPlaybackDeliveryStatus(
 ) {
   prunePlaybackDeliveries();
   const record = playbackDeliveries.get(playbackDeliveryKey(ownerKey, userId, mediaId, attemptId));
-  return record ? { status: record.status, updatedAt: record.updatedAt } : { status: "pending" as const, updatedAt: Date.now() };
+  return record ? { status: record.status, updatedAt: record.updatedAt, cachedDirect: record.cachedDirect ?? false } : { status: "pending" as const, updatedAt: Date.now() };
 }
 
 export function closePlaybackDeliveryTracker() {
@@ -687,8 +691,8 @@ export class PlaybackHttpError extends Error {
 }
 
 export function resolvePlaybackFile(database: StateDatabase, userId: string, mediaId: number, fileId: number) {
-  const row = database.db.prepare<unknown[], { "id": number; "bvid": string; "name": string; "remote_path": string; "expected_size": number | null; "relation_json": string }>(`
-    SELECT rf.id, rf.bvid, rf.name, rf.remote_path, rf.expected_size, r.payload_json AS relation_json
+  const row = database.db.prepare<unknown[], { "id": number; "bvid": string; "name": string; "remote_path": string; "expected_size": number | null; put_completed_at: number | null; "relation_json": string }>(`
+    SELECT rf.id, rf.bvid, rf.name, rf.remote_path, rf.expected_size, rf.put_completed_at, r.payload_json AS relation_json
     FROM remote_files rf JOIN favorite_relations r
       ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
     WHERE rf.id=? AND rf.user_id=? AND rf.media_id=? AND rf.status='verified'
@@ -712,7 +716,45 @@ export function resolvePlaybackFile(database: StateDatabase, userId: string, med
     name: String(row.name || path.posix.basename(remotePath)),
     remotePath,
     size: row.expected_size == null ? undefined : Number(row.expected_size),
+    putCompletedAt: row.put_completed_at,
   };
+}
+
+export function getPlaybackPreparationTargets(database: StateDatabase, ownerExists: (userId: string) => boolean,
+  preferred: {userId?: string; mediaId?: number} = {}) {
+  const rows = database.db.prepare<[string, number], {id: number; user_id: string; media_id: number; name: string; remote_path: string}>(`
+    SELECT rf.id, rf.user_id, rf.media_id, rf.name, rf.remote_path
+    FROM remote_files rf JOIN favorite_relations r
+      ON r.user_id=rf.user_id AND r.media_id=rf.media_id AND r.bvid=rf.bvid
+    WHERE rf.status='verified' AND r.backup_status IN ('verified','partial_verified')
+      AND NOT EXISTS (SELECT 1 FROM archive_deleted_sources ads
+        WHERE ads.user_id=rf.user_id AND ads.media_id=rf.media_id AND ads.bvid=rf.bvid
+          AND ads.status IN ('preparing','config_removing','pending','running','retry_wait','completed'))
+    ORDER BY CASE WHEN rf.user_id=? AND rf.media_id=? THEN 0 ELSE 1 END, rf.id
+  `).iterate(preferred.userId ?? '', preferred.mediaId ?? 0);
+  const directories = new Set<string>();
+  const owners = new Map<string, boolean>();
+  const targets: {userId: string; mediaId: number; fileId: number; directoryId: string}[] = [];
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.id) || row.id < 1 || typeof row.user_id !== 'string' || !row.user_id
+      || !Number.isSafeInteger(row.media_id) || row.media_id === 0 || typeof row.name !== 'string') {
+      throw new PlaybackHttpError(500, 'PLAYBACK_PREPARATION_RECORD', '播放准备记录字段无效');
+    }
+    if (!playableExtensions.has(path.posix.extname(row.name).toLowerCase())) continue;
+    if (!owners.has(row.user_id)) owners.set(row.user_id, ownerExists(row.user_id));
+    if (!owners.get(row.user_id)) continue;
+    const remotePath = normalizeStoredRemoteFilePath(row.remote_path);
+    if (!remotePath) throw new PlaybackHttpError(500, 'PLAYBACK_PREPARATION_RECORD', '播放准备记录路径无效');
+    const directory = path.posix.dirname(remotePath);
+    if (directories.has(directory)) continue;
+    try { resolvePlaybackFile(database, row.user_id, row.media_id, row.id); }
+    catch (error) { if (error instanceof PlaybackHttpError && error.statusCode === 404) continue; throw error; }
+    directories.add(directory);
+    targets.push({userId: row.user_id, mediaId: row.media_id, fileId: row.id,
+      directoryId: crypto.createHash('sha256').update(directory).digest('hex')});
+    if (targets.length === 256) break;
+  }
+  return targets;
 }
 
 export function playbackFileAlistLocation(
@@ -917,7 +959,7 @@ export async function fetchPlaybackUpstream(
   signal: AbortSignal,
   preferDirect: boolean,
   options: PlaybackTransportOptions
-) {
+): Promise<PlaybackUpstreamResult> {
   const fetchImpl = options.fetch || fetch;
   const lookup = options.lookup || dns.promises.lookup;
   const seen = new Set<string>();
@@ -1000,6 +1042,9 @@ export async function streamPlaybackFile(
     attemptId?: string;
     forceProxy?: boolean;
     transport?: PlaybackTransportOptions;
+    directLinks?: Pick<PlaybackDirectLinks, 'resolve' | 'forget'>;
+    refreshDirect?: boolean;
+    assertCurrent?: (file: ReturnType<typeof resolvePlaybackFile>) => void;
   }
 ) {
   const file = resolvePlaybackFile(database, input.userId, input.mediaId, input.fileId);
@@ -1035,7 +1080,7 @@ export async function streamPlaybackFile(
 
   try {
     const preferRedirect = config.playbackDeliveryMode !== "proxy" && !input.forceProxy;
-    let result = await fetchPlaybackUpstream(
+    const load = () => fetchPlaybackUpstream(
       target,
       base,
       req.method === "HEAD" ? "HEAD" : "GET",
@@ -1044,6 +1089,16 @@ export async function streamPlaybackFile(
       preferRedirect,
       input.transport || {}
     );
+    const assertResultCurrent = async (result: PlaybackUpstreamResult) => {
+      try { input.assertCurrent?.(file); }
+      catch (error) { await result.response?.body?.cancel(); throw error; }
+    };
+    const key = playbackFileFingerprint(file);
+    if (input.forceProxy) input.directLinks?.forget(key);
+    let result = preferRedirect && input.directLinks
+      ? await input.directLinks.resolve(key, load, controller.signal, input.refreshDirect)
+      : await load();
+    await assertResultCurrent(result);
     if (result.response?.status === 404 && isLikelyEncodedFilename(remoteLookupBasename(file.remotePath))) {
       await result.response.body?.cancel();
       const resolvePath = input.transport?.resolveRemotePath || (async (remotePath: string) => {
@@ -1070,9 +1125,16 @@ export async function streamPlaybackFile(
           throw new PlaybackHttpError(502, "PLAYBACK_REMOTE_PATH_AMBIGUOUS", "远端播放文件无法唯一确认");
         }
       }
+      await assertResultCurrent(result);
     }
     if (result.directLocation) {
-      markPlaybackDelivery(input, "direct");
+      // Cache hits retain the same DNS/private-network boundary as newly
+      // resolved locations; a signed URL is not an authorization decision.
+      if (result.cachedDirect && !await validatedExternalPlaybackLocation(result.directLocation, base, input.transport?.lookup || dns.promises.lookup)) {
+        throw new PlaybackHttpError(502, 'PLAYBACK_REDIRECT_UNSAFE', '远端存储返回了不安全的外部播放地址');
+      }
+      input.assertCurrent?.(file);
+      markPlaybackDelivery(input, "direct", result.cachedDirect);
       clearTimeout(timeout);
       res.status(302);
       res.setHeader("Location", result.directLocation);
@@ -1099,6 +1161,7 @@ export async function streamPlaybackFile(
         preferRedirect,
         input.transport || {},
       );
+      await assertResultCurrent(fallbackResult);
       if (fallbackResult.directLocation) {
         markPlaybackDelivery(input, "direct");
         res.status(302);

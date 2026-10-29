@@ -18,7 +18,7 @@ interface PlaybackState {
   queueNodes:Map<string,HTMLButtonElement>;queueObserver:IntersectionObserver|null;queueController:AbortController|null;
   queuePromise:Promise<QueuePage|null>|null;queueToken:number;queueLoading:boolean;queueLoadingDirection:string|null;
   queueError:{page:number;direction:string;message:string}|null;itemIndex:number;partIndex:number;loadingToken:number;
-  deliveryMode:string;alistBrowserConfigured:boolean;deliveryAttemptId:string|null;deliveryStatus:PlaybackDeliveryViewStatus;deliveryController:AbortController|null;
+  deliveryMode:string;alistBrowserConfigured:boolean;deliveryAttemptId:string|null;deliveryStatus:PlaybackDeliveryViewStatus;deliveryController:AbortController|null;cachedDirect:boolean;
   metadataReported:Set<string>;metadataReporting:Set<string>;metadataControllers:Map<string,AbortController>;metadataRetryTimers:Map<string,ReturnType<typeof setTimeout>>;
   progressTimer:ReturnType<typeof setInterval>|null;continuous:boolean;preferences:Preferences|null;drawerOpen:boolean;swipeChanging:boolean;
   swipe:{pointerId:number|null;startX:number;startY:number;deltaX:number;deltaY:number;tracking:boolean};
@@ -70,6 +70,9 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
   };
   const PLAYBACK_STORAGE_KEY='bfb-playback-v1';
   let artplayerLoader: Promise<typeof ArtplayerInstance> | null = null;
+  let nextPreparation: AbortController | null = null;
+  let connectionFeedback: {token:number;phase:'player'|'address'|'buffer';at:number} | null = null;
+  let connectionTimer: ReturnType<typeof setTimeout> | null = null;
     const playbackState: PlaybackState = {
       art: null,
       userId: null,
@@ -98,6 +101,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       deliveryAttemptId: null,
       deliveryStatus: 'pending',
       deliveryController: null,
+      cachedDirect: false,
       metadataReported: new Set(),
       metadataReporting: new Set(),
       metadataControllers: new Map(),
@@ -220,6 +224,8 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
     }
 
     function destroyCurrentArt() {
+      stopConnectionFeedback();
+      nextPreparation?.abort(); nextPreparation = null;
       if (!playbackState.art) return;
       const art = playbackState.art;
       playbackState.art = null;
@@ -340,6 +346,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
     }
 
     function setPlaybackMessage(title: string, detail: string, options: {retry?: boolean; skip?: boolean} = {}) {
+      stopConnectionFeedback();
       elements.playbackMessageTitle.textContent = title || '无法播放';
       elements.playbackMessageDetail.textContent = detail || '';
       setHidden('playbackRetryBtn', options.retry === false);
@@ -348,7 +355,51 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
     }
 
     function hidePlaybackMessage() {
+      stopConnectionFeedback();
       setHidden('playbackStageMessage', true);
+    }
+
+    function stopConnectionFeedback() {
+      connectionFeedback = null;
+      if (connectionTimer) clearTimeout(connectionTimer);
+      connectionTimer = null;
+    }
+    function renderConnectionFeedback() {
+      const state = connectionFeedback;
+      if (!state || state.token !== playbackState.loadingToken) return;
+      const seconds = Math.floor((Date.now() - state.at) / 1000);
+      elements.playbackMessageTitle.textContent = state.phase === 'player' ? '正在加载播放器'
+        : state.phase === 'address' ? '正在获取播放地址' : '正在缓冲视频';
+      const detail = state.phase === 'player' ? '正在准备播放控件。'
+        : state.phase === 'address' ? '正在向远端存储请求视频播放地址。' : '播放连接已建立，正在等待视频数据。';
+      elements.playbackMessageDetail.textContent = detail + (seconds > 0 ? ` 已等待 ${seconds} 秒。` : '');
+    }
+    function advanceConnectionFeedback(phase: 'player'|'address'|'buffer') {
+      if (!connectionFeedback) return;
+      if (connectionFeedback.phase !== phase) connectionFeedback = {...connectionFeedback,phase,at:Date.now()};
+      renderConnectionFeedback();
+    }
+    function beginConnectionFeedback(token: number) {
+      setPlaybackMessage('正在加载播放器', '正在准备播放控件。', {retry:false,skip:false});
+      connectionFeedback = {token,phase:'player',at:Date.now()};
+      const tick = () => {
+        if (!connectionFeedback || token !== playbackState.loadingToken) return;
+        renderConnectionFeedback(); connectionTimer = setTimeout(tick, 1000);
+      };
+      connectionTimer = setTimeout(tick, 1000);
+    }
+
+    function prepareNextPlayback(item: Item, part: Part) {
+      if (document.hidden || playbackState.deliveryMode === 'proxy') return;
+      const nextItem = playbackState.partIndex + 1 < item.parts.length ? item
+        : playbackState.continuous ? playbackState.items[playbackState.itemIndex + 1] : undefined;
+      const nextPart = nextItem === item ? item.parts[item.parts.indexOf(part) + 1] : nextItem?.parts[0];
+      if (!nextItem || !nextPart) return;
+      nextPreparation?.abort(); const own = new AbortController(); nextPreparation = own;
+      const url = `/api/users/${encodeURIComponent(nextItem.source.userId)}/favorites/${nextItem.source.mediaId}/playback/files/${nextPart.fileId}/prepare`;
+      void api.silent(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'link'}),signal:own.signal})
+        .catch(() => { if (!own.signal.aborted) console.debug('[Playback] next-link preparation unavailable'); })
+        .finally(() => { if (nextPreparation === own) nextPreparation = null; });
     }
 
     function playbackCoverUrl(item: Item | null) {
@@ -1060,10 +1111,11 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
     }
 
-    function playbackStreamUrl(part: Part, forceProxy: boolean, attemptId: string) {
+    function playbackStreamUrl(part: Part, forceProxy: boolean, attemptId: string, refreshDirect = false) {
       const params = new URLSearchParams();
       if (forceProxy) params.set('delivery', 'proxy');
       if (attemptId) params.set('attempt', attemptId);
+      if (refreshDirect) params.set('refresh', '1');
       const query = params.toString();
       return part.streamUrl + (query ? (part.streamUrl.includes('?') ? '&' : '?') + query : '');
     }
@@ -1094,6 +1146,8 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
             data.status || 'pending',
             false
           );
+          playbackState.cachedDirect = data.cachedDirect;
+          if (data.status === 'direct' || data.status === 'proxy') advanceConnectionFeedback('buffer');
           renderPlaybackMetadata();
           if (data.status && data.status !== 'pending') return;
         }
@@ -1148,6 +1202,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           data.status || 'pending',
           true
         );
+        playbackState.cachedDirect = data.cachedDirect;
         renderPlaybackMetadata();
       } catch (error) {
         if (!(error instanceof Error && error.name === 'AbortError') && token === playbackState.loadingToken
@@ -1221,7 +1276,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
       }
     }
 
-    async function playCurrentSelection(autoplay: boolean, options: {forceProxy?: boolean; resumeTime?: number; attemptId?: string} = {}) {
+    async function playCurrentSelection(autoplay: boolean, options: {forceProxy?: boolean; resumeTime?: number; attemptId?: string; refreshDirect?:boolean} = {}) {
       const item = currentPlaybackItem();
       const part = currentPlaybackPart();
       if (!item || !part) {
@@ -1243,23 +1298,21 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
         ? playbackState.deliveryStatus
         : 'pending';
       playbackState.deliveryAttemptId = attemptId;
+      playbackState.cachedDirect = false;
       playbackState.deliveryStatus = resolvePlaybackDeliveryViewStatus(previousDeliveryStatus, 'pending', false);
       destroyCurrentArt();
       updatePlaybackNow();
       void pollPlaybackDelivery(attemptId, token);
-      setPlaybackMessage(
-        '正在连接归档文件',
-        forceProxy ? '正在通过 BFB 代理连接归档文件。' : '正在获取网盘直连，必要时将自动使用 BFB 代理。',
-        { retry:false, skip:false }
-      );
+      beginConnectionFeedback(token);
       try {
         const Artplayer = await loadArtplayer();
         if (token !== playbackState.loadingToken) return;
+        advanceConnectionFeedback('address');
         const prefs = playbackState.preferences || loadPlaybackPreferences();
         const videoAttributes: {preload:'metadata'; playsinline:string; 'webkit-playsinline':string; referrerpolicy:string} = {preload:'metadata', playsinline:'', 'webkit-playsinline':'', referrerpolicy:'no-referrer'};
         const playerOptions = {
           container: elements.playbackArt,
-          url: playbackStreamUrl(part, forceProxy, attemptId),
+          url: playbackStreamUrl(part, forceProxy, attemptId, options.refreshDirect),
           title: safeText(item.title || item.bvid, '归档视频'),
           poster: playbackCoverUrl(item),
           theme: '#39C5BB',
@@ -1297,11 +1350,17 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           const duration = Number(art.duration || 0);
           if (resumeTime > 0 && duration - resumeTime > 1) art.currentTime = resumeTime;
           else if (savedTime >= 10 && duration - savedTime >= 15) art.currentTime = savedTime;
-          hidePlaybackMessage();
+          if (!autoplay || art.video.paused) hidePlaybackMessage();
+          else advanceConnectionFeedback('buffer');
           updateMediaSessionPosition();
           void reportPlaybackMediaMetadata(part, art, token);
         });
-        listenToPlayer('video:canplay', hidePlaybackMessage);
+        let nextPrepared = false;
+        listenToPlayer('video:canplay', () => {
+          hidePlaybackMessage();
+          if (!nextPrepared) { nextPrepared = true; prepareNextPlayback(item, part); }
+        });
+        listenToPlayer('video:playing', hidePlaybackMessage);
         listenToPlayer('video:pause', savePlaybackProgress);
         listenToPlayer('video:volumechange', () => {
           prefs.volume = Number(art.volume || 0);
@@ -1324,8 +1383,8 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           persistPlaybackPreferences();
           if (playbackState.continuous) stepPlayback(1, true);
         });
-        listenToPlayer('video:error', () => {
-          if (token !== playbackState.loadingToken) return;
+        listenToPlayer('video:error', async () => {
+          if (token !== playbackState.loadingToken || fallbackStarted) return;
           const mediaErrorCode = Number(art.video && art.video.error && art.video.error.code || 0);
           const action = decidePlaybackMediaError({
             mediaErrorCode,
@@ -1339,6 +1398,15 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
           if (action === 'proxy') {
             fallbackStarted = true;
             const failedAt = Number(art.currentTime || 0);
+            if (!options.refreshDirect) {
+              await finalizePlaybackDelivery(attemptId, token);
+              if (token !== playbackState.loadingToken) return;
+              if (playbackState.cachedDirect) {
+                setPlaybackMessage('正在更新播放地址', '重新获取地址后继续播放。', {retry:false,skip:false});
+                later(() => { if (token === playbackState.loadingToken) void playCurrentSelection(true, {refreshDirect:true,resumeTime:failedAt}); }, 0);
+                return;
+              }
+            }
             setPlaybackMessage('网盘直连暂时不可用', '正在切换为 BFB 代理播放。', { retry:false, skip:false });
             later(() => {
               if (token !== playbackState.loadingToken) return;
@@ -1889,6 +1957,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
 
   function init() {
     if(events)return;events=new AbortController();const signal=events.signal;
+    document.addEventListener('visibilitychange', () => { if (document.hidden) nextPreparation?.abort(); }, {signal});
     function listen<K extends keyof HTMLElementEventMap>(element:HTMLElement,type:K,callback:(event:HTMLElementEventMap[K])=>void){element.addEventListener(type,callback,{signal});}
     listen(elements.closePlaybackBtn, 'click', () => closeModal('playbackModal'));
     listen(elements.closePlaybackImmersiveBtn, 'click', () => closeModal('playbackModal'));
@@ -1930,7 +1999,7 @@ export function createPlayback({root:document,api,openModal,closeModal,showToast
 
   }
   function destroy(){destroyPlaybackSession();events?.abort();events=null;for(const timer of timers)clearTimeout(timer);timers.clear();for(const id of frames)cancelAnimationFrame(id);frames.clear();}
-  return {init,destroy,deactivate:destroyPlaybackSession,open:openArchivePlayback,openLibrary:openArchiveLibraryPlayback,
+  return {init,destroy,deactivate:destroyPlaybackSession,open:openArchivePlayback,openLibrary:openArchiveLibraryPlayback,preparePlayer:loadArtplayer,
     closeDrawer:()=>setPlaybackQueueDrawer(false),get drawerOpen(){return playbackState.drawerOpen;},
     configure(value:{deliveryMode:string;alistBrowserConfigured:boolean}){playbackState.deliveryMode=value.deliveryMode;playbackState.alistBrowserConfigured=value.alistBrowserConfigured;}};
 }

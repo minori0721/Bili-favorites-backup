@@ -119,7 +119,22 @@ export function parsePlaybackDelivery(value: unknown) {
   const data = record(value, '播放传输状态格式错误');
   const status = data.status;
   if (status !== 'pending' && status !== 'direct' && status !== 'proxy' && status !== 'failed' && status !== 'unknown') throw new ResponseFormatError('播放传输状态格式错误');
-  return {status};
+  return {status, cachedDirect: flag(data.cachedDirect, '播放链接缓存状态格式错误') ?? false};
+}
+
+export function parsePlaybackPreparationTargets(value: unknown) {
+  const data = record(value, '播放预热目录响应格式错误');
+  if (!Array.isArray(data.targets) || data.targets.length > 256) throw new ResponseFormatError('播放预热目录列表格式错误');
+  return requireUnique(data.targets.map(value => {
+    const target = record(value, '播放预热目标格式错误');
+    const mediaId = target.mediaId;
+    if (typeof mediaId !== 'number' || !Number.isSafeInteger(mediaId) || mediaId === 0) throw new ResponseFormatError('播放预热来源格式错误');
+    const userId = text(target.userId, '播放预热账号格式错误', false)!;
+    if (!userId || userId.length > 128) throw new ResponseFormatError('播放预热账号格式错误');
+    const directoryId = text(target.directoryId, '播放预热目录标识格式错误', false)!;
+    if (!/^[a-f0-9]{64}$/.test(directoryId)) throw new ResponseFormatError('播放预热目录标识格式错误');
+    return {userId, mediaId, directoryId, fileId:integer(target.fileId, '播放预热文件格式错误', false, 1)!};
+  }), target => target.directoryId, '播放预热目标重复');
 }
 
 export function parsePlaybackMetadata(value: unknown) {

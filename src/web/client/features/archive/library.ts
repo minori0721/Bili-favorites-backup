@@ -10,6 +10,7 @@ import { archiveMembershipStatusLabel, archiveStatusLabel, sourceAvailabilityRea
 import { createBilibiliVideoReference, createBilibiliProfileReference } from '../../shared/bilibili-links.js';
 import { archiveIndexUpdateLabel } from './navigation-meta.js';
 import { createDirectoryMenu, directoryIcon, type DirectoryAction } from './directory-menu.js';
+import { createArchivePlaybackPreparation } from '../../shared/playback-preparation.js';
 type Navigation = ReturnType<typeof parseArchiveNavigation>;
 type Summary = Navigation['summary'];
 type ReferenceStats = ReturnType<typeof parseArchiveReferenceStats>;
@@ -42,8 +43,9 @@ interface Options {
   openModal(id: string, trigger?: HTMLElement | null): void; closeModal(id: string, options?: {restoreFocus?: boolean}): unknown;
   showToast(message: string, kind?: 'success' | 'error'): void;
   play(bvid: string, trigger: HTMLElement, context: ArchiveContext): void;
+  preparePlayer(): Promise<unknown>;
 }
-export function createArchiveLibrary({root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play,manageVideo}: Options) {
+export function createArchiveLibrary({root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play,manageVideo,preparePlayer}: Options) {
   const requests = new Set<AbortController>();
   async function request(url: string, options: RequestInit = {}, silent = false) {
     const controller = new AbortController(); requests.add(controller);
@@ -79,6 +81,10 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     archiveLibrarySearchClearBtn: requireElement(document, '#archiveLibrarySearchClearBtn', HTMLButtonElement),
   };
   const ARCHIVE_LIBRARY_STORAGE_KEY = 'bfb-archive-library-v1';
+  const preparation = createArchivePlaybackPreparation({api,preparePlayer,
+    visible:()=>!document.hidden && elements.archiveLibraryModal.classList.contains('active'),
+    context:()=>archiveLibraryState,
+  });
   const directoryMenu = createDirectoryMenu(document);
     const archiveLibraryState: ArchiveState = {
       navigation: null,
@@ -130,7 +136,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
   function appendUniqueItems<T>(target: T[], incoming: T[], keyOf: (value:T)=>string) {
     const seen=new Set(target.map(keyOf));return incoming.filter(item=>{const key=keyOf(item);if(!key||seen.has(key))return false;seen.add(key);return true;});
   }
-  function openArchiveLibraryPlayback(bvid: string, trigger: HTMLElement) { play(bvid, trigger, archiveLibraryContextSnapshot()); }
+  function openArchiveLibraryPlayback(bvid: string, trigger: HTMLElement) { preparation.stop(); play(bvid, trigger, archiveLibraryContextSnapshot()); }
     function loadArchiveLibraryPreference(): Preference {
       const fallback: Preference = { version:1, scope:'global', userId:null, mediaId:null, filter:'all', sort:'context', scrollPositions:{} };
       try {
@@ -178,6 +184,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     }
 
     function cleanupArchiveLibrary() {
+      preparation.stop();
       directoryMenu.close();
       resetDirectoryStatistics();
       for (const controller of requests) controller.abort(); requests.clear();
@@ -759,6 +766,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     }
 
     async function selectArchiveLibraryDirectory(context: Directory, trigger?: HTMLElement | null) {
+      preparation.stop();
       if([context.scope,context.userId??null,context.mediaId??null].join(':')!==directoryStatisticsKey())resetDirectoryStatistics();
       const shouldFocusMobileBack = Boolean(trigger && isArchiveLibraryMobileLayout());
       saveArchiveLibraryScroll();
@@ -778,6 +786,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
       document.querySelector<HTMLElement>('.archive-library-shell')?.classList.add('show-content');
       syncArchiveLibraryPanels();
       await loadArchiveLibraryItems(true);
+      if (!archiveLibraryState.error) preparation.start();
       if (shouldFocusMobileBack && elements.archiveLibraryModal.classList.contains('active')) {
         elements.archiveLibraryMobileBackBtn.focus({ preventScroll:true });
       }
@@ -1406,6 +1415,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     }
 
     async function openArchiveLibrary(trigger: HTMLElement | null, sourceId?:string) {
+      preparation.stop();
       archiveLibraryState.sessionToken += 1;
       archiveLibraryState.token += 1;
       if (archiveLibraryState.controller) archiveLibraryState.controller.abort();
@@ -1461,6 +1471,7 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
         renderArchiveLibraryNavigation();
         setArchiveLibraryHeading();
         await loadArchiveLibraryItems(true);
+        if (archiveLibrarySessionCurrent(token) && !archiveLibraryState.error) preparation.start(true);
       } catch (error) {
         if ((error instanceof Error && error.name === 'AbortError') || !archiveLibrarySessionCurrent(token)) return;
         renderContentNotice(elements.archiveLibraryNotice, '归档目录加载失败。', 'error', () => { void openArchiveLibrary(trigger); });
@@ -1477,6 +1488,10 @@ export function createArchiveLibrary({root: document, api, confirmAction, layout
     if (events) return;
     events=new AbortController(); const signal=events.signal;
     function listen(element: EventTarget, type: string, callback: (event: Event)=>void) { element.addEventListener(type, callback, {signal}); }
+    listen(document, 'visibilitychange', () => {
+      if (document.hidden) preparation.stop();
+      else if (elements.archiveLibraryModal.classList.contains('active')) preparation.start(true);
+    });
     const closeStatsOutside = (event: Event) => {
       // A retry replaces its button before the click bubbles to document.
       if (!event.composedPath().includes(elements.archiveLibraryStats)) elements.archiveLibraryStats.open = false;

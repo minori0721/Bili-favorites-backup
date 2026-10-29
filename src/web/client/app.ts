@@ -153,7 +153,7 @@ export function createApplication() {
     const archiveVideoActions = createArchiveVideoActionController({root:document,api,confirm:confirmAction,open:openModal,close:closeModal,notify:showToast,formatBytes,
       changed:async operationId=>{await upSubscriptions.refresh(operationId);await archiveLibrary.refresh();}});
     const manageVideo=(bvid:string,source:{sourceId:string}|{userId:string;mediaId:number},trigger:HTMLElement)=>{void archiveVideoActions.open(bvid,source,trigger);};
-    const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context),manageVideo });
+    const archiveLibrary = createArchiveLibrary({ root: document, api, confirmAction, layout: archiveLibraryLayoutMedia, formatBytes, formatDateTime, openModal, closeModal, showToast, play: (bvid, trigger, context) => playback.openLibrary(bvid, trigger, context),manageVideo,preparePlayer:playback.preparePlayer });
     const upSubscriptions = createUpSubscriptions({root:document,api,confirm:confirmAction,openModal,closeModal,notify:showToast,
       summary:state=>{workspace.receiveSubscriptions(state);onboarding.receiveSubscriptions(state);},
       openArchive:(id,trigger)=>{void archiveLibrary.openUpSource(id,trigger);},play:(bvid,trigger,context)=>playback.openLibrary(bvid,trigger,context),manageVideo});

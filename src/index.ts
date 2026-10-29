@@ -411,11 +411,12 @@ app.use(createFavoritesRouter({users: userStore, detail: favoriteDetail, boundar
   select: (id, input) => favoriteBrowsing.select(id, input), folders: user => favoriteBrowsing.folders(user), cover: (user, mediaId) => favoriteBrowsing.cover(user, mediaId),
 }));
 
-app.use(createPlaybackRouter({boundary: asyncHandler, service: createPlaybackService({
+const playbackService = createPlaybackService({
   database: () => stateManager.getDatabase(), config: () => configStore.get(),
   users: userStore, isKnownOwner: id => archiveDeletion.isKnownOwner(id),
   updateMetadata: (userId, mediaId, fileId, metadata) => stateManager.updatePlaybackMediaMetadata(userId, mediaId, fileId, metadata),
-})}));
+});
+app.use(createPlaybackRouter({boundary: asyncHandler, service: playbackService}));
 
 app.use(createUnavailableRouter({boundary: asyncHandler, service: createUnavailableService({users: userStore, state: stateManager})}));
 
@@ -552,6 +553,7 @@ export async function closeAppResources() {
   if (!coverBackfillStopped || !coverQueueIdle) throw new Error("Cover work did not stop before closing the state database");
   await cleanupBBDownCredentialResidue().catch(error => console.warn(`[Shutdown] credential cleanup failed: ${safeErrorSummary(error)}`));
   closePlaybackDeliveryTracker();
+  playbackService.close();
   adminSessionStore.close();
   stateManager.close();
   await logManager.close();
@@ -621,6 +623,7 @@ if (process.env.NODE_ENV !== "test") {
     });
     const coverQueueIdle = coverBackfillStopped && await waitForCoverCacheIdle(30_000);
     closePlaybackDeliveryTracker();
+    playbackService.close();
     adminSessionStore.close();
     const quiesced = await accountLoginStopped && await accountRefreshStopped && startupStopped && downloadsStopped && schedulerStopped && await pathMigrationStopped && archiveDeletionQuiesced && renamePreviewQuiesced && coverBackfillStopped && coverQueueIdle;
     if (quiesced) {

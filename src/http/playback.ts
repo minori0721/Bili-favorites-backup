@@ -9,6 +9,37 @@ function isPlaybackMediaId(mediaId: number) {
 }
 export function createPlaybackRouter(deps: {service: ReturnType<typeof createPlaybackService>; boundary: RouteBoundary}) {
 const router = Router();
+router.get('/api/playback/preparation-targets', (req, res) => {
+  const userId = req.query.userId;
+  const mediaId = req.query.mediaId === undefined ? undefined : Number(req.query.mediaId);
+  if ((userId !== undefined && (typeof userId !== 'string' || !userId || userId.length > 128))
+    || (mediaId !== undefined && (typeof req.query.mediaId !== 'string' || !isPlaybackMediaId(mediaId) || typeof userId !== 'string'))) {
+    res.status(400).json({success:false,message:'Invalid playback preparation context'}); return;
+  }
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({success:true,data:{targets:deps.service.preparationTargets({userId,mediaId})}});
+});
+
+router.post('/api/users/:id/favorites/:mediaId/playback/files/:fileId/prepare', deps.boundary(async (req, res) => {
+  const userId = req.params.id, mediaId = Number(req.params.mediaId), fileId = Number(req.params.fileId);
+  const kind: unknown = req.body?.kind;
+  if (!playbackOwnerExists(userId)) { res.status(404).json({success:false,message:'User not found'}); return; }
+  if (!isPlaybackMediaId(mediaId) || !Number.isSafeInteger(fileId) || fileId < 1 || (kind !== 'directory' && kind !== 'link')) {
+    res.status(400).json({success:false,message:'Invalid playback preparation request'}); return;
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  req.once('aborted', abort); res.once('close', abort);
+  try {
+    const prepared = await deps.service.preparePlayback(userId, mediaId, fileId, kind, controller.signal);
+    if (!res.destroyed) res.setHeader('Cache-Control', 'private, no-store');
+    if (!res.destroyed) res.json({success:true,data:{prepared}});
+  } catch (error) {
+    if (controller.signal.aborted && res.destroyed) return;
+    if (error instanceof PlaybackHttpError) { res.status(error.statusCode).json({success:false,code:error.code,message:error.message}); return; }
+    throw error;
+  } finally { req.off('aborted', abort); res.off('close', abort); }
+}));
 router.get("/api/users/:id/favorites/:mediaId/playback-queue", (req, res) => {
   const user = deps.service.getUser(req.params.id);
   if (!user) {
@@ -168,10 +199,14 @@ const playbackFileHandler = deps.boundary(async (req, res) => {
     return;
   }
   const delivery = req.query.delivery;
+  const refresh = req.query.refresh;
   const attemptId = req.query.attempt === undefined ? undefined : String(req.query.attempt);
   if (delivery !== undefined && delivery !== "proxy") {
     res.status(400).json({ success: false, message: "Invalid playback delivery mode" });
     return;
+  }
+  if (refresh !== undefined && refresh !== '1') {
+    res.status(400).json({success:false,message:'Invalid playback refresh mode'}); return;
   }
   if (attemptId !== undefined && !/^[0-9a-f]{32}$/i.test(attemptId)) {
     res.status(400).json({ success: false, message: "Invalid playback delivery attempt" });
@@ -185,6 +220,7 @@ const playbackFileHandler = deps.boundary(async (req, res) => {
       ownerKey: req.sessionID,
       attemptId,
       forceProxy: delivery === "proxy",
+      refreshDirect: refresh === '1',
     });
   } catch (error) {
     if (error instanceof PlaybackHttpError && !res.headersSent) {

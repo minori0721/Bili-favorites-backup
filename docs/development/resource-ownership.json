@@ -1,6 +1,38 @@
 {
   "resources": [
     {
+      "module": "playback-preparation.ts",
+      "ownerSymbol": "PlaybackDirectLinks",
+      "resourceSymbols": ["entries", "pending"],
+      "stop": "close clears the bounded signed-link cache and detaches pending entries; proxy bodies remain owned by individual playback requests",
+      "lateCallback": "a loader only writes while its pending identity is still current; storage and database generations are verified again before returning a location",
+      "rebind": "the playback service clears links on storage credential or database replacement; each hit revalidates the current file identity and redirect safety"
+    },
+    {
+      "module": "playback-preparation.ts",
+      "ownerSymbol": "PlaybackDirectoryPreparation",
+      "resourceSymbols": ["pending", "tail", "nextAt"],
+      "stop": "clear aborts queued and active directory reads; a departed visitor releases only its subscription and the last visitor aborts the shared request",
+      "lateCallback": "the sequential tail remains ordered after cancellation and map entries are removed only by their current request identity",
+      "rebind": "the playback service cancels old directory work and resets its pause when storage or database identity changes; no directory TTL is mirrored"
+    },
+    {
+      "module": "playback-service.ts",
+      "ownerSymbol": "createPlaybackService",
+      "resourceSymbols": ["links", "directories", "previous"],
+      "stop": "application shutdown closes the playback service and clears its link and directory preparation owners",
+      "lateCallback": "configuration digest, current database and resolved file fingerprints are checked after asynchronous work before returning a playback location",
+      "rebind": "each call reads current providers; storage configuration or database changes clear previous preparation resources"
+    },
+    {
+      "module": "web/client/shared/playback-preparation.ts",
+      "ownerSymbol": "createArchivePlaybackPreparation",
+      "resourceSymbols": ["controller", "timer", "completed"],
+      "stop": "library close, directory navigation or hidden-page transition aborts the current pass and cancels its delayed start",
+      "lateCallback": "an aborted pass cannot issue further directory requests; completed identities only deduplicate one visible library visit",
+      "rebind": "a new visible visit reloads current validated file identities and lets storage determine its real cache expiry"
+    },
+    {
       "module": "web/client/features/archive/directory-menu.ts",
       "ownerSymbol": "createDirectoryMenu",
       "resourceSymbols": ["current"],
@@ -563,12 +595,15 @@
       "ownerSymbol": "createPlayback",
       "resourceSymbols": [
         "artplayerLoader",
+        "nextPreparation",
+        "connectionFeedback",
+        "connectionTimer",
         "playbackState",
         "events",
         "timers",
         "frames"
       ],
-      "stop": "destroyPlaybackSession aborts events and clears timers and animation frames",
+      "stop": "destroyPlaybackSession aborts events, next-link preparation and connection feedback, and clears timers and animation frames",
       "lateCallback": "session identity rejects callbacks from a released player",
       "rebind": "a new playback session owns a fresh player and queue state"
     },
