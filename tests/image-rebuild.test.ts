@@ -70,18 +70,25 @@ test('the candidate runtime must include the Node 24 security patch, without acc
   }
 });
 
-test('the real workflow CLI emits only image rebuild outputs and checks the supplied candidate runtime', async () => {
+test('the real workflow CLI isolates its outputs and bilingual summary and checks the supplied candidate runtime', async () => {
   const dir = await createTestDir('image-rebuild-cli');
   const output = path.join(dir, 'output');
+  const summary = path.join(dir, 'summary.md');
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], {
-    env: {...process.env, ...env, GITHUB_OUTPUT: output}, encoding: 'utf8', windowsHide: true, timeout: 10_000,
+    env: {...process.env, ...env, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary},
+    encoding: 'utf8', windowsHide: true, timeout: 10_000,
   });
   try {
     const configured = run('configure');
     assert.equal(configured.status, 0, configured.stderr);
     assert.equal(fs.readFileSync(output, 'utf8'), `rebuild_only=true\ntags<<BFB_REBUILD_TAGS\ndocker.io/owner/app:rebuild-${revision}-1234-1\ndocker.io/owner/app:dev\nBFB_REBUILD_TAGS\n`);
+    const guide = fs.readFileSync(summary, 'utf8');
+    assert.equal(guide.split('### Summary guide / 摘要阅读说明').length - 1, 1);
+    assert.ok(guide.includes('The full vulnerability report includes all known findings.'));
+    assert.ok(guide.includes('完整漏洞报告列出所有已知告警'));
     assert.equal(run('verify-node', 'v24.22.1').status, 0);
     assert.notEqual(run('verify-node', 'v24.22.0').status, 0);
     assert.notEqual(run('configure', 'unexpected').status, 0);
+    assert.equal(fs.readFileSync(summary, 'utf8'), guide, 'other CLI commands must not append the guide');
   } finally { await removeTestDir(dir); }
 });

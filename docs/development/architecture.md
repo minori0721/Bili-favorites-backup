@@ -12,7 +12,9 @@
 
 原生 HTTPS 代理连接显式使用已验证 IP 的地址族，同时保留原域名的 TLS / SNI 校验；只连接已经选定的地址，不再次解析目标域名。
 
-回归入口为 `tests/playback-preparation.test.ts`、`tests/http/playback-preparation.test.ts`、`tests/ui/playback-state.spec.ts` 和 `tests/ui/playback-autoplay.spec.ts`，覆盖真实 SQLite 接线、取消与请求合并、过期与文件失效、迟到响应、位置恢复及桌面和手机手动播放。`tests/playback-https.test.ts` 通过隔离 HTTPS 服务验证真实 Node 连接、IPv4 / IPv6、证书、Range / HEAD 与取消释放；专用测试证书只加入客户端子进程的信任列表，不修改系统或父进程的证书配置。
+HEAD 元数据请求在 405 / 501，或最终外部网盘响应为 403 时，沿现有安全重定向链执行一次 `GET Range: bytes=0-0` 探测；WebDAV 本身的 401 / 403 不重试。拿到响应头后取消正文，网盘忽略 Range 时也不继续读取。探测成功必须提供有效的 `Content-Range` 总长度或完整响应的 `Content-Length`，再生成包含文件总大小、无正文的 200 HEAD 响应；不使用数据库大小代替损坏的远端响应。HEAD 不转发客户端的 Range / If-Range，遵循 [HTTP 方法与范围请求语义](https://www.rfc-editor.org/rfc/rfc9110.html#section-14.2)。
+
+回归入口为 `tests/playback-preparation.test.ts`、`tests/http/playback-preparation.test.ts`、`tests/ui/playback-state.spec.ts` 和 `tests/ui/playback-autoplay.spec.ts`，覆盖真实 SQLite 接线、取消与请求合并、过期与文件失效、迟到响应、位置恢复及桌面和手机手动播放。`tests/playback.test.ts` 覆盖 HEAD 回退的权限、大小校验、重绑定和 DNS 边界；`tests/playback-https.test.ts` 通过隔离 HTTPS 服务验证真实 Node 连接、IPv4 / IPv6、证书、Range / HEAD 回退与取消释放；专用测试证书只加入客户端子进程的信任列表，不修改系统或父进程的证书配置。
 
 ## 账号操作与对账提交
 
@@ -241,7 +243,7 @@ main 的 push 通过 GitHub Actions API 查询成功的 dev push；正式 `vX.Y.
 
 没有合格记录、工作流版本不明、测试未实际成功执行、来源运行尚未完成或失败、API 不可用时，自动执行全套测试。dev、非正式标签和所有手动触发均不启用测试复用，包括显式的“仅重建镜像”；需要强制复验时使用 `workflow_dispatch`。工作流修改本身也会触发 CI。判定脚本为 `scripts/dev-test-evidence.mjs`，对应边界测试为 `tests/dev-test-evidence.test.ts`。
 
-安装依赖、发布说明校验和镜像隔离启动检查始终执行。完整应用构建仅由 Dockerfile 的 `builder` 阶段负责，保留类型、架构、编译和资源检查；移除宿主机上不参与镜像交付的重复构建。未复用测试时，网页测试资源仍由 `npm test` 的 `pretest` 生成。镜像先按摘要上传，按该摘要完成启动、安全和层复用检查，再将同一摘要赋给 `dev`、`latest` 或版本标签并逐一核对；检查失败时不更新部署标签。赋标签本身不是多标签原子操作，若发布中途失败，以各标签的摘要核对结果判断实际状态。跳过测试的运行摘要记录复用的提交 SHA、工作流 SHA 和来源 run 链接及 ID，便于追溯。文档站仍独立构建部署；UI 仍按改动范围在本地验收，不能把此复用规则当成 UI 已自动运行。
+安装依赖、发布说明校验和镜像隔离启动检查始终执行。完整应用构建仅由 Dockerfile 的 `builder` 阶段负责，保留类型、架构、编译和资源检查；移除宿主机上不参与镜像交付的重复构建。未复用测试时，网页测试资源仍由 `npm test` 的 `pretest` 生成。镜像先按摘要上传，按该摘要完成启动、安全和层复用检查，再将同一摘要赋给 `dev`、`latest` 或版本标签并逐一核对；检查失败时不更新部署标签。赋标签本身不是多标签原子操作，若发布中途失败，以各标签的摘要核对结果判断实际状态。跳过测试的运行摘要记录复用的提交 SHA、工作流 SHA 和来源 run 链接及 ID，便于追溯。文档站从 `dev` 独立构建部署，`main` 保留构建检查；`github-pages` 环境仅允许 `dev`，网站沿用原地址。同一分支的文档构建与部署串行执行。未发布功能标注“仅开发版”，正式发布后改为实际支持版本。UI 仍按改动范围在本地验收，不能把此复用规则当成 UI 已自动运行。
 
 CI 的 Ubuntu 24.04 测试机缺少 FFmpeg 或 ffprobe 时，使用临时软件源配置：先从 Ubuntu 官方主源下载，失败后仅切换一次 Kernel.org 镜像。每个源的索引与软件包下载共限时 180 秒，保留签名校验并跳过推荐包；全部下载完成后离线安装，安装失败直接终止，不中断 dpkg 换源。该配置不修改运行镜像或服务器软件源；`tests/ci-media-tools.test.ts` 验证超时、回退、安装失败及已有工具路径，真实下载表现以 Actions 为准。
 

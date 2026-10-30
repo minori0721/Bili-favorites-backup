@@ -913,8 +913,9 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
 
     mode = "head405";
     const headFallback = await fetch(`${proxyBase}/stream`, { method: "HEAD" });
-    assert.equal(headFallback.status, 206);
-    assert.equal(headFallback.headers.get("content-range"), `bytes 0-0/${content.length}`);
+    assert.equal(headFallback.status, 200);
+    assert.equal(headFallback.headers.get("content-range"), null);
+    assert.equal(headFallback.headers.get("content-length"), String(content.length));
     assert.equal(await headFallback.text(), "");
     mode = "normal";
 
@@ -1027,6 +1028,167 @@ test("playback proxy forwards safe byte ranges, streams early, and aborts upstre
   } finally {
     await closeServer(proxy);
     await closeServer(upstream);
+    database.close();
+  }
+});
+
+test('HEAD compatibility probes stay bounded, preserve authentication failures and report full file metadata', {timeout:20_000}, async t => {
+  const database = new StateDatabase(':memory:');
+  database.replaceState(playbackState());
+  const fileId = required(database.db.prepare<unknown[], {id:number}>(
+    "SELECT id FROM remote_files WHERE user_id='u1' AND media_id=10 AND bvid='BVPLAY001'",
+  ).get()).id;
+  const base = 'http://alist.invalid:5244';
+  const calls: {host:string;method:string;authorization:string|null;range:string|null;ifRange:string|null}[] = [];
+  let provider: 'external'|'dav'|'return-to-dav' = 'external';
+  let headStatus = 403, getStatus = 206, cancelled = 0, lookups = 0;
+  let getHeaders: Record<string,string> = {};
+  let invalidateOnGet = false, stale = false, privateOnRetry = false;
+  const reset = () => {
+    calls.length = 0; provider = 'external'; headStatus = 403; getStatus = 206;
+    getHeaders = {'Content-Range':'bytes 0-0/128','Content-Length':'1'};
+    cancelled = 0; lookups = 0; invalidateOnGet = false; stale = false; privateOnRetry = false;
+  };
+  const app = express();
+  app.all('/stream', async (req, res) => {
+    try {
+      await streamPlaybackFile(database, testConfig({alistUrl:base,playbackDeliveryMode:'proxy'}), req, res, {
+        userId:'u1',mediaId:10,fileId,ownerKey:'head-compatibility',
+        assertCurrent: () => { if(stale) throw new PlaybackHttpError(409,'PLAYBACK_FILE_CHANGED','File changed'); },
+        transport: {
+          lookup: async () => [{address:privateOnRetry && ++lookups > 1 ? '10.0.0.2' : '93.184.216.34',family:4}],
+          fetch: async (input, init) => {
+            const url = new URL(String(input)), headers = new Headers(init?.headers), method = init?.method || 'GET';
+            calls.push({host:url.hostname,method,authorization:headers.get('authorization'),range:headers.get('range'),ifRange:headers.get('if-range')});
+            if(url.origin === base && provider !== 'dav' && url.pathname !== '/returned') {
+              return new Response(null,{status:302,headers:{Location:'https://media.example.com/video.mp4'}});
+            }
+            if(url.origin !== base && provider === 'return-to-dav') {
+              return new Response(null,{status:302,headers:{Location:base+'/returned'}});
+            }
+            if(method === 'HEAD') return new Response(null,{status:headStatus,headers:{'Content-Length':'128'}});
+            if(invalidateOnGet) stale = true;
+            return new Response(new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array(req.method === 'HEAD' ? 1024 : 1));
+                if(req.method !== 'HEAD') controller.close();
+              },
+              cancel() { cancelled++; },
+            }), {status:getStatus,headers:getHeaders});
+          },
+        },
+      });
+    } catch(error) {
+      if(error instanceof PlaybackHttpError && !res.headersSent) res.status(error.statusCode).json({code:error.code});
+      else throw error;
+    }
+  });
+  const server = http.createServer(app), proxyBase = await listen(server);
+  const head = (headers:Record<string,string> = {}) => fetch(proxyBase+'/stream',{method:'HEAD',headers});
+  try {
+    await t.test('external HEAD 403 uses one one-byte GET, strips credentials and returns the full length', async () => {
+      reset();
+      const response = await head({Range:'bytes=10-999999','If-Range':'old-etag'});
+      assert.equal(response.status,200);
+      assert.equal(response.headers.get('content-length'),'128');
+      assert.equal(response.headers.get('content-range'),null);
+      assert.equal(await response.text(),'');
+      assert.deepEqual(calls.map(x=>[x.host,x.method,x.range,x.ifRange]),[
+        ['alist.invalid','HEAD',null,null],['media.example.com','HEAD',null,null],
+        ['alist.invalid','GET','bytes=0-0',null],['media.example.com','GET','bytes=0-0',null],
+      ]);
+      assert.ok(calls.filter(x=>x.host==='alist.invalid').every(x=>x.authorization?.startsWith('Basic ')));
+      assert.ok(calls.filter(x=>x.host==='media.example.com').every(x=>x.authorization===null));
+      assert.equal(cancelled,1);
+    });
+    await t.test('a provider ignoring Range is cancelled before the full media body is read', async () => {
+      reset(); getStatus = 200; getHeaders = {'Content-Length':'104857600'};
+      const response = await head();
+      assert.equal(response.status,200);
+      assert.equal(response.headers.get('content-length'),'104857600');
+      assert.equal(await response.text(),'');
+      assert.equal(cancelled,1);
+      assert.equal(calls.length,4);
+    });
+    await t.test('successful HEAD and ordinary GET never add compatibility requests', async () => {
+      reset(); provider = 'dav'; headStatus = 200;
+      assert.equal((await head()).status,200);
+      assert.equal(calls.length,1);
+      reset();
+      const response = await fetch(proxyBase+'/stream');
+      assert.equal(response.status,206);
+      await response.body?.cancel();
+      assert.equal(calls.length,2);
+      assert.ok(calls.every(x=>x.method==='GET'));
+    });
+    await t.test('WebDAV 401/403 and external HEAD 401 do not trigger GET', async () => {
+      for(const [where,status] of [['dav',401],['dav',403],['external',401]] as const) {
+        reset(); provider = where; headStatus = status;
+        assert.equal((await head()).status,502);
+        assert.equal(calls.length,where==='dav'?1:2);
+        assert.ok(calls.every(x=>x.method==='HEAD'));
+      }
+    });
+    await t.test('redirecting back to WebDAV does not turn its 403 into an external denial', async () => {
+      reset(); provider = 'return-to-dav';
+      assert.equal((await head()).status,502);
+      assert.equal(calls.length,3);
+      assert.ok(calls.every(x=>x.method==='HEAD'));
+      assert.equal(calls[2].authorization,null);
+    });
+    await t.test('GET 401/403 remains a failure after exactly one compatibility attempt', async () => {
+      for(const status of [401,403]) {
+        reset(); getStatus = status;
+        assert.equal((await head()).status,502);
+        assert.equal(calls.length,4);
+        assert.equal(cancelled,1);
+      }
+      reset(); getStatus = 403;
+      assert.equal((await fetch(proxyBase+'/stream')).status,502);
+      assert.equal(calls.length,2);
+    });
+    await t.test('existing WebDAV 405/501 fallbacks also return full metadata', async () => {
+      for(const status of [405,501]) {
+        reset(); provider = 'dav'; headStatus = status;
+        const response = await head();
+        assert.equal(response.status,200);
+        assert.equal(response.headers.get('content-length'),'128');
+        assert.equal(response.headers.get('content-range'),null);
+        assert.deepEqual(calls.map(x=>[x.method,x.range]),[['HEAD',null],['GET','bytes=0-0']]);
+        assert.equal(cancelled,1);
+      }
+    });
+    await t.test('missing or malformed probe metadata cannot be replaced with the database size', async () => {
+      const cases: {status:number;headers:Record<string,string>}[] = [
+        {status:206,headers:{'Content-Length':'1'}},
+        {status:206,headers:{'Content-Range':'bytes 0-1/128','Content-Length':'2'}},
+        {status:206,headers:{'Content-Range':'bytes 0-0/*','Content-Length':'1'}},
+        {status:206,headers:{'Content-Range':'bytes 0-0/0','Content-Length':'1'}},
+        {status:206,headers:{'Content-Range':'bytes 0-0/9007199254740992'}},
+        {status:206,headers:{'Content-Range':'bytes 0-0/128','Content-Length':'2'}},
+        {status:200,headers:{}},
+        {status:200,headers:{'Content-Length':'-1'}},
+        {status:200,headers:{'Content-Length':'9007199254740992'}},
+      ];
+      for(const entry of cases) {
+        reset(); getStatus = entry.status; getHeaders = entry.headers;
+        assert.equal((await head()).status,502,JSON.stringify(entry));
+        assert.equal(cancelled,1);
+      }
+    });
+    await t.test('a storage rebind during the probe rejects the late result and cancels its body', async () => {
+      reset(); invalidateOnGet = true;
+      assert.equal((await head()).status,409);
+      assert.equal(cancelled,1);
+    });
+    await t.test('GET fallback still rejects an external address whose DNS changes to private', async () => {
+      reset(); privateOnRetry = true;
+      assert.equal((await head()).status,502);
+      assert.equal(calls.length,3);
+      assert.equal(calls.at(-1)?.host,'alist.invalid');
+    });
+  } finally {
+    await closeServer(server);
     database.close();
   }
 });

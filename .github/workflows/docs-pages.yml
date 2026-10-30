@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: docs-pages-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -31,7 +35,7 @@ jobs:
           cache-dependency-path: docs/package-lock.json
 
       - name: Configure GitHub Pages
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/dev'
         uses: actions/configure-pages@v6
 
       - name: Install documentation dependencies
@@ -49,7 +53,7 @@ jobs:
           path: docs/.vitepress/dist
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/dev'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -58,9 +62,6 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    concurrency:
-      group: pages
-      cancel-in-progress: false
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

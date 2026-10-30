@@ -814,6 +814,20 @@ function copyPlaybackHeaders(upstream: Response, res: PlaybackResponse, fallback
   res.setHeader("Vary", "Range");
 }
 
+function playbackHeadProbeResponse(upstream: Response) {
+  const range = /^bytes 0-0\/(\d+)$/i.exec(upstream.headers.get('content-range') || '');
+  const contentLength = upstream.headers.get('content-length');
+  const length = upstream.status === 206 ? range?.[1] : contentLength;
+  if (!length || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length))
+    || (upstream.status === 206 && (Number(length) < 1 || (contentLength !== null && contentLength !== '1')))) {
+    throw new PlaybackHttpError(502, 'PLAYBACK_UPSTREAM_RESPONSE', '远端存储未返回有效的播放文件大小');
+  }
+  const headers = new Headers(upstream.headers);
+  headers.set('content-length', length);
+  headers.delete('content-range');
+  return new Response(null, {status:200,headers});
+}
+
 function isPrivateIpv4(hostname: string) {
   const octets = hostname.split(".").map(Number);
   if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return true;
@@ -1000,7 +1014,7 @@ export async function fetchPlaybackUpstream(
         ? await options.fetchPinned(current, requestInit, pinned)
         : (options.fetch ? await fetchImpl(current, requestInit) : await fetchPinnedHttps(current, requestInit, pinned)))
       : await fetchImpl(current, requestInit);
-    if (!PLAYBACK_REDIRECT_STATUSES.has(response.status)) return { response };
+    if (!PLAYBACK_REDIRECT_STATUSES.has(response.status)) return { response, externalResponse: !sameAlistOrigin };
 
     const location = response.headers.get("location");
     await response.body?.cancel();
@@ -1052,7 +1066,7 @@ export async function streamPlaybackFile(
 ) {
   const file = resolvePlaybackFile(database, input.userId, input.mediaId, input.fileId);
   markPlaybackDelivery(input, "pending");
-  const range = String(req.headers.range || "").trim();
+  const range = req.method === "HEAD" ? "" : String(req.headers.range || "").trim();
   if (range && !/^bytes=(?:\d+-\d*|-\d+)$/i.test(range)) {
     if (file.size) res.setHeader("Content-Range", `bytes */${file.size}`);
     markPlaybackDelivery(input, "failed");
@@ -1078,7 +1092,7 @@ export async function streamPlaybackFile(
     Authorization: `Basic ${Buffer.from(`${config.alistUsername}:${config.alistPassword}`).toString("base64")}`,
   };
   if (range) headers.Range = range;
-  const ifRange = String(req.headers["if-range"] || "").trim();
+  const ifRange = req.method === "HEAD" ? "" : String(req.headers["if-range"] || "").trim();
   if (ifRange) headers["If-Range"] = ifRange;
 
   try {
@@ -1148,13 +1162,13 @@ export async function streamPlaybackFile(
       return;
     }
     let upstream = result.response!;
-    if (req.method === "HEAD" && [405, 501].includes(upstream.status)) {
-      // Some WebDAV providers reject HEAD even though a one-byte ranged GET
-      // is supported. Use that fallback only for HEAD, and always discard the
-      // GET body so this branch never downloads video data for a metadata request.
+    let headProbe = false;
+    if (req.method === "HEAD" && ([405, 501].includes(upstream.status)
+      || (upstream.status === 403 && result.response && result.externalResponse))) {
+      // External signed URLs may reject HEAD while accepting GET. Preserve
+      // WebDAV authentication failures and limit the metadata probe to one byte.
       await upstream.body?.cancel();
-      const headFallbackHeaders = { ...headers };
-      if (!headFallbackHeaders.Range) headFallbackHeaders.Range = "bytes=0-0";
+      const headFallbackHeaders = { ...headers, Range: "bytes=0-0" };
       const fallbackResult = await fetchPlaybackUpstream(
         target,
         base,
@@ -1165,6 +1179,7 @@ export async function streamPlaybackFile(
         input.transport || {},
       );
       await assertResultCurrent(fallbackResult);
+      await fallbackResult.response?.body?.cancel();
       if (fallbackResult.directLocation) {
         markPlaybackDelivery(input, "direct");
         res.status(302);
@@ -1176,6 +1191,7 @@ export async function streamPlaybackFile(
         return;
       }
       upstream = fallbackResult.response!;
+      headProbe = true;
     }
     clearTimeout(timeout);
     if (upstream.status === 401 || upstream.status === 403) {
@@ -1193,6 +1209,9 @@ export async function streamPlaybackFile(
     if (![200, 206, 416].includes(upstream.status)) {
       await upstream.body?.cancel();
       throw new PlaybackHttpError(502, "PLAYBACK_UPSTREAM_RESPONSE", `远端存储返回了无法播放的状态 ${upstream.status}`);
+    }
+    if (headProbe && (upstream.status === 200 || upstream.status === 206)) {
+      upstream = playbackHeadProbeResponse(upstream);
     }
 
     res.status(upstream.status);

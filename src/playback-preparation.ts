@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 export type PlaybackUpstreamResult =
   | { directLocation: string; response?: undefined; cachedDirect?: boolean }
-  | { response: Response; directLocation?: undefined; cachedDirect?: false };
+  | { response: Response; directLocation?: undefined; cachedDirect?: false; externalResponse?: boolean };
 
 function waitFor<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
