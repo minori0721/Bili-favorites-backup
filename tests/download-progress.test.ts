@@ -7,6 +7,37 @@ import { createTestDir, removeTestDir } from './helpers.js';
 
 const policy = { sampleIntervalMs: 1000, minRuntimeMs: 0, windowMs: 10_000, minBytesPerSecond: 1 };
 
+test('intentional throttling allows slow progress while a genuine stall still retries', async () => {
+  let now = 0, size = 0, stops = 0;
+  const sampler = createDownloadProgressSampler({ startedAt: 0, now: () => now,
+    readSize: async () => size, minimumBytesPerSecond: () => Number.MIN_VALUE,
+    onSamplingFailure: () => assert.fail('unexpected measurement error'), onLowSpeed: () => { stops++; },
+  }, { ...policy, minBytesPerSecond: 10 * 1024 });
+  for (let minute = 0; minute <= 12; minute++) { now = minute * 1000; size = minute; await sampler.sample(); }
+  assert.equal(stops, 0);
+  now += 10_000; await sampler.sample(); assert.equal(stops, 1);
+});
+
+test('changing throttling mode starts a new monitoring window', async () => {
+  let now = 0, minimum = 10240, stops = 0;
+  const sampler = createDownloadProgressSampler({ startedAt: 0, now: () => now, readSize: async () => 0,
+    minimumBytesPerSecond: () => minimum, onSamplingFailure: () => {}, onLowSpeed: () => { stops++; },
+  }, policy);
+  await sampler.sample(); now = 9000; minimum = Number.MIN_VALUE; await sampler.sample();
+  now = 10_000; await sampler.sample(); assert.equal(stops, 0);
+  now = 19_000; await sampler.sample(); assert.equal(stops, 1);
+});
+
+test('very small allowances extend the stall window until a network-sized block can arrive', async () => {
+  let now = 0, stops = 0;
+  const sampler = createDownloadProgressSampler({ startedAt: 0, now: () => now,
+    readSize: async () => 0, minimumBytesPerSecond: () => Number.MIN_VALUE,
+    windowMs: () => 131_072_000, onSamplingFailure: () => {}, onLowSpeed: () => { stops++; },
+  }, policy);
+  await sampler.sample(); now = 600_000; await sampler.sample(); assert.equal(stops, 0);
+  now = 131_072_000; await sampler.sample(); assert.equal(stops, 1);
+});
+
 test('failed size measurements invalidate the window instead of creating zero-byte progress', async () => {
   let now = 0, size = 100, failing = false, warnings = 0, stops = 0;
   const sampler = createDownloadProgressSampler({ startedAt: 0, now: () => now,

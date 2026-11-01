@@ -87,6 +87,7 @@ export default defineConfig({
             { text: "在线内容与封面", link: "/features/online-content" },
             { text: "归档播放器", link: "/features/player" },
             { text: "四列任务队列", link: "/features/queue" },
+            { text: "下载与上传限速", link: "/guide/transfer-limits" },
             { text: "上传确认", link: "/features/upload-verification" },
             { text: "异常熔断与恢复", link: "/features/recovery" },
             { text: "充电视频", link: "/features/charging" },

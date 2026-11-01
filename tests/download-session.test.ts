@@ -877,6 +877,7 @@ test("configuration changes preserve completed data but isolate unsafe fragments
 });
 
 for (const previousRelease of [
+  { version: "2.0.7", commit: "35a26fab051528532e126af7271dc1ca1be1746c" },
   { version: "2.0.6", commit: "b4d4ba36a7934d8490c5a43274941022eac5c483" },
   { version: "2.0.5", commit: "fa7209d63bd73a4ab07913ce1478a0e13056ad09" },
   { version: "2.0.4", commit: "0ea9463202e8a57e0d673f29166e54f4ed770255" },

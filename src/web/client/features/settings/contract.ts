@@ -26,6 +26,13 @@ export function parseSettings(value: unknown) {
             throw new Error('设置字段格式错误: ' + key);
         return item;
     }
+    const bandwidth = (key: string): number | undefined => {
+        const rate = value[key];
+        if (rate === undefined) return undefined;
+        if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 10000)
+            throw new Error('设置字段格式错误: ' + key);
+        return rate;
+    };
     return {
         pollIntervalMinutes: number('pollIntervalMinutes'),
         perVideoDelaySeconds: number('perVideoDelaySeconds'),
@@ -42,6 +49,8 @@ export function parseSettings(value: unknown) {
         retryDelaySeconds: number('retryDelaySeconds'),
         concurrentDownloads: number('concurrentDownloads'),
         concurrentUploads: number('concurrentUploads'),
+        downloadLimitMBps: bandwidth('downloadLimitMBps'),
+        uploadLimitMBps: bandwidth('uploadLimitMBps'),
         uploadFileIntervalSeconds: number('uploadFileIntervalSeconds'),
         localCacheLimitGB: number('localCacheLimitGB'),
         onlineCoverCacheLimitMB: number('onlineCoverCacheLimitMB'),

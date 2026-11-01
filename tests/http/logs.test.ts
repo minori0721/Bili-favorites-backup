@@ -1,7 +1,7 @@
 import express from 'express';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, get, type ClientRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createLogRouter } from '../../src/http/logs.js';
 import type { LogEntry } from '../../src/logger.js';
 
@@ -83,11 +83,16 @@ test('a connection with no drain signal times out and cancels its listener', {ti
     {observe:()=>()=>{}},{stallTimeoutMs:20}));
   const server=createServer({highWaterMark:1},app);server.listen(0,'127.0.0.1');
   await new Promise<void>(resolve=>server.once('listening',resolve));const address=server.address();assert.ok(address&&typeof address==='object');
-  const response=await fetch(`http://127.0.0.1:${address.port}/api/logs/stream`);
+  let request:ClientRequest|undefined,response:IncomingMessage|undefined;
   try {
+    // Raw HTTP accepts OS-assigned ports that Fetch's blocked-port list rejects.
+    response=await new Promise<IncomingMessage>((resolve,reject)=>{
+      request=get({hostname:'127.0.0.1',port:address.port,path:'/api/logs/stream',agent:false},resolve);
+      request.once('error',reject);
+    });
     send?.({timestamp:'2026-10-28T00:00:00Z',type:'system',level:'info',summary:'event',raw:'event'});
     await release;assert.equal(active,0);assert.equal(stream?.destroyed,true);
   } finally {
-    await response.body?.cancel().catch(()=>{});server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));t.mock.restoreAll();
+    response?.destroy();request?.destroy();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));t.mock.restoreAll();
   }
 });

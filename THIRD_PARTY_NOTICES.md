@@ -28,7 +28,7 @@ Bili-favorites-backup 自有代码按 **GPL-3.0-only** 发行。完整条款见 
 
 ## 镜像内的独立工具
 
-- **BBDown bfb-2.0.7**：MIT，Copyright (c) 2020 nilaoda。使用 [BFB fork](https://github.com/minori0721/BBDown)，原作者见 [上游](https://github.com/nilaoda/BBDown)；[许可全文](licenses/BBDown-MIT.txt)。fork 中最小 PlayerUnite 协议定义标注源自 `aaa1115910/bv`，该项目的 [MIT 版权与许可](licenses/bv-MIT.txt)一并保留。BBDown 的 NuGet 和 .NET Native AOT 组件仍适用各自许可，完整随包清单的待办见来源说明。
+- **BBDown bfb-2.0.8**：MIT，Copyright (c) 2020 nilaoda。使用 [BFB fork](https://github.com/minori0721/BBDown)，原作者见 [上游](https://github.com/nilaoda/BBDown)；[许可全文](licenses/BBDown-MIT.txt)。fork 中最小 PlayerUnite 协议定义标注源自 `aaa1115910/bv`，该项目的 [MIT 版权与许可](licenses/bv-MIT.txt)一并保留。BBDown 的 NuGet 和 .NET Native AOT 组件仍适用各自许可，完整随包清单的待办见来源说明。
 - **FFmpeg / ffprobe**：当前固定 `n8.1.2-22-g94138f6973-20260711` 的 `linux64-lgpl-8.1` 构建。线上 `ffmpeg -L` 报告 **LGPL 第 3 版或更高版本**；随附 [LGPLv3 全文](licenses/FFmpeg-LGPL-3.0.txt)，其中引用的 GPLv3 全文见 [LICENSE](LICENSE)。静态链接的第三方库保留各自权利；FFmpeg 的 LGPL 不能代替这些组件的许可与源码材料。
 - **aria2**：镜像通过 Debian 软件包安装，保留 `/usr/share/doc/aria2/copyright`、`/usr/share/common-licenses/` 等原始材料；该包声明 GPL-2.0-or-later，并有 OpenSSL 例外说明。其依赖与包版本以实际镜像的 dpkg 记录为准。
 - **Node.js、tini 与 Debian 系统组件**：各自保留原许可；Node 的版权材料位于 `/usr/local/LICENSE`，tini 等 Debian 包位于 `/usr/share/doc/<包名>/copyright`。本项目许可不重新授权这些独立组件。

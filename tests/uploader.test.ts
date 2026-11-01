@@ -26,8 +26,33 @@ import { UploadOperationError } from "../src/upload-health.js";
 import { UploadTask, UploadVerificationTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 import { createRemoteFileResolver } from "../src/remote-file-resolver.js";
+import { configureTransferBandwidth } from '../src/transfer-bandwidth.js';
 
 const noopLog = { push() {} };
+
+test('configured upload bandwidth limits the real verified upload entry point', async () => {
+  const runtime = await createTestDir('configured-upload-bandwidth');
+  const server = await startWebDavServer({});
+  const config = testConfig({ alistUrl: server.url, uploadLimitMBps: 0.125 });
+  const body = Buffer.alloc(128 * 1024, 90);
+  try {
+    await fs.promises.writeFile(path.join(runtime, 'video.mp4'), body);
+    configureTransferBandwidth(config);
+    const started = performance.now();
+    const result = await uploadWithAList(runtime, '/target', config, {
+      cleanupLocal: false, files: ['video.mp4'], uploadIntent: 'history_upload',
+      verificationDelaysMs: [0], log: noopLog,
+    });
+    assert.ok(performance.now() - started >= 800, 'the production PUT must consume the shared allowance');
+    assert.equal(server.puts.length, 1);
+    assert.equal(result.allVerified, true);
+    assert.equal(result.files[0]?.verificationStatus, 'verified');
+    assert.equal((await fs.promises.stat(path.join(runtime, 'video.mp4'))).size, body.length);
+  } finally {
+    configureTransferBandwidth(testConfig());
+    await server.close(); await removeTestDir(runtime);
+  }
+});
 
 test("upload MIME detection covers media subtitles images and JSON", () => {
   assert.equal(detectUploadMimeType("video.mp4"), "video/mp4");

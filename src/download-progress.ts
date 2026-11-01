@@ -29,6 +29,8 @@ interface Dependencies {
   readSize(): Promise<number>;
   now(): number;
   startedAt: number;
+  minimumBytesPerSecond?(): number;
+  windowMs?(): number;
   onSamplingFailure(error: unknown): void;
   onLowSpeed(input: { bytesPerSecond: number; seconds: number; runtimeMs: number }): void;
 }
@@ -39,6 +41,8 @@ export function createDownloadProgressSampler(deps: Dependencies, policy = downl
   let pending: Promise<void> | undefined;
   let stopped = false;
   let samplingFailed = false;
+  let minimumRate = deps.minimumBytesPerSecond?.() ?? policy.minBytesPerSecond;
+  let windowMs = deps.windowMs?.() ?? policy.windowMs;
 
   async function measure() {
     let size: number;
@@ -54,16 +58,21 @@ export function createDownloadProgressSampler(deps: Dependencies, policy = downl
     if (stopped) return;
     samplingFailed = false;
     const now = deps.now();
+    const nextMinimumRate = deps.minimumBytesPerSecond?.() ?? policy.minBytesPerSecond;
+    const nextWindowMs = deps.windowMs?.() ?? policy.windowMs;
+    if (nextMinimumRate !== minimumRate || nextWindowMs !== windowMs) samples.length = 0;
+    minimumRate = nextMinimumRate;
+    windowMs = nextWindowMs;
     const previous = samples[samples.length - 1];
     // Merging removes temporary tracks; a shrinking directory starts a new baseline.
     if (previous && (size < previous.size || now < previous.at)) samples.length = 0;
     samples.push({ at: now, size });
-    while (samples.length > 1 && samples[1].at <= now - policy.windowMs) samples.shift();
+    while (samples.length > 1 && samples[1].at <= now - windowMs) samples.shift();
     const first = samples[0];
-    if (now - deps.startedAt < policy.minRuntimeMs || now - first.at < policy.windowMs) return;
+    if (now - deps.startedAt < policy.minRuntimeMs || now - first.at < windowMs) return;
     const seconds = (now - first.at) / 1000;
     const bytesPerSecond = (size - first.size) / seconds;
-    if (bytesPerSecond >= policy.minBytesPerSecond) return;
+    if (bytesPerSecond >= minimumRate) return;
     stopped = true;
     samples.length = 0;
     deps.onLowSpeed({ bytesPerSecond, seconds, runtimeMs: now - deps.startedAt });

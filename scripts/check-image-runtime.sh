@@ -31,5 +31,6 @@ done
 aria2c --version >/dev/null
 ffmpeg -version >/dev/null
 ffprobe -version >/dev/null
-BBDown --help >/dev/null
+bbdown_help=$(BBDown --help)
+printf '%s\n' "$bbdown_help" | grep -q -- '--aria2c-rpc-config'
 node -p 'JSON.stringify({node: process.version, undici: process.versions.undici, openssl: process.versions.openssl})'

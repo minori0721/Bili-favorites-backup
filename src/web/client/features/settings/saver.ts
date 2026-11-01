@@ -58,6 +58,8 @@ export function createSettingsSaver(dependencies: {
             retryDelaySeconds: Number(field('retryDelaySeconds').value),
             concurrentDownloads: Number(field('concurrentDownloads').value),
             concurrentUploads: Number(field('concurrentUploads').value),
+            downloadLimitMBps: Number(field('downloadLimitMBps').value),
+            uploadLimitMBps: Number(field('uploadLimitMBps').value),
             uploadFileIntervalSeconds: Number(field('uploadFileIntervalSeconds').value),
             localCacheLimitGB: Number(field('localCacheLimitGB').value),
             onlineCoverCacheLimitMB: Number(field('onlineCoverCacheLimitMB').value),

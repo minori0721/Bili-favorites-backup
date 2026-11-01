@@ -26,6 +26,7 @@ export function resolveRemotePath(context: UploadContext) {
 
 import type { WebDAVClient } from "webdav";
 import fs from "node:fs";
+import { uploadBandwidth } from './transfer-bandwidth.js';
 import path from "node:path";
 import crypto from "node:crypto";
 import { AppConfig } from "./config.js";
@@ -592,8 +593,9 @@ async function putAndVerifyLocalFile(
   await beforePut?.();
   const putOnce = async (includeExtendedTimestamps: boolean) => {
     const opened = await openVerifiedLocalUpload(localRoot, localFile, stat.size);
+    const transferStream = uploadBandwidth.wrap(opened.stream);
     try {
-      const putAccepted = await client.putFileContents(remoteFile, opened.stream, {
+      const putAccepted = await client.putFileContents(remoteFile, transferStream, {
         contentLength: false,
         // The preflight is advisory; conditional PUT closes the race where
         // another writer creates a different file before this request starts.
@@ -602,6 +604,7 @@ async function putAndVerifyLocalFile(
       });
       return { putAccepted, openedStat: opened.stat };
     } finally {
+      transferStream.destroy();
       opened.stream.destroy();
       await opened.handle.close().catch((closeError) => {
         console.warn(`[Uploader] file close failed after upload: ${String(closeError)}`);

@@ -13,6 +13,8 @@ import { getVideoPageSnapshot, type VideoAccessSnapshot, type VideoPageSnapshotR
 import { cacheLocalCover } from "./cover-cache.js";
 import { safeErrorSummary } from "./diagnostics.js";
 import { createDownloadProgressSampler, downloadProgressPolicy, readDownloadDirectorySize } from "./download-progress.js";
+import { downloadTransport, shutdownDownloadTransport } from './transfer-bandwidth.js';
+import type { DownloadTransport } from './managed-aria2.js';
 import { createDebugLogPath, writeDebugLogAtomic } from "./debug-log-retention.js";
 import {
   buildSelectPageArgument,
@@ -114,6 +116,7 @@ async function cleanupNewInvalidArtifacts(downloadDir: string, baseline: Set<str
 }
 
 const activeDownloadChildren = new Map<ReturnType<typeof spawn>, string>();
+const activeDownloadRuns = new Set<{ accountUid: string; cancelled: boolean }>();
 let shutdownRequested = false;
 const DEBUG_PROBE_TIMEOUT_MS = 45_000;
 const DEBUG_PROBE_OUTPUT_LIMIT = 1_000_000;
@@ -123,7 +126,7 @@ export async function shutdownActiveDownloads(timeoutMs = 20_000) {
   const children = [...activeDownloadChildren.keys()];
   await Promise.all(children.map((child) => terminateDownloadProcessTree(child, false)));
   const deadline = Date.now() + Math.max(0, timeoutMs);
-  while (activeDownloadChildren.size > 0 && Date.now() < deadline) {
+  while ((activeDownloadChildren.size > 0 || activeDownloadRuns.size > 0) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const forceTargets = children.filter((child) => activeDownloadChildren.has(child));
@@ -133,19 +136,23 @@ export async function shutdownActiveDownloads(timeoutMs = 20_000) {
       console.warn(`[BBDown] Process ${child.pid || "unknown"} remained active after forced shutdown`);
     }
   }
-  if (activeDownloadChildren.size > 0) throw new Error('Download processes did not stop before the shutdown deadline');
+  if (activeDownloadChildren.size > 0 || activeDownloadRuns.size > 0) throw new Error('Download processes or transports did not stop before the shutdown deadline');
+  await shutdownDownloadTransport(Math.max(100, deadline - Date.now()));
 }
 
 export async function cancelActiveDownloadsForAccount(accountUid: string, timeoutMs = 20_000) {
+  const runs = [...activeDownloadRuns].filter(run => run.accountUid === String(accountUid || ''));
+  for (const run of runs) run.cancelled = true;
   const children = [...activeDownloadChildren.entries()]
     .filter(([, uid]) => uid === String(accountUid || ""))
     .map(([child]) => child);
   await Promise.all(children.map((child) => terminateDownloadProcessTree(child, false)));
   const deadline = Date.now() + Math.max(0, timeoutMs);
-  while (children.some((child) => activeDownloadChildren.has(child)) && Date.now() < deadline) {
+  while ((children.some((child) => activeDownloadChildren.has(child)) || runs.some(run => activeDownloadRuns.has(run))) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await Promise.all(children.filter((child) => activeDownloadChildren.has(child)).map((child) => terminateDownloadProcessTree(child, true)));
+  if (runs.some(run => activeDownloadRuns.has(run))) throw new Error('Account download transports did not stop before the deadline');
   return children.length;
 }
 
@@ -569,6 +576,7 @@ export async function downloadWithBBDown(
     pageSnapshot?: VideoPageSnapshotResult;
     command?: string;
     commandArgsPrefix?: string[];
+    acquireTransport?: () => Promise<DownloadTransport>;
     qualityUpgrade?: DownloadSessionManifest["qualityUpgrade"];
     apiModeOverride?: BBDownApiMode;
     onApiReady?: (mode: BBDownApiMode) => void;
@@ -779,6 +787,7 @@ export async function downloadWithBBDown(
           credentialConfig.sensitiveValues,
           {
             effectiveApiMode: runMode,
+            acquireTransport: options.acquireTransport ?? (!options.command ? () => downloadTransport.acquire() : undefined),
             onApiReady: options.onApiReady,
             accountUid: String(cookie.DedeUserID || ""),
             defaultPageIndex: selectedPageFallback(runArgs),
@@ -809,6 +818,7 @@ export async function downloadWithBBDown(
           credentialConfig.sensitiveValues,
           {
             effectiveApiMode: "web",
+            acquireTransport: options.acquireTransport ?? (!options.command ? () => downloadTransport.acquire() : undefined),
             onApiReady: options.onApiReady,
             accountUid: String(cookie.DedeUserID || ""),
             defaultPageIndex: selectedPageFallback(commandArgs),
@@ -1278,13 +1288,14 @@ async function runDebugProbe(
   });
 }
 
-function runCommand(
+async function runCommand(
   command: string,
   args: string[],
   cwd: string,
   bvid: string,
   sensitiveValues: string[],
   options: {
+    acquireTransport?: () => Promise<DownloadTransport>;
     effectiveApiMode: BBDownApiMode;
     onApiReady?: (mode: BBDownApiMode) => void;
     accountUid?: string;
@@ -1293,6 +1304,33 @@ function runCommand(
     strictEncoding?: BBDownEncoding;
     strictQuality?: string;
   }
+) {
+  const run = { accountUid: String(options.accountUid || ''), cancelled: false };
+  activeDownloadRuns.add(run);
+  let transport: DownloadTransport | undefined;
+  try {
+    transport = await options.acquireTransport?.();
+    if (run.cancelled || shutdownRequested) throw new Error('Download cancelled before transport start');
+    const commandArgs = transport ? args.filter((_value, index) => args[index] !== '--aria2c-args' && args[index - 1] !== '--aria2c-args')
+      .concat('--aria2c-rpc-config', transport.configPath) : args;
+    await runDownloadCommand(command, commandArgs, cwd, bvid, sensitiveValues, options, transport);
+  } finally {
+    try { await transport?.release(); }
+    finally { activeDownloadRuns.delete(run); }
+  }
+}
+
+function runDownloadCommand(
+  command: string, args: string[], cwd: string, bvid: string, sensitiveValues: string[],
+  options: {
+    effectiveApiMode: BBDownApiMode;
+    onApiReady?: (mode: BBDownApiMode) => void;
+    accountUid?: string;
+    defaultPageIndex?: number;
+    onSelectedStream?: (stream: BBDownSelectedVideoSelection) => void;
+    strictEncoding?: BBDownEncoding;
+    strictQuality?: string;
+  }, transport?: DownloadTransport,
 ) {
   return new Promise<void>((resolve, reject) => {
     if (shutdownRequested) {
@@ -1399,7 +1437,10 @@ function runCommand(
     };
 
     const progressSampler = createDownloadProgressSampler({
-      readSize: () => readDownloadDirectorySize(cwd), now: Date.now, startedAt: commandStartedAt,
+      readSize: () => transport ? transport.progressBytes() : readDownloadDirectorySize(cwd),
+      minimumBytesPerSecond: transport?.minimumProgressRate,
+      windowMs: transport?.progressWindowMs,
+      now: Date.now, startedAt: commandStartedAt,
       onSamplingFailure: error => console.warn(`[Download] progress sampling failed: ${safeErrorSummary(error)}`),
       onLowSpeed: ({ bytesPerSecond, seconds, runtimeMs }) => {
         if (settled || strictSelectionError) return;

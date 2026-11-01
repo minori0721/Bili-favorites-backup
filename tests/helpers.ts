@@ -17,6 +17,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     retryDelaySeconds: 1,
     concurrentDownloads: 1,
     concurrentUploads: 2,
+    downloadLimitMBps: 0,
+    uploadLimitMBps: 0,
     uploadFileIntervalSeconds: 0,
     localCacheLimitGB: 0,
     onlineCoverCacheLimitMB: 256,

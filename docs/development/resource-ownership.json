@@ -1,6 +1,22 @@
 {
   "resources": [
     {
+      "module": "managed-aria2.ts",
+      "ownerSymbol": "ManagedAria2",
+      "resourceSymbols": ["engine", "rate", "stopped", "owners", "updates"],
+      "stop": "application download shutdown stops the private process within its deadline; each released task cancels and removes only its own GID prefix and private configuration",
+      "lateCallback": "rate updates and failed-generation disposal compare the captured engine identity; a new task waits for pending rate changes before obtaining its configuration",
+      "rebind": "holds no database connection; task leases and database replacement remain owned by the existing scheduler and maintenance flow"
+    },
+    {
+      "module": "byte-rate-limiter.ts",
+      "ownerSymbol": "ByteRateLimiter",
+      "resourceSymbols": ["rate", "credit", "sampledAt", "waiting", "timer"],
+      "stop": "each upload stream removes its pending allowance and abort listener on close; the last pending read clears the timer; application shutdown drains existing upload tasks",
+      "lateCallback": "queued reads belong to their abort signal and current FIFO entry; timer callbacks always read the current rate and queue",
+      "rebind": "owns byte allowances only, without credentials, file handles or database connections; configuration updates alter current streams without replacing their owners"
+    },
+    {
       "module": "playback-preparation.ts",
       "ownerSymbol": "PlaybackDirectLinks",
       "resourceSymbols": ["entries", "pending"],
@@ -120,7 +136,9 @@
         "samples",
         "pending",
         "stopped",
-        "samplingFailed"
+        "samplingFailed",
+        "minimumRate",
+        "windowMs"
       ],
       "stop": "download process cleanup stops sampling and clears its window; one in-flight directory read is shared until it settles",
       "lateCallback": "stopped samples cannot report low speed or alter the window; failed measurements reset the valid window",

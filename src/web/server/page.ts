@@ -372,6 +372,10 @@ function getSettingsSection() {
         <div><label for="retryDelaySeconds">重试间隔 (秒)</label><input id="retryDelaySeconds" type="number" min="1" /></div>
         <div><label for="concurrentDownloads">同时下载并发数</label><input id="concurrentDownloads" type="number" min="1" max="5" /></div>
         <div><label for="concurrentUploads">同时上传并发数</label><input id="concurrentUploads" type="number" min="1" max="10" /></div>
+        <div><label for="downloadLimitMBps">下载总限速（MB/s）</label><input id="downloadLimitMBps" type="number" min="0" max="10000" step="any" aria-describedby="transferLimitHint" /></div>
+        <div><label for="uploadLimitMBps">上传总限速（MB/s）</label><input id="uploadLimitMBps" type="number" min="0" max="10000" step="any" aria-describedby="transferLimitHint uploadLimitHint" /></div>
+        <p class="muted field-hint field-full" id="transferLimitHint">0 表示不限速；同方向的备份任务共用额度，保存后也会调整正在传输的任务。</p>
+        <p class="muted field-hint field-full" id="uploadLimitHint">上传限速控制本程序发往 AList / OpenList 的速度；如需限制网盘上传带宽，请同时设置存储服务的服务端上传限速。</p>
         <div class="field-full"><label for="uploadFileIntervalSeconds">远端文件上传间隔（秒）</label><input id="uploadFileIntervalSeconds" type="number" min="0" max="120" step="1" aria-describedby="uploadFileIntervalHint" /><p class="muted field-hint" id="uploadFileIntervalHint">全局限制实际 PUT 的启动频率；远端预检和已存在文件跳过不等待，0 表示关闭。</p></div>
         <div class="field-full"><label for="queuePrefetchLimit">任务预取上限</label><input id="queuePrefetchLimit" type="number" min="5" max="100" /></div>
         <div><label for="remoteVerifyConcurrency">远端对账并发数</label><input id="remoteVerifyConcurrency" type="number" min="1" max="100" /></div>

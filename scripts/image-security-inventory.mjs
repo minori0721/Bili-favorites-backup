@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 // migration must review this acceptance check along with its dependency change.
 export function verifySecurityDependencyVersions(versions) {
   for (const [name, minimum] of Object.entries({
-    'body-parser': [1, 20, 9], 'follow-redirects': [1, 16, 1], 'markdown-it': [15, 0, 3], 'qs': [6, 16, 1],
+    'body-parser': [1, 20, 9], 'follow-redirects': [1, 16, 2], 'markdown-it': [15, 0, 3], 'qs': [6, 16, 1],
   })) {
     const version = versions[name];
     assert.equal(typeof version, 'string', `Missing runtime dependency: ${name}`);

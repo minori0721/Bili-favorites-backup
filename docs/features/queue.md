@@ -4,6 +4,8 @@
 
 从导航进入“任务”，查看队列看板、日志和需要处理的问题。
 
+下载和上传可分别设置总限速，详见[下载与上传限速](../guide/transfer-limits)。
+
 ![当前开发版 390 像素手机任务页：调度摘要、待下载卡片与底部导航，使用隔离演示数据](/screenshots/dashboard-mobile.jpg){.doc-shot .doc-shot-mobile}
 
 ## 队列卡片怎么看

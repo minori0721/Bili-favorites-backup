@@ -67,6 +67,8 @@ export interface AppConfig {
   retryDelaySeconds: number;
   concurrentDownloads: number;
   concurrentUploads: number;
+  downloadLimitMBps: number;
+  uploadLimitMBps: number;
   uploadFileIntervalSeconds: number;
   localCacheLimitGB: number;
   onlineCoverCacheLimitMB: number;
@@ -100,6 +102,8 @@ const defaultConfig: AppConfig = {
   retryDelaySeconds: 5,
   concurrentDownloads: 1,
   concurrentUploads: 2,
+  downloadLimitMBps: 0,
+  uploadLimitMBps: 0,
   uploadFileIntervalSeconds: 10,
   localCacheLimitGB: 10,
   onlineCoverCacheLimitMB: 256,
@@ -138,6 +142,8 @@ export function decodeStoredConfig(value: unknown): Partial<AppConfig> & { start
       case 'retryDelaySeconds': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.retryDelaySeconds = raw; else invalid(key); break;
       case 'concurrentDownloads': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.concurrentDownloads = raw; else invalid(key); break;
       case 'concurrentUploads': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.concurrentUploads = raw; else invalid(key); break;
+      case 'downloadLimitMBps': if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 10000) decoded.downloadLimitMBps = raw; else invalid(key); break;
+      case 'uploadLimitMBps': if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 10000) decoded.uploadLimitMBps = raw; else invalid(key); break;
       case 'uploadFileIntervalSeconds': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.uploadFileIntervalSeconds = raw; else invalid(key); break;
       case 'localCacheLimitGB': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.localCacheLimitGB = raw; else invalid(key); break;
       case 'onlineCoverCacheLimitMB': if (typeof raw === 'number' && Number.isFinite(raw)) decoded.onlineCoverCacheLimitMB = raw; else invalid(key); break;
@@ -189,6 +195,8 @@ export function normalizeLoadedConfig(input: Partial<AppConfig> & { startupRecov
   if (input.retryDelaySeconds !== undefined) merged.retryDelaySeconds = input.retryDelaySeconds;
   if (input.concurrentDownloads !== undefined) merged.concurrentDownloads = input.concurrentDownloads;
   if (input.concurrentUploads !== undefined) merged.concurrentUploads = input.concurrentUploads;
+  if (input.downloadLimitMBps !== undefined) merged.downloadLimitMBps = input.downloadLimitMBps;
+  if (input.uploadLimitMBps !== undefined) merged.uploadLimitMBps = input.uploadLimitMBps;
   if (input.uploadFileIntervalSeconds !== undefined) merged.uploadFileIntervalSeconds = input.uploadFileIntervalSeconds;
   if (input.localCacheLimitGB !== undefined) merged.localCacheLimitGB = input.localCacheLimitGB;
   if (input.onlineCoverCacheLimitMB !== undefined) merged.onlineCoverCacheLimitMB = input.onlineCoverCacheLimitMB;
@@ -289,6 +297,8 @@ const allowedKeys = new Set<keyof AppConfig>([
   "retryDelaySeconds",
   "concurrentDownloads",
   "concurrentUploads",
+  "downloadLimitMBps",
+  "uploadLimitMBps",
   "uploadFileIntervalSeconds",
   "localCacheLimitGB",
   "onlineCoverCacheLimitMB",
@@ -325,6 +335,13 @@ export function validateConfig(input: Partial<AppConfig>) {
   for (const key of Object.keys(input)) {
     if (!allowedKeys.has(key as keyof AppConfig)) {
       return `Unknown config field: ${key}`;
+    }
+  }
+
+  for (const key of ['downloadLimitMBps', 'uploadLimitMBps'] as const) {
+    const value = input[key];
+    if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 10000)) {
+      return `${key} must be between 0 and 10000`;
     }
   }
 

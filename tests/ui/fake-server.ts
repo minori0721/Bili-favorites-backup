@@ -367,6 +367,8 @@ app.get("/api/config", async (_request, response) => {
   retryDelaySeconds: 5,
   concurrentDownloads: 1,
   concurrentUploads: 2,
+  downloadLimitMBps: 0,
+  uploadLimitMBps: 0,
   uploadFileIntervalSeconds: 0,
   localCacheLimitGB: 10,
   queuePrefetchLimit: 25,

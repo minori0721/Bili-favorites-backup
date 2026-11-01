@@ -95,6 +95,7 @@ import { createRemoteReplacementRunner } from "./remote-operations.js";
 import { createRenameService } from './rename-service.js';
 import { createRuntimeMemoryObservation } from './runtime-memory-observation.js';
 import { SyncScheduler } from "./scheduler.js";
+import { configureTransferBandwidth } from './transfer-bandwidth.js';
 import type { SchedulerControl } from './ports/scheduler-control.js';
 import type { RecoveryPort, SyncControlPort } from './ports/task-control.js';
 import { recoverInterruptedQualityDownloads } from './scheduler/quality-download-recovery.js';
@@ -132,6 +133,7 @@ logManager.reload();
 const importMaintenance = new ImportMaintenance();
 
 const configStore = new ConfigStore();
+configureTransferBandwidth(configStore.get());
 const userStore = new UserStore();
 const stateManager = new StateManager();
 const onboardingService = createOnboardingService({newInstallation,
@@ -368,6 +370,7 @@ app.use(createConfigurationRouter({boundary: asyncHandler, service: createConfig
   hasArchiveDeletion: () => stateManager.getDatabase().hasActiveArchiveDeletion(),
   hasRemotePaths: () => stateManager.getDatabase().hasRemoteArchivePathData(),
   changed(previous, next) {
+    configureTransferBandwidth(next);
     renameService.invalidateConfig(next);
     onlineCoverCache.setLimitMb(next.onlineCoverCacheLimitMB);
     scheduler.applyConfigUpdate(previous, next);
@@ -449,7 +452,8 @@ app.use(createRecoveryRouter({ boundary: asyncHandler,
 
 app.use(createStorageCleanupRouter({ boundary: asyncHandler, service: createStorageCleanup({
   scheduler: {
-    refreshLocalCacheState: () => scheduler.refreshLocalCacheState(), updateInterval: () => scheduler.updateInterval(),
+    refreshLocalCacheState: () => scheduler.refreshLocalCacheState(),
+    updateInterval: () => { configureTransferBandwidth(configStore.get()); scheduler.updateInterval(); },
     hasRunningTransferTasks: () => scheduler.hasRunningTransferTasks(),
     hasActiveOrQueuedSchedulerWork: () => scheduler.hasActiveOrQueuedSchedulerWork(),
     withCleanupLock: work => scheduler.withCleanupLock(work),
@@ -468,6 +472,7 @@ async function reloadStoresAfterImport(restored: string[], previousMarkers: Lega
     upSubscriptions.reset();
     archiveVideoActions.reset();
     configStore.reload();
+    configureTransferBandwidth(configStore.get());
     onlineCoverCache.setLimitMb(configStore.get().onlineCoverCacheLimitMB);
     favoriteFolderListCache.clear();
     favoriteDetail.clear();

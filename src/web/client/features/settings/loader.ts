@@ -75,6 +75,8 @@ export function createSettingsLoader(dependencies: {
             field('retryDelaySeconds').value = String(d.retryDelaySeconds ?? 5);
             field('concurrentDownloads').value = String(d.concurrentDownloads ?? 1);
             field('concurrentUploads').value = String(d.concurrentUploads ?? 2);
+            field('downloadLimitMBps').value = String(d.downloadLimitMBps ?? 0);
+            field('uploadLimitMBps').value = String(d.uploadLimitMBps ?? 0);
             field('uploadFileIntervalSeconds').value = String(d.uploadFileIntervalSeconds ?? 10);
             field('localCacheLimitGB').value = String(d.localCacheLimitGB ?? 10);
             field('onlineCoverCacheLimitMB').value = String(d.onlineCoverCacheLimitMB ?? 256);

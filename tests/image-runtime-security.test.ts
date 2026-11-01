@@ -25,7 +25,10 @@ command() {
 aria2c() { [ "$MOCK_FAILED_TOOL" != aria2c ]; }
 ffmpeg() { [ "$MOCK_FAILED_TOOL" != ffmpeg ]; }
 ffprobe() { [ "$MOCK_FAILED_TOOL" != ffprobe ]; }
-BBDown() { [ "$MOCK_FAILED_TOOL" != BBDown ]; }
+BBDown() {
+  [ "$MOCK_FAILED_TOOL" != BBDown ] || return 1
+  if [ "$MOCK_OLD_BBDOWN" != true ]; then printf '%s\n' '--aria2c-rpc-config'; fi
+}
 node() { printf '%s\n' 'node component versions'; }
 `;
 const packageQuery = String.raw`#!/bin/sh
@@ -49,7 +52,7 @@ async function verifyRuntime(overrides: Record<string, string> = {}) {
     fs.writeFileSync(path.join(bin, 'dpkg-query'), packageQuery, { mode: 0o755 });
     const result = spawnSync('/bin/sh', ['-ec', '. "$1"; . "$2"', 'verify', mocksFile, scriptFile], {
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MOCK_BUILD_TOOL: '', MOCK_NPM_DIRECTORY: 'false', MOCK_FAILED_TOOL: '',
-        MOCK_MISSING_EXECUTABLE: '', MOCK_MISSING_PACKAGE: '',
+        MOCK_MISSING_EXECUTABLE: '', MOCK_MISSING_PACKAGE: '', MOCK_OLD_BBDOWN: 'false',
         MOCK_LIBSSL3_VERSION: '3.0.22-1~deb12u2', MOCK_OPENSSL_VERSION: '3.0.22-1~deb12u2', ...overrides },
       encoding: 'utf8', timeout: 10_000,
     });
@@ -101,4 +104,7 @@ test('a runtime executable that cannot start prevents acceptance even when its f
     assert.notEqual(result.status, 0);
     assert.doesNotMatch(result.stdout, /node component versions/);
   }
+  const oldTool = await verifyRuntime({ MOCK_OLD_BBDOWN: 'true' });
+  assert.notEqual(oldTool.status, 0);
+  assert.doesNotMatch(oldTool.stdout, /node component versions/);
 });

@@ -28,6 +28,8 @@ export function createSettingsHelp(dependencies:{root:ParentNode;priority():stri
         retryDelaySeconds: Number(field('retryDelaySeconds').value || 5),
         concurrentDownloads: Number(field('concurrentDownloads').value || 1),
         concurrentUploads: Number(field('concurrentUploads').value || 2),
+        downloadLimitMBps: Number(field('downloadLimitMBps').value),
+        uploadLimitMBps: Number(field('uploadLimitMBps').value),
         uploadFileIntervalSeconds: Number(field('uploadFileIntervalSeconds').value || 0),
         localCacheLimitGB: Number(field('localCacheLimitGB').value || 0),
         onlineCoverCacheLimitMB: Number(field('onlineCoverCacheLimitMB').value || 256),
@@ -50,7 +52,8 @@ export function createSettingsHelp(dependencies:{root:ParentNode;priority():stri
           '<div class="flow-step"><div class="badge">自动轮询</div><div class="desc">程序每 <strong>' + escapeHtml(c.pollIntervalMinutes) + ' 分钟</strong>自动检查一次；手动按钮会额外插队触发。</div></div>' +
           '<div class="flow-step"><div class="badge">扫描收藏夹</div><div class="desc">发现新视频后按当前命名模板准备任务：<code>' + escapeHtml(c.filenameTemplate) + '</code></div></div>' +
           '<div class="flow-step"><div class="badge">下载队列</div><div class="desc">最多同时下载 <strong>' + escapeHtml(c.concurrentDownloads) + '</strong> 个；本地 temp 达到 <strong>' + escapeHtml(c.localCacheLimitGB || 0) + 'GB</strong> 软上限时不再启动新下载；画质为 <strong>' + escapeHtml(c.bbdownQuality) + '</strong>，编码偏好为 <strong>' + escapeHtml(encodingText) + '</strong>，音频选项为 <strong>' + escapeHtml(audioText) + '</strong>；分P之间延迟 <strong>' + escapeHtml(c.perVideoDelaySeconds) + ' 秒</strong>。</div></div>' +
-          '<div class="flow-step"><div class="badge">失败重试</div><div class="desc">下载或上传失败后最多重试 <strong>' + escapeHtml(c.maxRetries) + '</strong> 次，每次间隔 <strong>' + escapeHtml(c.retryDelaySeconds) + ' 秒</strong>；下载卡住超过 30 分钟且最近 10 分钟低于 10KB/s 会自动进入重试。</div></div>' +
+          '<div class="flow-step"><div class="badge">传输限速</div><div class="desc">下载总限速 <strong>' + escapeHtml(c.downloadLimitMBps || 0) + ' MB/s</strong>，上传总限速 <strong>' + escapeHtml(c.uploadLimitMBps || 0) + ' MB/s</strong>，0 表示不限速。同方向任务共用额度，保存后也会调整正在传输的任务；上传限制本程序发往存储服务的速度。</div></div>' +
+          '<div class="flow-step"><div class="badge">失败重试</div><div class="desc">下载或上传失败后最多重试 <strong>' + escapeHtml(c.maxRetries) + '</strong> 次，每次间隔 <strong>' + escapeHtml(c.retryDelaySeconds) + ' 秒</strong>；运行超过 30 分钟后检查下载进展。不限速时最近 10 分钟持续低于 10KB/s 会重试；限速时按额度调整观察时间，保留正常慢速下载。</div></div>' +
           '<div class="flow-step"><div class="badge">上传远端存储</div><div class="desc">最多同时上传 <strong>' + escapeHtml(c.concurrentUploads) + '</strong> 个；实际 PUT 全局间隔 <strong>' + escapeHtml(c.uploadFileIntervalSeconds || 0) + ' 秒</strong>；目标路径是 <code>' + escapeHtml(c.alistDest) + '</code>，目录结构是 <strong>' + escapeHtml(layoutText) + '</strong>。</div></div>' +
           '<div class="flow-step"><div class="badge">状态对账</div><div class="desc">远端存储对账并发 <strong>' + escapeHtml(c.remoteVerifyConcurrency) + '</strong>，限速 <strong>' + escapeHtml(c.remoteVerifyRateLimitPerSecond) + ' 次/秒</strong>，每轮最多补传 <strong>' + escapeHtml(c.remoteRequeueLimitPerCycle) + '</strong> 个缺失视频。</div></div>' +
         '</div>' +

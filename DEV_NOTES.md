@@ -27,3 +27,4 @@ git diff --check
 - [运行环境重建与部署更新](docs/operations/update.md)
 - [归档管理验证路径](docs/development/archive-actions-verification.md)
 - [UP 订阅实现说明](docs/development/up-subscriptions.md)
+- [传输带宽所有权与验证](docs/development/transfer-bandwidth.md)
