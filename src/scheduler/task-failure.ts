@@ -37,6 +37,7 @@ export function readTaskFailure(value: unknown) {
     permanent: item.permanent === true, deferToNextCycle: item.deferToNextCycle === true,
     chargingRestricted: item.chargingRestricted === true, encodingValidation: item.encodingValidation === true,
     qualityValidation: item.qualityValidation === true, uploadSessionStale: item.uploadSessionStale === true,
+    uploadExecutionStale: item.uploadExecutionStale === true,
     uploadSessionTransient: item.uploadSessionTransient === true,
     retryAfterMs: typeof item.retryAfterMs === 'number' && Number.isFinite(item.retryAfterMs) ? item.retryAfterMs : undefined,
     encodingAssessment: encodingAssessment(item.encodingAssessment),

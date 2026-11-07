@@ -5,7 +5,7 @@ import { isRecord } from './shared/api/value.js';
 export interface RemoteFileContent { size: number; md5: string; }
 export type RemoteContentReader = (remotePath: string) => Promise<RemoteFileContent | null>;
 
-/** One recovery assessment owns its short-lived login; normal uploads do not call this API. */
+/** A recovery attempt owns its short-lived login; fresh uploads do not call this API. */
 export function createRemoteContentReader(config: Pick<AppConfig, 'alistUrl' | 'alistUsername' | 'alistPassword'>,
   request: typeof fetch = fetch): RemoteContentReader {
   const base = parseStorageBaseUrl(config.alistUrl);

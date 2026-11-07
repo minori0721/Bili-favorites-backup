@@ -3,7 +3,7 @@ import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, resumeUploadSession, verifyRemoteFiles } from "./uploader.js";
-import type { UploadFileContentRead } from './upload-content-proof.js';
+import type { UploadContentProof, UploadFileContentRead } from './upload-content-proof.js';
 import type { ExistingArchiveProof, UploadIntent } from "./upload-preflight.js";
 import { applyBBDownEncodingPreference, AppConfig, type BBDownApiMode, type BBDownEncoding } from "./config.js";
 import { BiliCookie } from "./users.js";
@@ -603,6 +603,7 @@ export class UploadTask extends Task {
   strictMediaTarget?: StrictMediaTarget;
   onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
   onTransferContent?: (task: UploadTask, file: UploadFileContentRead) => void;
+  uploadContentProof?: UploadContentProof;
   assertExecutionCurrent?: () => void;
 
   private readonly upload: typeof uploadWithAList;
@@ -632,6 +633,7 @@ export class UploadTask extends Task {
       sessionId?: string;
       sessionGeneration?: number;
       sessionDedupeKey?: string;
+      uploadContentProof?: UploadContentProof;
       conflictArchiveSegment?: string;
       conflictArchiveRoot?: string;
       conflictArchiveOldFiles?: RemoteFileRecord[];
@@ -650,6 +652,7 @@ export class UploadTask extends Task {
   ) {
     super(`Upload ${bvid}`, { maxRetries: config.maxRetries, retryDelaySeconds: config.retryDelaySeconds });
     this.upload = options.upload ?? uploadWithAList;
+    this.uploadContentProof = options.uploadContentProof;
     this.bvid = bvid;
     this.downloadDir = downloadDir;
     this.remotePath = remotePath;
@@ -733,6 +736,7 @@ export class UploadTask extends Task {
           this.onTransferSession?.(this, session.id, session.generation);
         },
         assertCurrent: this.assertExecutionCurrent,
+        uploadContentProof: this.uploadContentProof,
         onFileContentRead: this.onTransferContent ? file => this.onTransferContent!(this, file) : undefined,
         allowReupload: false,
         reuploadAuthorizedFiles: this.reuploadAuthorizedFiles,
@@ -758,7 +762,9 @@ export class UploadTask extends Task {
         onConflictArchived: this.onConflictArchived,
       });
     } catch (error: unknown) {
+      this.assertExecutionCurrent?.();
       const detail = isRecord(error) ? error : {};
+      if (detail.uploadSessionStale === true || detail.uploadExecutionStale === true) throw error;
       const failure = isRecord(detail.uploadFailure) ? detail.uploadFailure : {};
       const status = Number(failure.status || detail.status || 0);
       const reasonCode = String(failure.code || detail.code || "UPLOAD_REMOTE_CONFLICT");

@@ -30,7 +30,8 @@ import { uploadBandwidth } from './transfer-bandwidth.js';
 import path from "node:path";
 import crypto from "node:crypto";
 import { Transform } from 'node:stream';
-import type { UploadFileContentRead } from './upload-content-proof.js';
+import { contentProofForFile, type UploadContentProof, type UploadFileContentRead } from './upload-content-proof.js';
+import { createRemoteContentReader, type RemoteContentReader } from './remote-content-inspection.js';
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
 import { redactRemotePathForDisplay } from "./diagnostics.js";
@@ -749,6 +750,7 @@ export interface UploadClient extends RemoteDirectoryClient {
 
 export interface UploadOptions {
   assertCurrent?: () => void;
+  uploadContentProof?: UploadContentProof;
   onFileContentRead?: (file: UploadFileContentRead) => void;
   deferSessionCompletion?: boolean;
   onPreparedSession?: (session: { id: string; generation: number }) => void;
@@ -1069,26 +1071,42 @@ async function inspectPathForExpectedSize(
 
 async function preflightUploadGroup(
   client: RemoteDirectoryClient,
-  entries: Array<{ remoteFile: string; expectedSize: number; currentSessionPutAccepted: boolean }>,
+  entries: Array<{ remoteFile: string; expectedSize: number; currentSessionPutAccepted: boolean; confirmContent?: () => Promise<boolean> }>,
   options: UploadOptions,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
 ) {
   const intent = options.uploadIntent || (options.historyOnly ? "history_upload" : "normal_backup");
+  const inspectTarget = async (remoteFile: string, fallback: 'always' | 'risk_only') => {
+    const observed = await inspectRemoteFile(client, remoteFile, resolver, fallback);
+    if (observed.status === 'unknown' && observed.failure
+      && ['transient', 'permission'].includes(observed.failure.category)) {
+      throw withUploadErrorMetadata(new Error('远端上传目标暂时无法核验'), {
+        status: observed.failure.status ?? (observed.failure.category === 'permission' ? 403 : 503),
+        remoteFailure: observed.failure, retryAfterMs: observed.failure.retryAfterMs,
+      });
+    }
+    return observed;
+  };
   const existingArchiveObservations = [];
   if (intent === "normal_backup" && options.existingArchiveProof) {
     for (const file of options.existingArchiveProof.files) {
-      const observed = await inspectRemoteFile(client, file.path, resolver, "always");
+      const observed = await inspectTarget(file.path, 'always');
       const { path: _observedPath, ...observation } = observed;
       existingArchiveObservations.push({ path: file.path, ...observation });
     }
   }
   const targets = [];
   for (const entry of entries) {
-    const observed = await inspectRemoteFile(client, entry.remoteFile, resolver, "risk_only");
+    const observed = await inspectTarget(entry.remoteFile, 'risk_only');
+    const currentSessionContentVerified = intent === 'normal_backup' && !options.existingArchiveProof
+      && !entry.currentSessionPutAccepted && observed.status === 'exists' && !observed.directory
+      && observed.size === entry.expectedSize && entry.confirmContent
+      ? await entry.confirmContent() : false;
     targets.push({
       path: entry.remoteFile,
       expectedSize: entry.expectedSize,
       currentSessionPutAccepted: entry.currentSessionPutAccepted,
+      currentSessionContentVerified,
       observed: { ...observed, path: entry.remoteFile },
     });
   }
@@ -1114,6 +1132,26 @@ async function uploadWithTransferSession(
   const bvid = String(options.bvid || "");
   if (!bvid && !options.sessionId) throw new Error("Transactional upload requires a BVID or session id");
   const previousSession = options.sessionId ? store.get(options.sessionId) : null;
+  let contentReader: RemoteContentReader | undefined;
+  const assertSessionCurrent = (sessionId: string, generation: number) => {
+    options.assertCurrent?.();
+    const current = store.assertGeneration(sessionId, generation);
+    if (current.phase === 'superseded') throw new Error('Upload session was superseded during content verification');
+    return current;
+  };
+  const confirmContent = async (file: TransferSessionFileRecord) => {
+    const session = assertSessionCurrent(file.sessionId, file.generation);
+    const expected = contentProofForFile(options.uploadContentProof, session, file);
+    if (!expected) return false;
+    contentReader ??= createRemoteContentReader(config);
+    const remote = await contentReader(file.finalPath);
+    assertSessionCurrent(session.id, session.generation);
+    const current = store.getFile(session.id, file.relativePath, session.generation);
+    if (!current || current.finalPath !== file.finalPath || current.expectedSize !== file.expectedSize) {
+      throw new Error('Upload file identity changed during content verification');
+    }
+    return remote !== null && remote.size === expected.size && remote.md5 === expected.md5;
+  };
   if (previousSession && options.resumeOnly && !options.allowReupload && !options.reuploadAuthorizedFiles?.length) {
     const session = store.assertGeneration(previousSession.id, options.sessionGeneration);
     if (session.allowReupload) store.updateSession(session.id, { allowReupload: false }, session.generation);
@@ -1123,7 +1161,8 @@ async function uploadWithTransferSession(
     const pendingChecks: UploadResult["pendingChecks"] = [];
     for (const file of recorded) {
       const observed = await inspectPathForExpectedSize(client, file.finalPath, file.expectedSize, resolver);
-      if (observed.status === "exists" && !file.putAcceptedAt) {
+      assertSessionCurrent(session.id, session.generation);
+      if (observed.status === "exists" && !file.putAcceptedAt && !await confirmContent(file)) {
         throw new UploadPreflightConflictError("UPLOAD_UNKNOWN_SAME_SIZE_TARGET", "远端同大小文件缺少本次PUT证明，不能确认上传成功");
       }
       const verified = observed.status === "exists";
@@ -1204,10 +1243,12 @@ async function uploadWithTransferSession(
         remoteFile: entry.sessionFile.finalPath,
         expectedSize: entry.stat.size,
         currentSessionPutAccepted: Boolean(entry.sessionFile.putAcceptedAt),
+        confirmContent: () => confirmContent(entry.sessionFile),
       })),
       options,
       resolver,
     );
+    assertSessionCurrent(session.id, sessionGeneration);
     if (groupDecision.kind === "retain_existing") {
       store.supersede(session.id, sessionGeneration);
       return {
@@ -1223,6 +1264,7 @@ async function uploadWithTransferSession(
     }
     await ensureRemoteDir(client, remotePath, profile);
   } catch (error) {
+    assertSessionCurrent(session.id, sessionGeneration);
     store.updateSession(session.id, { phase: "failed", lastError: sanitizeUploadText(String(errorRecord(error).message || error)) }, sessionGeneration);
     throw await toUploadOperationError(error, remotePath);
   }
@@ -1248,12 +1290,14 @@ async function uploadWithTransferSession(
         const normalizedFinalPath = sessionFile.finalPath.replace(/\\/g, "/");
         if (uploadIntent === "normal_backup"
           && !sessionFile.putAcceptedAt
-          && !acceptedExistingPaths.has(normalizedFinalPath)) {
+          && !acceptedExistingPaths.has(normalizedFinalPath)
+          && !await confirmContent(sessionFile)) {
           throw new UploadPreflightConflictError(
             "UPLOAD_UNKNOWN_SAME_SIZE_TARGET",
             "远端目标在整组预检后出现同名同大小文件，但缺少本次Session的PUT证明",
           );
         }
+        assertSessionCurrent(session.id, sessionGeneration);
         store.updateFile(session.id, entry.relativePath, {
           status: "verified",
           verifiedAt: Date.now(),
@@ -1267,7 +1311,7 @@ async function uploadWithTransferSession(
 
       const hasPriorPut = Boolean(sessionFile.putAcceptedAt);
       const hasReuploadAuthorization = legacyAllowReupload || reuploadAuthorizedFiles.has(entry.relativePath.replace(/\\/g, "/"));
-      const mayPut = !options.resumeOnly || hasReuploadAuthorization;
+      const mayPut = (!options.resumeOnly && !hasPriorPut) || hasReuploadAuthorization;
       if (!mayPut) {
         const now = Date.now();
         store.updateFile(session.id, entry.relativePath, {
@@ -1307,12 +1351,12 @@ async function uploadWithTransferSession(
       let transfer: Awaited<ReturnType<typeof putAndVerifyLocalFile>>;
       const checkpoints = {
         contentRead: options.onFileContentRead ? (md5: string) => {
-          options.assertCurrent?.();
+          assertSessionCurrent(session.id, sessionGeneration);
           options.onFileContentRead!({ sessionId: session.id, generation: sessionGeneration,
             relativePath: entry.relativePath, finalPath: sessionFile.finalPath, size: entry.stat.size, md5 });
         } : undefined,
         putAccepted: () => {
-          options.assertCurrent?.();
+          assertSessionCurrent(session.id, sessionGeneration);
           if (!store.updateFile(session.id, entry.relativePath, { putAcceptedAt: Date.now() }, sessionGeneration)) {
             throw new Error('Upload file disappeared before PUT checkpoint');
           }
@@ -1335,16 +1379,16 @@ async function uploadWithTransferSession(
            checkpoints,
         );
       } catch (error) {
-        options.assertCurrent?.();
+        assertSessionCurrent(session.id, sessionGeneration);
         const uploadError = await toUploadOperationError(error, sessionFile.finalPath);
-        options.assertCurrent?.();
+        assertSessionCurrent(session.id, sessionGeneration);
         const compatibilityName = shouldRetryWithCompatibilityName(uploadError, sessionFile.name)
           ? buildCompatibilityUploadName(sessionFile.name, reservedRemoteNames)
           : undefined;
         if (!compatibilityName) throw uploadError;
         const compatibilityPath = joinRemotePath(session.remotePath, compatibilityName);
         await inspectPathForExpectedSize(client, compatibilityPath, entry.stat.size, resolver);
-        options.assertCurrent?.();
+        assertSessionCurrent(session.id, sessionGeneration);
         store.updateFile(session.id, entry.relativePath, {
           name: compatibilityName,
           stagingPath: compatibilityPath,
@@ -1371,7 +1415,7 @@ async function uploadWithTransferSession(
           throw await toUploadOperationError(compatibilityError, compatibilityPath);
         }
       }
-      options.assertCurrent?.();
+      assertSessionCurrent(session.id, sessionGeneration);
       sessionFile = store.getFile(session.id, entry.relativePath, sessionGeneration)!;
       if (transfer.verificationStatus === "awaiting_verification") {
         const now = Date.now();
@@ -1398,7 +1442,7 @@ async function uploadWithTransferSession(
       sessionFile = store.getFile(session.id, entry.relativePath, sessionGeneration)!;
       finalFiles.push(transferFileRecord({ ...entry, sessionFile }, config, metadata, "verified"));
     } catch (error) {
-      options.assertCurrent?.();
+      assertSessionCurrent(session.id, sessionGeneration);
       store.updateFile(session.id, entry.relativePath, {
         status: "failed",
         lastError: sanitizeUploadText(String(errorRecord(error).message || error)),

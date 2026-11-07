@@ -9,6 +9,8 @@ test('task error boundary preserves Error messages and validates control flags',
   assert.equal(readTaskFailure(error).qualityValidation, false);
   assert.equal(readTaskFailure(error).retryAfterMs, 100);
   assert.equal(readTaskFailure({ retryAfterMs: Infinity }).retryAfterMs, undefined);
+  assert.equal(readTaskFailure({uploadExecutionStale: true}).uploadExecutionStale, true);
+  assert.equal(readTaskFailure({uploadExecutionStale: 'true'}).uploadExecutionStale, false);
 });
 
 test('preclassified upload failures retain conflict and backend evidence', () => {

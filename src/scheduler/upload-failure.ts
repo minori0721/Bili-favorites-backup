@@ -33,6 +33,10 @@ export function createUploadFailureHandler(dependencies: Dependencies) {
     console.error('[Queue] Task ' + task.name + ' ' + (error.deferToNextCycle ? 'deferred to next cycle' : 'permanently failed') + ': ' + sanitizeUploadText(error.message || error));
   return (task: UploadTask | QualityUploadPhaseTask, rawError: unknown) => {
       const error = readTaskFailure(rawError);
+      if (error.uploadExecutionStale) {
+        deps.dispatchPersistentJobs();
+        return;
+      }
       if (task instanceof UploadTask && task.encodingRetry) {
         deps.handleEncodingRetryUploadError(task, rawError);
         return;

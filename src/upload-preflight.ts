@@ -23,6 +23,7 @@ export interface UploadTargetPreflightEntry {
   expectedSize: number;
   observed: ObservedRemoteEntry;
   currentSessionPutAccepted: boolean;
+  currentSessionContentVerified?: boolean;
 }
 
 export type UploadGroupPreflightDecision =
@@ -141,14 +142,14 @@ export function decideUploadGroupPreflight(input: {
         `远端存在同名但大小不同的文件，系统没有覆盖它（期望 ${target.expectedSize}，实际 ${observed.size ?? "未知"}）`,
       );
     }
-    if (input.intent === "normal_backup" && !target.currentSessionPutAccepted) {
+    if (input.intent === "normal_backup" && !target.currentSessionPutAccepted && !target.currentSessionContentVerified) {
       throw new UploadPreflightConflictError(
         "UPLOAD_UNKNOWN_SAME_SIZE_TARGET",
         "远端存在同名同大小文件，但缺少旧归档证明或本次上传证明，系统没有把它标记为上传成功",
       );
     }
     acceptedExistingPaths.push(normalizedPath(target.path));
-    resumed ||= target.currentSessionPutAccepted;
+    resumed ||= target.currentSessionPutAccepted || target.currentSessionContentVerified === true;
   }
 
   return {

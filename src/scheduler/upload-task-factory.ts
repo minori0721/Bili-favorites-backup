@@ -21,7 +21,8 @@ interface Dependencies {
 export function createUploadTaskFactory(deps: Dependencies) {
   function build(item: RecoveryUploadItem) {
     const epoch = deps.generation();
-    const assertCurrent = () => { if (epoch !== deps.generation()) throw new Error('Upload task belongs to an inactive runtime'); };
+    const staleExecution = (message: string) => Object.assign(new Error(message), {uploadExecutionStale: true});
+    const assertCurrent = () => { if (epoch !== deps.generation()) throw staleExecution('Upload task belongs to an inactive runtime'); };
     const relationProof = item.userId && Number.isInteger(item.mediaId)
       ? deps.stateManager.getRelationStatus(item.userId, Number(item.mediaId), item.bvid)
       : null;
@@ -55,6 +56,7 @@ export function createUploadTaskFactory(deps: Dependencies) {
       sessionId: item.sessionId,
       sessionGeneration: item.sessionGeneration,
       sessionDedupeKey: item.sessionDedupeKey,
+      uploadContentProof: item.uploadContentProof,
       conflictArchiveSegment: item.conflictArchiveSegment,
       conflictArchiveRoot: item.remotePath,
       conflictArchiveOldFiles,
@@ -142,7 +144,12 @@ export function createUploadTaskFactory(deps: Dependencies) {
       const live = deps.jobStore.findById(uploadTask.persistentJobId);
       if (!live || live.leaseOwner !== deps.leaseOwner || !['leased', 'running'].includes(live.status)
         || (uploadTask.sessionId && (live.payload.sessionId !== uploadTask.sessionId
-          || live.payload.sessionGeneration !== uploadTask.sessionGeneration))) throw new Error('Upload task execution ownership changed');
+          || live.payload.sessionGeneration !== uploadTask.sessionGeneration))) throw staleExecution('Upload task execution ownership changed');
+      if (uploadTask.sessionId) {
+        const session = deps.transferSessions.get(uploadTask.sessionId);
+        if (!session || (uploadTask.sessionGeneration !== undefined && session.generation !== uploadTask.sessionGeneration)
+          || session.phase === 'superseded') throw staleExecution('Upload task session ownership changed');
+      }
     };
     uploadTask.onTransferContent = (task, file) => {
       task.assertExecutionCurrent?.();
