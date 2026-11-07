@@ -10,7 +10,7 @@
 
 ## BBDown
 
-- 固定工具：[bfb-2.0.8](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.8)。对应源码提交 [`8699466322ee5e898c1fe9a443f91d88182c1fbf`](https://github.com/minori0721/BBDown/tree/8699466322ee5e898c1fe9a443f91d88182c1fbf)；[下载该提交源码](https://github.com/minori0721/BBDown/archive/8699466322ee5e898c1fe9a443f91d88182c1fbf.tar.gz)。项目文件包含 NuGet 版本，`.github/workflows/bfb-release.yml` 记录 Native AOT 构建过程。
+- 固定工具：[bfb-2.0.9](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.9)。对应源码提交 [`9cb64e86d6ee338e0786f52be3807a7a00c0b98c`](https://github.com/minori0721/BBDown/tree/9cb64e86d6ee338e0786f52be3807a7a00c0b98c)；[下载该提交源码](https://github.com/minori0721/BBDown/archive/9cb64e86d6ee338e0786f52be3807a7a00c0b98c.tar.gz)。项目文件包含 NuGet 版本，`.github/workflows/bfb-release.yml` 记录 Native AOT 构建过程。
 - 上游为 nilaoda/BBDown（MIT）；本仓库随附其版权原文。PlayerUnite 子集的来源标注为 `aaa1115910/bv`（MIT），也附带该项目许可。
 - **待补齐**：旧 `BBDown_linux-x64.zip` 仅含可执行文件，原文件和 SHA256 保持不变。其 .NET / NuGet Native AOT 组件的完整第三方声明需另补配套材料，后续工具包应一并提供。当前 BFB 镜像已保留 BBDown、bv 许可。
 

@@ -25,6 +25,7 @@ import {
 export const DOWNLOAD_SESSION_FILE = ".bfb-download.json";
 export const DOWNLOAD_RETAINED_FILE = ".bfb-retained.json";
 export const BBDOWN_SOURCE_COMMIT = BBDOWN_BUILD_INFO.commit;
+const PREVIOUS_BBDOWN_2_0_8_COMMIT = "8699466322ee5e898c1fe9a443f91d88182c1fbf";
 const PREVIOUS_BBDOWN_2_0_7_COMMIT = "35a26fab051528532e126af7271dc1ca1be1746c";
 const PREVIOUS_BBDOWN_2_0_6_COMMIT = "b4d4ba36a7934d8490c5a43274941022eac5c483";
 const PREVIOUS_BBDOWN_PATCH_COMMIT = "fa7209d63bd73a4ab07913ce1478a0e13056ad09";
@@ -1419,7 +1420,7 @@ export async function prepareDownloadSession(options: {
         && previousSnapshot.hiRes === nextSnapshot.hiRes
         && previousSnapshot.dolby === nextSnapshot.dolby
         && previousSnapshot.filenameTemplate === nextSnapshot.filenameTemplate;
-      const compatibleSameApiBbdownUpgrade = [PREVIOUS_BBDOWN_2_0_7_COMMIT, PREVIOUS_BBDOWN_2_0_6_COMMIT, PREVIOUS_BBDOWN_PATCH_COMMIT, PREVIOUS_BBDOWN_INTERACTIVE_COMMIT, PREVIOUS_BBDOWN_SOURCE_COMMIT].includes(manifest.bbdownCommit)
+      const compatibleSameApiBbdownUpgrade = [PREVIOUS_BBDOWN_2_0_8_COMMIT, PREVIOUS_BBDOWN_2_0_7_COMMIT, PREVIOUS_BBDOWN_2_0_6_COMMIT, PREVIOUS_BBDOWN_PATCH_COMMIT, PREVIOUS_BBDOWN_INTERACTIVE_COMMIT, PREVIOUS_BBDOWN_SOURCE_COMMIT].includes(manifest.bbdownCommit)
         && previousSnapshot.apiMode === nextSnapshot.apiMode
         && sameRuntimeConfig;
       const compatibleBbdownUpgrade = compatibleSameApiBbdownUpgrade || (
@@ -1437,6 +1438,7 @@ export async function prepareDownloadSession(options: {
         && sameRuntimeConfig
         && (
           manifest.bbdownCommit === BBDOWN_SOURCE_COMMIT
+          || manifest.bbdownCommit === PREVIOUS_BBDOWN_2_0_8_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_2_0_7_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_2_0_6_COMMIT
           || manifest.bbdownCommit === PREVIOUS_BBDOWN_PATCH_COMMIT
