@@ -70,7 +70,7 @@ test('prefetched downloads remain leased beyond thirty minutes and never appear 
   } finally { await f.close(); }
 });
 
-test('all three queues renew prefetched and retry-wait claims using their own lease duration', async () => {
+test('all three queues renew prefetched and retry-wait claims for five minutes', async () => {
   const f = fixture();
   try {
     for (const [kind, queue] of [['download', f.download], ['upload', f.upload], ['verify_upload', f.verification]] as const) {
@@ -87,8 +87,55 @@ test('all three queues renew prefetched and retry-wait claims using their own le
     f.dispatcher.renewLeases();
     const states = [f.download, f.upload, f.verification].map(queue => f.jobs.findById(queue.getTasks()[0].persistentJobId!)!);
     assert.ok(states.every(job => job.status === 'leased' && job.leaseOwner === f.owner));
-    assert.equal(states[0].leaseExpiresAt! - states[0].updatedAt, 30 * 60_000);
+    assert.equal(states[0].leaseExpiresAt! - states[0].updatedAt, 5 * 60_000);
     assert.equal(states[2].leaseExpiresAt! - states[2].updatedAt, 5 * 60_000);
+  } finally { await f.close(); }
+});
+
+test('orphaned running download wakes at lease expiry without a sync request or stealing a live claim', async () => {
+  const root = await createTestDir('orphan-lease-wakeup');
+  const state = new StateManager({statePath: path.join(root, 'state.json'), dbPath: path.join(root, 'state.sqlite')});
+  const user = seedQueuedDownload(state, 'BVORPHAN');
+  const time = new ManualTime();
+  const f = createHeldScheduler({get: () => testConfig({pollIntervalMinutes: 1440})}, memoryUsers([user]), state,
+    {now: time.now, scheduleTimer: time.schedule});
+  try {
+    const job = f.jobs.enqueue({kind: 'download', dedupeKey: 'orphan', bvid: 'BVORPHAN',
+      payload: {primaryUserId: user.id, primaryMediaId: 1, primaryFolderTitle: 'Favorites'}});
+    f.jobs.claimByDedupeKey(job.dedupeKey, 'previous-process', 5 * 60_000);
+    assert.equal(f.jobs.nextDueAt(f.owner), time.now() + 5 * 60_000);
+    f.scheduler.start();
+    await flush();
+    time.advance(5 * 60_000 - 1);
+    assert.equal(f.queues.get('download').getSize(), 0);
+    assert.equal(f.jobs.findById(job.id)?.leaseOwner, 'previous-process');
+    time.advance(1);
+    await flush();
+    assert.equal(f.queues.get('download').getSize(), 1);
+    assert.equal(f.jobs.findById(job.id)?.leaseOwner, f.owner);
+    assert.equal(f.jobs.findById(job.id)?.leaseExpiresAt, time.now() + 5 * 60_000);
+    assert.equal(f.jobs.nextDueAt(f.owner), undefined);
+    assert.equal(f.queues.get('download').getActiveCount(), 0);
+  } finally { await f.scheduler.shutdown(1000, {closeDatabase: false}); state.close(); await removeTestDir(root); }
+});
+
+test('batch heartbeat is atomic and cannot renew expired or foreign claims', async () => {
+  const f = fixture();
+  try {
+    const jobs = [0, 1, 2].map(i => f.jobs.enqueue({kind: 'download', dedupeKey: `batch-${i}`}));
+    for (const [i, job] of jobs.entries()) f.jobs.claimByDedupeKey(job.dedupeKey, i === 2 ? 'other-owner' : f.owner, 5 * 60_000);
+    const before = jobs.map(job => f.jobs.findById(job.id)!.leaseExpiresAt);
+    f.advance(60_000);
+    f.database.db.exec(`CREATE TRIGGER fail_heartbeat BEFORE UPDATE OF lease_expires_at ON jobs
+      WHEN OLD.dedupe_key='batch-1' BEGIN SELECT RAISE(ABORT, 'injected heartbeat failure'); END`);
+    assert.throws(() => f.jobs.extendLeases(jobs.map(job => job.id), f.owner, 5 * 60_000), /heartbeat failure/);
+    assert.deepEqual(jobs.map(job => f.jobs.findById(job.id)!.leaseExpiresAt), before);
+    f.database.db.exec('DROP TRIGGER fail_heartbeat');
+    const renewed = f.jobs.extendLeases(jobs.map(job => job.id), f.owner, 5 * 60_000);
+    assert.deepEqual(renewed.renewedIds, jobs.slice(0, 2).map(job => job.id));
+    assert.equal(f.jobs.findById(jobs[2].id)!.leaseExpiresAt, before[2]);
+    f.advance(5 * 60_000);
+    assert.deepEqual(f.jobs.extendLeases([jobs[0].id], f.owner, 5 * 60_000).renewedIds, []);
   } finally { await f.close(); }
 });
 

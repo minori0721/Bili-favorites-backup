@@ -3,6 +3,7 @@ import type { JobRepository } from '../repositories/jobs.js';
 import type { StateManager, LocalCleanupPlan, RemoteFileRecord } from '../state.js';
 import type { TransferSessionRepository } from '../repositories/transfer-sessions.js';
 import type { ExistingArchiveProof } from '../upload-preflight.js';
+import { decodeUploadContentProof, hasUploadConfirmation, type UploadFileContent } from '../upload-content-proof.js';
 
 interface RecoveryCommitDependencies {
   state: Pick<StateManager, 'runAtomic' | 'restoreExistingArchiveProof' | 'markVerifiedUpload' | 'recordLocalCleanupPlan'>;
@@ -48,6 +49,7 @@ export function commitRetainedRecovery(deps: RecoveryCommitDependencies, jobId: 
 }
 
 interface VerifiedRecoveryCommand {
+  confirmedContent?: readonly UploadFileContent[];
   job: PersistentJobRecord;
   session: NonNullable<ReturnType<TransferSessionRepository['get']>>;
   files: ReturnType<TransferSessionRepository['listFiles']>;
@@ -71,7 +73,8 @@ export function commitVerifiedRecovery(deps: RecoveryCommitDependencies, command
     const active = deps.sessions.get(session.id);
     if (!active || active.generation !== expectedGeneration || active.phase === 'superseded') throw new Error('Recovery attempt changed before commit');
     const activeFiles = deps.sessions.listFiles(session.id, expectedGeneration);
-    if (files.length === 0 || activeFiles.length !== files.length || activeFiles.some(file => !file.putAcceptedAt
+    const contentProof = decodeUploadContentProof(current.payload.uploadContentProof);
+    if (files.length === 0 || activeFiles.length !== files.length || activeFiles.some(file => !hasUploadConfirmation(contentProof, active, file, command.confirmedContent)
       || !files.some(expected => expected.relativePath === file.relativePath
         && expected.finalPath === file.finalPath && expected.expectedSize === file.expectedSize
         && expected.putAcceptedAt === file.putAcceptedAt))) {

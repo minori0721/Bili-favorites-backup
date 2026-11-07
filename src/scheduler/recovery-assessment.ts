@@ -17,6 +17,8 @@ import { PersistedDomainDecodeError } from '../repositories/domain-decoders.js';
 import { decodeRecoveryFiles } from './recovery-projection.js';
 import { RecoveryEvidencePreservationError, type RecoveryEvidenceResult } from './recovery-evidence-rebuild.js';
 import { canResumePartialUpload } from './partial-upload-resume.js';
+import { contentProofForFile, decodeUploadContentProof, type UploadFileContent } from '../upload-content-proof.js';
+import { createRemoteContentReader, type RemoteContentReader } from '../remote-content-inspection.js';
 type Session = NonNullable<ReturnType<TransferSessionRepository['get']>>;
 type Files = ReturnType<TransferSessionRepository['listFiles']>;
 interface Dependencies {
@@ -25,6 +27,7 @@ interface Dependencies {
   configStore: Pick<ConfigStore, 'get'>;
   recoveryJobLocks: RecoveryLockAccess;
   remoteFileInspector: typeof inspectRemoteFileSize;
+  remoteContentReader?: RemoteContentReader;
   now(): number;
   atomic<T>(work: () => T): T;
   canRun(): boolean;
@@ -40,7 +43,7 @@ interface Dependencies {
   inspectRecoveryLocalFiles(job: PersistentJobRecord): { status: RecoveryAssessment['localStatus']; session: Session | null; files: Files };
   persistedExistingArchiveProof(payload: unknown): ExistingArchiveProof | null;
   finalizeRetainedArchiveRecovery(job: PersistentJobRecord, proof: ExistingArchiveProof): boolean;
-  finalizeVerifiedRecovery(job: PersistentJobRecord, session: Session, files: Files): boolean;
+  finalizeVerifiedRecovery(job: PersistentJobRecord, session: Session, files: Files, confirmedContent?: readonly UploadFileContent[]): boolean;
   startConflictCandidate(jobId: string, automatic: boolean): { ok: boolean };
   queueFreshDownloadForRecovery(job: PersistentJobRecord, status: RecoveryAssessment['localStatus'], initiated: boolean): boolean;
 }
@@ -191,7 +194,7 @@ export function createRecoveryAssessmentService(deps: Dependencies) {
           proof = deps.captureExistingArchiveProof(session.userId, session.mediaId!, session.bvid);
         }
         const priorFiles = session.generation > 1 ? deps.transferSessions.listFiles(session.id, session.generation - 1) : [];
-        const matching = proof && priorFiles.length > 0 && priorFiles.every((file) => file.status === "verified" && file.putAcceptedAt)
+        const matching = proof && priorFiles.length > 0 && priorFiles.every((file) => file.status === "verified" && (file.putAcceptedAt || file.verifiedAt))
           && priorFiles.length === proof.files.length
           && priorFiles.every((file) => proof!.files.some((item) => item.path === file.finalPath && item.size === file.expectedSize))
           && deps.isVerifiedArchiveProofForRecovery({ payload: { ...payload, files: priorFiles.map((file) => file.relativePath) } }, proof);
@@ -369,16 +372,37 @@ export function createRecoveryAssessmentService(deps: Dependencies) {
       }
 
       if (results.every((item) => item.status === "verified")) {
-        if (local.files.every((file) => Boolean(file.putAcceptedAt))) {
-          const changed = deps.finalizeVerifiedRecovery(job, local.session, local.files);
+        const confirmed: UploadFileContent[] = [];
+        let contentMismatch = false;
+        try {
+          const proof = decodeUploadContentProof(payload.uploadContentProof);
+          const readContent = deps.remoteContentReader || createRemoteContentReader(deps.configStore.get());
+          for (const file of local.files) {
+            if (file.putAcceptedAt) continue;
+            const expected = contentProofForFile(proof, local.session, file);
+            if (!expected) continue;
+            const remote = await readContent(file.finalPath);
+            if (!current()) return { changed: false, stale: true };
+            if (remote && remote.size === expected.size && remote.md5 === expected.md5) confirmed.push(expected);
+            else if (remote) contentMismatch = true;
+          }
+        } catch (error) {
+          if (!current()) return { changed: false, stale: true };
+          if (error instanceof PersistedDomainDecodeError) throw error;
+          const assessment = buildRemoteRecoveryAssessment(local.status, error, '远端文件内容');
+          return { changed: update(assessment), assessment };
+        }
+        if (local.files.every(file => Boolean(file.putAcceptedAt) || confirmed.some(item => item.relativePath === file.relativePath))) {
+          const changed = deps.finalizeVerifiedRecovery(job, local.session, local.files, confirmed);
           return { changed, resolved: changed };
         }
         const assessment: RecoveryAssessment = {
           kind: "unknown_same_size",
           checkedAt: deps.now(),
           localStatus: local.status,
-          remoteStatus: "verified",
-          summary: "远端文件与本地文件同大小，但缺少本次Session的PUT证明，系统没有把它标记为本次上传成功。",
+          remoteStatus: contentMismatch ? "mismatch" : "verified",
+          summary: contentMismatch ? '远端文件内容与本次上传不一致，尚未确认本次归档。'
+            : '远端文件大小一致，但缺少上传回执或匹配的内容指纹，尚未确认本次归档。',
         };
         if (!update(assessment)) return { changed: false, stale: true };
         if (options.allowAutomatic && payload.conflictCandidateOnly !== true && assessment.candidateEligible !== false) {

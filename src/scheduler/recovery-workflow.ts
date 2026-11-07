@@ -175,8 +175,8 @@ export function createRecoveryWorkflow(deps: RecoveryWorkflowDependencies) {
     return recoveryFinalization.finalizeRetainedArchiveRecovery(job, proof, options);
   }
 
-  function finalizeVerifiedRecovery(job: import('../database.js').PersistentJobRecord, session: NonNullable<ReturnType<TransferSessionRepository["get"]>>, files: ReturnType<TransferSessionRepository["listFiles"]>) {
-    return recoveryFinalization.finalizeVerifiedRecovery(job, session, files);
+  function finalizeVerifiedRecovery(job: import('../database.js').PersistentJobRecord, session: NonNullable<ReturnType<TransferSessionRepository["get"]>>, files: ReturnType<TransferSessionRepository["listFiles"]>, confirmedContent?: readonly import('../upload-content-proof.js').UploadFileContent[]) {
+    return recoveryFinalization.finalizeVerifiedRecovery(job, session, files, confirmedContent);
   }
 
   function queueFreshDownloadForRecovery(job: import('../database.js').PersistentJobRecord, localStatus: RecoveryAssessment["localStatus"], userInitiated = false) {

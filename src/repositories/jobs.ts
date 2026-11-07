@@ -67,6 +67,7 @@ export interface JobRepository {
   claimDue(kinds: PersistentJobKind[], limit: number, leaseOwner: string, leaseMs?: number, now?: number): PersistentJobRecord[];
   markRunning(id: string, leaseOwner: string, leaseMs?: number): boolean;
   extendLease(id: string, leaseOwner: string, leaseMs?: number): boolean;
+  extendLeases(ids: readonly string[], leaseOwner: string, leaseMs: number): { renewedIds: string[]; leaseExpiresAt: number };
   complete(id: string, leaseOwner?: string): boolean;
   completeAndEnqueue(id: string, leaseOwner: string, inputs: EnqueuePersistentJob[]): PersistentJobRecord[] | null;
   retry(id: string, leaseOwner: string, error: string, notBefore: number): {
@@ -128,7 +129,7 @@ export interface JobRepository {
   removeObsoleteArchiveRecoveryCandidate(id: string): boolean;
   countOutstanding(kinds: PersistentJobKind[]): number;
   countDue(kinds: PersistentJobKind[], maxPriority?: number, now?: number): number;
-  nextDueAt(): number | undefined;
+  nextDueAt(leaseOwner?: string): number | undefined;
   scheduleSummary(kind: PersistentJobKind): {
     count: number;
     nextAt: number | undefined;

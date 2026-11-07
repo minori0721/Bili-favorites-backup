@@ -1,7 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { dataDir } from "./paths.js";
-import { readJsonFileDecoded, writeJsonFile } from "./storage.js";
+import { JsonFileDurabilityError, readJsonFileDecoded, writeJsonFile } from "./storage.js";
 import { isRecord } from "./shared/api/value.js";
 
 export interface BiliCookie {
@@ -179,7 +179,7 @@ export class UserStore {
   constructor(options: { filePath?: string; read?: () => BiliUser[]; write?: (file: string, value: BiliUser[]) => void } = {}) {
     this.filePath = options.filePath ?? usersPath;
     this.write = options.write ?? ((file, value) => writeJsonFile(file, value, { flush: true }));
-    this.read = options.read ?? (() => readJsonFileDecoded(this.filePath, defaultUsers, decodeStoredUsers));
+    this.read = options.read ?? (() => readJsonFileDecoded(this.filePath, defaultUsers, decodeStoredUsers, { flush: true }));
     this.users = [];
     this.reload();
   }
@@ -190,11 +190,23 @@ export class UserStore {
 
   reload() {
     const next = this.read();
-    if (ensureUserAppBuvids(next)) this.write(this.filePath, next);
-    this.users = next;
-    this.identities.clear();
-    for (const user of next) this.register(user, this.newIdentity(user.id));
+    const commit = () => {
+      this.users = next;
+      this.identities.clear();
+      for (const user of next) this.register(user, this.newIdentity(user.id));
+    };
+    if (ensureUserAppBuvids(next)) this.persist(next, commit);
+    else commit();
     return this.list();
+  }
+
+  private persist(next: BiliUser[], commit: () => void) {
+    try { this.write(this.filePath, next); }
+    catch (error) {
+      if (error instanceof JsonFileDurabilityError) commit();
+      throw error;
+    }
+    commit();
   }
 
   getById(id: string) {
@@ -218,11 +230,10 @@ export class UserStore {
       ensureUserAppBuvid(candidate);
       next.push(candidate);
     }
-    this.write(this.filePath, next);
-    this.users = next;
-    const identity = this.identities.get(user.id) ?? this.newIdentity(user.id);
-    this.register(next[existingIndex >= 0 ? existingIndex : next.length - 1], { ...identity, authorization: Symbol(),
-      selection: Symbol(),
+    this.persist(next, () => {
+      this.users = next;
+      const identity = this.identities.get(user.id) ?? this.newIdentity(user.id);
+      this.register(next[existingIndex >= 0 ? existingIndex : next.length - 1], { ...identity, authorization: Symbol(), selection: Symbol() });
     });
   }
 
@@ -242,25 +253,27 @@ export class UserStore {
     this.assertWritable(id);
     const candidate = { ...structuredClone(user), ...structuredClone(patch) };
     const next = this.users.map(item => item.id === id ? candidate : item);
-    this.write(this.filePath, next);
-    this.users = next;
-    const identity = this.identities.get(id)!;
-    const authorizationChanged = ['cookie', 'rawAuth', 'accessToken', 'refreshToken', 'expires', 'lastLoginAt']
-      .some(key => Object.prototype.hasOwnProperty.call(patch, key));
-    const selectionChanged = candidate.enabled !== user.enabled
-      || candidate.favorites.map(folder => folder.mediaId).join(',') !== user.favorites.map(folder => folder.mediaId).join(',');
-    this.register(candidate, { ...identity,
-      authorization: authorizationChanged ? Symbol() : identity.authorization,
-      selection: selectionChanged ? Symbol() : identity.selection,
+    this.persist(next, () => {
+      this.users = next;
+      const identity = this.identities.get(id)!;
+      const authorizationChanged = ['cookie', 'rawAuth', 'accessToken', 'refreshToken', 'expires', 'lastLoginAt']
+        .some(key => Object.prototype.hasOwnProperty.call(patch, key));
+      const selectionChanged = candidate.enabled !== user.enabled
+        || candidate.favorites.map(folder => folder.mediaId).join(',') !== user.favorites.map(folder => folder.mediaId).join(',');
+      this.register(candidate, { ...identity,
+        authorization: authorizationChanged ? Symbol() : identity.authorization,
+        selection: selectionChanged ? Symbol() : identity.selection,
+      });
     });
     return candidate;
   }
 
   remove(id: string) {
     const next = this.users.filter((user) => user.id !== id);
-    this.write(this.filePath, next);
-    this.users = next;
-    this.identities.delete(id);
+    this.persist(next, () => {
+      this.users = next;
+      this.identities.delete(id);
+    });
   }
 
   clear() {

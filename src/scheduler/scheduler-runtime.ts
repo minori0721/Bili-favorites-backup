@@ -54,6 +54,7 @@ import { createDownloadFailureHandler } from './download-failure.js';
 import { createDownloadTaskFactory } from './download-task-factory.js';
 import { createEncodingRecoveryHandlers } from './encoding-recovery-handlers.js';
 import { createFavoriteScan } from './favorite-scan.js';
+import { TASK_LEASE_MS, TASK_HEARTBEAT_MS } from './task-lease.js';
 import { createLegacyCacheRecovery } from './legacy-cache-recovery.js';
 import { createLegacyQualityMigration } from './legacy-quality-migration.js';
 import { createLocalCapacity } from './local-capacity.js';
@@ -526,8 +527,7 @@ export class SchedulerRuntime implements SchedulerControl {
     });
     for (const queue of [this.downloadQueue, this.uploadQueue, this.verificationQueue]) {
       queue.setBeforeRun(task => {
-        if(task.persistentJobId && !this.jobStore.markRunning(task.persistentJobId,this.leaseOwner,
-          queue===this.verificationQueue?5*60_000:30*60_000))return false;
+        if(task.persistentJobId && !this.jobStore.markRunning(task.persistentJobId,this.leaseOwner,TASK_LEASE_MS))return false;
         return queue===this.verificationQueue || admitArchiveTask(task);
       });
       queue.setFailureHandler(error => this.failRuntime(error));
@@ -967,7 +967,7 @@ export class SchedulerRuntime implements SchedulerControl {
   private ensureLeaseHeartbeat() {
     if (this.runtime.closed || this.runtime.failure) return;
     if (this.timers.has('heartbeat')) return;
-    this.timers.start('heartbeat', () => this.renewActiveLeases(), 60_000, true);
+    this.timers.start('heartbeat', () => this.renewActiveLeases(), TASK_HEARTBEAT_MS, true);
   }
 
   private queueHighWater(concurrency = 1, batchSize = 25) {
@@ -1079,7 +1079,7 @@ export class SchedulerRuntime implements SchedulerControl {
 
   private schedulePersistentJobWake() {
     this.timers.cancel('dispatch');
-    const nextAt = this.jobStore.nextDueAt();
+    const nextAt = this.jobStore.nextDueAt(this.leaseOwner);
     if (nextAt === undefined) return;
     this.timers.start('dispatch', () => {
       this.dispatchPersistentJobs();

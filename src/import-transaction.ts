@@ -3,6 +3,8 @@ import path from "node:path";
 import { dataDir, tempDir, databasePath } from "./paths.js";
 import { recoverDatabaseReplacement } from "./database-replacement.js";
 import { isRecord } from "./shared/api/value.js";
+import { JsonFileDurabilityError, writeJsonFile } from './storage.js';
+import { syncDirectory, syncPath } from './durability.js';
 
 interface ImportFile { target: string; staged: string; backup: string; existed: boolean }
 interface ImportRecord { version: 1; id: string; committed: boolean; rolledBack?: boolean; files: ImportFile[] }
@@ -26,9 +28,11 @@ function decodeImportRecord(value: unknown): ImportRecord {
     ...(value.rolledBack === undefined ? {} : { rolledBack: value.rolledBack }), files };
 }
 function save(record: ImportRecord) {
-  const fd = fs.openSync(`${journal}.writing`, "w", 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  fs.renameSync(`${journal}.writing`, journal);
+  try { writeJsonFile(journal, record, { flush: true }); }
+  catch (error) {
+    if (error instanceof JsonFileDurabilityError) Object.assign(error, { recoveryRequired: true });
+    throw error;
+  }
 }
 export function beginImportTransaction(id: string) {
   if (fs.existsSync(journal)) throw Object.assign(new Error("Previous import requires recovery"), { recoveryRequired: true });
@@ -68,8 +72,10 @@ export function recoverImportTransaction() {
         // Copy instead of consuming the backup: another crash can repeat recovery.
         fs.rmSync(file.target, { recursive: true, force: true });
         fs.cpSync(file.backup, file.target, { recursive: true });
+        syncPath(file.target);
       } else if (!file.existed) fs.rmSync(file.target, { recursive: true, force: true });
       else if (!fs.existsSync(file.staged) || !fs.existsSync(file.target)) throw new Error("Import backup is missing; refusing ambiguous recovery");
+      syncDirectory(path.dirname(file.target));
     }
   }
   // Files are now consistent. Cleanup failure retains the durable decision.

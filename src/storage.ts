@@ -1,6 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { syncCreatedDirectory } from './durability.js';
+
+/** Rename succeeded, but stable storage could not be confirmed. The visible value is already new. */
+export class JsonFileDurabilityError extends Error {
+  readonly committed = true;
+  constructor(cause: unknown) {
+    super('文件已替换，但目录落盘失败；请检查磁盘后重试');
+    Object.assign(this, { cause });
+    this.name = 'JsonFileDurabilityError';
+  }
+}
 
 export class JsonFileDecodeError extends Error {
   constructor(filePath: string, readonly preservedAt: string | null, cause: unknown) {
@@ -15,10 +26,10 @@ export function readJsonFileDecoded<T>(
   filePath: string,
   defaultValue: T,
   decode: (value: unknown) => T,
+  options: { flush?: boolean } = {},
 ): T {
   if (!fs.existsSync(filePath)) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2), "utf-8");
+    writeJsonFile(filePath, defaultValue, options);
     return defaultValue;
   }
   const contents = fs.readFileSync(filePath, "utf-8");
@@ -39,7 +50,8 @@ export function readJsonFileDecoded<T>(
 
 export function writeJsonFile<T>(filePath: string, value: T, options: { flush?: boolean } = {}): void {
   const contents = JSON.stringify(value, null, 2);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const directory = path.dirname(filePath);
+  const firstCreated = fs.mkdirSync(directory, { recursive: true });
   const tempPath = `${filePath}.${randomUUID()}.tmp`;
   let descriptor: number | undefined;
   let created = false;
@@ -54,8 +66,13 @@ export function writeJsonFile<T>(filePath: string, value: T, options: { flush?: 
     if (options.flush) fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
-    // Rename is the commit point. No fallible cleanup follows a successful rename.
+    // The visible value changes at rename; a later sync failure must not be reported as a rollback.
     fs.renameSync(tempPath, filePath);
+    created = false;
+    if (options.flush) {
+      try { syncCreatedDirectory(directory, firstCreated); }
+      catch (error) { throw new JsonFileDurabilityError(error); }
+    }
   } catch (error) {
     if (descriptor !== undefined) {
       try { fs.closeSync(descriptor); }

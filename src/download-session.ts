@@ -13,6 +13,7 @@ import type { QualityArtifactProfile } from "./quality-artifact.js";
 import type { UploadFileMetadata } from "./state.js";
 import { BBDOWN_BUILD_INFO } from "./generated/bbdown-build-info.js";
 import { writeJsonFile } from "./storage.js";
+import { syncCompletedFile, syncCreatedDirectory } from './durability.js';
 import { isRecoveryProtected, RECOVERY_PROTECTION_FILE } from './recovery-file-protection.js';
 import {
   actualQualityLabel,
@@ -700,7 +701,7 @@ export function writeDownloadSession(downloadDir: string, manifest: DownloadSess
   // This keeps manifests portable between Windows and Linux runtimes.
   manifest.outputs = normalizeManifestOutputPaths(manifest.outputs);
   manifest.history = normalizeManifestOutputPaths(manifest.history);
-  writeJsonFile(downloadSessionPath(downloadDir), manifest);
+  writeJsonFile(downloadSessionPath(downloadDir), manifest, { flush: true });
 }
 
 export function buildUploadFileMetadataFromSession(
@@ -1246,15 +1247,19 @@ async function scanAndValidateOutputs(downloadDir: string, manifest: DownloadSes
     const filePath = path.join(downloadDir, output.relativePath);
     const page = pagesByIndex.get(output.pageIndex);
     if (!fs.existsSync(filePath) || !page || page.cid !== output.cid) continue;
+    let details: Awaited<ReturnType<typeof validateMediaOutput>>;
     try {
-      const details = await validateMediaOutput(filePath, page.duration);
+      details = await validateMediaOutput(filePath, page.duration);
       if (output.quickHash && output.quickHash !== details.quickHash) throw new Error("media quick hash changed");
-      outputs.push({ ...output, ...details, verifiedAt: nowIso() });
     } catch {
       if (path.dirname(output.relativePath) === ".") {
         await quarantineFile(downloadDir, output.relativePath, "_invalid");
       }
+      continue;
     }
+    // Disk failure is not media corruption: leave the original in place and stop this attempt.
+    await syncCompletedFile(filePath, downloadDir, details.size);
+    outputs.push({ ...output, ...details, verifiedAt: nowIso() });
   }
   const recordedPaths = new Set(outputs.map((output) => output.relativePath));
   for (const relativePath of candidateFiles) {
@@ -1270,6 +1275,7 @@ async function scanAndValidateOutputs(downloadDir: string, manifest: DownloadSes
       if (details) {
         const historyRelative = path.join("_history", safeStamp(manifest.snapshotAt), fileName);
         await movePreserving(path.join(downloadDir, relativePath), path.join(downloadDir, historyRelative));
+        await syncCompletedFile(path.join(downloadDir, historyRelative), downloadDir, details.size);
         manifest.history.push({
           ...details,
           pageIndex: pageIndex || 0,
@@ -1284,8 +1290,14 @@ async function scanAndValidateOutputs(downloadDir: string, manifest: DownloadSes
       }
       continue;
     }
+    let details: Awaited<ReturnType<typeof validateMediaOutput>>;
     try {
-      const details = await validateMediaOutput(path.join(downloadDir, relativePath), page.duration);
+      details = await validateMediaOutput(path.join(downloadDir, relativePath), page.duration);
+    } catch {
+      await quarantineFile(downloadDir, relativePath, "_invalid");
+      continue;
+    }
+    await syncCompletedFile(path.join(downloadDir, relativePath), downloadDir, details.size);
       outputs.push({
         ...details,
         pageIndex: page.index,
@@ -1294,9 +1306,6 @@ async function scanAndValidateOutputs(downloadDir: string, manifest: DownloadSes
         verifiedAt: nowIso(),
       });
       recordedPaths.add(relativePath);
-    } catch {
-      await quarantineFile(downloadDir, relativePath, "_invalid");
-    }
   }
   const uniqueByCid = new Map<number, DownloadOutputRecord>();
   for (const output of outputs) {
@@ -1365,7 +1374,8 @@ export async function prepareDownloadSession(options: {
   deferCompleteStatus?: boolean;
 }) : Promise<PreparedDownloadSession> {
   const { downloadDir, bvid, accountUid, config } = options;
-  await fs.promises.mkdir(downloadDir, { recursive: true });
+  const firstCreated = await fs.promises.mkdir(downloadDir, { recursive: true });
+  syncCreatedDirectory(downloadDir, firstCreated ?? downloadDir);
   const fingerprint = buildDownloadConfigFingerprint(config, accountUid);
   const session = readDownloadSession(downloadDir);
   let manifest = session.kind === "valid" ? session.manifest : null;
@@ -1598,7 +1608,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       bvid: path.basename(downloadDir),
       retainedAt: nowIso(),
       reason: "The download session manifest was missing during cleanup; all local files were preserved.",
-    });
+    }, { flush: true });
     return { removedFiles: 0, removedRelativePaths: [], removedDirectories: 0, removedBytes: 0, removedDirectory: false, retainedBytes };
   }
   const manifest = session.manifest;
@@ -1701,7 +1711,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
       sessionId: manifest.sessionId,
       retainedAt: nowIso(),
       reason: "Unverified or incomplete local artifacts were preserved after confirmed outputs were cleaned.",
-    });
+    }, { flush: true });
     return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
   }
   writeJsonFile(path.join(downloadDir, DOWNLOAD_RETAINED_FILE), {
@@ -1710,7 +1720,7 @@ export async function cleanupUploadedSessionFiles(downloadDir: string, options: 
     sessionId: manifest.sessionId,
     retainedAt: nowIso(),
     reason: "Unverified local artifacts were preserved after all verified outputs were uploaded.",
-  });
+  }, { flush: true });
   return { removedFiles, removedRelativePaths: [...removedPaths], removedDirectories: 0, removedBytes, removedDirectory: false, retainedBytes: directorySizeSync(downloadDir) };
 }
 

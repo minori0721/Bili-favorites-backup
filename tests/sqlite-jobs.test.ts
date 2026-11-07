@@ -406,7 +406,7 @@ test("SQLite runtime pragmas and persistent job leasing are deterministic", () =
   try {
     assert.equal(database.db.pragma("foreign_keys", { simple: true }), 1);
     assert.equal(database.db.pragma("busy_timeout", { simple: true }), 5000);
-    assert.equal(String(database.db.pragma("synchronous", { simple: true })), "1");
+    assert.equal(String(database.db.pragma("synchronous", { simple: true })), "2");
 
     const jobs = new PersistentJobStore(database);
     const base = Date.now();

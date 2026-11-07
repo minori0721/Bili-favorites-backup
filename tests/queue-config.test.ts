@@ -319,7 +319,7 @@ test("repeated start preserves scheduled admission and renews active leases only
     assert.ok(firstLease);
     scheduler.start();
     time.advance(59_000);
-    assert.equal(jobs.findById(job.id)?.leaseExpiresAt, time.now() + 30 * 60_000);
+    assert.equal(jobs.findById(job.id)?.leaseExpiresAt, time.now() + 5 * 60_000);
     assert.ok(jobs.findById(job.id)!.leaseExpiresAt! > firstLease);
     task.status = 'completed';
     queues.get('download').removePendingTasks(() => true);

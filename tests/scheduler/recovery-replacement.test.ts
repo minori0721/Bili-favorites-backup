@@ -19,6 +19,30 @@ import { buildLocalCleanupPlan } from '../../src/scheduler/local-cleanup-plan.js
 import { commitVerifiedTransfer } from '../../src/scheduler/verified-transfer.js';
 import { createTestDir, removeTestDir, testConfig } from '../helpers.js';
 
+for (const change of ['none', 'runtime', 'lease', 'session'] as const) test(`production content checkpoint rejects late upload callbacks: ${change}`, async () => {
+  const f = await fixture();
+  let generation = 0;
+  try {
+    const task = createUploadTaskFactory({ stateManager: f.state, configStore: { get: testConfig }, jobStore: f.jobs,
+      transferSessions: f.sessions, leaseOwner: 'owner', generation: () => generation, captureExistingArchiveProof: () => undefined,
+      legacyConflictSideEffectsStarted: () => false, restoreConflictCandidateExistingArchive: () => false }).build(parseRecoveryUploadItem({
+        bvid: 'BVREPLACE', localDir: f.next, remotePath: '/archive', userId: 'u', mediaId: 1, files: ['new.mp4'] }));
+    task.persistentJobId = f.command.jobId;
+    task.sessionId = f.session.id; task.sessionGeneration = f.session.generation;
+    task.onTransferSession!(task, f.session.id, f.session.generation);
+    if (change === 'runtime') generation++;
+    if (change === 'lease') f.jobs.complete(f.command.jobId);
+    if (change === 'session') {
+      const job = f.jobs.findById(f.command.jobId)!;
+      f.jobs.updatePayload(job.id, { ...job.payload, sessionGeneration: f.session.generation + 1 });
+    }
+    const checkpoint = () => task.onTransferContent!(task, { sessionId: f.session.id, generation: f.session.generation,
+      relativePath: 'new.mp4', finalPath: '/archive/new.mp4', size: 5, md5: 'a'.repeat(32) });
+    if (change === 'none') { checkpoint(); assert.ok(f.jobs.findById(f.command.jobId)?.payload.uploadContentProof); }
+    else { assert.throws(checkpoint, /inactive|ownership/); assert.equal(f.jobs.findById(f.command.jobId)?.payload.uploadContentProof, undefined); }
+  } finally { await f.close(); }
+});
+
 async function fixture(extraPage = false) {
   const root = await createTestDir('replacement-cleanup'), old = path.join(root, 'old'), next = path.join(root, 'next');
   fs.mkdirSync(old); fs.mkdirSync(next); fs.writeFileSync(path.join(old, 'p1.mp4'), 'old');

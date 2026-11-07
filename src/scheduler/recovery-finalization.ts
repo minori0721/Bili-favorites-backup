@@ -12,6 +12,7 @@ import { logManager } from '../logger.js';
 import { AUTOMATIC_RECOVERY_REDOWNLOAD_LIMIT } from './retry-policy.js';
 import { protectRecoveryDirectory } from '../recovery-file-protection.js';
 import { captureRecoverySource, decodeRecoverySources, buildRecoveryReplacementPlans } from './recovery-replacement.js';
+import { decodeUploadContentProof, hasUploadConfirmation, type UploadFileContent } from '../upload-content-proof.js';
 interface Dependencies {
   stateManager: Parameters<typeof commitRetainedRecovery>[0]['state'] & Pick<StateManager, 'getRelationStatus' | 'resetRelationForRetry'>;
   jobStore: Pick<JobRepository, 'findById' | 'complete'>;
@@ -60,7 +61,7 @@ export function createRecoveryFinalization(deps: Dependencies) {
     return true;
   }
 
-  function finalizeVerifiedRecovery(job: PersistentJobRecord, session: NonNullable<ReturnType<TransferSessionRepository["get"]>>, files: ReturnType<TransferSessionRepository["listFiles"]>) {
+  function finalizeVerifiedRecovery(job: PersistentJobRecord, session: NonNullable<ReturnType<TransferSessionRepository["get"]>>, files: ReturnType<TransferSessionRepository["listFiles"]>, confirmedContent: readonly UploadFileContent[] = []) {
     if (!deps.canRun()) return false;
     const current = deps.jobStore.findById(job.id);
     if (!current || !current.payload.awaitingManualRecovery) return false;
@@ -70,7 +71,8 @@ export function createRecoveryFinalization(deps: Dependencies) {
       ? Number(payload.sessionGeneration)
       : session.generation;
     if (session.generation !== expectedGeneration) return false;
-    if (files.length === 0 || !files.every((file) => Boolean(file.putAcceptedAt))) return false;
+    const contentProof = decodeUploadContentProof(current.payload.uploadContentProof);
+    if (files.length === 0 || !files.every(file => hasUploadConfirmation(contentProof, session, file, confirmedContent))) return false;
     const now = deps.now();
     const verifiedFiles = deps.verifiedFilesFromRecovery(current, files);
     const cleanupPlan = deps.buildLocalCleanupPlan(
@@ -86,6 +88,7 @@ export function createRecoveryFinalization(deps: Dependencies) {
     commitVerifiedRecovery({ state: deps.stateManager, jobs: deps.jobStore, sessions: deps.transferSessions }, {
       job: current, session, files, verifiedFiles, cleanupPlan, expectedGeneration, now,
       replacementPlans,
+      confirmedContent,
     });
     if (cleanupPlan) void deps.cleanup(String(current.bvid || session.bvid), String(payload.localDir || session.localDir));
     for (const plan of replacementPlans) void deps.cleanup(session.bvid, plan.localDir);

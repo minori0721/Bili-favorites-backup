@@ -29,6 +29,8 @@ import fs from "node:fs";
 import { uploadBandwidth } from './transfer-bandwidth.js';
 import path from "node:path";
 import crypto from "node:crypto";
+import { Transform } from 'node:stream';
+import type { UploadFileContentRead } from './upload-content-proof.js';
 import { AppConfig } from "./config.js";
 import { logManager } from "./logger.js";
 import { redactRemotePathForDisplay } from "./diagnostics.js";
@@ -579,6 +581,7 @@ async function putAndVerifyLocalFile(
   allowExistingMatch = false,
   resolver: RemoteFileResolver = createRemoteFileResolver(client),
   profile?: RemoteBackendProfile,
+  checkpoints?: { contentRead?(md5: string): void; putAccepted?(): void },
 ) {
   const preflight = await inspectExpectedRemoteFile(client, remoteFile, stat.size, resolver, "risk_only");
   if (preflight === "verified") {
@@ -593,8 +596,29 @@ async function putAndVerifyLocalFile(
   await beforePut?.();
   const putOnce = async (includeExtendedTimestamps: boolean) => {
     const opened = await openVerifiedLocalUpload(localRoot, localFile, stat.size);
-    const transferStream = uploadBandwidth.wrap(opened.stream);
+    const hash = checkpoints?.contentRead ? crypto.createHash('md5') : undefined;
+    let bytes = 0;
+    const fingerprint = hash ? new Transform({
+      transform(chunk: Buffer, _encoding, done) {
+        bytes += chunk.length;
+        if (bytes > stat.size) { done(new Error('Upload content changed while reading')); return; }
+        hash.update(chunk);
+        if (bytes < stat.size) { done(null, chunk); return; }
+        // HTTP may acknowledge Content-Length bytes before the stream emits EOF.
+        // Persist the complete fingerprint before releasing the final chunk.
+        void (async () => {
+          await assertLocalUploadUnchanged(opened, stat.size);
+          await assertPathUnchanged(opened.stat);
+          checkpoints!.contentRead!(hash.digest('hex'));
+        })().then(() => done(null, chunk), done);
+      },
+      flush(done) { done(bytes === stat.size ? undefined : new Error('Upload content stream was incomplete')); },
+    }) : undefined;
+    const forwardError = (error: Error) => fingerprint?.destroy(error);
+    if (fingerprint) opened.stream.on('error', forwardError);
+    const transferStream = uploadBandwidth.wrap(fingerprint || opened.stream);
     try {
+      if (fingerprint) opened.stream.pipe(fingerprint);
       const putAccepted = await client.putFileContents(remoteFile, transferStream, {
         contentLength: false,
         // The preflight is advisory; conditional PUT closes the race where
@@ -602,9 +626,11 @@ async function putAndVerifyLocalFile(
         overwrite: false,
         headers: buildUploadHeaders(localFile, opened.stat, includeExtendedTimestamps),
       });
+      if (putAccepted !== false) checkpoints?.putAccepted?.();
       return { putAccepted, openedStat: opened.stat };
     } finally {
       transferStream.destroy();
+      fingerprint?.destroy();
       opened.stream.destroy();
       await opened.handle.close().catch((closeError) => {
         console.warn(`[Uploader] file close failed after upload: ${String(closeError)}`);
@@ -722,6 +748,8 @@ export interface UploadClient extends RemoteDirectoryClient {
 }
 
 export interface UploadOptions {
+  assertCurrent?: () => void;
+  onFileContentRead?: (file: UploadFileContentRead) => void;
   deferSessionCompletion?: boolean;
   onPreparedSession?: (session: { id: string; generation: number }) => void;
   /** @deprecated Local cleanup belongs to the committed archive owner, never the transport. */
@@ -1277,6 +1305,19 @@ async function uploadWithTransferSession(
         await beforePut();
       };
       let transfer: Awaited<ReturnType<typeof putAndVerifyLocalFile>>;
+      const checkpoints = {
+        contentRead: options.onFileContentRead ? (md5: string) => {
+          options.assertCurrent?.();
+          options.onFileContentRead!({ sessionId: session.id, generation: sessionGeneration,
+            relativePath: entry.relativePath, finalPath: sessionFile.finalPath, size: entry.stat.size, md5 });
+        } : undefined,
+        putAccepted: () => {
+          options.assertCurrent?.();
+          if (!store.updateFile(session.id, entry.relativePath, { putAcceptedAt: Date.now() }, sessionGeneration)) {
+            throw new Error('Upload file disappeared before PUT checkpoint');
+          }
+        },
+      };
       try {
         transfer = await putAndVerifyLocalFile(
           client,
@@ -1291,15 +1332,19 @@ async function uploadWithTransferSession(
              || acceptedExistingPaths.has(sessionFile.finalPath.replace(/\\/g, "/")),
            resolver,
            profile,
+           checkpoints,
         );
       } catch (error) {
+        options.assertCurrent?.();
         const uploadError = await toUploadOperationError(error, sessionFile.finalPath);
+        options.assertCurrent?.();
         const compatibilityName = shouldRetryWithCompatibilityName(uploadError, sessionFile.name)
           ? buildCompatibilityUploadName(sessionFile.name, reservedRemoteNames)
           : undefined;
         if (!compatibilityName) throw uploadError;
         const compatibilityPath = joinRemotePath(session.remotePath, compatibilityName);
         await inspectPathForExpectedSize(client, compatibilityPath, entry.stat.size, resolver);
+        options.assertCurrent?.();
         store.updateFile(session.id, entry.relativePath, {
           name: compatibilityName,
           stagingPath: compatibilityPath,
@@ -1320,16 +1365,19 @@ async function uploadWithTransferSession(
            uploadIntent !== "normal_backup",
            resolver,
            profile,
+           checkpoints,
           );
         } catch (compatibilityError) {
           throw await toUploadOperationError(compatibilityError, compatibilityPath);
         }
       }
+      options.assertCurrent?.();
+      sessionFile = store.getFile(session.id, entry.relativePath, sessionGeneration)!;
       if (transfer.verificationStatus === "awaiting_verification") {
         const now = Date.now();
         store.updateFile(session.id, entry.relativePath, {
           status: "awaiting_remote",
-          putAcceptedAt: transfer.putAccepted ? now : sessionFile.putAcceptedAt,
+          putAcceptedAt: sessionFile.putAcceptedAt || (transfer.putAccepted ? now : undefined),
           nextCheckAt: now + 2_000,
           lastError: transfer.putAccepted
             ? "PUT 已接受，等待正式文件可见"
@@ -1342,7 +1390,7 @@ async function uploadWithTransferSession(
       }
       store.updateFile(session.id, entry.relativePath, {
         status: "verified",
-        putAcceptedAt: sessionFile.putAcceptedAt || Date.now(),
+        putAcceptedAt: sessionFile.putAcceptedAt || (transfer.putAccepted ? Date.now() : undefined),
         verifiedAt: Date.now(),
         nextCheckAt: null,
         lastError: null,
@@ -1350,6 +1398,7 @@ async function uploadWithTransferSession(
       sessionFile = store.getFile(session.id, entry.relativePath, sessionGeneration)!;
       finalFiles.push(transferFileRecord({ ...entry, sessionFile }, config, metadata, "verified"));
     } catch (error) {
+      options.assertCurrent?.();
       store.updateFile(session.id, entry.relativePath, {
         status: "failed",
         lastError: sanitizeUploadText(String(errorRecord(error).message || error)),

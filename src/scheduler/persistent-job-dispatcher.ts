@@ -8,6 +8,7 @@ import { QualityUpgradeCleanupTask, QualityUpgradeDownloadTask, QualityUpgradeRe
 import { parseRecoveryUploadItem, type RecoveryUploadItem } from './upload-work.js';
 import { joinRemotePath } from '../utils.js';
 import type { TransferSessionStore } from '../transfer-session.js';
+import { TASK_LEASE_MS, TASK_HEARTBEAT_MS } from './task-lease.js';
 
 export interface PersistentJobDispatcherDependencies {
   configStore: Pick<ConfigStore, 'get'>;
@@ -32,14 +33,20 @@ export interface PersistentJobDispatcherDependencies {
 /** Claims durable work and turns it into bounded in-memory tasks. */
 export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDependencies) {
   function renewLeases(force = true) {
+    const candidates = [deps.downloadQueue, deps.uploadQueue, deps.verificationQueue].flatMap(queue =>
+      queue.getTasks().filter(task => task.persistentJobId
+        && ['pending', 'running', 'retry_wait'].includes(task.status)
+        && (force || task.persistentJob?.leaseExpiresAt === undefined
+          || task.persistentJob.leaseExpiresAt <= deps.now() + TASK_HEARTBEAT_MS))
+        .map(task => ({queue, task, id: task.persistentJobId!})));
+    if (candidates.length === 0) return;
+    const renewed = deps.jobs.extendLeases(candidates.map(candidate => candidate.id), deps.leaseOwner, TASK_LEASE_MS);
+    const renewedIds = new Set(renewed.renewedIds);
     for (const queue of [deps.downloadQueue, deps.uploadQueue, deps.verificationQueue]) {
       const stale = new Set<string>();
-      for (const task of queue.getTasks()) {
-        if (!task.persistentJobId || (task.status !== 'pending' && task.status !== 'running' && task.status !== 'retry_wait')) continue;
-        const duration = queue === deps.verificationQueue ? 5 * 60_000 : 30 * 60_000;
-        if (!force && task.persistentJob?.leaseExpiresAt !== undefined && task.persistentJob.leaseExpiresAt > deps.now() + 60_000) continue;
-        if (deps.jobs.extendLease(task.persistentJobId, deps.leaseOwner, duration)) {
-          if (task.persistentJob) task.persistentJob.leaseExpiresAt = deps.now() + duration;
+      for (const {task, id} of candidates.filter(candidate => candidate.queue === queue)) {
+        if (renewedIds.has(id)) {
+          if (task.persistentJob) task.persistentJob.leaseExpiresAt = renewed.leaseExpiresAt;
           continue;
         }
         if (task.status === 'running') {
@@ -58,7 +65,7 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
     const config = deps.configStore.get();
     const downloadCapacity = Math.max(0, deps.queueHighWater(config.concurrentDownloads, config.queuePrefetchLimit) - deps.downloadQueue.getSize());
     if (downloadCapacity > 0 && deps.canCreateDownloadTask()) {
-      const jobs = deps.jobs.claimDue(['quality_download', 'download'], downloadCapacity, deps.leaseOwner, 30 * 60_000);
+      const jobs = deps.jobs.claimDue(['quality_download', 'download'], downloadCapacity, deps.leaseOwner, TASK_LEASE_MS);
       const activeQualityArtifacts = new Set(deps.downloadQueue.getTasks()
         .filter(task => task instanceof QualityUpgradeDownloadTask)
         .map(task => String(task.control.artifactKey || task.bvid || '')));
@@ -87,7 +94,7 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
 
     const uploadCapacity = Math.max(0, deps.queueHighWater(config.concurrentUploads, config.queuePrefetchLimit) - deps.uploadQueue.getSize());
     if (uploadCapacity > 0) {
-      const jobs = deps.jobs.claimDue(['upload', 'quality_upload', 'quality_replace', 'quality_cleanup', 'history_upload'], uploadCapacity, deps.leaseOwner, 30 * 60_000);
+      const jobs = deps.jobs.claimDue(['upload', 'quality_upload', 'quality_replace', 'quality_cleanup', 'history_upload'], uploadCapacity, deps.leaseOwner, TASK_LEASE_MS);
       for (const job of jobs) {
         if (!deps.accepting()) return;
         if (deps.uploadQueue.hasPersistentJob(job.id)) continue;
@@ -145,7 +152,7 @@ export function createPersistentJobDispatcher(deps: PersistentJobDispatcherDepen
 
     const verificationCapacity = Math.max(0, deps.queueHighWater(config.remoteVerifyConcurrency, config.queuePrefetchLimit) - deps.verificationQueue.getSize());
     if (verificationCapacity > 0) {
-      const jobs = deps.jobs.claimDue(['verify_upload'], verificationCapacity, deps.leaseOwner, 5 * 60_000);
+      const jobs = deps.jobs.claimDue(['verify_upload'], verificationCapacity, deps.leaseOwner, TASK_LEASE_MS);
       const factory = createVerificationTaskFactory({
         config: () => config, sessions: deps.sessions, jobs: deps.jobs, leaseOwner: deps.leaseOwner,
         rejected: (job, reason) => logManager.push({ timestamp: new Date(deps.now()).toISOString(), type: 'upload', level: 'error',

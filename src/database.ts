@@ -808,7 +808,7 @@ export class StateDatabase {
     try {
       this.db.pragma("foreign_keys = ON");
       this.db.pragma("busy_timeout = 5000");
-      this.db.pragma("synchronous = NORMAL");
+      this.db.pragma("synchronous = FULL");
       if (filePath !== ":memory:") this.db.pragma("journal_mode = WAL");
       const currentVersion = Number(this.db.pragma("user_version", { simple: true }) || 0);
       if (currentVersion > DATABASE_SCHEMA_VERSION) {

@@ -39,6 +39,48 @@ function readDownloadSession(downloadDir: string) {
   return result.kind === "valid" ? result.manifest : null;
 }
 
+test('media disk-sync failure preserves the previous manifest and media; retry syncs before completing', async t => {
+  configureFfprobe();
+  const root = await createTestDir('session-disk-sync');
+  const bvid = 'BVDURABLE';
+  const downloadDir = path.join(root, bvid);
+  const media = path.join(downloadDir, 'video.mp4');
+  const manifestFile = path.join(downloadDir, '.bfb-download.json');
+  try {
+    await prepareDownloadSession({downloadDir, bvid, accountUid: 1, config: testConfig(),
+      pages: [{index: 1, cid: 1, title: 'One', duration: 2}]});
+    const before = fs.readFileSync(manifestFile, 'utf8');
+    await createVideo(media);
+    const bytes = fs.readFileSync(media);
+    let fail = true, synced = false;
+    const open = fs.promises.open;
+    t.mock.method(fs.promises, 'open', async (...args: Parameters<typeof open>) => {
+      const handle = await open(...args);
+      if (String(args[0]) === media && typeof args[1] === 'number') {
+        const sync = handle.sync.bind(handle);
+        t.mock.method(handle, 'sync', async () => {
+          if (fail) throw new Error('injected completed-media disk failure');
+          await sync(); synced = true;
+        });
+      }
+      return handle;
+    });
+    const rename = fs.renameSync;
+    t.mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === manifestFile) assert.equal(synced, true);
+      return rename(from, to);
+    });
+    await assert.rejects(refreshDownloadSessionOutputs(downloadDir), /completed-media disk failure/);
+    assert.equal(fs.readFileSync(manifestFile, 'utf8'), before);
+    assert.deepEqual(fs.readFileSync(media), bytes);
+    assert.equal(fs.existsSync(path.join(downloadDir, '_invalid')), false);
+    fail = false;
+    const result = await refreshDownloadSessionOutputs(downloadDir);
+    assert.equal(result.manifest.status, 'complete');
+    assert.equal(result.manifest.outputs.length, 1);
+  } finally {t.mock.restoreAll(); await removeTestDir(root);}
+});
+
 test("download session reads distinguish missing, invalid JSON, invalid fields, and I/O failures", async () => {
   const runtime = await createTestDir("download-session-read-result");
   const missingDir = path.join(runtime, "missing");

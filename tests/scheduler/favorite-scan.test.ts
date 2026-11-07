@@ -26,6 +26,45 @@ function sharedRefresh(accounts: UserStore, refresh: typeof import('../../src/bi
 
 const item = { bvid: 'BVSCAN', title: 'Fixture', upperName: 'Fixture', cover: 'https://example.test/cover.jpg' };
 
+for (const fail of [false, true]) {
+  test(`page metadata commits as a group before side effects: ${fail ? 'rollback' : 'success'}`, async () => {
+    const root = await createTestDir('scan-page-commit');
+    const state = new StateManager({statePath: path.join(root, 'state.json'), dbPath: path.join(root, 'state.sqlite')});
+    const accounts = memoryUsers([user]);
+    const items = Array.from({length: 20}, (_, i) => ({...item, bvid: `BVPAGE${i}`}));
+    const database = state.getDatabase().db;
+    let effects = 0, fresh = 0;
+    if (fail) database.exec(`CREATE TRIGGER fail_scan_page BEFORE INSERT ON videos
+      WHEN NEW.bvid='BVPAGE5' BEGIN SELECT RAISE(ABORT, 'injected page failure'); END`);
+    const effect = () => {
+      effects++;
+      assert.equal(database.inTransaction, false);
+      assert.ok(items.every(item => state.getVideoMeta(item.bvid)));
+    };
+    const scan = createFavoriteScan({state, users: accounts, deletions: {folder: () => false, source: () => false},
+      now: () => 1_000, random: () => 0, sleep: async () => {}, generation: () => 0, canRun: () => true,
+      listPage: async () => ({items, page: 1, pageSize: 20, total: 20, hasMore: false}),
+      refreshAccount: async () => {throw new Error('unused');}, resolveSelfVisible: async (_cookie, _uid, value) => value,
+      cacheCover: effect, progress() {}, recordCount(n) {fresh += n;}, probe: effect,
+      enqueue() {effect(); return false;}});
+    try {
+      if (fail) {
+        await assert.rejects(scan.all(user, 1, 'Favorites'), /page failure/);
+        assert.equal(effects, 0);
+        assert.equal(fresh, 0);
+        assert.ok(items.every(item => state.getVideoMeta(item.bvid) === null));
+        assert.notEqual(state.getFolderScan(user.id, 1, 'Favorites').initStatus, 'complete');
+      } else {
+        await scan.all(user, 1, 'Favorites');
+        assert.equal(fresh, 20);
+        assert.equal(effects, 40);
+        assert.deepEqual(items.map(item => state.getRelationStatus(user.id, 1, item.bvid)?.favOrder),
+          Array.from({length: 20}, (_, i) => i + 1));
+      }
+    } finally {state.close(); await removeTestDir(root);}
+  });
+}
+
 for (const failure of [false, true]) {
   test(`self-visible ${failure ? 'failure' : 'success'} from superseded credentials cannot record or start a cooldown`, async () => {
     const root = await createTestDir('scan-visible-race');

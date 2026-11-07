@@ -2,6 +2,7 @@ import { decodeRecoverySources, type RecoverySource } from './recovery-replaceme
 import type { RemoteFileRecord, UploadFileMetadata } from '../state.js';
 import type { UploadIntent, ExistingArchiveProof } from '../upload-preflight.js';
 import type { EncodingRetryContext, StrictMediaTarget } from '../tasks.js';
+import { decodeUploadContentProof, type UploadContentProof } from '../upload-content-proof.js';
 import { optional, text, bool, integer, positive, list, oneOf, archiveProof, remoteFile, metadataMap, encodingRetry, strictTarget } from './upload-payload-decoders.js';
 
 export interface RecoveryUploadItem {
@@ -32,6 +33,7 @@ export interface RecoveryUploadItem {
   conflictArchiveVerifiedPaths?: string[];
   sessionId?: string;
   sessionGeneration?: number;
+  uploadContentProof?: UploadContentProof;
   sessionDedupeKey?: string;
   allowReupload?: boolean;
   reuploadAuthorizedFiles?: string[];
@@ -105,6 +107,7 @@ export function parseRecoveryUploadItem(value: unknown): RecoveryUploadItem {
     conflictArchiveVerifiedPaths: optional(source.conflictArchiveVerifiedPaths, 'conflictArchiveVerifiedPaths', list(text)),
     reuploadAuthorizedFiles: optional(source.reuploadAuthorizedFiles, 'reuploadAuthorizedFiles', list(text)),
     sessionGeneration: optional(source.sessionGeneration, 'sessionGeneration', positive),
+    uploadContentProof: decodeUploadContentProof(source.uploadContentProof),
     uploadIntent: optional(source.uploadIntent, 'uploadIntent', oneOf(['normal_backup', 'history_upload', 'quality_upgrade', 'conflict_candidate'])),
     existingArchiveProof: optional(source.existingArchiveProof, 'existingArchiveProof', archiveProof),
     conflictArchiveOldFiles: optional(source.conflictArchiveOldFiles, 'conflictArchiveOldFiles', list(remoteFile)),

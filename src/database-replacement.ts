@@ -2,6 +2,9 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { isRecord } from "./shared/api/value.js";
+import { JsonFileDurabilityError, writeJsonFile } from './storage.js';
+import { syncDirectory, syncPath } from './durability.js';
+import path from 'node:path';
 
 interface ReplacementRecord { version: 1; id: string; committed: boolean }
 const suffixes = ["", "-wal", "-shm"];
@@ -14,10 +17,11 @@ export function validateExistingDatabase(file: string) {
 }
 
 function persist(file: string, record: ReplacementRecord) {
-  const staging = `${file}.writing`;
-  const fd = fs.openSync(staging, "w", 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  fs.renameSync(staging, file);
+  try { writeJsonFile(file, record, { flush: true }); }
+  catch (error) {
+    if (error instanceof JsonFileDurabilityError) Object.assign(error, { recoveryRequired: true });
+    throw error;
+  }
 }
 
 function paths(file: string, id: string) {
@@ -60,8 +64,10 @@ export function recoverDatabaseReplacement(file: string, commitPending = false) 
     validateExistingDatabase(p.backup);
     const restore = `${p.next}.restore`;
     fs.copyFileSync(p.backup, restore);
+    syncPath(restore);
     for (const suffix of suffixes) fs.rmSync(`${file}${suffix}`, { force: true });
     fs.renameSync(restore, file);
+    syncDirectory(path.dirname(file));
     validateExistingDatabase(file);
     // Recovery is itself restartable until the restored database is validated.
     persist(p.journal, { ...record, committed: true });
@@ -88,6 +94,7 @@ export async function prepareDatabaseReplacement(file: string, source: string, b
     install() {
       for (const suffix of suffixes) if (fs.existsSync(`${file}${suffix}`)) fs.renameSync(`${file}${suffix}`, `${p.displaced}${suffix}`);
       fs.renameSync(p.next, file);
+      syncDirectory(path.dirname(file));
       validateExistingDatabase(file);
     },
     commit() {

@@ -27,8 +27,42 @@ import { UploadTask, UploadVerificationTask } from "../src/tasks.js";
 import { createTestDir, removeTestDir, testConfig } from "./helpers.js";
 import { createRemoteFileResolver } from "../src/remote-file-resolver.js";
 import { configureTransferBandwidth } from '../src/transfer-bandwidth.js';
+import { createHash } from 'node:crypto';
+import type { UploadFileContentRead } from '../src/upload-content-proof.js';
 
 const noopLog = { push() {} };
+
+for (const failure of ['none', 'put', 'verify', 'checkpoint'] as const) test(`upload checkpoints reflect stream completion and real PUT acceptance: ${failure}`, async () => {
+  const runtime = await createTestDir('upload-fingerprint');
+  const database = new StateDatabase(path.join(runtime, 'state.sqlite'));
+  const sessions = new TransferSessionStore(database);
+  const server = await startWebDavServer({ failFirstPut: failure === 'put', remoteSizeOffset: failure === 'verify' ? 1 : 0 });
+  const body = Buffer.alloc(130_000, 37);
+  const contents: UploadFileContentRead[] = [];
+  let sessionId = '';
+  try {
+    await fs.promises.writeFile(path.join(runtime, 'v.mp4'), body);
+    const upload = () => uploadWithAList(runtime, '/target', testConfig({ alistUrl: server.url }), {
+      transferSessionStore: sessions, files: ['v.mp4'], bvid: 'BVHASH', verificationDelaysMs: [0], log: noopLog,
+      onPreparedSession: session => { sessionId = session.id; },
+      onFileContentRead: file => {
+        contents.push(file);
+        assert.equal(sessions.getFile(file.sessionId, file.relativePath, file.generation)?.putAcceptedAt, undefined);
+        if (failure === 'checkpoint') throw new Error('checkpoint unavailable');
+      },
+    });
+    if (failure === 'none') assert.equal((await upload()).allVerified, true);
+    else await assert.rejects(upload());
+    assert.equal(contents.length, 1);
+    assert.equal(contents[0].md5, createHash('md5').update(body).digest('hex'));
+    assert.equal(contents[0].finalPath, '/target/v.mp4');
+    const file = sessions.getFile(sessionId, 'v.mp4');
+    assert.ok(file);
+    assert.equal(Boolean(file.putAcceptedAt), failure === 'none' || failure === 'verify');
+    assert.equal(file.status === 'verified', failure === 'none');
+    assert.equal((await fs.promises.stat(path.join(runtime, 'v.mp4'))).size, body.length);
+  } finally { await server.close(); database.close(); await removeTestDir(runtime); }
+});
 
 test('configured upload bandwidth limits the real verified upload entry point', async () => {
   const runtime = await createTestDir('configured-upload-bandwidth');
@@ -153,6 +187,7 @@ function xmlEscape(value: string) {
 }
 
 async function startWebDavServer(options: {
+  abortAfterBytes?: number;
   failFirstPut?: boolean;
   failPutName?: string;
   failPutStatus?: number;
@@ -210,7 +245,13 @@ async function startWebDavServer(options: {
     }
     if (req.method === "PUT") {
       const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      let received = 0;
+      try {
+        for await (const chunk of req) {
+          chunks.push(Buffer.from(chunk)); received += chunk.length;
+          if (options.abortAfterBytes && received >= options.abortAfterBytes) { req.destroy(); return; }
+        }
+      } catch { res.destroy(); return; }
       const body = Buffer.concat(chunks);
       puts.push({ path: requestPath, headers: req.headers, body });
       putCount += 1;
@@ -284,6 +325,24 @@ async function startWebDavServer(options: {
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }
+
+test('an interrupted partial upload never creates a complete-file fingerprint or PUT receipt', async () => {
+  const runtime = await createTestDir('upload-partial-fingerprint');
+  const database = new StateDatabase(path.join(runtime, 'state.sqlite'));
+  const sessions = new TransferSessionStore(database);
+  const server = await startWebDavServer({ abortAfterBytes: 16_384 });
+  let sessionId = '', hashes = 0;
+  try {
+    await fs.promises.writeFile(path.join(runtime, 'v.mp4'), Buffer.alloc(4 * 1024 * 1024, 37));
+    await assert.rejects(uploadWithAList(runtime, '/target', testConfig({ alistUrl: server.url }), {
+      transferSessionStore: sessions, files: ['v.mp4'], bvid: 'BVHASH', verificationDelaysMs: [0], log: noopLog,
+      onPreparedSession: session => { sessionId = session.id; }, onFileContentRead: () => { hashes++; },
+    }));
+    assert.equal(hashes, 0);
+    assert.equal(sessions.getFile(sessionId, 'v.mp4')?.putAcceptedAt, undefined);
+    assert.equal((await fs.promises.stat(path.join(runtime, 'v.mp4'))).size, 4 * 1024 * 1024);
+  } finally { await server.close(); database.close(); await removeTestDir(runtime); }
+});
 
 test("stream upload sends exact length, MIME and ownCloud timestamps without chunked encoding", async () => {
   const runtime = await createTestDir("upload-headers");

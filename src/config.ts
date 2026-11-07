@@ -1,6 +1,6 @@
 import path from "node:path";
 import { dataDir } from "./paths.js";
-import { readJsonFileDecoded, writeJsonFile } from "./storage.js";
+import { JsonFileDurabilityError, readJsonFileDecoded, writeJsonFile } from "./storage.js";
 import { parseStorageBaseUrl } from "./storage-url.js";
 import { isRecord } from "./shared/api/value.js";
 
@@ -251,7 +251,7 @@ export class ConfigStore {
   constructor(options: { filePath?: string; write?: (file: string, value: AppConfig) => void } = {}) {
     this.filePath = options.filePath ?? configPath;
     this.write = options.write ?? ((file, value) => writeJsonFile(file, value, { flush: true }));
-    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(this.filePath, defaultConfig, decodeStoredConfig);
+    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(this.filePath, defaultConfig, decodeStoredConfig, { flush: true });
     this.config = normalizeLoadedConfig(stored);
     if (needsConfigMigration(stored, this.config)) {
       this.write(this.filePath, this.config);
@@ -263,7 +263,7 @@ export class ConfigStore {
   }
 
   reload() {
-    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(this.filePath, defaultConfig, decodeStoredConfig);
+    const stored = readJsonFileDecoded<Partial<AppConfig> & { startupRecoveryBatchSize?: number }>(this.filePath, defaultConfig, decodeStoredConfig, { flush: true });
     this.config = normalizeLoadedConfig(stored);
     return this.get();
   }
@@ -273,7 +273,11 @@ export class ConfigStore {
       ...this.config,
       ...next,
     });
-    this.write(this.filePath, merged);
+    try { this.write(this.filePath, merged); }
+    catch (error) {
+      if (error instanceof JsonFileDurabilityError) this.config = merged;
+      throw error;
+    }
     this.config = merged;
     return this.get();
   }

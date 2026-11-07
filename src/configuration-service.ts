@@ -2,6 +2,7 @@ import { parseConfigPatch, validateBBDownRuntimeConfig, type AppConfig, type Con
 import { normalizeRemotePath } from './remote-path.js';
 import type { checkRemoteStorageReadOnly } from './storage-diagnostic.js';
 import type { BiliUser } from './users.js';
+import { JsonFileDurabilityError } from './storage.js';
 
 export function createConfigurationService(deps: {
   config: Pick<ConfigStore, 'get' | 'update'>;
@@ -52,11 +53,19 @@ export function createConfigurationService(deps: {
   if (runtimeError) {
     return { status: 400, body: { success: false, message: runtimeError } };
   }
-  const updated = deps.config.update(patch);
+  let updated: AppConfig;
+  let durabilityFailure: JsonFileDurabilityError | undefined;
+  try { updated = deps.config.update(patch); }
+  catch (error) {
+    if (!(error instanceof JsonFileDurabilityError)) throw error;
+    updated = deps.config.get();
+    durabilityFailure = error;
+  }
   try { deps.changed(previous, updated); }
   catch (cause) {
     throw Object.assign(new Error('配置已保存，但运行设置应用失败'), { cause, code: 'CONFIG_APPLY_FAILED', statusCode: 500 });
   }
+  if (durabilityFailure) throw durabilityFailure;
   return { status: 200, body: { success: true, data: updated } };
   }
   async function checkStorage(input: unknown) {

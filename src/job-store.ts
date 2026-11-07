@@ -407,6 +407,19 @@ export class PersistentJobStore implements JobRepository {
     `).run(now + leaseMs, now, id, leaseOwner, now).changes === 1;
   }
 
+  extendLeases(ids: readonly string[], leaseOwner: string, leaseMs: number) {
+    const now = this.now();
+    const leaseExpiresAt = now + leaseMs;
+    const renewedIds = this.stateDatabase.db.transaction(() => {
+      const update = this.stateDatabase.db.prepare(`
+        UPDATE jobs SET lease_expires_at=?, updated_at=?
+        WHERE id=? AND lease_owner=? AND status IN ('leased','running') AND lease_expires_at>?
+      `);
+      return [...new Set(ids)].filter(id => update.run(leaseExpiresAt, now, id, leaseOwner, now).changes === 1);
+    })();
+    return { renewedIds, leaseExpiresAt };
+  }
+
   private completeUnsafe(id: string, leaseOwner?: string) {
     const ownerClause = leaseOwner ? " AND lease_owner=?" : "";
     const args = leaseOwner ? [id, leaseOwner] : [id];
@@ -1195,10 +1208,15 @@ export class PersistentJobStore implements JobRepository {
     return decodeCountRow(row, "due job count").count;
   }
 
-  nextDueAt() {
-    const row = this.stateDatabase.db.prepare<[], unknown>(`
-      SELECT MIN(not_before) AS next_at FROM jobs WHERE status IN ('pending','retry_wait')
-    `).get();
+  nextDueAt(leaseOwner?: string) {
+    const row = this.stateDatabase.db.prepare<[string | null], unknown>(`
+      SELECT MIN(next_at) AS next_at FROM (
+        SELECT MIN(not_before) AS next_at FROM jobs WHERE status IN ('pending','retry_wait')
+        UNION ALL
+        SELECT MIN(lease_expires_at) AS next_at FROM jobs
+        WHERE status IN ('leased','running') AND lease_owner IS NOT ?
+      )
+    `).get(leaseOwner ?? null);
     const decoded = decodeNextAtRow(row, "next due job schedule");
     return decoded.next_at === null ? undefined : decoded.next_at;
   }

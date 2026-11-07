@@ -3,6 +3,7 @@ import path from "node:path";
 import { Task } from "./queue.js";
 import { downloadWithBBDown } from "./downloader.js";
 import { uploadWithAList, UploadResult, deleteRemoteFiles, inspectRemoteFileSize, moveRemoteFile, resumeUploadSession, verifyRemoteFiles } from "./uploader.js";
+import type { UploadFileContentRead } from './upload-content-proof.js';
 import type { ExistingArchiveProof, UploadIntent } from "./upload-preflight.js";
 import { applyBBDownEncodingPreference, AppConfig, type BBDownApiMode, type BBDownEncoding } from "./config.js";
 import { BiliCookie } from "./users.js";
@@ -601,6 +602,8 @@ export class UploadTask extends Task {
   encodingRetry?: EncodingRetryContext;
   strictMediaTarget?: StrictMediaTarget;
   onTransferSession?: (task: UploadTask, sessionId: string, sessionGeneration: number) => void;
+  onTransferContent?: (task: UploadTask, file: UploadFileContentRead) => void;
+  assertExecutionCurrent?: () => void;
 
   private readonly upload: typeof uploadWithAList;
 
@@ -725,8 +728,12 @@ export class UploadTask extends Task {
         sessionGeneration: this.sessionGeneration,
         sessionDedupeKey: this.sessionDedupeKey,
         onPreparedSession: (session) => {
+          this.sessionId = session.id;
+          this.sessionGeneration = session.generation;
           this.onTransferSession?.(this, session.id, session.generation);
         },
+        assertCurrent: this.assertExecutionCurrent,
+        onFileContentRead: this.onTransferContent ? file => this.onTransferContent!(this, file) : undefined,
         allowReupload: false,
         reuploadAuthorizedFiles: this.reuploadAuthorizedFiles,
         consumeReuploadPermission: (relativePath) => {

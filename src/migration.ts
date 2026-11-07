@@ -1,5 +1,6 @@
 import { parseMigrationPayload } from './migration-payload.js';
 import { beginImportTransaction } from "./import-transaction.js";
+import { syncDirectory, syncPath } from './durability.js';
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -933,6 +934,8 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
       const stat = await fs.promises.stat(source);
       if (stat.isDirectory()) await fs.promises.cp(source, staged, { recursive: true, force: false, errorOnExist: true });
       else await fs.promises.copyFile(source, staged, fs.constants.COPYFILE_EXCL);
+      syncPath(staged);
+      syncDirectory(path.dirname(staged));
       transaction.add({ target, staged, backup });
       prepared.push({ name, target, staged, backup });
       return true;
@@ -960,6 +963,7 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
         }
         switched.push(item);
         restored.push(item.name);
+        syncDirectory(path.dirname(item.target));
       }
 
       if (options.restoreState !== false) {
@@ -1013,6 +1017,8 @@ export async function applyMigrationPackageFile(archivePath: string, options: {
         try {
           await fs.promises.rm(item.target, { recursive: true, force: true });
           if (await pathExists(item.backup)) await fs.promises.cp(item.backup, item.target, { recursive: true });
+          if (await pathExists(item.target)) syncPath(item.target);
+          syncDirectory(path.dirname(item.target));
         } catch (rollbackError) {
           rollbackErrors.push(`${item.name}: ${safeErrorSummary(rollbackError)}; backup=${item.backup}`);
         }

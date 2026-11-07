@@ -7,7 +7,7 @@ import { safeErrorSummary } from '../diagnostics.js';
 import { logManager } from '../logger.js';
 import { availabilityJitter } from './retry-policy.js';
 interface ScanDependencies {
-    state: Pick<StateManager, 'getRelationStatus' | 'updateFolderScan' | 'markMissingFavoritesInactive' | 'getFolderScan' | 'recordFavoriteItem' | 'recordCoverCache' | 'getSourceAvailability' | 'listRelationsForBvid' | 'markAvailabilityPending'>;
+    state: Pick<StateManager, 'runAtomic' | 'getRelationStatus' | 'updateFolderScan' | 'markMissingFavoritesInactive' | 'getFolderScan' | 'recordFavoriteItem' | 'recordCoverCache' | 'getSourceAvailability' | 'listRelationsForBvid' | 'markAvailabilityPending'>;
     deletions: {
         folder(userId: string, mediaId: number): boolean;
         source(userId: string, mediaId: number, bvid: string): boolean;
@@ -348,6 +348,7 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
     async function recordPage(user: BiliUser, mediaId: number, folderTitle: string, items: Awaited<ReturnType<typeof listFavoriteItemsPage>>["items"], page: number, pageSize: number, seenAt: string = new Date(deps.now()).toISOString(), seenBvids: Set<string> | undefined, assertCurrent: ReturnType<typeof checkpoint>) {
         assertCurrent();
         let newItems = 0;
+        const resolved: Array<{item: (typeof items)[number]; indexInPage: number}> = [];
         for (const [indexInPage, rawItem] of items.entries()) {
             if (deps.deletions.source(user.id, mediaId, rawItem.bvid)) {
                 continue;
@@ -356,6 +357,14 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
             assertCurrent();
             if (deps.deletions.source(user.id, mediaId, item.bvid))
                 continue;
+            resolved.push({item, indexInPage});
+        }
+        const afterCommit: Array<() => void> = [];
+        // Resolve network observations first. One synchronous transaction records the page;
+        // cover downloads, admission and task execution start only after its commit.
+        deps.state.runAtomic(() => {
+          assertCurrent();
+          for (const {item, indexInPage} of resolved) {
             seenBvids?.add(item.bvid);
             const previousRelation = deps.state.getRelationStatus(user.id, mediaId, item.bvid);
             const favOrder = (Math.max(1, page) - 1) * Math.max(1, pageSize) + indexInPage + 1;
@@ -365,10 +374,10 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                 favIndexInPage: indexInPage,
             }, seenAt);
             if (!item.unavailable && item.cover) {
-                deps.cacheCover(item.bvid, item.cover, (coverLocalPath) => {
+                afterCommit.push(() => deps.cacheCover(item.bvid, item.cover!, (coverLocalPath) => {
                     if (assertCurrent.current())
                         deps.state.recordCoverCache(item.bvid, coverLocalPath);
-                });
+                }));
             }
             const availability = deps.state.getSourceAvailability(item.bvid);
             const shouldAutoProbe = availability && deps.state.listRelationsForBvid(item.bvid).some((relation) => relation.activeInFavorite
@@ -384,32 +393,36 @@ export function createFavoriteScan(deps: ScanDependencies): FavoriteScanPort & {
                     if (!availability.nextCheckAt || !Number.isFinite(persistedNextAt) || persistedNextAt <= deps.now()) {
                         deps.state.markAvailabilityPending(item.bvid, "favorite_flag", seenAt, new Date(nextAt).toISOString());
                     }
-                    deps.probe(item.bvid, {
+                    afterCommit.push(() => deps.probe(item.bvid, {
                         preferredUserId: user.id,
                         notBefore: nextAt,
                         availabilityRound: availability.checkRound,
                         availabilityReason: availability.reason,
-                    });
+                    }));
                 } else if (!item.unavailable && !item.selfVisible
                     && (!previousRelation || previousRelation.favoriteUnavailable)) {
                     // A newly visible favorite is a signal to check the actual
                     // video with this account, not proof that all accounts can download it.
-                    deps.probe(item.bvid, {
+                    afterCommit.push(() => deps.probe(item.bvid, {
                         preferredUserId: user.id,
                         notBefore: deps.now() + availabilityJitter(item.bvid),
                         availabilityRound: availability.checkRound,
                         availabilityReason: availability.reason,
-                    });
+                    }));
                 }
             }
             if (!result.wasKnown) {
                 newItems += 1;
-                deps.recordCount(1, 0);
             }
-            const queued = deps.enqueue(user, mediaId, folderTitle, item.bvid);
-            if (queued) {
-                deps.recordCount(0, 1);
-            }
+            afterCommit.push(() => {
+                if (deps.enqueue(user, mediaId, folderTitle, item.bvid)) deps.recordCount(0, 1);
+            });
+          }
+        });
+        if (newItems) deps.recordCount(newItems, 0);
+        for (const effect of afterCommit) {
+            assertCurrent();
+            effect();
         }
         return { newItems };
     }

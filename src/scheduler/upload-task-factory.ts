@@ -6,6 +6,7 @@ import type { TransferSessionRepository } from '../repositories/transfer-session
 import type { ExistingArchiveProof } from '../upload-preflight.js';
 import { parseStrictMediaTarget } from './recovery-context.js';
 import type { RecoveryUploadItem } from './upload-work.js';
+import { decodeUploadContentProof } from '../upload-content-proof.js';
 interface Dependencies {
   stateManager: Pick<StateManager, 'getRelationStatus' | 'markRemoteConflictArchived' | 'markUploading'>;
   configStore: Pick<ConfigStore, 'get'>;
@@ -131,8 +132,31 @@ export function createUploadTaskFactory(deps: Dependencies) {
         sessionId,
         sessionGeneration,
         attemptKey: `${sessionId}:g${sessionGeneration}`,
+        uploadContentProof: current.sessionId === sessionId && current.sessionGeneration === sessionGeneration ? current.uploadContentProof : undefined,
         lifecycleState: current.conflictCandidateOnly ? "conflict_candidate" : "uploading",
       })) throw new Error("Upload task disappeared before session binding");
+    };
+    uploadTask.assertExecutionCurrent = () => {
+      assertCurrent();
+      if (!uploadTask.persistentJobId) return;
+      const live = deps.jobStore.findById(uploadTask.persistentJobId);
+      if (!live || live.leaseOwner !== deps.leaseOwner || !['leased', 'running'].includes(live.status)
+        || (uploadTask.sessionId && (live.payload.sessionId !== uploadTask.sessionId
+          || live.payload.sessionGeneration !== uploadTask.sessionGeneration))) throw new Error('Upload task execution ownership changed');
+    };
+    uploadTask.onTransferContent = (task, file) => {
+      task.assertExecutionCurrent?.();
+      if (!task.persistentJobId) return;
+      const session = deps.transferSessions.assertGeneration(file.sessionId, file.generation);
+      const expected = deps.transferSessions.getFile(session.id, file.relativePath, file.generation);
+      if (!expected || session.phase === 'superseded' || expected.expectedSize !== file.size || expected.finalPath !== file.finalPath) throw new Error('Upload content no longer belongs to this file');
+      const live = deps.jobStore.findById(task.persistentJobId)!;
+      const previous = decodeUploadContentProof(live.payload.uploadContentProof);
+      const files = previous?.sessionId === file.sessionId && previous.generation === file.generation ? previous.files : [];
+      const { sessionId, generation, ...content } = file;
+      if (!deps.jobStore.updatePayload(live.id, { ...live.payload, uploadContentProof: {
+        sessionId, generation, files: [...files.filter(item => item.relativePath !== content.relativePath), content],
+      } })) throw new Error('Upload task disappeared before content checkpoint');
     };
     uploadTask.onConflictCandidateUploading = (task) => {
       assertCurrent();
