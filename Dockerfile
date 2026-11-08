@@ -13,8 +13,13 @@ ARG BFB_BUILD_REVISION=
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
+# Native addons can compile when their prebuilt download is unavailable.
+# These tools stay in the dependency stage and never enter the runtime image.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
-RUN npm ci
+RUN npm_config_nodedir=/usr/local npm ci
 
 # Keep runtime dependencies independent of source-only rebuilds.
 FROM deps AS prod-deps
