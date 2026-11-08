@@ -205,7 +205,7 @@ BFB通过标准 WebDAV 接入存储服务。普通归档需要目录读取、创
 | 镜像标签 | 用途 |
 | --- | --- |
 | `latest` | `main`稳定版 |
-| `v2.7.2` | 当前固定稳定版本，便于可控升级 |
+| `v2.7.3` | 当前固定稳定版本，便于可控升级 |
 | `v2.7.1` | 上一固定稳定版本 |
 | `dev` | 持续更新的开发测试版 |
 
@@ -223,7 +223,7 @@ npm run build
 
 本地修改可按范围运行 `npm run test:release`、`npm run test:core` 或 `npm run test:files -- <文件...>`；大数据专项入口为 `npm run test:slow`。`npm test` 和 CI 继续执行全部回归，具体选择见[开发与验证](docs/development/architecture.md#开发与验证)。
 
-项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.2` 镜像内置 [BBDown bfb-2.0.7](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.7)，支持结构化媒体探测与互动视频完整可达片段清单；最终媒体信息以ffprobe为准。开发与验证方式见 [开发说明](DEV_NOTES.md)。
+项目固定BBDown fork与FFmpeg版本，不在构建时跟随上游master。`v2.7.3` 镜像内置 [BBDown bfb-2.0.9](https://github.com/minori0721/BBDown/releases/tag/bfb-2.0.9)，支持下载总限速、结构化媒体探测与互动视频完整可达片段清单，并改善封面处理；最终媒体信息以ffprobe为准。开发与验证方式见 [开发说明](DEV_NOTES.md)。
 
 ## 许可证
 
