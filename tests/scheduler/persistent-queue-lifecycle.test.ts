@@ -13,6 +13,7 @@ import { createTestDir, removeTestDir, testConfig } from '../helpers.js';
 import { createHeldScheduler } from '../fixtures/held-scheduler.js';
 import { seedQueuedDownload } from '../fixtures/queued-download.js';
 import { ManualTime } from '../fixtures/manual-time.js';
+import { SchedulerRuntime } from '../../src/scheduler/scheduler-runtime.js';
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 class HeldTask extends Task { async run() {} }
@@ -92,7 +93,9 @@ test('all three queues renew prefetched and retry-wait claims for five minutes',
   } finally { await f.close(); }
 });
 
-test('orphaned running download wakes at lease expiry without a sync request or stealing a live claim', async () => {
+test('orphaned running download wakes at lease expiry without a sync request or stealing a live claim', async t => {
+  // Advance real lease timers without enrolling this test in unrelated network scans.
+  const automaticSync = t.mock.method(SchedulerRuntime.prototype, 'tick', async () => false);
   const root = await createTestDir('orphan-lease-wakeup');
   const state = new StateManager({statePath: path.join(root, 'state.json'), dbPath: path.join(root, 'state.sqlite')});
   const user = seedQueuedDownload(state, 'BVORPHAN');
@@ -116,6 +119,7 @@ test('orphaned running download wakes at lease expiry without a sync request or 
     assert.equal(f.jobs.findById(job.id)?.leaseExpiresAt, time.now() + 5 * 60_000);
     assert.equal(f.jobs.nextDueAt(f.owner), undefined);
     assert.equal(f.queues.get('download').getActiveCount(), 0);
+    assert.equal(automaticSync.mock.callCount(), 1, 'the unrelated startup scan is isolated; the lease wake still ran');
   } finally { await f.scheduler.shutdown(1000, {closeDatabase: false}); state.close(); await removeTestDir(root); }
 });
 
@@ -182,12 +186,13 @@ test('expired claims cannot be revived or started by their previous owner', asyn
   } finally { await f.close(); }
 });
 
-test('production scheduler heartbeat renews pending claims without executing external work', async () => {
+test('production scheduler heartbeat renews pending claims without executing external work', async t => {
+  const automaticSync = t.mock.method(SchedulerRuntime.prototype, 'tick', async () => false);
   const root = await createTestDir('scheduler-prefetch-heartbeat');
   const state = new StateManager({statePath: path.join(root, 'state.json'), dbPath: path.join(root, 'state.sqlite')});
   const user = seedQueuedDownload(state, 'BVHEARTBEAT');
   const time = new ManualTime();
-  // Resolve the queued task's account without enrolling it in automatic scans.
+  // Keep the real enabled account and source; only the unrelated polling entry point is replaced.
   const f = createHeldScheduler({get: () => testConfig({pollIntervalMinutes: 1440})}, memoryUsers([user]), state, {now: time.now, scheduleTimer: time.schedule});
   try {
     const job = f.jobs.enqueue({kind: 'download', dedupeKey: 'heartbeat', bvid: 'BVHEARTBEAT', payload: {primaryUserId: user.id, primaryMediaId: 1, primaryFolderTitle: 'Favorites'}});
@@ -199,6 +204,7 @@ test('production scheduler heartbeat renews pending claims without executing ext
     assert.equal(f.jobs.findById(job.id)?.status, 'leased');
     assert.ok(f.jobs.findById(job.id)!.leaseExpiresAt! > time.now());
     assert.equal(f.queues.get('download').getActiveCount(), 0);
+    assert.equal(automaticSync.mock.callCount(), 1);
   } finally { await f.scheduler.shutdown(1000, {closeDatabase: false}); state.close(); await removeTestDir(root); }
 });
 

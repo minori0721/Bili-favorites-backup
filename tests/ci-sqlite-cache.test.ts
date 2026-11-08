@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import {existsSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {sqlitePrebuildPlan, sqliteInstallReport} from '../scripts/ci-sqlite-cache.mjs';
+import {createHash} from 'node:crypto';
+import {sqlitePrebuildPlan, sqliteInstallReport, prepareSqlitePrebuilt} from '../scripts/ci-sqlite-cache.mjs';
 import {createTestDir, removeTestDir} from './helpers.js';
 
 const lock = {version: '2.7.4-dev', packages: {
@@ -45,6 +47,71 @@ test('cache archive name matches the actual prebuild-install consumer', () => {
   const url = installer.getDownloadUrl({pkg: {name: 'better-sqlite3', version: '12.11.1',
     repository: 'https://github.com/WiseLibs/better-sqlite3'}, ...runtime, libc: '', 'tag-prefix': 'v'});
   assert.equal(sqlitePrebuildPlan(lock, runtime).filename, path.basename(installer.cachedPrebuild(url)));
+});
+
+test('official API preparation selects the exact asset, verifies its checksum and then reuses it without requests', async () => {
+  const dir = await createTestDir('sqlite-api-preparation');
+  const plan = sqlitePrebuildPlan(lock, runtime);
+  const archive = path.join(dir, '_prebuilds', plan.filename);
+  const content = Buffer.from('isolated prebuilt archive');
+  const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  const calls: string[] = [];
+  const source = {
+    release(version: string) {
+      calls.push(version);
+      return {assets: [{id: 10, name: 'other-platform.tar.gz', digest}, {id: 20, name: plan.asset, digest}]};
+    },
+    download(id: number, destination: string) {
+      calls.push(String(id));
+      assert.notEqual(destination, archive, 'the final cache is not visible until checksum validation succeeds');
+      assert.equal(existsSync(archive), false);
+      writeFileSync(destination, content);
+    },
+  };
+  try {
+    assert.deepEqual(prepareSqlitePrebuilt(plan, archive, source), {source: 'github-api'});
+    assert.deepEqual(await fs.readFile(archive), content);
+    assert.deepEqual(calls, ['12.11.1', '20']);
+    assert.deepEqual(prepareSqlitePrebuilt(plan, archive, source), {source: 'cache'});
+    assert.equal(calls.length, 2, 'a warm cache never calls the API');
+    assert.deepEqual(await fs.readdir(path.dirname(archive)), [plan.filename]);
+  } finally {await removeTestDir(dir);}
+});
+
+test('unavailable metadata or unverifiable assets leave npm download and compilation available', async () => {
+  const dir = await createTestDir('sqlite-api-unavailable');
+  const plan = sqlitePrebuildPlan(lock, runtime);
+  const archive = path.join(dir, 'not-created', plan.filename);
+  const download = () => assert.fail('unverified release metadata must not authorize a binary download');
+  try {
+    assert.deepEqual(prepareSqlitePrebuilt(plan, archive, {release: () => {throw new Error('API timeout');}, download}), {
+      source: 'npm', reason: 'release-api-unavailable',
+    });
+    for (const release of [null, {assets: {}}, {assets: []}, {assets: [{name: plan.asset, id: 1}]},
+      {assets: [{name: plan.asset, id: -1, digest: `sha256:${'a'.repeat(64)}`}]}]) {
+      assert.deepEqual(prepareSqlitePrebuilt(plan, archive, {release: () => release, download}), {
+        source: 'npm', reason: 'verified-asset-unavailable',
+      });
+    }
+    await assert.rejects(fs.stat(path.dirname(archive)), {code: 'ENOENT'});
+  } finally {await removeTestDir(dir);}
+});
+
+test('partial API downloads and checksum mismatches never populate the cache or leave temporary files', async () => {
+  const dir = await createTestDir('sqlite-api-bad-download');
+  const plan = sqlitePrebuildPlan(lock, runtime);
+  const archive = path.join(dir, plan.filename);
+  const release = () => ({assets: [{name: plan.asset, id: 1, digest: `sha256:${'a'.repeat(64)}`}]});
+  try {
+    for (const failure of ['interrupted', 'checksum']) {
+      const result = prepareSqlitePrebuilt(plan, archive, {release, download: (_id, destination) => {
+        writeFileSync(destination, 'partial or incorrect archive');
+        if (failure === 'interrupted') throw new Error('download interrupted');
+      }});
+      assert.deepEqual(result, {source: 'npm', reason: failure === 'interrupted' ? 'asset-api-unavailable' : 'asset-checksum-mismatch'});
+      assert.deepEqual(await fs.readdir(dir), []);
+    }
+  } finally {await removeTestDir(dir);}
 });
 
 test('only a successful prebuilt install with a retained archive can populate the cache', () => {
@@ -109,6 +176,11 @@ test('production wiring restores an exact archive before npm and saves only conf
   assert.match(job, /path: \$\{\{ steps.sqlite-plan.outputs.archive \}\}/);
   assert.match(job, /key: \$\{\{ steps.sqlite-plan.outputs.key \}\}/);
   assert.doesNotMatch(job, /restore-keys:|--ignore-scripts/);
+  assert.ok(job.indexOf('actions/cache/restore@v5') < job.indexOf('run: node scripts/ci-sqlite-cache.mjs prepare'));
+  assert.ok(job.indexOf('run: node scripts/ci-sqlite-cache.mjs prepare') < job.indexOf('npm ci --foreground-scripts'));
+  const preparation = job.split('      - name: Prepare uncached SQLite prebuilt through the official API\n')[1].split('\n      - name: ')[0];
+  assert.match(preparation, /GH_TOKEN: \$\{\{ github.token \}\}/);
+  assert.doesNotMatch(job.split('      - name: Install application dependencies\n')[1], /GH_TOKEN:/);
   assert.match(job, /!cancelled\(\) && steps.npm-install.outcome != 'skipped'/);
   assert.match(job, /if: steps.sqlite-cache.outputs.cache-hit != 'true' && steps.sqlite-install.outputs.save == 'true'/);
   assert.match(job, /NPM_INSTALL_OUTCOME: \$\{\{ steps.npm-install.outcome \}\}/);

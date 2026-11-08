@@ -111,20 +111,27 @@ test('clearing waits for an active archive cover promotion', async () => {
   } finally { release.resolve(); await f.close(); }
 });
 
-test('queued downloads hand off all four slots to subsequent batches', async () => {
+test('queued downloads hand off all four slots to subsequent batches', {timeout: 10_000}, async () => {
   let active = 0, maximum = 0, calls = 0;
+  const ready = [deferred<void>(), deferred<void>()], release = [deferred<void>(), deferred<void>()];
+  const entered = [0, 0];
   const f = await fixture({download: async (_url, output) => {
+    const batch = Math.floor(calls / 12);
     active++; calls++; maximum = Math.max(maximum, active);
-    await new Promise<void>(resolve => setImmediate(resolve));
+    if (++entered[batch] === 4) ready[batch].resolve();
+    await release[batch].promise;
     await fs.writeFile(output, 'image'); active--;
   }});
   try {
     for (let batch = 0; batch < 2; batch++) {
-      const results = await Promise.all(Array.from({length: 12}, (_, i) => f.cache.getOrFetch(`${batch}-${i}`, 'fixture')));
-      assert.ok(results.every(Boolean));
+      const results = Promise.all(Array.from({length: 12}, (_, i) => f.cache.getOrFetch(`${batch}-${i}`, 'fixture')));
+      await ready[batch].promise;
+      assert.equal(active, 4);
+      release[batch].resolve();
+      assert.ok((await results).every(Boolean));
     }
     assert.equal(calls, 24);
     assert.equal(maximum, 4);
     assert.equal(active, 0);
-  } finally { await f.close(); }
+  } finally { release.forEach(gate => gate.resolve()); await f.close(); }
 });

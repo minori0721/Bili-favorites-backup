@@ -99,6 +99,11 @@ jobs:
           ffprobe -version | sed -n '1p'
           aria2c --version | sed -n '1p'
 
+      - name: Prepare uncached SQLite prebuilt through the official API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-sqlite-cache.mjs prepare
+
       - name: Install application dependencies
         id: npm-install
         shell: bash
