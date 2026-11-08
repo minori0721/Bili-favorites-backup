@@ -65,3 +65,32 @@ test('promotion accepts a lost create response only after the registry confirms 
   });
   assert.equal(inspections, 2);
 });
+
+test('a conflicting fixed version is rejected before changing any alias', async () => {
+  const tags = promotionTags(image, `${image}:sha-aaaaaaa\n${image}:v2.8.0\n${image}:latest`);
+  const created: string[] = [];
+  await assert.rejects(promoteImage(image, digest, tags, {
+    create(tag) {created.push(tag);},
+    inspect(reference) {return reference === `${image}:v2.8.0` ? `sha256:${'c'.repeat(64)}` : digest;},
+    async wait() {},
+  }), /must not be overwritten/);
+  assert.deepEqual(created, []);
+});
+
+test('fixed version publication distinguishes missing tags, identical retries and registry failures', async () => {
+  const fixed = `${image}:v2.8.0`;
+  for (const exists of [true, false]) {
+    const published = new Map([[`${image}@${digest}`, digest], ...(exists ? [[fixed, digest] as [string, string]] : [])]);
+    const created: string[] = [];
+    await promoteImage(image, digest, promotionTags(image, `${image}:latest\n${fixed}`), {
+      create(tag) {created.push(tag); published.set(tag, digest);},
+      inspect(reference) {return published.get(reference) ?? null;}, async wait() {},
+    });
+    assert.deepEqual(created, [...(exists ? [] : [fixed]), `${image}:latest`]);
+  }
+  await assert.rejects(promoteImage(image, digest, [fixed], {
+    create() {assert.fail('unavailable registry must not authorize a fixed tag write');},
+    inspect(reference) {if (reference === fixed) throw new Error('registry authentication failed'); return digest;},
+    async wait() {},
+  }), /registry authentication failed/);
+});

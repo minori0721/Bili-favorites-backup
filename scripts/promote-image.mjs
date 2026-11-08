@@ -27,8 +27,15 @@ function docker(args) {
   });
 }
 
-function registryDigest(reference) {
-  const manifest = JSON.parse(docker(['inspect', '--format', '{{json .Manifest}}', reference]));
+export function registryDigest(reference) {
+  let raw;
+  try { raw = docker(['inspect', '--format', '{{json .Manifest}}', reference]); }
+  catch (error) {
+    const stderr = String(error?.stderr ?? '');
+    if (/manifest unknown|no such manifest/i.test(stderr) || stderr.includes(`${reference}: not found`)) return null;
+    throw error;
+  }
+  const manifest = JSON.parse(raw);
   if (!digestPattern.test(manifest?.digest ?? '')) throw new Error(`Invalid registry digest for ${reference}`);
   return manifest.digest;
 }
@@ -41,7 +48,15 @@ export async function promoteImage(image, digest, tags, operations = {
   if (!digestPattern.test(digest ?? '')) throw new Error('Invalid image digest');
   const source = `${image}@${digest}`;
   if (operations.inspect(source) !== digest) throw new Error('Candidate image digest is unavailable');
+  // Validate every fixed version before changing even a mutable alias.
+  const existingVersions = new Set();
+  for (const tag of tags.filter(tag => /:v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag))) {
+    const previous = operations.inspect(tag);
+    if (previous !== null && previous !== digest) throw new Error(`Fixed version image must not be overwritten: ${tag}`);
+    if (previous === digest) existingVersions.add(tag);
+  }
   for (const tag of tags) {
+    if (existingVersions.has(tag)) { console.log(`Verified existing ${tag} -> ${digest}`); continue; }
     let createError;
     try {
       operations.create(tag, source);

@@ -28,6 +28,25 @@ export function imageRebuildPlan(env = process.env) {
   return { rebuildOnly: true, tags: [`${image}:${fixedTag}`, `${image}:${branch === 'main' ? 'latest' : 'dev'}`] };
 }
 
+export function imagePublicationPlan(version, env = process.env) {
+  const rebuild = imageRebuildPlan(env);
+  const branch = rebuildBranch(env.GITHUB_REF);
+  if (!/^[0-9a-f]{40}$/.test(env.GITHUB_SHA ?? '')) throw new Error('Invalid publication revision');
+  if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(env.IMAGE_NAME ?? '')) throw new Error('Invalid publication image');
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-dev)?$/.test(version ?? '')
+    || (branch === 'main' && version.endsWith('-dev'))) throw new Error('Invalid package version for publication branch');
+  const releaseTag = branch === 'main' && !rebuild.rebuildOnly ? `v${version}` : '';
+  const image = `docker.io/${env.IMAGE_NAME}`;
+  return {
+    rebuildOnly: rebuild.rebuildOnly, version, releaseTag,
+    buildRef: releaseTag || branch,
+    tags: rebuild.rebuildOnly ? rebuild.tags : [
+      `${image}:sha-${env.GITHUB_SHA.slice(0, 7)}`, `${image}:revision-${env.GITHUB_SHA}`,
+      ...(releaseTag ? [`${image}:${releaseTag}`] : []), `${image}:${branch === 'main' ? 'latest' : 'dev'}`,
+    ],
+  };
+}
+
 export function verifyNodeRuntime(version) {
   const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version ?? '');
   const minimum = minimumNodeVersion.split('.').map(Number);
@@ -84,6 +103,12 @@ The full vulnerability report includes all known findings. The release gate chec
 完整漏洞报告列出所有已知告警；发布门槛只检查已有修复版本的严重、高危漏洞。门槛检查通过时，完整报告中仍可能有其他告警。
 
 `);
+  } else if (command === 'plan' && process.argv.length === 3) {
+    const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+    const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+    if (pkg.version !== lock.version || pkg.version !== lock.packages?.['']?.version) throw new Error('Package and lock versions must match');
+    const plan = imagePublicationPlan(pkg.version);
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `rebuild_only=${plan.rebuildOnly}\nbuild_ref=${plan.buildRef}\nrelease_tag=${plan.releaseTag}\nversion=${plan.version}\ntags<<BFB_PUBLICATION_TAGS\n${plan.tags.join('\n')}\nBFB_PUBLICATION_TAGS\n`);
   } else if (command === 'check-current' && process.argv.length === 3) {
     const current = isCurrentImageRebuild(process.env);
     fs.appendFileSync(process.env.GITHUB_OUTPUT, `current=${current}\n`);
@@ -94,5 +119,5 @@ The full vulnerability report includes all known findings. The release gate chec
     fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n\n${translation}\n`);
   } else if (command === 'verify-node' && process.argv.length === 4) {
     console.log(`Verified candidate Node runtime: ${verifyNodeRuntime(version)}`);
-  } else throw new Error('Usage: node scripts/image-rebuild.mjs configure | check-current | verify-node <version>');
+  } else throw new Error('Usage: node scripts/image-rebuild.mjs configure | plan | check-current | verify-node <version>');
 }

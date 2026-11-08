@@ -5,8 +5,6 @@ on:
     branches:
       - main
       - dev
-    tags:
-      - "v*.*.*"
     paths-ignore:
       - "docs/**"
       - "README.md"
@@ -21,20 +19,18 @@ on:
 
 permissions:
   contents: read
-  actions: read
+
+concurrency:
+  group: bfb-image-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: minori0721/bili-favorites-backup
 
 jobs:
-  docker:
+  test:
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write # The final dev-only step maintains the rolling prerelease.
-      actions: read
-    concurrency:
-      group: bfb-image-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -45,20 +41,12 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Configure image publication mode
-        id: build-mode
+      - name: Validate release notes before publishing images
         env:
-          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
-        run: node scripts/image-rebuild.mjs configure
-
-      - name: Find successful test evidence
-        id: test-evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/dev-test-evidence.mjs
+          BUILD_REF: ${{ github.ref }}
+        run: node scripts/release-notes.mjs --ref "$BUILD_REF" > "$RUNNER_TEMP/bfb-release-preview.md"
 
       - name: Check media and resume tools
-        if: steps.test-evidence.outputs.reuse != 'true'
         timeout-minutes: 10
         run: |
           command -v aria2c
@@ -100,12 +88,6 @@ jobs:
           ffprobe -version | sed -n '1p'
           aria2c --version | sed -n '1p'
 
-      - name: Validate release notes before publishing images
-        env:
-          BUILD_REF: ${{ github.ref }}
-        run: |
-          node scripts/release-notes.mjs --ref "$BUILD_REF" > "$RUNNER_TEMP/bfb-release-preview.md"
-
       - name: Install application dependencies
         run: npm ci
 
@@ -113,11 +95,35 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Test application
-        if: steps.test-evidence.outputs.reuse != 'true'
         run: npm test
 
-      # Dockerfile's builder performs the full build, including type and
-      # architecture checks. A host dist would be excluded from the context.
+  image:
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Configure image publication mode
+        id: build-mode
+        env:
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
+        run: node scripts/image-rebuild.mjs configure
+
+      - name: Plan image metadata
+        id: publication
+        env:
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
+        run: node scripts/image-rebuild.mjs plan
+
+      # All compilation, type and architecture checks run inside the builder.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -135,12 +141,13 @@ jobs:
           flavor: latest=false
           labels: |
             org.opencontainers.image.licenses=GPL-3.0-only
+            org.opencontainers.image.version=${{ steps.publication.outputs.version }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=sha,prefix=sha-
             type=sha,format=long,prefix=revision-
-            type=ref,event=tag
+            type=raw,value=${{ steps.publication.outputs.release_tag }},enable=${{ steps.publication.outputs.release_tag != '' }}
 
       - name: Capture previous image layers and select caches
         id: layer_cache
@@ -162,7 +169,7 @@ jobs:
           outputs: type=image,name=docker.io/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BFB_BUILD_REF=${{ github.ref_name }}
+            BFB_BUILD_REF=${{ steps.publication.outputs.build_ref }}
             BFB_BUILD_REVISION=${{ github.sha }}
           cache-from: |
             type=gha
@@ -252,59 +259,86 @@ jobs:
           INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
         run: node scripts/image-layer-report.mjs report "$RUNNER_TEMP/bfb-layer-baseline.json"
 
+  publish:
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Plan image publication
+        id: publication
+        env:
+          INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
+        run: node scripts/image-rebuild.mjs plan
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Check that image-only rebuild is current
-        if: steps.build-mode.outputs.rebuild_only == 'true'
+        if: steps.publication.outputs.rebuild_only == 'true'
         id: rebuild-current
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_REBUILD_ONLY: ${{ inputs.rebuild_only }}
         run: node scripts/image-rebuild.mjs check-current
 
-      # Keep promotion and preview publication inside the same per-ref concurrency lock.
       - name: Check that dev publication is current
-        if: github.ref == 'refs/heads/dev' && steps.build-mode.outputs.rebuild_only != 'true'
+        if: github.ref == 'refs/heads/dev' && steps.publication.outputs.rebuild_only != 'true'
         id: dev-publication
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/publish-dev-preview.mjs check
 
-      - name: Promote verified image tags
-        if: >-
-          (steps.build-mode.outputs.rebuild_only == 'true' && steps.rebuild-current.outputs.current == 'true') ||
-          (steps.build-mode.outputs.rebuild_only != 'true' && (github.ref != 'refs/heads/dev' || steps.dev-publication.outputs.current == 'true'))
+      - name: Check that stable publication is current
+        if: steps.publication.outputs.release_tag != ''
+        id: stable-publication
         env:
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
-          IMAGE_TAGS: ${{ steps.build-mode.outputs.rebuild_only == 'true' && steps.build-mode.outputs.tags || steps.meta.outputs.tags }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.publication.outputs.release_tag }}
+        run: node scripts/publish-release.mjs check "$RELEASE_TAG"
+
+      - name: Promote verified image tags
+        id: promote
+        if: >-
+          (steps.publication.outputs.rebuild_only == 'true' && steps.rebuild-current.outputs.current == 'true') ||
+          (steps.publication.outputs.rebuild_only != 'true' &&
+          (steps.dev-publication.outputs.current == 'true' || steps.stable-publication.outputs.current == 'true'))
+        env:
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.publication.outputs.tags }}
         run: node scripts/promote-image.mjs
 
       - name: Publish development preview after verified image promotion
-        if: github.ref == 'refs/heads/dev' && steps.dev-publication.outputs.current == 'true' && steps.build-mode.outputs.rebuild_only != 'true'
+        if: steps.promote.outcome == 'success' && github.ref == 'refs/heads/dev' && steps.publication.outputs.rebuild_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
         run: node scripts/publish-dev-preview.mjs publish
 
-  release:
-    needs: docker
-    if: startsWith(github.ref, 'refs/tags/v') && inputs.rebuild_only != true
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    concurrency:
-      group: bfb-release-publication
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - name: Generate notes from the tagged changelog
+      - name: Generate stable release notes
+        if: steps.promote.outcome == 'success' && steps.publication.outputs.release_tag != ''
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.publication.outputs.release_tag }}
         run: node scripts/release-notes.mjs "$RELEASE_TAG" > "$RUNNER_TEMP/bfb-release-notes.md"
       - name: Publish application release after image success
+        if: steps.promote.outcome == 'success' && steps.publication.outputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: node scripts/publish-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/bfb-release-notes.md"
+          RELEASE_TAG: ${{ steps.publication.outputs.release_tag }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: node scripts/publish-release.mjs publish "$RELEASE_TAG" "$RUNNER_TEMP/bfb-release-notes.md"

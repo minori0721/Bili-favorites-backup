@@ -10,7 +10,7 @@ const scopeFiles = {
     'tests/build-version.test.ts',
     'tests/release-notes.test.ts',
     'tests/dev-preview.test.ts',
-    'tests/dev-test-evidence.test.ts',
+    'tests/release-publication.test.ts',
     'tests/promote-image.test.ts',
     'tests/image-layer-report.test.ts',
     'tests/image-rebuild.test.ts',
