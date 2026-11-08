@@ -229,7 +229,7 @@ test('the real workflow gates publication on separate successful jobs and carrie
   assert.match(source, /^concurrency:\n  group: bfb-image-\$\{\{ github.ref \}\}\n  cancel-in-progress: false/m);
   assert.doesNotMatch(source.split('\njobs:\n')[0], /\n    tags:/);
   assert.match(testJob, /name: Test application\n        run: npm test/);
-  assert.match(testJob, /run: npm ci/);
+  assert.match(testJob, /npm ci --foreground-scripts --timing --loglevel=info/);
   assert.match(testJob, /run: npm audit --omit=dev --audit-level=high/);
   assert.match(imageJob, /^    needs: test/m);
   assert.match(imageJob, /digest: \$\{\{ steps.image.outputs.digest \}\}/);
@@ -245,6 +245,6 @@ test('the real workflow gates publication on separate successful jobs and carrie
   assert.match(publishJob, /node scripts\/publish-release\.mjs publish/);
   assert.doesNotMatch(publishJob, /build-push-action|npm ci|npm test|if:.*always\(/);
   assert.doesNotMatch(source, /continue-on-error/);
-  assert.equal(source.split('run: npm ci').length - 1, 1);
+  assert.equal(source.split('npm ci --foreground-scripts').length - 1, 1);
   assert.equal(source.split('run: node scripts/image-rebuild.mjs configure').length - 1, 1);
 });

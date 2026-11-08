@@ -41,6 +41,17 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Plan SQLite prebuilt cache
+        id: sqlite-plan
+        run: node scripts/ci-sqlite-cache.mjs plan
+
+      - name: Restore SQLite prebuilt
+        id: sqlite-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ steps.sqlite-plan.outputs.archive }}
+          key: ${{ steps.sqlite-plan.outputs.key }}
+
       - name: Validate release notes before publishing images
         env:
           BUILD_REF: ${{ github.ref }}
@@ -89,7 +100,25 @@ jobs:
           aria2c --version | sed -n '1p'
 
       - name: Install application dependencies
-        run: npm ci
+        id: npm-install
+        shell: bash
+        run: |
+          npm ci --foreground-scripts --timing --loglevel=info \
+            --logs-dir="$RUNNER_TEMP/bfb-npm-logs" 2>&1 | tee "$RUNNER_TEMP/bfb-npm-install.log"
+
+      - name: Record dependency installation
+        id: sqlite-install
+        if: ${{ !cancelled() && steps.npm-install.outcome != 'skipped' }}
+        env:
+          NPM_INSTALL_OUTCOME: ${{ steps.npm-install.outcome }}
+        run: node scripts/ci-sqlite-cache.mjs record "$RUNNER_TEMP/bfb-npm-install.log" "$RUNNER_TEMP/bfb-npm-logs"
+
+      - name: Save successfully installed SQLite prebuilt
+        if: steps.sqlite-cache.outputs.cache-hit != 'true' && steps.sqlite-install.outputs.save == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.sqlite-plan.outputs.archive }}
+          key: ${{ steps.sqlite-plan.outputs.key }}
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high

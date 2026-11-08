@@ -17,6 +17,7 @@ const scopeFiles = {
     'tests/image-runtime-security.test.ts',
     'tests/image-security-inventory.test.ts',
     'tests/ci-media-tools.test.ts',
+    'tests/ci-sqlite-cache.test.ts',
     'tests/update-check.test.ts',
     'tests/update-channels.test.ts',
   ],
